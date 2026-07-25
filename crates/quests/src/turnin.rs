@@ -62,9 +62,21 @@ pub fn complete(state: &mut WorldState, player: EntityId, key: &str) -> bool {
         return false;
     };
 
-    // What has to be handed over, gathered first.
+    // What has to be handed over, gathered first — and only for the objectives
+    // that were actually met. An `all_objectives: false` quest completes on one
+    // of its list, and demanding the goods for the others would make a quest the
+    // player has finished impossible to hand in.
+    let progress = state
+        .registry
+        .get::<QuestLog>(player)
+        .and_then(|log| log.active_quest(key))
+        .map(|entry| entry.progress.clone())
+        .unwrap_or_default();
     let mut wanted: Vec<(u16, u16)> = Vec::new();
-    for objective in &quest.objectives {
+    for (index, objective) in quest.objectives.iter().enumerate() {
+        if progress.get(index).copied().unwrap_or(0) < objective.count {
+            continue;
+        }
         match objective.kind {
             ObjectiveKind::Obtain { graphic } | ObjectiveKind::Deliver { graphic, .. } => {
                 wanted.push((graphic, objective.count));

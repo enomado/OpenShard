@@ -1197,3 +1197,151 @@ fn teleport_to(world: &mut World, entity: EntityId, at: Point) {
         .sectors
         .insert(entity, at);
 }
+
+#[test]
+fn an_escorted_traveller_walks_after_its_escorter() {
+    // The one behaviour a player sees immediately and the one nothing covered:
+    // that the follow step is actually taken, not merely decided.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![escort_quest()]);
+    let giver = place_giver(&mut world, &["escort"], now);
+    register_towns(&mut world, now);
+    world.queue(Command::MakeEscortable {
+        serial: giver,
+        destination: String::new(),
+    });
+    world.tick(now);
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4);
+    world.tick(now);
+
+    // Walk the player a few tiles off and let the escort beat run.
+    let player = world.state.players[&connection];
+    let away = Point::new(START.0 + 6, START.1, 0);
+    teleport_to(&mut world, player, away);
+    let npc = world
+        .state
+        .registry
+        .entity_of(Serial::new(giver).unwrap())
+        .unwrap();
+    let before = position_of(&world, npc);
+    for _ in 0..20 {
+        world.tick(now);
+    }
+    let after = position_of(&world, npc);
+
+    assert_ne!(before, after, "the traveller followed");
+    assert!(
+        openshard_state::distance(after, away) < openshard_state::distance(before, away),
+        "and got closer, rather than wandering"
+    );
+}
+
+/// Where a mobile stands.
+fn position_of(world: &World, entity: EntityId) -> Point {
+    world
+        .state
+        .registry
+        .get::<openshard_state::components::Position>(entity)
+        .expect("a placed mobile")
+        .0
+}
+
+#[test]
+fn a_timed_objective_fails_when_its_seconds_run_out() {
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    let mut quest = rat_cull();
+    quest.objectives[0].seconds = 2;
+    register(&mut world, vec![quest]);
+    let giver = place_giver(&mut world, &["rat_cull"], now);
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4);
+    world.tick(now);
+    assert!(!log_of(&world, connection).active[0].failed);
+
+    // Two seconds of ticks, and a little over.
+    for _ in 0..(3 * openshard_state::TICKS_PER_SECOND) {
+        world.tick(now);
+    }
+
+    let log = log_of(&world, connection);
+    assert!(log.active[0].failed, "the clock ran out");
+    // A failed quest stays in the log, in red, until it is resigned — ServUO
+    // shows it rather than removing it, so the player finds out why it stopped
+    // counting.
+    assert_eq!(log.active.len(), 1);
+}
+
+#[test]
+fn an_any_of_these_quest_completes_on_one_objective() {
+    // `all_objectives: false` is rendered by the gump either way (cliloc
+    // 1072209, "Only one of the following"), so getting it wrong would make the
+    // window lie.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    let either = QuestDef {
+        key: "either".to_owned(),
+        title: "One or the Other".to_owned(),
+        all_objectives: false,
+        objectives: vec![
+            ObjectiveDef {
+                kind: ObjectiveKind::Slay { body: RAT },
+                count: 1,
+                name: "rat".to_owned(),
+                seconds: 0,
+            },
+            ObjectiveDef {
+                kind: ObjectiveKind::Obtain { graphic: SILK },
+                count: 5,
+                name: "silk".to_owned(),
+                seconds: 0,
+            },
+        ],
+        ..QuestDef::default()
+    };
+    register(&mut world, vec![either]);
+    let giver = place_giver(&mut world, &["either"], now);
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4);
+    world.tick(now);
+
+    let player = world.state.players[&connection];
+    let killer = world.state.registry.serial_of(player).unwrap();
+    world.state.bus.send(openshard_combat::MobileDied {
+        entity: player,
+        serial: killer,
+        body: RAT,
+        killer: Some(killer),
+    });
+    world.tick(now);
+
+    // The rat alone is enough; the silk was never touched.
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 8); // Complete
+    world.tick(now);
+    assert!(
+        log_of(&world, connection).active.is_empty(),
+        "one of the two was the whole of it"
+    );
+}
