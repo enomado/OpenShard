@@ -8409,6 +8409,90 @@ fn a_shopkeeper_stands_still_while_a_customer_is_at_the_counter() {
 }
 
 #[test]
+fn a_trade_answers_its_own_keyword_and_only_within_earshot() {
+    // The headline path end to end: the pack registers a table by trade, someone
+    // speaks nearby, and the NPC of that trade answers. ServUO's
+    // `VendorAI.HandlesOnSpeech` bounds it to four tiles, which is what stops a
+    // shopkeeper across the square replying to a private conversation.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let Position(player_at) = *world.registry().get::<Position>(player).unwrap();
+
+    world.queue(Command::RegisterNpcSpeech {
+        trades: vec![(
+            "the baker".to_owned(),
+            openshard_state::SpeechTable {
+                greetings: vec!["Fresh bread, {name}.".to_owned()],
+                barks: Vec::new(),
+                entries: vec![openshard_state::SpeechEntry {
+                    keywords: vec!["bread".to_owned()],
+                    lines: vec!["My bread is fresh and hot.".to_owned()],
+                }],
+                fallback: None,
+            },
+        )],
+        male_names: Vec::new(),
+        female_names: Vec::new(),
+    });
+    world.tick(now);
+
+    // Well out of earshot: five tiles, one past `HandlesOnSpeech`.
+    let far = spawn_townsperson(
+        &mut world,
+        "the baker",
+        Point::new(player_at.x + 5, player_at.y, player_at.z),
+        now,
+    );
+    world.drain_outbound().count();
+    say(&mut world, connection, "I should like some bread", now);
+    let far_serial = world.registry().serial_of(far).unwrap().raw();
+    assert!(
+        !packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p[0] == 0xAE && mentions(p, far_serial)),
+        "a baker five tiles off must not answer"
+    );
+
+    // Two tiles: in earshot, and it answers over its own head.
+    let near = spawn_townsperson(
+        &mut world,
+        "the baker",
+        Point::new(player_at.x + 2, player_at.y, player_at.z),
+        now,
+    );
+    let near_serial = world.registry().serial_of(near).unwrap().raw();
+    world.drain_outbound().count();
+    say(&mut world, connection, "I should like some bread", now);
+    let packets = packets_for(&mut world, connection);
+    let answered = packets.iter().any(|p| {
+        p[0] == 0xAE && mentions(p, near_serial) && {
+            let text: Vec<u8> = p.iter().copied().filter(|&b| b != 0).collect();
+            String::from_utf8_lossy(&text).contains("fresh and hot")
+        }
+    });
+    assert!(answered, "the baker answered its keyword");
+
+    // And a trade with no table stays quiet rather than borrowing the baker's line.
+    let smith = spawn_townsperson(
+        &mut world,
+        "the blacksmith",
+        Point::new(player_at.x, player_at.y + 2, player_at.z),
+        now,
+    );
+    let smith_serial = world.registry().serial_of(smith).unwrap().raw();
+    world.drain_outbound().count();
+    say(&mut world, connection, "tell me of iron", now);
+    assert!(
+        !packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p[0] == 0xAE && mentions(p, smith_serial)),
+        "an unregistered trade has nothing to say"
+    );
+}
+
+#[test]
 fn a_criminal_is_refused_at_every_door_into_a_shop() {
     // ServUO's `CheckVendorAccess`, and the reason it is checked in four places
     // rather than one: a client that already has the buy window open can still send
