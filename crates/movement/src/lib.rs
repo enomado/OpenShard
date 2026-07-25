@@ -17,7 +17,7 @@
 //!     sequence: 0,
 //!     fastwalk_key: 0,
 //! };
-//! assert!(matches!(walker.request(step, &OpenWorld, Instant::now()), Walk::Moved { .. }));
+//! assert!(matches!(walker.request(step, &OpenWorld, Instant::now(), false), Walk::Moved { .. }));
 //! ```
 //!
 //! # What is here and what is not

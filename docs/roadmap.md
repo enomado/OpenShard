@@ -1314,9 +1314,22 @@ Roughly in dependency order, each script-first:
   - [ ] **Locks and keys on doors** — every door opens to any NPC that can work
     handles, and to any player; the pack already names locked doors it cannot yet
     lock. Wants a lock component the obstruction index respects and key items.
-  - [ ] **Mounted movement speed at the pace budget** — a mounted rider should
-    earn the mounted run rate in `WalkPace`; today the saddle is visual and the
-    budget does not know about it.
+  - [x] **Mounted movement speed at the pace budget.** The budget charged every mobile
+    the on-foot rate, so a mounted runner — legitimately twice as fast as anything it
+    knew about — spent credit faster than it earned and rubber-banded on a long gallop.
+    It now takes ServUO's four rates (`Mobile.WalkFoot` 400, `RunFoot` 200, `WalkMount`
+    200, `RunMount` 100).
+
+    **The two references look like they contradict each other here and do not**, which
+    is worth writing down because the temptation is to "fix" one to match. ServUO's
+    numbers are the real step gaps; Sphere's single 200ms walking interval is half
+    ServUO's foot walk, because it is a *floor* in an anti-speedhack check and is
+    deliberately lenient — jitter, batching and a bad connection must never trip it,
+    which is the whole argument of `WalkPace`. So the floors are ServUO's rates halved:
+    200 on foot, 100 running on foot or walking a mount, 50 running a mount. `mounted`
+    is a parameter of `Walker::request` rather than a field on the walker, the
+    read-site-derivation rule `equipped_weapon` follows — a mount goes on and comes off,
+    and a copy here is one more thing to keep in step.
   - [ ] **Secure trade between players** (`0x6F`) — the drag-onto-a-player trade
     window. The `NewSecureTrade` feature gate exists in `protocol`; the handler
     and the escrow container do not.

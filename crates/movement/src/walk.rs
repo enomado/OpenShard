@@ -221,7 +221,17 @@ impl Walker {
     ///
     /// `now` is a parameter rather than read here, so that a whole walk — pace
     /// and all — is a deterministic test with no `sleep` in it.
-    pub fn request(&mut self, request: WalkRequest, terrain: &dyn Terrain, now: Instant) -> Walk {
+    /// `mounted` is passed rather than kept on the walker, and deliberately: a mount
+    /// is put on and taken off, and a copy of that here is one more thing to keep in
+    /// step with the world (the read-site-derivation argument `equipped_weapon` makes).
+    /// The caller already knows, because it just looked the rider up.
+    pub fn request(
+        &mut self,
+        request: WalkRequest,
+        terrain: &dyn Terrain,
+        now: Instant,
+        mounted: bool,
+    ) -> Walk {
         if self.sequence.accept(request.sequence).is_err() {
             self.sequence.reject();
             return Walk::Refused;
@@ -242,7 +252,7 @@ impl Walker {
             };
         }
 
-        if self.pace.allow(now, request.facing.running) == Pace::TooFast {
+        if self.pace.allow(now, request.facing.running, mounted) == Pace::TooFast {
             // Moving faster than a body can move. Refuse the step rather than
             // the connection: the client snaps back, which is what a legitimate
             // one needs and what an illegitimate one deserves.
@@ -325,7 +335,7 @@ mod tests {
     #[test]
     fn walking_the_way_you_face_moves_you() {
         let mut walker = walker();
-        let outcome = walker.request(request(Direction::North, 0), &OpenWorld, now());
+        let outcome = walker.request(request(Direction::North, 0), &OpenWorld, now(), false);
         assert_eq!(
             outcome,
             Walk::Moved {
@@ -343,7 +353,7 @@ mod tests {
         // animates the turn and waits for the ack, so collapsing this into a
         // move puts the two ends a tile apart.
         let mut walker = walker();
-        let outcome = walker.request(request(Direction::East, 0), &OpenWorld, now());
+        let outcome = walker.request(request(Direction::East, 0), &OpenWorld, now(), false);
         assert_eq!(
             outcome,
             Walk::Turned {
@@ -353,7 +363,7 @@ mod tests {
         assert_eq!(walker.position, Point::new(100, 100, 0), "did not move");
 
         // Now it moves.
-        let outcome = walker.request(request(Direction::East, 1), &OpenWorld, now());
+        let outcome = walker.request(request(Direction::East, 1), &OpenWorld, now(), false);
         assert_eq!(
             outcome,
             Walk::Moved {
@@ -367,7 +377,7 @@ mod tests {
     fn a_turn_still_consumes_a_sequence_number() {
         // It is a step as far as the client is concerned, and it gets an ack.
         let mut walker = walker();
-        let _ = walker.request(request(Direction::East, 0), &OpenWorld, now());
+        let _ = walker.request(request(Direction::East, 0), &OpenWorld, now(), false);
         assert_eq!(walker.sequence.expected(), 1);
     }
 
@@ -385,6 +395,7 @@ mod tests {
             },
             &OpenWorld,
             now(),
+            false,
         );
         assert!(matches!(outcome, Walk::Moved { .. }));
         assert!(walker.facing.running);
@@ -394,7 +405,7 @@ mod tests {
     fn every_direction_steps_the_right_way() {
         for direction in Direction::ALL {
             let mut walker = Walker::new(Point::new(100, 100, 0), Facing::walking(direction));
-            let outcome = walker.request(request(direction, 0), &OpenWorld, now());
+            let outcome = walker.request(request(direction, 0), &OpenWorld, now(), false);
 
             let (dx, dy) = direction.step();
             let expected = Point::new((100 + dx) as u16, (100 + dy) as u16, 0);
@@ -413,7 +424,7 @@ mod tests {
     fn a_fresh_walker_that_does_not_start_at_zero_is_refused() {
         let mut walker = walker();
         assert_eq!(
-            walker.request(request(Direction::North, 5), &OpenWorld, now()),
+            walker.request(request(Direction::North, 5), &OpenWorld, now(), false),
             Walk::Refused
         );
         assert_eq!(walker.position, Point::new(100, 100, 0), "did not move");
@@ -423,8 +434,8 @@ mod tests {
     #[test]
     fn a_refusal_resets_the_sequence() {
         let mut walker = walker();
-        let _ = walker.request(request(Direction::North, 0), &OpenWorld, now());
-        let _ = walker.request(request(Direction::North, 1), &OpenWorld, now());
+        let _ = walker.request(request(Direction::North, 0), &OpenWorld, now(), false);
+        let _ = walker.request(request(Direction::North, 1), &OpenWorld, now(), false);
 
         // A wall.
         struct Wall;
@@ -435,7 +446,7 @@ mod tests {
         }
 
         assert_eq!(
-            walker.request(request(Direction::North, 2), &Wall, now()),
+            walker.request(request(Direction::North, 2), &Wall, now(), false),
             Walk::Refused
         );
         assert!(
@@ -456,7 +467,7 @@ mod tests {
         }
 
         let mut walker = walker();
-        let outcome = walker.request(request(Direction::North, 0), &Hill, now());
+        let outcome = walker.request(request(Direction::North, 0), &Hill, now(), false);
         assert_eq!(
             outcome,
             Walk::Moved {
@@ -473,7 +484,7 @@ mod tests {
         // walker at x=65535 — the far side of the map, instantly.
         let mut walker = Walker::new(Point::new(0, 0, 0), Facing::walking(Direction::West));
         assert_eq!(
-            walker.request(request(Direction::West, 0), &OpenWorld, now()),
+            walker.request(request(Direction::West, 0), &OpenWorld, now(), false),
             Walk::Refused
         );
         assert_eq!(walker.position, Point::new(0, 0, 0));
@@ -483,7 +494,7 @@ mod tests {
             Facing::walking(Direction::SouthEast),
         );
         assert_eq!(
-            walker.request(request(Direction::SouthEast, 0), &OpenWorld, now()),
+            walker.request(request(Direction::SouthEast, 0), &OpenWorld, now(), false),
             Walk::Refused
         );
     }
@@ -526,7 +537,7 @@ mod tests {
         let mut step = |walker: &mut Walker, direction: Direction| {
             // Two requests per direction: one turns, one moves.
             for _ in 0..2 {
-                let _ = walker.request(request(direction, sequence), &OpenWorld, now());
+                let _ = walker.request(request(direction, sequence), &OpenWorld, now(), false);
                 sequence = sequence.wrapping_add(1);
             }
         };

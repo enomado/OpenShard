@@ -62,9 +62,21 @@ impl World {
         let facet = self.state.facet_of(entity);
         let was = walker.position;
         let out_of_sequence = walker.sequence.is_fresh() && request.sequence != 0;
+        // A horse is the fastest a player legitimately moves, and the pace budget has
+        // to know: charging a mounted runner the on-foot rate spends credit twice as
+        // fast as it earns and rubber-bands a long gallop.
+        let mounted = self
+            .state
+            .registry
+            .has::<openshard_state::components::Riding>(entity);
         // The live terrain, not the bare map: a closed door blocks a walk the
         // statics would allow.
-        let outcome = walker.request(request, &self.state.facet_state(facet).live_terrain(), now);
+        let outcome = walker.request(
+            request,
+            &self.state.facet_state(facet).live_terrain(),
+            now,
+            mounted,
+        );
         self.state.registry.insert(entity, Movement(walker));
 
         match outcome {

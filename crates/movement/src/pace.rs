@@ -7,10 +7,34 @@ use std::time::{Duration, Instant};
 /// Sphere's `CClient::Event_Walking`.
 pub const WALK_INTERVAL: Duration = Duration::from_millis(200);
 
-/// The shortest gap between two steps when running, or mounted.
+/// The shortest gap between two steps when running on foot, or walking a mount.
 ///
-/// Sphere uses this for a mount, for hovering, and for `speedMode == 1`.
+/// Sphere uses this for a mount, for hovering, and for `speedMode == 1`; it is also
+/// half ServUO's `RunFoot`/`WalkMount`, which are both 200ms. See
+/// [`MOUNTED_RUN_INTERVAL`] for why half.
 pub const RUN_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The shortest gap between two steps when running a mount — the fastest a mobile
+/// legitimately moves.
+///
+/// # Why the references look like they disagree, and do not
+///
+/// ServUO names four rates (`Mobile.WalkFoot` 400, `RunFoot` 200, `WalkMount` 200,
+/// `RunMount` 100) and they are the *real* step gaps a client uses. Sphere names one
+/// walking interval, 200ms, which is half ServUO's foot walk — so read as a step rate
+/// the two flatly contradict each other.
+///
+/// They are not the same quantity. Sphere's number is a **floor** in an anti-speedhack
+/// check, and it is deliberately half the real rate so that jitter, batching and a bad
+/// connection never trip it. That is the whole argument of this module: the check has
+/// to be lenient or it punishes the wrong players.
+///
+/// So the floors here are ServUO's four rates halved: 200 on foot, 100 running on foot
+/// or walking a mount, 50 running a mount. Before this a mounted mobile was charged the
+/// on-foot rate, so a mounted runner — legitimately twice as fast as anything the
+/// budget knew about — spent credit twice as fast as it earned it and rubber-banded on
+/// a long gallop.
+pub const MOUNTED_RUN_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How many steps of credit a mobile may bank.
 ///
@@ -84,10 +108,10 @@ impl Pace {
 ///
 /// // A burst after standing still is fine: that is what the bucket is for.
 /// for step in 0..15 {
-///     assert!(pace.allow(start + Duration::from_millis(step), false).is_allowed());
+///     assert!(pace.allow(start + Duration::from_millis(step), false, false).is_allowed());
 /// }
 /// // Past the bucket, it is not.
-/// assert!(!pace.allow(start, false).is_allowed());
+/// assert!(!pace.allow(start, false, false).is_allowed());
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WalkPace {
@@ -132,10 +156,16 @@ impl WalkPace {
 
     /// Ask whether a step may be taken now, and charge for it if so.
     ///
-    /// `running` picks the shorter interval — a running mobile is *allowed* to
-    /// move faster, so it is not cheating by doing so.
-    pub fn allow(&mut self, now: Instant, running: bool) -> Pace {
-        let cost = if running { RUN_INTERVAL } else { WALK_INTERVAL }.as_millis() as i64;
+    /// `running` and `mounted` pick the interval — a mobile that is *allowed* to move
+    /// faster is not cheating by doing so, and a horse is the fastest thing a player
+    /// legitimately is. ServUO's four rates, halved; see [`MOUNTED_RUN_INTERVAL`].
+    pub fn allow(&mut self, now: Instant, running: bool, mounted: bool) -> Pace {
+        let cost = match (mounted, running) {
+            (true, true) => MOUNTED_RUN_INTERVAL,
+            (true, false) | (false, true) => RUN_INTERVAL,
+            (false, false) => WALK_INTERVAL,
+        }
+        .as_millis() as i64;
 
         // Refill for however long has passed. Saturating because the clock is a
         // parameter and `duration_since` panics in debug on a backwards one —
@@ -164,10 +194,63 @@ mod tests {
 
     /// Take `count` steps `gap` apart, and report how many were refused.
     fn walk(pace: &mut WalkPace, count: u32, gap: Duration, running: bool) -> u32 {
+        ride(pace, count, gap, running, false)
+    }
+
+    /// The same, with the choice of mount.
+    fn ride(pace: &mut WalkPace, count: u32, gap: Duration, running: bool, mounted: bool) -> u32 {
         let start = Instant::now();
         (0..count)
-            .filter(|step| pace.allow(start + gap * *step, running) == Pace::TooFast)
+            .filter(|step| pace.allow(start + gap * *step, running, mounted) == Pace::TooFast)
             .count() as u32
+    }
+
+    #[test]
+    fn a_mounted_gallop_is_never_refused() {
+        // The regression this exists for: a mounted runner is legitimately twice as
+        // fast as anything the budget knew about, so charged the on-foot rate it spent
+        // credit faster than it earned and rubber-banded on a long ride.
+        let mut pace = WalkPace::new();
+        assert_eq!(
+            ride(&mut pace, 5000, MOUNTED_RUN_INTERVAL, true, true),
+            0,
+            "a horse at a gallop"
+        );
+
+        // And on foot at the same cadence roughly every other step is refused, because
+        // a person cannot keep it up: it earns 50ms a step and a foot run costs 100, so
+        // the bucket drains and then allows one step in two for ever.
+        let mut pace = WalkPace::new();
+        let refused = ride(&mut pace, 5000, MOUNTED_RUN_INTERVAL, true, false);
+        assert!(
+            (2000..3000).contains(&refused),
+            "{refused} of 5000 refused on foot; about half is the steady state"
+        );
+    }
+
+    #[test]
+    fn a_walking_mount_earns_the_running_rate() {
+        // ServUO's `WalkMount` equals its `RunFoot`: a horse at a walk keeps pace with
+        // a person at a run, and the floor has to say so or leading a horse through a
+        // town at a walk is throttled.
+        let mut pace = WalkPace::new();
+        assert_eq!(ride(&mut pace, 2000, RUN_INTERVAL, false, true), 0);
+    }
+
+    #[test]
+    fn the_floors_are_half_the_references_real_rates() {
+        // ServUO names the real gaps (WalkFoot 400, RunFoot 200, WalkMount 200,
+        // RunMount 100); Sphere names one 200ms walking floor, which is half ServUO's
+        // foot walk. They are not the same quantity — one is a step rate, the other a
+        // lenient anti-speedhack floor — and this is the relationship that reconciles
+        // them, written down so the next person does not "fix" one to match the other.
+        assert_eq!(WALK_INTERVAL.as_millis() * 2, 400, "ServUO WalkFoot");
+        assert_eq!(
+            RUN_INTERVAL.as_millis() * 2,
+            200,
+            "ServUO RunFoot/WalkMount"
+        );
+        assert_eq!(MOUNTED_RUN_INTERVAL.as_millis() * 2, 100, "ServUO RunMount");
     }
 
     #[test]
@@ -210,14 +293,20 @@ mod tests {
         let start = Instant::now();
 
         for step in 0..10u32 {
-            assert!(pace.allow(start + WALK_INTERVAL * step, false).is_allowed());
+            assert!(pace
+                .allow(start + WALK_INTERVAL * step, false, false)
+                .is_allowed());
         }
 
         let after_stall = start + Duration::from_secs(5);
         for step in 0..8u32 {
             assert!(
-                pace.allow(after_stall + Duration::from_millis(step.into()), false)
-                    .is_allowed(),
+                pace.allow(
+                    after_stall + Duration::from_millis(step.into()),
+                    false,
+                    false
+                )
+                .is_allowed(),
                 "burst step {step} refused; a gate would do this and the client would rubber-band"
             );
         }
@@ -234,7 +323,7 @@ mod tests {
 
         for step in 0..5000u32 {
             at += Duration::from_millis(if step % 2 == 0 { 190 } else { 210 });
-            if pace.allow(at, false) == Pace::TooFast {
+            if pace.allow(at, false, false) == Pace::TooFast {
                 refused += 1;
             }
         }
@@ -254,7 +343,7 @@ mod tests {
             at += Duration::from_secs(1);
             for _ in 0..5u32 {
                 at += Duration::from_millis(1);
-                if pace.allow(at, false) == Pace::TooFast {
+                if pace.allow(at, false, false) == Pace::TooFast {
                     refused += 1;
                 }
             }
@@ -284,8 +373,8 @@ mod tests {
         // a speedhacker would simply wait first.
         let mut pace = WalkPace::new();
         let start = Instant::now();
-        pace.allow(start, false);
-        pace.allow(start + Duration::from_secs(60), false);
+        pace.allow(start, false, false);
+        pace.allow(start + Duration::from_secs(60), false, false);
 
         assert!(
             pace.credit_steps() <= WALK_BUFFER as i64,
@@ -296,7 +385,8 @@ mod tests {
         let after = start + Duration::from_secs(60);
         let mut refused = 0;
         for step in 0..100u32 {
-            if pace.allow(after + Duration::from_millis(step.into()), false) == Pace::TooFast {
+            if pace.allow(after + Duration::from_millis(step.into()), false, false) == Pace::TooFast
+            {
                 refused += 1;
             }
         }
@@ -308,7 +398,7 @@ mod tests {
         let mut pace = WalkPace::new();
         let start = Instant::now();
         for step in 0..1000u32 {
-            pace.allow(start + Duration::from_millis(500) * step, false);
+            pace.allow(start + Duration::from_millis(500) * step, false, false);
         }
         assert!(pace.credit_steps() <= WALK_BUFFER as i64);
     }
@@ -318,7 +408,7 @@ mod tests {
         // No previous step to measure against, and a character that just entered
         // the world has not been running.
         let mut pace = WalkPace::new();
-        assert!(pace.allow(Instant::now(), false).is_allowed());
+        assert!(pace.allow(Instant::now(), false, false).is_allowed());
     }
 
     #[test]
@@ -327,8 +417,8 @@ mod tests {
         // a parameter, and a caller can hand over anything.
         let mut pace = WalkPace::new();
         let start = Instant::now();
-        pace.allow(start + Duration::from_secs(10), false);
-        let _ = pace.allow(start, false);
+        pace.allow(start + Duration::from_secs(10), false, false);
+        let _ = pace.allow(start, false, false);
     }
 
     #[test]
@@ -342,7 +432,7 @@ mod tests {
         let start = Instant::now();
         let mut refused = 0;
         for step in 1..=50u32 {
-            if pace.allow(start + WALK_INTERVAL * step, false) == Pace::TooFast {
+            if pace.allow(start + WALK_INTERVAL * step, false, false) == Pace::TooFast {
                 refused += 1;
             }
         }
