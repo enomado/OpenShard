@@ -215,6 +215,32 @@ pub struct GameplayConfig {
     /// `Disabled` applied shard-wide, for a shard that wants no safe ground.
     #[serde(default = "default_true")]
     pub guards: bool,
+    /// Which expansion the shard tells the client it is — `"aos"`, `"se"` or
+    /// `"ml"` (the default).
+    ///
+    /// This is not decoration: the client draws its paperdoll from what it is
+    /// told the shard supports, so a shard that says "AoS" has **no Quest button
+    /// on the paperdoll** however well the server answers one. `"ml"` is the
+    /// default because that is where the quest system this engine implements
+    /// comes from; drop to `"aos"` for a pre-ML feel and reach the quest log
+    /// through the context menu instead.
+    #[serde(default = "default_expansion")]
+    pub expansion: String,
+}
+
+/// The expansions a shard may advertise, in order.
+///
+/// The names only; the `0xB9` masks they map to live in the server, because this
+/// crate deliberately knows nothing about the protocol. Not cosmetic either way:
+/// the client builds its paperdoll from what it is told, so the Quest and Guild
+/// buttons exist only under `"ml"`.
+pub const EXPANSIONS: [&str; 3] = ["aos", "se", "ml"];
+
+/// Whether an expansion name is one the shard can advertise.
+#[must_use]
+pub fn expansion_is_known(expansion: &str) -> bool {
+    let name = expansion.trim().to_ascii_lowercase();
+    EXPANSIONS.contains(&name.as_str())
 }
 
 /// Whether combat [`combat_era`](GameplayConfig::combat_era) is one the swing
@@ -288,6 +314,10 @@ fn default_season() -> u8 {
     0
 }
 
+fn default_expansion() -> String {
+    "ml".to_owned()
+}
+
 impl Default for GameplayConfig {
     fn default() -> Self {
         Self {
@@ -315,6 +345,7 @@ impl Default for GameplayConfig {
             uo_minute_seconds: default_uo_minute_seconds(),
             season: default_season(),
             guards: default_true(),
+            expansion: default_expansion(),
         }
     }
 }
@@ -579,6 +610,11 @@ pub enum ConfigError {
         /// The value given.
         season: u8,
     },
+    /// `gameplay.expansion` is not an expansion the shard can advertise.
+    UnknownExpansion {
+        /// The value given.
+        expansion: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -619,6 +655,10 @@ impl fmt::Display for ConfigError {
             Self::ZeroUoMinuteSeconds => {
                 f.write_str("gameplay.uo_minute_seconds must be at least 1")
             }
+            Self::UnknownExpansion { expansion } => write!(
+                f,
+                "gameplay.expansion \"{expansion}\" is not one of aos, se, ml"
+            ),
             Self::UnknownSeason { season } => write!(
                 f,
                 "gameplay.season {season} is not a season the client draws (0 spring, \
@@ -709,6 +749,13 @@ impl Config {
         // world at midnight for ever.
         if self.gameplay.uo_minute_seconds == 0 {
             return Err(ConfigError::ZeroUoMinuteSeconds);
+        }
+        // An expansion the shard cannot name would silently advertise nothing,
+        // and the client would quietly drop half its paperdoll.
+        if !expansion_is_known(&self.gameplay.expansion) {
+            return Err(ConfigError::UnknownExpansion {
+                expansion: self.gameplay.expansion.clone(),
+            });
         }
         // The client knows five seasons; a sixth draws nothing at all.
         if self.gameplay.season > 4 {

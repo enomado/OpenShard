@@ -350,7 +350,8 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
-            quest_blob: String::new(),
+            quests: Vec::new(),
+            done_quests: Vec::new(),
         }
     }
 
@@ -555,6 +556,8 @@ mod tests {
             spawned_by: Some(1),
             effects: Vec::new(),
             skills: Vec::new(),
+            quest_giver: Vec::new(),
+            escort_destination: None,
         }
     }
 

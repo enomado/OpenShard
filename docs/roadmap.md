@@ -1345,44 +1345,47 @@ Roughly in dependency order, each script-first:
 - [ ] `guilds` — membership, titles, the guild notoriety rules (green/orange),
   war declarations. Mostly data plus a notoriety hook; the abstract stub exists
   so the dependency graph already names it.
-- [x] `quests` — **the seams landed and the first quest runs**, pack-driven, the
-  "default in core, customise in the pack" split once more. The engine grew four
-  thin seams and nothing quest-shaped in a signature: a **`MobileUsed`** event so
-  double-clicking an NPC reaches the pack (the mobile counterpart of `ItemUsed`,
-  fired beside the paperdoll open); a **pack-driven gump** (`op_gump` + a
-  `GumpAnswered` event, generalising the admin gump's own encode/decode — a
-  non-admin `0xB1` now becomes an event instead of being dropped); an
-  **`op_give_item`** that drops a reward into the player's backpack (the worn-
-  container lookup a vendor payout uses); and a **per-character quest blob** the
-  pack owns (`CharacterRecord.quest_blob`, schema v11, the `effects` persistence
-  pattern) stored via `op_set_quest` and handed back on login as a `QuestLoaded`
-  event. `MobileDied` grew a `body` and a `killer`, so a kill can be attributed to
-  a player and matched by what died. The quest *data* (title, objectives of
-  kill/deliver, rewards, giver) and all the logic live in the Community Pack
-  (`quests/`): a giver placed on a tile offers its quest on double-click, an
-  accept starts it, `MobileDied`/`ItemUsed` advance it, and a turn-in pays the
-  reward — progress mirrored to the saved blob after every change, restored on
-  login. Offered on **double-click and on speech** (a "quest" keyword near a
-  giver, resolved with `op_position` the way the banker resolves reach). The
-  shipped example is *A Plague of Rats* for the Britain town herald. And **escort
-  quests run** — the objective kind that walks: an escortable is a giver the pack
-  takes off the built-in AI with `op_control`, and its `onTick` steps it after the
-  escorter (`op_position` + `op_move`, the server-authoritative step) and pays on
-  reaching the destination town; entirely pack code over the scripted-brain seam,
-  no new engine surface. The shipped example is a Britain traveller bound for
-  Minoc. And **collect quests** — since the engine has no inventory events, a
-  collect objective hands in at the counter: talking to the giver calls a new
-  `op_take_item` that draws N of an item from the backpack all-or-nothing and
-  reports back with an `ItemsTaken` event, which pays the reward only if the whole
-  lot was there. The shipped example gathers five spiders' silk for the
-  spellwright's apprentice. And the **real Felucca escortables are wired**: the
-  converter's escort pass places every `BaseEscortable` spawn from `felucca.xml`
-  (~63 — wandering mages, seekers, nobles, peasants, merchants) as an escort
-  giver, and the pack picks a random destination town on accept (ServUO's
-  `PickRandomDestination`) and pays `Gold(500, 1000)`. Deferred: atomic
-  multi-collect turn-ins (each collect objective is taken independently today),
-  and escort niceties — a follow-me abandon timer, the escortable refusing a
-  second escorter mid-walk, town names the client localizes.
+- [x] `quests` — **a core system now, ServUO's Mondain's Legacy model, with the
+  content left to the pack.** It was built pack-first (five thin seams and an
+  opaque JSON blob the engine only stored) and that did not survive a client.
+  Three things were wrong:
+  - **No quest log.** The paperdoll's Quest button sends `0xD7` subcommand
+    `0x32` — a packet, not a gump reply, so nothing pack-side could answer it.
+    The id sat in the length table with nothing routing it. A player could accept
+    a quest and then had no way to see it, track it or resign it.
+  - **Givers went inert at the first restart.** `restore_mobiles` emits no
+    `MobileSpawned` (it would re-stock every vendor and duplicate its crate) and
+    the pack bound a giver only on that event, so the shard's quests worked
+    exactly once — on the boot where `.admin` Populate ran — and never again,
+    silently.
+  - **The right window was not writable pack-side.** The script `GumpAnswered`
+    dropped `switches` (no radio dialog), and there was no server-side gump close,
+    no private message and no per-player sound.
+
+  What landed: `crates/quests` owns the model (`QuestDef`, objectives Slay /
+  Obtain / Deliver / Escort, rewards, `all_objectives`, `done_once`, restart
+  delays), the progress passes, the turn-in and the window; the pack owns the
+  quests, registered as data through `op_register_quests` and bound to an NPC
+  with `op_bind_quest_giver` / `op_make_escortable`. Progress is **found, not
+  announced**: kills off `combat::MobileDied`, escorts a point query against
+  `Regions`, timers off the tick counter, and Obtain a diffing pass over the
+  backpack twice a second — because nothing in the engine says an item moved, and
+  a call beside every insert is the pattern the persistence rule warns decays.
+  The gump is a port of `MondainQuestGump` (same frame art, same eight sections,
+  same button ids, same four sounds) built through a new typed `GumpLayout` in
+  `protocol` whose keywords come from ServUO's `Gump*.cs`; a reply is matched
+  against what the server remembers drawing, so a `0xB1` for a window this side
+  never opened does nothing. Underneath: `MobileUsed` fires for **every**
+  double-clicked mobile (a shop no longer swallows it — in ServUO a
+  `MondainQuester` *is* a `BaseVendor`), `restore_mobiles` announces a distinct
+  `MobileRestored`, and the bindings are saved components (schema v13, replacing
+  the v11 blob with structured `quests`/`done_quests`). The `0xB9` mask is what
+  makes the client *draw* the button at all, so `[gameplay] expansion`
+  (`"aos"`/`"se"`/`"ml"`, ML by default) sends ServUO's `ExpansionML` bits; a
+  staff `.quests` and a "Quest Log" context entry reach the same window either
+  way. Deferred: quest chains, `ApprenticeObjective`, the question-and-answer
+  objective, reward *choice*, the staff force-complete button, and a converter
+  pass over ServUO's own `BaseQuest` subclasses now that the model matches theirs.
 
 ### Not built, and until now not written down
 

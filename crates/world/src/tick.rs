@@ -47,7 +47,7 @@ use tracing::{debug, info, warn};
 use openshard_state::components::{
     Access, Account, Amount, Body, Brain, Client, Combat, Contained, Container, DamageType,
     Decoration, Door, Equipped, Facet, Ghost, Graphic, Heading, Hitpoints, Mana, MeleeDamage,
-    Movement, Name, Position, QuestLog, Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook,
+    Movement, Name, Position, Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook,
     Stackable, Stamina, Stats, Vendor,
 };
 use openshard_state::rng::Rng;
@@ -63,6 +63,7 @@ use openshard_combat as combat;
 use openshard_items as items;
 use openshard_magic as magic;
 use openshard_npc as npc;
+use openshard_quests as quests;
 use openshard_skills as skills;
 
 use crate::doorgen;
@@ -153,6 +154,10 @@ pub struct World {
     disturbed: Cursor<openshard_combat::MobileDamaged>,
     /// Deaths this tick, read by `reap` to lay a corpse where a creature fell.
     dead: Cursor<openshard_combat::MobileDied>,
+    /// Deaths this tick again, read to credit a quest's "slay N". A second cursor
+    /// on the same event rather than a shared read: `reap` and the quest tally
+    /// want the whole list independently, and a cursor is consumed by reading.
+    slain: Cursor<openshard_combat::MobileDied>,
     /// Region crossings this tick, read to set the guards on a murderer who has
     /// just walked into a town.
     crossed: Cursor<RegionChanged>,
@@ -224,6 +229,8 @@ impl World {
                 outbox: Vec::new(),
                 open_containers: HashMap::new(),
                 pending_targets: HashMap::new(),
+                quests: openshard_state::QuestDefs::default(),
+                open_quest_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
             },
@@ -238,6 +245,7 @@ impl World {
             raised: Cursor::default(),
             disturbed: Cursor::default(),
             dead: Cursor::default(),
+            slain: Cursor::default(),
             crossed: Cursor::default(),
             inbox: Vec::new(),
             spawners: Vec::new(),
@@ -485,6 +493,12 @@ impl World {
         // caster was struck; the Sphere style resolves in `begin_cast` and never
         // reaches here.
         self.advance_casts();
+        // Credit this tick's kills against any "slay N" objective. Before `reap`,
+        // which is only ordering hygiene — the event outlives both — but it keeps
+        // the quest tally reading a world where the body is still standing.
+        let slain: Vec<openshard_combat::MobileDied> =
+            self.state.bus.read(&mut self.slain).cloned().collect();
+        quests::advance_slay(&mut self.state, &slain);
         // Lay a corpse where each creature fell this tick — after every source of
         // death (a swing, a volley, poison, a spell, a command) has had its turn.
         self.reap();
@@ -509,6 +523,19 @@ impl World {
         // And follow what a player is carrying: gold spent, loot lifted, armour
         // worn. Diffed against what was last sent, so a still player costs nothing.
         self.refresh_statuses();
+        // The quest passes that *look* rather than being told: what a player is
+        // carrying against their obtain objectives, where an escorted NPC has got
+        // to, and the clocks on timed quests. All three are diffing passes for the
+        // same reason `refresh_statuses` is — a call beside every mutation is a
+        // call someone eventually forgets.
+        if self.state.ticks.is_multiple_of(quests::OBTAIN_EVERY_TICKS) {
+            let contents = items::contents_index(&self.state);
+            quests::refresh_obtain(&mut self.state, &contents);
+        }
+        for (serial, direction) in quests::advance_escorts(&mut self.state) {
+            self.step(serial, direction);
+        }
+        quests::tick_timers(&mut self.state);
         // Before the bus retires anything: what happened is what needs saving,
         // and reading it after `update` would read it a tick late.
         self.mark_dirty();
@@ -573,7 +600,7 @@ impl World {
             Command::GumpResponse {
                 connection,
                 response,
-            } => self.handle_admin_gump(connection, response),
+            } => self.handle_gump_response(connection, response),
             Command::TargetResponse {
                 connection,
                 response,
@@ -767,11 +794,30 @@ impl World {
                 // paperdoll-open read as a self-double-click.
                 if serial & 0x8000_0000 != 0 {
                     items::paperdoll_request(&mut self.state, connection, serial & 0x7FFF_FFFF);
-                } else if !npc::open_shop(&mut self.state, connection, serial) {
-                    // A vendor's shop first: if the click was a shopkeeper in
-                    // range the buy gump answers it; anything else is the
-                    // ordinary use rule.
-                    items::double_click(&mut self.state, connection, serial);
+                } else {
+                    // Every double-clicked mobile reaches the rules layered over
+                    // it, whatever the engine itself then does with the click.
+                    // This used to fire only where the click fell through to the
+                    // paperdoll, which made "vendor" and "quest giver" mutually
+                    // exclusive — in ServUO a quest giver (`MondainQuester`) *is*
+                    // a `BaseVendor`, so a shop that swallowed the click swallowed
+                    // the quest with it.
+                    items::mobile_used(&mut self.state, connection, serial);
+                    // And, if it gives quests, it talks about them — offer,
+                    // nudge or turn-in. Before the shop, because in ServUO a
+                    // quest giver is a vendor and both have to work.
+                    if let (Some(&player), Some(target)) = (
+                        self.state.players.get(&connection),
+                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                    ) {
+                        quests::talk_to(&mut self.state, player, target);
+                    }
+                    // Then the interaction: a vendor's shop first, if the click
+                    // was a shopkeeper in range; anything else is the ordinary
+                    // use rule.
+                    if !npc::open_shop(&mut self.state, connection, serial) {
+                        items::double_click(&mut self.state, connection, serial);
+                    }
                 }
             }
             Command::SingleClick { connection, serial } => self.single_click(connection, serial),
@@ -815,6 +861,42 @@ impl World {
                 layout,
                 lines,
             } => self.show_gump(serial, gump_id, x, y, &layout, &lines),
+            Command::RegisterQuests { quests } => {
+                let count = quests.len();
+                self.state.quests.set(quests);
+                debug!(count, "quest definitions registered");
+            }
+            Command::BindQuestGiver { serial, keys } => {
+                if let Some(serial) = Serial::new(serial) {
+                    quests::bind_giver(&mut self.state, serial, keys);
+                }
+            }
+            Command::MakeEscortable {
+                serial,
+                destination,
+            } => {
+                if let Some(serial) = Serial::new(serial) {
+                    quests::make_escortable(&mut self.state, serial, destination);
+                }
+            }
+            Command::QuestLogRequest { connection } => {
+                quests::open_log(&mut self.state, connection);
+            }
+            Command::CloseGump { serial, gump_id } => self.close_gump(serial, gump_id),
+            Command::Message { serial, text } => {
+                if let Some(entity) =
+                    Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
+                {
+                    self.state.system_message(entity, &text);
+                }
+            }
+            Command::PlaySound { serial, sound } => {
+                if let Some(entity) =
+                    Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
+                {
+                    self.state.play_sound_to(entity, sound);
+                }
+            }
             Command::GiveItem {
                 serial,
                 graphic,
@@ -822,13 +904,6 @@ impl World {
                 amount,
                 stackable,
             } => self.give_item(serial, graphic, hue, amount, stackable),
-            Command::SetQuest { serial, blob } => {
-                if let Some(entity) =
-                    Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-                {
-                    self.state.registry.insert(entity, QuestLog(blob));
-                }
-            }
             Command::TakeItem {
                 serial,
                 graphic,
@@ -997,32 +1072,28 @@ impl World {
         self.state.send(connection, packet);
     }
 
+    /// Close an open dialog on a player's client. Silent if the serial names no
+    /// mobile, or it has no client to close anything on.
+    fn close_gump(&mut self, serial: u32, gump_id: u32) {
+        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
+        else {
+            return;
+        };
+        let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
+            return;
+        };
+        let packet = openshard_protocol::encode_close_gump(gump_id, 0);
+        self.state.send(connection, packet);
+    }
+
     /// Drop an item into a player's backpack — a quest reward. Merges onto a like
     /// pile when `stackable` (gold), else a discrete piece. Silent if the serial
     /// names no mobile or it wears no backpack.
     fn give_item(&mut self, serial: u32, graphic: u16, hue: u16, amount: u16, stackable: bool) {
-        const BACKPACK_LAYER: u8 = 0x15;
         let Some(mobile) = Serial::new(serial) else {
             return;
         };
-        let backpack = self
-            .state
-            .registry
-            .query::<Equipped>()
-            .find(|(item, eq)| {
-                eq.mobile == mobile
-                    && eq.layer == BACKPACK_LAYER
-                    && self.state.registry.has::<Container>(*item)
-            })
-            .and_then(|(item, _)| self.state.registry.serial_of(item));
-        let Some(backpack) = backpack else {
-            return;
-        };
-        if stackable {
-            items::give(&mut self.state, backpack, graphic, hue, u32::from(amount));
-        } else {
-            items::place_one(&mut self.state, backpack, graphic, hue, amount);
-        }
+        items::give_to_backpack(&mut self.state, mobile, graphic, hue, amount, stackable);
     }
 
     /// Take up to `amount` of a graphic from a player's backpack — all-or-nothing,
@@ -1031,60 +1102,10 @@ impl World {
     /// tick. Nothing (and `taken: 0`) if the serial names no mobile or it wears no
     /// backpack.
     fn take_item(&mut self, serial: u32, graphic: u16, amount: u16) {
-        const BACKPACK_LAYER: u8 = 0x15;
         let Some(player) = Serial::new(serial) else {
             return;
         };
-        let backpack = self
-            .state
-            .registry
-            .query::<Equipped>()
-            .find(|(item, eq)| {
-                eq.mobile == player
-                    && eq.layer == BACKPACK_LAYER
-                    && self.state.registry.has::<Container>(*item)
-            })
-            .and_then(|(item, _)| self.state.registry.serial_of(item));
-        let taken = if let Some(backpack) = backpack {
-            // Every matching pile in the pack, with its serial and count.
-            let piles: Vec<(Serial, u16)> = self
-                .state
-                .registry
-                .query::<Contained>()
-                .filter(|(item, held)| {
-                    held.container == backpack
-                        && self
-                            .state
-                            .registry
-                            .get::<Graphic>(*item)
-                            .is_some_and(|g| g.id == graphic)
-                })
-                .filter_map(|(item, _)| {
-                    self.state
-                        .registry
-                        .serial_of(item)
-                        .map(|s| (s, items::amount_of(&self.state, item)))
-                })
-                .collect();
-            let total: u32 = piles.iter().map(|(_, a)| u32::from(*a)).sum();
-            if total >= u32::from(amount) {
-                // Enough — draw `amount` down across the piles, oldest first.
-                let mut remaining = amount;
-                for (pile, have) in &piles {
-                    if remaining == 0 {
-                        break;
-                    }
-                    let take = remaining.min(*have);
-                    items::consume(&mut self.state, *pile, take);
-                    remaining -= take;
-                }
-                amount
-            } else {
-                0 // Short — take nothing, so the player keeps what they have.
-            }
-        } else {
-            0
-        };
+        let taken = items::take_from_backpack(&mut self.state, player, graphic, amount);
         self.state.bus.send(openshard_items::ItemsTaken {
             player,
             graphic,
@@ -1186,6 +1207,8 @@ impl World {
 mod interest_tests;
 #[cfg(test)]
 mod persistence_tests;
+#[cfg(test)]
+mod quest_tests;
 #[cfg(test)]
 mod region_tests;
 #[cfg(test)]

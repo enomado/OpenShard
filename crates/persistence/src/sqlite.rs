@@ -140,7 +140,8 @@ CREATE TABLE IF NOT EXISTS characters (
     -- Whether it logged out dead: a ghost relogs a ghost. 0 for the living.
     dead     INTEGER NOT NULL,
     -- The player's quest log — an opaque JSON blob the pack owns. '' for none.
-    quest_blob TEXT NOT NULL DEFAULT ''
+    quests TEXT NOT NULL DEFAULT '[]',
+    done_quests TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
@@ -305,12 +306,16 @@ impl Store for SqliteStore {
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 let effects = serde_json::to_string(&record.effects)
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let quests = serde_json::to_string(&record.quests)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let done_quests = serde_json::to_string(&record.done_quests)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 transaction
                     .execute(
                         "INSERT OR REPLACE INTO characters \
                          (serial, account, name, body, hue, facet, x, y, z, facing, \
-                          strength, dexterity, intelligence, skills, effects, dead, quest_blob) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                          strength, dexterity, intelligence, skills, effects, dead, quests, done_quests) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                         params![
                             record.serial,
                             record.account,
@@ -328,7 +333,8 @@ impl Store for SqliteStore {
                             skills,
                             effects,
                             record.dead,
-                            record.quest_blob,
+                            quests,
+                            done_quests,
                         ],
                     )
                     .map_err(database)?;
@@ -509,7 +515,7 @@ impl Store for SqliteStore {
             let mut statement = guard
                 .prepare(
                     "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
-                     strength, dexterity, intelligence, skills, effects, dead, quest_blob \
+                     strength, dexterity, intelligence, skills, effects, dead, quests, done_quests \
                      FROM characters",
                 )
                 .map_err(database)?;
@@ -517,6 +523,8 @@ impl Store for SqliteStore {
                 .query_map([], |row| {
                     let skills: String = row.get(13)?;
                     let effects: String = row.get(14)?;
+                    let quests: String = row.get(16)?;
+                    let done_quests: String = row.get(17)?;
                     Ok((
                         CharacterRecord {
                             serial: row.get(0)?,
@@ -535,19 +543,26 @@ impl Store for SqliteStore {
                             skills: Vec::new(),
                             effects: Vec::new(),
                             dead: row.get(15)?,
-                            quest_blob: row.get(16)?,
+                            quests: Vec::new(),
+                            done_quests: Vec::new(),
                         },
                         skills,
                         effects,
+                        quests,
+                        done_quests,
                     ))
                 })
                 .map_err(database)?;
             let mut characters = Vec::new();
             for row in rows {
-                let (mut record, skills, effects) = row.map_err(database)?;
+                let (mut record, skills, effects, quests, done_quests) = row.map_err(database)?;
                 record.skills = serde_json::from_str(&skills)
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 record.effects = serde_json::from_str(&effects)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.quests = serde_json::from_str(&quests)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.done_quests = serde_json::from_str(&done_quests)
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 characters.push(record);
             }
@@ -841,7 +856,8 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
-            quest_blob: String::new(),
+            quests: Vec::new(),
+            done_quests: Vec::new(),
         }
     }
 
@@ -1026,6 +1042,8 @@ mod tests {
                 spawned_by: None,
                 effects: Vec::new(),
                 skills: Vec::new(),
+                quest_giver: Vec::new(),
+                escort_destination: None,
             }
         }
         let decoration = DecorationRecord {

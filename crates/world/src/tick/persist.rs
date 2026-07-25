@@ -1,9 +1,9 @@
 use super::*;
-use openshard_persistence::EffectRecord;
+use openshard_persistence::{DoneQuestRecord, EffectRecord, QuestRecord};
 use openshard_state::components::{
-    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Field, Frozen,
-    Npc, Poisoned, Price, QuestLog, RangedAttack, Skills, Spellbook, StatMod, StatMods, SwingSpeed,
-    Vendor,
+    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, DoneQuest,
+    Escortable, Field, Frozen, Npc, Poisoned, Price, QuestGiver, QuestLog, QuestState,
+    RangedAttack, Skills, Spellbook, StatMod, StatMods, SwingSpeed, Vendor,
 };
 
 impl World {
@@ -352,6 +352,12 @@ impl World {
                 skills: registry.get::<Skills>(entity).map_or_else(Vec::new, |s| {
                     s.entries().map(|(id, value, _)| (id, value)).collect()
                 }),
+                quest_giver: registry
+                    .get::<QuestGiver>(entity)
+                    .map_or_else(Vec::new, |giver| giver.keys.clone()),
+                escort_destination: registry
+                    .get::<Escortable>(entity)
+                    .map(|escort| escort.destination.clone()),
             });
         }
         records
@@ -570,11 +576,94 @@ impl World {
             skills,
             effects: Self::effects_of(registry, entity, now),
             dead: dead.is_some(),
-            quest_blob: registry
-                .get::<QuestLog>(entity)
-                .map(|q| q.0.clone())
-                .unwrap_or_default(),
+            quests: Self::quests_of(registry, entity),
+            done_quests: Self::done_quests_of(registry, entity, now),
         })
+    }
+
+    /// The quests a character has in progress, as they go to disk.
+    ///
+    /// Progress is stored per objective, positionally against the pack's
+    /// definition — see [`QuestRecord`]. A timed objective's clock is written as
+    /// the seconds *remaining*, never as the tick it ends on: the tick counter
+    /// starts again from zero at every boot, so a saved deadline would mean a
+    /// different moment on each restart. Same rule as `effects_of`.
+    pub(super) fn quests_of(registry: &Registry, entity: EntityId) -> Vec<QuestRecord> {
+        let Some(log) = registry.get::<QuestLog>(entity) else {
+            return Vec::new();
+        };
+        log.active
+            .iter()
+            .map(|quest| QuestRecord {
+                key: quest.key.clone(),
+                progress: quest.progress.clone(),
+                seconds: quest.seconds_left.clone(),
+                failed: quest.failed,
+                giver: quest.giver.map(Serial::raw),
+            })
+            .collect()
+    }
+
+    /// The quests a character has finished, with the wait before each may be
+    /// taken again — again a remaining span rather than a deadline.
+    pub(super) fn done_quests_of(
+        registry: &Registry,
+        entity: EntityId,
+        now: u64,
+    ) -> Vec<DoneQuestRecord> {
+        let Some(log) = registry.get::<QuestLog>(entity) else {
+            return Vec::new();
+        };
+        log.done
+            .iter()
+            .map(|done| DoneQuestRecord {
+                key: done.key.clone(),
+                restart_in_secs: if done.restart_at == u64::MAX {
+                    u32::MAX // never again
+                } else {
+                    let ticks = done.restart_at.saturating_sub(now);
+                    u32::try_from(ticks / TICKS_PER_SECOND).unwrap_or(u32::MAX)
+                },
+            })
+            .collect()
+    }
+
+    /// Put a character's saved quests back on them, with every clock re-based on
+    /// the tick it is being restored at.
+    pub(super) fn apply_quests(
+        registry: &mut Registry,
+        entity: EntityId,
+        quests: &[QuestRecord],
+        done: &[DoneQuestRecord],
+        now: u64,
+    ) {
+        if quests.is_empty() && done.is_empty() {
+            return;
+        }
+        let log = QuestLog {
+            active: quests
+                .iter()
+                .map(|record| QuestState {
+                    key: record.key.clone(),
+                    progress: record.progress.clone(),
+                    seconds_left: record.seconds.clone(),
+                    failed: record.failed,
+                    giver: record.giver.and_then(Serial::new),
+                })
+                .collect(),
+            done: done
+                .iter()
+                .map(|record| DoneQuest {
+                    key: record.key.clone(),
+                    restart_at: if record.restart_in_secs == u32::MAX {
+                        u64::MAX
+                    } else {
+                        now + u64::from(record.restart_in_secs) * TICKS_PER_SECOND
+                    },
+                })
+                .collect(),
+        };
+        registry.insert(entity, log);
     }
 
     /// Reserve a serial read from persistence so a fresh spawn never takes it.
@@ -909,8 +998,42 @@ impl World {
                 .facet_state_mut(facet)
                 .sectors
                 .insert(entity, position);
+            // Whether it gives quests, and whether it can be escorted. This is
+            // the binding that used to live only in the script's memory and so
+            // was lost at every restart.
+            if !record.quest_giver.is_empty() {
+                self.state.registry.insert(
+                    entity,
+                    QuestGiver {
+                        keys: record.quest_giver.clone(),
+                    },
+                );
+            }
+            if let Some(destination) = record.escort_destination.clone() {
+                self.state.registry.insert(
+                    entity,
+                    Escortable {
+                        destination,
+                        // Nobody is leading it at boot: an escort in progress ends
+                        // with the session it was walked in, the way a cast in
+                        // flight or a swing timer does.
+                        escorter: None,
+                        last_seen: 0,
+                    },
+                );
+            }
             // Its gear and stock were filed by `restore_items` under this serial.
             self.restore_inventory(record.serial);
+            // And say it is back. Not a `MobileSpawned` — see `MobileRestored` for
+            // why the two must not be one event — but not silence either, or every
+            // rule bound to this NPC by whoever placed it stays unbound for the
+            // rest of the shard's life.
+            self.state.bus.send(crate::events::MobileRestored {
+                entity,
+                serial,
+                body: record.body,
+                at: position,
+            });
         }
     }
 

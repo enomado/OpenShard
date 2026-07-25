@@ -139,15 +139,86 @@ pub struct Decays {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Name(pub String);
 
-/// A player's quest log — an opaque JSON string the community pack owns.
+/// One quest a character has taken, and how far along it is.
 ///
-/// The engine neither reads nor understands it: it stores it, persists it with the
-/// character, and hands it back to the pack on login. Quests are pack gameplay
-/// (the "default in core, customise in the pack" split), so their *shape* is the
-/// pack's business; this is just the box it rides home in — the same bargain as an
-/// item's `Spellbook` mask or a mobile's saved `effects`.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct QuestLog(pub String);
+/// `progress` runs parallel to the definition's objective list — one count per
+/// objective, in the same order. Positional, like ServUO's own save, which is why
+/// **reordering a quest's objectives invalidates saved progress on it**; adding
+/// one to the end is safe.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct QuestState {
+    /// Which quest, by the pack's key.
+    pub key: String,
+    /// How far each objective has got.
+    pub progress: Vec<u16>,
+    /// Ticks left on each timed objective; `0` on the untimed ones.
+    pub seconds_left: Vec<u32>,
+    /// Whether a timer ran out on it. A failed quest stays in the log, in red,
+    /// until it is resigned — ServUO shows it rather than removing it, so the
+    /// player finds out why it stopped counting.
+    pub failed: bool,
+    /// Who gave it, so the turn-in knows where to go back to. `None` once that
+    /// mobile is gone.
+    pub giver: Option<Serial>,
+}
+
+/// A quest a character has finished, and when they may take it again.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DoneQuest {
+    /// Which quest, by the pack's key.
+    pub key: String,
+    /// The tick it may be offered again at. [`u64::MAX`] never.
+    pub restart_at: u64,
+}
+
+/// A player's quest log: what they are doing, and what they have done.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct QuestLog {
+    /// Quests in progress, newest last. The gump lists them newest first.
+    pub active: Vec<QuestState>,
+    /// Quests finished, with their cooldowns.
+    pub done: Vec<DoneQuest>,
+}
+
+impl QuestLog {
+    /// The state of an active quest, if it is one.
+    #[must_use]
+    pub fn active_quest(&self, key: &str) -> Option<&QuestState> {
+        self.active.iter().find(|quest| quest.key == key)
+    }
+
+    /// The state of an active quest, to change.
+    pub fn active_quest_mut(&mut self, key: &str) -> Option<&mut QuestState> {
+        self.active.iter_mut().find(|quest| quest.key == key)
+    }
+}
+
+/// An NPC that offers quests — ServUO's `MondainQuester`, as a component.
+///
+/// The binding lives on the mobile and is **saved with it**, which is the whole
+/// point: the script that placed the NPC knows it is a giver only during the run
+/// that placed it, so a binding held anywhere else is lost at the first restart
+/// and the NPC goes quietly inert.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct QuestGiver {
+    /// Which quests it may offer, by key, in preference order.
+    pub keys: Vec<String>,
+}
+
+/// An NPC that can be escorted somewhere — ServUO's `BaseEscortable`.
+///
+/// Saved with the mobile for the same reason [`QuestGiver`] is.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Escortable {
+    /// The region it wants to reach, by name. Empty means "wherever the escorter's
+    /// quest says", picked when the escort is accepted.
+    pub destination: String,
+    /// Who is leading it, once someone is.
+    pub escorter: Option<Serial>,
+    /// The last tick its escorter was within sight. An escortable left behind
+    /// gives up rather than following a ghost across the map.
+    pub last_seen: u64,
+}
 
 /// The account a player character belongs to.
 ///

@@ -63,15 +63,6 @@ pub enum Event {
         /// Where it appeared.
         z: i8,
     },
-    /// A player logged in carrying a saved quest log — the blob handed back so the
-    /// pack rebuilds its in-memory quest state. Fires right after `PlayerEntered`,
-    /// only when the log is non-empty. The pack owns the blob's shape.
-    QuestLoaded {
-        /// Whose log, by wire identity.
-        serial: Serial,
-        /// The pack's serialized quest state, exactly as `op_set_quest` stored it.
-        blob: String,
-    },
     /// A creature or NPC appeared — the mobile a script can take control of.
     MobileSpawned {
         /// Its wire identity.
@@ -81,6 +72,25 @@ pub enum Event {
         /// Where it appeared.
         y: u16,
         /// Where it appeared.
+        z: i8,
+    },
+    /// An NPC came back from the save at boot — **not** a spawn.
+    ///
+    /// The distinction matters: a handler that *creates* something on a spawn (a
+    /// vendor's stock crate) must not run again on a restore, or it duplicates it
+    /// every reboot. A handler that *binds* something should run on both, and
+    /// before this event there was no way to — which is why a shard's quest
+    /// givers went inert after the first restart.
+    MobileRestored {
+        /// Its wire identity — the same serial it had before the restart.
+        serial: Serial,
+        /// Its body, so a pack matches the kind with no lookup.
+        body: u16,
+        /// Where it stands.
+        x: u16,
+        /// Where it stands.
+        y: u16,
+        /// Where it stands.
         z: i8,
     },
     /// A client asked to cast a spell — the hook a script turns into a real cast,
@@ -210,6 +220,20 @@ pub enum Event {
         /// The action the button asked for, e.g. `"populate:britain"`.
         action: String,
     },
+    /// A player finished a quest and has been paid what it declared.
+    ///
+    /// The pack's hook for a reward the core's flat list cannot express — a title,
+    /// a skill, a follow-up, a line of dialogue. The core has already paid by the
+    /// time this arrives, so a script *adds*; it is the `CorpseCreated` split
+    /// again.
+    QuestCompleted {
+        /// Who finished it, by wire identity.
+        serial: Serial,
+        /// Which quest, by the pack's key.
+        key: String,
+        /// Who it was turned in to, or `0`.
+        giver: Serial,
+    },
     /// A player answered a pack-built gump (from `op_gump`) — the reply seam. The
     /// pack matches on `gump_id` and reads `button` (0 = closed) to know the
     /// choice: accept or decline a quest, pick a menu entry.
@@ -220,8 +244,17 @@ pub enum Event {
         gump_id: u32,
         /// The button pressed; `0` is the close box.
         button: u32,
-        /// Any text fields' contents, in field order.
-        text: Vec<String>,
+        /// The ids of the checkboxes and radio buttons left *on*.
+        ///
+        /// Without these a pack can only build button-only dialogs: a radio group
+        /// answers with one OK button and the choice lives entirely in the
+        /// switches, so dropping them made the whole "pick one of these" shape
+        /// impossible to write. The world-side event has always carried them.
+        switches: Vec<u32>,
+        /// Any text fields, as `[id, contents]` pairs. Paired rather than
+        /// flattened, because a form with two fields is ambiguous without knowing
+        /// which is which.
+        text: Vec<(u16, String)>,
     },
 }
 
@@ -536,6 +569,58 @@ pub enum Command {
         /// The text lines the layout's `{ text }`/`{ croppedtext }` index into.
         lines: Vec<String>,
     },
+    /// Replace every quest this shard knows with the pack's list.
+    ///
+    /// Wholesale, never additive: a hot reload re-runs the pack from the top, and
+    /// merging would leave a quest the pack has deleted still on offer.
+    RegisterQuests {
+        /// The quests.
+        quests: Vec<ScriptQuest>,
+    },
+    /// Mark an NPC as offering a set of quests — and **save that on the mobile**,
+    /// so it is still a giver after a restart.
+    BindQuestGiver {
+        /// Which NPC.
+        serial: Serial,
+        /// Which quests, by key. Empty un-binds it.
+        keys: Vec<String>,
+    },
+    /// Mark an NPC as escortable, optionally to a fixed region. Saved with it.
+    MakeEscortable {
+        /// Which NPC.
+        serial: Serial,
+        /// The region it wants to reach; empty lets the quest decide.
+        destination: String,
+    },
+    /// Close an open gump on a player's client.
+    ///
+    /// A dialog that replaces itself — a page chain, a menu that reopens on a
+    /// different section — must close the old window first, or the client stacks
+    /// the new one on top and the player answers whichever they happen to click.
+    CloseGump {
+        /// Whose client.
+        serial: Serial,
+        /// Which dialog, by the id it was opened under.
+        gump_id: u32,
+    },
+    /// Send a player a private system line — the server talking to one person.
+    ///
+    /// Not [`Speak`](Self::Speak): that puts words over a mobile's head for
+    /// everyone in earshot, which is the wrong shape for "you have accepted the
+    /// quest".
+    Message {
+        /// Who reads it.
+        serial: Serial,
+        /// The words.
+        text: String,
+    },
+    /// Play a sound for one player — feedback on something only they did.
+    PlaySound {
+        /// Who hears it.
+        serial: Serial,
+        /// The sound id.
+        sound: u16,
+    },
     /// Put an item into a player's backpack — a quest reward, a handout. Merges
     /// onto a like pile when `stackable` (gold, reagents); otherwise a discrete
     /// piece.
@@ -550,15 +635,6 @@ pub enum Command {
         amount: u16,
         /// Whether it merges onto a like pile.
         stackable: bool,
-    },
-    /// Store a player's opaque quest blob — the pack's own JSON of accepted quests
-    /// and objective progress. The engine keeps and persists it; only the pack
-    /// reads it (handed back on the next login).
-    SetQuest {
-        /// Whose quest log.
-        serial: Serial,
-        /// The pack's serialized quest state.
-        blob: String,
     },
     /// Take up to `amount` of an item from a player's backpack — a quest's
     /// "collect N" hand-over. All-or-nothing; the result comes back as an
@@ -668,6 +744,77 @@ pub struct ScriptRegion {
     pub music: Option<u16>,
     /// The light level inside, overriding the hour; `None` takes the ambient.
     pub light: Option<u8>,
+}
+
+/// A quest, as the pack defines it.
+///
+/// Wire-primitive like [`ScriptRegion`]: the engine's own `QuestDef` lives in
+/// `state` and this crate does not depend on it, so the bridge converts.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScriptQuest {
+    /// The pack's id for it, and the key a player's progress is saved under.
+    pub key: String,
+    /// The quest's name.
+    pub title: String,
+    /// What it asks, in prose.
+    pub description: String,
+    /// What the giver says when the offer is refused.
+    pub refuse: String,
+    /// What the giver says when it is in progress but unfinished.
+    pub uncomplete: String,
+    /// What the giver says at turn-in.
+    pub complete: String,
+    /// What is said when a timed objective runs out.
+    pub failed: String,
+    /// What it asks for.
+    pub objectives: Vec<ScriptObjective>,
+    /// What it pays.
+    pub rewards: Vec<ScriptReward>,
+    /// Whether every objective must be met, or any one of them.
+    pub all_objectives: bool,
+    /// Whether a character may only ever do it once.
+    pub done_once: bool,
+    /// How long before it may be taken again, in seconds.
+    pub restart_delay_secs: u32,
+}
+
+/// One thing a [`ScriptQuest`] asks for.
+///
+/// `kind` is a string the bridge maps: `"slay"`, `"obtain"`, `"deliver"`,
+/// `"escort"`. A kind the engine does not know is dropped with a warning rather
+/// than failing the whole registration — one mistyped quest should not take the
+/// shard's other forty with it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScriptObjective {
+    /// Which kind.
+    pub kind: String,
+    /// The body (slay) or item graphic (obtain, deliver) it counts.
+    pub target: u16,
+    /// How many.
+    pub count: u16,
+    /// What to call the thing, in the gump.
+    pub name: String,
+    /// Where to take it (deliver) or walk to (escort).
+    pub destination: String,
+    /// How long the player has, in seconds; `0` is untimed.
+    pub seconds: u32,
+}
+
+/// One thing a [`ScriptQuest`] pays.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScriptReward {
+    /// What to call it in the rewards page.
+    pub name: String,
+    /// Coins, if it is gold.
+    pub gold: u32,
+    /// The item graphic, if it is an item.
+    pub graphic: u16,
+    /// Its hue.
+    pub hue: u16,
+    /// How many.
+    pub amount: u16,
+    /// Whether it merges onto a like pile.
+    pub stackable: bool,
 }
 
 /// One creature a spawn region may put down — the template a

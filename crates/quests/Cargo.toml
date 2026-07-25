@@ -1,0 +1,22 @@
+[package]
+name = "openshard-quests"
+description = "Quests: offering, tracking, turning in, and the quest log gump — ServUO's Mondain's Legacy model, with the content left to the pack."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openshard-ai.workspace = true
+openshard-combat.workspace = true
+openshard-entities.workspace = true
+openshard-gateway.workspace = true
+openshard-items.workspace = true
+openshard-protocol.workspace = true
+openshard-state.workspace = true
+tracing.workspace = true

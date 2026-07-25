@@ -19,9 +19,9 @@ use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Terrain;
 use openshard_protocol::{
-    encode_action, encode_health, encode_new_action, encode_opl_info, encode_play_sound,
-    encode_remove, AccessLevel, ClientVersion, Equipment, Feature, MobileIncoming, MobileMove,
-    Notoriety, PlayerUpdate, Point, PropertyList, WorldItem,
+    encode_action, encode_health, encode_message, encode_new_action, encode_opl_info,
+    encode_play_sound, encode_remove, AccessLevel, ClientVersion, Equipment, Feature,
+    MobileIncoming, MobileMove, Notoriety, PlayerUpdate, Point, PropertyList, WorldItem,
 };
 
 use crate::components::{
@@ -29,12 +29,18 @@ use crate::components::{
     Heading, Hitpoints, Movement, Name, Position, Staff,
 };
 use crate::obstruct::{LiveTerrain, Obstructions};
+use crate::quest::QuestDefs;
 use crate::region::{Region, Regions};
 use crate::rng::Rng;
 use crate::sectors::{Sectors, VIEW_RANGE};
 
 /// A character's height above the ground when the facet has no map to ask.
 const Z_WITHOUT_A_MAP: i8 = 0;
+
+/// The hue and font a private system line is drawn in — the client's usual muted
+/// grey, so it reads as the server talking rather than as a mobile speaking.
+const SYSTEM_HUE: u16 = 0x03B2;
+const SYSTEM_FONT: u16 = 3;
 
 /// Ticks in one second — the reciprocal of the world's 50ms tick interval. The
 /// world defines the interval; this is the whole-number rate config uses to turn
@@ -405,12 +411,66 @@ pub struct WorldState {
     /// Mobiles that have a targeting cursor up, and what the click is for. A `.tele`
     /// raises one; the `0x6C` answer looks here to know what to do with the spot.
     pub pending_targets: HashMap<EntityId, TargetPurpose>,
+    /// Every quest this shard knows, as the script pack defined them. Replaced
+    /// wholesale on a pack reload, and never persisted — the pack is the truth
+    /// about what a quest *is*, every boot; only a player's progress is saved.
+    pub quests: QuestDefs,
+    /// Which quest dialog each player has open, and on which page.
+    ///
+    /// Session state, like [`pending_targets`](Self::pending_targets): a gump
+    /// exists only while someone is looking at it, and a reply that arrives for a
+    /// window this side never opened is a reply to nothing. Cleared on logout.
+    pub open_quest_gumps: HashMap<EntityId, QuestGumpContext>,
     /// The tunable rules — swing era, speech ranges, timers — the systems read.
     pub gameplay: Gameplay,
     /// Set by a staff `.save` to ask the tick for an immediate snapshot. The world
     /// clears it once taken — a request, not the save itself, because taking the
     /// snapshot is the `World`'s to do, not a system's.
     pub save_requested: bool,
+}
+
+/// Which page of the quest dialog a player is looking at.
+///
+/// ServUO's `MondainQuestGump.Section`, and the same one window for all of it: a
+/// quest log, an offer, an objectives page and a rewards page are the same frame
+/// with a different middle, so they share an id and a reply handler.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum QuestSection {
+    /// The quest log: every quest in progress, one row each.
+    Main,
+    /// A quest's prose — the offer's first page, and the log's detail page.
+    Description,
+    /// What it asks for, with progress.
+    Objectives,
+    /// What it pays.
+    Rewards,
+    /// What the giver says when the offer is turned down.
+    Refuse,
+    /// What the giver says at turn-in.
+    Complete,
+    /// What the giver says when it is not finished yet.
+    InProgress,
+    /// What is said when a timer ran out.
+    Failed,
+}
+
+/// What a player's open quest dialog is showing.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct QuestGumpContext {
+    /// Which quest, by the pack's key. Empty on the log page, which is about no
+    /// single quest.
+    pub quest: String,
+    /// Which page.
+    pub section: QuestSection,
+    /// Whether this is an *offer* (Accept/Refuse) rather than the log's view of a
+    /// quest already taken (Resign/Close). The same pages, different buttons — and
+    /// the difference decides whether a button id means "accept" or "resign", so it
+    /// is remembered here rather than trusted from the reply.
+    pub offer: bool,
+    /// Whether the quest is finished, which is what lets the rewards page pay out.
+    pub completed: bool,
+    /// The giver the dialog was opened at, so a turn-in knows who to thank.
+    pub giver: Option<Serial>,
 }
 
 /// What a raised targeting cursor is waiting to do with the click.
@@ -603,6 +663,49 @@ impl WorldState {
         };
         let packet = encode_play_sound(sound, at.x, at.y, at.z);
         self.broadcast_from(source, packet);
+    }
+
+    /// Send `mobile` a private system line — seen by that client and no one else.
+    ///
+    /// The server talking, not a mobile: it goes out under the system serial in
+    /// the client's usual grey, so it reads as feedback rather than as somebody
+    /// speaking. A mobile with no client (an NPC, a scripted actor) simply hears
+    /// nothing.
+    pub fn system_message(&mut self, mobile: EntityId, text: &str) {
+        let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
+            return;
+        };
+        let packet = encode_message(
+            openshard_protocol::SYSTEM_SERIAL,
+            openshard_protocol::NO_GRAPHIC,
+            0, // regular mode
+            SYSTEM_HUE,
+            SYSTEM_FONT,
+            "System",
+            text,
+        );
+        self.send(connection, packet);
+    }
+
+    /// Play `sound` for `mobile` alone — a sound about the player, not about the
+    /// world.
+    ///
+    /// The quest sounds are the reason this exists beside [`play_sound`]: ServUO's
+    /// accept, resign, complete and objective-update chimes are feedback on a
+    /// dialog only one person is looking at, and broadcasting them would have a
+    /// whole street hear a stranger take a quest. The packet is still placed at the
+    /// mobile's own tile, so the client does not attenuate it away.
+    ///
+    /// A no-op for a mobile with no client (an NPC) or no position.
+    pub fn play_sound_to(&mut self, mobile: EntityId, sound: u16) {
+        let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
+            return;
+        };
+        let Some(&Position(at)) = self.registry.get::<Position>(mobile) else {
+            return;
+        };
+        let packet = encode_play_sound(sound, at.x, at.y, at.z);
+        self.send(connection, packet);
     }
 
     /// Animate `mobile` performing `action` — a swing, a death throe, a cast

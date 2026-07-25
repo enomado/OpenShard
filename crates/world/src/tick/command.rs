@@ -33,10 +33,11 @@ pub struct CharacterSheet {
     /// Whether the character logged out dead — a ghost relogs a ghost. `false`
     /// for a new character and for any living one.
     pub dead: bool,
-    /// The player's saved quest log — an opaque JSON blob the pack owns, restored
-    /// onto the character so a relog keeps quest progress. Empty for a new or
-    /// quest-less character.
-    pub quest_blob: String,
+    /// Quests in progress, with their per-objective progress. Empty for a new
+    /// character.
+    pub quests: Vec<openshard_persistence::QuestRecord>,
+    /// Quests already finished, with the wait before each may be taken again.
+    pub done_quests: Vec<openshard_persistence::DoneQuestRecord>,
 }
 
 /// One door in a [`Command::Decorate`] batch. The closed/open graphics and the
@@ -545,6 +546,55 @@ pub enum Command {
         /// The text lines the layout indexes into.
         lines: Vec<String>,
     },
+    /// Replace every quest this shard knows with the pack's list. From a script,
+    /// at load time.
+    RegisterQuests {
+        /// The quests.
+        quests: Vec<openshard_state::quest::QuestDef>,
+    },
+    /// Mark an NPC as offering a set of quests, and save that with it. From a
+    /// script.
+    BindQuestGiver {
+        /// Which NPC, by wire serial.
+        serial: u32,
+        /// Which quests, by key. Empty un-binds it.
+        keys: Vec<String>,
+    },
+    /// Mark an NPC as escortable, and save that with it. From a script.
+    MakeEscortable {
+        /// Which NPC, by wire serial.
+        serial: u32,
+        /// The region it wants to reach; empty lets the quest decide.
+        destination: String,
+    },
+    /// A client pressed the paperdoll's Quest button (`0xD7`/`0x32`) — open its
+    /// quest log.
+    QuestLogRequest {
+        /// Whose.
+        connection: ConnectionId,
+    },
+    /// Close an open gump on a player's client — the dialog a page chain is
+    /// replacing. From a script.
+    CloseGump {
+        /// Whose client, by wire serial.
+        serial: u32,
+        /// Which dialog, by the id it was opened under.
+        gump_id: u32,
+    },
+    /// Send a player a private system line. From a script.
+    Message {
+        /// Who reads it, by wire serial.
+        serial: u32,
+        /// The words.
+        text: String,
+    },
+    /// Play a sound for one player. From a script.
+    PlaySound {
+        /// Who hears it, by wire serial.
+        serial: u32,
+        /// The sound id.
+        sound: u16,
+    },
     /// Put an item into a player's backpack — a quest reward. From a script.
     GiveItem {
         /// Whose backpack, by wire serial.
@@ -557,14 +607,6 @@ pub enum Command {
         amount: u16,
         /// Whether it merges onto a like pile.
         stackable: bool,
-    },
-    /// Store a player's opaque quest blob — the pack's own JSON, kept and
-    /// persisted by the engine. From a script.
-    SetQuest {
-        /// Whose quest log, by wire serial.
-        serial: u32,
-        /// The pack's serialized quest state.
-        blob: String,
     },
     /// Take up to `amount` of a graphic from a player's backpack — a quest
     /// collect turn-in. All-or-nothing; reports back with an

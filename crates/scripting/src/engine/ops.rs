@@ -368,6 +368,186 @@ fn op_gump(state: &mut OpState, #[serde] spec: GumpSpec) {
     });
 }
 
+/// One objective in an [`op_register_quests`] batch.
+#[derive(serde::Deserialize)]
+struct ObjectiveSpec {
+    kind: String,
+    #[serde(default)]
+    target: u16,
+    #[serde(default = "one")]
+    count: u16,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    destination: String,
+    #[serde(default)]
+    seconds: u32,
+}
+
+/// One reward in an [`op_register_quests`] batch. Gold when `gold` is set,
+/// otherwise the item the rest describes.
+#[derive(serde::Deserialize)]
+struct RewardSpec {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    gold: u32,
+    #[serde(default)]
+    graphic: u16,
+    #[serde(default)]
+    hue: u16,
+    #[serde(default = "one")]
+    amount: u16,
+    #[serde(default)]
+    stackable: bool,
+}
+
+/// One quest in an [`op_register_quests`] batch.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuestSpec {
+    key: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    refuse: String,
+    #[serde(default)]
+    uncomplete: String,
+    #[serde(default)]
+    complete: String,
+    #[serde(default)]
+    failed: String,
+    #[serde(default)]
+    objectives: Vec<ObjectiveSpec>,
+    #[serde(default)]
+    rewards: Vec<RewardSpec>,
+    #[serde(default = "yes")]
+    all_objectives: bool,
+    #[serde(default)]
+    done_once: bool,
+    #[serde(default)]
+    restart_delay_secs: u32,
+}
+
+/// The whole quest list.
+#[derive(serde::Deserialize)]
+struct QuestsSpec {
+    quests: Vec<QuestSpec>,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+/// Register the shard's quests, replacing whatever was registered before:
+/// `op_register_quests({ quests: [...] })`. Called at pack load time; a hot
+/// reload re-registers cleanly.
+#[op2]
+fn op_register_quests(state: &mut OpState, #[serde] spec: QuestsSpec) {
+    let quests = spec
+        .quests
+        .into_iter()
+        .map(|quest| crate::ScriptQuest {
+            key: quest.key,
+            title: quest.title,
+            description: quest.description,
+            refuse: quest.refuse,
+            uncomplete: quest.uncomplete,
+            complete: quest.complete,
+            failed: quest.failed,
+            objectives: quest
+                .objectives
+                .into_iter()
+                .map(|objective| crate::ScriptObjective {
+                    kind: objective.kind,
+                    target: objective.target,
+                    count: objective.count,
+                    name: objective.name,
+                    destination: objective.destination,
+                    seconds: objective.seconds,
+                })
+                .collect(),
+            rewards: quest
+                .rewards
+                .into_iter()
+                .map(|reward| crate::ScriptReward {
+                    name: reward.name,
+                    gold: reward.gold,
+                    graphic: reward.graphic,
+                    hue: reward.hue,
+                    amount: reward.amount,
+                    stackable: reward.stackable,
+                })
+                .collect(),
+            all_objectives: quest.all_objectives,
+            done_once: quest.done_once,
+            restart_delay_secs: quest.restart_delay_secs,
+        })
+        .collect();
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::RegisterQuests { quests });
+}
+
+/// Make an NPC a quest giver: `op_bind_quest_giver(serial, ["rat_cull"])`.
+/// The binding is saved with the mobile, so it survives a restart — which is
+/// exactly what a binding held in script memory did not.
+#[op2]
+fn op_bind_quest_giver(state: &mut OpState, serial: u32, #[serde] keys: Vec<String>) {
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::BindQuestGiver { serial, keys });
+}
+
+/// Make an NPC escortable: `op_make_escortable(serial, "Britain")`. An empty
+/// destination lets the quest that starts the escort choose one. Saved with the
+/// mobile.
+#[op2(fast)]
+fn op_make_escortable(state: &mut OpState, serial: u32, #[string] destination: String) {
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::MakeEscortable {
+            serial,
+            destination,
+        });
+}
+
+/// Close an open gump on a player's client: `op_close_gump(serial, gumpId)`.
+/// A dialog that reopens on another page must close the old window first, or the
+/// client stacks them.
+#[op2(fast)]
+fn op_close_gump(state: &mut OpState, serial: u32, gump_id: u32) {
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::CloseGump { serial, gump_id });
+}
+
+/// Send a player a private system line: `op_message(serial, text)`. The server
+/// talking to one person — unlike `op_say`, which puts words over a mobile's head
+/// for everyone in earshot.
+#[op2(fast)]
+fn op_message(state: &mut OpState, serial: u32, #[string] text: String) {
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::Message { serial, text });
+}
+
+/// Play a sound for one player: `op_play_sound(serial, sound)` — feedback on
+/// something only they did.
+#[op2(fast)]
+fn op_play_sound(state: &mut OpState, serial: u32, sound: u32) {
+    state.borrow_mut::<Host>().outbox.push(Command::PlaySound {
+        serial,
+        sound: sound.min(u32::from(u16::MAX)) as u16,
+    });
+}
+
 /// A quest reward or handout: `op_give_item({ serial, graphic, hue, amount,
 /// stackable })` — dropped into the player's backpack.
 #[derive(serde::Deserialize)]
@@ -392,16 +572,6 @@ fn op_give_item(state: &mut OpState, #[serde] spec: GiveSpec) {
         amount: spec.amount,
         stackable: spec.stackable,
     });
-}
-
-/// Store a player's opaque quest blob — the pack's own JSON, kept and persisted by
-/// the engine and handed back on the next login.
-#[op2(fast)]
-fn op_set_quest(state: &mut OpState, serial: u32, #[string] blob: String) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::SetQuest { serial, blob });
 }
 
 /// Take up to `amount` of a graphic from a player's backpack — a quest's "collect
@@ -857,8 +1027,13 @@ extension!(
         op_clear_decorations,
         op_generate_doors,
         op_gump,
+        op_register_quests,
+        op_bind_quest_giver,
+        op_make_escortable,
+        op_close_gump,
+        op_message,
+        op_play_sound,
         op_give_item,
-        op_set_quest,
         op_take_item
     ],
     docs = "OpenShard's script-facing ops: read entity state, enqueue commands.",

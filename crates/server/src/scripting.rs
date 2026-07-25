@@ -31,6 +31,7 @@ pub struct Scripts {
     engine: DenoEngine,
     entered: Cursor<PlayerEntered>,
     spawned: Cursor<MobileSpawned>,
+    restored: Cursor<openshard_world::events::MobileRestored>,
     cast_requested: Cursor<SpellRequested>,
     moved: Cursor<MobileMoved>,
     refused: Cursor<StepRefused>,
@@ -45,6 +46,7 @@ pub struct Scripts {
     corpse: Cursor<CorpseCreated>,
     admin: Cursor<AdminMenuAction>,
     gump: Cursor<GumpAnswered>,
+    quest_done: Cursor<openshard_quests::QuestCompleted>,
 }
 
 impl Scripts {
@@ -80,6 +82,7 @@ impl Scripts {
         Some(Self {
             entered: world.bus().cursor(),
             spawned: world.bus().cursor(),
+            restored: world.bus().cursor(),
             cast_requested: world.bus().cursor(),
             moved: world.bus().cursor(),
             refused: world.bus().cursor(),
@@ -94,6 +97,7 @@ impl Scripts {
             corpse: world.bus().cursor(),
             admin: world.bus().cursor(),
             gump: world.bus().cursor(),
+            quest_done: world.bus().cursor(),
             engine,
         })
     }
@@ -119,25 +123,6 @@ impl Scripts {
                     y: e.position.y,
                     z: e.position.z,
                 });
-                // Hand back the saved quest log so the pack rebuilds its state.
-                // Read straight off the entity — no new world event, no cursor.
-                let blob = world
-                    .registry()
-                    .entity_of(e.serial)
-                    .and_then(|ent| {
-                        world
-                            .registry()
-                            .get::<openshard_world::components::QuestLog>(ent)
-                    })
-                    .map(|q| q.0.clone());
-                if let Some(blob) = blob {
-                    if !blob.is_empty() {
-                        events.push(ScriptEvent::QuestLoaded {
-                            serial: e.serial.raw(),
-                            blob,
-                        });
-                    }
-                }
             }
             for e in bus.read(&mut self.spawned) {
                 events.push(ScriptEvent::MobileSpawned {
@@ -145,6 +130,15 @@ impl Scripts {
                     x: e.position.x,
                     y: e.position.y,
                     z: e.position.z,
+                });
+            }
+            for e in bus.read(&mut self.restored) {
+                events.push(ScriptEvent::MobileRestored {
+                    serial: e.serial.raw(),
+                    body: e.body,
+                    x: e.at.x,
+                    y: e.at.y,
+                    z: e.at.z,
                 });
             }
             for e in bus.read(&mut self.cast_requested) {
@@ -235,12 +229,20 @@ impl Scripts {
                     action: e.action.clone(),
                 });
             }
+            for e in bus.read(&mut self.quest_done) {
+                events.push(ScriptEvent::QuestCompleted {
+                    serial: e.player.raw(),
+                    key: e.key.clone(),
+                    giver: e.giver.map_or(0, |g| g.raw()),
+                });
+            }
             for e in bus.read(&mut self.gump) {
                 events.push(ScriptEvent::GumpAnswered {
                     serial: e.serial.raw(),
                     gump_id: e.gump_id,
                     button: e.button,
-                    text: e.text_entries.iter().map(|(_, s)| s.clone()).collect(),
+                    switches: e.switches.clone(),
+                    text: e.text_entries.clone(),
                 });
             }
         }
@@ -610,6 +612,20 @@ fn into_world(command: ScriptCommand) -> Command {
             layout,
             lines,
         },
+        ScriptCommand::RegisterQuests { quests } => Command::RegisterQuests {
+            quests: quests.into_iter().filter_map(quest_def).collect(),
+        },
+        ScriptCommand::BindQuestGiver { serial, keys } => Command::BindQuestGiver { serial, keys },
+        ScriptCommand::MakeEscortable {
+            serial,
+            destination,
+        } => Command::MakeEscortable {
+            serial,
+            destination,
+        },
+        ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump { serial, gump_id },
+        ScriptCommand::Message { serial, text } => Command::Message { serial, text },
+        ScriptCommand::PlaySound { serial, sound } => Command::PlaySound { serial, sound },
         ScriptCommand::GiveItem {
             serial,
             graphic,
@@ -623,7 +639,6 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
             stackable,
         },
-        ScriptCommand::SetQuest { serial, blob } => Command::SetQuest { serial, blob },
         ScriptCommand::TakeItem {
             serial,
             graphic,
@@ -634,6 +649,83 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
         },
     }
+}
+
+/// Turn the pack's quest into the engine's.
+///
+/// A quest with no usable objective is dropped rather than registered: an
+/// objective list the engine cannot read would show as a quest that can be taken
+/// and never finished, which is worse than one that is not offered. The kind
+/// names are the pack's vocabulary and are matched here, in the one place that
+/// knows both sides.
+fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world::QuestDef> {
+    use openshard_world::{ObjectiveDef, ObjectiveKind, QuestDef, RewardDef, RewardKind};
+
+    let mut objectives = Vec::with_capacity(quest.objectives.len());
+    for objective in quest.objectives {
+        let kind = match objective.kind.as_str() {
+            "slay" | "kill" => ObjectiveKind::Slay {
+                body: objective.target,
+            },
+            "obtain" | "collect" => ObjectiveKind::Obtain {
+                graphic: objective.target,
+            },
+            "deliver" => ObjectiveKind::Deliver {
+                graphic: objective.target,
+                to: objective.destination.clone(),
+            },
+            "escort" => ObjectiveKind::Escort {
+                region: objective.destination.clone(),
+            },
+            other => {
+                warn!(quest = %quest.key, kind = other, "unknown quest objective kind; quest dropped");
+                return None;
+            }
+        };
+        objectives.push(ObjectiveDef {
+            kind,
+            count: objective.count.max(1),
+            name: objective.name,
+            seconds: objective.seconds,
+        });
+    }
+    if objectives.is_empty() {
+        warn!(quest = %quest.key, "quest has no objectives; dropped");
+        return None;
+    }
+
+    let rewards = quest
+        .rewards
+        .into_iter()
+        .map(|reward| RewardDef {
+            kind: if reward.gold > 0 {
+                RewardKind::Gold(reward.gold)
+            } else {
+                RewardKind::Item {
+                    graphic: reward.graphic,
+                    hue: reward.hue,
+                    amount: reward.amount.max(1),
+                    stackable: reward.stackable,
+                }
+            },
+            name: reward.name,
+        })
+        .collect();
+
+    Some(QuestDef {
+        key: quest.key,
+        title: quest.title,
+        description: quest.description,
+        refuse: quest.refuse,
+        uncomplete: quest.uncomplete,
+        complete: quest.complete,
+        failed: quest.failed,
+        objectives,
+        rewards,
+        all_objectives: quest.all_objectives,
+        done_once: quest.done_once,
+        restart_delay_secs: quest.restart_delay_secs,
+    })
 }
 
 #[cfg(test)]

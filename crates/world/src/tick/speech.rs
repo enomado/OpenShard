@@ -62,6 +62,11 @@ impl World {
             } else if lowered.contains("buy") {
                 npc::buy_keyword(&mut self.state, connection, actor);
             }
+            // And "quest" near a quest giver offers what it has. The same shape
+            // again — the word was spoken, and whoever is standing there answers.
+            if let Some(serial) = self.state.registry.serial_of(actor) {
+                quests::speech_offer(&mut self.state, serial, &text);
+            }
         }
     }
 

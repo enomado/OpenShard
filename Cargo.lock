@@ -1377,6 +1377,20 @@ name = "openshard-protocol"
 version = "0.0.1"
 
 [[package]]
+name = "openshard-quests"
+version = "0.0.1"
+dependencies = [
+ "openshard-ai",
+ "openshard-combat",
+ "openshard-entities",
+ "openshard-gateway",
+ "openshard-items",
+ "openshard-protocol",
+ "openshard-state",
+ "tracing",
+]
+
+[[package]]
 name = "openshard-scripting"
 version = "0.0.1"
 dependencies = [
@@ -1396,6 +1410,7 @@ dependencies = [
  "openshard-login",
  "openshard-persistence",
  "openshard-protocol",
+ "openshard-quests",
  "openshard-scripting",
  "openshard-world",
  "tokio",
@@ -1438,6 +1453,7 @@ dependencies = [
  "openshard-npc",
  "openshard-persistence",
  "openshard-protocol",
+ "openshard-quests",
  "openshard-skills",
  "openshard-state",
  "tracing",

@@ -59,6 +59,7 @@ mod combat;
 mod containers;
 mod context;
 mod direction;
+mod encoded;
 mod feature;
 mod feedback;
 mod gump;
@@ -87,12 +88,16 @@ pub use containers::{
 };
 pub use context::{encode_context_menu, ContextMenuRequest, ContextMenuSelect};
 pub use direction::{Direction, Facing, RUNNING_BIT};
+pub use encoded::EncodedCommand;
 pub use feature::{Feature, FeatureSet};
 pub use feedback::{
     encode_action, encode_graphical_effect, encode_hued_effect, encode_new_action,
     encode_play_sound, EffectKind, EffectPoint,
 };
-pub use gump::{encode_gump_display, GumpResponse};
+pub use gump::{
+    encode_close_gump, encode_gump_display, gump_color_rgb, GumpButton, GumpLayout, GumpResponse,
+    GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE,
+};
 pub use items::{
     encode_drag_cancel, encode_equip, DragCancelReason, DropItem, EquipItemRequest, PickUpItem,
     WorldItem, DROP_TO_GROUND,
@@ -103,7 +108,7 @@ pub use login::{
     ClientVersionReport, DeleteCharacter, DeleteResult, DenyReason, GameServerLogin,
     LoginDecodeError, SelectShard, ShardEntry, StartLocation, WrongPacket, ACCOUNT_NAME_LENGTH,
     AOS_FEATURE_FLAGS, CHARACTER_NAME_LENGTH, CLF_CONTEXT_MENU, CLF_TOOLTIPS, MAX_SHARDS,
-    MIN_CHARACTER_SLOTS, PASSWORD_LENGTH, SHARD_NAME_LENGTH,
+    MIN_CHARACTER_SLOTS, ML_FEATURE_FLAGS, PASSWORD_LENGTH, SE_FEATURE_FLAGS, SHARD_NAME_LENGTH,
 };
 pub use mobile::{
     encode_open_paperdoll, encode_remove, Equipment, LookRequest, MobileIncoming, MobileMove,

@@ -465,6 +465,21 @@ pub const CLF_TOOLTIPS: u32 = 0x20;
 /// character slot the list is not sized for.
 pub const AOS_FEATURE_FLAGS: u32 = 0x1F;
 
+/// The `0xB9` mask for Samurai Empire: AoS plus `SE` (`0x40`). ServUO's
+/// `FeatureFlags.ExpansionSE`, again without `LiveAccount`.
+pub const SE_FEATURE_FLAGS: u32 = AOS_FEATURE_FLAGS | 0x40;
+
+/// The `0xB9` mask for Mondain's Legacy: SE plus `ML` (`0x80`) and `NinthAge`
+/// (`0x200`, the custom-house tiles ML shipped). ServUO's
+/// `FeatureFlags.ExpansionML`, without `LiveAccount`.
+///
+/// **This is what makes the client draw the paperdoll's Quest button.** A client
+/// told the shard is AoS has no quest system to show a button for, so the button
+/// is simply absent — and a server that answers `0xD7`/`0x32` perfectly will
+/// still look broken, because nothing ever sends one. The same goes for the
+/// Guild button beside it.
+pub const ML_FEATURE_FLAGS: u32 = SE_FEATURE_FLAGS | 0x80 | 0x200;
+
 /// `0xB9` — the SupportedFeatures mask, sent before the character list.
 ///
 /// It tells the client which expansion feature sets to turn on — chiefly, for

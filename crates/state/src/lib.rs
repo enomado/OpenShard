@@ -27,6 +27,7 @@
 
 pub mod components;
 pub mod obstruct;
+pub mod quest;
 pub mod region;
 pub mod rng;
 pub mod runtime;
@@ -41,10 +42,11 @@ pub use components::{
     SwingSpeed, FIELD_HEIGHT,
 };
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
+pub use quest::{ObjectiveDef, ObjectiveKind, QuestDef, QuestDefs, RewardDef, RewardKind};
 pub use region::{Region, RegionFlags, RegionRect, Regions};
 pub use rng::Rng;
 pub use runtime::{
-    Action, CastStyle, FacetState, Gameplay, HeldItem, Origin, Outbound, TargetPurpose,
-    TooltipMode, WorldState, TICKS_PER_SECOND,
+    Action, CastStyle, FacetState, Gameplay, HeldItem, Origin, Outbound, QuestGumpContext,
+    QuestSection, TargetPurpose, TooltipMode, WorldState, TICKS_PER_SECOND,
 };
 pub use sectors::{distance, in_range, Sectors, SECTOR_SIZE, VIEW_RANGE};

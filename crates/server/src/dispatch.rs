@@ -44,7 +44,8 @@ pub(crate) fn dispatch(
                             .collect(),
                         effects: record.effects.clone(),
                         dead: record.dead,
-                        quest_blob: record.quest_blob.clone(),
+                        quests: record.quests.clone(),
+                        done_quests: record.done_quests.clone(),
                     }),
                 ),
                 None => (None, None, None, None),
@@ -106,6 +107,30 @@ pub(crate) fn dispatch(
                 } else {
                     world.queue(Command::RequestStatus { connection: id });
                 }
+            }
+            true
+        }
+        Some(EncodedCommand::ID) => {
+            // The AoS "encoded command": the paperdoll's own buttons, which are
+            // not gump replies — the paperdoll is drawn client-side and has no
+            // server layout to answer. Without this the Quest button does nothing
+            // at all, with nothing anywhere to say why.
+            if !session.in_world {
+                return true;
+            }
+            let Ok(command) = EncodedCommand::decode(packet) else {
+                warn!(%id, "malformed 0xD7");
+                return false;
+            };
+            match command.subcommand {
+                EncodedCommand::QUEST_GUMP_REQUEST => {
+                    world.queue(Command::QuestLogRequest { connection: id });
+                }
+                // Named, not routed: combat has no weapon abilities and `guilds`
+                // is a stub. Naming them means the byte layout is not re-derived
+                // the day either lands.
+                EncodedCommand::SET_ABILITY | EncodedCommand::GUILD_GUMP_REQUEST => {}
+                other => debug!(subcommand = format!("0x{other:02X}"), "unhandled 0xD7"),
             }
             true
         }
@@ -523,7 +548,8 @@ pub(crate) fn create_character(
             // A new character is clean.
             effects: Vec::new(),
             dead: false,
-            quest_blob: String::new(),
+            quests: Vec::new(),
+            done_quests: Vec::new(),
         }),
         access,
     });

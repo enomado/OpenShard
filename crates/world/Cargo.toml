@@ -24,6 +24,7 @@ openshard-magic.workspace = true
 openshard-npc.workspace = true
 openshard-persistence.workspace = true
 openshard-protocol.workspace = true
+openshard-quests.workspace = true
 openshard-skills.workspace = true
 openshard-state.workspace = true
 tracing.workspace = true

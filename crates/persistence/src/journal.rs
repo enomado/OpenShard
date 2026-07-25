@@ -327,7 +327,8 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
-            quest_blob: String::new(),
+            quests: Vec::new(),
+            done_quests: Vec::new(),
         }
     }
 

@@ -10,6 +10,9 @@ const CLILOC_PAPERDOLL: u32 = 3_006_123;
 const CLILOC_OPEN: u32 = 3_000_362;
 const CLILOC_BUY: u32 = 3_006_103;
 const CLILOC_SELL: u32 = 3_006_104;
+/// `3006168` "Quest Log" — the same entry ServUO offers on a player's own menu,
+/// and a way into the log for a client whose paperdoll draws no Quest button.
+const CLILOC_QUEST_LOG: u32 = 3_006_168;
 
 /// What a chosen context-menu entry does. Every one routes to a handler a
 /// double-click already reaches — the menu decides *what*, the existing rule does
@@ -18,6 +21,8 @@ const CLILOC_SELL: u32 = 3_006_104;
 enum ContextAction {
     /// Open the object's paperdoll (a mobile).
     Paperdoll,
+    /// Open your own quest log.
+    QuestLog,
     /// Use the object — for a container, open it.
     Open,
     /// Open a vendor's buy window.
@@ -92,6 +97,9 @@ impl World {
             ContextAction::Sell => {
                 npc::offer_sell_list(&mut self.state, connection, actor);
             }
+            ContextAction::QuestLog => {
+                quests::open_log(&mut self.state, connection);
+            }
         }
     }
 
@@ -108,7 +116,15 @@ impl World {
                 (CLILOC_PAPERDOLL, ContextAction::Paperdoll),
             ]
         } else if self.state.registry.has::<Body>(entity) {
-            vec![(CLILOC_PAPERDOLL, ContextAction::Paperdoll)]
+            let mut entries = vec![(CLILOC_PAPERDOLL, ContextAction::Paperdoll)];
+            // Your own menu also offers the quest log. The paperdoll's Quest
+            // button is the usual way in, but it is only drawn by a client whose
+            // expansion set includes ML — this reaches the same window without
+            // depending on that.
+            if self.state.registry.has::<Client>(entity) {
+                entries.push((CLILOC_QUEST_LOG, ContextAction::QuestLog));
+            }
+            entries
         } else {
             Vec::new()
         }

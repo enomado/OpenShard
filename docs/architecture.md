@@ -287,8 +287,17 @@ twice rolls and expires identically.
 
 ## Scripting (spike done)
 
-Gameplay is not hardcoded. NPCs, items, quests, regions, commands, skills,
-crafting and spells are TypeScript, hot-reloadable without a restart.
+Gameplay *content* is not hardcoded. NPCs, items, quests, regions, commands,
+skills, crafting and spells are TypeScript, hot-reloadable without a restart.
+
+The line has moved once already, and it is worth naming where: a system whose
+*window the client draws* — the quest log, the vendor gump, the spellbook — has
+to be the core's, because the client reaches it through packets a script cannot
+answer, and because its state has to survive a restart the script's memory does
+not. So `crates/quests` owns the quest model and the gump, and the pack owns the
+quests. That is the same "default in core, customise in the pack" split as
+`magic::spells` and `Pack.loot`, and the rule of thumb it produced is: **if a
+binding must outlive a reboot, it is a saved component, not a map in a script.**
 
 `deno_core` embeds V8 in-process. QuickJS was considered and rejected — too slow
 for hot gameplay code. A Node sidecar was considered and rejected — IPC latency

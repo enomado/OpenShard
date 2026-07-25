@@ -26,6 +26,7 @@ use openshard_state::sectors::in_range;
 use openshard_state::{HeldItem, Origin, Outbound, WorldState, TICKS_PER_SECOND};
 use tracing::{debug, warn};
 
+mod backpack;
 mod consume;
 mod containers;
 mod decay;
@@ -38,6 +39,7 @@ mod stack;
 mod trigger;
 mod weight;
 
+pub use backpack::*;
 pub use consume::*;
 pub use containers::*;
 pub use decay::*;

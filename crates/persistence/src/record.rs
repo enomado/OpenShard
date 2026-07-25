@@ -49,7 +49,15 @@ use serde::{Deserialize, Serialize};
 /// - v12: a facet's named regions, and the world clock. Both are things a restart
 ///   would otherwise lose to a shard that looks fine: no guards, no town music,
 ///   daylight in every dungeon, and every night starting over at boot.
-pub const SCHEMA_VERSION: u32 = 12;
+/// - v13: quests, structurally. The v11 blob is **gone**, not migrated: it held a
+///   format only the script pack understood, and the quest system that understands
+///   it now lives in the engine, so there is nothing to translate it into that
+///   would not be a guess. A shard upgrading past v13 loses quest progress and
+///   keeps everything else, which is the recreate-on-mismatch convention every
+///   bump above shares. What replaces it: a character's quests and their
+///   cooldowns, and, on a mobile, whether it gives quests or can be escorted —
+///   the last two being why quest givers went inert after every restart.
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// An account, as saved.
 ///
@@ -125,11 +133,52 @@ pub struct CharacterRecord {
     /// restores the character exactly. `false` for the living, the common case.
     #[serde(default)]
     pub dead: bool,
-    /// The player's quest log — an opaque JSON blob the community pack owns (the
-    /// engine stores and hands it back on login, never reads it). Empty string for
-    /// a character with no quests; old saves default it.
+    /// Every quest in progress, with how far each objective has got.
     #[serde(default)]
-    pub quest_blob: String,
+    pub quests: Vec<QuestRecord>,
+    /// Every quest already finished, with the cooldown before it may be taken
+    /// again. Kept separately from [`quests`](Self::quests) because a finished
+    /// quest has no progress left to save — only a date.
+    #[serde(default)]
+    pub done_quests: Vec<DoneQuestRecord>,
+}
+
+/// A quest in progress, as saved.
+///
+/// `progress` and `seconds` run parallel to the *definition's* objective list, so
+/// this is only meaningful next to the pack's definition of `key`. That is the
+/// same bargain ServUO's own save makes (it matches objectives positionally
+/// against a freshly constructed quest), and it means adding an objective to the
+/// end of an existing quest is safe while reordering is not.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct QuestRecord {
+    /// Which quest, by the pack's key. A key the pack no longer defines is
+    /// dropped on load rather than failing the character.
+    pub key: String,
+    /// How far each objective has got.
+    pub progress: Vec<u16>,
+    /// Seconds left on each timed objective; `0` on the untimed ones. A *remaining
+    /// span*, not a deadline: the tick counter starts again from zero at boot, so
+    /// a saved absolute tick would mean something different every restart — the
+    /// same rule [`EffectRecord::remaining`] follows.
+    #[serde(default)]
+    pub seconds: Vec<u32>,
+    /// Whether a timer ran out on it.
+    #[serde(default)]
+    pub failed: bool,
+    /// The serial of the NPC that gave it, if it is still known.
+    #[serde(default)]
+    pub giver: Option<u32>,
+}
+
+/// A finished quest and its cooldown.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct DoneQuestRecord {
+    /// Which quest, by the pack's key.
+    pub key: String,
+    /// Seconds until it may be taken again — again a remaining span, not a
+    /// deadline. [`u32::MAX`] means never (a once-only quest).
+    pub restart_in_secs: u32,
 }
 
 /// A timed effect on a mobile that a relog must not wash off — poison today,
@@ -409,6 +458,20 @@ pub struct MobileRecord {
     /// save restores a skill-less creature.
     #[serde(default)]
     pub skills: Vec<(u8, u16)>,
+    /// The quests this NPC offers, by key. Empty for an ordinary mobile.
+    ///
+    /// Saved because the binding has nowhere else to live that survives: the
+    /// script that placed the NPC only knows it is a giver during the run that
+    /// placed it, so before this the shard's quests worked exactly once — on the
+    /// boot where the world was populated — and every restart afterwards left a
+    /// town full of NPCs that answered nothing, with no error anywhere to say so.
+    #[serde(default)]
+    pub quest_giver: Vec<String>,
+    /// The region this NPC asks to be escorted to, if it is escortable. `None` for
+    /// an ordinary mobile; an empty string means "wherever the quest decides",
+    /// chosen when someone accepts.
+    #[serde(default)]
+    pub escort_destination: Option<String>,
 }
 
 /// A shut-and-openable door's live state, inside a [`DecorationRecord`].
@@ -598,7 +661,17 @@ mod tests {
                 remaining: 5,
             }],
             dead: true,
-            quest_blob: r#"{"active":[1]}"#.into(),
+            quests: vec![QuestRecord {
+                key: "rat_cull".into(),
+                progress: vec![3],
+                seconds: vec![0],
+                failed: false,
+                giver: Some(0x4000_0001),
+            }],
+            done_quests: vec![DoneQuestRecord {
+                key: "silk_gather".into(),
+                restart_in_secs: 3600,
+            }],
         };
         let json = serde_json::to_string(&record).expect("a record must serialise");
         let back: CharacterRecord = serde_json::from_str(&json).expect("and come back");
@@ -627,7 +700,8 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
-            quest_blob: String::new(),
+            quests: Vec::new(),
+            done_quests: Vec::new(),
         };
         let json = serde_json::to_string(&record).expect("a record must serialise");
         let back: CharacterRecord = serde_json::from_str(&json).expect("and come back");

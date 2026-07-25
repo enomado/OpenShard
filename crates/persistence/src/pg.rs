@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS characters (
     skills  TEXT NOT NULL,
     effects  TEXT NOT NULL,
     dead    BOOLEAN NOT NULL,
-    quest_blob TEXT NOT NULL DEFAULT ''
+    quests TEXT NOT NULL DEFAULT '[]',
+    done_quests TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
@@ -240,12 +241,16 @@ impl Store for PgStore {
                 .map_err(|e| StoreError::Corrupt(e.to_string()))?;
             let effects = serde_json::to_string(&record.effects)
                 .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let quests = serde_json::to_string(&record.quests)
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let done_quests = serde_json::to_string(&record.done_quests)
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
             transaction
                 .execute(
                     "INSERT INTO characters \
                      (serial, account, name, body, hue, facet, x, y, z, facing, \
-                      strength, dexterity, intelligence, skills, effects, dead, quest_blob) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
+                      strength, dexterity, intelligence, skills, effects, dead, quests, done_quests) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
                      ON CONFLICT (serial) DO UPDATE SET \
                      account = EXCLUDED.account, name = EXCLUDED.name, \
                      body = EXCLUDED.body, hue = EXCLUDED.hue, facet = EXCLUDED.facet, \
@@ -253,7 +258,7 @@ impl Store for PgStore {
                      strength = EXCLUDED.strength, dexterity = EXCLUDED.dexterity, \
                      intelligence = EXCLUDED.intelligence, skills = EXCLUDED.skills, \
                      effects = EXCLUDED.effects, dead = EXCLUDED.dead, \
-                     quest_blob = EXCLUDED.quest_blob",
+                     quests = EXCLUDED.quests, done_quests = EXCLUDED.done_quests",
                     &[
                         &i64::from(record.serial),
                         &record.account,
@@ -271,7 +276,8 @@ impl Store for PgStore {
                         &skills,
                         &effects,
                         &record.dead,
-                        &record.quest_blob,
+                        &quests,
+                        &done_quests,
                     ],
                 )
                 .await
@@ -426,7 +432,7 @@ impl Store for PgStore {
         let rows = client
             .query(
                 "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
-                 strength, dexterity, intelligence, skills, effects, dead, quest_blob \
+                 strength, dexterity, intelligence, skills, effects, dead, quests, done_quests \
                  FROM characters",
                 &[],
             )
@@ -573,7 +579,10 @@ fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
         effects: serde_json::from_str(row.get::<_, &str>(14))
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
         dead: row.get::<_, bool>(15),
-        quest_blob: row.get::<_, String>(16),
+        quests: serde_json::from_str(row.get::<_, &str>(16))
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+        done_quests: serde_json::from_str(row.get::<_, &str>(17))
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?,
     })
 }
 
@@ -773,7 +782,8 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
-            quest_blob: String::new(),
+            quests: Vec::new(),
+            done_quests: Vec::new(),
         }
     }
 

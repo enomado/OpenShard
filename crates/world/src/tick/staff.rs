@@ -41,16 +41,24 @@ impl World {
         }
     }
 
-    /// Act on an admin-gump button. The gump crate reads the response and gates it
-    /// (game-master only); the acting — registering or clearing spawn regions,
-    /// which only the tick can touch — is here.
-    pub(super) fn handle_admin_gump(
+    /// Route a `0xB1` — a gump button — to whoever opened that gump.
+    ///
+    /// There is one reply packet for every dialog on the shard, so the `gump_id`
+    /// the client echoes back is the only thing saying which. Three destinations:
+    /// the engine's own admin menu, the quest dialogs, and everything else, which
+    /// belongs to the pack that opened it and leaves as a `GumpAnswered`.
+    pub(super) fn handle_gump_response(
         &mut self,
         connection: ConnectionId,
         response: openshard_protocol::GumpResponse,
     ) {
-        // A reply to a gump that is *not* the engine's admin menu belongs to the
-        // pack that opened it (a quest offer, a notice board). Forward it as a
+        // The quest dialogs answer themselves — the core owns that window, the
+        // way it owns the container and vendor ones.
+        if openshard_quests::handle(&mut self.state, connection, &response) {
+            return;
+        }
+        // A reply to a gump that is *not* the engine's own belongs to the pack
+        // that opened it (a notice board, a shard's custom menu). Forward it as a
         // `GumpAnswered` rather than dropping it, then stop — only the admin gump
         // runs the staff path below.
         if response.gump_id != crate::admin::ADMIN_GUMP {

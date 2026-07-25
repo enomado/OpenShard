@@ -106,10 +106,22 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
 /// ServUO's core-expansion default; a 2D client ignores the ones it does not use.
 pub(crate) fn supported_features_of(config: &Config) -> u32 {
     let g = &config.gameplay;
+    // The expansion the operator asked for. This is what the client builds its
+    // paperdoll from: under AoS there is no Quest button to press, so the whole
+    // `0xD7`/`0x32` path is unreachable however correctly it is implemented.
+    let expansion = match g.expansion.trim().to_ascii_lowercase().as_str() {
+        "aos" => openshard_protocol::AOS_FEATURE_FLAGS,
+        "se" => openshard_protocol::SE_FEATURE_FLAGS,
+        // `config` has already refused anything else; ML is the default.
+        _ => openshard_protocol::ML_FEATURE_FLAGS,
+    };
+    // With tooltips and context menus both off the shard advertises nothing at
+    // all and a modern client falls back to the classic single-click name — the
+    // pre-AoS feel, which is a choice an operator can still make.
     let aos = openshard_world::TooltipMode::parse(&g.tooltips) != openshard_world::TooltipMode::Off
         || g.context_menus;
     if aos {
-        openshard_protocol::AOS_FEATURE_FLAGS
+        expansion
     } else {
         0
     }

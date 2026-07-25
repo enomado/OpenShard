@@ -631,18 +631,7 @@ impl World {
 
     /// A private system line to a player, if it is one. A creature hears nothing.
     pub(super) fn notify_self(&mut self, entity: EntityId, text: &str) {
-        if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) {
-            let packet = encode_message(
-                openshard_protocol::SYSTEM_SERIAL,
-                openshard_protocol::NO_GRAPHIC,
-                0,
-                0x03B2,
-                3,
-                "System",
-                text,
-            );
-            self.state.send(connection, packet);
-        }
+        self.state.system_message(entity, text);
     }
 }
 

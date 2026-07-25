@@ -57,10 +57,27 @@ pub struct ItemsTaken {
     pub taken: u16,
 }
 
-/// Emit [`MobileUsed`] for a double-clicked mobile — fired beside the paperdoll
-/// open in [`double_click`](crate::double_click), never in place of it. Skips a
-/// self-click (opening your own paperdoll is not "using an NPC").
-pub(crate) fn mobile_used(
+/// Emit [`MobileUsed`] for a double-clicked mobile.
+///
+/// Called *before* the engine decides what the click means, never in place of
+/// that decision: the shop still opens, the paperdoll still opens, and the rules
+/// layered over the mobile hear the click either way. Skips a self-click (opening
+/// your own paperdoll is not "using an NPC") and anything that is not a mobile.
+pub fn mobile_used(state: &mut WorldState, connection: ConnectionId, serial: u32) {
+    let Some(&player) = state.players.get(&connection) else {
+        return;
+    };
+    let Some(target_serial) = Serial::new(serial) else {
+        return;
+    };
+    let Some(target) = state.registry.entity_of(target_serial) else {
+        return;
+    };
+    emit_mobile_used(state, player, target, target_serial);
+}
+
+/// The body of [`mobile_used`], once the entities are resolved.
+pub(crate) fn emit_mobile_used(
     state: &mut WorldState,
     player: EntityId,
     target: EntityId,

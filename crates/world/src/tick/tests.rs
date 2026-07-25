@@ -2039,7 +2039,7 @@ fn picking_up_a_whole_stack_from_a_container_does_not_split_it() {
 
 /// Spawn a creature at `point` with `hits` and return its serial. An orange
 /// enemy, no armour — the plain punching bag most combat tests want.
-fn spawn_mobile_at(world: &mut World, point: Point, hits: u16, now: Instant) -> u32 {
+pub(super) fn spawn_mobile_at(world: &mut World, point: Point, hits: u16, now: Instant) -> u32 {
     spawn_mobile_full(world, point, hits, 5, combat::SWING_DAMAGE, 0, now)
 }
 
@@ -4016,7 +4016,8 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
-            quest_blob: record.quest_blob.clone(),
+            quests: record.quests.clone(),
+            done_quests: record.done_quests.clone(),
         }),
         access: AccessLevel::Player,
     });
@@ -4392,7 +4393,8 @@ fn poison_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
-            quest_blob: record.quest_blob.clone(),
+            quests: record.quests.clone(),
+            done_quests: record.done_quests.clone(),
         }),
         access: AccessLevel::Player,
     });
@@ -4614,7 +4616,8 @@ fn a_stat_buff_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
-            quest_blob: record.quest_blob.clone(),
+            quests: record.quests.clone(),
+            done_quests: record.done_quests.clone(),
         }),
         access: AccessLevel::Player,
     });
@@ -4986,7 +4989,8 @@ fn a_behaviour_buff_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
-            quest_blob: record.quest_blob.clone(),
+            quests: record.quests.clone(),
+            done_quests: record.done_quests.clone(),
         }),
         access: AccessLevel::Player,
     });
@@ -5420,7 +5424,8 @@ fn paralysis_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
-            quest_blob: record.quest_blob.clone(),
+            quests: record.quests.clone(),
+            done_quests: record.done_quests.clone(),
         }),
         access: AccessLevel::Player,
     });
@@ -10745,31 +10750,6 @@ fn take_item_is_all_or_nothing_and_reports_what_it_took() {
         "short: it took nothing"
     );
     assert_eq!(backpack_gold(&world), 2, "and left the two untouched");
-}
-
-#[test]
-fn set_quest_stores_the_blob_on_the_character() {
-    use openshard_state::components::QuestLog;
-    let now = Instant::now();
-    let mut world = world();
-    let conn = enter(&mut world, now);
-    let player = world.state.players[&conn];
-    let serial = world.registry().serial_of(player).unwrap().raw();
-
-    world.queue(Command::SetQuest {
-        serial,
-        blob: r#"{"active":[7]}"#.to_owned(),
-    });
-    world.tick(now);
-
-    assert_eq!(
-        world
-            .registry()
-            .get::<QuestLog>(player)
-            .map(|q| q.0.as_str()),
-        Some(r#"{"active":[7]}"#),
-        "the quest blob rode onto the character, ready to persist"
-    );
 }
 
 #[test]

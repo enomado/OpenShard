@@ -51,6 +51,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "go" => go_to(state, actor, &args),
         "add" => add_item(state, actor, &args),
         "spellbook" => full_spellbook(state, actor),
+        "quests" => openshard_quests::open_log_for(state, actor),
         "set" => set_stat(state, actor, &args),
         "admin" => crate::admin::open_menu(state, actor),
         "save" => save_world(state, actor),
@@ -270,19 +271,7 @@ fn set_stat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
 /// Send the actor a private system line — the reply to a command, seen by no one
 /// else. A mobile with no client (a scripted GM, say) simply gets no reply.
 pub(crate) fn notify(state: &mut WorldState, actor: EntityId, text: &str) {
-    let Some(&Client { connection, .. }) = state.registry.get::<Client>(actor) else {
-        return;
-    };
-    let packet = encode_message(
-        u32::MAX, // the system serial, so the client draws it as a server message
-        0xFFFF,
-        0, // regular mode
-        SYSTEM_HUE,
-        SYSTEM_FONT,
-        "System",
-        text,
-    );
-    state.send(connection, packet);
+    state.system_message(actor, text);
 }
 
 /// The ground height at `(x, y)` on `facet`, if the facet has a map loaded.

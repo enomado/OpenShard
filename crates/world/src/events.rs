@@ -47,6 +47,32 @@ pub struct SpellRequested {
 // Re-exported here so readers keep finding it beside `PlayerEntered`.
 pub use openshard_npc::MobileSpawned;
 
+/// An NPC mobile came back from the store at boot, exactly as it was saved.
+///
+/// Deliberately *not* a `MobileSpawned`: spawning means "this did not exist a
+/// moment ago", and a restore means the opposite. Anything that acts on a spawn
+/// by *creating* something — a vendor's stock crate is the standing example —
+/// would duplicate it on every reboot if the two shared an event.
+///
+/// But a world that comes back silently is a world the layers above it cannot
+/// see. Everything a script learned about the NPCs it placed — which one gives
+/// which quest, which one can be escorted — lived only in the memory of the run
+/// that placed them, so the shard worked once and was inert after the first
+/// restart, with nothing in any log to say so. This is the announcement that
+/// closes that: a listener that binds rather than creates reads it and re-binds,
+/// idempotently, on every boot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MobileRestored {
+    /// The restored entity.
+    pub entity: EntityId,
+    /// Its wire identity — the same serial it had before the restart.
+    pub serial: Serial,
+    /// Its body, so a listener matches the kind without a lookup.
+    pub body: u16,
+    /// Where it stands.
+    pub at: Point,
+}
+
 /// A mobile took a step.
 ///
 /// Emitted for the step, not for the turn: a turn changes no tile, and a
