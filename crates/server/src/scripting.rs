@@ -136,9 +136,12 @@ impl Scripts {
                 events.push(ScriptEvent::MobileRestored {
                     serial: e.serial.raw(),
                     body: e.body,
-                    x: e.at.x,
-                    y: e.at.y,
-                    z: e.at.z,
+                    // `home`, not `at`: a pack binds by the tile an NPC was placed
+                    // on, and a townsperson with a routine is not standing on it
+                    // when the save is taken. See `ScriptEvent::MobileRestored`.
+                    x: e.home.x,
+                    y: e.home.y,
+                    z: e.home.z,
                 });
             }
             for e in bus.read(&mut self.cast_requested) {

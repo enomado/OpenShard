@@ -69,8 +69,23 @@ pub struct MobileRestored {
     pub serial: Serial,
     /// Its body, so a listener matches the kind without a lookup.
     pub body: u16,
-    /// Where it stands.
+    /// Where it stands right now.
     pub at: Point,
+    /// The post it belongs to — its [`Npc`] home, or where it stands if it has
+    /// none (a creature, a guard, anything without a beat).
+    ///
+    /// # Bind by this, not by `at`
+    ///
+    /// A pack binds its NPCs by tile: the tile a quest giver was *placed* on is
+    /// the key it looks the quest up by. `at` is where the mobile was standing
+    /// when the save was taken, and a townsperson does not stand still — with
+    /// `npc_schedule` on it is somewhere else entirely for a third of the day.
+    /// So a save taken at night would hand every quest to whichever townsperson
+    /// happened to be nearest the giver's post, permanently, because the binding
+    /// is itself persisted. A home does not move, which is what makes it a key.
+    ///
+    /// [`Npc`]: openshard_state::components::Npc
+    pub home: Point,
 }
 
 /// A mobile took a step.

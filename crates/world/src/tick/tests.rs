@@ -8256,7 +8256,12 @@ fn a_banker_greets_a_nearby_player() {
 }
 
 /// Spawn a townsperson of a trade, dressed and named by the core.
-fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: Instant) -> EntityId {
+pub(super) fn spawn_townsperson(
+    world: &mut World,
+    trade: &str,
+    at: Point,
+    now: Instant,
+) -> EntityId {
     world.queue(Command::SpawnMobile {
         body: 0x0190,
         hue: 0,

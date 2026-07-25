@@ -86,11 +86,18 @@ pub enum Event {
         serial: Serial,
         /// Its body, so a pack matches the kind with no lookup.
         body: u16,
-        /// Where it stands.
+        /// The tile it was *placed* on, not the one it is standing on.
+        ///
+        /// A pack binds by tile — the post a quest giver was placed on is the key
+        /// its quest is looked up by — and this event exists to let it re-bind on
+        /// every boot. A townsperson does not stand still: with a daily routine on
+        /// it is somewhere else for a third of the day, so a save taken at night
+        /// would hand every quest to whoever was nearest the giver's post, for
+        /// good, since the binding is itself persisted. The post does not move.
         x: u16,
-        /// Where it stands.
+        /// The tile it was placed on. See `x`.
         y: u16,
-        /// Where it stands.
+        /// The tile it was placed on. See `x`.
         z: i8,
     },
     /// A client asked to cast a spell — the hook a script turns into a real cast,

@@ -1113,6 +1113,13 @@ impl World {
                 serial,
                 body: record.body,
                 at: position,
+                // Its post, which is what a pack keys a binding on — see the
+                // event's own doc. `position` is wherever it had wandered to when
+                // the save was taken, and with a daily routine that is somewhere
+                // else entirely for a third of the day.
+                home: record
+                    .npc_home
+                    .map_or(position, |(x, y, z)| Point::new(x, y, z)),
             });
         }
     }

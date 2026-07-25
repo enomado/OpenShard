@@ -682,6 +682,64 @@ fn restoring_a_mobile_announces_it_as_restored_not_as_spawned() {
 }
 
 #[test]
+fn a_restore_announces_the_post_an_npc_belongs_to_not_where_it_wandered() {
+    // A pack binds its NPCs by tile: the tile a quest giver was placed on is the
+    // key its quest is looked up by, and `MobileRestored` is what lets it re-bind
+    // on every boot. A townsperson does not stand still, and with a daily routine
+    // it is somewhere else entirely for a third of the day — so a save taken while
+    // one had wandered would hand its quest to whoever was standing nearest its
+    // post instead, permanently, because the binding is itself persisted. The
+    // event carries the post, which does not move.
+    let now = Instant::now();
+    let mut world = world();
+    let _ = enter(&mut world, now);
+    // A townsperson, not a bare mobile: in ServUO a `MondainQuester` *is* a
+    // `BaseVendor`, and it is the townsfolk — the ones with an `Npc` beat and a
+    // post to keep to — that a routine walks off at dusk.
+    let entity = super::tests::spawn_townsperson(
+        &mut world,
+        "the healer",
+        Point::new(START.0 + 1, START.1, 0),
+        now,
+    );
+    world.state.registry.insert(
+        entity,
+        QuestGiver {
+            keys: vec!["rat_cull".to_owned()],
+        },
+    );
+    let giver = world.registry().serial_of(entity).unwrap().raw();
+    let post = world.registry().get::<Position>(entity).unwrap().0;
+
+    // Walk it off its post, the way a night routine would, and save it there.
+    let wandered = Point::new(post.x + 5, post.y + 4, post.z);
+    world.state.registry.insert(entity, Position(wandered));
+    world.take_snapshot();
+    let mobiles = world
+        .drain_saves()
+        .next()
+        .expect("a snapshot")
+        .mobiles
+        .clone()
+        .expect("the mobile sweep");
+
+    let mut shard = super::tests::world();
+    let mut restored: Cursor<crate::events::MobileRestored> = shard.bus().cursor();
+    shard.restore_mobiles(mobiles);
+    let event = shard
+        .bus()
+        .read(&mut restored)
+        .find(|e| e.serial.raw() == giver)
+        .copied()
+        .expect("the giver announced its restore");
+    assert_eq!(event.at, wandered, "it is standing where it was saved");
+    assert_eq!(
+        event.home, post,
+        "and it announces the post it belongs to, which is what a pack binds by"
+    );
+}
+
+#[test]
 fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
     let now = Instant::now();
     let mut world = world();
