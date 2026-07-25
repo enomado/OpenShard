@@ -266,6 +266,20 @@ pub struct Door {
     pub close_at: u64,
 }
 
+/// How widely known a mobile is — ServUO's `Mobile.Fame`, `0..=32000`.
+///
+/// Earned by killing things, and by killing *famous* things in particular: a creature
+/// gives up its own fame. Half of what a character's title is computed from.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Fame(pub i32);
+
+/// Which way a mobile is known — ServUO's `Mobile.Karma`, `-32000..=32000`.
+///
+/// Killing something evil earns karma; killing something innocent loses it. The other
+/// half of the title, and the axis a creature's own notoriety colour is derived from.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Karma(pub i32);
+
 /// A lock on a door or a container — ServUO's `ILockable`: `Locked` plus a
 /// `KeyValue` that says which key fits.
 ///

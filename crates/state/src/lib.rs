@@ -33,14 +33,15 @@ pub mod region;
 pub mod rng;
 pub mod runtime;
 pub mod sectors;
+pub mod title;
 
 pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
-    Decoration, Door, Equipped, Facet, Field, FieldKind, Frozen, Ghost, Graphic, Guard, Heading,
-    Hitpoints, InRegion, KeyValue, Lock, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name,
-    NightHome, Npc, Position, Resistance, Scripted, Skills, SpawnedBy, Stackable, Stamina, StatMod,
-    StatMods, Stats, SwingSpeed, Title, FIELD_HEIGHT,
+    Decoration, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic, Guard,
+    Heading, Hitpoints, InRegion, Karma, KeyValue, Lock, Mana, MeleeDamage, Movement, MurderDecay,
+    Murders, Name, NightHome, Npc, Position, Resistance, Scripted, Skills, SpawnedBy, Stackable,
+    Stamina, StatMod, StatMods, Stats, SwingSpeed, Title, FIELD_HEIGHT,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
@@ -52,3 +53,4 @@ pub use runtime::{
     QuestSection, TargetPurpose, TooltipMode, WorldState, TICKS_PER_SECOND,
 };
 pub use sectors::{distance, in_range, Sectors, SECTOR_SIZE, VIEW_RANGE};
+pub use title::{compute_title, titled_name};

@@ -220,6 +220,10 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             // already *is* the uniform), no beat, no keyword table.
             title: None,
             shoe: ShoeType::default(),
+            // A guard earns nobody anything: it is gone before it can be fought, and a
+            // shard where killing the town watch made you famous would be a different game.
+            fame: 0,
+            karma: 0,
             night_home: None,
             banker: false,
             vendor: false,

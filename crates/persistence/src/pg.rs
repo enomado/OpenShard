@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS characters (
     skills  TEXT NOT NULL,
     effects  TEXT NOT NULL,
     dead    BOOLEAN NOT NULL,
+    -- Standing: how widely and which way it is known, and how many innocents it
+    -- has killed. The last is what makes a repeat killer permanently red.
+    fame    INTEGER NOT NULL DEFAULT 0,
+    karma   INTEGER NOT NULL DEFAULT 0,
+    murders INTEGER NOT NULL DEFAULT 0,
     quests TEXT NOT NULL DEFAULT '[]',
     done_quests TEXT NOT NULL DEFAULT '[]'
 );
@@ -249,7 +254,8 @@ impl Store for PgStore {
                 .execute(
                     "INSERT INTO characters \
                      (serial, account, name, body, hue, facet, x, y, z, facing, \
-                      strength, dexterity, intelligence, skills, effects, dead, quests, done_quests) \
+                      strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
+                       quests, done_quests) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
                      ON CONFLICT (serial) DO UPDATE SET \
                      account = EXCLUDED.account, name = EXCLUDED.name, \
@@ -258,6 +264,7 @@ impl Store for PgStore {
                      strength = EXCLUDED.strength, dexterity = EXCLUDED.dexterity, \
                      intelligence = EXCLUDED.intelligence, skills = EXCLUDED.skills, \
                      effects = EXCLUDED.effects, dead = EXCLUDED.dead, \
+                     fame = EXCLUDED.fame, karma = EXCLUDED.karma, murders = EXCLUDED.murders, \
                      quests = EXCLUDED.quests, done_quests = EXCLUDED.done_quests",
                     &[
                         &i64::from(record.serial),
@@ -276,6 +283,9 @@ impl Store for PgStore {
                         &skills,
                         &effects,
                         &record.dead,
+                        &record.fame,
+                        &record.karma,
+                        &i32::from(record.murders),
                         &quests,
                         &done_quests,
                     ],
@@ -432,7 +442,8 @@ impl Store for PgStore {
         let rows = client
             .query(
                 "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
-                 strength, dexterity, intelligence, skills, effects, dead, quests, done_quests \
+                 strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
+                 quests, done_quests \
                  FROM characters",
                 &[],
             )
@@ -579,9 +590,12 @@ fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
         effects: serde_json::from_str(row.get::<_, &str>(14))
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
         dead: row.get::<_, bool>(15),
-        quests: serde_json::from_str(row.get::<_, &str>(16))
+        fame: row.get::<_, i32>(16),
+        karma: row.get::<_, i32>(17),
+        murders: u16::try_from(row.get::<_, i32>(18)).unwrap_or(0),
+        quests: serde_json::from_str(row.get::<_, &str>(19))
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
-        done_quests: serde_json::from_str(row.get::<_, &str>(17))
+        done_quests: serde_json::from_str(row.get::<_, &str>(20))
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
     })
 }
@@ -782,6 +796,9 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
         }

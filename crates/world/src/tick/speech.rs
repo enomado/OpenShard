@@ -89,7 +89,9 @@ impl World {
         // A mobile carries a `Name` and a `Body`; an item a `Graphic` and no
         // `Name`. The two cases pick a different graphic, hue, and name source.
         let (graphic, hue, text) = if let Some(name) = self.state.registry.get::<Name>(target) {
-            let name = name.0.clone();
+            // The earned name, not the bare one: ServUO shows a fame title to an
+            // onlooker once the mobile's fame reaches 5000.
+            let name = openshard_state::titled_name(&self.state, target, &name.0.clone());
             let Some(body) = self.state.registry.get::<Body>(target).map(|b| b.id) else {
                 return;
             };

@@ -2075,6 +2075,8 @@ fn spawn_mobile_full(
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -2599,6 +2601,8 @@ fn a_creature_dies_with_its_own_voice() {
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -3209,6 +3213,8 @@ fn a_creature_can_be_given_combat_skills() {
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -4028,6 +4034,9 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: record.quests.clone(),
             done_quests: record.done_quests.clone(),
         }),
@@ -4405,6 +4414,9 @@ fn poison_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: record.quests.clone(),
             done_quests: record.done_quests.clone(),
         }),
@@ -4628,6 +4640,9 @@ fn a_stat_buff_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: record.quests.clone(),
             done_quests: record.done_quests.clone(),
         }),
@@ -5001,6 +5016,9 @@ fn a_behaviour_buff_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: record.quests.clone(),
             done_quests: record.done_quests.clone(),
         }),
@@ -5436,6 +5454,9 @@ fn paralysis_survives_a_relogin() {
                 .collect(),
             effects: record.effects.clone(),
             dead: record.dead,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: record.quests.clone(),
             done_quests: record.done_quests.clone(),
         }),
@@ -6194,6 +6215,8 @@ fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now:
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -7092,6 +7115,8 @@ fn a_spawner_fills_to_its_ceiling_and_clear_empties_it() {
     let now = Instant::now();
     let mut world = world();
     let creature = CreatureTemplate {
+        fame: 0,
+        karma: 0,
         body: 0x0009,
         hue: 0,
         hits: 10,
@@ -7168,6 +7193,8 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: true,
@@ -7761,6 +7788,8 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: true,
@@ -7866,6 +7895,8 @@ fn a_wounded_spawner_creature_survives_a_restart_and_is_counted() {
     let now = Instant::now();
     let mut home = world();
     let creature = CreatureTemplate {
+        fame: 0,
+        karma: 0,
         body: 0x0009,
         hue: 0,
         hits: 10,
@@ -8135,6 +8166,8 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
         name: Some("the banker".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: true,
         vendor: false,
@@ -8239,6 +8272,8 @@ fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: Instant) ->
         name: None,
         title: Some(trade.to_owned()),
         shoe: 1,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -8329,6 +8364,180 @@ fn place_lockable_door(world: &mut World, at: Point, key_value: u32, now: Instan
         .map(|(entity, _)| entity)
         .next_back()
         .expect("a door")
+}
+
+#[test]
+fn a_kill_pays_the_killer_in_fame_and_karma() {
+    // ServUO's `BaseCreature.OnDeath`: the killer takes the victim's fame and the
+    // *negation* of its karma. The sign is the whole rule — a creature carries negative
+    // karma when it is evil, so slaying it earns karma and slaying something innocent
+    // costs, and nothing has to know what a murder is for that to work.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let killer = world.state.players[&connection];
+
+    let evil = spawn_creature_with_standing(&mut world, 2000, -3000, now);
+    let evil_serial = world.registry().serial_of(evil).unwrap().raw();
+    let killer_serial = world.registry().serial_of(killer).unwrap();
+    openshard_combat::damage(
+        &mut world.state,
+        evil_serial,
+        10_000,
+        openshard_state::DamageType::Physical,
+        Some(killer_serial),
+    );
+    world.tick(now);
+    let fame = world
+        .registry()
+        .get::<openshard_state::components::Fame>(killer)
+        .map_or(0, |f| f.0);
+    let karma = world
+        .registry()
+        .get::<openshard_state::components::Karma>(killer)
+        .map_or(0, |k| k.0);
+    assert_eq!(
+        fame, 2000,
+        "the victim's fame, undiminished on a first kill"
+    );
+    assert_eq!(
+        karma, 3000,
+        "and the negation of its karma: killing evil is good"
+    );
+
+    // An innocent costs. The curve bites now that the killer has standing.
+    let innocent = spawn_creature_with_standing(&mut world, 100, 2000, now);
+    let innocent_serial = world.registry().serial_of(innocent).unwrap().raw();
+    openshard_combat::damage(
+        &mut world.state,
+        innocent_serial,
+        10_000,
+        openshard_state::DamageType::Physical,
+        Some(killer_serial),
+    );
+    world.tick(now);
+    let after = world
+        .registry()
+        .get::<openshard_state::components::Karma>(killer)
+        .map_or(0, |k| k.0);
+    assert!(
+        after < karma,
+        "killing an innocent costs karma: {karma} -> {after}"
+    );
+}
+
+/// Spawn a creature carrying standing to give up.
+fn spawn_creature_with_standing(
+    world: &mut World,
+    fame: i32,
+    karma: i32,
+    now: Instant,
+) -> EntityId {
+    world.queue(Command::SpawnMobile {
+        body: 0x00D0,
+        hue: 0,
+        hits: 10,
+        notoriety: 3,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 0,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: Point::new(START.0 + 1, START.1 + 1, 0),
+        facet: 0,
+        name: None,
+        title: None,
+        shoe: 0,
+        fame,
+        karma,
+        night_home: None,
+        banker: false,
+        vendor: false,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    world
+        .registry()
+        .query::<openshard_state::components::Fame>()
+        .filter(|(entity, _)| !world.registry().has::<Client>(*entity))
+        .map(|(entity, _)| entity)
+        .next_back()
+        .expect("a creature with standing")
+}
+
+#[test]
+fn a_murderer_stays_red_across_a_restart() {
+    // The count that makes a repeat killer permanently red lived only in memory, so
+    // every restart washed every murderer blue — while the decay clock and the
+    // notoriety rule built on top of it were both already correct.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    world
+        .state
+        .registry
+        .insert(player, openshard_state::components::Murders(5));
+    world
+        .state
+        .registry
+        .insert(player, openshard_state::components::Fame(7000));
+    world
+        .state
+        .registry
+        .insert(player, openshard_state::components::Karma(-9000));
+
+    let now_ticks = world.state.ticks;
+    let record = World::record_of(world.registry(), player, now_ticks).expect("a character");
+    assert_eq!(record.murders, 5, "the count is swept into the save");
+    assert_eq!(record.fame, 7000);
+    assert_eq!(record.karma, -9000);
+
+    // And a fresh login from that record comes back red and infamous.
+    let mut booted = World::new(START);
+    booted.queue(Command::Enter {
+        connection: ConnectionId::from_raw(9),
+        version: ClientVersion::TOL,
+        account: "admin".to_owned(),
+        name: record.name.clone(),
+        serial: None,
+        position: None,
+        facet: 0,
+        appearance: None,
+        sheet: Some(CharacterSheet {
+            strength: record.strength,
+            dexterity: record.dexterity,
+            intelligence: record.intelligence,
+            skills: Vec::new(),
+            effects: Vec::new(),
+            dead: false,
+            fame: record.fame,
+            karma: record.karma,
+            murders: record.murders,
+            quests: Vec::new(),
+            done_quests: Vec::new(),
+        }),
+        access: AccessLevel::Player,
+    });
+    booted.tick(now);
+    let back = booted.state.players[&ConnectionId::from_raw(9)];
+    assert_eq!(
+        booted
+            .registry()
+            .get::<openshard_state::components::Murders>(back)
+            .map(|m| m.0),
+        Some(5),
+        "still a murderer"
+    );
+    // And famous enough to have earned a title, which is the visible half.
+    let titled = openshard_state::titled_name(&booted.state, back, "Rowena");
+    assert_ne!(titled, "Rowena", "a famous infamous character has a title");
+    assert!(titled.contains("Rowena"));
 }
 
 #[test]
@@ -8515,6 +8724,8 @@ fn a_non_human_townsperson_keeps_its_own_body() {
         name: None,
         title: Some("the frightened dryad".to_owned()),
         shoe: 1,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -8775,6 +8986,8 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
         name: None,
         title: Some("the provisioner".to_owned()),
         shoe: 1,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: true,
@@ -8954,6 +9167,8 @@ fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
         name: None,
         title: Some("the peasant".to_owned()),
         shoe: 1,
+        fame: 0,
+        karma: 0,
         night_home: Some(home),
         banker: false,
         vendor: false,
@@ -9214,6 +9429,8 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
         name: Some("the tailor".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -9260,6 +9477,8 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -9446,6 +9665,8 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
         name: Some("the tailor".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: true,
@@ -10151,6 +10372,8 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -10220,6 +10443,8 @@ fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instan
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -10422,6 +10647,8 @@ fn spawn_postured(
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -10634,6 +10861,8 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, u32) {
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -10969,6 +11198,8 @@ fn a_shop_sells_goods_and_buys_them_back() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: true,
@@ -11119,6 +11350,8 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: true,
@@ -11240,6 +11473,8 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: true,
@@ -11357,6 +11592,8 @@ fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) ->
         name: None,
         title: None,
         shoe: 0,
+        fame: 0,
+        karma: 0,
         night_home: None,
         banker: false,
         vendor: false,
@@ -11619,6 +11856,8 @@ fn lod_a_spawner_with_no_player_near_stays_dormant_then_wakes() {
     let mut world = lod_world();
     let conn = enter(&mut world, now); // player at START
     let creature = CreatureTemplate {
+        fame: 0,
+        karma: 0,
         body: 0x0009,
         hue: 0,
         hits: 10,

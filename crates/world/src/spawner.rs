@@ -28,6 +28,10 @@ pub struct CreatureTemplate {
     pub damage: u16,
     /// Physical resistance, a percentage.
     pub resistance: u8,
+    /// How widely known it is — what its killer inherits.
+    pub fame: i32,
+    /// Which way it is known. **Negative is evil**, so killing it earns karma.
+    pub karma: i32,
     /// Swing cadence in ticks; `0` derives it from dexterity.
     pub swing: u64,
     /// How far it notices a target; `0` for a placid animal.

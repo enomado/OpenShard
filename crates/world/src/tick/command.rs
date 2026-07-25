@@ -33,6 +33,14 @@ pub struct CharacterSheet {
     /// Whether the character logged out dead — a ghost relogs a ghost. `false`
     /// for a new character and for any living one.
     pub dead: bool,
+    /// How widely known the character is, and which way — ServUO's fame and karma.
+    pub fame: i32,
+    /// Which way it is known. Negative is infamy.
+    pub karma: i32,
+    /// How many innocents it has killed. A **standing**, and one that used not to
+    /// survive a restart: the fifth murder makes a character red for good, and a count
+    /// held only in memory washed every murderer blue at the next boot.
+    pub murders: u16,
     /// Quests in progress, with their per-objective progress. Empty for a new
     /// character.
     pub quests: Vec<openshard_persistence::QuestRecord>,
@@ -306,6 +314,10 @@ pub enum Command {
         /// What the trade wears on its feet, `ShoeType`'s wire byte. Read only when
         /// the core does the dressing.
         shoe: u8,
+        /// How widely known it is; a killer inherits it.
+        fame: i32,
+        /// Which way it is known. Negative is evil.
+        karma: i32,
         /// Where it sleeps, for the optional daily routine.
         night_home: Option<Point>,
         /// Whether it is a banker (answers "bank").

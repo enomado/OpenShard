@@ -109,6 +109,8 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
                 name: None,
                 title: None,
                 shoe: 0,
+                fame: 0,
+                karma: 0,
                 night_home: None,
                 banker: false,
                 vendor: false,

@@ -157,6 +157,23 @@ impl World {
                     max: sheet.dexterity,
                 },
             );
+            // Standing. Zero is the same as absent everywhere that reads these, so a
+            // fresh character carries neither component and an old save reads as one.
+            if sheet.fame != 0 {
+                self.state
+                    .registry
+                    .insert(entity, openshard_state::components::Fame(sheet.fame));
+            }
+            if sheet.karma != 0 {
+                self.state
+                    .registry
+                    .insert(entity, openshard_state::components::Karma(sheet.karma));
+            }
+            if sheet.murders != 0 {
+                self.state
+                    .registry
+                    .insert(entity, openshard_state::components::Murders(sheet.murders));
+            }
             if !sheet.skills.is_empty() {
                 let mut skills = openshard_state::components::Skills::default();
                 for (id, value, lock) in sheet.skills {

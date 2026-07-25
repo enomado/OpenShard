@@ -5,9 +5,9 @@ use openshard_entities::{EntityId, Serial, SerialKind};
 use openshard_movement::Walker;
 use openshard_protocol::{Direction, Facing, Notoriety, Point};
 use openshard_state::components::{
-    body_opens_doors, creature_name, Aggression, Banker, Body, Brain, Facet, Heading, Hitpoints,
-    MeleeDamage, Movement, Name, NightHome, Npc, Position, RangedAttack, Resistance, Skills,
-    SwingSpeed, Title,
+    body_opens_doors, creature_name, Aggression, Banker, Body, Brain, Facet, Fame, Heading,
+    Hitpoints, Karma, MeleeDamage, Movement, Name, NightHome, Npc, Position, RangedAttack,
+    Resistance, Skills, SwingSpeed, Title,
 };
 use openshard_state::WorldState;
 use tracing::{debug, warn};
@@ -70,6 +70,12 @@ pub struct SpawnSpec {
     /// What the trade wears on its feet. Read only when there is a `title`, since
     /// that is when the core does the dressing.
     pub shoe: ShoeType,
+    /// How widely known it is — what a killer inherits. A creature's own fame.
+    pub fame: i32,
+    /// Which way it is known. **Negative is evil**, so killing it *earns* karma: the
+    /// killer is awarded the negation. A positive-karma creature is innocent and killing
+    /// it costs.
+    pub karma: i32,
     /// Where it sleeps, for the optional daily routine. `None` keeps it at its post
     /// around the clock, which is what both references do and what every pack does
     /// today — but it has to be *settable*, or `gameplay.npc_schedule` is a flag
@@ -122,6 +128,8 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         name,
         title,
         shoe,
+        fame,
+        karma,
         night_home,
         banker,
         vendor,
@@ -197,6 +205,14 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     state
         .registry
         .insert(entity, MeleeDamage { amount: damage });
+    // Standing, only when it has any: a rat gives up nothing and a dragon a great deal,
+    // and an absent component is the same as zero everywhere that reads it.
+    if fame != 0 {
+        state.registry.insert(entity, Fame(fame));
+    }
+    if karma != 0 {
+        state.registry.insert(entity, Karma(karma));
+    }
     // Combat skills, if the pack gave any: a sheet is what turns on the to-hit
     // roll and damage scaling for this creature (see `combat::check_hit`).
     if !skills.is_empty() {

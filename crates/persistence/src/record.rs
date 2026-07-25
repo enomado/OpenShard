@@ -68,7 +68,13 @@ use serde::{Deserialize, Serialize};
 ///   also carries a vendor's **full shelf** (`restock`), for the same reason: the
 ///   crate's live contents are what is *left*, so a restock timer with nothing to
 ///   compare them against would forget what full meant at every reboot.
-pub const SCHEMA_VERSION: u32 = 14;
+/// - v15: standing — a character's **fame**, **karma** and **murder count**. The first
+///   two are new (ServUO's `Titles`); the third was a bug, not an addition: the count
+///   that makes a repeat killer permanently red lived only in memory, so every restart
+///   washed every murderer blue while the decay clock and the notoriety rule around it
+///   were both already correct. Creature fame/karma rides the JSON `MobileRecord` and
+///   `CreatureData` with no column of its own.
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// An account, as saved.
 ///
@@ -144,6 +150,21 @@ pub struct CharacterRecord {
     /// restores the character exactly. `false` for the living, the common case.
     #[serde(default)]
     pub dead: bool,
+    /// How widely known the character is — ServUO's `Mobile.Fame`.
+    #[serde(default)]
+    pub fame: i32,
+    /// Which way it is known — ServUO's `Mobile.Karma`.
+    #[serde(default)]
+    pub karma: i32,
+    /// How many innocents this character has killed.
+    ///
+    /// Saved because it is a **standing**, and it was not: the fifth murder makes a
+    /// character a murderer for good, and a count that lives only in memory washed
+    /// every red blue at the next restart. Everything else about the flag — the decay
+    /// clock, the notoriety it forces — was already right; the number underneath it
+    /// simply went missing at the door.
+    #[serde(default)]
+    pub murders: u16,
     /// Every quest in progress, with how far each objective has got.
     #[serde(default)]
     pub quests: Vec<QuestRecord>,
@@ -339,6 +360,13 @@ pub struct CreatureData {
     pub damage: u16,
     /// Physical resistance, a percentage.
     pub resistance: u8,
+    /// How widely known it is — what its killer inherits. Defaulted, so an older
+    /// saved region restores creatures that give up no standing.
+    #[serde(default)]
+    pub fame: i32,
+    /// Which way it is known. Negative is evil.
+    #[serde(default)]
+    pub karma: i32,
     /// Swing cadence in ticks; `0` derives it from dexterity.
     pub swing: u64,
     /// How far it notices a target.
@@ -705,6 +733,9 @@ mod tests {
                 remaining: 5,
             }],
             dead: true,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: vec![QuestRecord {
                 key: "rat_cull".into(),
                 progress: vec![3],
@@ -744,6 +775,9 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
         };

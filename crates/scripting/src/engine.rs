@@ -515,6 +515,8 @@ mod tests {
                 max_count: 4,
                 respawn_delay: 60,
                 creatures: vec![crate::SpawnCreature {
+                    fame: 0,
+                    karma: 0,
                     body: 0x0032,
                     hue: 0,
                     hits: 34,

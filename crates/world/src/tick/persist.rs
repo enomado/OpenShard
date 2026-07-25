@@ -594,6 +594,15 @@ impl World {
             skills,
             effects: Self::effects_of(registry, entity, now),
             dead: dead.is_some(),
+            fame: registry
+                .get::<openshard_state::components::Fame>(entity)
+                .map_or(0, |f| f.0),
+            karma: registry
+                .get::<openshard_state::components::Karma>(entity)
+                .map_or(0, |k| k.0),
+            murders: registry
+                .get::<openshard_state::components::Murders>(entity)
+                .map_or(0, |m| m.0),
             quests: Self::quests_of(registry, entity),
             done_quests: Self::done_quests_of(registry, entity, now),
         })

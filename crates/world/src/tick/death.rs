@@ -20,13 +20,17 @@ impl World {
     /// "emit, don't call" seam: combat announces a death, the world disposes of the
     /// body.
     pub(super) fn reap(&mut self) {
-        let dead: Vec<(EntityId, Serial)> = self
+        let dead: Vec<(EntityId, Serial, Option<Serial>)> = self
             .state
             .bus
             .read(&mut self.dead)
-            .map(|event| (event.entity, event.serial))
+            .map(|event| (event.entity, event.serial, event.killer))
             .collect();
-        for (entity, serial) in dead {
+        for (entity, serial, killer) in dead {
+            // Standing first, while the victim's own fame and karma can still be read:
+            // ServUO's `BaseCreature.OnDeath` awards from the corpse's owner, and the
+            // body is about to be swept.
+            self.award_standing(entity, killer);
             // A body already gone — reaped once, or removed another way this tick —
             // is skipped. A ghost that dies again (it cannot, guarded elsewhere) is
             // likewise a no-op.
@@ -39,6 +43,50 @@ impl World {
                 self.become_ghost(entity, serial);
             } else {
                 self.lay_corpse(entity, serial);
+            }
+        }
+    }
+
+    /// Award the killer the victim's fame, and karma by the victim's own sign —
+    /// ServUO's `BaseCreature.OnDeath`, which hands `Titles.AwardFame(killer, Fame)`
+    /// and `AwardKarma(killer, -Karma)` to whoever struck last.
+    ///
+    /// The sign is the whole rule: a creature carries *negative* karma when it is evil,
+    /// so killing it awards its negation — a positive amount — and killing something
+    /// innocent (positive karma) costs the killer. That is why a murderer's karma falls
+    /// without anything needing to know what a murder is.
+    fn award_standing(&mut self, victim: EntityId, killer: Option<Serial>) {
+        let Some(killer) = killer.and_then(|s| self.state.registry.entity_of(s)) else {
+            return; // an unattributed death earns nobody anything
+        };
+        if killer == victim {
+            return;
+        }
+        let fame = self
+            .state
+            .registry
+            .get::<openshard_state::components::Fame>(victim)
+            .map_or(0, |f| f.0);
+        let karma = self
+            .state
+            .registry
+            .get::<openshard_state::components::Karma>(victim)
+            .map_or(0, |k| k.0);
+        if fame == 0 && karma == 0 {
+            return; // a creature with no standing to give
+        }
+        let gained_fame = combat::titles::award_fame(&mut self.state, killer, fame);
+        let gained_karma = combat::titles::award_karma(&mut self.state, killer, -karma);
+        // Only a player is told; a creature has nobody to tell.
+        if self.state.registry.has::<Client>(killer) {
+            for line in [
+                combat::titles::award_message(gained_fame, false),
+                combat::titles::award_message(gained_karma, true),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.notify_self(killer, line);
             }
         }
     }

@@ -350,6 +350,9 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
         }

@@ -155,6 +155,12 @@ struct MobileSpec {
     /// The trade's footwear, `ShoeType`'s wire byte; defaults to plain shoes.
     #[serde(default = "shoes")]
     shoe: u8,
+    /// How widely known it is; a killer inherits it.
+    #[serde(default)]
+    fame: i32,
+    /// Which way it is known. Negative is evil.
+    #[serde(default)]
+    karma: i32,
     /// Where it sleeps, `[x, y, z]`. Only read with `gameplay.npc_schedule` on.
     #[serde(default)]
     night_home: Option<(u16, u16, i8)>,
@@ -221,6 +227,8 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
             name: spec.name,
             title: spec.title,
             shoe: spec.shoe,
+            fame: spec.fame,
+            karma: spec.karma,
             night_home: spec.night_home,
             banker: spec.banker,
             vendor: spec.vendor,
@@ -690,6 +698,10 @@ struct CreatureSpec {
     #[serde(default)]
     resistance: u8,
     #[serde(default)]
+    fame: i32,
+    #[serde(default)]
+    karma: i32,
+    #[serde(default)]
     swing: u64,
     #[serde(default)]
     sight: u8,
@@ -736,6 +748,8 @@ fn op_register_spawner(state: &mut OpState, #[serde] spec: SpawnerSpec) {
             notoriety: c.notoriety,
             damage: c.damage,
             resistance: c.resistance,
+            fame: c.fame,
+            karma: c.karma,
             swing: c.swing,
             sight: c.sight,
             aggression: c.aggression,

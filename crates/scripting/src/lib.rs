@@ -360,6 +360,12 @@ pub enum Command {
         /// What the trade wears on its feet, as [`ShoeType`](../npc/dress/enum.ShoeType.html)'s
         /// wire byte. Only read when the core dresses the NPC.
         shoe: u8,
+        /// How widely known it is — what its killer inherits.
+        fame: i32,
+        /// Which way it is known. **Negative is evil**: a killer is awarded the
+        /// negation, so killing something evil earns karma and killing something
+        /// innocent costs it.
+        karma: i32,
         /// Where it sleeps, `(x, y, z)`. Read only when `gameplay.npc_schedule` is
         /// on, and the only way that setting can ever do anything — without a home
         /// to walk to, an NPC keeps to its post around the clock.
@@ -902,6 +908,10 @@ pub struct SpawnCreature {
     pub damage: u16,
     /// Physical resistance, 0–100.
     pub resistance: u8,
+    /// How widely known it is — what its killer inherits.
+    pub fame: i32,
+    /// Which way it is known. Negative is evil, so killing it earns karma.
+    pub karma: i32,
     /// Ticks between swings; 0 takes the default.
     pub swing: u64,
     /// How far it notices a foe; 0 is passive.

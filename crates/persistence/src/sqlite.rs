@@ -139,6 +139,12 @@ CREATE TABLE IF NOT EXISTS characters (
     effects  TEXT NOT NULL,
     -- Whether it logged out dead: a ghost relogs a ghost. 0 for the living.
     dead     INTEGER NOT NULL,
+    -- Standing: how widely and which way it is known, and how many innocents it
+    -- has killed. The last is what makes a repeat killer permanently red, and it
+    -- used to live only in memory.
+    fame     INTEGER NOT NULL DEFAULT 0,
+    karma    INTEGER NOT NULL DEFAULT 0,
+    murders  INTEGER NOT NULL DEFAULT 0,
     -- The player's quest log — an opaque JSON blob the pack owns. '' for none.
     quests TEXT NOT NULL DEFAULT '[]',
     done_quests TEXT NOT NULL DEFAULT '[]'
@@ -314,8 +320,10 @@ impl Store for SqliteStore {
                     .execute(
                         "INSERT OR REPLACE INTO characters \
                          (serial, account, name, body, hue, facet, x, y, z, facing, \
-                          strength, dexterity, intelligence, skills, effects, dead, quests, done_quests) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                          strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
+                           quests, done_quests) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
+                                 ?19, ?20, ?21)",
                         params![
                             record.serial,
                             record.account,
@@ -333,6 +341,9 @@ impl Store for SqliteStore {
                             skills,
                             effects,
                             record.dead,
+                            record.fame,
+                            record.karma,
+                            record.murders,
                             quests,
                             done_quests,
                         ],
@@ -515,7 +526,8 @@ impl Store for SqliteStore {
             let mut statement = guard
                 .prepare(
                     "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
-                     strength, dexterity, intelligence, skills, effects, dead, quests, done_quests \
+                     strength, dexterity, intelligence, skills, effects, dead, fame, karma, \
+                     murders, quests, done_quests \
                      FROM characters",
                 )
                 .map_err(database)?;
@@ -523,8 +535,8 @@ impl Store for SqliteStore {
                 .query_map([], |row| {
                     let skills: String = row.get(13)?;
                     let effects: String = row.get(14)?;
-                    let quests: String = row.get(16)?;
-                    let done_quests: String = row.get(17)?;
+                    let quests: String = row.get(19)?;
+                    let done_quests: String = row.get(20)?;
                     Ok((
                         CharacterRecord {
                             serial: row.get(0)?,
@@ -543,6 +555,9 @@ impl Store for SqliteStore {
                             skills: Vec::new(),
                             effects: Vec::new(),
                             dead: row.get(15)?,
+                            fame: row.get(16)?,
+                            karma: row.get(17)?,
+                            murders: row.get(18)?,
                             quests: Vec::new(),
                             done_quests: Vec::new(),
                         },
@@ -856,6 +871,9 @@ mod tests {
             skills: Vec::new(),
             effects: Vec::new(),
             dead: false,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
         }

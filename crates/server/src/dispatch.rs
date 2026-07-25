@@ -44,6 +44,9 @@ pub(crate) fn dispatch(
                             .collect(),
                         effects: record.effects.clone(),
                         dead: record.dead,
+                        fame: record.fame,
+                        karma: record.karma,
+                        murders: record.murders,
                         quests: record.quests.clone(),
                         done_quests: record.done_quests.clone(),
                     }),
@@ -545,9 +548,12 @@ pub(crate) fn create_character(
                 .filter(|choice| choice.value > 0)
                 .map(|choice| (choice.skill, u16::from(choice.value) * 10, SkillLock::Up))
                 .collect(),
-            // A new character is clean.
+            // A new character is clean, and unknown.
             effects: Vec::new(),
             dead: false,
+            fame: 0,
+            karma: 0,
+            murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
         }),

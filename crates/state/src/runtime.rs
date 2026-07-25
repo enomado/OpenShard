@@ -1054,6 +1054,12 @@ impl WorldState {
         let serial = self.registry.serial_of(entity)?.raw();
         let mut list = PropertyList::new(serial);
         if let Some(Name(name)) = self.registry.get::<Name>(entity) {
+            // The earned name — a fame title once the mobile is famous enough for an
+            // onlooker to have heard of it. The cliloc is `~1_PREFIX~~2_NAME~~3_SUFFIX~`
+            // and ServUO fills the three separately; the title table interleaves a
+            // prefix and a suffix around the name in one string, so it goes in the name
+            // slot whole and the other two stay empty.
+            let name = crate::title::titled_name(self, entity, name);
             list.add_args(1_050_045, &format!(" \t{name}\t "));
         } else if let Some(&Graphic { id, .. }) = self.registry.get::<Graphic>(entity) {
             let cliloc = 1_020_000 + u32::from(id);

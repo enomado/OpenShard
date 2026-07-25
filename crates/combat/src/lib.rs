@@ -28,6 +28,7 @@ use openshard_state::sectors::in_range;
 use openshard_state::{Action, WorldState};
 
 pub mod armor;
+pub mod titles;
 pub mod weapons;
 
 /// How near, in tiles (Chebyshev), a mobile must be to land a melee blow: the
