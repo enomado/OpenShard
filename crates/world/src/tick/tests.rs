@@ -8191,10 +8191,15 @@ fn a_banker_greets_a_nearby_player() {
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    // The banker two tiles off — inside the greet range. Its spawn tick also
-    // runs the townsfolk beat, so it greets straight away. The line is one of
-    // several, but every one names the visitor.
+    // The banker two tiles off — inside the greet range. Its first beat is jittered
+    // across one beat's span (so a whole facet's townsfolk do not beat in lockstep),
+    // so give it that long to come due. The line is one of several, but every one
+    // names the visitor.
     spawn_banker(&mut world, Point::new(START.0 + 2, START.1, 0), now);
+    world.drain_outbound().count();
+    for _ in 0..45 {
+        world.tick(now);
+    }
     // Speech is Unicode `0xAE` now, so the name is UTF-16; strip the zero bytes
     // and the ASCII characters read straight through.
     let greeted = packets_for(&mut world, connection).iter().any(|p| {
@@ -8570,6 +8575,35 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
     assert!(
         packets.iter().any(|p| p[0] == 0xAE),
         "and is told why, over the shopkeeper's head"
+    );
+}
+
+#[test]
+fn a_crowd_of_townsfolk_does_not_beat_in_lockstep() {
+    // A `Populate` places seven hundred townsfolk on one tick. With a shared
+    // `next_beat` of zero every one of their beats falls on the same tick for ever
+    // after — a curiosity until they all path home at dusk together and a whole
+    // facet's A* bill lands at once. `spawn` jitters the first beat across one beat's
+    // span, the way `register_spawner` jitters a region's first spawn.
+    let now = Instant::now();
+    let mut world = world();
+    for i in 0..40u16 {
+        spawn_townsperson(
+            &mut world,
+            "the peasant",
+            Point::new(START.0 + 20 + i, START.1 + 20, 0),
+            now,
+        );
+    }
+    let beats: std::collections::HashSet<u64> = world
+        .registry()
+        .query::<openshard_state::components::Npc>()
+        .map(|(_, npc)| npc.next_beat)
+        .collect();
+    assert!(
+        beats.len() > 10,
+        "forty townsfolk should not share a handful of beats, saw {} distinct",
+        beats.len()
     );
 }
 

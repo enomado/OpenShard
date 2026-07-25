@@ -15,6 +15,7 @@ use tracing::{debug, warn};
 use openshard_items as items;
 
 use crate::dress::{dress_townsperson, ShoeType};
+use crate::live::BEAT_TICKS;
 use crate::names::townsperson_name;
 
 /// How far an idle townsperson may drift from its post before it heads back — a
@@ -282,12 +283,21 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // service still is, so a pack that names neither a trade nor a service is the
     // only way to get a prop — which is what a prop should take.
     if state.registry.has::<Title>(entity) || banker || vendor {
+        // The first beat is jittered across one beat's worth of ticks, the way
+        // `register_spawner` jitters a fresh region's first spawn. A `Populate` places
+        // seven hundred townsfolk on one tick, and a shared `next_beat` of zero puts
+        // every one of their beats on the same tick for ever after — which is only a
+        // pacing curiosity until they all path home at dusk on the same tick and the
+        // A* bill for a whole facet lands at once.
+        let jitter = state
+            .rng
+            .below(u32::try_from(BEAT_TICKS).unwrap_or(u32::MAX));
         state.registry.insert(
             entity,
             Npc {
                 home: position,
                 wander: TOWNSFOLK_WANDER,
-                next_beat: 0,
+                next_beat: state.ticks + u64::from(jitter),
                 next_greet: 0,
             },
         );

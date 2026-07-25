@@ -1268,9 +1268,30 @@ Roughly in dependency order, each script-first:
     no notion of one. `config` refuses a working day that wraps midnight, so the one
     comparison that reads the hours stays a comparison. A spawn names the home
     (`night_home`), which is what makes the setting reachable at all — it was briefly
-    a flag with no path to data, restored from a record nothing ever wrote. **No pack
-    ships homes yet**, so on today's data the setting is a no-op with a passing test
-    behind it rather than a feature.
+    a flag with no path to data, restored from a record nothing ever wrote.
+
+    **Where the homes come from is a derivation, and it is ours.** Neither reference
+    has the data: ServUO's townsfolk stand at their posts around the clock, its only
+    scheduled-movement mechanism is a hand-placed `WayPoint` chain Britannia ships none
+    of, and `Data/Decoration` has no notion of which floor tile belongs to whom. So the
+    converter sends each townsperson to **another townsperson's post in the same
+    town** — a tile ServUO itself stood a mobile on, so it is on the floor and
+    reachable — choosing the nearest between six and twenty tiles away. Both bounds
+    earn their place: under six the NPC never leaves its two-tile wander range, and
+    over twenty the bounded A\* (`PATH_BUDGET`, 400 nodes) starts failing, at which
+    point `step_toward`'s naive fallback noses it into a wall all night. A first
+    attempt shifted by index rather than distance produced a median walk of 79 tiles
+    and a worst case of 442. 277 of Felucca's 710 townsfolk have a neighbour in that
+    band; the rest keep to their posts, which is what the setting being off looks like
+    anyway.
+
+    Two things make the cost bearable. LOD already dozes an NPC no player is near, so
+    the towns nobody is standing in do not path at all. And `spawn` now **jitters an
+    NPC's first beat** across one beat's span, the way `register_spawner` jitters a
+    fresh region's first spawn: a `Populate` places seven hundred townsfolk on one
+    tick, and a shared `next_beat` of zero put every one of their beats on the same
+    tick for ever after — invisible until dusk, when a whole facet's A\* bill would
+    land at once.
   - [ ] **Barks — an idle line to an empty street.** The engine has it: `npc::live`
     speaks a trade's `barks` when nobody is within greeting range, on its own long
     cooldown. Nothing fills the list, because ServUO's townsfolk do not call out and

@@ -35,8 +35,9 @@ use openshard_state::WorldState;
 
 use crate::speech::{bark_line, greeting_for};
 
-/// How long between an NPC's beats, in ticks (~2s at 20Hz).
-const BEAT_TICKS: u64 = 40;
+/// How long between an NPC's beats, in ticks (~2s at 20Hz). `spawn` also jitters the
+/// first one across this span, so a whole facet's townsfolk do not beat in lockstep.
+pub(crate) const BEAT_TICKS: u64 = 40;
 /// How near a player has to come for a townsperson to greet them. ServUO's
 /// `VendorAI.HandlesOnSpeech` uses the same four tiles.
 pub(crate) const GREET_RANGE: u32 = 4;
