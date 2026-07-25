@@ -253,12 +253,22 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // which is everything but the aggressive-but-blind prop (sight 0), the old
     // meaning of "no brain".
     if sight > 0 || wander || aggression != Aggression::Aggressive {
+        // Jittered like the townsfolk beat below, and for the same reason: a
+        // spawner that fills a region hands every creature in it the same timer,
+        // and a pack of wolves that decides, turns and lunges on one tick reads
+        // as one animal with six bodies.
+        let interval = if beat > 0 {
+            beat
+        } else {
+            state.gameplay.creature_step_ticks.max(1)
+        };
+        let first = crate::live::first_beat(&mut state.rng, state.ticks, interval);
         state.registry.insert(
             entity,
             Brain {
                 sight,
                 wander,
-                next_think: 0,
+                next_think: first,
                 guard_until: 0,
                 opens_doors: body_opens_doors(body),
                 aggression,
@@ -307,18 +317,16 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         // The first beat is jittered across one beat's worth of ticks, the way
         // `register_spawner` jitters a fresh region's first spawn. A `Populate` places
         // seven hundred townsfolk on one tick, and a shared `next_beat` of zero puts
-        // every one of their beats on the same tick for ever after — which is only a
-        // pacing curiosity until they all path home at dusk on the same tick and the
-        // A* bill for a whole facet lands at once.
-        let jitter = state
-            .rng
-            .below(u32::try_from(BEAT_TICKS).unwrap_or(u32::MAX));
+        // every one of their beats on the same tick — which is only a pacing
+        // curiosity until they all path home at dusk on the same tick and the A*
+        // bill for a whole facet lands at once.
+        let first = crate::live::first_beat(&mut state.rng, state.ticks, BEAT_TICKS);
         state.registry.insert(
             entity,
             Npc {
                 home: position,
                 wander: TOWNSFOLK_WANDER,
-                next_beat: state.ticks + u64::from(jitter),
+                next_beat: first,
                 next_greet: 0,
             },
         );

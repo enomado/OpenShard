@@ -44,7 +44,7 @@ pub mod speech;
 mod vendor;
 pub use dress::{dress_townsperson, Appearance, ShoeType, FIXED_LAYERS};
 pub use guards::{call_guards, expire_guards, guard_keywords, hunt_with_guards};
-pub use live::live;
+pub use live::{beat_jitter, first_beat, live, next_beat, BEAT_JITTER_FRACTION, BEAT_TICKS};
 pub use names::{personal_name, townsperson_name};
 pub use spawn::{spawn, MobileSpawned, SpawnSpec};
 pub use speech::{check_vendor_access, overhear};

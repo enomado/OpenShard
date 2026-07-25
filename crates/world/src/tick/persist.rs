@@ -920,6 +920,25 @@ impl World {
             // Read before the registry is borrowed: a saved timer counts from the
             // tick the world came back at.
             let boot_ticks = self.state.ticks;
+            let brain_interval = if record.beat > 0 {
+                record.beat
+            } else {
+                self.state.gameplay.creature_step_ticks.max(1)
+            };
+            // And the beats, for the same borrow reason. A beat is *not* saved —
+            // it is a pacing detail, not world state — so it has to be re-rolled
+            // here, and re-rolling it to zero is what put every restored mobile on
+            // one tick. That mattered more than it looks: `spawn` jitters the first
+            // beat, but a shard is populated once and restored on every boot
+            // afterwards, so the jitter ran exactly once in a shard's life and the
+            // save undid it. See `npc::first_beat`.
+            let first_think =
+                openshard_npc::first_beat(&mut self.state.rng, boot_ticks, brain_interval);
+            let first_beat = openshard_npc::first_beat(
+                &mut self.state.rng,
+                boot_ticks,
+                openshard_npc::BEAT_TICKS,
+            );
             let registry = &mut self.state.registry;
             registry.insert(
                 entity,
@@ -978,7 +997,7 @@ impl World {
                     Brain {
                         sight: record.sight,
                         wander: record.wander,
-                        next_think: 0,
+                        next_think: first_think,
                         guard_until: 0,
                         opens_doors: body_opens_doors(record.body),
                         aggression,
@@ -1028,7 +1047,10 @@ impl World {
                     Npc {
                         home: Point::new(x, y, z),
                         wander: record.npc_wander,
-                        next_beat: 0,
+                        next_beat: first_beat,
+                        // Eligible to greet at once, which is not the same as
+                        // greeting at once: `attend` rolls for it, and the beats
+                        // above no longer arrive together anyway.
                         next_greet: 0,
                     },
                 );

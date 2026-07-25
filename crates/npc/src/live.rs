@@ -31,19 +31,43 @@ use openshard_entities::EntityId;
 use openshard_protocol::{Direction, Facing, Point};
 use openshard_state::components::{Heading, Npc, Position};
 use openshard_state::sectors::in_range;
-use openshard_state::WorldState;
+use openshard_state::{Rng, WorldState};
 
 use crate::speech::{bark_line, greeting_for};
 
-/// How long between an NPC's beats, in ticks (~2s at 20Hz). `spawn` also jitters the
-/// first one across this span, so a whole facet's townsfolk do not beat in lockstep.
-pub(crate) const BEAT_TICKS: u64 = 40;
+/// How long between an NPC's beats, in ticks (~2s at 20Hz).
+pub const BEAT_TICKS: u64 = 40;
+/// What fraction of a beat's interval that beat is spread over: one in this many.
+///
+/// Sphere re-rolls an idle NPC's timer at the end of *every* beat —
+/// `_SetTimeoutS(1 + g_Rand.GetValFast(2))`, the last line of `NPC_Act_Idle` —
+/// rather than re-arming it to a constant. The difference is not cosmetic. A
+/// fixed interval preserves whatever phase two NPCs happen to share, forever:
+/// jittering only the first beat sets the offsets once and then defends them.
+/// Anything that puts two townsfolk on the same tick — a restore, a shared doze —
+/// welds them together for the life of the shard, and a street of shopkeepers
+/// greeting, turning and wandering in unison is what that looks like from the
+/// client.
+///
+/// It is a *fraction*, not a fixed number of ticks, because the same helper arms
+/// beats three orders of magnitude apart: a townsperson's two seconds, a
+/// creature's four hundred milliseconds, a dozing mobile's sixteen. A flat spread
+/// wide enough to matter to the first swamps the second — a 400 ms monster
+/// arriving anywhere in 400–1400 ms is not pacing, it is noise, and it would make
+/// `creature_step_ms` mean nothing. A quarter of the interval de-synchronises a
+/// crowd within a few beats (the offsets random-walk apart and never re-converge)
+/// while leaving every pace knob legible.
+pub const BEAT_JITTER_FRACTION: u64 = 4;
 /// How near a player has to come for a townsperson to greet them. ServUO's
 /// `VendorAI.HandlesOnSpeech` uses the same four tiles.
 pub(crate) const GREET_RANGE: u32 = 4;
 /// How long a townsperson waits between greetings — long enough not to natter at
 /// someone standing at the counter.
 const GREET_COOLDOWN: u64 = 15 * 20;
+/// And how far that wait is spread. The beats themselves are staggered, so two
+/// NPCs greet on different ticks to begin with; without this they would still come
+/// off cooldown together and re-converge every fifteen seconds.
+const GREET_COOLDOWN_JITTER: u32 = 5 * 20;
 /// How long between two of an NPC's own idle remarks. Much longer than a greeting:
 /// a bark is atmosphere, and a street of shopkeepers each shouting every fifteen
 /// seconds is worse than silence.
@@ -51,6 +75,42 @@ const BARK_COOLDOWN: u64 = 60 * 20;
 /// The chance, in a hundred, that an idle NPC with nobody near says something to
 /// itself this beat.
 const BARK_CHANCE: u32 = 6;
+
+/// When a mobile beating every `interval` ticks should next have its turn.
+///
+/// The one place a beat is armed, so the jitter cannot be forgotten at one of
+/// them — and it was, at four: the restore path, the beat itself, the LOD doze
+/// and the creature brain. Spends the world's seeded `rng`, so a shard still
+/// replays; jitter is randomness *inside* the tick, which is exactly what
+/// `WorldState::rng` is for.
+#[must_use]
+pub fn next_beat(rng: &mut Rng, now: u64, interval: u64) -> u64 {
+    now + interval + u64::from(rng.below(beat_jitter(interval)))
+}
+
+/// The spread applied to a beat of `interval` ticks, as a bound for `Rng::below`.
+/// At least 1, so the call is always well formed and a one-tick beat is simply
+/// never spread.
+#[must_use]
+pub fn beat_jitter(interval: u64) -> u32 {
+    u32::try_from(interval / BEAT_JITTER_FRACTION)
+        .unwrap_or(u32::MAX)
+        .max(1)
+}
+
+/// When a mobile that has just *arrived* — spawned, restored, or woken — should
+/// take its first turn: somewhere inside the next `interval`, never `now`.
+///
+/// Sphere's `CChar::_GoAwake`, whose comment says the whole thing: *"make it tick
+/// randomly in the next sector, so all awaken NPCs get a different tick time."*
+/// The distinction from [`next_beat`] is that this spreads across the *whole*
+/// interval rather than adding to it — an arrival should be prompt as well as
+/// staggered, and a mobile made to wait a full beat before its first is a mobile
+/// that visibly starts up around the player.
+#[must_use]
+pub fn first_beat(rng: &mut Rng, now: u64, interval: u64) -> u64 {
+    now + u64::from(rng.below(u32::try_from(interval).unwrap_or(u32::MAX)))
+}
 
 /// One tick of townsfolk life. Returns the steps the NPCs want —
 /// `(serial, direction)` — for the tick to apply through its own terrain-checked
@@ -71,8 +131,9 @@ pub fn live(state: &mut WorldState, hour: u64) -> Vec<(u32, u8)> {
     let mut steps = Vec::new();
     for npc in due {
         // Space out the next beat first, so an early return below still paces it.
+        let armed = next_beat(&mut state.rng, now, BEAT_TICKS);
         if let Some(mut n) = state.registry.get::<Npc>(npc).copied() {
-            n.next_beat = now + BEAT_TICKS;
+            n.next_beat = armed;
             state.registry.insert(npc, n);
         }
         let Some(&Position(at)) = state.registry.get::<Position>(npc) else {
@@ -85,8 +146,10 @@ pub fn live(state: &mut WorldState, hour: u64) -> Vec<(u32, u8)> {
         // a full Felucca is thousands of mobiles, and the ones alone in a field
         // are exactly the ones whose beat nobody can tell was skipped.
         if state.gameplay.lod && !state.any_player_near(at, state.gameplay.lod_radius, facet) {
+            let doze = BEAT_TICKS * state.gameplay.lod_idle_factor.max(1);
+            let armed = next_beat(&mut state.rng, now, doze);
             if let Some(mut n) = state.registry.get::<Npc>(npc).copied() {
-                n.next_beat = now + BEAT_TICKS * state.gameplay.lod_idle_factor.max(1);
+                n.next_beat = armed;
                 state.registry.insert(npc, n);
             }
             continue;
@@ -141,10 +204,13 @@ fn attend(
         return;
     };
     crate::say(state, npc, &line);
+    // Jitter the cooldown too, so two NPCs that did happen to greet on one tick do
+    // not come off cooldown on one tick either.
+    let cooldown = GREET_COOLDOWN + u64::from(state.rng.below(GREET_COOLDOWN_JITTER));
     state.registry.insert(
         npc,
         Npc {
-            next_greet: now + GREET_COOLDOWN,
+            next_greet: now + cooldown,
             ..npc_state
         },
     );

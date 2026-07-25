@@ -18,7 +18,13 @@ pub(super) const START: (u16, u16) = (1363, 1600);
 
 /// A generous upper bound on ticks-per-beat, so a test loop that waits "a few
 /// beats" survives any cadence the defaults settle on.
-pub(super) const AI_THINK_TICKS: u64 = 10;
+///
+/// It has to cover the *spread* as well as the interval. A beat is armed as
+/// `interval + rng.below(beat_jitter(interval))` (`npc::next_beat`) —
+/// deliberately, so a crowd does not act in unison — and a loop sized to the bare
+/// interval turns every "wait one beat" here into a coin flip on the seed. The
+/// widest beat these tests wait on is the idle amble, twice the 8-tick default.
+pub(super) const AI_THINK_TICKS: u64 = 16 + 16 / openshard_npc::BEAT_JITTER_FRACTION;
 
 /// Ticks a bare-handed, default-dexterity mobile waits between swings under
 /// the default rules — the pace the combat tests reckon against. `dex 100`,
@@ -9253,6 +9259,60 @@ fn a_restored_townsperson_still_knows_its_trade() {
 }
 
 #[test]
+fn restored_townsfolk_do_not_all_beat_on_the_same_tick() {
+    // The bug this protects against was invisible from a fresh shard and permanent
+    // on a real one. `spawn` jitters an NPC's first beat, so a `Populate` reads
+    // fine — but a shard is populated once and *restored* on every boot after
+    // that, and the restore path handed every NPC a beat of zero. So the jitter
+    // ran once in a shard's life and the first save undid it: from then on the
+    // whole town greeted, turned and wandered on one tick, for ever, because a
+    // beat re-armed to a constant preserves whatever phase it is given.
+    let now = Instant::now();
+    let mut world = world();
+    let _ = enter(&mut world, now);
+    for i in 0..12u16 {
+        spawn_townsperson(
+            &mut world,
+            "the peasant",
+            Point::new(START.0 + 3, START.1 + i, 0),
+            now,
+        );
+    }
+
+    let mut booted = World::new(START);
+    booted.restore_mobiles(world.mobile_records());
+    let beats: std::collections::BTreeSet<u64> = booted
+        .registry()
+        .query::<openshard_state::components::Npc>()
+        .map(|(_, npc)| npc.next_beat)
+        .collect();
+    assert!(
+        beats.len() > 1,
+        "twelve restored townsfolk share {} beat(s): the town moves as one body",
+        beats.len()
+    );
+
+    // And they stay apart. A constant re-arm would keep whatever spread the
+    // restore happened to give them but never widen it, and any two that landed
+    // together would be welded together — so assert on the pairs, not the count.
+    for _ in 0..(openshard_npc::BEAT_TICKS * 4) {
+        booted.tick(now);
+    }
+    let beats: Vec<u64> = booted
+        .registry()
+        .query::<openshard_state::components::Npc>()
+        .map(|(_, npc)| npc.next_beat)
+        .collect();
+    let unique: std::collections::BTreeSet<u64> = beats.iter().copied().collect();
+    assert!(
+        unique.len() * 2 > beats.len(),
+        "after four beats most townsfolk still share a tick ({} distinct of {})",
+        unique.len(),
+        beats.len()
+    );
+}
+
+#[test]
 fn single_clicking_a_named_mobile_draws_its_name() {
     let now = Instant::now();
     let mut world = world();
@@ -10585,9 +10645,15 @@ fn a_human_chaser_opens_the_door_in_its_way() {
         8,
         now,
     );
-    for _ in 0..(AI_THINK_TICKS * 2) {
-        world.tick(now);
-    }
+    // Only as far as noticing. Ticking a fixed padded count here let it also walk
+    // *through* the doorway before the door was slammed, which left nothing in its
+    // way and quietly turned this into a test of standing still.
+    let now = tick_until(&mut world, now, AI_THINK_TICKS * 2, |w| {
+        w.registry()
+            .get::<Combat>(creature)
+            .and_then(|c| c.target)
+            .is_some()
+    });
     assert!(
         world
             .registry()
@@ -11730,6 +11796,55 @@ fn lod_world() -> World {
     })
 }
 
+/// Tick until `creature` takes a beat, and return the gap it re-armed itself to.
+///
+/// Every beat is jittered (`npc::next_beat`), so neither the tick a beat lands on
+/// nor the exact gap it sets is fixed. What the LOD tests are about is which
+/// *rule* chose the gap — hunting, ambling, dozing — which is still legible: the
+/// three are an order of magnitude apart, and the spread is a quarter of one
+/// interval. So they assert a band, not a number.
+fn beat_gap(world: &mut World, creature: EntityId, now: Instant) -> u64 {
+    let before = world.registry().get::<Brain>(creature).unwrap().next_think;
+    for _ in 0..500 {
+        world.tick(now);
+        let brain = *world.registry().get::<Brain>(creature).unwrap();
+        if brain.next_think != before {
+            return brain.next_think - world.state.ticks;
+        }
+    }
+    panic!("the creature never took a beat");
+}
+
+/// The band a beat armed for `interval` ticks may land in.
+fn beat_band(interval: u64) -> std::ops::Range<u64> {
+    interval..interval + u64::from(openshard_npc::beat_jitter(interval))
+}
+
+/// Tick until `done` holds, up to `limit` ticks. Returns whether it did.
+///
+/// Waiting a *fixed* number of ticks for something a jittered beat decides is
+/// wrong in both directions. Too few and the test is a coin flip on the seed; too
+/// many and it can overshoot into the next thing entirely — which is not
+/// hypothetical, since padding the wait for "did the creature notice me" also
+/// gave it time to walk through the open doorway, so the test for opening a
+/// slammed door stopped having a door in front of the creature at all.
+fn tick_until(
+    world: &mut World,
+    from: Instant,
+    limit: u64,
+    done: impl Fn(&World) -> bool,
+) -> Instant {
+    let mut at = from;
+    for _ in 0..limit {
+        if done(world) {
+            break;
+        }
+        at += TICK_INTERVAL;
+        world.tick(at);
+    }
+    at
+}
+
 #[test]
 fn lod_off_a_far_creature_still_ambles() {
     // Baseline: with LOD off, a creature no one is near still thinks each idle
@@ -11745,11 +11860,12 @@ fn lod_off_a_far_creature_still_ambles() {
         now,
     );
     let base = world.state.gameplay.creature_step_ticks.max(1);
-    let brain = *world.registry().get::<Brain>(creature).unwrap();
-    assert_eq!(
-        brain.next_think - world.state.ticks,
-        base * 2,
-        "LOD off: a far creature ambles at twice the beat, as it always has"
+    let gap = beat_gap(&mut world, creature, now);
+    let want = beat_band(base * 2);
+    assert!(
+        want.contains(&gap),
+        "LOD off: a far creature ambles at twice the beat, as it always has \
+         (gap {gap}, expected {want:?})"
     );
 }
 
@@ -11769,11 +11885,12 @@ fn lod_a_far_creature_dozes() {
     );
     let base = world.state.gameplay.creature_step_ticks.max(1);
     let factor = world.state.gameplay.lod_idle_factor;
-    let brain = *world.registry().get::<Brain>(creature).unwrap();
-    assert_eq!(
-        brain.next_think - world.state.ticks,
-        base * factor,
-        "LOD on, no player near: the far creature dozes at the stretched beat"
+    let gap = beat_gap(&mut world, creature, now);
+    let want = beat_band(base * factor);
+    assert!(
+        want.contains(&gap),
+        "LOD on, no player near: the far creature dozes at the stretched beat \
+         (gap {gap}, expected {want:?})"
     );
 }
 

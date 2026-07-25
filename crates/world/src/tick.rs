@@ -1016,14 +1016,11 @@ impl World {
                             .any_player_near(p, self.state.gameplay.lod_radius, facet)
                     });
                     if !near {
-                        let default_beat = self.state.gameplay.creature_step_ticks.max(1);
+                        let base = self.brain_beat(creature);
+                        let doze = base * self.state.gameplay.lod_idle_factor;
+                        let armed = openshard_npc::next_beat(&mut self.state.rng, now, doze);
                         if let Some(brain) = self.state.registry.get_mut::<Brain>(creature) {
-                            let base = if brain.beat_ticks > 0 {
-                                brain.beat_ticks
-                            } else {
-                                default_beat
-                            };
-                            brain.next_think = now + base * self.state.gameplay.lod_idle_factor;
+                            brain.next_think = armed;
                         }
                         continue;
                     }
@@ -1043,15 +1040,27 @@ impl World {
                 .get::<Combat>(creature)
                 .and_then(|c| c.target)
                 .is_some();
-            let default_beat = self.state.gameplay.creature_step_ticks.max(1);
+            let base = self.brain_beat(creature);
+            let interval = if engaged { base } else { base * 2 };
+            let armed = openshard_npc::next_beat(&mut self.state.rng, now, interval);
             if let Some(brain) = self.state.registry.get_mut::<Brain>(creature) {
-                let base = if brain.beat_ticks > 0 {
-                    brain.beat_ticks
-                } else {
-                    default_beat
-                };
-                brain.next_think = now + if engaged { base } else { base * 2 };
+                brain.next_think = armed;
             }
+        }
+    }
+
+    /// How long this creature waits between decisions: its own pace if the spawn
+    /// pinned one, else the shard's `creature_step_ticks`.
+    fn brain_beat(&self, creature: EntityId) -> u64 {
+        let own = self
+            .state
+            .registry
+            .get::<Brain>(creature)
+            .map_or(0, |brain| brain.beat_ticks);
+        if own > 0 {
+            own
+        } else {
+            self.state.gameplay.creature_step_ticks.max(1)
         }
     }
 
