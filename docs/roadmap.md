@@ -1219,9 +1219,13 @@ Roughly in dependency order, each script-first:
       `Scripts/Mobiles/NPCs` and emits the smith's ringmail, apron, bascinet and
       hammer — and are worn *over* the base, winning any layer both want, which is
       the precedence a ServUO override has when it calls `base.InitOutfit()`.
-      Hair is an ordinary worn item on the wire, so `items::FIXED_LAYERS` refuses a
-      lift from layers `0x0B`/`0x10` — ServUO's `Movable = false`, without which a
-      player pulls the hair off a shopkeeper's head.
+      The roll only takes over a **human** base body, since `InitOutfit` dresses a
+      human: Britannia's one non-human town NPC (`FrightenedDryad`, `Body = 266`)
+      keeps its own body and its own bare skin rather than being replaced by a
+      shopkeeper in a shirt. Hair is an ordinary worn item on the wire, so
+      `items::FIXED_LAYERS` refuses a lift from layers `0x0B`/`0x10` — ServUO's
+      `Movable = false`, without which a player pulls the hair off a shopkeeper's
+      head.
     - **A `Title`** ("the blacksmith") is now a component and the pack sends *that*,
       not a name; `npc::names` puts a person in front of it ("Rowena the
       blacksmith") from the `Data/names.xml` lists. It is a **key**, so it is saved

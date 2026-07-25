@@ -158,8 +158,13 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // over the shirt, not instead of it. So the base is always rolled for a trade,
     // and whatever the pack sent is worn on top of it (see below, where the pack's
     // list is equipped first and the base then fills only the layers still free).
+    // And only over a *human* base body. `InitOutfit` dresses a human: a shirt and
+    // trousers on a dryad (`FrightenedDryad`, body 266) or a gargoyle is nonsense, and
+    // rolling a gender would replace the body the pack asked for with a human one —
+    // which is exactly what happened to the one non-human quest giver Britannia has.
     let dressed = title
         .as_ref()
+        .filter(|_| body == crate::dress::BODY_MALE || body == crate::dress::BODY_FEMALE)
         .map(|_| dress_townsperson(&mut state.rng, shoe, None));
     let (body, hue) = match &dressed {
         Some(look) => (look.body, look.hue),

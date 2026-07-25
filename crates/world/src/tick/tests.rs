@@ -8303,6 +8303,69 @@ fn a_townsperson_is_dressed_and_named_by_the_core() {
 }
 
 #[test]
+fn a_non_human_townsperson_keeps_its_own_body() {
+    // `InitOutfit` dresses a human. Britannia has one non-human town NPC — ServUO's
+    // `FrightenedDryad`, a `MondainQuester` with `Body = 266` — and rolling a gender
+    // for it would replace the body the pack asked for with a human one and put a
+    // shirt and trousers on a dryad.
+    let now = Instant::now();
+    let mut world = world();
+    let _ = enter(&mut world, now);
+    world.queue(Command::SpawnMobile {
+        body: 266,
+        hue: 0,
+        hits: 100,
+        notoriety: 7,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 2,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: Point::new(START.0 + 7, START.1, 0),
+        facet: 0,
+        name: None,
+        title: Some("the frightened dryad".to_owned()),
+        shoe: 1,
+        night_home: None,
+        banker: false,
+        vendor: false,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    let dryad = world
+        .registry()
+        .query::<openshard_state::components::Title>()
+        .map(|(entity, _)| entity)
+        .next_back()
+        .expect("a townsperson");
+    assert_eq!(
+        world.registry().get::<Body>(dryad).map(|b| b.id),
+        Some(266),
+        "the pack's body stands"
+    );
+    assert!(
+        !world
+            .registry()
+            .query::<Equipped>()
+            .any(|(_, w)| Some(w.mobile) == world.registry().serial_of(dryad)),
+        "and it is not wearing a shopkeeper's shirt"
+    );
+    // It still lives, greets and answers keywords — the trade is what does that, not
+    // the outfit.
+    assert!(
+        world
+            .registry()
+            .has::<openshard_state::components::Npc>(dryad),
+        "a non-human townsperson still keeps a beat"
+    );
+}
+
+#[test]
 fn a_townspersons_hair_cannot_be_lifted_off_its_head() {
     // Hair is an ordinary worn item on the wire, so without the fixed-layer guard
     // the lift path takes it and a shopkeeper goes bald onto someone's cursor.
