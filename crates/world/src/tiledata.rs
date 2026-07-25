@@ -97,8 +97,14 @@ impl TileFlags {
     pub const FLOOR: u64 = 0x0000_0001;
     /// UFLAG1_WALL: wall, door or fireplace.
     pub const WALL: u64 = 0x0000_0010;
-    /// UFLAG1_NOSHOOT: blocks a straight line — arrows, and sight.
-    pub const NO_SHOOT: u64 = 0x0000_0020;
+    /// UFLAG2_WALL2: the second wall bit. ServUO calls it `NoShoot` and uses it
+    /// for exactly that — a straight line an arrow or a look does not cross.
+    ///
+    /// The value is `0x2000`, not `0x20`: `0x20` is `UFLAG1_DAMAGE` (a fire, a
+    /// spike), and there is no `UFLAG1_NOSHOOT` in Sphere's header at all. Naming
+    /// the damage bit "no shoot" made every brazier opaque and every portcullis
+    /// transparent, which is the wrong answer in both directions at once.
+    pub const NO_SHOOT: u64 = 0x0000_2000;
     /// UFLAG1_BLOCK: too big and heavy to walk through.
     pub const BLOCK: u64 = 0x0000_0040;
     /// UFLAG1_WATER: water or wet.
@@ -553,7 +559,12 @@ mod tests {
         assert_eq!(TileFlags::PLATFORM, 0x0000_0200);
         assert_eq!(TileFlags::CLIMBABLE, 0x0000_0400);
         assert_eq!(TileFlags::WINDOW, 0x0000_1000);
+        assert_eq!(TileFlags::NO_SHOOT, 0x0000_2000);
         assert_eq!(TileFlags::DOOR, 0x2000_0000);
+        // The bit next door, and the reason NO_SHOOT is pinned here: 0x20 is
+        // UFLAG1_DAMAGE, and naming it "no shoot" is a one-character mistake
+        // that silently moves every line-of-sight test one flag to the left.
+        assert_ne!(TileFlags::NO_SHOOT, 0x0000_0020);
     }
 
     #[test]

@@ -295,10 +295,20 @@ impl MapTerrain {
             if tile.flags.is_platform() {
                 return false;
             }
-            // An arch or doorway is a hole in a wall, not a wall.
-            if tile.flags.has(crate::tiledata::TileFlags::WINDOW) {
-                return false;
-            }
+            // Note what is *not* here: `UFLAG2_WINDOW`. Sphere's own comment on
+            // that bit says "can walk thru it", but Sphere never once reads it in
+            // `CWorldMap` — the only uses in the whole engine are three
+            // line-of-sight tests in `CCharLOS.cpp`, and even those are gated on
+            // `LOS_NB_WINDOWS`. ServUO's `Movement.Check` blocks on
+            // `Impassable | Surface` with no window exemption either. So a window
+            // is a hole for a *look*, never for a *step* — see `sight_clear`,
+            // which is where the flag belongs and is still honoured.
+            //
+            // Exempting it here let anything the server moved walk through every
+            // wall segment with a window in it. It never showed for a player,
+            // because the client refuses the step before it is ever sent; it
+            // showed for townsfolk walking home at night, which is the only end
+            // of this rule nobody was watching.
             let bottom = i32::from(item.z);
             let top = bottom + i32::from(tile.height).max(1);
             // Overlap between [bottom, top) and [z, z + PLAYER_HEIGHT).
@@ -472,19 +482,35 @@ impl Terrain for MapTerrain {
             for item in self.map.statics_at(x, y) {
                 let tile = self.tiles.static_tile(item.tile);
                 let flags = tile.flags;
-                // Windows are the deliberate hole in a wall; grilles and bars
-                // carry NO_SHOOT and stay opaque, which is why a monster does
-                // not aggro through a portcullis it can never reach through.
+                // Windows are the deliberate hole in a wall — Sphere's
+                // `LOS_NB_WINDOWS`, and the one place `UFLAG2_WINDOW` is read at
+                // all. A look passes; a step does not (see `is_obstructed`).
                 if flags.has(TileFlags::WINDOW) {
                     continue;
                 }
-                if !flags.has(TileFlags::WALL) && !flags.has(TileFlags::NO_SHOOT) {
+                // Sphere's `CCharLOS.cpp:400`: a static blocks sight if it is
+                // `UFLAG1_WALL | UFLAG1_BLOCK | UFLAG2_PLATFORM`. The platform bit
+                // is not an oversight there — an upper floor is exactly what stops
+                // you seeing the storey above you. `NO_SHOOT` is ServUO's name for
+                // `UFLAG2_WALL2` and covers the grilles and bars a look does not
+                // cross either, which is why a monster does not aggro through a
+                // portcullis it can never reach through.
+                const WALLISH: u64 = TileFlags::WALL | TileFlags::BLOCK | TileFlags::NO_SHOOT;
+                let wallish = flags.has(WALLISH);
+                if !wallish && !flags.is_platform() {
                     continue;
                 }
                 let base = i32::from(item.z);
-                // Walls often carry zero height in tiledata; treat them as a
-                // full storey, the way the client draws them.
-                let top = base + i32::from(tile.height.max(15));
+                // Walls often carry zero height in tiledata; treat them as a full
+                // storey, the way the client draws them. A *platform* keeps its
+                // real height, and the difference is not academic: a floor tile is
+                // height 0, and lending it a storey walls off every doorway it is
+                // laid in — which is how "an open doorway is a sight line" broke.
+                let top = if wallish {
+                    base + i32::from(tile.height.max(15))
+                } else {
+                    base + i32::from(tile.height)
+                };
                 if base <= ray_z && ray_z < top {
                     return false;
                 }
@@ -891,6 +917,52 @@ mod tests {
         assert!(
             blocked > 100,
             "only {blocked} blocked tiles in Britain; the statics are not loading"
+        );
+    }
+
+    #[test]
+    fn a_window_wall_stops_a_step_but_not_a_look() {
+        // The two halves of `UFLAG2_WINDOW`, which used to be read as one. A wall
+        // segment with a window in it is solid to walk into and see-through to look
+        // through; treating the flag as "walk thru it" (Sphere's comment says so,
+        // Sphere's movement code never once agrees) let every server-driven mobile
+        // stroll out of a building through the window.
+        let Some(terrain) = real_terrain() else {
+            return;
+        };
+
+        let mut tested = 0;
+        for y in 1550..1900u16 {
+            for x in 1350..1600u16 {
+                let Some(ground) = terrain.map().land(x, y) else {
+                    continue;
+                };
+                let z = i32::from(ground.z);
+                // A window-flagged static that also blocks, standing in the way at
+                // ground level. That is a wall with a window, not an open archway.
+                let is_window_wall = terrain.map().statics_at(x, y).any(|item| {
+                    let tile = terrain.tiles().static_tile(item.tile);
+                    let base = i32::from(item.z);
+                    let top = base + i32::from(tile.height).max(1);
+                    tile.flags.has(TileFlags::WINDOW)
+                        && tile.flags.is_blocking()
+                        && !tile.flags.is_platform()
+                        && base < z + PLAYER_HEIGHT
+                        && z < top
+                });
+                if !is_window_wall {
+                    continue;
+                }
+                assert!(
+                    terrain.is_obstructed(x, y, z),
+                    "({x},{y}) is a wall with a window and must not be walked through",
+                );
+                tested += 1;
+            }
+        }
+        assert!(
+            tested > 10,
+            "only {tested} window walls found; the sweep is not reaching real statics",
         );
     }
 
