@@ -218,6 +218,33 @@ impl Sectors {
             .filter(move |(_, point)| in_range(centre, *point, range))
             .copied()
     }
+
+    /// Which sector a point falls in. The unit a crossing is diffed against.
+    #[must_use]
+    pub fn sector_of(&self, point: Point) -> usize {
+        self.bucket_of(point)
+    }
+
+    /// Everything in the sector `centre` falls in, and its eight neighbours.
+    ///
+    /// Sphere's sector-wake unit: `CSector::_CanSleep` takes the block, not the
+    /// tile (`fCheckAdjacents`), so a sector is already alive before a player
+    /// crosses into it. Deliberately not a radius — the point is to cover the
+    /// player's whole sector wherever in it they happen to stand, which a radius
+    /// centred on them does not, and to stay cheap enough that the caller need
+    /// only run it on the tick someone actually crosses a boundary.
+    pub fn in_block(&self, centre: Point) -> impl Iterator<Item = (EntityId, Point)> + '_ {
+        let x = (u32::from(centre.x) / SECTOR_SIZE).min(self.across - 1);
+        let y = (u32::from(centre.y) / SECTOR_SIZE).min(self.down - 1);
+        let (min_x, max_x) = (x.saturating_sub(1), (x + 1).min(self.across - 1));
+        let (min_y, max_y) = (y.saturating_sub(1), (y + 1).min(self.down - 1));
+        let down = self.down;
+        (min_x..=max_x)
+            .flat_map(move |x| (min_y..=max_y).map(move |y| (x * down + y) as usize))
+            .filter_map(move |bucket| self.buckets.get(bucket))
+            .flatten()
+            .copied()
+    }
 }
 
 #[cfg(test)]

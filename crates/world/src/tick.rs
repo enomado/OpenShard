@@ -91,6 +91,7 @@ mod speech;
 mod spells;
 mod staff;
 mod status;
+mod wake;
 
 pub use command::{Appearance, CharacterSheet, Command, DecorContainer, DecorDoor};
 use defaults::*;
@@ -188,6 +189,10 @@ pub struct World {
     /// Where the world clock started, in UO minutes — restored at boot so a
     /// restart does not put the world back at midnight. See `tick/ambient.rs`.
     clock_base: u64,
+    /// The sector each player was last seen in, the remembered half of the wake
+    /// diff. A change means someone has walked into a block of the map that may
+    /// be asleep. See `tick/wake.rs`.
+    player_sectors: HashMap<EntityId, (u8, usize)>,
 }
 
 impl std::fmt::Debug for World {
@@ -256,6 +261,7 @@ impl World {
             last_light: HashMap::new(),
             last_music: HashMap::new(),
             clock_base: 0,
+            player_sectors: HashMap::new(),
         }
     }
 
@@ -446,6 +452,12 @@ impl World {
         for command in commands {
             self.apply(command, now);
         }
+
+        // Before anything beats: has a player walked into a part of the map that
+        // was asleep? A dozing mobile is not woken by anyone arriving unless
+        // something tells it, and waiting out a sixteen-second doze is what "the
+        // NPCs only start acting when I get close" looks like. See `tick/wake.rs`.
+        self.sector_wakes();
 
         // Strike whatever swings are due, lift any criminal flags that have run
         // out, then rot away what has lain on the ground too long. All after the
@@ -1170,6 +1182,10 @@ impl World {
         let Some(entity) = self.state.players.remove(&connection) else {
             return;
         };
+        // And which sector it was standing in, or the map would keep a row per
+        // character that has ever logged in. Someone logging back on reads as a
+        // fresh arrival, which is what wakes the ground under them.
+        self.forget_sector(entity);
         // A rider logs out *still mounted*: the ride persists. The saddle rides
         // along in the saved inventory below, and `restore_inventory` rebuilds the
         // ridden creature from it on relogin, so the character comes back on

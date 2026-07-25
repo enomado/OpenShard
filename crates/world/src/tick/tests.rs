@@ -11964,6 +11964,42 @@ fn lod_an_engaged_creature_keeps_simulating() {
 }
 
 #[test]
+fn lod_walking_into_a_sleeping_town_wakes_it() {
+    use openshard_state::components::Npc;
+    // LOD's saving comes from letting a mobile nobody is near push its next beat
+    // sixteen seconds out. Nothing used to take that back when someone arrived —
+    // a dozing townsperson simply finished a timer set while the street was
+    // empty. So walking into a town found a still tableau that came to life up to
+    // sixteen seconds later, which is what "the NPCs only start acting when I get
+    // close" is. Sphere's `_GoAwake` is the missing half.
+    let now = Instant::now();
+    let mut world = lod_world();
+    let conn = enter(&mut world, now); // player at START
+    let far = Point::new(START.0, START.1 + 300, 0);
+    let npc = spawn_townsperson(&mut world, "the peasant", far, now);
+
+    // Let it notice nobody is there and doze.
+    for _ in 0..(openshard_npc::BEAT_TICKS * 2) {
+        world.tick(now);
+    }
+    let dozing = world.registry().get::<Npc>(npc).unwrap().next_beat;
+    assert!(
+        dozing > world.state.ticks + openshard_npc::BEAT_TICKS,
+        "the far townsperson should be dozing, not beating"
+    );
+
+    // Walk up to it. The wake is what pulls that timer back in.
+    teleport(&mut world, conn, Point::new(far.x, far.y + 2, 0));
+    world.tick(now);
+    let woken = world.registry().get::<Npc>(npc).unwrap().next_beat;
+    assert!(
+        woken <= world.state.ticks + openshard_npc::BEAT_TICKS,
+        "arriving wakes it within a beat (was {dozing}, now {woken}, tick {})",
+        world.state.ticks
+    );
+}
+
+#[test]
 fn lod_a_spawner_with_no_player_near_stays_dormant_then_wakes() {
     use crate::spawner::{CreatureTemplate, SpawnArea, Spawner};
     // With LOD on, a spawn region no player is near keeps its timer held and puts
