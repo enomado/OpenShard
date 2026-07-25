@@ -2075,6 +2075,7 @@ fn spawn_mobile_full(
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -2598,6 +2599,7 @@ fn a_creature_dies_with_its_own_voice() {
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -3207,6 +3209,7 @@ fn a_creature_can_be_given_combat_skills() {
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -6191,6 +6194,7 @@ fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now:
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -7161,6 +7165,7 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -7753,6 +7758,7 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -8124,6 +8130,7 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
         name: Some("the banker".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: true,
         vendor: false,
         equipment: Vec::new(),
@@ -8222,6 +8229,7 @@ fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: Instant) ->
         name: None,
         title: Some(trade.to_owned()),
         shoe: 1,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -8398,6 +8406,157 @@ fn a_shopkeeper_stands_still_while_a_customer_is_at_the_counter() {
     // And it turned to face them rather than staring past.
     let facing = world.registry().get::<Heading>(keeper).unwrap().0;
     assert_eq!(facing.direction, openshard_protocol::Direction::West);
+}
+
+#[test]
+fn a_criminal_is_refused_at_every_door_into_a_shop() {
+    // ServUO's `CheckVendorAccess`, and the reason it is checked in four places
+    // rather than one: a client that already has the buy window open can still send
+    // a `0x3B` purchase, so refusing only at the open leaves the deal reachable.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    // A real shopkeeper: the `vendor` flag is what gives it the stock crate
+    // `open_shop` reads, and an empty crate still opens a window.
+    world.queue(Command::SpawnMobile {
+        body: 0x0190,
+        hue: 0,
+        hits: 100,
+        notoriety: 7,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 2,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: Point::new(START.0 + 1, START.1, 0),
+        facet: 0,
+        name: None,
+        title: Some("the provisioner".to_owned()),
+        shoe: 1,
+        night_home: None,
+        banker: false,
+        vendor: true,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    let keeper = world
+        .registry()
+        .query::<openshard_state::components::Vendor>()
+        .map(|(entity, _)| entity)
+        .next()
+        .expect("a shopkeeper");
+    let keeper_serial = world.registry().serial_of(keeper).unwrap().raw();
+
+    // Blue, and the shop opens.
+    world.drain_outbound().count();
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: keeper_serial,
+    });
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p.first() == Some(&0x74)),
+        "an innocent customer is served"
+    );
+
+    // Grey, and it is not — with the refusal said out loud, not swallowed.
+    world
+        .state
+        .registry
+        .insert(player, openshard_protocol::Notoriety::Criminal);
+    world.drain_outbound().count();
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: keeper_serial,
+    });
+    world.tick(now);
+    let packets = packets_for(&mut world, connection);
+    assert!(
+        !packets.iter().any(|p| p.first() == Some(&0x74)),
+        "a criminal gets no shop"
+    );
+    assert!(
+        packets.iter().any(|p| p[0] == 0xAE),
+        "and is told why, over the shopkeeper's head"
+    );
+}
+
+#[test]
+fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
+    // `gameplay.npc_schedule` is ours, not a port, and it is only reachable because a
+    // spawn can name a `night_home` — without that field the setting was a flag
+    // nothing in the engine could ever satisfy.
+    let now = Instant::now();
+    let post = Point::new(START.0 + 4, START.1 + 4, 0);
+    let home = Point::new(START.0 + 12, START.1 + 4, 0);
+
+    let gameplay = Gameplay {
+        npc_schedule: true,
+        ..Gameplay::default()
+    };
+    let mut world = World::new(START).with_gameplay(gameplay);
+    world.queue(Command::SpawnMobile {
+        body: 0x0190,
+        hue: 0,
+        hits: 100,
+        notoriety: 7,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 2,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: post,
+        facet: 0,
+        name: None,
+        title: Some("the peasant".to_owned()),
+        shoe: 1,
+        night_home: Some(home),
+        banker: false,
+        vendor: false,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    let peasant = world
+        .registry()
+        .query::<openshard_state::components::Title>()
+        .map(|(entity, _)| entity)
+        .next_back()
+        .expect("a townsperson");
+    assert!(
+        world
+            .registry()
+            .has::<openshard_state::components::NightHome>(peasant),
+        "the spawn's night home reached the mobile"
+    );
+
+    // Wind the clock into the small hours. The hour is derived from the tick counter
+    // at ServUO's rate, so this is a number of ticks and not a wall clock.
+    let per_hour = world.state.gameplay.uo_minute_ticks * 60;
+    world.state.ticks += per_hour * 2; // 02:00 — outside working hours
+    let start = world.registry().get::<Position>(peasant).unwrap().0;
+    for _ in 0..3000 {
+        world.tick(now);
+    }
+    let at = world.registry().get::<Position>(peasant).unwrap().0;
+    let moved_toward_home = i32::from(at.x).abs_diff(i32::from(home.x))
+        < i32::from(start.x).abs_diff(i32::from(home.x));
+    assert!(
+        moved_toward_home,
+        "at night a townsperson heads home: started {start:?}, reached {at:?}, home {home:?}"
+    );
 }
 
 #[test]
@@ -8623,6 +8782,7 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
         name: Some("the tailor".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -8668,6 +8828,7 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -8853,6 +9014,7 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
         name: Some("the tailor".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -9556,6 +9718,7 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -9624,6 +9787,7 @@ fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instan
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -9825,6 +9989,7 @@ fn spawn_postured(
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -10036,6 +10201,7 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, u32) {
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -10370,6 +10536,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -10519,6 +10686,7 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -10639,6 +10807,7 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -10755,6 +10924,7 @@ fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) ->
         name: None,
         title: None,
         shoe: 0,
+        night_home: None,
         banker: false,
         vendor: false,
         equipment: Vec::new(),

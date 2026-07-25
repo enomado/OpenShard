@@ -272,17 +272,6 @@ fn nearest_player(
         .min_by_key(|(_, pos)| squared_distance(*pos, at))
 }
 
-/// Whether a mobile is a townsperson at all. The gate every townsfolk rule reads,
-/// rather than each one asking about bankers and vendors in turn.
-///
-/// [`Npc`] and not [`Title`]: the trade is optional (a banker declared only by its
-/// service is still a townsperson), and `Npc` is what `spawn` grants to every one
-/// of them — so it is the honest marker.
-#[must_use]
-pub fn is_townsperson(state: &WorldState, entity: EntityId) -> bool {
-    state.registry.has::<Npc>(entity)
-}
-
 /// Chebyshev distance — the square UO measures range in.
 pub(crate) fn chebyshev(a: Point, b: Point) -> u32 {
     let dx = i32::from(a.x).abs_diff(i32::from(b.x));

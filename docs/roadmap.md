@@ -1241,7 +1241,10 @@ Roughly in dependency order, each script-first:
       substring test on the whole line, under which "that sword is unsellable"
       opened a buy-back list; a bare "buy"/"sell" now needs the shopkeeper named
       (`WasNamed`), and `vendor buy`/`vendor sell` work unqualified. A criminal is
-      refused out loud (`CheckVendorAccess`, cliloc 501522). The **lines are the
+      refused out loud (`CheckVendorAccess`, cliloc 501522) at **all four** doors
+      into a shop — the open, the sell offer, the purchase and the sale — because a
+      client that already has the window up can still send a `0x3B`, so refusing only
+      at the open leaves the deal reachable. The **lines are the
       pack's**, registered per trade by `op_register_npc_speech` — and are
       themselves ServUO-derived rather than invented: the greeting is cliloc 500186,
       the "what is thy trade" answer is built from the title, and "what dost thou
@@ -1262,10 +1265,12 @@ Roughly in dependency order, each script-first:
     `tick/ambient.rs` already derives from the tick counter — so it replays like
     everything else. Marked as **ours, not a port**: neither reference ties an NPC to
     the hour, and ServUO's nearest equivalent is a hand-placed `WayPoint` chain with
-    no notion of one. It also does nothing until a pack gives its NPCs a home to go
-    to, which no pack does yet, so turning it on alone is safe. `config` refuses a
-    working day that wraps midnight, so the one comparison that reads the hours stays
-    a comparison.
+    no notion of one. `config` refuses a working day that wraps midnight, so the one
+    comparison that reads the hours stays a comparison. A spawn names the home
+    (`night_home`), which is what makes the setting reachable at all — it was briefly
+    a flag with no path to data, restored from a record nothing ever wrote. **No pack
+    ships homes yet**, so on today's data the setting is a no-op with a passing test
+    behind it rather than a feature.
   - [ ] **Barks — an idle line to an empty street.** The engine has it: `npc::live`
     speaks a trade's `barks` when nobody is within greeting range, on its own long
     cooldown. Nothing fills the list, because ServUO's townsfolk do not call out and

@@ -155,6 +155,9 @@ struct MobileSpec {
     /// The trade's footwear, `ShoeType`'s wire byte; defaults to plain shoes.
     #[serde(default = "shoes")]
     shoe: u8,
+    /// Where it sleeps, `[x, y, z]`. Only read with `gameplay.npc_schedule` on.
+    #[serde(default)]
+    night_home: Option<(u16, u16, i8)>,
     #[serde(default)]
     banker: bool,
     #[serde(default)]
@@ -218,6 +221,7 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
             name: spec.name,
             title: spec.title,
             shoe: spec.shoe,
+            night_home: spec.night_home,
             banker: spec.banker,
             vendor: spec.vendor,
             equipment,

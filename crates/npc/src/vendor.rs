@@ -248,6 +248,12 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
         debug!(serial, "open_shop: out of trade range");
         return false;
     }
+    // Whether this customer may trade at all — ServUO checks it here, in `VendorBuy`,
+    // and again on each of the three ways a deal can be struck below. It has to be
+    // all four: a client that already has the window open can still send a `0x3B`.
+    if !crate::speech::check_vendor_access(state, vendor, player) {
+        return true;
+    }
     let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
         return false;
     };
@@ -353,6 +359,9 @@ pub fn buy(
     if !in_trade_range(state, player, vendor) || list.is_empty() {
         return;
     }
+    if !crate::speech::check_vendor_access(state, vendor, player) {
+        return;
+    }
     let Some(backpack) = worn_container(state, player, BACKPACK_LAYER) else {
         return;
     };
@@ -435,6 +444,10 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
         return false;
     };
+    // ServUO's `VendorSell` refuses the same customers `VendorBuy` does.
+    if !crate::speech::check_vendor_access(state, vendor, actor) {
+        return true;
+    }
     let Some(backpack) = worn_container(state, actor, BACKPACK_LAYER) else {
         return false;
     };
@@ -485,6 +498,9 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32
         return;
     };
     if !in_trade_range(state, player, vendor) || list.is_empty() {
+        return;
+    }
+    if !crate::speech::check_vendor_access(state, vendor, player) {
         return;
     }
     let Some(backpack) = worn_container(state, player, BACKPACK_LAYER) else {

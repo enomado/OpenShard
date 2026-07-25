@@ -336,6 +336,7 @@ fn into_world(command: ScriptCommand) -> Command {
             name,
             title,
             shoe,
+            night_home,
             banker,
             vendor,
             equipment,
@@ -362,6 +363,7 @@ fn into_world(command: ScriptCommand) -> Command {
             // core never dresses and which keeps no beat.
             title: (!title.is_empty()).then_some(title),
             shoe,
+            night_home: night_home.map(|(x, y, z)| openshard_protocol::Point::new(x, y, z)),
             banker,
             vendor,
             equipment: equipment
@@ -1003,6 +1005,7 @@ mod tests {
             name: None,
             title: None,
             shoe: 0,
+            night_home: None,
             banker: false,
             vendor: false,
             equipment: Vec::new(),
@@ -1074,6 +1077,7 @@ mod tests {
             name: None,
             title: None,
             shoe: 0,
+            night_home: None,
             banker: false,
             vendor: false,
             equipment: Vec::new(),

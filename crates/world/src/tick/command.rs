@@ -302,6 +302,8 @@ pub enum Command {
         /// What the trade wears on its feet, `ShoeType`'s wire byte. Read only when
         /// the core does the dressing.
         shoe: u8,
+        /// Where it sleeps, for the optional daily routine.
+        night_home: Option<Point>,
         /// Whether it is a banker (answers "bank").
         banker: bool,
         /// Whether it is a shopkeeper — double-click opens its shop.

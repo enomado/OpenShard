@@ -99,6 +99,7 @@ impl World {
                     // body already is, keeps no beat and answers no keyword.
                     title: None,
                     shoe: npc::ShoeType::None,
+                    night_home: None,
                     banker: false,
                     vendor: false,
                     equipment: Vec::new(),

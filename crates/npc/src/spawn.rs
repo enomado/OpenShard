@@ -6,8 +6,8 @@ use openshard_movement::Walker;
 use openshard_protocol::{Direction, Facing, Notoriety, Point};
 use openshard_state::components::{
     body_opens_doors, creature_name, Aggression, Banker, Body, Brain, Facet, Heading, Hitpoints,
-    MeleeDamage, Movement, Name, Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed,
-    Title,
+    MeleeDamage, Movement, Name, NightHome, Npc, Position, RangedAttack, Resistance, Skills,
+    SwingSpeed, Title,
 };
 use openshard_state::WorldState;
 use tracing::{debug, warn};
@@ -69,6 +69,11 @@ pub struct SpawnSpec {
     /// What the trade wears on its feet. Read only when there is a `title`, since
     /// that is when the core does the dressing.
     pub shoe: ShoeType,
+    /// Where it sleeps, for the optional daily routine. `None` keeps it at its post
+    /// around the clock, which is what both references do and what every pack does
+    /// today — but it has to be *settable*, or `gameplay.npc_schedule` is a flag
+    /// nothing can ever satisfy.
+    pub night_home: Option<Point>,
     /// Whether this mobile is a banker — it answers "bank".
     pub banker: bool,
     /// Whether this mobile is a shopkeeper — it answers double-click with a
@@ -116,6 +121,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         name,
         title,
         shoe,
+        night_home,
         banker,
         vendor,
         equipment,
@@ -285,6 +291,9 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
                 next_greet: 0,
             },
         );
+        if let Some(at) = night_home {
+            state.registry.insert(entity, NightHome(at));
+        }
     }
     // Dress it before the reveal, so the clothing rides in the `0x78` that
     // draws it — a naked banker is a bug that looks like nudity.

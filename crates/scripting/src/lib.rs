@@ -360,6 +360,10 @@ pub enum Command {
         /// What the trade wears on its feet, as [`ShoeType`](../npc/dress/enum.ShoeType.html)'s
         /// wire byte. Only read when the core dresses the NPC.
         shoe: u8,
+        /// Where it sleeps, `(x, y, z)`. Read only when `gameplay.npc_schedule` is
+        /// on, and the only way that setting can ever do anything — without a home
+        /// to walk to, an NPC keeps to its post around the clock.
+        night_home: Option<(u16, u16, i8)>,
         /// Whether it is a banker — saying "bank" near it opens the box.
         banker: bool,
         /// Whether it is a shopkeeper — double-click opens its shop.

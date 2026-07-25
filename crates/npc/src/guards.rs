@@ -220,6 +220,7 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             // already *is* the uniform), no beat, no keyword table.
             title: None,
             shoe: ShoeType::default(),
+            night_home: None,
             banker: false,
             vendor: false,
             equipment: GUARD_KIT.to_vec(),
