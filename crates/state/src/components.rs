@@ -798,49 +798,590 @@ pub const fn scroll_spell(graphic: u16) -> Option<u8> {
     }
 }
 
-/// Whether a body knows what a door handle is. The reference rule is
-/// "not an animal, not a sea creature"; without body-type tables yet, the
-/// human bodies are the safe core of that set.
-#[must_use]
-pub const fn body_opens_doors(body: u16) -> bool {
-    matches!(body, 0x0190..=0x0193 | 0x025D | 0x025E | 0x0260 | 0x0261)
+/// What kind of thing a body is — ServUO's `BodyType`, from `Data/bodyTable.cfg`.
+///
+/// The table this reads replaced two hand-kept body-id lists (which bodies open doors,
+/// which can be ridden). Both were "the safe core of the set" rather than the set, and
+/// a list you have to remember to extend is one that goes stale silently.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum BodyType {
+    /// Not in the table: ServUO's `BodyType.Empty`, and the default.
+    #[default]
+    Empty,
+    /// A monster — an orc, a lich, a dragon. Has hands, near enough.
+    Monster,
+    /// A sea creature. Cannot leave the water, cannot work a handle.
+    Sea,
+    /// An animal. Four legs and no thumbs.
+    Animal,
+    /// A person.
+    Human,
 }
 
-/// The item graphic that draws a body as a mount on a rider, for the bodies
-/// that can be ridden at all. The classic stable: horses, llama, ostards.
-/// `None` is "not rideable", which is what double-click checks first.
+/// Every body ServUO's `Data/bodyTable.cfg` gives a type, sorted by id.
+///
+/// `Equipment` entries are dropped: they are item art, never a mobile. What is left
+/// is what a creature can be.
+const BODY_TYPES: &[(u16, BodyType)] = &[
+    (0x0001, BodyType::Monster),
+    (0x0002, BodyType::Monster),
+    (0x0003, BodyType::Monster),
+    (0x0004, BodyType::Monster),
+    (0x0005, BodyType::Animal),
+    (0x0006, BodyType::Animal),
+    (0x0007, BodyType::Monster),
+    (0x0008, BodyType::Monster),
+    (0x0009, BodyType::Monster),
+    (0x000a, BodyType::Monster),
+    (0x000b, BodyType::Monster),
+    (0x000c, BodyType::Monster),
+    (0x000d, BodyType::Monster),
+    (0x000e, BodyType::Monster),
+    (0x000f, BodyType::Monster),
+    (0x0010, BodyType::Monster),
+    (0x0011, BodyType::Monster),
+    (0x0012, BodyType::Monster),
+    (0x0013, BodyType::Monster),
+    (0x0014, BodyType::Monster),
+    (0x0015, BodyType::Monster),
+    (0x0016, BodyType::Monster),
+    (0x0017, BodyType::Animal),
+    (0x0018, BodyType::Monster),
+    (0x0019, BodyType::Animal),
+    (0x001a, BodyType::Monster),
+    (0x001b, BodyType::Animal),
+    (0x001c, BodyType::Monster),
+    (0x001d, BodyType::Animal),
+    (0x001e, BodyType::Monster),
+    (0x001f, BodyType::Monster),
+    (0x0021, BodyType::Monster),
+    (0x0022, BodyType::Animal),
+    (0x0023, BodyType::Monster),
+    (0x0024, BodyType::Monster),
+    (0x0025, BodyType::Animal),
+    (0x0026, BodyType::Monster),
+    (0x0027, BodyType::Monster),
+    (0x0028, BodyType::Monster),
+    (0x0029, BodyType::Monster),
+    (0x002a, BodyType::Monster),
+    (0x002b, BodyType::Monster),
+    (0x002c, BodyType::Monster),
+    (0x002d, BodyType::Monster),
+    (0x002e, BodyType::Monster),
+    (0x002f, BodyType::Monster),
+    (0x0030, BodyType::Monster),
+    (0x0031, BodyType::Monster),
+    (0x0032, BodyType::Monster),
+    (0x0033, BodyType::Monster),
+    (0x0034, BodyType::Animal),
+    (0x0035, BodyType::Monster),
+    (0x0036, BodyType::Monster),
+    (0x0037, BodyType::Monster),
+    (0x0038, BodyType::Monster),
+    (0x0039, BodyType::Monster),
+    (0x003a, BodyType::Monster),
+    (0x003b, BodyType::Monster),
+    (0x003c, BodyType::Monster),
+    (0x003d, BodyType::Monster),
+    (0x003e, BodyType::Monster),
+    (0x003f, BodyType::Animal),
+    (0x0040, BodyType::Animal),
+    (0x0041, BodyType::Animal),
+    (0x0042, BodyType::Monster),
+    (0x0043, BodyType::Monster),
+    (0x0044, BodyType::Monster),
+    (0x0045, BodyType::Monster),
+    (0x0046, BodyType::Monster),
+    (0x0047, BodyType::Monster),
+    (0x0048, BodyType::Monster),
+    (0x0049, BodyType::Monster),
+    (0x004a, BodyType::Monster),
+    (0x004b, BodyType::Monster),
+    (0x004c, BodyType::Monster),
+    (0x004d, BodyType::Monster),
+    (0x004e, BodyType::Monster),
+    (0x004f, BodyType::Monster),
+    (0x0050, BodyType::Monster),
+    (0x0051, BodyType::Animal),
+    (0x0052, BodyType::Monster),
+    (0x0053, BodyType::Monster),
+    (0x0054, BodyType::Monster),
+    (0x0055, BodyType::Monster),
+    (0x0056, BodyType::Monster),
+    (0x0057, BodyType::Monster),
+    (0x0058, BodyType::Animal),
+    (0x0059, BodyType::Monster),
+    (0x005a, BodyType::Monster),
+    (0x005b, BodyType::Monster),
+    (0x005c, BodyType::Monster),
+    (0x005d, BodyType::Monster),
+    (0x005e, BodyType::Monster),
+    (0x005f, BodyType::Animal),
+    (0x0060, BodyType::Monster),
+    (0x0061, BodyType::Animal),
+    (0x0062, BodyType::Animal),
+    (0x0063, BodyType::Animal),
+    (0x0064, BodyType::Animal),
+    (0x0065, BodyType::Monster),
+    (0x0066, BodyType::Monster),
+    (0x0067, BodyType::Monster),
+    (0x0068, BodyType::Monster),
+    (0x006a, BodyType::Monster),
+    (0x006b, BodyType::Monster),
+    (0x006c, BodyType::Monster),
+    (0x006d, BodyType::Monster),
+    (0x006e, BodyType::Monster),
+    (0x006f, BodyType::Monster),
+    (0x0070, BodyType::Monster),
+    (0x0071, BodyType::Monster),
+    (0x0072, BodyType::Animal),
+    (0x0073, BodyType::Animal),
+    (0x0074, BodyType::Animal),
+    (0x0075, BodyType::Animal),
+    (0x0076, BodyType::Animal),
+    (0x0077, BodyType::Animal),
+    (0x0078, BodyType::Animal),
+    (0x0079, BodyType::Animal),
+    (0x007a, BodyType::Animal),
+    (0x007b, BodyType::Monster),
+    (0x007c, BodyType::Monster),
+    (0x007d, BodyType::Monster),
+    (0x007e, BodyType::Monster),
+    (0x007f, BodyType::Animal),
+    (0x0080, BodyType::Monster),
+    (0x0081, BodyType::Monster),
+    (0x0082, BodyType::Monster),
+    (0x0083, BodyType::Monster),
+    (0x0084, BodyType::Animal),
+    (0x0085, BodyType::Animal),
+    (0x0086, BodyType::Animal),
+    (0x0087, BodyType::Monster),
+    (0x0088, BodyType::Monster),
+    (0x0089, BodyType::Monster),
+    (0x008a, BodyType::Monster),
+    (0x008b, BodyType::Monster),
+    (0x008c, BodyType::Monster),
+    (0x008d, BodyType::Monster),
+    (0x008e, BodyType::Monster),
+    (0x008f, BodyType::Monster),
+    (0x0090, BodyType::Sea),
+    (0x0091, BodyType::Sea),
+    (0x0092, BodyType::Monster),
+    (0x0093, BodyType::Monster),
+    (0x0094, BodyType::Monster),
+    (0x0095, BodyType::Monster),
+    (0x0096, BodyType::Sea),
+    (0x0097, BodyType::Sea),
+    (0x0098, BodyType::Monster),
+    (0x0099, BodyType::Monster),
+    (0x009a, BodyType::Monster),
+    (0x009b, BodyType::Monster),
+    (0x009c, BodyType::Animal),
+    (0x009d, BodyType::Monster),
+    (0x009e, BodyType::Monster),
+    (0x009f, BodyType::Monster),
+    (0x00a0, BodyType::Monster),
+    (0x00a1, BodyType::Monster),
+    (0x00a2, BodyType::Monster),
+    (0x00a3, BodyType::Monster),
+    (0x00a4, BodyType::Monster),
+    (0x00a5, BodyType::Monster),
+    (0x00a6, BodyType::Monster),
+    (0x00a7, BodyType::Animal),
+    (0x00a8, BodyType::Monster),
+    (0x00a9, BodyType::Animal),
+    (0x00aa, BodyType::Animal),
+    (0x00ab, BodyType::Animal),
+    (0x00ac, BodyType::Monster),
+    (0x00ad, BodyType::Monster),
+    (0x00ae, BodyType::Monster),
+    (0x00af, BodyType::Monster),
+    (0x00b0, BodyType::Monster),
+    (0x00b1, BodyType::Animal),
+    (0x00b2, BodyType::Animal),
+    (0x00b3, BodyType::Animal),
+    (0x00b4, BodyType::Monster),
+    (0x00b5, BodyType::Monster),
+    (0x00b6, BodyType::Monster),
+    (0x00b7, BodyType::Human),
+    (0x00b8, BodyType::Human),
+    (0x00b9, BodyType::Human),
+    (0x00ba, BodyType::Human),
+    (0x00bb, BodyType::Animal),
+    (0x00bc, BodyType::Animal),
+    (0x00bd, BodyType::Monster),
+    (0x00be, BodyType::Animal),
+    (0x00bf, BodyType::Animal),
+    (0x00c0, BodyType::Animal),
+    (0x00c1, BodyType::Animal),
+    (0x00c2, BodyType::Animal),
+    (0x00c3, BodyType::Animal),
+    (0x00c4, BodyType::Monster),
+    (0x00c5, BodyType::Monster),
+    (0x00c6, BodyType::Monster),
+    (0x00c7, BodyType::Monster),
+    (0x00c8, BodyType::Animal),
+    (0x00c9, BodyType::Animal),
+    (0x00ca, BodyType::Animal),
+    (0x00cb, BodyType::Animal),
+    (0x00cc, BodyType::Animal),
+    (0x00cd, BodyType::Animal),
+    (0x00ce, BodyType::Monster),
+    (0x00cf, BodyType::Animal),
+    (0x00d0, BodyType::Animal),
+    (0x00d1, BodyType::Animal),
+    (0x00d2, BodyType::Animal),
+    (0x00d3, BodyType::Animal),
+    (0x00d4, BodyType::Animal),
+    (0x00d5, BodyType::Animal),
+    (0x00d6, BodyType::Animal),
+    (0x00d7, BodyType::Monster),
+    (0x00d8, BodyType::Animal),
+    (0x00d9, BodyType::Animal),
+    (0x00da, BodyType::Animal),
+    (0x00db, BodyType::Animal),
+    (0x00dc, BodyType::Animal),
+    (0x00dd, BodyType::Animal),
+    (0x00df, BodyType::Animal),
+    (0x00e1, BodyType::Animal),
+    (0x00e2, BodyType::Animal),
+    (0x00e4, BodyType::Animal),
+    (0x00e7, BodyType::Animal),
+    (0x00e8, BodyType::Animal),
+    (0x00e9, BodyType::Animal),
+    (0x00ea, BodyType::Animal),
+    (0x00ed, BodyType::Animal),
+    (0x00ee, BodyType::Animal),
+    (0x00f0, BodyType::Monster),
+    (0x00f1, BodyType::Monster),
+    (0x00f2, BodyType::Monster),
+    (0x00f3, BodyType::Animal),
+    (0x00f4, BodyType::Monster),
+    (0x00f5, BodyType::Monster),
+    (0x00f6, BodyType::Animal),
+    (0x00f7, BodyType::Monster),
+    (0x00f8, BodyType::Animal),
+    (0x00f9, BodyType::Monster),
+    (0x00fa, BodyType::Monster),
+    (0x00fb, BodyType::Monster),
+    (0x00fc, BodyType::Monster),
+    (0x00fd, BodyType::Monster),
+    (0x00fe, BodyType::Animal),
+    (0x00ff, BodyType::Monster),
+    (0x0100, BodyType::Monster),
+    (0x0101, BodyType::Monster),
+    (0x0102, BodyType::Monster),
+    (0x0103, BodyType::Monster),
+    (0x0104, BodyType::Monster),
+    (0x0105, BodyType::Monster),
+    (0x0106, BodyType::Monster),
+    (0x0107, BodyType::Monster),
+    (0x0108, BodyType::Monster),
+    (0x0109, BodyType::Monster),
+    (0x010a, BodyType::Monster),
+    (0x010b, BodyType::Monster),
+    (0x010d, BodyType::Monster),
+    (0x010e, BodyType::Monster),
+    (0x010f, BodyType::Monster),
+    (0x0110, BodyType::Monster),
+    (0x0111, BodyType::Monster),
+    (0x0114, BodyType::Animal),
+    (0x0115, BodyType::Animal),
+    (0x0116, BodyType::Animal),
+    (0x0117, BodyType::Animal),
+    (0x0118, BodyType::Monster),
+    (0x0119, BodyType::Monster),
+    (0x011a, BodyType::Animal),
+    (0x011b, BodyType::Animal),
+    (0x011c, BodyType::Animal),
+    (0x011d, BodyType::Monster),
+    (0x011e, BodyType::Monster),
+    (0x011f, BodyType::Monster),
+    (0x0122, BodyType::Animal),
+    (0x0123, BodyType::Animal),
+    (0x0124, BodyType::Animal),
+    (0x0125, BodyType::Monster),
+    (0x012c, BodyType::Monster),
+    (0x012d, BodyType::Monster),
+    (0x012e, BodyType::Monster),
+    (0x012f, BodyType::Monster),
+    (0x0130, BodyType::Monster),
+    (0x0131, BodyType::Monster),
+    (0x0132, BodyType::Monster),
+    (0x0133, BodyType::Monster),
+    (0x0134, BodyType::Monster),
+    (0x0135, BodyType::Monster),
+    (0x0136, BodyType::Monster),
+    (0x0137, BodyType::Monster),
+    (0x0138, BodyType::Monster),
+    (0x0139, BodyType::Monster),
+    (0x013a, BodyType::Monster),
+    (0x013b, BodyType::Monster),
+    (0x013c, BodyType::Monster),
+    (0x013d, BodyType::Monster),
+    (0x013e, BodyType::Monster),
+    (0x013f, BodyType::Monster),
+    (0x014e, BodyType::Monster),
+    (0x0190, BodyType::Human),
+    (0x0191, BodyType::Human),
+    (0x0192, BodyType::Human),
+    (0x0193, BodyType::Human),
+    (0x023e, BodyType::Monster),
+    (0x025d, BodyType::Human),
+    (0x025e, BodyType::Human),
+    (0x025f, BodyType::Human),
+    (0x0260, BodyType::Human),
+    (0x029a, BodyType::Human),
+    (0x029b, BodyType::Human),
+    (0x02b1, BodyType::Monster),
+    (0x02b4, BodyType::Monster),
+    (0x02c0, BodyType::Monster),
+    (0x02c9, BodyType::Monster),
+    (0x02ca, BodyType::Monster),
+    (0x02cb, BodyType::Monster),
+    (0x02cc, BodyType::Monster),
+    (0x02cd, BodyType::Monster),
+    (0x02ce, BodyType::Monster),
+    (0x02cf, BodyType::Monster),
+    (0x02d0, BodyType::Monster),
+    (0x02d1, BodyType::Monster),
+    (0x02d2, BodyType::Monster),
+    (0x02d3, BodyType::Monster),
+    (0x02d4, BodyType::Monster),
+    (0x02d5, BodyType::Monster),
+    (0x02d6, BodyType::Monster),
+    (0x02d7, BodyType::Monster),
+    (0x02d8, BodyType::Monster),
+    (0x02d9, BodyType::Monster),
+    (0x02da, BodyType::Monster),
+    (0x02dc, BodyType::Monster),
+    (0x02dd, BodyType::Monster),
+    (0x02de, BodyType::Monster),
+    (0x02df, BodyType::Monster),
+    (0x02e0, BodyType::Monster),
+    (0x02e1, BodyType::Monster),
+    (0x02e2, BodyType::Monster),
+    (0x02e3, BodyType::Monster),
+    (0x02e4, BodyType::Monster),
+    (0x02e5, BodyType::Monster),
+    (0x02e6, BodyType::Monster),
+    (0x02e7, BodyType::Monster),
+    (0x02e8, BodyType::Human),
+    (0x02e9, BodyType::Human),
+    (0x02ea, BodyType::Monster),
+    (0x02eb, BodyType::Monster),
+    (0x02ec, BodyType::Monster),
+    (0x02ed, BodyType::Monster),
+    (0x02ee, BodyType::Human),
+    (0x02ef, BodyType::Human),
+    (0x02f0, BodyType::Monster),
+    (0x02f1, BodyType::Monster),
+    (0x02f2, BodyType::Monster),
+    (0x02f3, BodyType::Monster),
+    (0x02f4, BodyType::Monster),
+    (0x02f5, BodyType::Monster),
+    (0x02f6, BodyType::Monster),
+    (0x02fb, BodyType::Monster),
+    (0x02fc, BodyType::Monster),
+    (0x02fd, BodyType::Monster),
+    (0x02fe, BodyType::Monster),
+    (0x02ff, BodyType::Monster),
+    (0x0300, BodyType::Monster),
+    (0x0301, BodyType::Monster),
+    (0x0302, BodyType::Monster),
+    (0x0303, BodyType::Monster),
+    (0x0304, BodyType::Monster),
+    (0x0305, BodyType::Monster),
+    (0x0306, BodyType::Monster),
+    (0x0307, BodyType::Monster),
+    (0x0308, BodyType::Monster),
+    (0x0309, BodyType::Monster),
+    (0x030a, BodyType::Monster),
+    (0x030b, BodyType::Monster),
+    (0x030c, BodyType::Monster),
+    (0x030d, BodyType::Monster),
+    (0x030e, BodyType::Monster),
+    (0x030f, BodyType::Monster),
+    (0x0310, BodyType::Monster),
+    (0x0311, BodyType::Monster),
+    (0x0312, BodyType::Monster),
+    (0x0313, BodyType::Monster),
+    (0x0314, BodyType::Monster),
+    (0x0315, BodyType::Monster),
+    (0x0316, BodyType::Monster),
+    (0x0317, BodyType::Animal),
+    (0x0318, BodyType::Monster),
+    (0x0319, BodyType::Animal),
+    (0x031a, BodyType::Animal),
+    (0x031b, BodyType::Monster),
+    (0x031c, BodyType::Monster),
+    (0x031d, BodyType::Monster),
+    (0x031e, BodyType::Monster),
+    (0x031f, BodyType::Animal),
+    (0x0324, BodyType::Monster),
+    (0x0325, BodyType::Monster),
+    (0x0326, BodyType::Monster),
+    (0x0327, BodyType::Monster),
+    (0x0328, BodyType::Monster),
+    (0x033a, BodyType::Monster),
+    (0x033d, BodyType::Monster),
+    (0x033e, BodyType::Monster),
+    (0x033f, BodyType::Monster),
+    (0x0340, BodyType::Monster),
+    (0x03db, BodyType::Human),
+    (0x03dc, BodyType::Human),
+    (0x03de, BodyType::Human),
+    (0x03df, BodyType::Human),
+    (0x03e2, BodyType::Human),
+    (0x03e6, BodyType::Monster),
+    (0x03e7, BodyType::Monster),
+    (0x0402, BodyType::Monster),
+    (0x042c, BodyType::Sea),
+    (0x042d, BodyType::Animal),
+    (0x04dc, BodyType::Sea),
+    (0x04dd, BodyType::Sea),
+    (0x04de, BodyType::Monster),
+    (0x04df, BodyType::Monster),
+    (0x04e0, BodyType::Monster),
+    (0x04e5, BodyType::Human),
+    (0x04e6, BodyType::Animal),
+    (0x04e7, BodyType::Animal),
+    (0x0505, BodyType::Animal),
+    (0x0506, BodyType::Animal),
+    (0x0507, BodyType::Animal),
+    (0x0508, BodyType::Animal),
+    (0x0509, BodyType::Animal),
+    (0x050a, BodyType::Animal),
+    (0x050b, BodyType::Animal),
+    (0x050c, BodyType::Animal),
+    (0x050d, BodyType::Animal),
+    (0x050e, BodyType::Animal),
+    (0x051c, BodyType::Animal),
+    (0x051d, BodyType::Animal),
+    (0x0578, BodyType::Animal),
+    (0x057a, BodyType::Monster),
+    (0x057b, BodyType::Monster),
+    (0x057c, BodyType::Monster),
+    (0x057d, BodyType::Monster),
+    (0x057e, BodyType::Monster),
+    (0x057f, BodyType::Animal),
+    (0x0580, BodyType::Animal),
+    (0x0582, BodyType::Animal),
+    (0x0587, BodyType::Animal),
+    (0x0588, BodyType::Animal),
+    (0x0589, BodyType::Monster),
+    (0x058a, BodyType::Monster),
+    (0x058b, BodyType::Monster),
+    (0x058c, BodyType::Monster),
+    (0x058e, BodyType::Monster),
+    (0x058f, BodyType::Animal),
+    (0x0590, BodyType::Animal),
+    (0x0591, BodyType::Animal),
+    (0x0592, BodyType::Animal),
+    (0x0593, BodyType::Animal),
+    (0x0594, BodyType::Monster),
+    (0x0597, BodyType::Animal),
+    (0x0598, BodyType::Animal),
+    (0x0599, BodyType::Monster),
+    (0x05a0, BodyType::Animal),
+    (0x05a1, BodyType::Animal),
+    (0x05c7, BodyType::Monster),
+    (0x05cc, BodyType::Monster),
+    (0x05cd, BodyType::Monster),
+    (0x05e6, BodyType::Monster),
+    (0x05e7, BodyType::Monster),
+    (0x05e8, BodyType::Monster),
+];
+
+const MOUNTS: &[(u16, u16)] = &[
+    (0x0074, 0x3ea7),
+    (0x0075, 0x3ea8),
+    (0x007a, 0x3eb4),
+    (0x0084, 0x3ead),
+    (0x0090, 0x3eb3),
+    (0x00a9, 0x3e95),
+    (0x00bb, 0x3eba),
+    (0x00bc, 0x3eb8),
+    (0x00be, 0x3e9e),
+    (0x00c8, 0x3e9f),
+    (0x00cc, 0x3ea2),
+    (0x00d2, 0x3ea3),
+    (0x00da, 0x3ea4),
+    (0x00db, 0x3ea5),
+    (0x00dc, 0x3ea6),
+    (0x00e2, 0x3ea0),
+    (0x00e4, 0x3ea1),
+    (0x00f3, 0x3e94),
+    (0x0114, 0x3e90),
+    (0x0115, 0x3e91),
+    (0x0317, 0x3ebc),
+    (0x0319, 0x3ebb),
+    (0x031a, 0x3ebd),
+    (0x031f, 0x3ebe),
+    (0x057f, 0x3ecb),
+    (0x0580, 0x3ecd),
+    (0x0582, 0x3ecc),
+    (0x05a0, 0x3ecf),
+    (0x05a1, 0x3ed0),
+    (0x05e6, 0x3ed1),
+];
+
+/// The type ServUO gives this body, or [`BodyType::Empty`] for one it does not list.
+///
+/// A binary search over a sorted table, so it is cheap enough for the tick paths that
+/// ask it about every creature in range.
 #[must_use]
-pub const fn mount_item_for(body: u16) -> Option<u16> {
-    Some(match body {
-        0x00C8 => 0x3E9F, // bay horse
-        0x00CC => 0x3EA2, // dark brown horse
-        0x00E2 => 0x3EA0, // grey horse
-        0x00E4 => 0x3EA1, // tan horse
-        0x00DC => 0x3EA6, // llama
-        0x00DB => 0x3EA5, // forest ostard
-        0x00D2 => 0x3EA3, // desert ostard
-        0x00DA => 0x3EA4, // frenzied ostard
-        _ => return None,
-    })
+pub fn body_type(body: u16) -> BodyType {
+    match BODY_TYPES.binary_search_by_key(&body, |&(id, _)| id) {
+        Ok(index) => BODY_TYPES[index].1,
+        Err(_) => BodyType::Empty,
+    }
+}
+
+/// Whether a body knows what a door handle is.
+///
+/// ServUO's `BaseCreature.CanOpenDoors`, exactly: `!Body.IsAnimal && !Body.IsSea`. So
+/// an orc follows you through a door and a wolf does not, and a body the table does not
+/// list is assumed to have hands — which is ServUO's answer too, since an unlisted body
+/// is `BodyType.Empty` and neither of the two things the rule excludes.
+///
+/// This was a list of eight human body ids, described in its own comment as a stand-in
+/// "without body-type tables yet". The whole monster half of Britannia was shut out by
+/// a closed door it could have opened.
+#[must_use]
+pub fn body_opens_doors(body: u16) -> bool {
+    !matches!(body_type(body), BodyType::Animal | BodyType::Sea)
+}
+
+/// The item graphic that draws a body as a mount on a rider, for the bodies that can be
+/// ridden at all. `None` is "not rideable", which is what double-click checks first.
+///
+/// Ported from ServUO's `BaseMount` subclasses — the `base(name, bodyID, itemID, …)`
+/// each one passes, plus the alternating body/item arrays a class that rolls between
+/// several looks keeps (`Horse` is one of four). Thirty bodies, against the eight the
+/// hand-kept list had.
+#[must_use]
+pub fn mount_item_for(body: u16) -> Option<u16> {
+    MOUNTS
+        .binary_search_by_key(&body, |&(id, _)| id)
+        .ok()
+        .map(|index| MOUNTS[index].1)
 }
 
 /// The creature body a mount-item graphic stands for — the inverse of
 /// [`mount_item_for`]. Persistence saves the worn mount item, not the ridden
 /// creature (which lives only while ridden), so restoring a saved ride rebuilds
 /// the creature from the item it was drawn as. `None` is "not a mount item".
+///
+/// Derived from the one [`MOUNTS`] table rather than written out again: two
+/// hand-kept halves of one mapping is how a saved ride comes back as the wrong
+/// animal.
 #[must_use]
-pub const fn mount_body_for(item_graphic: u16) -> Option<u16> {
-    Some(match item_graphic {
-        0x3E9F => 0x00C8, // bay horse
-        0x3EA2 => 0x00CC, // dark brown horse
-        0x3EA0 => 0x00E2, // grey horse
-        0x3EA1 => 0x00E4, // tan horse
-        0x3EA6 => 0x00DC, // llama
-        0x3EA5 => 0x00DB, // forest ostard
-        0x3EA3 => 0x00D2, // desert ostard
-        0x3EA4 => 0x00DA, // frenzied ostard
-        _ => return None,
-    })
+pub fn mount_body_for(item_graphic: u16) -> Option<u16> {
+    MOUNTS
+        .iter()
+        .find(|&&(_, item)| item == item_graphic)
+        .map(|&(body, _)| body)
 }
 
 /// The default name a creature's body gives it — "a chicken", "a horse" —
@@ -1411,6 +1952,76 @@ pub struct Guard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_body_table_is_sorted_so_the_search_finds_things() {
+        // Both lookups binary-search. An out-of-order entry does not fail loudly — it
+        // silently answers `Empty` for a body that is in the table, and an ogre stops
+        // opening doors for no visible reason.
+        assert!(
+            BODY_TYPES.windows(2).all(|w| w[0].0 < w[1].0),
+            "BODY_TYPES must be sorted and unique"
+        );
+        assert!(
+            MOUNTS.windows(2).all(|w| w[0].0 < w[1].0),
+            "MOUNTS must be sorted and unique"
+        );
+    }
+
+    #[test]
+    fn doors_open_to_hands_and_not_to_paws() {
+        // ServUO's `CanOpenDoors`: `!Body.IsAnimal && !Body.IsSea`. The eight-body list
+        // this replaced shut out every monster in Britannia — an orc could not follow
+        // you through a door it plainly has hands for.
+        assert!(body_opens_doors(0x0190), "a man");
+        assert!(body_opens_doors(0x0191), "a woman");
+        assert!(body_opens_doors(0x0011), "an orc");
+        assert!(!body_opens_doors(0x00C9), "a cat");
+        assert!(!body_opens_doors(0x00E2), "a horse");
+        // An unlisted body is `BodyType::Empty` — neither animal nor sea — so it has
+        // hands, which is ServUO's answer too.
+        assert_eq!(body_type(0xFFFE), BodyType::Empty);
+        assert!(body_opens_doors(0xFFFE));
+    }
+
+    #[test]
+    fn the_body_types_are_servuos() {
+        assert_eq!(body_type(0x0190), BodyType::Human);
+        assert_eq!(body_type(0x00E2), BodyType::Animal);
+        assert_eq!(body_type(0x0011), BodyType::Monster);
+    }
+
+    #[test]
+    fn every_horse_colour_is_rideable_and_round_trips() {
+        // The hand-kept list had eight mounts; ServUO has thirty, and four of them are
+        // the one `Horse` class rolling between colours — which the first scrape missed
+        // entirely, because the colours live in an array and not in the constructor.
+        for (body, item) in [
+            (0x00C8, 0x3E9F),
+            (0x00CC, 0x3EA2),
+            (0x00E2, 0x3EA0),
+            (0x00E4, 0x3EA1),
+            (0x00DC, 0x3EA6),
+        ] {
+            assert_eq!(mount_item_for(body), Some(item), "body {body:#06x}");
+            assert_eq!(mount_body_for(item), Some(body), "item {item:#06x}");
+        }
+        assert_eq!(mount_item_for(0x0190), None, "a person is not a mount");
+        assert!(MOUNTS.len() >= 25, "{} mounts", MOUNTS.len());
+    }
+
+    #[test]
+    fn no_two_mounts_share_one_item_graphic() {
+        // `mount_body_for` is the inverse of one table now, and an inverse only exists
+        // if the mapping is one to one — otherwise a saved ride comes back as whichever
+        // animal the search happened to reach first.
+        let mut items: Vec<u16> = MOUNTS.iter().map(|&(_, item)| item).collect();
+        items.sort_unstable();
+        let before = items.len();
+        items.dedup();
+        assert_eq!(before, items.len(), "a mount item graphic is used twice");
+    }
+
     use openshard_entities::{Registry, SerialKind};
     use openshard_protocol::Direction;
 

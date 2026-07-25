@@ -36,7 +36,7 @@ pub mod sectors;
 
 pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
-    Body, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
+    Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Decoration, Door, Equipped, Facet, Field, FieldKind, Frozen, Ghost, Graphic, Guard, Heading,
     Hitpoints, InRegion, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, NightHome, Npc,
     Position, Resistance, Scripted, Skills, SpawnedBy, Stackable, Stamina, StatMod, StatMods,
