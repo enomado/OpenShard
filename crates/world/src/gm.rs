@@ -50,6 +50,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "tele" => teleport_cursor(state, actor),
         "go" => go_to(state, actor, &args),
         "add" => add_item(state, actor, &args),
+        "key" => make_key(state, actor, &args),
         "spellbook" => full_spellbook(state, actor),
         "quests" => openshard_quests::open_log_for(state, actor),
         "set" => set_stat(state, actor, &args),
@@ -57,6 +58,53 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "save" => save_world(state, actor),
         other => notify(state, actor, &format!("Unknown command '{other}'.")),
     }
+}
+
+/// `.key <value>` — put a key in your pack, and lock what you turn it on.
+///
+/// The one way to exercise locks on today's data, and worth having for that reason
+/// alone: neither reference's Britannia locks a single door. ServUO's own decoration
+/// data has exactly one `Locked` entry in the whole game and it is a container in
+/// Malas, so the lock rules would otherwise be reachable only through a pack that
+/// nobody has written yet.
+///
+/// Turning the key on an unlocked door or chest locks it; turning it on one locked to
+/// the same value unlocks it. That is ServUO's `Key.OnTarget`, which does both.
+fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let value: u32 = match args.first().map(|v| v.parse()) {
+        Some(Ok(value)) if value != 0 => value,
+        _ => {
+            notify(
+                state,
+                actor,
+                "Usage: .key <value>, where value is not zero.",
+            );
+            return;
+        }
+    };
+    // Dropped at the operator's feet rather than into the pack: `.add` does the same,
+    // and it keeps this out of the backpack-lookup business.
+    let Some(&Position(at)) = state.registry.get::<Position>(actor) else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    // ServUO's iron key, `0x100E`.
+    let Some(key) = items::spawn_item(state, 0x100E, 0, 1, false, at, facet) else {
+        notify(state, actor, "No room for a key.");
+        return;
+    };
+    state
+        .registry
+        .insert(key, openshard_state::components::KeyValue(value));
+    state.registry.insert(
+        key,
+        openshard_state::components::Name(format!("a key ({value})")),
+    );
+    notify(
+        state,
+        actor,
+        &format!("A key for lock {value} is in your pack."),
+    );
 }
 
 /// `.gm [on|off]` — turn staff mode on or off, or toggle it.

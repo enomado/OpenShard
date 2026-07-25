@@ -1050,6 +1050,7 @@ mod tests {
             }
         }
         let decoration = DecorationRecord {
+            key_value: 0,
             serial: 0x4000_0100,
             graphic: 0x0675,
             hue: 0,

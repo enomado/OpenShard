@@ -22,6 +22,18 @@ impl World {
             openshard_state::TargetPurpose::Teleport => {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
+            openshard_state::TargetPurpose::TurnKey { key } => {
+                // The key may have gone while the cursor was up, and the target may be
+                // nothing at all — a key turned on the sky opens nothing and says so.
+                let target = openshard_entities::Serial::new(response.serial)
+                    .and_then(|s| self.state.registry.entity_of(s));
+                match target {
+                    Some(target) if items::in_key_reach(&self.state, actor, target) => {
+                        items::turn_key(&mut self.state, actor, key, target);
+                    }
+                    _ => self.notify_self(actor, "That does not have a lock."),
+                }
+            }
             openshard_state::TargetPurpose::Spell { spell, success } => {
                 // The cast already paid and rolled; now it has its aim. Announce
                 // it (so the pack can react) and run the core effect if it took.

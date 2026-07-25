@@ -878,6 +878,9 @@ struct DecorStaticSpec {
 /// One placed door in a [`DecorSpec`].
 #[derive(serde::Deserialize)]
 struct DecorDoorSpec {
+    /// Which key opens it; absent or 0 is unlocked.
+    #[serde(default)]
+    key_value: u32,
     closed: u16,
     open: u16,
     #[serde(default)]
@@ -893,6 +896,9 @@ struct DecorDoorSpec {
 /// One placed container in a [`DecorSpec`].
 #[derive(serde::Deserialize)]
 struct DecorContainerSpec {
+    /// Which key opens it; absent or 0 is unlocked.
+    #[serde(default)]
+    key_value: u32,
     graphic: u16,
     gump: u16,
     #[serde(default)]
@@ -936,6 +942,7 @@ fn op_decorate(state: &mut OpState, #[serde] spec: DecorSpec) {
         .doors
         .into_iter()
         .map(|d| crate::DecorDoor {
+            key_value: d.key_value,
             closed: d.closed,
             open: d.open,
             offset_x: d.offset_x,
@@ -949,6 +956,7 @@ fn op_decorate(state: &mut OpState, #[serde] spec: DecorSpec) {
         .containers
         .into_iter()
         .map(|c| crate::DecorContainer {
+            key_value: c.key_value,
             graphic: c.graphic,
             gump: c.gump,
             hue: c.hue,

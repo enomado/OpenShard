@@ -409,6 +409,9 @@ impl World {
                 z: at.z,
                 door,
                 container_gump: registry.get::<Container>(entity).map(|c| c.gump),
+                key_value: registry
+                    .get::<openshard_state::components::Lock>(entity)
+                    .map_or(0, |lock| lock.key_value),
             });
         }
         records
@@ -1113,6 +1116,16 @@ impl World {
             self.state.registry.insert(entity, Position(position));
             self.state.registry.insert(entity, Facet(facet));
             self.state.registry.insert(entity, Decoration);
+            // The lock, on either kind: a door that was locked at the save comes back
+            // locked, or a shard's set-piece unbars itself at every reboot.
+            if record.key_value != 0 {
+                self.state.registry.insert(
+                    entity,
+                    openshard_state::components::Lock {
+                        key_value: record.key_value,
+                    },
+                );
+            }
             if let Some(gump) = record.container_gump {
                 self.state.registry.insert(entity, Container { gump });
             }

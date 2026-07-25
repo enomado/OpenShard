@@ -551,6 +551,11 @@ pub struct DecorationRecord {
     pub door: Option<DoorState>,
     /// The container gump if this decoration opens as one, else `None`.
     pub container_gump: Option<u16>,
+    /// Which key opens it; `0` is unlocked. On the record rather than inside
+    /// [`DoorState`] because a container locks too, and a lock is the same thing on
+    /// either — ServUO's `ILockable`. Defaulted, so an older save reads as unlocked.
+    #[serde(default)]
+    pub key_value: u32,
 }
 
 /// One named area of a facet, as saved.

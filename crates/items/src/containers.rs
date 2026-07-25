@@ -23,6 +23,9 @@ pub fn double_click(state: &mut WorldState, connection: ConnectionId, serial: u3
     // is its own interaction.
     if state.registry.has::<Door>(target) {
         toggle_door(state, player, target, target_serial);
+    } else if state.registry.has::<KeyValue>(target) {
+        // A key raises a cursor for the lock it is about to turn.
+        crate::use_key(state, connection, player, target);
     } else if state.registry.has::<Spellbook>(target) {
         open_spellbook(state, connection, player, target, target_serial);
     } else if state.registry.has::<Container>(target) {
@@ -152,6 +155,13 @@ pub(crate) fn open_container(
         return;
     };
     if !container_in_reach(state, container, player) {
+        return;
+    }
+    // A locked chest does not open — ServUO's `LockableContainer.OnDoubleClick`, which
+    // says cliloc 501747 ("It appears to be locked.") and stops. Staff walk through it,
+    // as they do the door.
+    if crate::is_locked(state, container) && !state.is_staff(player) {
+        state.system_message(player, crate::LOCKED_MESSAGE);
         return;
     }
 

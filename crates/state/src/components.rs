@@ -266,6 +266,35 @@ pub struct Door {
     pub close_at: u64,
 }
 
+/// A lock on a door or a container — ServUO's `ILockable`: `Locked` plus a
+/// `KeyValue` that says which key fits.
+///
+/// # A lock is a refusal, not a second kind of door
+///
+/// Everything about a locked door is the same as an unlocked one — the graphic, the
+/// offset, the auto-close, the obstruction it registers while shut. The only
+/// difference is that the thing which would open it does not. So this is a marker
+/// beside [`Door`] rather than a field inside it, and the two places that open a
+/// door consult it: a player's double-click (answered with cliloc 502503, "That is
+/// locked.") and the AI's decree, which is what stops a townsperson strolling
+/// through a locked shopfront on its way home.
+///
+/// `key_value` is ServUO's: a key fits when its own value matches, and `0` is a lock
+/// no key in the world opens — a set-piece door, not a mistake.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Lock {
+    /// Which key opens it. `0` fits no key.
+    pub key_value: u32,
+}
+
+/// A key, and what it opens — ServUO's `Key.KeyValue`.
+///
+/// Using a key raises a target cursor; clicking a [`Lock`] whose `key_value` matches
+/// turns it. The value and not the item is what matters, so a copied key works and a
+/// key to another door does not.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyValue(pub u32);
+
 /// Which spawn region put this mobile here — an index into the world's spawner
 /// list.
 ///

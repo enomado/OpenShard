@@ -1311,9 +1311,27 @@ Roughly in dependency order, each script-first:
     1042809) are *heard*, which is what makes sixty of them scattered across a facet
     findable and what tells a bystander an escort has just set out. The ask rides the
     greeting seam (`BaseEscortable.OnMovement`) and stops once someone is leading it.
-  - [ ] **Locks and keys on doors** — every door opens to any NPC that can work
-    handles, and to any player; the pack already names locked doors it cannot yet
-    lock. Wants a lock component the obstruction index respects and key items.
+  - [x] **Locks and keys on doors and chests.** A `Lock { key_value }` beside the
+    `Door` (and on a container), ServUO's `ILockable`. A lock is a *refusal*, not a
+    second kind of door: the graphic, the swing, the auto-close and the obstruction are
+    all unchanged, and the only difference is that the two things which would open it
+    do not — a player's double-click (answered with cliloc 502503, "That is locked.")
+    and **the AI's decree**, without which a townsperson walking home strolls through a
+    locked shopfront and the lock is decoration. Staff walk through both. A locked chest
+    does not open either (`LockableContainer`). A key is a `KeyValue` item whose
+    double-click raises a target cursor — ServUO's `Key.OnDoubleClick`, a cursor rather
+    than a guess, because most of Britannia's shops have two doors within arm's reach —
+    and a fitting key both unlocks *and* locks, which is ServUO's one-key-two-directions.
+    The **value** matches, not the item, so a copied key works. The lock persists on the
+    decoration record, or a set-piece unbars itself at every reboot.
+
+    **The note this replaces claimed the pack already names locked doors. It does
+    not, and neither does ServUO**: `Data/Decoration` has exactly one `Locked` entry in
+    the whole game and it is a container in Malas. ServUO's locked doors are all
+    scripted set-pieces (Doom's Gauntlet) and player houses. So the mechanism ships with
+    a way to *reach* it — `op_decorate`'s door and container entries take a `key_value`,
+    and a staff `.key <value>` drops a key that locks whatever it is turned on — rather
+    than as a rule with no path to data, which is the mistake `NightHome` made first.
   - [x] **Mounted movement speed at the pace budget.** The budget charged every mobile
     the on-foot rate, so a mounted runner — legitimately twice as fast as anything it
     knew about — spent credit faster than it earned and rubber-banded on a long gallop.

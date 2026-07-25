@@ -715,6 +715,10 @@ pub struct DecorStatic {
 /// only toggles.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DecorDoor {
+    /// Which key opens it; `0` is unlocked. ServUO's `ILockable.KeyValue`, and the
+    /// only way a shard gets a locked door at all — neither reference's Britannia data
+    /// locks one, so without this the lock rules would be unreachable.
+    pub key_value: u32,
     /// The shut graphic (open is `closed + 1`, but carried explicitly).
     pub closed: u16,
     /// The open graphic.
@@ -735,6 +739,8 @@ pub struct DecorDoor {
 /// or crate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DecorContainer {
+    /// Which key opens it; `0` is unlocked.
+    pub key_value: u32,
     /// The item graphic.
     pub graphic: u16,
     /// The gump the client opens for it (from the client's container table).

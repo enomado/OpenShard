@@ -45,6 +45,8 @@ pub struct CharacterSheet {
 /// door-family arithmetic); the world only stores and toggles.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DecorDoor {
+    /// Which key opens it; `0` is unlocked.
+    pub key_value: u32,
     /// The shut graphic.
     pub closed: u16,
     /// The open graphic.
@@ -61,6 +63,8 @@ pub struct DecorDoor {
 /// opens onto a gump.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DecorContainer {
+    /// Which key opens it; `0` is unlocked.
+    pub key_value: u32,
     /// The item graphic.
     pub graphic: u16,
     /// The gump the client opens for it.

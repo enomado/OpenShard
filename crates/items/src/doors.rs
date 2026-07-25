@@ -31,7 +31,87 @@ pub fn toggle_door(state: &mut WorldState, player: EntityId, door: EntityId, ser
     let Some(is_open) = state.registry.get::<Door>(door).map(|d| d.is_open) else {
         return;
     };
+    // A locked door refuses to be opened, and says so. Only while *shut*: ServUO
+    // checks `m_Locked && !m_Open`, so a door left standing open can always be pushed
+    // closed again — otherwise a lock that snapped on while the door was open would
+    // wedge it open for ever.
+    if !is_open && is_locked(state, door) && !state.is_staff(player) {
+        state.system_message(player, LOCKED_MESSAGE);
+        return;
+    }
     set_door(state, door, serial, !is_open);
+}
+
+/// ServUO cliloc 502503, what a player is told by a door that will not open.
+pub const LOCKED_MESSAGE: &str = "That is locked.";
+
+/// A key was used: raise a target cursor for it — ServUO's `Key.OnDoubleClick`.
+///
+/// A cursor and not a guess. Several doors stand within arm's reach of each other in
+/// most of Britannia's shops, and picking one for the player is how a key locks the
+/// wrong door.
+pub fn use_key(state: &mut WorldState, connection: ConnectionId, player: EntityId, key: EntityId) {
+    if !state.registry.has::<KeyValue>(key) {
+        return;
+    }
+    state
+        .pending_targets
+        .insert(player, openshard_state::TargetPurpose::TurnKey { key });
+    state.send(connection, openshard_protocol::encode_target_cursor(0));
+}
+
+/// Whether a player is close enough to turn a key on something.
+#[must_use]
+pub fn in_key_reach(state: &WorldState, player: EntityId, target: EntityId) -> bool {
+    let (Some(&Position(at)), Some(&Position(player_at))) = (
+        state.registry.get::<Position>(target),
+        state.registry.get::<Position>(player),
+    ) else {
+        // Not on the ground: a chest in a pack is reached through its container.
+        return crate::container_in_reach(state, target, player);
+    };
+    state.facet_of(target) == state.facet_of(player) && in_range(at, player_at, ITEM_REACH)
+}
+
+/// Whether this door or container is locked.
+#[must_use]
+pub fn is_locked(state: &WorldState, entity: EntityId) -> bool {
+    state.registry.has::<Lock>(entity)
+}
+
+/// Turn a key on a lock. Returns whether it fitted.
+///
+/// ServUO's `Key.OnTarget`: the *value* is what matches, not the item, so a copied key
+/// works and a key to another door does not. A fitting key toggles the lock, which is
+/// how ServUO's keys both lock and unlock.
+pub fn turn_key(state: &mut WorldState, player: EntityId, key: EntityId, target: EntityId) -> bool {
+    let Some(&KeyValue(value)) = state.registry.get::<KeyValue>(key) else {
+        return false;
+    };
+    // A door or a container is lockable; nothing else is.
+    if !state.registry.has::<Door>(target) && !state.registry.has::<Container>(target) {
+        return false;
+    }
+    match state.registry.get::<Lock>(target).copied() {
+        // Locked, and this key fits: unlock it.
+        Some(Lock { key_value }) if key_value == value && value != 0 => {
+            state.registry.remove::<Lock>(target);
+            state.system_message(player, "You unlock it.");
+            true
+        }
+        // Locked by something else. ServUO says nothing useful here either.
+        Some(_) => {
+            state.system_message(player, "The key does not fit.");
+            false
+        }
+        // Unlocked: the same key locks it again.
+        None if value != 0 => {
+            state.registry.insert(target, Lock { key_value: value });
+            state.system_message(player, "You lock it.");
+            true
+        }
+        None => false,
+    }
 }
 
 /// Put a door into the open or closed state, redrawing it for everyone who can see
@@ -135,6 +215,11 @@ pub fn open_door(state: &mut WorldState, door: EntityId) {
     let Some(serial) = state.registry.serial_of(door) else {
         return;
     };
+    // Hands are not a key. Without this a townsperson walking home strolls straight
+    // through a locked shopfront, and the lock is decoration.
+    if is_locked(state, door) {
+        return;
+    }
     set_door(state, door, serial, true);
 }
 

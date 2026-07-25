@@ -517,6 +517,13 @@ pub enum TargetPurpose {
         /// Whether the cast's skill roll passed.
         success: bool,
     },
+    /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
+    /// raises a cursor rather than guessing which of several nearby doors was meant.
+    TurnKey {
+        /// The key, by entity. Checked to still exist when the click lands: a key
+        /// dropped or consumed while the cursor was up opens nothing.
+        key: EntityId,
+    },
 }
 
 impl WorldState {

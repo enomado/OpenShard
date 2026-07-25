@@ -574,6 +574,7 @@ fn into_world(command: ScriptCommand) -> Command {
             doors: doors
                 .into_iter()
                 .map(|d| openshard_world::DecorDoor {
+                    key_value: d.key_value,
                     closed: d.closed,
                     open: d.open,
                     offset_x: d.offset_x,
@@ -584,6 +585,7 @@ fn into_world(command: ScriptCommand) -> Command {
             containers: containers
                 .into_iter()
                 .map(|c| openshard_world::DecorContainer {
+                    key_value: c.key_value,
                     graphic: c.graphic,
                     gump: c.gump,
                     hue: c.hue,

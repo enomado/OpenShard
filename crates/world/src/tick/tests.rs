@@ -6821,6 +6821,7 @@ fn a_door_opens_and_closes_on_double_click() {
         facet: 0,
         statics: Vec::new(),
         doors: vec![DecorDoor {
+            key_value: 0,
             closed: 0x0675,
             open: 0x0676,
             offset_x: -1,
@@ -6879,6 +6880,7 @@ fn an_open_door_swings_shut_on_its_own() {
         facet: 0,
         statics: Vec::new(),
         doors: vec![DecorDoor {
+            key_value: 0,
             closed: 0x0675,
             open: 0x0676,
             offset_x: -1,
@@ -7003,6 +7005,7 @@ fn a_decoration_container_opens_on_double_click() {
         statics: Vec::new(),
         doors: Vec::new(),
         containers: vec![DecorContainer {
+            key_value: 0,
             graphic: 0x0E42,
             gump: 0x49,
             hue: 0,
@@ -7962,6 +7965,7 @@ fn decoration_and_door_state_survive_a_restart() {
         statics: vec![(0x07C1, 0, Point::new(START.0 + 6, START.1, 0))],
         doors: vec![
             DecorDoor {
+                key_value: 0,
                 closed: 0x0675,
                 open: 0x0676,
                 offset_x: -1,
@@ -7969,6 +7973,7 @@ fn decoration_and_door_state_survive_a_restart() {
                 position: shut_at,
             },
             DecorDoor {
+                key_value: 0,
                 closed: 0x0675,
                 open: 0x0676,
                 offset_x: -1,
@@ -8299,6 +8304,186 @@ fn a_townsperson_is_dressed_and_named_by_the_core() {
     assert!(
         worn.contains(&0x04) || worn.contains(&0x17),
         "legs: {worn:?}"
+    );
+}
+
+/// Place a door at `at`, locked to `key_value` (0 for unlocked), and return it.
+fn place_lockable_door(world: &mut World, at: Point, key_value: u32, now: Instant) -> EntityId {
+    world.queue(Command::Decorate {
+        facet: 0,
+        statics: Vec::new(),
+        doors: vec![DecorDoor {
+            key_value,
+            closed: 0x0675,
+            open: 0x0676,
+            offset_x: 0,
+            offset_y: 0,
+            position: at,
+        }],
+        containers: Vec::new(),
+    });
+    world.tick(now);
+    world
+        .registry()
+        .query::<openshard_state::components::Door>()
+        .map(|(entity, _)| entity)
+        .next_back()
+        .expect("a door")
+}
+
+#[test]
+fn a_locked_door_refuses_a_player_and_an_npc_alike() {
+    // ServUO's `BaseDoor.OnDoubleClick`: locked and shut, say cliloc 502503 and stop.
+    // And hands are not a key — without the second half a townsperson walking home
+    // strolls straight through a locked shopfront and the lock is decoration.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let Position(player_at) = *world.registry().get::<Position>(player).unwrap();
+    let door = place_lockable_door(
+        &mut world,
+        Point::new(player_at.x + 1, player_at.y, player_at.z),
+        0xBEEF,
+        now,
+    );
+    let door_serial = world.registry().serial_of(door).unwrap().raw();
+    world.drain_outbound().count();
+
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: door_serial,
+    });
+    world.tick(now);
+    assert!(
+        !world
+            .registry()
+            .get::<openshard_state::components::Door>(door)
+            .unwrap()
+            .is_open,
+        "a locked door stays shut"
+    );
+    assert!(
+        packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p[0] == 0x1C || p[0] == 0xAE),
+        "and the player is told so"
+    );
+
+    // The AI's decree does not open it either.
+    openshard_items::open_door(&mut world.state, door);
+    assert!(
+        !world
+            .registry()
+            .get::<openshard_state::components::Door>(door)
+            .unwrap()
+            .is_open,
+        "hands are not a key"
+    );
+}
+
+#[test]
+fn a_key_turns_only_the_lock_it_fits() {
+    // ServUO's `Key.OnTarget` matches the *value*, not the item, so a copied key works
+    // and a key to another door does not. And a fitting key both unlocks and locks —
+    // one key, two directions, which is what ServUO does.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let Position(player_at) = *world.registry().get::<Position>(player).unwrap();
+    let door = place_lockable_door(
+        &mut world,
+        Point::new(player_at.x + 1, player_at.y, player_at.z),
+        0xBEEF,
+        now,
+    );
+
+    // A key to another lock does nothing.
+    let wrong = openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0)
+        .expect("a key");
+    world
+        .state
+        .registry
+        .insert(wrong, openshard_state::components::KeyValue(0x1234));
+    assert!(!openshard_items::turn_key(
+        &mut world.state,
+        player,
+        wrong,
+        door
+    ));
+    assert!(
+        world
+            .registry()
+            .has::<openshard_state::components::Lock>(door),
+        "the wrong key leaves it locked"
+    );
+
+    // The right one unlocks it, and turning it again locks it back.
+    let right = openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0)
+        .expect("a key");
+    world
+        .state
+        .registry
+        .insert(right, openshard_state::components::KeyValue(0xBEEF));
+    assert!(openshard_items::turn_key(
+        &mut world.state,
+        player,
+        right,
+        door
+    ));
+    assert!(!world
+        .registry()
+        .has::<openshard_state::components::Lock>(door));
+    assert!(openshard_items::turn_key(
+        &mut world.state,
+        player,
+        right,
+        door
+    ));
+    assert!(
+        world
+            .registry()
+            .has::<openshard_state::components::Lock>(door),
+        "the same key locks it again"
+    );
+
+    // And the door opens now that it can be unlocked.
+    openshard_items::turn_key(&mut world.state, player, right, door);
+    openshard_items::open_door(&mut world.state, door);
+    assert!(
+        world
+            .registry()
+            .get::<openshard_state::components::Door>(door)
+            .unwrap()
+            .is_open
+    );
+}
+
+#[test]
+fn a_locked_door_comes_back_locked() {
+    // A set-piece that unbars itself at every reboot is not a set-piece.
+    let now = Instant::now();
+    let mut world = world();
+    let _ = enter(&mut world, now);
+    let door = place_lockable_door(&mut world, Point::new(START.0 + 5, START.1, 0), 0xBEEF, now);
+    assert!(world
+        .registry()
+        .has::<openshard_state::components::Lock>(door));
+
+    let records = world.decoration_records();
+    assert!(
+        records.iter().any(|r| r.key_value == 0xBEEF),
+        "the lock is swept into the save"
+    );
+    let mut booted = World::new(START);
+    booted.restore_decorations(records);
+    assert!(
+        booted
+            .registry()
+            .query::<openshard_state::components::Lock>()
+            .any(|(_, lock)| lock.key_value == 0xBEEF),
+        "and comes back"
     );
 }
 
@@ -9820,6 +10005,7 @@ fn place_door(world: &mut World, at: Point, now: Instant) -> (EntityId, u32) {
         facet: 0,
         statics: Vec::new(),
         doors: vec![DecorDoor {
+            key_value: 0,
             closed: 0x0675,
             open: 0x0676,
             offset_x: -1,

@@ -46,6 +46,14 @@ impl World {
                     close_at: 0,
                 },
             );
+            if door.key_value != 0 {
+                self.state.registry.insert(
+                    entity,
+                    openshard_state::components::Lock {
+                        key_value: door.key_value,
+                    },
+                );
+            }
             self.state.facet_state_mut(facet).obstructions.block(
                 door.position.x,
                 door.position.y,
@@ -67,6 +75,14 @@ impl World {
                     gump: container.gump,
                 },
             );
+            if container.key_value != 0 {
+                self.state.registry.insert(
+                    entity,
+                    openshard_state::components::Lock {
+                        key_value: container.key_value,
+                    },
+                );
+            }
         }
     }
 

@@ -632,6 +632,7 @@ mod tests {
                 facet: 0,
                 statics: vec![],
                 doors: vec![crate::DecorDoor {
+                    key_value: 0,
                     closed: 0x0675,
                     open: 0x0676,
                     offset_x: -1,
@@ -641,6 +642,7 @@ mod tests {
                     z: 30,
                 }],
                 containers: vec![crate::DecorContainer {
+                    key_value: 0,
                     graphic: 0x0E42,
                     gump: 0x49,
                     hue: 0,
