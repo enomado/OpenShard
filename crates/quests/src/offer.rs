@@ -62,7 +62,9 @@ pub fn talk_to(state: &mut WorldState, player: EntityId, giver: EntityId) -> boo
     }
 
     // Otherwise the first quest it may still offer.
-    let Some(key) = keys.iter().find(|key| can_offer(state, player, key)) else {
+    let Some(key) = keys.iter().find(|key| {
+        can_offer(state, player, key) && crate::log::offerable(state, key, giver_serial)
+    }) else {
         return true; // a giver with nothing left to give is still a giver
     };
     if quest_count(state, player) >= QUEST_LIMIT {

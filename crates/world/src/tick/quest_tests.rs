@@ -877,3 +877,182 @@ fn escorter_of(world: &World, serial: u32) -> Option<Serial> {
         .get::<openshard_state::components::Escortable>(entity)
         .and_then(|escort| escort.escorter)
 }
+
+#[test]
+fn an_escort_names_its_destination_in_the_offer_and_the_log() {
+    // It used to say "Escort to a destination" in both, because the town was
+    // picked when the quest was *accepted* — which is no use to a player deciding
+    // whether to walk across the facet. A traveller knows where it is going from
+    // the moment it is placed.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![escort_quest()]);
+    let giver = place_giver(&mut world, &["escort"], now);
+    register_towns(&mut world, now);
+    // Bound with no destination, the way the pack binds every traveller.
+    world.queue(Command::MakeEscortable {
+        serial: giver,
+        destination: String::new(),
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, connection);
+
+    // The offer's objectives page names it.
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, connection);
+    press(&mut world, connection, QUEST_GUMP, 7); // Next -> Objectives
+    world.tick(now);
+    assert!(
+        gump_says(&mut world, connection, "Minoc"),
+        "the offer says where, before the player agrees to go"
+    );
+
+    // And so does the log, after accepting.
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4);
+    world.tick(now);
+    world.queue(Command::QuestLogRequest { connection });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 11);
+    world.tick(now);
+    let _ = packets_for(&mut world, connection);
+    press(&mut world, connection, QUEST_GUMP, 7);
+    world.tick(now);
+    assert!(
+        gump_says(&mut world, connection, "Minoc"),
+        "and the log still says where"
+    );
+}
+
+#[test]
+fn a_traveller_with_nowhere_to_go_offers_nothing() {
+    // A facet with no named regions cannot host an escort. Offering one anyway
+    // would be offering a walk that can never be finished.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![escort_quest()]);
+    let giver = place_giver(&mut world, &["escort"], now);
+    world.queue(Command::MakeEscortable {
+        serial: giver,
+        destination: String::new(),
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, connection);
+
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    assert!(
+        !drew_a_gump(&mut world, connection),
+        "no destination, no offer"
+    );
+}
+
+#[test]
+fn re_binding_an_escortable_keeps_the_escort_it_is_on() {
+    // The pack re-binds every NPC on restore, and a shard that saves mid-escort
+    // must not drop it on the next boot.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![escort_quest()]);
+    let giver = place_giver(&mut world, &["escort"], now);
+    register_towns(&mut world, now);
+    world.queue(Command::MakeEscortable {
+        serial: giver,
+        destination: String::new(),
+    });
+    world.tick(now);
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4);
+    world.tick(now);
+    let leading = escorter_of(&world, giver);
+    assert!(leading.is_some());
+
+    world.queue(Command::MakeEscortable {
+        serial: giver,
+        destination: String::new(),
+    });
+    world.tick(now);
+    assert_eq!(
+        escorter_of(&world, giver),
+        leading,
+        "a re-bind does not drop an escort in progress"
+    );
+}
+
+/// Whether the last gump drawn for a connection carries `text` in one of its
+/// lines.
+fn gump_says(world: &mut World, connection: ConnectionId, text: &str) -> bool {
+    last_gump_lines(world, connection)
+        .iter()
+        .any(|line| line.contains(text))
+}
+
+/// The text lines of the last gump drawn for a connection.
+fn last_gump_lines(world: &mut World, connection: ConnectionId) -> Vec<String> {
+    let packet = packets_for(world, connection)
+        .into_iter()
+        .rfind(|p| p.first() == Some(&0xB0))
+        .expect("a gump");
+    let layout_len = u16::from_be_bytes([packet[19], packet[20]]) as usize;
+    let mut at = 21 + layout_len;
+    let count = u16::from_be_bytes([packet[at], packet[at + 1]]) as usize;
+    at += 2;
+    let mut lines = Vec::new();
+    for _ in 0..count {
+        let chars = u16::from_be_bytes([packet[at], packet[at + 1]]) as usize;
+        at += 2;
+        let units: Vec<u16> = (0..chars)
+            .map(|i| u16::from_be_bytes([packet[at + i * 2], packet[at + i * 2 + 1]]))
+            .collect();
+        at += chars * 2;
+        lines.push(String::from_utf16_lossy(&units));
+    }
+    lines
+}
+
+/// Two named regions on the default facet: the one the travellers stand in, and
+/// somewhere for them to want to go.
+fn register_towns(world: &mut World, now: Instant) {
+    use openshard_state::{Region, RegionFlags, RegionRect};
+    let here = Region {
+        id: 0,
+        name: "Britain".to_owned(),
+        priority: 50,
+        rects: vec![RegionRect::new(START.0 - 20, START.1 - 20, 40, 40)],
+        flags: RegionFlags::default(),
+        music: None,
+        light: None,
+    };
+    let away = Region {
+        id: 0,
+        name: "Minoc".to_owned(),
+        priority: 50,
+        rects: vec![RegionRect::new(START.0 + 200, START.1 + 200, 40, 40)],
+        flags: RegionFlags::default(),
+        music: None,
+        light: None,
+    };
+    world.queue(Command::RegisterRegions {
+        facet: 0,
+        regions: vec![here, away],
+    });
+    world.tick(now);
+}

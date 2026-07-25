@@ -105,18 +105,59 @@ pub fn bind_giver(state: &mut WorldState, mobile: Serial, keys: Vec<String>) {
 
 /// Mark an NPC as escortable, optionally to a fixed region. From the pack, and
 /// saved with the mobile.
+///
+/// **An empty destination is resolved here, not later.** A traveller has to know
+/// where it is going before anyone is offered the walk: picking at accept-time
+/// meant the offer read "Escort to a destination", which is not something a
+/// player can say yes or no to. ServUO's `PickRandomDestination`, on the world's
+/// seeded generator so the choice replays.
+///
+/// A facet with no named regions leaves it empty, and the quest is then not
+/// offered at all — see [`offerable`]. That is the honest answer: there is
+/// nowhere to go.
 pub fn make_escortable(state: &mut WorldState, mobile: Serial, destination: String) {
     let Some(entity) = state.registry.entity_of(mobile) else {
         return;
     };
+    let destination = if destination.is_empty() {
+        random_town(state, entity).unwrap_or_default()
+    } else {
+        destination
+    };
+    // Keep whoever is already being led: a re-bind (the pack runs one on every
+    // restore) must not quietly drop an escort in progress.
+    let escorter = state
+        .registry
+        .get::<Escortable>(entity)
+        .and_then(|escort| escort.escorter);
     state.registry.insert(
         entity,
         Escortable {
             destination,
-            escorter: None,
+            escorter,
             last_seen: state.ticks,
         },
     );
+}
+
+/// Whether `giver` can offer `key` — the check `can_offer` cannot make, because
+/// it needs to know who is offering.
+///
+/// Only escorts have anything to say here: a traveller with nowhere to go cannot
+/// be escorted anywhere, and offering the quest would be offering a walk that can
+/// never be completed.
+#[must_use]
+pub fn offerable(state: &WorldState, key: &str, giver: Option<Serial>) -> bool {
+    let Some(quest) = state.quests.get(key) else {
+        return false;
+    };
+    let wants_escort = quest.objectives.iter().any(|objective| {
+        matches!(objective.kind, openshard_state::quest::ObjectiveKind::Escort { ref region } if region.is_empty())
+    });
+    if !wants_escort {
+        return true;
+    }
+    giver.is_some_and(|giver| escort_destination(state, giver).is_some())
 }
 
 /// Put an escortable in someone's care. Refuses one that is already following
