@@ -231,6 +231,7 @@ impl World {
                 start,
                 rng: Rng::new(DEFAULT_SEED),
                 ticks: 0,
+                hour: 0,
                 outbox: Vec::new(),
                 open_containers: HashMap::new(),
                 pending_targets: HashMap::new(),
@@ -453,6 +454,11 @@ impl World {
             self.apply(command, now);
         }
 
+        // What time it is, once, before anything asks. Derived from the tick
+        // counter (see `tick/ambient.rs`), never a wall clock, so a routine and a
+        // shop's opening hours replay like everything else.
+        self.refresh_hour();
+
         // Before anything beats: has a player walked into a part of the map that
         // was asleep? A dozing mobile is not woken by anyone arriving unless
         // something tells it, and waiting out a sixteen-second doze is what "the
@@ -467,12 +473,7 @@ impl World {
         // The townsfolk beat: `npc::live` greets and faces on its own and hands
         // back the idle steps it wants, which the tick applies through `step` —
         // the same decide-then-apply split the creature brain uses.
-        // The world's hour, for the optional daily routine. Derived from the tick
-        // counter (see `tick/ambient.rs`), never a wall clock, so a routine replays
-        // like everything else; the longitude term is the shard's own centre, since
-        // an NPC's post is where its own day is measured.
-        let hour = self.uo_time_at(0).0;
-        for (serial, direction) in npc::live(&mut self.state, hour) {
+        for (serial, direction) in npc::live(&mut self.state) {
             self.step(serial, direction);
         }
         combat::swings(&mut self.state);

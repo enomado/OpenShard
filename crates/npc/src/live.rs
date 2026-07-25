@@ -116,10 +116,11 @@ pub fn first_beat(rng: &mut Rng, now: u64, interval: u64) -> u64 {
 /// `(serial, direction)` — for the tick to apply through its own terrain-checked
 /// `step`. Everything else is done here on the world.
 ///
-/// `hour` is the world's hour (0–23), from the tick counter — see
-/// `world/tick/ambient.rs`. It is only read when `gameplay.npc_schedule` is on.
+/// The world's hour rides on `state` (`WorldState::hour`, refreshed once a tick
+/// by `world/tick/ambient.rs`); it is only read when `gameplay.npc_schedule` is
+/// on.
 #[must_use]
-pub fn live(state: &mut WorldState, hour: u64) -> Vec<(u32, u8)> {
+pub fn live(state: &mut WorldState) -> Vec<(u32, u8)> {
     let now = state.ticks;
     let due: Vec<EntityId> = state
         .registry
@@ -165,7 +166,7 @@ pub fn live(state: &mut WorldState, hour: u64) -> Vec<(u32, u8)> {
 
         // Nobody near: a remark to itself now and then, and a drift near home.
         bark(state, npc, now);
-        if let Some(dir) = wander_step(state, npc, at, hour) {
+        if let Some(dir) = wander_step(state, npc, at) {
             if let Some(serial) = state.registry.serial_of(npc) {
                 steps.push((serial.raw(), dir));
             }
@@ -242,12 +243,12 @@ fn bark(state: &mut WorldState, npc: EntityId, now: u64) {
 /// `None` means stand still this beat. The tile is not checked here — the tick's
 /// `step` validates it against the terrain, and a step into a wall simply turns
 /// the NPC.
-fn wander_step(state: &mut WorldState, npc: EntityId, at: Point, hour: u64) -> Option<u8> {
+fn wander_step(state: &mut WorldState, npc: EntityId, at: Point) -> Option<u8> {
     let Npc { home, wander, .. } = *state.registry.get::<Npc>(npc)?;
     if wander == 0 {
         return None;
     }
-    let post = post_at_hour(state, npc, home, hour);
+    let post = post_at_hour(state, npc, home);
 
     // ServUO's `WalkRandomInHome`: past the home range, walk back; inside it,
     // `WalkRandom`.
@@ -299,27 +300,32 @@ fn walk_home(state: &mut WorldState, npc: EntityId, at: Point, post: Point) -> O
 /// `gameplay.npc_schedule` on, a townsperson with a `night_home` walks to it
 /// outside working hours and back to its post inside them. Without the setting, or
 /// without a `night_home` in the pack's data, this is the post and nothing changes.
-fn post_at_hour(state: &WorldState, npc: EntityId, home: Point, hour: u64) -> Point {
-    if !state.gameplay.npc_schedule {
+fn post_at_hour(state: &WorldState, npc: EntityId, home: Point) -> Point {
+    if working_hours(state) {
         return home;
     }
-    let Some(night_home) = state.registry.get::<Npc>(npc).and_then(|_| {
-        state
-            .registry
-            .get::<openshard_state::components::NightHome>(npc)
-            .map(|h| h.0)
-    }) else {
-        return home;
-    };
-    let work = state.gameplay.npc_work_hour;
-    let rest = state.gameplay.npc_home_hour;
+    state
+        .registry
+        .get::<openshard_state::components::NightHome>(npc)
+        .map_or(home, |h| h.0)
+}
+
+/// Whether the town is at work: inside the shard's working hours, or always if
+/// the schedule is off.
+///
+/// The one predicate the whole routine turns on — where a townsperson stands,
+/// whether its shop serves, and which greeting it gives. Three rules reading one
+/// answer, rather than three comparisons drifting apart.
+#[must_use]
+pub fn working_hours(state: &WorldState) -> bool {
+    if !state.gameplay.npc_schedule {
+        return true;
+    }
+    let work = u64::from(state.gameplay.npc_work_hour);
+    let rest = u64::from(state.gameplay.npc_home_hour);
     // A working day that does not wrap midnight is the only shape the setting
     // allows; `config` rejects the rest, so this comparison is enough.
-    if hour >= u64::from(work) && hour < u64::from(rest) {
-        home
-    } else {
-        night_home
-    }
+    state.hour >= work && state.hour < rest
 }
 
 /// The nearest player to `at` within `range` on `facet`, and where it stands.

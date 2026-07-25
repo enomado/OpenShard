@@ -44,6 +44,19 @@ impl World {
             .saturating_add(self.state.ticks / per_minute)
     }
 
+    /// Publish the world's hour on [`WorldState`] for the systems that read it.
+    ///
+    /// The longitude term is dropped here on purpose. The light *should* reach the
+    /// east before the west, and `daylight_at` keeps that; but a rule — a shop's
+    /// opening hours, a townsperson's routine — has to be one answer for the whole
+    /// facet, or a shopkeeper and the customer standing in front of them can
+    /// disagree about whether it is closing time.
+    ///
+    /// [`WorldState`]: openshard_state::WorldState
+    pub(super) fn refresh_hour(&mut self) {
+        self.state.hour = self.uo_time_at(0).0;
+    }
+
     /// Start the clock from `minutes` rather than midnight — what the boot load
     /// hands back so a shard restarts at the hour it stopped.
     #[must_use]

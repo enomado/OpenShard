@@ -39,6 +39,19 @@ use crate::live::GREET_RANGE;
 const VENDOR_GREETING: &str = "Greetings.  Have a look around.";
 /// ServUO cliloc 501522: what a shopkeeper tells a criminal.
 pub(crate) const REFUSE_SCUM: &str = "I shall not treat with scum like thee!";
+/// What a shopkeeper says to someone trying to trade after hours. Ours — neither
+/// reference has a closing time — so it is a plain line rather than a cliloc
+/// number invented to look like one.
+pub(crate) const CLOSED_FOR_THE_NIGHT: &str = "The shop is closed. Come back in the morning.";
+
+/// What a townsperson says instead of a greeting once the day is over. Also ours,
+/// and deliberately few: a night line is atmosphere, and the pack can register its
+/// own per trade the same way it registers the day's.
+const NIGHT_GREETINGS: &[&str] = &[
+    "Good evening to thee.",
+    "A late hour to be abroad.",
+    "The day is done. Rest well.",
+];
 
 /// The greeting a trade with no registered table falls back to. Deliberately
 /// bland: a bare shard should read as unfinished, not as wrong.
@@ -76,6 +89,16 @@ pub(crate) fn greeting_for(
                 to => format!("I am looking to go to {to}, will you take me?"),
             });
         }
+    }
+
+    // After hours the trade has nothing to sell and nothing to say about it, so
+    // the shopkeeper's own line gives way to a civil good evening. Ahead of the
+    // registered table, because a table keyed on the trade is a *daytime* answer:
+    // "have a look around" from a shop that is shut reads worse than silence.
+    if !crate::live::working_hours(state) {
+        let pool: Vec<String> = NIGHT_GREETINGS.iter().map(|s| (*s).to_owned()).collect();
+        let line = pick(state, &pool)?;
+        return Some(fill_name(&line, visitor_name.as_deref()));
     }
 
     let registered = table_lines(state, npc, |t| &t.greetings);
@@ -210,10 +233,28 @@ fn answer(state: &mut WorldState, npc: EntityId, words: &[&str]) -> bool {
     }
 }
 
-/// Whether this mobile may trade at all — ServUO's `BaseVendor.CheckVendorAccess`.
-/// A criminal or a murderer is refused, out loud.
+/// Whether this mobile may trade at all — ServUO's `BaseVendor.CheckVendorAccess`,
+/// plus the shard's opening hours. Either refusal is spoken out loud.
+///
+/// # Why both live here
+///
+/// This is called at all four doors into a shop — opening it, buying, offering
+/// the sell list, and selling — because a client with the buy window already up
+/// can still send a `0x3B` after the door was shut behind it. Adding a second
+/// predicate beside it at four sites is three chances to add it at three.
+///
+/// The closing hour is **ours**, marked as such: neither reference shuts a shop,
+/// and it rides on `gameplay.npc_schedule` so a shard that has not asked for a
+/// daily routine has no closing time either. It matters more than flavour —
+/// a vendor's stock crate is worn, so the shop is wherever the shopkeeper is
+/// standing, and a shopkeeper that has walked off for the night should not still
+/// be selling from wherever it ended up.
 #[must_use]
 pub fn check_vendor_access(state: &mut WorldState, vendor: EntityId, buyer: EntityId) -> bool {
+    if !crate::live::working_hours(state) {
+        crate::say(state, vendor, CLOSED_FOR_THE_NIGHT);
+        return false;
+    }
     // ServUO refuses a criminal outright. The grey flag and the red standing are
     // the two ways to be one here, and both are read from the same place every
     // other "who may do what to whom" rule reads it.

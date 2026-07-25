@@ -428,6 +428,15 @@ pub struct WorldState {
     pub rng: Rng,
     /// How many ticks have run.
     pub ticks: u64,
+    /// The world's hour, 0–23, refreshed once per tick from the tick counter.
+    ///
+    /// Derived, not stored — `world/tick/ambient.rs` computes it and drops it
+    /// here at the top of every tick, the same way `ticks` is the one clock every
+    /// system reads. It is state rather than a parameter because more than one
+    /// system now asks what time it is (a townsperson's routine, a shop's opening
+    /// hours, its greeting), and threading an `hour` argument through each of them
+    /// is a signature to keep in step for a value that has exactly one source.
+    pub hour: u64,
     /// Packets the last tick produced.
     pub outbox: Vec<Outbound>,
     /// Which connections have each container open, so a change to its contents —

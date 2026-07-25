@@ -9045,6 +9045,132 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
     );
 }
 
+/// A shard that keeps shop hours, started at `hour` o'clock.
+fn shop_hours_world(hour: u64) -> World {
+    World::new(START)
+        .with_gameplay(Gameplay {
+            npc_schedule: true,
+            ..Default::default()
+        })
+        .with_clock_minutes(hour * 60)
+}
+
+/// Place a shopkeeper next to the player and return it.
+///
+/// Through `SpawnMobile` with `vendor: true`, not by inserting the marker after
+/// the fact: the flag is what makes `make_vendor` hang the stock crate on the
+/// mobile, and `open_shop` reads the crate. A `Vendor` with no crate is a
+/// shopkeeper that silently refuses every customer.
+fn spawn_shopkeeper(world: &mut World, now: Instant) -> (EntityId, u32) {
+    world.queue(Command::SpawnMobile {
+        body: 0x0190,
+        hue: 0,
+        hits: 100,
+        notoriety: 7,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 2,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: Point::new(START.0 + 1, START.1, 0),
+        facet: 0,
+        name: None,
+        title: Some("the provisioner".to_owned()),
+        shoe: 1,
+        fame: 0,
+        karma: 0,
+        night_home: None,
+        banker: false,
+        vendor: true,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    let keeper = world
+        .registry()
+        .query::<openshard_state::components::Vendor>()
+        .map(|(entity, _)| entity)
+        .next()
+        .expect("a shopkeeper");
+    let serial = world.registry().serial_of(keeper).unwrap().raw();
+    (keeper, serial)
+}
+
+#[test]
+fn a_shop_that_keeps_hours_is_shut_after_them() {
+    // Ours, not either reference's — and it earns its place for a structural
+    // reason rather than a flavourful one. A vendor's stock crate is *worn*, so
+    // the shop is wherever the shopkeeper is standing; a shopkeeper that has
+    // walked off for the night is still a shop unless something says otherwise.
+    // Checked at the same door the criminal refusal uses, so all four ways in are
+    // covered by one predicate.
+    let now = Instant::now();
+
+    // Midday: open.
+    let mut world = shop_hours_world(12);
+    let connection = enter(&mut world, now);
+    let (_, keeper_serial) = spawn_shopkeeper(&mut world, now);
+    world.drain_outbound().count();
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: keeper_serial,
+    });
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p.first() == Some(&0x74)),
+        "a customer at midday is served"
+    );
+
+    // Ten at night, past the default 21:00: shut, and said out loud.
+    let mut world = shop_hours_world(22);
+    let connection = enter(&mut world, now);
+    let (_, keeper_serial) = spawn_shopkeeper(&mut world, now);
+    world.drain_outbound().count();
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: keeper_serial,
+    });
+    world.tick(now);
+    let packets = packets_for(&mut world, connection);
+    assert!(
+        !packets.iter().any(|p| p.first() == Some(&0x74)),
+        "the shop is shut for the night"
+    );
+    assert!(
+        packets.iter().any(|p| p[0] == 0xAE),
+        "and the shopkeeper says so rather than ignoring the customer"
+    );
+}
+
+#[test]
+fn a_shard_with_no_schedule_never_closes() {
+    // The whole routine hangs off one setting. A shard that has not asked for a
+    // daily routine has no closing time either, whatever hour it happens to be —
+    // otherwise turning the clock on would quietly shut every shop at night.
+    let now = Instant::now();
+    let mut world = World::new(START).with_clock_minutes(22 * 60);
+    let connection = enter(&mut world, now);
+    let (_, keeper_serial) = spawn_shopkeeper(&mut world, now);
+    world.drain_outbound().count();
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: keeper_serial,
+    });
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p.first() == Some(&0x74)),
+        "no schedule, no closing time"
+    );
+}
+
 #[test]
 fn a_traveller_asks_for_an_escort_out_loud() {
     // ServUO's `BaseEscortable.OnMovement` says "I am looking to go to X, will you take
