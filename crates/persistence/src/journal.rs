@@ -66,8 +66,8 @@ use std::collections::HashSet;
 use openshard_entities::{EntityId, Serial};
 
 use crate::record::{
-    CharacterRecord, DecorationRecord, Inventory, ItemRecord, MobileRecord, SpawnerRecord,
-    SCHEMA_VERSION,
+    CharacterRecord, DecorationRecord, Inventory, ItemRecord, MobileRecord, RegionRecord,
+    SpawnerRecord, SCHEMA_VERSION,
 };
 
 /// A consistent picture of everything that changed, taken at one tick.
@@ -103,6 +103,13 @@ pub struct Snapshot {
     /// Every placed decoration, when this snapshot swept them. Same replace-all
     /// semantics as the mobiles.
     pub decorations: Option<Vec<DecorationRecord>>,
+    /// Every facet's named regions, when this snapshot swept them. Replace-all
+    /// again — the pack owns the whole map of the world, so a partial write would
+    /// be worse than none.
+    pub regions: Option<Vec<RegionRecord>>,
+    /// The world clock, in UO minutes, when this snapshot was taken. `None` in a
+    /// snapshot that carried only character changes; the stored value stands.
+    pub clock_minutes: Option<u64>,
 }
 
 impl Snapshot {
@@ -291,6 +298,8 @@ impl Journal {
             spawners: None,
             mobiles: None,
             decorations: None,
+            regions: None,
+            clock_minutes: None,
         })
     }
 }

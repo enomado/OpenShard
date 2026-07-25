@@ -131,6 +131,36 @@ pub struct CorpseCreated {
     pub body: u16,
 }
 
+/// A mobile crossed from one region into another.
+///
+/// One event for the crossing, carrying both sides, rather than a pair — a step
+/// out of one town and straight into another is a single thing that happened,
+/// and a reader that has to correlate two events to see it will eventually
+/// correlate them wrongly. Either side is optional: the unnamed wilds are
+/// `None`, so walking out of a town is a `to` of nothing and walking in is a
+/// `from` of nothing.
+///
+/// The engine reads it to hunt murderers who walk into a guarded town; the pack
+/// reads it for everything a place *means* — a town's name for an escort's
+/// destination, an ambush that fires when someone enters a valley. Carries an
+/// owned `String`, so it is `Clone`, not `Copy`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RegionChanged {
+    /// Who crossed.
+    pub entity: EntityId,
+    /// Their wire identity.
+    pub serial: Serial,
+    /// The facet the crossing happened on.
+    pub facet: u8,
+    /// The region left, if they were in one.
+    pub from: Option<u16>,
+    /// The region entered, if they are in one now.
+    pub to: Option<u16>,
+    /// The entered region's name, so a reader needs no lookup. Empty when the
+    /// crossing was out into unnamed land.
+    pub name: String,
+}
+
 /// A game master pressed a button in the `.admin` menu.
 ///
 /// The engine carries the verb across; the script pack decides what it does —

@@ -1677,6 +1677,9 @@ fn gameplay_config_reaches_the_systems() {
         false, // lod
         32,    // lod_radius
         8,     // lod_idle_factor
+        5,     // uo_minute_seconds
+        0,     // season
+        true,  // guards
     );
     let mut world = World::new(START).with_gameplay(gameplay);
     world.queue(Command::SpawnItem {
@@ -7255,10 +7258,11 @@ fn entering_sends_the_sequence_the_client_needs() {
     let ids: Vec<u8> = world.drain_outbound().map(|out| out.packet[0]).collect();
     assert_eq!(
         ids,
-        vec![0x1B, 0xBF, 0xB9, 0x20, 0x4F, 0x11, 0x3A, 0x78, 0x55],
+        vec![0x1B, 0xBF, 0xB9, 0xBC, 0x20, 0x4F, 0x11, 0x3A, 0x78, 0x55],
         "0x1B first or there is no body; 0x55 last or the client draws early; \
              0xB9 AoS features after the map change (ServUO's DoLogin order), or a \
-             modern client shows no tooltips; 0x11 status and the 0x78 of the \
+             modern client shows no tooltips; 0xBC season between the map change and \
+             the player update, as ServUO sends it; 0x11 status and the 0x78 of the \
              player's own equipment before it, or the client has no stamina and no \
              backpack serial to open; 0x3A fills the skill window"
     );
@@ -8752,6 +8756,7 @@ fn add_empty_facet(world: &mut World, facet: u8) {
             terrain: None,
             sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
             obstructions: Obstructions::default(),
+            regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
         },
     );
 }
@@ -9683,6 +9688,9 @@ fn the_chase_pace_is_the_operators_knob() {
             false, // lod
             32,    // lod_radius
             8,     // lod_idle_factor
+            5,     // uo_minute_seconds
+            0,     // season
+            true,  // guards
         );
         let mut world = World::new(START).with_gameplay(gameplay);
         let _gm = enter_gm(&mut world, now);

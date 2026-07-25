@@ -511,6 +511,99 @@ fn op_clear_spawners(state: &mut OpState) {
         .push(Command::ClearSpawners);
 }
 
+/// One rectangle of a [`RegionSpec`]. `zMin`/`zMax` default to the whole column,
+/// which is what a `<rect>` with no `zrange` means in the data this comes from.
+#[derive(serde::Deserialize)]
+struct RegionRectSpec {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    #[serde(default = "z_floor", rename = "zMin")]
+    z_min: i8,
+    #[serde(default = "z_ceiling", rename = "zMax")]
+    z_max: i8,
+}
+
+const fn z_floor() -> i8 {
+    i8::MIN
+}
+const fn z_ceiling() -> i8 {
+    i8::MAX
+}
+
+/// One named area in an [`op_register_regions`] batch.
+#[derive(serde::Deserialize)]
+struct RegionSpec {
+    name: String,
+    #[serde(default)]
+    priority: u8,
+    rects: Vec<RegionRectSpec>,
+    #[serde(default)]
+    guarded: bool,
+    #[serde(default, rename = "noTeleport")]
+    no_teleport: bool,
+    #[serde(default, rename = "noRecall")]
+    no_recall: bool,
+    #[serde(default, rename = "noHousing")]
+    no_housing: bool,
+    #[serde(default)]
+    safe: bool,
+    #[serde(default)]
+    music: Option<u16>,
+    #[serde(default)]
+    light: Option<u8>,
+}
+
+/// A whole facet's regions.
+#[derive(serde::Deserialize)]
+struct RegionsSpec {
+    #[serde(default)]
+    facet: u8,
+    regions: Vec<RegionSpec>,
+}
+
+/// Give a facet its named areas, replacing whatever it had.
+#[op2]
+fn op_register_regions(state: &mut OpState, #[serde] spec: RegionsSpec) {
+    let regions = spec
+        .regions
+        .into_iter()
+        .map(|region| crate::ScriptRegion {
+            name: region.name,
+            priority: region.priority,
+            rects: region
+                .rects
+                .into_iter()
+                .map(|r| (r.x, r.y, r.width, r.height, r.z_min, r.z_max))
+                .collect(),
+            guarded: region.guarded,
+            no_teleport: region.no_teleport,
+            no_recall: region.no_recall,
+            no_housing: region.no_housing,
+            safe: region.safe,
+            music: region.music,
+            light: region.light,
+        })
+        .collect();
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::RegisterRegions {
+            facet: spec.facet,
+            regions,
+        });
+}
+
+/// Forget a facet's regions.
+#[op2(fast)]
+fn op_clear_regions(state: &mut OpState, facet: u8) {
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::ClearRegions { facet });
+}
+
 /// One placed decoration in a [`DecorSpec`].
 #[derive(serde::Deserialize)]
 struct DecorStaticSpec {
@@ -758,6 +851,8 @@ extension!(
         op_say,
         op_register_spawner,
         op_clear_spawners,
+        op_register_regions,
+        op_clear_regions,
         op_decorate,
         op_clear_decorations,
         op_generate_doors,

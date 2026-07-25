@@ -1344,6 +1344,7 @@ version = "0.0.1"
 dependencies = [
  "openshard-ai",
  "openshard-chat",
+ "openshard-combat",
  "openshard-entities",
  "openshard-gateway",
  "openshard-items",

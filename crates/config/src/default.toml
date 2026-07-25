@@ -166,6 +166,22 @@ vendor_bank_payment = true
 # lod_radius = 32
 # lod_idle_factor = 8
 
+# The sky, and the town watch.
+#
+# uo_minute_seconds  how many real seconds one UO minute lasts. 5 is ServUO's
+#                    rate: a whole UO day in two real hours, night falling around
+#                    22:00 and lifting around 06:00. Raise it for longer days.
+#                    The clock is derived from the tick counter, never a wall
+#                    clock, so it replays — and it is saved, so a restart does
+#                    not put the world back at midnight.
+# season             what the client draws: 0 spring, 1 summer, 2 fall,
+#                    3 winter, 4 desolation. Sent once, on world entry.
+# guards             whether guards answer in the regions marked guarded. Off
+#                    makes every town as lawless as the woods.
+uo_minute_seconds = 5
+season = 0
+guards = true
+
 # Development accounts, in plaintext, until there is a database.
 [[accounts]]
 name = "admin"

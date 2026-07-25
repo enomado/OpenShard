@@ -22,8 +22,10 @@ pub const ADMIN_GUMP: u32 = 0x00AD_0001;
 /// Button ids the layout gives its reply buttons. `0` is the client's close box.
 const BTN_POPULATE_FELUCCA: u32 = 13;
 const BTN_DECORATE_FELUCCA: u32 = 22;
+const BTN_REGIONS_FELUCCA: u32 = 31;
 const BTN_CLEAR: u32 = 12;
 const BTN_CLEAR_DECO: u32 = 21;
+const BTN_CLEAR_REGIONS: u32 = 30;
 
 /// Open the admin menu for `actor`. The caller has already checked the authority
 /// (the `.admin` command is game-master-gated), so this only draws.
@@ -34,18 +36,22 @@ pub fn open_menu(state: &mut WorldState, actor: EntityId) {
     // One flat page: two actions that lay the whole facet, and the two that clear
     // them. Nothing to switch between, so there are no tabs to fall out of sync.
     let layout = "\
-{ resizepic 0 0 5054 300 210 }\
+{ resizepic 0 0 5054 300 270 }\
 { text 105 14 2100 0 }\
 { button 30 54 4005 4007 1 0 13 }{ text 66 56 1153 1 }\
 { button 30 88 4005 4007 1 0 22 }{ text 66 90 1153 2 }\
-{ button 30 130 4017 4019 1 0 12 }{ text 66 132 33 3 }\
-{ button 30 164 4017 4019 1 0 21 }{ text 66 166 33 4 }";
+{ button 30 122 4005 4007 1 0 31 }{ text 66 124 1153 3 }\
+{ button 30 164 4017 4019 1 0 12 }{ text 66 166 33 4 }\
+{ button 30 198 4017 4019 1 0 21 }{ text 66 200 33 5 }\
+{ button 30 232 4017 4019 1 0 30 }{ text 66 234 33 6 }";
     let lines = [
         "Admin".to_owned(),
         "Populate Felucca".to_owned(),
         "Decorate Felucca".to_owned(),
+        "Regions: Felucca".to_owned(),
         "Clear spawns".to_owned(),
         "Clear deco".to_owned(),
+        "Clear regions".to_owned(),
     ];
     // The context serial is the game master's own — a non-zero value the client
     // keys the open gump on and echoes back. A zero here can leave some clients
@@ -82,8 +88,10 @@ pub fn button_action(
     let verb = match response.button {
         BTN_POPULATE_FELUCCA => "populate:felucca",
         BTN_DECORATE_FELUCCA => "decorate:felucca",
+        BTN_REGIONS_FELUCCA => "regions:felucca",
         BTN_CLEAR => "clear",
         BTN_CLEAR_DECO => "clear:deco",
+        BTN_CLEAR_REGIONS => "clear:regions",
         _ => return None, // the close box, or a button we do not know
     };
     Some((actor, verb))

@@ -90,6 +90,9 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
         g.lod,
         g.lod_radius,
         g.lod_idle_factor,
+        g.uo_minute_seconds,
+        g.season,
+        g.guards,
     )
 }
 

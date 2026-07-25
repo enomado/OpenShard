@@ -24,10 +24,13 @@ pub(super) const DEFAULT_HUE: u16 = 0x83EA;
 pub(super) const TEXT_HUE: u16 = 0x03B2;
 /// Full daylight. The scale runs backwards: 0 is brightest, 0x1F pitch dark.
 pub(super) const LIGHT_DAY: u8 = 0;
-/// The personal light a Night Sight caster sees by — the brightest level, so the
-/// dark lifts. Distinct name from [`LIGHT_DAY`] though both are 0 today: the
-/// ambient is daylight only until a day/night cycle exists, and Night Sight is
-/// the override that will matter the moment one does.
+/// Full night — ServUO's `LightCycle.NightLevel`. Dark enough to want a lantern,
+/// not dark enough to be unplayable; the two-hour ramps either side of it are in
+/// `tick/ambient.rs`.
+pub(super) const LIGHT_NIGHT: u8 = 12;
+/// The light a Night Sight caster sees by — the brightest level, so the dark
+/// lifts wherever they are. Distinct name from [`LIGHT_DAY`] though both are 0:
+/// one is what time it is, the other is a buff beating it.
 pub(super) const LIGHT_NIGHTSIGHT: u8 = 0;
 /// The facet a new character spawns on, and the world's fallback for a facet it
 /// has not loaded. Zero is Felucca.

@@ -168,6 +168,13 @@ fn teleport_cursor(state: &mut WorldState, actor: EntityId) {
 /// Finish a `.tele`: the game master clicked a spot; jump there. Called from the
 /// world's `0x6C` handler with the clicked location.
 pub(crate) fn teleport_to(state: &mut WorldState, actor: EntityId, to: Point) {
+    // Staff pass this by `is_staff`, so a game master with the mode *off* is
+    // refused here — which is the only way to check the rule from the kind of
+    // account that can set one up.
+    if !state.may_teleport(actor, to) {
+        notify(state, actor, "You cannot teleport from or to that place.");
+        return;
+    }
     state.teleport(actor, to);
     notify(
         state,

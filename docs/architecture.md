@@ -62,7 +62,7 @@ Arrows are dependencies; they only ever point down.
 | Crate | Owns |
 |---|---|
 | `entities` | `EntityId`, `Serial`, `SparseSet`, `Registry`. Identity and storage. No gameplay. |
-| `state` | Components, the `Sectors` spatial index, the seeded `Rng`. The world's runtime *data*, below the systems that act on it, so each system can live in its own crate. Knows nothing of *when* state changes. |
+| `state` | Components, the `Sectors` spatial index, the `Regions` index of named areas, the seeded `Rng`. The world's runtime *data*, below the systems that act on it, so each system can live in its own crate. Knows nothing of *when* state changes. |
 | `events` | `Events<E>`, `Cursor<E>`, `EventBus`. Machinery. Defines no game events. |
 | `protocol` | Versions, feature gates, the codec, framing, the login and world packets. |
 | `gateway` | The sans-io `Connection` and a thin Tokio `Server`. Finds packet boundaries; knows nothing of meaning. |
@@ -83,7 +83,7 @@ crate, owning its domain events:
 | `combat` | `damage`/`die`/`swings`/`volleys`/`attack`, poison pulses, criminal flagging, the swing formula | `MobileDamaged`, `MobileDied` |
 | `items` | spawn/drag/stack/decay/containers/equip/doors/mounts, one module each | `ItemSpawned` |
 | `ai` | the creature brain: LOS aggro, cached-path chase, give-up, kiting, fleeing, retaliation | — |
-| `npc` | townsfolk services (banker, vendor buy/sell) and the creature `spawn` rule | `MobileSpawned` |
+| `npc` | townsfolk services (banker, vendor buy/sell), the town guards, and the creature `spawn` rule | `MobileSpawned` |
 
 The drawing/interest substrate they share (`show`, `forget`, `broadcast_move`,
 `refresh_around`, `reveal`, `mobile_incoming`, …) lives on `WorldState`, in the
@@ -119,8 +119,9 @@ split cheap, used by `tick/`, `engine/` (scripting) and the items crate:
 The `tick/` layout, as the worked example: `command.rs` (the `Command` enum),
 `defaults.rs` (tuning constants), `persist.rs` (the journal bridge),
 `enter.rs` (character entry), `motion.rs` (`walk`/`step`), `spawners.rs`
-(spawn-region upkeep), `decor.rs` (decoration and door generation), `speech.rs`,
-`staff.rs`, and the three test files. `tick.rs` itself keeps the `World` struct,
+(spawn-region upkeep), `decor.rs` (decoration and door generation),
+`regions.rs` (the region crossing), `ambient.rs` (the world clock and light),
+`speech.rs`, `staff.rs`, and the test files. `tick.rs` itself keeps the `World` struct,
 the command router and the tick — orchestration, ~750 lines.
 
 ### Where code goes

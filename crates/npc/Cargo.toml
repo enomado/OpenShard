@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 openshard-ai.workspace = true
 openshard-chat.workspace = true
+openshard-combat.workspace = true
 openshard-entities.workspace = true
 openshard-gateway.workspace = true
 openshard-items.workspace = true

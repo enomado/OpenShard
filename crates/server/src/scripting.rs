@@ -507,6 +507,43 @@ fn into_world(command: ScriptCommand) -> Command {
             ),
         },
         ScriptCommand::ClearSpawners => Command::ClearSpawners,
+        ScriptCommand::RegisterRegions { facet, regions } => Command::RegisterRegions {
+            facet,
+            regions: regions
+                .into_iter()
+                .map(|region| openshard_world::Region {
+                    // The world numbers them on registration, by position; this
+                    // side has no id to give.
+                    id: 0,
+                    name: region.name,
+                    priority: region.priority,
+                    rects: region
+                        .rects
+                        .into_iter()
+                        .map(
+                            |(x, y, width, height, z_min, z_max)| openshard_world::RegionRect {
+                                x,
+                                y,
+                                width,
+                                height,
+                                z_min,
+                                z_max,
+                            },
+                        )
+                        .collect(),
+                    flags: openshard_world::RegionFlags {
+                        guarded: region.guarded,
+                        no_teleport: region.no_teleport,
+                        no_recall: region.no_recall,
+                        no_housing: region.no_housing,
+                        safe: region.safe,
+                    },
+                    music: region.music,
+                    light: region.light,
+                })
+                .collect(),
+        },
+        ScriptCommand::ClearRegions { facet } => Command::ClearRegions { facet },
         ScriptCommand::Decorate {
             facet,
             statics,
@@ -1174,5 +1211,63 @@ mod tests {
             }
         });
         assert!(answered, "the script answered the keyword");
+    }
+
+    #[test]
+    fn a_script_gives_a_facet_its_regions() {
+        // The pack owns the map of the world: it hands the engine a whole
+        // facet's named areas through one op, and the flags come across intact
+        // — which is what the guards, the dark and the no-teleport rule read.
+        let script = TempScript::new(
+            "regions",
+            "function onEvent(e) {\n\
+             if (e.type === 'PlayerEntered') {\n\
+                 Deno.core.ops.op_register_regions({ facet: 0, regions: [\n\
+                   { name: 'Britain', priority: 50, guarded: true, music: 9,\n\
+                     rects: [{ x: 1300, y: 1500, width: 200, height: 200 }] },\n\
+                   { name: 'Covetous', priority: 60, noTeleport: true, light: 26,\n\
+                     rects: [{ x: 1350, y: 1550, width: 10, height: 10, zMin: -128, zMax: -20 }] },\n\
+                 ] });\n\
+             }\n\
+             }",
+        );
+
+        let now = Instant::now();
+        let mut world = World::new((1363, 1600));
+        let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
+
+        world.queue(Command::Enter {
+            connection: ConnectionId::from_raw(1),
+            version: ClientVersion::TOL,
+            account: "admin".to_owned(),
+            name: "Lord British".to_owned(),
+            serial: None,
+            position: None,
+            facet: 0,
+            appearance: None,
+            sheet: None,
+            access: AccessLevel::Player,
+        });
+        world.tick(now); // PlayerEntered
+        scripts.pump(&mut world); // the script registers the regions
+        world.tick(now); // the world takes them
+
+        let britain = world
+            .region_at(0, openshard_protocol::Point::new(1363, 1600, 0))
+            .expect("the player is standing in Britain");
+        assert_eq!(britain.name, "Britain");
+        assert!(britain.flags.guarded);
+        assert_eq!(britain.music, Some(9));
+
+        // The height band came across too: the dungeon is below, not underfoot.
+        assert!(world
+            .region_at(0, openshard_protocol::Point::new(1355, 1555, 0))
+            .is_some_and(|r| r.name == "Britain"));
+        let deep = world
+            .region_at(0, openshard_protocol::Point::new(1355, 1555, -40))
+            .expect("the dungeon is under it");
+        assert_eq!(deep.name, "Covetous");
+        assert!(deep.flags.no_teleport);
+        assert_eq!(deep.light, Some(26));
     }
 }

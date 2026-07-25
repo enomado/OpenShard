@@ -23,8 +23,8 @@ use async_trait::async_trait;
 
 use crate::journal::Snapshot;
 use crate::record::{
-    AccountRecord, CharacterRecord, DecorationRecord, ItemRecord, MobileRecord, SpawnerRecord,
-    SCHEMA_VERSION,
+    AccountRecord, CharacterRecord, DecorationRecord, ItemRecord, MobileRecord, RegionRecord,
+    SpawnerRecord, SCHEMA_VERSION,
 };
 
 /// What a store could not do.
@@ -89,6 +89,19 @@ pub trait Store: Send + Sync {
     /// The caller re-lays them at boot, door state and all.
     async fn decorations(&self) -> Result<Vec<DecorationRecord>, StoreError>;
 
+    /// Every facet's named regions, for the boot load.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError>;
+
+    /// The world clock, in UO minutes, as last saved. `0` on a store that has
+    /// never held one — a fresh shard starts at midnight.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    async fn clock_minutes(&self) -> Result<u64, StoreError>;
+
     /// Every account.
     async fn accounts(&self) -> Result<Vec<AccountRecord>, StoreError>;
 
@@ -114,6 +127,10 @@ pub struct MemoryStore {
     mobiles: Mutex<HashMap<u32, MobileRecord>>,
     /// Placed decorations keyed by serial.
     decorations: Mutex<HashMap<u32, DecorationRecord>>,
+    /// Named regions, keyed by `(facet, id)`.
+    regions: Mutex<HashMap<(u8, u16), RegionRecord>>,
+    /// The world clock, in UO minutes.
+    clock: Mutex<u64>,
     accounts: Mutex<HashMap<String, AccountRecord>>,
     /// How many saves have landed. What a test asserts on.
     saves: Mutex<u64>,
@@ -213,6 +230,17 @@ impl Store for MemoryStore {
                 decorations.insert(record.serial, record.clone());
             }
         }
+        // The regions sweep replaces the whole map of the world at once.
+        if let Some(records) = &snapshot.regions {
+            let mut regions = self.regions.lock().expect("the mutex is never poisoned");
+            regions.clear();
+            for record in records {
+                regions.insert((record.facet, record.id), record.clone());
+            }
+        }
+        if let Some(minutes) = snapshot.clock_minutes {
+            *self.clock.lock().expect("the mutex is never poisoned") = minutes;
+        }
         *self.saves.lock().expect("the mutex is never poisoned") += 1;
         Ok(())
     }
@@ -265,6 +293,20 @@ impl Store for MemoryStore {
             .values()
             .cloned()
             .collect())
+    }
+
+    async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError> {
+        Ok(self
+            .regions
+            .lock()
+            .expect("the mutex is never poisoned")
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    async fn clock_minutes(&self) -> Result<u64, StoreError> {
+        Ok(*self.clock.lock().expect("the mutex is never poisoned"))
     }
 
     async fn accounts(&self) -> Result<Vec<AccountRecord>, StoreError> {
@@ -323,6 +365,8 @@ mod tests {
             spawners: None,
             mobiles: None,
             decorations: None,
+            regions: None,
+            clock_minutes: None,
         }
     }
 
@@ -378,6 +422,8 @@ mod tests {
             spawners: None,
             mobiles: None,
             decorations: None,
+            regions: None,
+            clock_minutes: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
         assert!(matches!(error, StoreError::SchemaMismatch { .. }));
@@ -450,6 +496,8 @@ mod tests {
                 spawners: None,
                 mobiles: None,
                 decorations: None,
+                regions: None,
+                clock_minutes: None,
             })
             .await
             .expect("save");
@@ -467,6 +515,8 @@ mod tests {
                 spawners: None,
                 mobiles: None,
                 decorations: None,
+                regions: None,
+                clock_minutes: None,
             })
             .await
             .expect("save");
@@ -528,6 +578,8 @@ mod tests {
                 spawners: None,
                 mobiles: Some(vec![mobile(2, 30), mobile(3, 30)]),
                 decorations: None,
+                regions: None,
+                clock_minutes: None,
             })
             .await
             .expect("save");
@@ -544,6 +596,8 @@ mod tests {
                 spawners: None,
                 mobiles: Some(vec![mobile(3, 7)]),
                 decorations: None,
+                regions: None,
+                clock_minutes: None,
             })
             .await
             .expect("save");
@@ -575,6 +629,8 @@ mod tests {
                 spawners: None,
                 mobiles: None,
                 decorations: None,
+                regions: None,
+                clock_minutes: None,
             })
             .await
             .expect("save");
@@ -590,6 +646,8 @@ mod tests {
                 spawners: None,
                 mobiles: None,
                 decorations: None,
+                regions: None,
+                clock_minutes: None,
             })
             .await
             .expect("save");

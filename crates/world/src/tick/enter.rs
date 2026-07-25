@@ -296,6 +296,13 @@ impl World {
                 encode_supported_features(AOS_FEATURE_FLAGS, extended),
             );
         }
+        // Which season the client draws its trees in, with the change sound off:
+        // this is a login, not a turn of the year. Between the map change and the
+        // player update, where ServUO's `Mobile.SendEverything` puts it — the
+        // client redraws the world for the season, so it wants to know before it
+        // is told where the player stands.
+        self.state
+            .send(connection, encode_season(self.state.gameplay.season, false));
         self.state.send(
             connection,
             PlayerUpdate {
@@ -308,15 +315,12 @@ impl World {
             }
             .encode(),
         );
-        self.state.send(connection, encode_light_level(LIGHT_DAY));
-        // A relogged Night Sight is still lit — the buff persisted (restored above)
-        // — so re-send the bright personal light over the ambient just sent.
-        if magic::behaviour_buff(&self.state, entity, openshard_state::effect::NIGHT_SIGHT)
-            .is_some()
-        {
-            self.state
-                .send(connection, encode_light_level(LIGHT_NIGHTSIGHT));
-        }
+        // The light where this character actually is and at the hour it actually
+        // is — the region's dark, a relogged Night Sight, or the time of day. One
+        // rule computes it, here and on every tick after; remembering it here is
+        // what stops the refresh pass sending it a second time immediately.
+        let level = self.initial_light(connection);
+        self.state.send(connection, encode_light_level(level));
         // The status bar, stamina and all. Without it the client believes it has
         // zero stamina and refuses to run — see `MobileStatus`. Sent before the
         // login-complete that starts the client drawing, so the numbers are there

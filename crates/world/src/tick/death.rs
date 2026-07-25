@@ -415,15 +415,10 @@ impl World {
         base + jitter
     }
 
-    /// Take a creature off the world: forget it from every screen, drop it from
-    /// the sector grid, despawn it. The disposal half of the old `combat::die`.
-    fn despawn_creature(&mut self, entity: EntityId, serial: Serial) {
-        let facet = self.state.facet_of(entity);
-        for watcher in self.state.watchers_of(entity) {
-            self.state.forget(watcher, entity, serial);
-        }
-        self.state.seen.remove(&entity);
-        self.state.facet_state_mut(facet).sectors.remove(entity);
-        self.state.registry.despawn(entity);
+    /// Take a creature off the world. The disposal half of the old `combat::die`;
+    /// the removal itself is the substrate's, shared with anything else that
+    /// takes a mobile out (a guard that has done its work).
+    fn despawn_creature(&mut self, entity: EntityId, _serial: Serial) {
+        self.state.despawn_mobile(entity);
     }
 }

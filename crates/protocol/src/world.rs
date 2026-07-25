@@ -529,6 +529,31 @@ pub fn encode_light_level(level: u8) -> Vec<u8> {
     vec![0x4F, level]
 }
 
+/// `0x6D` — play a music track. 3 bytes.
+///
+/// The id indexes the client's own music list (ServUO's `MusicName` enum order,
+/// `Server/Region.cs`), so no filename travels — the client owns the tracks. Both
+/// references agree byte for byte: Sphere's `PacketPlayMusic`, ServUO's
+/// `PlayMusic`. Sent when a mobile crosses into a region whose track differs from
+/// the one it was hearing; re-sending the same id restarts the track, which is
+/// why the crossing pass compares before it sends.
+pub fn encode_play_music(track: u16) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(3);
+    writer.u8(0x6D);
+    writer.u16(track);
+    writer.into_bytes()
+}
+
+/// `0xBC` — which season the client draws. 3 bytes.
+///
+/// `0` spring, `1` summer, `2` fall, `3` winter, `4` desolation. The second byte
+/// asks the client to play the season's own sound as it changes; sending it on
+/// world entry with the sound off avoids announcing a change that is really just
+/// a login. Ported from ServUO's `SeasonChange`.
+pub fn encode_season(season: u8, play_sound: bool) -> Vec<u8> {
+    vec![0xBC, season, u8::from(play_sound)]
+}
+
 /// `0xD1` — the logout the client asked for is granted. 2 bytes.
 ///
 /// The client's own `0xD1` is a *notification*: it announces that the player
@@ -829,6 +854,12 @@ mod tests {
     fn the_small_entry_packets_are_the_right_shape() {
         assert_eq!(encode_login_complete(), vec![0x55]);
         assert_eq!(encode_light_level(0), vec![0x4F, 0]);
+        // Music and season: three bytes each, the track big-endian. Both
+        // references write exactly this.
+        assert_eq!(encode_play_music(11), vec![0x6D, 0x00, 11]);
+        assert_eq!(encode_play_music(0x0102), vec![0x6D, 0x01, 0x02]);
+        assert_eq!(encode_season(3, true), vec![0xBC, 3, 1]);
+        assert_eq!(encode_season(0, false), vec![0xBC, 0, 0]);
         // The logout ack is the same two bytes in both references, and the same
         // length the client's own table gives the id it comes back on.
         assert_eq!(encode_logout_ack(), vec![0xD1, 0x01]);

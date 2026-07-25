@@ -81,6 +81,8 @@ impl World {
             spawners: None,
             mobiles: None,
             decorations: None,
+            regions: None,
+            clock_minutes: None,
         });
 
         // Every online character, whole: its record and its entire carried
@@ -125,18 +127,26 @@ impl World {
         snapshot.mobiles = Some(mobiles);
         // And every placed decoration, door state included.
         snapshot.decorations = Some(self.decoration_records());
+        // And the named regions of every facet, and the hour of the day. Neither
+        // is a thing a player changes, but both are things a restart would
+        // silently lose: no guards, no music, daylight in the dungeons, and every
+        // night starting over.
+        snapshot.regions = Some(self.region_records());
+        snapshot.clock_minutes = Some(self.clock_minutes());
 
         // Skip only a genuinely empty save, so a quiet, empty shard queues nothing.
         let ground_empty = snapshot.ground.as_ref().is_none_or(Vec::is_empty);
         let spawners_empty = snapshot.spawners.as_ref().is_none_or(Vec::is_empty);
         let mobiles_empty = snapshot.mobiles.as_ref().is_none_or(Vec::is_empty);
         let decorations_empty = snapshot.decorations.as_ref().is_none_or(Vec::is_empty);
+        let regions_empty = snapshot.regions.as_ref().is_none_or(Vec::is_empty);
         if snapshot.characters.is_empty()
             && snapshot.removed.is_empty()
             && ground_empty
             && spawners_empty
             && mobiles_empty
             && decorations_empty
+            && regions_empty
         {
             return;
         }

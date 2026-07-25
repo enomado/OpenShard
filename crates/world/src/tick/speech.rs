@@ -49,6 +49,10 @@ impl World {
         // request the banker answers, not a hidden command.
         if let Some(&actor) = self.state.players.get(&connection) {
             npc::banker_keywords(&mut self.state, connection, actor, &text);
+            // And "guards" in a guarded region calls one down on whoever nearby
+            // has earned it. Same shape: the word was spoken, and the town
+            // answers it.
+            npc::guard_keywords(&mut self.state, connection, actor, &text);
             // "sell" near a shopkeeper opens the offer list; "buy" opens the shop —
             // the keyword path to the same gump a double-click reaches. Checked
             // "sell" first so the "buy" substring inside neither steals it.

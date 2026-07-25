@@ -477,6 +477,20 @@ pub enum Command {
     },
     /// Remove every spawn region and the creatures they were maintaining.
     ClearSpawners,
+    /// Give a facet its named areas — towns, dungeons, guarded zones. The whole
+    /// set at once, replacing whatever that facet had, because the pack owns it
+    /// entire and a half-registered map of the world is worse than none.
+    RegisterRegions {
+        /// Which facet.
+        facet: u8,
+        /// Every area on it.
+        regions: Vec<ScriptRegion>,
+    },
+    /// Forget a facet's regions.
+    ClearRegions {
+        /// Which facet.
+        facet: u8,
+    },
     /// Place decoration: script-added statics — signs, furniture — the shard puts
     /// on top of the static art the client's map already draws. In a batch,
     /// because a city is many at once.
@@ -624,6 +638,36 @@ pub struct DecorContainer {
     pub y: u16,
     /// Where.
     pub z: i8,
+}
+
+/// One named area a [`RegisterRegions`](Command::RegisterRegions) carries.
+///
+/// Wire-primitive like every other script type: the engine's own `Region` lives
+/// in `state` and this crate does not depend on it, so the bridge converts. The
+/// nesting ServUO's data has is already flattened by the time it gets here —
+/// `priority` is all that is left of it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScriptRegion {
+    /// What the place is called.
+    pub name: String,
+    /// Which region wins where two overlap: the higher number.
+    pub priority: u8,
+    /// The boxes it covers: `(x, y, width, height, z_min, z_max)`.
+    pub rects: Vec<(u16, u16, u16, u16, i8, i8)>,
+    /// Guards answer a call here.
+    pub guarded: bool,
+    /// No teleporting in, out or within.
+    pub no_teleport: bool,
+    /// No Recall or Gate (nothing reads this yet).
+    pub no_recall: bool,
+    /// No house may be placed (nothing reads this yet).
+    pub no_housing: bool,
+    /// No player may harm another (nothing reads this yet).
+    pub safe: bool,
+    /// The client music track, as a `MusicName` index; `None` changes nothing.
+    pub music: Option<u16>,
+    /// The light level inside, overriding the hour; `None` takes the ambient.
+    pub light: Option<u8>,
 }
 
 /// One creature a spawn region may put down — the template a

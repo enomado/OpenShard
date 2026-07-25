@@ -191,6 +191,26 @@ pub(crate) async fn run_shard(
         Err(error) => error!(%error, "could not read saved spawners; starting with none"),
     }
 
+    // The named regions — towns, dungeons, guarded zones. Saved like everything
+    // else, so a restart keeps its guards, its music and the dark in its caves
+    // without waiting for a staff `.admin`.
+    match store.regions().await {
+        Ok(regions) => {
+            if !regions.is_empty() {
+                info!(regions = regions.len(), "restored the world's regions");
+            }
+            world.restore_regions(regions);
+        }
+        Err(error) => error!(%error, "could not read saved regions; starting with none"),
+    }
+
+    // And the hour of the day. The tick counter restarts at zero by design, so
+    // without this every restart would be a fresh midnight.
+    match store.clock_minutes().await {
+        Ok(minutes) => world = world.with_clock_minutes(minutes),
+        Err(error) => error!(%error, "could not read the saved clock; starting at midnight"),
+    }
+
     let mut login = LoginServer::new(accounts, &config.server.name, advertised);
     // The character-creation screen needs somewhere to start. Without it the
     // client refuses to create at all — "No city found. Something wrong with the

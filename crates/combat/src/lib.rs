@@ -20,8 +20,9 @@ use openshard_protocol::{
 };
 use openshard_state::components::{
     body_is_female, body_opens_doors, creature_base_sound, effect, BehaviourBuffs, Body, Client,
-    Combat, CriminalUntil, DamageType, Frozen, Ghost, Hitpoints, MeleeDamage, MurderDecay, Murders,
-    Poisoned, Position, RangedAttack, Resistance, Skills, Stamina, Stats, Steps, SwingSpeed,
+    Combat, CriminalUntil, DamageType, Frozen, Ghost, Guard, Hitpoints, MeleeDamage, MurderDecay,
+    Murders, Poisoned, Position, RangedAttack, Resistance, Skills, Stamina, Stats, Steps,
+    SwingSpeed,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{Action, WorldState};
@@ -727,7 +728,15 @@ const MURDER_DECAY_TICKS: u64 = 8 * 3600 * 20;
 
 /// Tally a killed innocent against `killer`, turn it red once the tally reaches
 /// the threshold, and start the slow fade if it is not already running.
+///
+/// A town guard is exempt: executing the guilty is the whole of its purpose, and
+/// a guard that went red after five sentences would be hunted by the next one.
+/// ServUO says the same thing by clearing the guard's own `Criminal` and `Kills`
+/// on every beat of its attack timer.
 fn record_murder(state: &mut WorldState, killer: EntityId) {
+    if state.registry.has::<Guard>(killer) {
+        return;
+    }
     let count = state.registry.get::<Murders>(killer).map_or(0, |m| m.0) + 1;
     state.registry.insert(killer, Murders(count));
     if !state.registry.has::<MurderDecay>(killer) {

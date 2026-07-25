@@ -45,7 +45,7 @@ use tokio_postgres::{Client, NoTls, Row};
 use crate::journal::Snapshot;
 use crate::record::{
     AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord,
-    SpawnerRecord, SCHEMA_VERSION,
+    RegionRecord, SpawnerRecord, SCHEMA_VERSION,
 };
 use crate::store::{Store, StoreError};
 
@@ -111,6 +111,20 @@ CREATE TABLE IF NOT EXISTS mobiles (
 CREATE TABLE IF NOT EXISTS decorations (
     serial BIGINT PRIMARY KEY,
     data   TEXT NOT NULL
+);
+-- A facet's named areas. Keyed by (facet, id) because an id is only an index
+-- into its own facet's list; the rest is a JSON record, like a decoration.
+CREATE TABLE IF NOT EXISTS regions (
+    facet INTEGER NOT NULL,
+    id    INTEGER NOT NULL,
+    data  TEXT NOT NULL,
+    PRIMARY KEY (facet, id)
+);
+-- The world's own scalars: one row, id 0. The clock lives here so a restart does
+-- not put the world back at midnight.
+CREATE TABLE IF NOT EXISTS world (
+    id            INTEGER PRIMARY KEY,
+    clock_minutes BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS spawners (
     id             BIGINT PRIMARY KEY,
@@ -375,6 +389,34 @@ impl Store for PgStore {
                     .map_err(database)?;
             }
         }
+        // A region sweep replaces the whole set.
+        if let Some(regions) = &snapshot.regions {
+            transaction
+                .execute("DELETE FROM regions", &[])
+                .await
+                .map_err(database)?;
+            for region in regions {
+                let data = serde_json::to_string(region)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                transaction
+                    .execute(
+                        "INSERT INTO regions (facet, id, data) VALUES ($1, $2, $3)",
+                        &[&i32::from(region.facet), &i32::from(region.id), &data],
+                    )
+                    .await
+                    .map_err(database)?;
+            }
+        }
+        if let Some(minutes) = snapshot.clock_minutes {
+            transaction
+                .execute(
+                    "INSERT INTO world (id, clock_minutes) VALUES (0, $1) \
+                     ON CONFLICT (id) DO UPDATE SET clock_minutes = EXCLUDED.clock_minutes",
+                    &[&(minutes as i64)],
+                )
+                .await
+                .map_err(database)?;
+        }
         transaction.commit().await.map_err(database)?;
         Ok(())
     }
@@ -433,6 +475,32 @@ impl Store for PgStore {
                     .map_err(|e| StoreError::Corrupt(e.to_string()))
             })
             .collect()
+    }
+
+    async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query("SELECT data FROM regions ORDER BY facet, id", &[])
+            .await
+            .map_err(database)?;
+        rows.iter()
+            .map(|row| {
+                serde_json::from_str(row.get::<_, &str>(0))
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))
+            })
+            .collect()
+    }
+
+    async fn clock_minutes(&self) -> Result<u64, StoreError> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query("SELECT clock_minutes FROM world WHERE id = 0", &[])
+            .await
+            .map_err(database)?;
+        // A store that has never held a clock starts the world at midnight.
+        Ok(rows
+            .first()
+            .map_or(0, |row| row.get::<_, i64>(0).max(0) as u64))
     }
 
     async fn spawners(&self) -> Result<Vec<SpawnerRecord>, StoreError> {
@@ -720,6 +788,8 @@ mod tests {
             spawners: None,
             mobiles: None,
             decorations: None,
+            regions: None,
+            clock_minutes: None,
         }
     }
 
@@ -880,6 +950,8 @@ mod tests {
             spawners: None,
             mobiles: None,
             decorations: None,
+            regions: None,
+            clock_minutes: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
         assert!(matches!(error, StoreError::SchemaMismatch { .. }));

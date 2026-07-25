@@ -34,8 +34,10 @@ use openshard_state::rng::Rng;
 use openshard_state::sectors::in_range;
 use openshard_state::WorldState;
 
+mod guards;
 mod spawn;
 mod vendor;
+pub use guards::{call_guards, expire_guards, guard_keywords, hunt_with_guards};
 pub use spawn::{spawn, MobileSpawned, SpawnSpec};
 pub use vendor::{
     buy, buy_keyword, offer_sell_list, open_shop, sell, stock, StockLine, STOCK_LAYER,
@@ -91,7 +93,7 @@ const GREETINGS_ANON: &[&str] = &[
 ];
 
 /// Personal names a generated banker draws from; the title "the banker" follows.
-const PERSONAL_NAMES: &[&str] = &[
+pub(crate) const PERSONAL_NAMES: &[&str] = &[
     "Alanna",
     "Bartholomew",
     "Cedric",

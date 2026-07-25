@@ -1245,6 +1245,34 @@ pub struct Stamina {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Movement(pub Walker);
 
+/// The region a mobile was last seen in — the remembered half of the crossing
+/// diff.
+///
+/// The world does not call "you have left Britain" beside every step. It keeps
+/// this, and one pass compares it against the region under the mobile's feet; a
+/// difference is the crossing. Same shape as the status bar's snapshot, and for
+/// the same reason: a line beside every mutation is the thing that decays the
+/// moment a new mover forgets to write it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct InRegion {
+    /// The region's id on its facet, or `None` out in the wilds.
+    pub region: Option<u16>,
+}
+
+/// A town guard, summoned to execute someone and gone soon after.
+///
+/// Not a creature with a life: ServUO's guard is a sentence, and this marker is
+/// what says so — the tick it vanishes on, and nothing else. There is no target
+/// on it because there is no pursuit; a guard strikes in the moment it arrives.
+/// A mobile wearing it is also exempt from earning a murder count,
+/// because killing the guilty is its whole purpose (ServUO clears the guard's
+/// `Criminal`/`Kills` on every beat, which is the same statement).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Guard {
+    /// The tick it despawns, its work done.
+    pub until: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

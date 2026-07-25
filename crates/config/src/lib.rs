@@ -199,6 +199,22 @@ pub struct GameplayConfig {
     /// times slower. Only meaningful when `lod` is on; must be at least 1.
     #[serde(default = "default_lod_idle_factor")]
     pub lod_idle_factor: u64,
+    /// How many real seconds one UO minute lasts — how fast the day/night cycle
+    /// runs. `5` (the default) is ServUO's rate and puts a whole UO day in two
+    /// real hours: dawn around 04:00 UO, dusk around 22:00. A larger number slows
+    /// the sun down; `0` is refused, since a stopped clock is permanent midnight.
+    #[serde(default = "default_uo_minute_seconds")]
+    pub uo_minute_seconds: u64,
+    /// Which season the client draws: `0` spring, `1` summer, `2` fall, `3`
+    /// winter, `4` desolation. Sent once, on world entry — there is no calendar
+    /// turning it yet.
+    #[serde(default = "default_season")]
+    pub season: u8,
+    /// Whether guards answer in the regions marked guarded. `true` (the default)
+    /// is a town where a criminal is punished; `false` is ServUO's per-region
+    /// `Disabled` applied shard-wide, for a shard that wants no safe ground.
+    #[serde(default = "default_true")]
+    pub guards: bool,
 }
 
 /// Whether combat [`combat_era`](GameplayConfig::combat_era) is one the swing
@@ -263,6 +279,14 @@ fn default_lod_radius() -> u32 {
 fn default_lod_idle_factor() -> u64 {
     8
 }
+/// ServUO's `Clock.SecondsPerUOMinute`.
+fn default_uo_minute_seconds() -> u64 {
+    5
+}
+/// Spring — the season a shard with no calendar sits in.
+fn default_season() -> u8 {
+    0
+}
 
 impl Default for GameplayConfig {
     fn default() -> Self {
@@ -288,6 +312,9 @@ impl Default for GameplayConfig {
             lod: default_false(),
             lod_radius: default_lod_radius(),
             lod_idle_factor: default_lod_idle_factor(),
+            uo_minute_seconds: default_uo_minute_seconds(),
+            season: default_season(),
+            guards: default_true(),
         }
     }
 }
@@ -544,6 +571,14 @@ pub enum ConfigError {
     /// `gameplay.lod` is on but `lod_idle_factor` is zero, which would leave a
     /// dozing creature's next-think unmoved and busy-loop the gate.
     ZeroLodIdleFactor,
+    /// `gameplay.uo_minute_seconds` is zero, which stops the world clock — a
+    /// shard frozen at midnight, with no error to say why.
+    ZeroUoMinuteSeconds,
+    /// `gameplay.season` is not one the client draws.
+    UnknownSeason {
+        /// The value given.
+        season: u8,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -581,6 +616,14 @@ impl fmt::Display for ConfigError {
             Self::ZeroLodIdleFactor => {
                 f.write_str("gameplay.lod_idle_factor must be at least 1 when gameplay.lod is on")
             }
+            Self::ZeroUoMinuteSeconds => {
+                f.write_str("gameplay.uo_minute_seconds must be at least 1")
+            }
+            Self::UnknownSeason { season } => write!(
+                f,
+                "gameplay.season {season} is not a season the client draws (0 spring, \
+                 1 summer, 2 fall, 3 winter, 4 desolation)"
+            ),
         }
     }
 }
@@ -661,6 +704,17 @@ impl Config {
             if self.gameplay.lod_idle_factor == 0 {
                 return Err(ConfigError::ZeroLodIdleFactor);
             }
+        }
+        // A UO minute of zero divides the tick counter by nothing and leaves the
+        // world at midnight for ever.
+        if self.gameplay.uo_minute_seconds == 0 {
+            return Err(ConfigError::ZeroUoMinuteSeconds);
+        }
+        // The client knows five seasons; a sixth draws nothing at all.
+        if self.gameplay.season > 4 {
+            return Err(ConfigError::UnknownSeason {
+                season: self.gameplay.season,
+            });
         }
         Ok(())
     }

@@ -312,8 +312,15 @@ impl World {
                 }
             }
             SpellEffect::Teleport => {
-                self.state.teleport(caster, target_location);
-                self.state.broadcast_move(caster);
+                // The spell obeys the same region rule the staff `.tele` does —
+                // one predicate, so a shard cannot bar one route and leave the
+                // other open.
+                if self.state.may_teleport(caster, target_location) {
+                    self.state.teleport(caster, target_location);
+                    self.state.broadcast_move(caster);
+                } else {
+                    self.notify_self(caster, "You cannot teleport from or to that place.");
+                }
             }
             SpellEffect::StatMod(kind) => {
                 // A Mobile-target spell, so it lands on the aimed mobile — or on

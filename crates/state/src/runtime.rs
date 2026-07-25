@@ -29,6 +29,7 @@ use crate::components::{
     Heading, Hitpoints, Movement, Name, Position, Staff,
 };
 use crate::obstruct::{LiveTerrain, Obstructions};
+use crate::region::{Region, Regions};
 use crate::rng::Rng;
 use crate::sectors::{Sectors, VIEW_RANGE};
 
@@ -108,6 +109,15 @@ pub struct Gameplay {
     /// How many times its normal beat a dozing creature's next think is pushed
     /// out under [`lod`](Self::lod). At least 1.
     pub lod_idle_factor: u64,
+    /// Ticks in one UO minute — how fast the world clock runs. ServUO's five real
+    /// seconds to the minute puts a whole UO day in two real hours.
+    pub uo_minute_ticks: u64,
+    /// The season the client draws: 0 spring, 1 summer, 2 fall, 3 winter, 4
+    /// desolation. Static for now; sent on world entry.
+    pub season: u8,
+    /// Whether guards answer at all in the regions marked guarded — ServUO's
+    /// per-region `Disabled`, as one shard-wide switch.
+    pub guards: bool,
 }
 
 /// How AoS object tooltips (the "cliloc" hover names) are served — Sphere's
@@ -194,6 +204,9 @@ impl Gameplay {
         lod: bool,
         lod_radius: u32,
         lod_idle_factor: u64,
+        uo_minute_seconds: u64,
+        season: u8,
+        guards: bool,
     ) -> Self {
         Self {
             combat_era,
@@ -218,6 +231,11 @@ impl Gameplay {
             lod,
             lod_radius,
             lod_idle_factor,
+            // A UO minute of zero would stop the clock; one tick is the fastest
+            // a day can sensibly run.
+            uo_minute_ticks: (uo_minute_seconds * TICKS_PER_SECOND).max(1),
+            season,
+            guards,
         }
     }
 }
@@ -248,6 +266,9 @@ impl Default for Gameplay {
             false, // lod (opt-in, off)
             32,    // lod_radius
             8,     // lod_idle_factor
+            5,     // uo_minute_seconds (ServUO's rate: a UO day in two hours)
+            0,     // season (spring)
+            true,  // guards (a guarded region has guards)
         )
     }
 }
@@ -279,6 +300,8 @@ pub struct FacetState {
     pub sectors: Sectors,
     /// What the live world has put in the way: closed doors, placed decoration.
     pub obstructions: Obstructions,
+    /// The named areas of this facet — towns, dungeons, guarded zones.
+    pub regions: Regions,
 }
 
 impl FacetState {
@@ -430,6 +453,20 @@ impl WorldState {
             .expect("an entity's facet is always loaded")
     }
 
+    /// The region a point on `facet` falls in, if any.
+    #[must_use]
+    pub fn region_at(&self, facet: u8, point: Point) -> Option<&Region> {
+        self.facets.get(&facet)?.regions.at(point)
+    }
+
+    /// The region an entity is standing in, if any. The lookup every rule that
+    /// asks "is this allowed here" goes through.
+    #[must_use]
+    pub fn region_of(&self, entity: EntityId) -> Option<&Region> {
+        let position = self.registry.get::<Position>(entity)?;
+        self.region_at(self.facet_of(entity), position.0)
+    }
+
     /// Where a character appears on `facet`: the configured x and y, at that
     /// facet's height.
     ///
@@ -464,9 +501,29 @@ impl WorldState {
         })
     }
 
+    /// Take a mobile out of the world: forget it from every screen, drop it from
+    /// the sector grid, despawn it.
+    ///
+    /// The counterpart of the spawn path, and the one place that order is
+    /// written down — forgetting *after* the despawn would leave the serial
+    /// unresolvable and the mobile drawn on every screen that had it, which is
+    /// exactly the "ghost that never leaves" bug.
+    pub fn despawn_mobile(&mut self, entity: EntityId) {
+        let Some(serial) = self.registry.serial_of(entity) else {
+            return;
+        };
+        let facet = self.facet_of(entity);
+        for watcher in self.watchers_of(entity) {
+            self.forget(watcher, entity, serial);
+        }
+        self.seen.remove(&entity);
+        self.facet_state_mut(facet).sectors.remove(entity);
+        self.registry.despawn(entity);
+    }
+
     /// Everyone who currently has `entity` on their screen — the mobiles whose
-    /// `seen` set holds it. The audience for a redraw: a health bar, a step, a
-    /// change of colour.
+    /// `seen` set holds it. The audience for a redraw: a health bar, a change of
+    /// colour.
     #[must_use]
     pub fn watchers_of(&self, entity: EntityId) -> Vec<EntityId> {
         self.seen
@@ -952,6 +1009,31 @@ impl WorldState {
     #[must_use]
     pub fn is_staff(&self, watcher: EntityId) -> bool {
         self.registry.has::<Staff>(watcher)
+    }
+
+    /// Whether a mobile may teleport to a point — the `no_teleport` region flag.
+    ///
+    /// Both ends are checked, not just the destination: a region that bars
+    /// teleporting bars it *out* as well as *in*, or a jail is a jail only until
+    /// someone inside casts. ServUO's `SpellHelper.CheckTravel` makes the same
+    /// two checks for the same reason.
+    ///
+    /// Staff pass. Every in-game exemption goes through [`is_staff`](Self::is_staff),
+    /// so `.gm off` puts a game master under this rule with everyone else.
+    #[must_use]
+    pub fn may_teleport(&self, mobile: EntityId, to: Point) -> bool {
+        if self.is_staff(mobile) {
+            return true;
+        }
+        let facet = self.facet_of(mobile);
+        let barred = |point: Option<Point>| {
+            point.is_some_and(|point| {
+                self.region_at(facet, point)
+                    .is_some_and(|region| region.flags.no_teleport)
+            })
+        };
+        let from = self.registry.get::<Position>(mobile).map(|p| p.0);
+        !barred(from) && !barred(Some(to))
     }
 
     /// Whether `watcher` may see mobile `other`. The living cannot see the dead: a

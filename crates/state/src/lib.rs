@@ -18,6 +18,8 @@
 //!   carries.
 //! - [`Sectors`] — the spatial index that answers "what is near this point",
 //!   Chebyshev distance, the square region a UO client draws.
+//! - [`Regions`] — the named areas of a facet: which town or dungeon a point is
+//!   in, and what holds there (guards, light, music).
 //! - [`Rng`] — the seeded generator behind every roll. Deterministic on purpose:
 //!   advanced only by the tick, never the OS, so a world replays roll for roll.
 //!
@@ -25,6 +27,7 @@
 
 pub mod components;
 pub mod obstruct;
+pub mod region;
 pub mod rng;
 pub mod runtime;
 pub mod sectors;
@@ -32,12 +35,13 @@ pub mod sectors;
 pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
-    Decoration, Door, Equipped, Facet, Field, FieldKind, Frozen, Ghost, Graphic, Heading,
-    Hitpoints, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, Npc, Position, Resistance,
-    Scripted, Skills, SpawnedBy, Stackable, Stamina, StatMod, StatMods, Stats, SwingSpeed,
-    FIELD_HEIGHT,
+    Decoration, Door, Equipped, Facet, Field, FieldKind, Frozen, Ghost, Graphic, Guard, Heading,
+    Hitpoints, InRegion, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, Npc, Position,
+    Resistance, Scripted, Skills, SpawnedBy, Stackable, Stamina, StatMod, StatMods, Stats,
+    SwingSpeed, FIELD_HEIGHT,
 };
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
+pub use region::{Region, RegionFlags, RegionRect, Regions};
 pub use rng::Rng;
 pub use runtime::{
     Action, CastStyle, FacetState, Gameplay, HeldItem, Origin, Outbound, TargetPurpose,

@@ -46,7 +46,10 @@ use serde::{Deserialize, Serialize};
 /// - v11: a character's quest log — an opaque JSON blob the community pack owns
 ///   and the engine only stores, so quest progress survives a relog. Empty for a
 ///   character with no quests, and old saves default it, so the bump is additive.
-pub const SCHEMA_VERSION: u32 = 11;
+/// - v12: a facet's named regions, and the world clock. Both are things a restart
+///   would otherwise lose to a shard that looks fine: no guards, no town music,
+///   daylight in every dungeon, and every night starting over at boot.
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// An account, as saved.
 ///
@@ -446,6 +449,56 @@ pub struct DecorationRecord {
     pub door: Option<DoorState>,
     /// The container gump if this decoration opens as one, else `None`.
     pub container_gump: Option<u16>,
+}
+
+/// One named area of a facet, as saved.
+///
+/// Regions are pure data the pack registers, so saving them looks redundant —
+/// until a restart, when nothing re-registers them until a game master clicks
+/// `.admin` again, and a shard silently loses its guards, its music and the dark
+/// in its dungeons. The save is the truth here as everywhere else.
+///
+/// The rectangles ride as JSON for the same reason a spawner's creature list
+/// does: a region holds a handful, and a table of them would be a join for no
+/// gain.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RegionRecord {
+    /// Which facet it belongs to.
+    pub facet: u8,
+    /// Its index on that facet, which is its id.
+    pub id: u16,
+    /// What the place is called.
+    pub name: String,
+    /// Which region wins where two overlap.
+    pub priority: u8,
+    /// Its boxes: `(x, y, width, height, z_min, z_max)`.
+    pub rects: Vec<(u16, u16, u16, u16, i8, i8)>,
+    /// Guards answer a call here.
+    pub guarded: bool,
+    /// No teleporting in, out or within.
+    pub no_teleport: bool,
+    /// No Recall or Gate.
+    pub no_recall: bool,
+    /// No house may be placed.
+    pub no_housing: bool,
+    /// No player may harm another.
+    pub safe: bool,
+    /// The client music track, as a `MusicName` index.
+    pub music: Option<u16>,
+    /// The light level inside, overriding the hour.
+    pub light: Option<u8>,
+}
+
+/// The world's own scalars, as saved — one row, not one per anything.
+///
+/// Just the clock today: the UO minute the shard stopped at, so a restart does
+/// not put the world back at midnight and make every night a fresh one. The tick
+/// counter cannot carry it, since that resets at boot by design (every restored
+/// timer is an offset from zero).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct WorldRecord {
+    /// The world clock, in UO minutes.
+    pub clock_minutes: u64,
 }
 
 /// A character's whole carried inventory, replaced as a unit.

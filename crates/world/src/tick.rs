@@ -37,7 +37,7 @@ use openshard_persistence::{
 };
 use openshard_protocol::{
     encode_context_menu, encode_gump_display, encode_light_level, encode_login_complete,
-    encode_logout_ack, encode_map_change, encode_message, encode_supported_features,
+    encode_logout_ack, encode_map_change, encode_message, encode_season, encode_supported_features,
     encode_walk_ack, encode_walk_reject, AccessLevel, ClientVersion, Direction, Facing, Feature,
     MobileStatus, Notoriety, PlayerStart, PlayerUpdate, Point, WalkRequest, AOS_FEATURE_FLAGS,
     DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH, LABEL_MODE,
@@ -53,7 +53,8 @@ use openshard_state::components::{
 use openshard_state::rng::Rng;
 use openshard_state::sectors::Sectors;
 use openshard_state::{
-    FacetState, Gameplay, Obstructions, Outbound, TooltipMode, WorldState, TICKS_PER_SECOND,
+    FacetState, Gameplay, Obstructions, Outbound, Regions, TooltipMode, WorldState,
+    TICKS_PER_SECOND,
 };
 
 use openshard_ai as ai;
@@ -67,11 +68,12 @@ use openshard_skills as skills;
 use crate::doorgen;
 use crate::events::{
     AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeft,
-    RefusedReason, StepRefused,
+    RefusedReason, RegionChanged, StepRefused,
 };
 use crate::gm;
 use crate::terrain::MapTerrain;
 
+mod ambient;
 mod command;
 mod context;
 mod death;
@@ -81,6 +83,7 @@ mod enter;
 mod fields;
 mod motion;
 mod persist;
+mod regions;
 mod skills_wire;
 mod spawners;
 mod speech;
@@ -150,6 +153,9 @@ pub struct World {
     disturbed: Cursor<openshard_combat::MobileDamaged>,
     /// Deaths this tick, read by `reap` to lay a corpse where a creature fell.
     dead: Cursor<openshard_combat::MobileDied>,
+    /// Region crossings this tick, read to set the guards on a murderer who has
+    /// just walked into a town.
+    crossed: Cursor<RegionChanged>,
     /// Commands waiting for the next tick.
     inbox: Vec<Command>,
     /// The spawn regions the tick keeps populated. Registered by the script pack,
@@ -168,6 +174,15 @@ pub struct World {
     /// The derived status numbers last sent to each connected player, so the
     /// refresh pass can send only what changed. See `tick/status.rs`.
     last_status: HashMap<ConnectionId, status::StatusSnapshot>,
+    /// The light level last sent to each connected player, the remembered half of
+    /// the ambient diff. See `tick/ambient.rs`.
+    last_light: HashMap<ConnectionId, u8>,
+    /// The music track each player is currently hearing, so a crossing that does
+    /// not change it does not restart it. See `tick/regions.rs`.
+    last_music: HashMap<ConnectionId, u16>,
+    /// Where the world clock started, in UO minutes — restored at boot so a
+    /// restart does not put the world back at midnight. See `tick/ambient.rs`.
+    clock_base: u64,
 }
 
 impl std::fmt::Debug for World {
@@ -191,6 +206,7 @@ impl World {
                 terrain: None,
                 sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
                 obstructions: Obstructions::default(),
+                regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
             },
         );
         Self {
@@ -222,11 +238,15 @@ impl World {
             raised: Cursor::default(),
             disturbed: Cursor::default(),
             dead: Cursor::default(),
+            crossed: Cursor::default(),
             inbox: Vec::new(),
             spawners: Vec::new(),
             next_spawner_id: 1,
             pending_inventories: HashMap::new(),
             last_status: HashMap::new(),
+            last_light: HashMap::new(),
+            last_music: HashMap::new(),
+            clock_base: 0,
         }
     }
 
@@ -266,7 +286,8 @@ impl World {
 
     /// Load `terrain` as facet `facet`, its interest grid sized to the map.
     pub fn with_facet(mut self, facet: u8, terrain: MapTerrain) -> Self {
-        let sectors = Sectors::new(terrain.map().width(), terrain.map().height());
+        let (width, height) = (terrain.map().width(), terrain.map().height());
+        let sectors = Sectors::new(width, height);
         // Boxed as `dyn Terrain`: the state crate holds the abstraction, and the
         // world supplies the concrete map here.
         self.state.facets.insert(
@@ -275,6 +296,7 @@ impl World {
                 terrain: Some(Box::new(terrain) as Box<dyn Terrain + Send + Sync>),
                 sectors,
                 obstructions: Obstructions::default(),
+                regions: Regions::new(width, height),
             },
         );
         self
@@ -469,10 +491,21 @@ impl World {
         items::decay(&mut self.state);
         items::close_doors(&mut self.state);
         self.maintain_spawners();
+        // Notice who walked into a town or out of a dungeon: the crossing emits
+        // its event and starts the region's music. Before the guards read it, and
+        // before the light pass, which the crossing can change.
+        self.region_crossings();
+        // A murderer who walks into a guarded town is hunted without anyone
+        // having to call — ServUO's `GuardedRegion.OnEnter`.
+        self.guard_crossings();
+        npc::expire_guards(&mut self.state);
 
         // Follow this tick's skill gains on any open window. Before `update`
         // retires the events, like `mark_dirty`.
         self.send_skill_updates();
+        // The sun moved, or somebody walked into a cave. One pass, both reasons,
+        // and only the players whose level actually changed are told.
+        self.refresh_light();
         // And follow what a player is carrying: gold spent, loot lifted, armour
         // worn. Diffed against what was last sent, so a still player costs nothing.
         self.refresh_statuses();
@@ -547,6 +580,8 @@ impl World {
             } => self.handle_target(connection, response),
             Command::RegisterSpawner { spawner } => self.register_spawner(spawner),
             Command::ClearSpawners => self.clear_spawners(),
+            Command::RegisterRegions { facet, regions } => self.register_regions(facet, regions),
+            Command::ClearRegions { facet } => self.clear_regions(facet),
             Command::Decorate {
                 facet,
                 statics,
@@ -1069,6 +1104,12 @@ impl World {
             watchers.remove(&connection);
             !watchers.is_empty()
         });
+        // And forget what it was last told about itself. A connection id can be
+        // reused, and a reconnect that inherits the last one's remembered light
+        // and music is told neither — it would sit in daylight inside a cave.
+        self.last_status.remove(&connection);
+        self.forget_light(connection);
+        self.forget_music(connection);
 
         let Some(entity) = self.state.players.remove(&connection) else {
             return;
@@ -1145,6 +1186,8 @@ impl World {
 mod interest_tests;
 #[cfg(test)]
 mod persistence_tests;
+#[cfg(test)]
+mod region_tests;
 #[cfg(test)]
 mod status_tests;
 #[cfg(test)]
