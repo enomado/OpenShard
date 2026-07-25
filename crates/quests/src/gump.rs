@@ -461,7 +461,18 @@ fn section_objectives(
                     false,
                     false,
                 );
-                layout.html_colored(173, offset, 200, 16, region, GUMP_WHITE, false, false);
+                // An objective with no region of its own takes the giver's, and
+                // that is only chosen when the quest is accepted — so the offer
+                // says "a destination" and the log says where.
+                let named = if region.is_empty() {
+                    context
+                        .giver
+                        .and_then(|giver| crate::log::escort_destination(state, giver))
+                        .unwrap_or_else(|| "a destination".to_owned())
+                } else {
+                    region.clone()
+                };
+                layout.html_colored(173, offset, 200, 16, &named, GUMP_WHITE, false, false);
                 offset += 16;
             }
         }

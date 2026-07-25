@@ -137,51 +137,61 @@ pub fn start_escort(state: &mut WorldState, npc: Serial, escorter: Serial) -> bo
     true
 }
 
-/// A player double-clicked an escortable: take it into their care, and say where
-/// it wants to go.
+/// Put a giver into a player's care, because they just accepted a quest that
+/// asks to be escorted somewhere.
 ///
-/// Returns whether the mobile was an escortable at all. One escortable follows
-/// one person: a second player clicking it is told so rather than silently
-/// stealing it, which is ServUO's rule and the only one that does not lose the
-/// first player's walk.
-pub(crate) fn ask_for_escort(state: &mut WorldState, player: EntityId, npc: EntityId) -> bool {
-    let Some(escort) = state.registry.get::<Escortable>(npc).cloned() else {
-        return false;
-    };
-    let (Some(player_serial), Some(npc_serial)) = (
-        state.registry.serial_of(player),
-        state.registry.serial_of(npc),
-    ) else {
-        return false;
-    };
+/// Returns where it wants to go, or `None` if the giver is not escortable, is
+/// already following somebody else, or the facet has no named region to name.
+/// The destination is chosen here rather than at registration so a shard's
+/// travellers do not all want the same town — ServUO's `PickRandomDestination`,
+/// on the world's seeded generator so the choice replays with the tick.
+pub(crate) fn begin_escort(
+    state: &mut WorldState,
+    player: EntityId,
+    giver: Serial,
+) -> Option<String> {
+    let npc = state.registry.entity_of(giver)?;
+    let escort = state.registry.get::<Escortable>(npc).cloned()?;
+    let player_serial = state.registry.serial_of(player)?;
     if escort
         .escorter
         .is_some_and(|current| current != player_serial)
     {
         state.system_message(player, "That person is already being escorted.");
-        return true;
+        return None;
     }
-    // A destination the pack did not fix is chosen now, from the facet's own
-    // named regions — ServUO's `PickRandomDestination`. On the world's seeded
-    // generator, so the choice replays with the rest of the tick.
     let destination = if escort.destination.is_empty() {
-        let Some(picked) = random_town(state, npc) else {
-            return true; // a facet with no named regions has nowhere to go
-        };
-        picked
+        random_town(state, npc)?
     } else {
         escort.destination.clone()
     };
-    make_escortable(state, npc_serial, destination.clone());
-    if !start_escort(state, npc_serial, player_serial) {
-        return true;
+    make_escortable(state, giver, destination.clone());
+    if start_escort(state, giver, player_serial) {
+        Some(destination)
+    } else {
+        None
     }
-    let name = state
-        .registry
-        .get::<openshard_state::components::Name>(npc)
-        .map_or_else(|| "The traveller".to_owned(), |n| n.0.clone());
-    state.system_message(player, &format!("{name} will follow you to {destination}."));
-    true
+}
+
+/// Stop a giver following anyone — its quest was resigned, or paid.
+pub(crate) fn release_escort(state: &mut WorldState, giver: Serial) {
+    let Some(npc) = state.registry.entity_of(giver) else {
+        return;
+    };
+    let Some(mut escort) = state.registry.get::<Escortable>(npc).cloned() else {
+        return;
+    };
+    escort.escorter = None;
+    escort.last_seen = state.ticks;
+    state.registry.insert(npc, escort);
+}
+
+/// Where an escortable wants to be taken, if it is one and has been told.
+#[must_use]
+pub fn escort_destination(state: &WorldState, giver: Serial) -> Option<String> {
+    let npc = state.registry.entity_of(giver)?;
+    let escort = state.registry.get::<Escortable>(npc)?;
+    (!escort.destination.is_empty()).then(|| escort.destination.clone())
 }
 
 /// A named region on the mobile's facet, picked at random — where an escortable

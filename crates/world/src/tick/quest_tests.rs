@@ -754,3 +754,126 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
 fn connection_two() -> ConnectionId {
     ConnectionId::from_raw(2)
 }
+
+#[test]
+fn double_clicking_an_escortable_offers_rather_than_starts_following() {
+    // The bug this pins: the escort used to begin on the click, so an NPC walked
+    // off after anyone who so much as looked at it — no offer, no log entry, and
+    // no way to say no. ServUO starts the follow in `BaseQuest.OnAccept`, and so
+    // does this.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![escort_quest()]);
+    let giver = place_giver(&mut world, &["escort"], now);
+    make_escortable(&mut world, giver);
+    let _ = packets_for(&mut world, connection);
+
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+
+    assert!(
+        drew_a_gump(&mut world, connection),
+        "the click offers the quest"
+    );
+    assert!(
+        escorter_of(&world, giver).is_none(),
+        "and nobody is being followed yet"
+    );
+
+    press(&mut world, connection, QUEST_GUMP, 4); // Accept
+    world.tick(now);
+
+    let player = world.state.players[&connection];
+    let expected = world.state.registry.serial_of(player);
+    assert_eq!(
+        escorter_of(&world, giver),
+        expected,
+        "accepting is what starts the escort"
+    );
+}
+
+#[test]
+fn resigning_an_escort_stops_it_following() {
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![escort_quest()]);
+    let giver = place_giver(&mut world, &["escort"], now);
+    make_escortable(&mut world, giver);
+
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4);
+    world.tick(now);
+    assert!(escorter_of(&world, giver).is_some());
+
+    world.queue(Command::QuestLogRequest { connection });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 11); // the row
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 3); // Resign
+    world.tick(now);
+    press_with(&mut world, connection, QUEST_RESIGN_GUMP, 1, vec![1]); // yes
+    world.tick(now);
+
+    assert!(
+        escorter_of(&world, giver).is_none(),
+        "a resigned escort does not keep trailing the player"
+    );
+}
+
+/// The escort quest every traveller gives: no region of its own, so the
+/// destination is whatever the giver asked for.
+fn escort_quest() -> QuestDef {
+    QuestDef {
+        key: "escort".to_owned(),
+        title: "An Escort Request".to_owned(),
+        objectives: vec![ObjectiveDef {
+            kind: ObjectiveKind::Escort {
+                region: String::new(),
+            },
+            count: 1,
+            name: "escort".to_owned(),
+            seconds: 0,
+        }],
+        ..QuestDef::default()
+    }
+}
+
+/// Make a placed NPC escortable, with a destination already fixed so the test
+/// does not depend on a facet having named regions.
+fn make_escortable(world: &mut World, serial: u32) {
+    let entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(serial).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        entity,
+        openshard_state::components::Escortable {
+            destination: "Britain".to_owned(),
+            escorter: None,
+            last_seen: 0,
+        },
+    );
+}
+
+/// Who, if anyone, an escortable is following.
+fn escorter_of(world: &World, serial: u32) -> Option<Serial> {
+    let entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(serial).unwrap())?;
+    world
+        .state
+        .registry
+        .get::<openshard_state::components::Escortable>(entity)
+        .and_then(|escort| escort.escorter)
+}

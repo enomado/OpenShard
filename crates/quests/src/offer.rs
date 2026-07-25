@@ -7,6 +7,7 @@
 
 use openshard_entities::{EntityId, Serial};
 use openshard_state::components::{DoneQuest, QuestGiver, QuestLog, QuestState};
+use openshard_state::quest::ObjectiveKind;
 use openshard_state::{QuestGumpContext, QuestSection, WorldState, TICKS_PER_SECOND};
 
 use crate::events::{QuestAccepted, QuestRefused, QuestResigned};
@@ -22,11 +23,12 @@ pub const QUEST_LIMIT: usize = 10;
 /// Returns whether the mobile was a quest giver at all, so a caller can fall
 /// through to whatever else a click on it means.
 pub fn talk_to(state: &mut WorldState, player: EntityId, giver: EntityId) -> bool {
-    // An escortable asks to be taken somewhere. Checked first, and it may also be
-    // a quest giver — ServUO's `BaseEscort` is both.
-    if crate::log::ask_for_escort(state, player, giver) {
-        return true;
-    }
+    // Note there is no escortable branch here. An escort is a *quest* — ServUO
+    // starts the follow in `BaseQuest.OnAccept`, never on the click — so an
+    // escortable reaches this the ordinary way, as the giver of a quest with an
+    // escort objective. Starting it on the double-click instead made an NPC
+    // wander off after whoever glanced at it, with no offer, no log entry and no
+    // way to say no.
     let Some(keys) = state
         .registry
         .get::<QuestGiver>(giver)
@@ -120,6 +122,10 @@ pub fn accept(state: &mut WorldState, player: EntityId, key: &str, giver: Option
     // quest is timed from the moment it is taken.
     let seconds_left: Vec<u32> = quest.objectives.iter().map(|o| o.seconds).collect();
     let progress = vec![0u16; quest.objectives.len()];
+    let wants_escort = quest
+        .objectives
+        .iter()
+        .any(|objective| matches!(objective.kind, ObjectiveKind::Escort { .. }));
 
     let mut log = state
         .registry
@@ -137,6 +143,19 @@ pub fn accept(state: &mut WorldState, player: EntityId, key: &str, giver: Option
         giver,
     });
     state.registry.insert(player, log);
+
+    // If it asks for an escort, the giver starts following now — ServUO's
+    // `BaseQuest.OnAccept`, which is the moment the player agreed to lead it.
+    if wants_escort {
+        if let Some(giver) = giver {
+            if let Some(destination) = crate::log::begin_escort(state, player, giver) {
+                state.system_message(
+                    player,
+                    &format!("Lead on! Payment will be made when we arrive at {destination}."),
+                );
+            }
+        }
+    }
 
     if let Some(serial) = state.registry.serial_of(player) {
         state.bus.send(QuestAccepted {
@@ -178,9 +197,15 @@ pub fn resign(state: &mut WorldState, player: EntityId, key: &str) {
     let Some(index) = log.active.iter().position(|quest| quest.key == key) else {
         return;
     };
+    let giver = log.active[index].giver;
     log.active.remove(index);
     remember_done(state, &mut log, key);
     state.registry.insert(player, log);
+    // Anyone this quest had following stops following. Without this a resigned
+    // escort trails the player for ever, off any quest log.
+    if let Some(giver) = giver {
+        crate::log::release_escort(state, giver);
+    }
 
     if let Some(serial) = state.registry.serial_of(player) {
         state.bus.send(QuestResigned {

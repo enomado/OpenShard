@@ -52,7 +52,10 @@ pub use events::{
     QuestAccepted, QuestCompleted, QuestFailed, QuestObjectiveUpdated, QuestRefused, QuestResigned,
 };
 pub use gump::{QUEST_GUMP, QUEST_RESIGN_GUMP};
-pub use log::{bind_giver, make_escortable, open_log, open_log_for, speech_offer, start_escort};
+pub use log::{
+    bind_giver, escort_destination, make_escortable, open_log, open_log_for, speech_offer,
+    start_escort,
+};
 pub use offer::{accept, can_offer, offer, refuse, resign, talk_to, QUEST_LIMIT};
 pub use progress::{
     advance_escorts, advance_slay, refresh_obtain, tick_timers, OBTAIN_EVERY_TICKS,
