@@ -1056,3 +1056,144 @@ fn register_towns(world: &mut World, now: Instant) {
     });
     world.tick(now);
 }
+
+#[test]
+fn an_escort_pays_on_reaching_its_destination() {
+    // The arrival match only ever looked for an objective naming the region
+    // literally, and the pack's one escort quest names none — so not one of its
+    // sixty travellers could ever complete.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![escort_quest()]);
+    let giver = place_giver(&mut world, &["escort"], now);
+    register_towns(&mut world, now);
+    world.queue(Command::MakeEscortable {
+        serial: giver,
+        destination: String::new(),
+    });
+    world.tick(now);
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4); // Accept
+    world.tick(now);
+    assert_eq!(log_of(&world, connection).active[0].progress, vec![0]);
+
+    // Put both of them inside the destination region and let the pass look.
+    let player = world.state.players[&connection];
+    let inside = Point::new(START.0 + 210, START.1 + 210, 0);
+    teleport_to(&mut world, player, inside);
+    let npc = world
+        .state
+        .registry
+        .entity_of(Serial::new(giver).unwrap())
+        .unwrap();
+    teleport_to(&mut world, npc, inside);
+    world.tick(now);
+
+    assert_eq!(
+        log_of(&world, connection).active[0].progress,
+        vec![1],
+        "arriving completes the escort"
+    );
+}
+
+#[test]
+fn a_delivery_completes_on_talking_to_its_destination() {
+    // Deliver objectives never advanced at all: nothing outside the turn-in even
+    // looked at the kind, so a delivery quest could be accepted and never
+    // finished.
+    let now = Instant::now();
+    let mut world = super::tests::world();
+    let connection = enter(&mut world, now);
+    register(&mut world, vec![deliver_quest()]);
+    let giver = place_giver(&mut world, &["deliver_silk"], now);
+    let destination = place_named(&mut world, "Mirabel", now);
+
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: giver,
+    });
+    world.tick(now);
+    press(&mut world, connection, QUEST_GUMP, 4);
+    world.tick(now);
+
+    // Talking to the destination without the goods does nothing.
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: destination,
+    });
+    world.tick(now);
+    assert_eq!(
+        log_of(&world, connection).active[0].progress,
+        vec![0],
+        "an empty-handed conversation is not a delivery"
+    );
+
+    let player = world.state.players[&connection];
+    let owner = world.state.registry.serial_of(player).unwrap();
+    let backpack = openshard_items::backpack_of(&world.state, owner).unwrap();
+    put_silk(&mut world, backpack, 2);
+    world.queue(Command::DoubleClick {
+        connection,
+        serial: destination,
+    });
+    world.tick(now);
+
+    assert_eq!(
+        log_of(&world, connection).active[0].progress,
+        vec![2],
+        "carrying them completes the objective"
+    );
+}
+
+/// A quest asking for two skeins of silk taken to Mirabel.
+fn deliver_quest() -> QuestDef {
+    QuestDef {
+        key: "deliver_silk".to_owned(),
+        title: "A Parcel for Mirabel".to_owned(),
+        objectives: vec![ObjectiveDef {
+            kind: ObjectiveKind::Deliver {
+                graphic: SILK,
+                to: "Mirabel".to_owned(),
+            },
+            count: 2,
+            name: "spiders' silk".to_owned(),
+            seconds: 0,
+        }],
+        ..QuestDef::default()
+    }
+}
+
+/// Place a plain named NPC — a delivery destination, which gives no quests.
+fn place_named(world: &mut World, name: &str, now: Instant) -> u32 {
+    let at = Point::new(START.0 + 2, START.1, 0);
+    let serial = spawn_mobile_at(world, at, 100, now);
+    let entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(serial).unwrap())
+        .unwrap();
+    world
+        .state
+        .registry
+        .insert(entity, openshard_state::components::Name(name.to_owned()));
+    serial
+}
+
+/// Move a mobile to a tile, sector index included.
+fn teleport_to(world: &mut World, entity: EntityId, at: Point) {
+    world
+        .state
+        .registry
+        .insert(entity, openshard_state::components::Position(at));
+    let facet = world.state.facet_of(entity);
+    world
+        .state
+        .facet_state_mut(facet)
+        .sectors
+        .insert(entity, at);
+}

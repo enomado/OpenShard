@@ -58,7 +58,7 @@ pub use log::{
 };
 pub use offer::{accept, can_offer, offer, refuse, resign, talk_to, QUEST_LIMIT};
 pub use progress::{
-    advance_escorts, advance_slay, refresh_obtain, tick_timers, OBTAIN_EVERY_TICKS,
+    advance_escorts, advance_slay, deliver_to, refresh_obtain, tick_timers, OBTAIN_EVERY_TICKS,
 };
 pub use reply::{handle, owns};
 pub use turnin::{complete, is_complete};

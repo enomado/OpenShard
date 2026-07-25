@@ -321,7 +321,15 @@ fn arrive(state: &mut WorldState, npc: EntityId, escorter: EntityId, destination
     advance(
         state,
         escorter,
-        |kind| matches!(kind, ObjectiveKind::Escort { region } if region == destination),
+        // An escort objective names a region, or names none — in which case the
+        // destination is whatever this giver asked for, chosen when it was
+        // placed. A pack writing one escort quest for sixty travellers depends
+        // entirely on the second form, and matching only the first meant none of
+        // them ever completed on arrival.
+        |kind| {
+            matches!(kind, ObjectiveKind::Escort { region }
+                if region.is_empty() || region == destination)
+        },
     );
     // The NPC's part is over: it stops being escortable and wanders off like any
     // other townsperson. Despawning it here would make a quest giver vanish under
@@ -351,4 +359,71 @@ fn position_of(state: &WorldState, entity: EntityId) -> Option<openshard_protoco
         .registry
         .get::<openshard_state::components::Position>(entity)
         .map(|position| position.0)
+}
+
+/// A player talked to a mobile: complete any delivery objective that names it.
+///
+/// ServUO's `QuestHelper.DeliveryArrived`, which runs *first* in
+/// `MondainQuester.OnTalk` — before the offer, before the turn-in — because the
+/// destination of a delivery is usually somebody else's quest giver, or an
+/// ordinary vendor that gives no quests at all. Matched by name, since that is
+/// what the pack can write before anything has been spawned.
+///
+/// The objective completes, it does not increment: you have either brought the
+/// delivery or you have not. The items themselves are taken at turn-in, with the
+/// rest — ServUO's `DeliverObjective.Update` only calls `Complete()`.
+pub fn deliver_to(state: &mut WorldState, player: EntityId, destination: EntityId) -> bool {
+    let Some(name) = state
+        .registry
+        .get::<openshard_state::components::Name>(destination)
+        .map(|name| name.0.clone())
+    else {
+        return false;
+    };
+    let Some(mut log) = state.registry.get::<QuestLog>(player).cloned() else {
+        return false;
+    };
+    let Some(serial) = state.registry.serial_of(player) else {
+        return false;
+    };
+    let mut updates: Vec<(String, usize, u16, u16)> = Vec::new();
+    for quest in &mut log.active {
+        if quest.failed {
+            continue;
+        }
+        let Some(def) = state.quests.get(&quest.key) else {
+            continue;
+        };
+        for (index, objective) in def.objectives.iter().enumerate() {
+            let ObjectiveKind::Deliver { graphic, to } = &objective.kind else {
+                continue;
+            };
+            if to != &name {
+                continue;
+            }
+            let Some(slot) = quest.progress.get_mut(index) else {
+                continue;
+            };
+            if *slot >= objective.count {
+                continue;
+            }
+            // Only if the goods are actually here. Otherwise the objective would
+            // complete on a conversation and the turn-in would then refuse for
+            // reasons the player cannot see.
+            let carried = openshard_items::carried_amount(state, serial, *graphic);
+            if carried < u32::from(objective.count) {
+                continue;
+            }
+            *slot = objective.count;
+            updates.push((quest.key.clone(), index, objective.count, objective.count));
+        }
+    }
+    if updates.is_empty() {
+        return false;
+    }
+    state.registry.insert(player, log);
+    for (key, index, progress, goal) in updates {
+        announce(state, player, serial, &key, index, progress, goal);
+    }
+    true
 }

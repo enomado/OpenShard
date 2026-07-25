@@ -23,6 +23,11 @@ pub const QUEST_LIMIT: usize = 10;
 /// Returns whether the mobile was a quest giver at all, so a caller can fall
 /// through to whatever else a click on it means.
 pub fn talk_to(state: &mut WorldState, player: EntityId, giver: EntityId) -> bool {
+    // A delivery first, before anything asks whether this mobile gives quests —
+    // the destination of a delivery is usually somebody else's giver, or a plain
+    // vendor that gives none. ServUO's `OnTalk` opens the same way.
+    let delivered = crate::progress::deliver_to(state, player, giver);
+
     // Note there is no escortable branch here. An escort is a *quest* — ServUO
     // starts the follow in `BaseQuest.OnAccept`, never on the click — so an
     // escortable reaches this the ordinary way, as the giver of a quest with an
@@ -34,7 +39,7 @@ pub fn talk_to(state: &mut WorldState, player: EntityId, giver: EntityId) -> boo
         .get::<QuestGiver>(giver)
         .map(|q| q.keys.clone())
     else {
-        return false;
+        return delivered;
     };
     let giver_serial = state.registry.serial_of(giver);
 
