@@ -8579,6 +8579,72 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
 }
 
 #[test]
+fn a_traveller_asks_for_an_escort_out_loud() {
+    // ServUO's `BaseEscortable.OnMovement` says "I am looking to go to X, will you take
+    // me?" when someone comes near, and that is what makes sixty travellers scattered
+    // across a facet findable at all. It has to be *speech*, not a system line to the
+    // player: the ask is heard, so a second player standing there knows an escort is
+    // going begging.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let Position(player_at) = *world.registry().get::<Position>(player).unwrap();
+
+    let traveller = spawn_townsperson(
+        &mut world,
+        "a wandering healer",
+        Point::new(player_at.x + 2, player_at.y, player_at.z),
+        now,
+    );
+    world.state.registry.insert(
+        traveller,
+        openshard_state::components::Escortable {
+            destination: "Britain".to_owned(),
+            escorter: None,
+            last_seen: 0,
+        },
+    );
+    let traveller_serial = world.registry().serial_of(traveller).unwrap().raw();
+    world.drain_outbound().count();
+    for _ in 0..45 {
+        world.tick(now);
+    }
+    let asked = packets_for(&mut world, connection).iter().any(|p| {
+        p[0] == 0xAE && mentions(p, traveller_serial) && {
+            let text: Vec<u8> = p.iter().copied().filter(|&b| b != 0).collect();
+            String::from_utf8_lossy(&text).contains("Britain")
+        }
+    });
+    assert!(asked, "the traveller named where it wants to go");
+
+    // Once it is being led it has nothing left to ask for, and falls back to whatever
+    // its trade would say.
+    world.state.registry.insert(
+        traveller,
+        openshard_state::components::Escortable {
+            destination: "Britain".to_owned(),
+            escorter: world.registry().serial_of(player),
+            last_seen: 0,
+        },
+    );
+    world.drain_outbound().count();
+    for _ in 0..(15 * 20 + 45) {
+        world.tick(now);
+    }
+    let asked_again = packets_for(&mut world, connection).iter().any(|p| {
+        p[0] == 0xAE && mentions(p, traveller_serial) && {
+            let text: Vec<u8> = p.iter().copied().filter(|&b| b != 0).collect();
+            String::from_utf8_lossy(&text).contains("will you take me")
+        }
+    });
+    assert!(
+        !asked_again,
+        "a traveller already being led must not keep asking"
+    );
+}
+
+#[test]
 fn a_crowd_of_townsfolk_does_not_beat_in_lockstep() {
     // A `Populate` places seven hundred townsfolk on one tick. With a shared
     // `next_beat` of zero every one of their beats falls on the same tick for ever

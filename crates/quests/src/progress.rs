@@ -184,6 +184,24 @@ pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
     steps
 }
 
+/// The muted grey and font the client draws townsfolk chatter in — `npc`'s, so an
+/// escortable's voice matches every other NPC's.
+const NPC_HUE: u16 = 0x03B2;
+/// The font a townsperson speaks in.
+const NPC_FONT: u16 = 3;
+
+/// Have an escortable say something out loud, over its own head.
+///
+/// ServUO's `BaseEscortable` uses `Say`, not `SendMessage`: the traveller's asking,
+/// its thanks and its "I seem to have lost my master" are *heard*, by the escorter and
+/// by anyone standing nearby. This engine had them as private system lines to the
+/// player, which reads as the interface talking rather than the NPC.
+pub(crate) fn escortable_says(state: &mut WorldState, npc: Option<EntityId>, text: &str) {
+    if let Some(npc) = npc {
+        openshard_chat::speak(state, npc, 0, NPC_HUE, NPC_FONT, text);
+    }
+}
+
 /// Ticks between an escortable's steps — a townsperson's amble, so a player does
 /// not have to stand still and wait for it.
 const ESCORT_BEAT_TICKS: u64 = 6;
@@ -335,21 +353,37 @@ fn arrive(state: &mut WorldState, npc: EntityId, escorter: EntityId, destination
     // other townsperson. Despawning it here would make a quest giver vanish under
     // the player who just walked it across the map.
     state.registry.remove::<Escortable>(npc);
-    if let Some(name) = state
+    // ServUO's cliloc 1042809, said out loud: "We have arrived! I thank thee,
+    // ~1_PLAYER_NAME~! I have no further need of thy services. Here is thy pay."
+    let escorter_name = state
         .registry
-        .get::<openshard_state::components::Name>(npc)
-        .map(|n| n.0.clone())
-    {
-        state.system_message(escorter, &format!("{name} thanks you and departs."));
-    }
+        .get::<openshard_state::components::Name>(escorter)
+        .map_or_else(|| "friend".to_owned(), |n| n.0.clone());
+    escortable_says(
+        state,
+        Some(npc),
+        &format!(
+            "We have arrived! I thank thee, {escorter_name}! I have no further need of \
+             thy services. Here is thy pay."
+        ),
+    );
 }
 
 /// Stop following: the escorter logged out, died, or simply walked away.
 fn abandon(state: &mut WorldState, npc: EntityId) {
+    let was_led = state
+        .registry
+        .get::<Escortable>(npc)
+        .is_some_and(|escort| escort.escorter.is_some());
     if let Some(mut escort) = state.registry.get::<Escortable>(npc).cloned() {
         escort.escorter = None;
         escort.last_seen = state.ticks;
         state.registry.insert(npc, escort);
+    }
+    // ServUO's cliloc 1005653, and the escorter's own 1042473. Said aloud, so a
+    // traveller left behind in a corridor is audible rather than silently inert.
+    if was_led {
+        escortable_says(state, Some(npc), "Hmmm. I seem to have lost my master.");
     }
 }
 

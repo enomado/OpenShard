@@ -156,9 +156,14 @@ pub fn accept(state: &mut WorldState, player: EntityId, key: &str, giver: Option
     if wants_escort {
         if let Some(giver) = giver {
             if let Some(destination) = crate::log::begin_escort(state, player, giver) {
-                state.system_message(
-                    player,
-                    &format!("Lead on! Payment will be made when we arrive at {destination}."),
+                // Said out loud by the traveller, not shown to the player as a system
+                // line — ServUO's `BaseEscortable` uses `Say` here, so whoever else is
+                // standing around learns an escort has just set out.
+                let speaker = state.registry.entity_of(giver);
+                crate::progress::escortable_says(
+                    state,
+                    speaker,
+                    &format!("Lead on! Payment will be made when we arrive in {destination}."),
                 );
             }
         }

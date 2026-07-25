@@ -1292,12 +1292,21 @@ Roughly in dependency order, each script-first:
     tick, and a shared `next_beat` of zero put every one of their beats on the same
     tick for ever after — invisible until dusk, when a whole facet's A\* bill would
     land at once.
-  - [ ] **Barks — an idle line to an empty street.** The engine has it: `npc::live`
-    speaks a trade's `barks` when nobody is within greeting range, on its own long
-    cooldown. Nothing fills the list, because ServUO's townsfolk do not call out and
-    inventing a personality per trade is the one thing this slice deliberately did
-    not do. ServUO's own source for this is the **Town Crier** (a news queue and a
-    staff gump), which is its own feature.
+  - [x] **Barks, and the travellers speak up.** `npc::live` says a trade's `barks`
+    when nobody is within greeting range, on its own long cooldown. The lines are the
+    same derivation the wares answer uses — the trade names itself and what it
+    actually stocks, off ServUO's own `SB*.cs` list — because ServUO's townsfolk are
+    silent here and writing a personality per trade is the one thing this slice
+    deliberately does not do. A trade with no shop has nothing to call out and stays
+    quiet. (The **Town Crier**, ServUO's real source of street noise, is still its own
+    feature: it wants a news queue and a staff gump.)
+
+    **`BaseEscortable` is one of the few NPC classes ServUO does give lines**, so
+    those are ported as speech rather than as private system messages — a traveller's
+    ask, its thanks and its "Hmmm. I seem to have lost my master." (cliloc 1005653,
+    1042809) are *heard*, which is what makes sixty of them scattered across a facet
+    findable and what tells a bystander an escort has just set out. The ask rides the
+    greeting seam (`BaseEscortable.OnMovement`) and stops once someone is leading it.
   - [ ] **Locks and keys on doors** — every door opens to any NPC that can work
     handles, and to any player; the pack already names locked doors it cannot yet
     lock. Wants a lock component the obstruction index respects and key items.

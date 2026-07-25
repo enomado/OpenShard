@@ -29,7 +29,7 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::Notoriety;
-use openshard_state::components::{Name, Npc, Position, Title, Vendor};
+use openshard_state::components::{Escortable, Name, Npc, Position, Title, Vendor};
 use openshard_state::sectors::in_range;
 use openshard_state::{SpeechEntry, WorldState};
 
@@ -62,6 +62,22 @@ pub(crate) fn greeting_for(
     visitor: EntityId,
 ) -> Option<String> {
     let visitor_name = state.registry.get::<Name>(visitor).map(|n| n.0.clone());
+
+    // A traveller waiting for an escort asks for one, ahead of anything its trade
+    // would otherwise say — ServUO's `BaseEscortable.OnMovement`, which is what makes
+    // the sixty of them scattered across Felucca findable at all. Only while it is
+    // *unescorted*: one already being led has nothing to ask for.
+    if let Some(escort) = state.registry.get::<Escortable>(npc) {
+        if escort.escorter.is_none() {
+            return Some(match escort.destination.as_str() {
+                // A pack may leave the destination for the quest to choose when
+                // someone accepts, in which case there is no place to name yet.
+                "" => "I am looking for an escort. Wilt thou take me?".to_owned(),
+                to => format!("I am looking to go to {to}, will you take me?"),
+            });
+        }
+    }
+
     let registered = table_lines(state, npc, |t| &t.greetings);
 
     let line = if let Some(lines) = registered {
