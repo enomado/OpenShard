@@ -47,13 +47,19 @@ struct SpawnSpec {
     facet: u8,
 }
 
-/// The default stack size: a single item.
 /// The serde default for a spec's `aggression`: aggressive, the old behaviour.
 fn aggressive() -> u8 {
     2
 }
 
+/// The default stack size: a single item.
 fn one() -> u16 {
+    1
+}
+
+/// The serde default for a townsperson's `shoe`: plain shoes, `BaseVendor`'s own
+/// default `ShoeType`.
+fn shoes() -> u8 {
     1
 }
 
@@ -142,6 +148,13 @@ struct MobileSpec {
     facet: u8,
     #[serde(default)]
     name: String,
+    /// The trade, ServUO-style ("the blacksmith"). The key its dress, its name and
+    /// its speech all hang off.
+    #[serde(default)]
+    title: String,
+    /// The trade's footwear, `ShoeType`'s wire byte; defaults to plain shoes.
+    #[serde(default = "shoes")]
+    shoe: u8,
     #[serde(default)]
     banker: bool,
     #[serde(default)]
@@ -203,6 +216,8 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
             z: spec.z,
             facet: spec.facet,
             name: spec.name,
+            title: spec.title,
+            shoe: spec.shoe,
             banker: spec.banker,
             vendor: spec.vendor,
             equipment,
@@ -438,6 +453,76 @@ struct QuestsSpec {
 
 const fn yes() -> bool {
     true
+}
+
+/// What a script passes to register townsfolk speech.
+#[derive(serde::Deserialize)]
+struct NpcSpeechSpec {
+    /// One entry per trade, keyed by the title its NPCs wear.
+    #[serde(default)]
+    trades: Vec<TradeSpeechSpec>,
+    /// Personal names for male NPCs; empty keeps the core's list.
+    #[serde(default)]
+    male_names: Vec<String>,
+    /// Personal names for female NPCs; empty keeps the core's list.
+    #[serde(default)]
+    female_names: Vec<String>,
+}
+
+/// One trade's speech in a [`NpcSpeechSpec`].
+#[derive(serde::Deserialize)]
+struct TradeSpeechSpec {
+    title: String,
+    #[serde(default)]
+    greetings: Vec<String>,
+    #[serde(default)]
+    barks: Vec<String>,
+    #[serde(default)]
+    entries: Vec<SpeechEntrySpec>,
+    #[serde(default)]
+    fallback: String,
+}
+
+/// One keyword group in a [`TradeSpeechSpec`].
+#[derive(serde::Deserialize)]
+struct SpeechEntrySpec {
+    keywords: Vec<String>,
+    lines: Vec<String>,
+}
+
+/// Register what every trade says, replacing whatever was registered before:
+/// `op_register_npc_speech({ trades: [...], male_names: [...], female_names: [...] })`.
+///
+/// Called at pack load time, like `op_register_quests`; a hot reload re-registers
+/// cleanly. The keys are the titles NPCs are spawned with.
+#[op2]
+fn op_register_npc_speech(state: &mut OpState, #[serde] spec: NpcSpeechSpec) {
+    let trades = spec
+        .trades
+        .into_iter()
+        .map(|trade| crate::ScriptTradeSpeech {
+            title: trade.title,
+            greetings: trade.greetings,
+            barks: trade.barks,
+            entries: trade
+                .entries
+                .into_iter()
+                .map(|entry| crate::ScriptSpeechEntry {
+                    keywords: entry.keywords,
+                    lines: entry.lines,
+                })
+                .collect(),
+            fallback: trade.fallback,
+        })
+        .collect();
+    state
+        .borrow_mut::<Host>()
+        .outbox
+        .push(Command::RegisterNpcSpeech {
+            trades,
+            male_names: spec.male_names,
+            female_names: spec.female_names,
+        });
 }
 
 /// Register the shard's quests, replacing whatever was registered before:
@@ -1027,6 +1112,7 @@ extension!(
         op_clear_decorations,
         op_generate_doors,
         op_gump,
+        op_register_npc_speech,
         op_register_quests,
         op_bind_quest_giver,
         op_make_escortable,

@@ -226,6 +226,24 @@ pub struct GameplayConfig {
     /// through the context menu instead.
     #[serde(default = "default_expansion")]
     pub expansion: String,
+    /// Whether townsfolk keep a daily routine — at their posts by day, at home by
+    /// night. Off by default.
+    ///
+    /// Marked as ours rather than a port: neither reference ties an NPC to the
+    /// clock. ServUO's nearest equivalent is a hand-placed `WayPoint` chain a
+    /// builder walks an NPC along, with no notion of the hour. It also does nothing
+    /// until the pack gives its NPCs a home to go to, so turning it on alone is
+    /// safe.
+    #[serde(default)]
+    pub npc_schedule: bool,
+    /// The hour townsfolk arrive at their posts, with `npc_schedule` on.
+    #[serde(default = "default_npc_work_hour")]
+    pub npc_work_hour: u8,
+    /// The hour townsfolk leave for home, with `npc_schedule` on. Must be after
+    /// `npc_work_hour` and under 24 — a working day that wraps midnight is
+    /// rejected at load, so nothing downstream has to reason about one.
+    #[serde(default = "default_npc_home_hour")]
+    pub npc_home_hour: u8,
 }
 
 /// The expansions a shard may advertise, in order.
@@ -318,6 +336,16 @@ fn default_expansion() -> String {
     "ml".to_owned()
 }
 
+/// The hour a shop opens, with `npc_schedule` on.
+fn default_npc_work_hour() -> u8 {
+    7
+}
+
+/// The hour a shop closes, with `npc_schedule` on.
+fn default_npc_home_hour() -> u8 {
+    21
+}
+
 impl Default for GameplayConfig {
     fn default() -> Self {
         Self {
@@ -345,6 +373,9 @@ impl Default for GameplayConfig {
             uo_minute_seconds: default_uo_minute_seconds(),
             season: default_season(),
             guards: default_true(),
+            npc_schedule: false,
+            npc_work_hour: default_npc_work_hour(),
+            npc_home_hour: default_npc_home_hour(),
             expansion: default_expansion(),
         }
     }
@@ -615,6 +646,15 @@ pub enum ConfigError {
         /// The value given.
         expansion: String,
     },
+    /// `gameplay.npc_work_hour`/`npc_home_hour` do not describe a working day that
+    /// starts and ends on the same date. Rejected rather than wrapped, so the one
+    /// comparison that reads them stays a comparison.
+    BadNpcHours {
+        /// The hour given for opening.
+        work: u8,
+        /// The hour given for closing.
+        home: u8,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -658,6 +698,11 @@ impl fmt::Display for ConfigError {
             Self::UnknownExpansion { expansion } => write!(
                 f,
                 "gameplay.expansion \"{expansion}\" is not one of aos, se, ml"
+            ),
+            Self::BadNpcHours { work, home } => write!(
+                f,
+                "gameplay.npc_work_hour {work} and npc_home_hour {home} must both be under 24 \
+                 with work before home; a working day that wraps midnight is not supported",
             ),
             Self::UnknownSeason { season } => write!(
                 f,
@@ -749,6 +794,16 @@ impl Config {
         // world at midnight for ever.
         if self.gameplay.uo_minute_seconds == 0 {
             return Err(ConfigError::ZeroUoMinuteSeconds);
+        }
+        // A routine whose day wraps midnight would leave every NPC permanently at
+        // one end of it, which reads as the setting doing nothing.
+        if self.gameplay.npc_work_hour >= self.gameplay.npc_home_hour
+            || self.gameplay.npc_home_hour > 23
+        {
+            return Err(ConfigError::BadNpcHours {
+                work: self.gameplay.npc_work_hour,
+                home: self.gameplay.npc_home_hour,
+            });
         }
         // An expansion the shard cannot name would silently advertise nothing,
         // and the client would quietly drop half its paperdoll.

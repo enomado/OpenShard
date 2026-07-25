@@ -7,17 +7,20 @@ use openshard_protocol::{Direction, Facing, Notoriety, Point};
 use openshard_state::components::{
     body_opens_doors, creature_name, Aggression, Banker, Body, Brain, Facet, Heading, Hitpoints,
     MeleeDamage, Movement, Name, Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed,
+    Title,
 };
 use openshard_state::WorldState;
 use tracing::{debug, warn};
 
 use openshard_items as items;
 
-use crate::banker_name;
+use crate::dress::{dress_townsperson, ShoeType};
+use crate::names::townsperson_name;
 
-/// How far an idle banker may drift from its post before it heads back — a couple
-/// of tiles of shuffling near the counter, not a stroll out the door.
-const BANKER_WANDER: u8 = 2;
+/// How far an idle townsperson may drift from its post before it heads back — a
+/// couple of tiles of shuffling near the counter, not a stroll out the door.
+/// ServUO's `RangeHome` for a `BaseVendor`.
+const TOWNSFOLK_WANDER: u8 = 2;
 
 /// A creature or NPC appeared in the world.
 ///
@@ -57,14 +60,27 @@ pub struct SpawnSpec {
     pub wander: bool,
     pub position: Point,
     pub facet: u8,
-    /// A name the client shows on single-click, if any. Townsfolk have one.
+    /// A name the client shows on single-click, if any. Overrides `title`.
     pub name: Option<String>,
+    /// The trade this NPC plies, ServUO-style ("the blacksmith"). `None` for a
+    /// creature. It is the key three things hang off — the generated name, the
+    /// generated outfit, and the speech table — so it is saved with the mobile.
+    pub title: Option<String>,
+    /// What the trade wears on its feet. Read only when there is a `title`, since
+    /// that is when the core does the dressing.
+    pub shoe: ShoeType,
     /// Whether this mobile is a banker — it answers "bank".
     pub banker: bool,
     /// Whether this mobile is a shopkeeper — it answers double-click with a
     /// buy gump and "sell" with an offer.
     pub vendor: bool,
     /// Worn clothing and gear, `(graphic, layer, hue)` — so it is not naked.
+    ///
+    /// **Additive, not a replacement.** A mobile with a `title` is always dressed by
+    /// the core ([`dress_townsperson`]) and this list is worn *over* that base, the
+    /// precedence ServUO's per-trade `InitOutfit` overrides have — they call
+    /// `base.InitOutfit()` and add an apron, not instead of the shirt. Where the two
+    /// want one layer, this list wins. A mobile with no `title` wears only this.
     pub equipment: Vec<(u16, u8, u16)>,
     /// Trained combat skills, `(skill id, value in tenths)` — Wrestling, Tactics,
     /// Anatomy and the weapon skills. Without these a creature has no `Skills`
@@ -98,6 +114,8 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         position,
         facet,
         name,
+        title,
+        shoe,
         banker,
         vendor,
         equipment,
@@ -124,6 +142,23 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         Some(z) => Point::new(position.x, position.y, z),
         None => position,
     };
+    // Dress a townsperson before anything is written, because the roll decides the
+    // body and the skin too — a woman is a different body graphic, not a flag. A
+    // creature (no `title`) is never dressed; its body already is its appearance.
+    //
+    // ServUO's `BaseVendor` constructor runs `InitBody` then `InitOutfit`, and a
+    // trade's own override calls `base.InitOutfit()` and *adds* to it — an apron
+    // over the shirt, not instead of it. So the base is always rolled for a trade,
+    // and whatever the pack sent is worn on top of it (see below, where the pack's
+    // list is equipped first and the base then fills only the layers still free).
+    let dressed = title
+        .as_ref()
+        .map(|_| dress_townsperson(&mut state.rng, shoe, None));
+    let (body, hue) = match &dressed {
+        Some(look) => (look.body, look.hue),
+        None => (body, hue),
+    };
+
     let (entity, serial) = match state.registry.spawn_with_serial(SerialKind::Mobile) {
         Ok(pair) => pair,
         Err(error) => {
@@ -203,15 +238,19 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
             },
         );
     }
-    // A name, in order of authority: what the spawn asked for, then a banker's
-    // generated one ("Rowena the banker"), then the creature default its body
-    // gives it ("a chicken", "a horse") — so an unnamed animal or monster still
-    // reads on single-click. Nameless only when none of those apply (a plain
-    // human NPC, or an unlisted creature body).
+    // A name, in order of authority: what the spawn asked for, then a personal
+    // name generated in front of the trade ("Rowena the blacksmith"), then the
+    // creature default its body gives it ("a chicken", "a horse") — so an unnamed
+    // animal or monster still reads on single-click. Nameless only when none of
+    // those apply (an unlisted creature body).
+    //
+    // The generated form is why a whole town no longer answers to "the banker":
+    // the pack sends the trade, and the person in front of it is the core's.
     let name = if let Some(name) = name {
         Some(name)
-    } else if banker {
-        Some(banker_name(&mut state.rng))
+    } else if let Some(title) = &title {
+        let female = dressed.as_ref().is_some_and(|look| look.female);
+        Some(townsperson_name(&mut state.rng, title, female))
     } else {
         creature_name(body).map(str::to_owned)
     };
@@ -222,24 +261,51 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         crate::vendor::make_vendor(state, entity, serial);
     }
     if banker {
-        state.registry.insert(entity, Banker { next_greet: 0 });
+        state.registry.insert(entity, Banker);
     }
-    // Both kinds of townsfolk get the base: a home to keep to, the beat that
-    // turns them to face whoever comes near.
-    if banker || vendor {
+    // The trade itself, kept on the mobile: it is the key its speech table is
+    // looked up by every time someone talks near it, so it cannot live only in the
+    // spawn call that placed it — see `MobileRecord::title`.
+    if let Some(title) = title {
+        state.registry.insert(entity, Title(title));
+    }
+    // Every townsperson gets the base — a home to keep to and the beat that turns
+    // it to face whoever comes near — not only the two with a service to sell.
+    // Gating this on `banker || vendor` alone left 257 of Felucca's 738 townsfolk
+    // as statues: a name, and no life at all. A declared trade is now enough, and a
+    // service still is, so a pack that names neither a trade nor a service is the
+    // only way to get a prop — which is what a prop should take.
+    if state.registry.has::<Title>(entity) || banker || vendor {
         state.registry.insert(
             entity,
             Npc {
                 home: position,
-                wander: BANKER_WANDER,
+                wander: TOWNSFOLK_WANDER,
                 next_beat: 0,
+                next_greet: 0,
             },
         );
     }
     // Dress it before the reveal, so the clothing rides in the `0x78` that
     // draws it — a naked banker is a bug that looks like nudity.
-    for (graphic, layer, item_hue) in equipment {
-        items::equip_worn_item(state, serial, graphic, item_hue, layer);
+    //
+    // The pack's own list goes on first and the generated base fills what is left,
+    // which is the precedence ServUO's `InitOutfit` overrides have: a smith's apron
+    // is a deliberate choice and the base shirt is a fallback, so where the two want
+    // one layer the pack wins. `equip_worn_item` does not check the layer — it would
+    // cheerfully list two items on one and leave the client drawing whichever it
+    // read last — so the check is here, at the one place that equips a whole outfit.
+    let mut worn: Vec<u8> = Vec::with_capacity(8);
+    for (graphic, layer, item_hue) in equipment
+        .into_iter()
+        .chain(dressed.into_iter().flat_map(|look| look.equipment))
+    {
+        if worn.contains(&layer) {
+            continue;
+        }
+        if items::equip_worn_item(state, serial, graphic, item_hue, layer).is_some() {
+            worn.push(layer);
+        }
     }
     state
         .registry

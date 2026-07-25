@@ -53,15 +53,16 @@ impl World {
             // has earned it. Same shape: the word was spoken, and the town
             // answers it.
             npc::guard_keywords(&mut self.state, connection, actor, &text);
-            // "sell" near a shopkeeper opens the offer list; "buy" opens the shop —
-            // the keyword path to the same gump a double-click reaches. Checked
-            // "sell" first so the "buy" substring inside neither steals it.
-            let lowered = text.to_ascii_lowercase();
-            if lowered.contains("sell") {
-                npc::offer_sell_list(&mut self.state, connection, actor);
-            } else if lowered.contains("buy") {
-                npc::buy_keyword(&mut self.state, connection, actor);
-            }
+            // And the townsfolk in earshot hear it: a shop keyword opens a shop, a
+            // trade keyword earns an answer. ServUO's `VendorAI.OnSpeech`, bounded
+            // to its four tiles.
+            //
+            // This replaced a substring test on the whole line — `contains("sell")`
+            // — under which "that sword is unsellable" opened a buy-back list, and
+            // a bare "sell" opened the shop of whichever vendor happened to be
+            // nearest in a crowded bank. Keywords are whole words now, and a bare
+            // "buy"/"sell" needs the shopkeeper named.
+            npc::overhear(&mut self.state, connection, actor, &text);
             // And "quest" near a quest giver offers what it has. The same shape
             // again — the word was spoken, and whoever is standing there answers.
             if let Some(serial) = self.state.registry.serial_of(actor) {

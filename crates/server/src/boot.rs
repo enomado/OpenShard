@@ -93,6 +93,9 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
         g.uo_minute_seconds,
         g.season,
         g.guards,
+        g.npc_schedule,
+        g.npc_work_hour,
+        g.npc_home_hour,
     )
 }
 

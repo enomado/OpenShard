@@ -26,6 +26,7 @@
 //! The tick that drives all this, and the systems that act on it, live above.
 
 pub mod components;
+pub mod dialogue;
 pub mod obstruct;
 pub mod quest;
 pub mod region;
@@ -37,10 +38,11 @@ pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Decoration, Door, Equipped, Facet, Field, FieldKind, Frozen, Ghost, Graphic, Guard, Heading,
-    Hitpoints, InRegion, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, Npc, Position,
-    Resistance, Scripted, Skills, SpawnedBy, Stackable, Stamina, StatMod, StatMods, Stats,
-    SwingSpeed, FIELD_HEIGHT,
+    Hitpoints, InRegion, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, NightHome, Npc,
+    Position, Resistance, Scripted, Skills, SpawnedBy, Stackable, Stamina, StatMod, StatMods,
+    Stats, SwingSpeed, Title, FIELD_HEIGHT,
 };
+pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
 pub use quest::{ObjectiveDef, ObjectiveKind, QuestDef, QuestDefs, RewardDef, RewardKind};
 pub use region::{Region, RegionFlags, RegionRect, Regions};

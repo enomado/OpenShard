@@ -1680,6 +1680,9 @@ fn gameplay_config_reaches_the_systems() {
         5,     // uo_minute_seconds
         0,     // season
         true,  // guards
+        false, // npc_schedule
+        7,     // npc_work_hour
+        21,    // npc_home_hour
     );
     let mut world = World::new(START).with_gameplay(gameplay);
     world.queue(Command::SpawnItem {
@@ -2070,6 +2073,8 @@ fn spawn_mobile_full(
         position: point,
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -2591,6 +2596,8 @@ fn a_creature_dies_with_its_own_voice() {
         position: Point::new(START.0, START.1, 0),
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -3198,6 +3205,8 @@ fn a_creature_can_be_given_combat_skills() {
         position: Point::new(START.0, START.1, 0),
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -6180,6 +6189,8 @@ fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now:
         position: point,
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -7148,6 +7159,8 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
         position: Point::new(START.0 + 1, START.1, 0),
         facet: 0,
         name: Some("Mirabel".to_owned()),
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -7738,6 +7751,8 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         position: Point::new(START.0 + 1, START.1, 0),
         facet: 0,
         name: Some("Mirabel".to_owned()),
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -8107,6 +8122,8 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
         position: at,
         facet: 0,
         name: Some("the banker".to_owned()),
+        title: None,
+        shoe: 0,
         banker: true,
         vendor: false,
         equipment: Vec::new(),
@@ -8180,6 +8197,253 @@ fn a_banker_greets_a_nearby_player() {
         }
     });
     assert!(greeted, "the banker greeted the nearby player by name");
+}
+
+/// Spawn a townsperson of a trade, dressed and named by the core.
+fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: Instant) -> EntityId {
+    world.queue(Command::SpawnMobile {
+        body: 0x0190,
+        hue: 0,
+        hits: 100,
+        notoriety: 7,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 2,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: at,
+        facet: 0,
+        // No name and no equipment: the core dresses it and names it, which is the
+        // path the pack takes.
+        name: None,
+        title: Some(trade.to_owned()),
+        shoe: 1,
+        banker: false,
+        vendor: false,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    world
+        .registry()
+        .query::<openshard_state::components::Title>()
+        .filter(|(_, title)| title.0 == trade)
+        .map(|(entity, _)| entity)
+        .next_back()
+        .expect("a townsperson of that trade")
+}
+
+#[test]
+fn a_townsperson_is_dressed_and_named_by_the_core() {
+    // What the pack sends is a trade and a tile. Everything a client draws — a
+    // gender, a skin, hair, clothes, a personal name — is the core's roll, because
+    // the pack shipped one robe and one haircut for all 738 of Felucca's townsfolk.
+    let now = Instant::now();
+    let mut world = world();
+    let _ = enter(&mut world, now);
+    let smith = spawn_townsperson(
+        &mut world,
+        "the blacksmith",
+        Point::new(START.0 + 4, START.1, 0),
+        now,
+    );
+
+    let name = world
+        .registry()
+        .get::<Name>(smith)
+        .expect("a townsperson is named")
+        .0
+        .clone();
+    assert!(name.ends_with(" the blacksmith"), "{name}");
+    assert_ne!(name, "the blacksmith", "a person, not just a trade");
+
+    let body = world.registry().get::<Body>(smith).expect("a body");
+    assert!(
+        body.id == 0x0190 || body.id == 0x0191,
+        "a human body, either gender: {:#06x}",
+        body.id
+    );
+    assert_ne!(body.hue, 0, "a rolled skin hue, not the flat default");
+
+    let worn: Vec<u8> = world
+        .registry()
+        .query::<Equipped>()
+        .filter(|(_, w)| Some(w.mobile) == world.registry().serial_of(smith))
+        .map(|(_, w)| w.layer)
+        .collect();
+    // The regression that catches "everyone is back in the one generic robe":
+    // hair, a torso, legs and shoes, on four distinct layers.
+    assert!(worn.contains(&0x0B), "hair: {worn:?}");
+    assert!(worn.contains(&0x03), "shoes: {worn:?}");
+    assert!(
+        worn.contains(&0x05) || worn.contains(&0x11),
+        "a torso: {worn:?}"
+    );
+    assert!(
+        worn.contains(&0x04) || worn.contains(&0x17),
+        "legs: {worn:?}"
+    );
+}
+
+#[test]
+fn a_townspersons_hair_cannot_be_lifted_off_its_head() {
+    // Hair is an ordinary worn item on the wire, so without the fixed-layer guard
+    // the lift path takes it and a shopkeeper goes bald onto someone's cursor.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let smith = spawn_townsperson(
+        &mut world,
+        "the blacksmith",
+        Point::new(START.0 + 1, START.1, 0),
+        now,
+    );
+    let smith_serial = world.registry().serial_of(smith).unwrap();
+    let hair = world
+        .registry()
+        .query::<Equipped>()
+        .find(|(_, w)| w.mobile == smith_serial && w.layer == 0x0B)
+        .map(|(item, _)| item)
+        .expect("a townsperson has hair");
+    let hair_serial = world.registry().serial_of(hair).unwrap().raw();
+    world.drain_outbound().count();
+
+    world.queue(Command::PickUpItem {
+        connection,
+        serial: hair_serial,
+        amount: 1,
+    });
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p[0] == 0x27),
+        "the lift is refused with a drag-cancel"
+    );
+    assert!(
+        world.registry().has::<Equipped>(hair),
+        "and the hair stays on its head"
+    );
+}
+
+#[test]
+fn a_wandering_townsperson_changes_tiles_and_not_only_its_heading() {
+    // The pirouette regression. The motion path implements turn-as-step: a step in
+    // a direction you are not already facing only *turns* you. The old wander rolled
+    // a fresh random heading every beat, so seven beats in eight were a spin and the
+    // NPC read as frozen. ServUO's `WalkRandom` keeps the current heading most of
+    // the time, which is what makes the step land on a new tile.
+    let now = Instant::now();
+    let mut world = world();
+    let start = Point::new(START.0 + 6, START.1 + 6, 0);
+    let wanderer = spawn_townsperson(&mut world, "the peasant", start, now);
+    // A wide home range, so heading back to the post is not what moves it.
+    let home = *world
+        .registry()
+        .get::<openshard_state::components::Npc>(wanderer)
+        .expect("a townsperson keeps a beat");
+    world.state.registry.insert(
+        wanderer,
+        openshard_state::components::Npc { wander: 8, ..home },
+    );
+
+    // Fifty beats. Under the old roll that was ~3 translating steps at best; under
+    // `WalkRandom` it is a dozen or more, so the two are not close.
+    let mut tiles = std::collections::HashSet::new();
+    for _ in 0..2000 {
+        world.tick(now);
+        if let Some(&Position(at)) = world.registry().get::<Position>(wanderer) {
+            tiles.insert((at.x, at.y));
+        }
+    }
+    assert!(
+        tiles.len() >= 6,
+        "a wandering townsperson should get about, saw {} tiles: {tiles:?}",
+        tiles.len()
+    );
+}
+
+#[test]
+fn a_shopkeeper_stands_still_while_a_customer_is_at_the_counter() {
+    // ServUO's `VendorAI.DoActionInteract` faces the customer and takes no step.
+    // Before it, `try_greet` bailed on anything that was not a banker and the vendor
+    // fell straight through to the wander — so it walked off mid-transaction.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+    let Position(player_at) = *world.registry().get::<Position>(player).unwrap();
+    let keeper = spawn_townsperson(
+        &mut world,
+        "the provisioner",
+        Point::new(player_at.x + 1, player_at.y, player_at.z),
+        now,
+    );
+    let post = world.registry().get::<Position>(keeper).unwrap().0;
+
+    for _ in 0..400 {
+        world.tick(now);
+        let at = world.registry().get::<Position>(keeper).unwrap().0;
+        assert_eq!(
+            (at.x, at.y),
+            (post.x, post.y),
+            "the shopkeeper left the counter with a customer standing at it"
+        );
+    }
+
+    // And it turned to face them rather than staring past.
+    let facing = world.registry().get::<Heading>(keeper).unwrap().0;
+    assert_eq!(facing.direction, openshard_protocol::Direction::West);
+}
+
+#[test]
+fn a_restored_townsperson_still_knows_its_trade() {
+    // The `quest_giver` lesson applied ahead of time: the trade is the key an NPC's
+    // speech table is looked up by on every word spoken near it, so an NPC restored
+    // without it is a mute statue no save file can be told apart from a working one.
+    let now = Instant::now();
+    let mut world = world();
+    let _ = enter(&mut world, now);
+    let smith = spawn_townsperson(
+        &mut world,
+        "the blacksmith",
+        Point::new(START.0 + 3, START.1, 0),
+        now,
+    );
+    let name = world.registry().get::<Name>(smith).unwrap().0.clone();
+
+    let records = world.mobile_records();
+    assert!(
+        records
+            .iter()
+            .any(|r| r.title.as_deref() == Some("the blacksmith")),
+        "the trade is swept into the save"
+    );
+
+    // A fresh world restoring that sweep gets its trade and its beat back.
+    let mut booted = World::new(START);
+    booted.restore_mobiles(records);
+    let restored = booted
+        .registry()
+        .query::<openshard_state::components::Title>()
+        .find(|(_, title)| title.0 == "the blacksmith")
+        .map(|(entity, _)| entity)
+        .expect("the trade came back");
+    assert_eq!(
+        booted.registry().get::<Name>(restored).unwrap().0,
+        name,
+        "and so did the person"
+    );
+    assert!(
+        booted
+            .registry()
+            .has::<openshard_state::components::Npc>(restored),
+        "and its beat, or it stands frozen after every restart"
+    );
 }
 
 #[test]
@@ -8357,6 +8621,8 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
         position: Point::new(START.0, START.1, 0),
         facet: 0,
         name: Some("the tailor".to_owned()),
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -8400,6 +8666,8 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         position: Point::new(START.0 + 1, START.1, 0),
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -8583,6 +8851,8 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
         position: point,
         facet: 0,
         name: Some("the tailor".to_owned()),
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -9284,6 +9554,8 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         position: Point::new(START.0, START.1 + 2, 0),
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -9350,6 +9622,8 @@ fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instan
         position: at,
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -9549,6 +9823,8 @@ fn spawn_postured(
         position: at,
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -9696,6 +9972,9 @@ fn the_chase_pace_is_the_operators_knob() {
             5,     // uo_minute_seconds
             0,     // season
             true,  // guards
+            false, // npc_schedule
+            7,     // npc_work_hour
+            21,    // npc_home_hour
         );
         let mut world = World::new(START).with_gameplay(gameplay);
         let _gm = enter_gm(&mut world, now);
@@ -9755,6 +10034,8 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, u32) {
         position: at,
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),
@@ -10087,6 +10368,8 @@ fn a_shop_sells_goods_and_buys_them_back() {
         position: Point::new(START.0 + 1, START.1, 0),
         facet: 0,
         name: Some("Mirabel".to_owned()),
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -10211,7 +10494,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
 }
 
 #[test]
-fn saying_buy_opens_the_shop_and_an_empty_sell_answers_overhead() {
+fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
     let now = Instant::now();
     let mut world = world();
     let gm = enter_gm(&mut world, now);
@@ -10234,6 +10517,8 @@ fn saying_buy_opens_the_shop_and_an_empty_sell_answers_overhead() {
         position: Point::new(START.0 + 1, START.1, 0),
         facet: 0,
         name: Some("Mirabel".to_owned()),
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: true,
         equipment: Vec::new(),
@@ -10250,20 +10535,56 @@ fn saying_buy_opens_the_shop_and_an_empty_sell_answers_overhead() {
     let vendor_serial = world.registry().serial_of(vendor).unwrap().raw();
     world.drain_outbound().count();
 
-    // "buy" opens the price list, exactly as a double-click would.
+    // A bare "buy" reaches nobody: ServUO's `VendorAI.OnSpeech` opens a shop on an
+    // unqualified word only for `vendor buy`, and on a bare "buy" only when the
+    // shopkeeper was named. Before that rule this was a substring test on the whole
+    // line, so "that sword is unsellable" opened a buy-back list and a bare "sell"
+    // in a crowded bank opened whichever shop happened to be nearest.
     world.queue(Command::Say {
         connection: gm,
         mode: 0,
         hue: 0,
         font: 3,
-        text: "buy".to_owned(),
+        text: "i wonder what to buy".to_owned(),
+    });
+    world.tick(now);
+    assert!(
+        !packets_for(&mut world, gm)
+            .iter()
+            .any(|p| p.first() == Some(&0x74)),
+        "an unaddressed 'buy' must not open a shop"
+    );
+
+    // Naming the shopkeeper does open it, exactly as a double-click would.
+    world.queue(Command::Say {
+        connection: gm,
+        mode: 0,
+        hue: 0,
+        font: 3,
+        text: "Mirabel buy".to_owned(),
     });
     world.tick(now);
     assert!(
         packets_for(&mut world, gm)
             .iter()
             .any(|p| p.first() == Some(&0x74)),
-        "saying 'buy' opened the shop"
+        "naming the shopkeeper and saying 'buy' opened the shop"
+    );
+
+    // And so does ServUO's unqualified keyword, which needs no name.
+    world.queue(Command::Say {
+        connection: gm,
+        mode: 0,
+        hue: 0,
+        font: 3,
+        text: "vendor buy".to_owned(),
+    });
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, gm)
+            .iter()
+            .any(|p| p.first() == Some(&0x74)),
+        "'vendor buy' opened the shop with no name"
     );
 
     // "sell" with nothing the vendor wants is answered over the vendor's head as
@@ -10273,7 +10594,7 @@ fn saying_buy_opens_the_shop_and_an_empty_sell_answers_overhead() {
         mode: 0,
         hue: 0,
         font: 3,
-        text: "sell".to_owned(),
+        text: "vendor sell".to_owned(),
     });
     world.tick(now);
     let packets = packets_for(&mut world, gm);
@@ -10286,6 +10607,125 @@ fn saying_buy_opens_the_shop_and_an_empty_sell_answers_overhead() {
     assert!(
         !packets.iter().any(|p| p[0] == 0x1C),
         "and not as a private system message"
+    );
+}
+
+#[test]
+fn a_bought_out_shelf_refills_when_its_hour_is_up() {
+    // ServUO's `BaseVendor.Restock`, checked on shop-open (`DelayRestock`, an hour).
+    // Without it a shelf someone cleaned out stayed empty for the life of the shard.
+    // The price and the label have to come back with the goods: a sold-out line
+    // leaves no item behind to copy them from, which is why the full shelf is
+    // remembered rather than reconstructed.
+    let now = Instant::now();
+    let mut world = world();
+    let gm = enter_gm(&mut world, now);
+    world.queue(Command::SpawnMobile {
+        body: 0x0190,
+        hue: 0,
+        hits: 50,
+        notoriety: 1,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 0,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: Point::new(START.0 + 1, START.1, 0),
+        facet: 0,
+        name: Some("Mirabel".to_owned()),
+        title: None,
+        shoe: 0,
+        banker: false,
+        vendor: true,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    let vendor = world
+        .state
+        .registry
+        .query::<openshard_state::components::Vendor>()
+        .map(|(entity, _)| entity)
+        .next()
+        .expect("a shopkeeper");
+    let vendor_serial = world.registry().serial_of(vendor).unwrap().raw();
+    world.queue(Command::StockVendor {
+        serial: vendor_serial,
+        stock: vec![npc::StockLine {
+            graphic: 0x0F7A,
+            hue: 0,
+            amount: 20,
+            price: 4,
+            name: "black pearl".to_owned(),
+        }],
+    });
+    world.tick(now);
+
+    // Clear the shelf the way a buyer would: the item is simply gone.
+    let pearls = world
+        .state
+        .registry
+        .query::<openshard_state::components::Contained>()
+        .map(|(item, _)| item)
+        .next()
+        .expect("stock on the shelf");
+    world.state.registry.despawn(pearls);
+
+    // Opening the shop before the hour is up finds it still empty.
+    world.queue(Command::DoubleClick {
+        connection: gm,
+        serial: vendor_serial,
+    });
+    world.tick(now);
+    assert_eq!(
+        world
+            .state
+            .registry
+            .query::<openshard_state::components::Contained>()
+            .count(),
+        0,
+        "the shelf must not refill early"
+    );
+
+    // Wind the clock past the delay and open it again.
+    world.state.ticks += npc::RESTOCK_TICKS;
+    world.queue(Command::DoubleClick {
+        connection: gm,
+        serial: vendor_serial,
+    });
+    world.tick(now);
+    let restocked: Vec<_> = world
+        .state
+        .registry
+        .query::<openshard_state::components::Contained>()
+        .map(|(item, _)| item)
+        .collect();
+    assert_eq!(restocked.len(), 1, "the line came back");
+    let item = restocked[0];
+    assert_eq!(
+        world
+            .registry()
+            .get::<openshard_state::components::Amount>(item)
+            .map(|a| a.0),
+        Some(20),
+        "at its full amount"
+    );
+    assert_eq!(
+        world
+            .registry()
+            .get::<openshard_state::components::Price>(item)
+            .map(|p| p.0),
+        Some(4),
+        "and at its price, not a default of one"
+    );
+    assert_eq!(
+        world.registry().get::<Name>(item).map(|n| n.0.as_str()),
+        Some("black pearl"),
+        "and with its label"
     );
 }
 
@@ -10313,6 +10753,8 @@ fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) ->
         position: at,
         facet: 0,
         name: None,
+        title: None,
+        shoe: 0,
         banker: false,
         vendor: false,
         equipment: Vec::new(),

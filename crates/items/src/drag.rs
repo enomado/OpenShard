@@ -5,6 +5,15 @@ use super::*;
 /// on. Server-authoritative — the client's word is never taken.
 pub(crate) const ITEM_REACH: u32 = 3;
 
+/// The layers nothing may ever be lifted off — hair (`0x0B`) and a beard (`0x10`).
+///
+/// UO has no "hair" field on a mobile: hair and a beard are ordinary items worn on
+/// their own layers and drawn in the same `0x78` equipment list as a shirt. Which
+/// means the lift path below would happily take them, and a player standing next to
+/// a shopkeeper could pull the hair off its head onto their cursor. ServUO marks the
+/// same items `Movable = false`; this is that, at the one door a lift comes through.
+pub const FIXED_LAYERS: &[u8] = &[0x0B, 0x10];
+
 /// Lift an item onto a client's cursor. See `Command::PickUpItem`.
 pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, amount: u16) {
     let Some(&player) = state.players.get(&connection) else {
@@ -30,6 +39,15 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
     }
     // A town's fittings are not loot: script-placed decoration cannot be lifted.
     if state.registry.has::<Decoration>(item) {
+        reject_drag(state, connection, DragCancelReason::CannotLift);
+        return;
+    }
+    // Nor is somebody's hair. See `FIXED_LAYERS`.
+    if state
+        .registry
+        .get::<Equipped>(item)
+        .is_some_and(|worn| FIXED_LAYERS.contains(&worn.layer))
+    {
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     }

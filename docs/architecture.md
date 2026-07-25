@@ -83,7 +83,7 @@ crate, owning its domain events:
 | `combat` | `damage`/`die`/`swings`/`volleys`/`attack`, poison pulses, criminal flagging, the swing formula | `MobileDamaged`, `MobileDied` |
 | `items` | spawn/drag/stack/decay/containers/equip/doors/mounts, one module each | `ItemSpawned` |
 | `ai` | the creature brain: LOS aggro, cached-path chase, give-up, kiting, fleeing, retaliation | — |
-| `npc` | townsfolk services (banker, vendor buy/sell), the town guards, and the creature `spawn` rule | `MobileSpawned` |
+| `npc` | townsfolk: generated appearance and names, the greet/face/wander beat, the keyword answers, banker and vendor services, the town guards, and the creature `spawn` rule | `MobileSpawned` |
 
 The drawing/interest substrate they share (`show`, `forget`, `broadcast_move`,
 `refresh_around`, `reveal`, `mobile_incoming`, …) lives on `WorldState`, in the

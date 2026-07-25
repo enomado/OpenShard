@@ -182,6 +182,20 @@ uo_minute_seconds = 5
 season = 0
 guards = true
 
+# Townsfolk daily routine — at their posts by day, at home by night.
+#
+# Off by default, and marked as ours rather than a port: neither reference ties an
+# NPC to the clock. ServUO's nearest equivalent is a hand-placed WayPoint chain a
+# builder walks an NPC along, with no notion of the hour. It also does nothing
+# until the pack gives its NPCs somewhere to go, so turning it on alone is safe.
+#
+# The working day may not wrap midnight — work must come before home, and both
+# under 24 — because exactly one comparison reads them and a wrapped day would
+# strand every NPC at one end of it.
+# npc_schedule = false
+# npc_work_hour = 7
+# npc_home_hour = 21
+
 # Development accounts, in plaintext, until there is a database.
 [[accounts]]
 name = "admin"

@@ -1195,15 +1195,83 @@ Roughly in dependency order, each script-first:
     engine code); double-click opens the classic buy flow (`0x74` contents +
     `0x3B` purchase), and saying "sell" nearby offers the mirror (`0x9E` list,
     `0x9F` sale) at half price. Stock persists with the vendor (§4, schema v5) —
-    a restart does not restock the shelf.
+    a restart does not lose the shelf.
   - [x] **Mounts.** Double-click a horse, llama or ostard to ride: the creature
     leaves the world into limbo and a `0x19`-layer saddle item draws the rider
     mounted; double-click yourself to dismount, and the creature is reconstituted
     whole — heading, walker, brain — beside you. The ride persists through the
     saddle item saved with the character, so logging out mounted logs back in
     mounted; the ridden creature itself is the one mobile the world sweep skips.
-  - [ ] **Vendor restock timers** — a bought-out shelf refills on a timer, the
-    references' economy heartbeat; today stock only changes by trade.
+  - [x] **Townsfolk are people, not props.** Every one of Felucca's 738 town NPCs
+    was the same male body at hue 0 in the same robe and haircut, named after its
+    trade ("the blacksmith", thirty-eight of them called "the banker"), silent
+    unless it was a banker, and — because a fresh random heading each beat only
+    *turns* a mobile on the turn-as-step motion path — pirouetting rather than
+    walking. Four things fixed it, all ServUO:
+    - **`npc::dress`** is `BaseVendor.InitBody`/`InitOutfit` ported constant for
+      constant: a rolled gender (body `0x0190`/`0x0191`), one of 57 skin hues with
+      the partial-hue bit (`Utility.RandomSkinHue`), one of nine hair styles and
+      seven beards at a matching hue (`RaceDefinitions.Human.RandomHair`), a
+      shirt/doublet/fancy-shirt, trousers or a kilt or a skirt, and shoes of the
+      `VendorShoeType` its trade declares. All on the world's seeded `Rng`, so a
+      populated facet replays. The **trade's own additions are the pack's** — the
+      converter reads the 248 `InitOutfit`/`ShoeType` overrides in
+      `Scripts/Mobiles/NPCs` and emits the smith's ringmail, apron, bascinet and
+      hammer — and are worn *over* the base, winning any layer both want, which is
+      the precedence a ServUO override has when it calls `base.InitOutfit()`.
+      Hair is an ordinary worn item on the wire, so `items::FIXED_LAYERS` refuses a
+      lift from layers `0x0B`/`0x10` — ServUO's `Movable = false`, without which a
+      player pulls the hair off a shopkeeper's head.
+    - **A `Title`** ("the blacksmith") is now a component and the pack sends *that*,
+      not a name; `npc::names` puts a person in front of it ("Rowena the
+      blacksmith") from the `Data/names.xml` lists. It is a **key**, so it is saved
+      (schema v14): the trade is what an NPC's keyword table is looked up by on
+      every word spoken nearby, and a binding that lives only in the spawn call is
+      the `quest_giver` bug again.
+    - **`npc::live`** is `BaseAI.WalkRandomInHome(2, 2, 1)`: one chance in two of
+      not moving and one in two of a new heading, so most beats continue on the
+      current one and the step *translates*. Every trade greets and turns to face a
+      visitor, not only bankers, and a shopkeeper with a customer inside four tiles
+      stands still (`VendorAI.DoActionInteract`) instead of wandering off
+      mid-transaction. Every townsperson gets the `Npc` beat now, which woke the 257
+      of 738 that had neither a bank nor a shop and so had no life at all. LOD gates
+      it, like the creature brains.
+    - **`npc::speech`** is `VendorAI.OnSpeech`: townsfolk in earshot (four tiles,
+      `HandlesOnSpeech`) match **whole-word** keywords and answer. That replaced a
+      substring test on the whole line, under which "that sword is unsellable"
+      opened a buy-back list; a bare "buy"/"sell" now needs the shopkeeper named
+      (`WasNamed`), and `vendor buy`/`vendor sell` work unqualified. A criminal is
+      refused out loud (`CheckVendorAccess`, cliloc 501522). The **lines are the
+      pack's**, registered per trade by `op_register_npc_speech` — and are
+      themselves ServUO-derived rather than invented: the greeting is cliloc 500186,
+      the "what is thy trade" answer is built from the title, and "what dost thou
+      sell" lists the trade's actual `SB*.cs` stock. The core default is a plain
+      greeting, so a bare shard still speaks.
+  - [x] **Vendor restock timers.** ServUO's `BaseVendor.Restock`: a shelf tops every
+    line back up to its original amount, checked when the shop is opened
+    (`DelayRestock`, an hour) rather than on a tick pass — the reference's own choice,
+    and it costs nothing while nobody is shopping. What "full" means has to be
+    *remembered*, because the crate's live contents are what is left and there is
+    nothing else to compare them against; the price and label go in the record too,
+    since a sold-out line leaves no item behind to copy them from. It is saved with
+    the vendor as seconds-still-to-wait, the `SpawnerRecord` rule, so a restart does
+    not come back either already due or an hour early.
+  - [x] **A townsfolk routine, behind a flag.** `[gameplay] npc_schedule` (off, with
+    `npc_work_hour`/`npc_home_hour`) walks a townsperson to a `NightHome` outside
+    working hours and back to its post inside them, off the world clock
+    `tick/ambient.rs` already derives from the tick counter — so it replays like
+    everything else. Marked as **ours, not a port**: neither reference ties an NPC to
+    the hour, and ServUO's nearest equivalent is a hand-placed `WayPoint` chain with
+    no notion of one. It also does nothing until a pack gives its NPCs a home to go
+    to, which no pack does yet, so turning it on alone is safe. `config` refuses a
+    working day that wraps midnight, so the one comparison that reads the hours stays
+    a comparison.
+  - [ ] **Barks — an idle line to an empty street.** The engine has it: `npc::live`
+    speaks a trade's `barks` when nobody is within greeting range, on its own long
+    cooldown. Nothing fills the list, because ServUO's townsfolk do not call out and
+    inventing a personality per trade is the one thing this slice deliberately did
+    not do. ServUO's own source for this is the **Town Crier** (a news queue and a
+    staff gump), which is its own feature.
   - [ ] **Locks and keys on doors** — every door opens to any NPC that can work
     handles, and to any player; the pack already names locked doors it cannot yet
     lock. Wants a lock component the obstruction index respects and key items.

@@ -95,6 +95,10 @@ impl World {
                     // A maintained spawn is a monster or an animal, never a named
                     // townsperson; those are placed once, not respawned.
                     name: None,
+                    // Nor a trade: a maintained spawn is dressed as whatever its
+                    // body already is, keeps no beat and answers no keyword.
+                    title: None,
+                    shoe: npc::ShoeType::None,
                     banker: false,
                     vendor: false,
                     equipment: Vec::new(),

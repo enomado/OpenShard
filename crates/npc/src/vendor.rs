@@ -16,7 +16,8 @@ use openshard_protocol::{
     Purchase, Sale, SellLine,
 };
 use openshard_state::components::{
-    Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Vendor,
+    Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord,
+    Vendor,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{TooltipMode, WorldState};
@@ -96,8 +97,15 @@ fn in_trade_range(state: &WorldState, player: EntityId, vendor: EntityId) -> boo
         .sight_clear(at, vendor_at)
 }
 
+/// How long a bought-out shelf takes to refill, in ticks. ServUO's
+/// `BaseVendor.DelayRestock` is an hour of real time; at 20Hz that is this.
+pub const RESTOCK_TICKS: u64 = 60 * 60 * 20;
+
 /// Fill a vendor's stock from a script's lines. See `Command::StockVendor`.
 /// Replaces nothing: lines add to whatever the crate already holds.
+///
+/// It also records the shelf as it stands *now* on the vendor, so it can be topped
+/// back up later — see [`Restock`]. The record is cumulative, like the stocking.
 pub fn stock(state: &mut WorldState, vendor_serial: u32, lines: Vec<StockLine>) {
     let Some(vendor) = Serial::new(vendor_serial).and_then(|s| state.registry.entity_of(s)) else {
         return;
@@ -105,31 +113,117 @@ pub fn stock(state: &mut WorldState, vendor_serial: u32, lines: Vec<StockLine>) 
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
         return;
     };
+    // What "full" means for this shelf, and when it may be filled again. Cumulative,
+    // like the stocking itself.
+    let mut record = state
+        .registry
+        .get::<Restock>(vendor)
+        .cloned()
+        .unwrap_or(Restock {
+            at: state.ticks + RESTOCK_TICKS,
+            lines: Vec::new(),
+        });
     for line in lines {
-        let Ok((entity, _serial)) = state.registry.spawn_with_serial(SerialKind::Item) else {
-            return;
-        };
-        state.registry.insert(
-            entity,
-            Graphic {
-                id: line.graphic,
-                hue: line.hue,
-            },
-        );
-        state.registry.insert(
-            entity,
-            Contained {
-                container: stock_serial,
-                x: 50,
-                y: 50,
-                grid: 0,
-            },
-        );
-        state.registry.insert(entity, Amount(line.amount));
-        state.registry.insert(entity, Price(line.price));
-        state.registry.insert(entity, Name(line.name));
+        record.lines.push(StockRecord {
+            graphic: line.graphic,
+            hue: line.hue,
+            amount: line.amount,
+            price: line.price,
+            name: line.name.clone(),
+        });
+        place_stock_line(state, stock_serial, &line);
     }
+    state.registry.insert(vendor, record);
     debug!(%stock_serial, "vendor stocked");
+}
+
+/// Put one line of goods on a shelf: the item, its count, its price and its label.
+/// Shared by the first stocking and the restock, so a refilled line is the same
+/// object a fresh one is.
+fn place_stock_line(state: &mut WorldState, stock_serial: Serial, line: &StockLine) {
+    let Ok((entity, _serial)) = state.registry.spawn_with_serial(SerialKind::Item) else {
+        return;
+    };
+    state.registry.insert(
+        entity,
+        Graphic {
+            id: line.graphic,
+            hue: line.hue,
+        },
+    );
+    state.registry.insert(
+        entity,
+        Contained {
+            container: stock_serial,
+            x: 50,
+            y: 50,
+            grid: 0,
+        },
+    );
+    state.registry.insert(entity, Amount(line.amount));
+    state.registry.insert(entity, Price(line.price));
+    state.registry.insert(entity, Name(line.name.clone()));
+}
+
+/// Top a vendor's shelf back up if its timer has run out — ServUO's
+/// `BaseVendor.Restock`, checked when the shop is opened rather than on a tick pass.
+/// That is the reference's own choice and it costs nothing when nobody is shopping.
+///
+/// Each remembered line is brought back to its full amount: a partly bought pile is
+/// refilled, a sold-out one is put back. Never *reduced* — a script that added to the
+/// shelf outside the record should not be undone by a timer — and anything on the
+/// shelf the record does not name is left alone.
+fn restock_if_due(state: &mut WorldState, vendor: EntityId, stock_serial: Serial) {
+    let Some(record) = state.registry.get::<Restock>(vendor).cloned() else {
+        return;
+    };
+    if state.ticks < record.at {
+        return;
+    }
+    for line in &record.lines {
+        let existing = state
+            .registry
+            .query::<Contained>()
+            .filter(|(_, held)| held.container == stock_serial)
+            .filter(|(item, _)| {
+                state
+                    .registry
+                    .get::<Graphic>(*item)
+                    .is_some_and(|g| g.id == line.graphic && g.hue == line.hue)
+            })
+            .map(|(item, _)| item)
+            .next();
+        match existing {
+            Some(item) => {
+                let have = state.registry.get::<Amount>(item).map_or(0, |a| a.0);
+                if have < line.amount {
+                    state.registry.insert(item, Amount(line.amount));
+                }
+            }
+            None => place_stock_line(
+                state,
+                stock_serial,
+                &StockLine {
+                    graphic: line.graphic,
+                    hue: line.hue,
+                    amount: line.amount,
+                    price: line.price,
+                    name: line.name.clone(),
+                },
+            ),
+        }
+    }
+    state.registry.insert(
+        vendor,
+        Restock {
+            at: state.ticks + RESTOCK_TICKS,
+            lines: record.lines,
+        },
+    );
+    // ServUO says "Restocked!" out loud when a staff member forces one; a shelf that
+    // refilled on its own timer is worth the same line, and every visible action in
+    // this engine announces itself.
+    vendor_says(state, vendor, "I have restocked my wares.");
 }
 
 /// Open the shop on a double-click, if the clicked mobile is a vendor in
@@ -157,6 +251,9 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
         return false;
     };
+    // Before the shelf is read, refill it if its hour is up — ServUO checks the
+    // restock delay at exactly this point, in `VendorBuy`.
+    restock_if_due(state, vendor, stock_serial);
 
     // The contents and prices key on the stock crate — the client pairs the 0x74
     // lines with the 0x3C items by order, so the same walk builds both.

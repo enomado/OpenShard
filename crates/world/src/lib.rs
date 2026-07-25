@@ -64,6 +64,7 @@ pub use openshard_state::{
     Murders, Name, Position, Resistance, Scripted, Skills, Stackable, Stats, SwingSpeed,
 };
 pub use openshard_state::{CastStyle, Gameplay, TooltipMode};
+pub use openshard_state::{Dialogue, SpeechEntry, SpeechTable};
 pub use openshard_state::{ObjectiveDef, ObjectiveKind, QuestDef, RewardDef, RewardKind};
 pub use openshard_state::{Region, RegionFlags, RegionRect};
 pub use terrain::{MapTerrain, MAX_STEP_UP, PLAYER_HEIGHT};

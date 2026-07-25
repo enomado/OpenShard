@@ -292,8 +292,16 @@ pub enum Command {
         position: Point,
         /// Which facet.
         facet: u8,
-        /// A name shown on single-click, if any — a townsperson has one.
+        /// A name shown on single-click, if any — a townsperson has one. Overrides
+        /// `title`.
         name: Option<String>,
+        /// The trade it plies, ServUO-style ("the blacksmith"). `None` for a
+        /// creature. The key its dress, its generated name and its speech all hang
+        /// off, so it is kept on the mobile and saved with it.
+        title: Option<String>,
+        /// What the trade wears on its feet, `ShoeType`'s wire byte. Read only when
+        /// the core does the dressing.
+        shoe: u8,
         /// Whether it is a banker (answers "bank").
         banker: bool,
         /// Whether it is a shopkeeper — double-click opens its shop.
@@ -545,6 +553,16 @@ pub enum Command {
         layout: String,
         /// The text lines the layout indexes into.
         lines: Vec<String>,
+    },
+    /// Replace every trade's speech and the personal names in use with the pack's.
+    /// From a script, at load time.
+    RegisterNpcSpeech {
+        /// Each trade's table, keyed by the title its NPCs wear.
+        trades: Vec<(String, openshard_state::SpeechTable)>,
+        /// Personal names for male NPCs; empty keeps the core's list.
+        male_names: Vec<String>,
+        /// Personal names for female NPCs; empty keeps the core's list.
+        female_names: Vec<String>,
     },
     /// Replace every quest this shard knows with the pack's list. From a script,
     /// at load time.

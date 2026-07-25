@@ -28,6 +28,7 @@ use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
     Heading, Hitpoints, Movement, Name, Position, Staff,
 };
+use crate::dialogue::Dialogue;
 use crate::obstruct::{LiveTerrain, Obstructions};
 use crate::quest::QuestDefs;
 use crate::region::{Region, Regions};
@@ -124,6 +125,22 @@ pub struct Gameplay {
     /// Whether guards answer at all in the regions marked guarded — ServUO's
     /// per-region `Disabled`, as one shard-wide switch.
     pub guards: bool,
+    /// Whether townsfolk keep a daily routine: at its post inside working hours,
+    /// at its `NightHome` outside them.
+    ///
+    /// Off by default, and deliberately marked as ours: neither reference ties an
+    /// NPC to the clock. ServUO's nearest equivalent is a hand-placed `WayPoint`
+    /// chain, which a builder walks an NPC along with no notion of the hour. With
+    /// no `NightHome` in the pack's data the setting does nothing.
+    pub npc_schedule: bool,
+    /// The hour townsfolk arrive at their posts, with
+    /// [`npc_schedule`](Self::npc_schedule) on.
+    pub npc_work_hour: u8,
+    /// The hour townsfolk leave for home, with
+    /// [`npc_schedule`](Self::npc_schedule) on. Must be after
+    /// [`npc_work_hour`](Self::npc_work_hour) — `config` rejects a working day that
+    /// wraps midnight, so nothing downstream has to reason about one.
+    pub npc_home_hour: u8,
 }
 
 /// How AoS object tooltips (the "cliloc" hover names) are served — Sphere's
@@ -213,6 +230,9 @@ impl Gameplay {
         uo_minute_seconds: u64,
         season: u8,
         guards: bool,
+        npc_schedule: bool,
+        npc_work_hour: u8,
+        npc_home_hour: u8,
     ) -> Self {
         Self {
             combat_era,
@@ -242,6 +262,9 @@ impl Gameplay {
             uo_minute_ticks: (uo_minute_seconds * TICKS_PER_SECOND).max(1),
             season,
             guards,
+            npc_schedule,
+            npc_work_hour,
+            npc_home_hour,
         }
     }
 }
@@ -275,6 +298,9 @@ impl Default for Gameplay {
             5,     // uo_minute_seconds (ServUO's rate: a UO day in two hours)
             0,     // season (spring)
             true,  // guards (a guarded region has guards)
+            false, // npc_schedule (ours, not the references'; opt-in, off)
+            7,     // npc_work_hour
+            21,    // npc_home_hour
         )
     }
 }
@@ -415,6 +441,10 @@ pub struct WorldState {
     /// wholesale on a pack reload, and never persisted — the pack is the truth
     /// about what a quest *is*, every boot; only a player's progress is saved.
     pub quests: QuestDefs,
+    /// What every trade says, as the script pack registered it. Replaced wholesale
+    /// on a reload and never persisted, for the same reason as
+    /// [`quests`](Self::quests): the pack is the truth about content.
+    pub dialogue: Dialogue,
     /// Which quest dialog each player has open, and on which page.
     ///
     /// Session state, like [`pending_targets`](Self::pending_targets): a gump

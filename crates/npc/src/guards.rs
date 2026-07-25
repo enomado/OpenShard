@@ -33,8 +33,10 @@ use openshard_state::WorldState;
 
 use openshard_combat as combat;
 
+use crate::dress::ShoeType;
+use crate::names::personal_name;
+use crate::notify;
 use crate::spawn::{spawn, SpawnSpec};
-use crate::{notify, PERSONAL_NAMES};
 
 /// How far a call for guards reaches for someone to answer it — ServUO's 14.
 const CALL_RANGE: u32 = 14;
@@ -213,6 +215,11 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             position: at,
             facet,
             name: Some(name),
+            // A guard is not a townsperson: it appears, speaks its one line, deals
+            // its blow and is gone. No trade, so no generated dress (its body
+            // already *is* the uniform), no beat, no keyword table.
+            title: None,
+            shoe: ShoeType::default(),
             banker: false,
             vendor: false,
             equipment: GUARD_KIT.to_vec(),
@@ -299,6 +306,6 @@ pub fn expire_guards(state: &mut WorldState) {
 /// A guard's name: a personal name and the title, from the world's seeded
 /// generator so a replay names it the same.
 fn guard_name(state: &mut WorldState) -> String {
-    let name = PERSONAL_NAMES[state.rng.below(PERSONAL_NAMES.len() as u32) as usize];
+    let name = personal_name(&mut state.rng, false);
     format!("{name} the guard")
 }

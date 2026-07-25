@@ -349,13 +349,26 @@ pub enum Command {
         /// Which facet.
         facet: u8,
         /// A name the client shows on single-click, for a townsperson; empty for a
-        /// nameless creature.
+        /// nameless creature. Overrides `title` — a pack that knows the exact
+        /// name to use says so.
         name: String,
+        /// The trade this NPC plies, in ServUO's form ("the blacksmith"). Empty
+        /// for a creature. With it and no `name`, the core generates
+        /// "Rowena the blacksmith"; it is also the key its speech is looked up by,
+        /// which is why it is kept on the mobile and saved.
+        title: String,
+        /// What the trade wears on its feet, as [`ShoeType`](../npc/dress/enum.ShoeType.html)'s
+        /// wire byte. Only read when the core dresses the NPC.
+        shoe: u8,
         /// Whether it is a banker — saying "bank" near it opens the box.
         banker: bool,
         /// Whether it is a shopkeeper — double-click opens its shop.
         vendor: bool,
-        /// Worn clothing and gear, so it is not naked.
+        /// Worn clothing and gear, so it is not naked. **Additive**: an NPC with a
+        /// `title` is always dressed by the core (ServUO's `InitBody`/`InitOutfit`
+        /// off `title`/`shoe`) and this is worn over that base, winning any layer
+        /// the two both want — the precedence a per-trade `InitOutfit` override has
+        /// in ServUO. An NPC with no `title` wears only this.
         equipment: Vec<WornItem>,
         /// Trained combat skills, `(skill id, value in tenths)`.
         skills: Vec<(u8, u16)>,
@@ -569,6 +582,22 @@ pub enum Command {
         /// The text lines the layout's `{ text }`/`{ croppedtext }` index into.
         lines: Vec<String>,
     },
+    /// Replace every trade's speech, and the personal names in use, with the
+    /// pack's.
+    ///
+    /// Wholesale, never additive, for the same reason as
+    /// [`RegisterQuests`](Command::RegisterQuests): a hot reload re-runs the pack
+    /// from the top, and merging would leave lines the pack has deleted still being
+    /// spoken.
+    RegisterNpcSpeech {
+        /// Each trade's table, keyed by the title NPCs of that trade are spawned
+        /// with ("the blacksmith").
+        trades: Vec<ScriptTradeSpeech>,
+        /// Personal names for male NPCs. Empty keeps the core's own list.
+        male_names: Vec<String>,
+        /// Personal names for female NPCs. Empty keeps the core's own list.
+        female_names: Vec<String>,
+    },
     /// Replace every quest this shard knows with the pack's list.
     ///
     /// Wholesale, never additive: a hot reload re-runs the pack from the top, and
@@ -746,10 +775,38 @@ pub struct ScriptRegion {
     pub light: Option<u8>,
 }
 
+/// Everything one trade says, as the pack defines it.
+///
+/// Wire-primitive like [`ScriptRegion`]: the engine's own `SpeechTable` lives in
+/// `state` and this crate does not depend on it, so the bridge converts.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScriptTradeSpeech {
+    /// The title NPCs of this trade wear — the key. "the blacksmith".
+    pub title: String,
+    /// Lines it greets an approaching player with; `{name}` is the visitor's name.
+    pub greetings: Vec<String>,
+    /// Lines it says to itself when nobody is near. Empty is a quiet street.
+    pub barks: Vec<String>,
+    /// Keyword groups and their answers, in precedence order.
+    pub entries: Vec<ScriptSpeechEntry>,
+    /// What it says when spoken to and nothing matched. Empty stays quiet.
+    pub fallback: String,
+}
+
+/// One keyword group in a [`ScriptTradeSpeech`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScriptSpeechEntry {
+    /// The words that trigger it. Matched as whole words, so "sell" does not fire
+    /// on "unsellable"; a multi-word entry ("vendor buy") matches as a run.
+    pub keywords: Vec<String>,
+    /// The answers, one picked at random.
+    pub lines: Vec<String>,
+}
+
 /// A quest, as the pack defines it.
 ///
-/// Wire-primitive like [`ScriptRegion`]: the engine's own `QuestDef` lives in
-/// `state` and this crate does not depend on it, so the bridge converts.
+/// Wire-primitive for the same reason as [`ScriptTradeSpeech`]: the engine's own
+/// `QuestDef` lives in `state` and this crate does not depend on it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ScriptQuest {
     /// The pack's id for it, and the key a player's progress is saved under.

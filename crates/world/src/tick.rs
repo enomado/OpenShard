@@ -230,6 +230,7 @@ impl World {
                 open_containers: HashMap::new(),
                 pending_targets: HashMap::new(),
                 quests: openshard_state::QuestDefs::default(),
+                dialogue: openshard_state::Dialogue::default(),
                 open_quest_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
@@ -454,7 +455,12 @@ impl World {
         // The townsfolk beat: `npc::live` greets and faces on its own and hands
         // back the idle steps it wants, which the tick applies through `step` —
         // the same decide-then-apply split the creature brain uses.
-        for (serial, direction) in npc::live(&mut self.state) {
+        // The world's hour, for the optional daily routine. Derived from the tick
+        // counter (see `tick/ambient.rs`), never a wall clock, so a routine replays
+        // like everything else; the longitude term is the shard's own centre, since
+        // an NPC's post is where its own day is measured.
+        let hour = self.uo_time_at(0).0;
+        for (serial, direction) in npc::live(&mut self.state, hour) {
             self.step(serial, direction);
         }
         combat::swings(&mut self.state);
@@ -666,6 +672,8 @@ impl World {
                 position,
                 facet,
                 name,
+                title,
+                shoe,
                 banker,
                 vendor,
                 equipment,
@@ -690,6 +698,8 @@ impl World {
                         position,
                         facet,
                         name,
+                        title,
+                        shoe: npc::ShoeType::from_bits(shoe),
                         banker,
                         vendor,
                         equipment,
@@ -861,6 +871,16 @@ impl World {
                 layout,
                 lines,
             } => self.show_gump(serial, gump_id, x, y, &layout, &lines),
+            Command::RegisterNpcSpeech {
+                trades,
+                male_names,
+                female_names,
+            } => {
+                let count = trades.len();
+                self.state.dialogue.set_tables(trades.into_iter().collect());
+                self.state.dialogue.set_names(male_names, female_names);
+                debug!(count, "townsfolk speech registered");
+            }
             Command::RegisterQuests { quests } => {
                 let count = quests.len();
                 self.state.quests.set(quests);

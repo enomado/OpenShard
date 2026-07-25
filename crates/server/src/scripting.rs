@@ -334,6 +334,8 @@ fn into_world(command: ScriptCommand) -> Command {
             z,
             facet,
             name,
+            title,
+            shoe,
             banker,
             vendor,
             equipment,
@@ -356,6 +358,10 @@ fn into_world(command: ScriptCommand) -> Command {
             facet,
             // An empty name from the script means nameless.
             name: (!name.is_empty()).then_some(name),
+            // And an empty title means "not a townsperson" — a creature, which the
+            // core never dresses and which keeps no beat.
+            title: (!title.is_empty()).then_some(title),
+            shoe,
             banker,
             vendor,
             equipment: equipment
@@ -612,6 +618,15 @@ fn into_world(command: ScriptCommand) -> Command {
             layout,
             lines,
         },
+        ScriptCommand::RegisterNpcSpeech {
+            trades,
+            male_names,
+            female_names,
+        } => Command::RegisterNpcSpeech {
+            trades: trades.into_iter().map(trade_speech).collect(),
+            male_names,
+            female_names,
+        },
         ScriptCommand::RegisterQuests { quests } => Command::RegisterQuests {
             quests: quests.into_iter().filter_map(quest_def).collect(),
         },
@@ -649,6 +664,37 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
         },
     }
+}
+
+/// One trade's speech, from the pack's wire-primitive form to the engine's.
+///
+/// Keywords are lowercased here, in the one place that knows both sides, because
+/// the matcher compares against already-lowercased words — a pack that wrote
+/// "Buy" would otherwise register a keyword nothing can ever match, and there is
+/// nothing anywhere to say so.
+fn trade_speech(
+    trade: openshard_scripting::ScriptTradeSpeech,
+) -> (String, openshard_world::SpeechTable) {
+    use openshard_world::{SpeechEntry, SpeechTable};
+
+    let table = SpeechTable {
+        greetings: trade.greetings,
+        barks: trade.barks,
+        entries: trade
+            .entries
+            .into_iter()
+            .map(|entry| SpeechEntry {
+                keywords: entry
+                    .keywords
+                    .into_iter()
+                    .map(|keyword| keyword.to_lowercase())
+                    .collect(),
+                lines: entry.lines,
+            })
+            .collect(),
+        fallback: (!trade.fallback.is_empty()).then_some(trade.fallback),
+    };
+    (trade.title, table)
 }
 
 /// Turn the pack's quest into the engine's.
@@ -955,6 +1001,8 @@ mod tests {
             position: openshard_protocol::Point::new(1363, 1600, 0),
             facet: 0,
             name: None,
+            title: None,
+            shoe: 0,
             banker: false,
             vendor: false,
             equipment: Vec::new(),
@@ -1024,6 +1072,8 @@ mod tests {
             position: openshard_protocol::Point::new(1363, 1600, 0),
             facet: 0,
             name: None,
+            title: None,
+            shoe: 0,
             banker: false,
             vendor: false,
             equipment: Vec::new(),

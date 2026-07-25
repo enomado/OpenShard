@@ -43,7 +43,7 @@ pub use pg::PgStore;
 pub use record::{
     AccountRecord, CharacterRecord, CreatureData, DecorationRecord, DoneQuestRecord, DoorState,
     EffectRecord, Inventory, ItemLocation, ItemRecord, MobileRecord, QuestRecord, RegionRecord,
-    SkillRecord, SpawnerRecord, WorldRecord, EFFECT_POISON, SCHEMA_VERSION,
+    RestockRecord, SkillRecord, SpawnerRecord, WorldRecord, EFFECT_POISON, SCHEMA_VERSION,
 };
 pub use sqlite::SqliteStore;
 pub use store::{MemoryStore, Store, StoreError};

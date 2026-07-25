@@ -1,9 +1,10 @@
 use super::*;
-use openshard_persistence::{DoneQuestRecord, EffectRecord, QuestRecord};
+use openshard_persistence::{DoneQuestRecord, EffectRecord, QuestRecord, RestockRecord};
 use openshard_state::components::{
     body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, DoneQuest,
-    Escortable, Field, Frozen, Npc, Poisoned, Price, QuestGiver, QuestLog, QuestState,
-    RangedAttack, Skills, Spellbook, StatMod, StatMods, SwingSpeed, Vendor,
+    Escortable, Field, Frozen, NightHome, Npc, Poisoned, Price, QuestGiver, QuestLog, QuestState,
+    RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title,
+    Vendor,
 };
 
 impl World {
@@ -345,8 +346,22 @@ impl World {
                 wander,
                 banker: registry.has::<Banker>(entity),
                 vendor: registry.has::<Vendor>(entity),
+                title: registry.get::<Title>(entity).map(|t| t.0.clone()),
                 npc_home: npc.map(|n| (n.home.x, n.home.y, n.home.z)),
                 npc_wander: npc.map_or(0, |n| n.wander),
+                night_home: registry
+                    .get::<NightHome>(entity)
+                    .map(|h| (h.0.x, h.0.y, h.0.z)),
+                restock: registry.get::<Restock>(entity).map(|shelf| RestockRecord {
+                    // Seconds, not the tick: a tick counter restarts at boot, so a
+                    // saved tick comes back either already due or an hour early.
+                    in_seconds: shelf.at.saturating_sub(self.state.ticks) / TICKS_PER_SECOND,
+                    lines: shelf
+                        .lines
+                        .iter()
+                        .map(|l| (l.graphic, l.hue, l.amount, l.price, l.name.clone()))
+                        .collect(),
+                }),
                 spawned_by: registry.get::<SpawnedBy>(entity).map(|s| s.0),
                 effects: Self::effects_of(registry, entity, self.state.ticks),
                 skills: registry.get::<Skills>(entity).map_or_else(Vec::new, |s| {
@@ -890,6 +905,9 @@ impl World {
             };
             let position = Point::new(record.x, record.y, record.z);
             let facing = Facing::from_bits(record.facing);
+            // Read before the registry is borrowed: a saved timer counts from the
+            // tick the world came back at.
+            let boot_ticks = self.state.ticks;
             let registry = &mut self.state.registry;
             registry.insert(
                 entity,
@@ -960,10 +978,37 @@ impl World {
                 registry.insert(entity, Name(name));
             }
             if record.banker {
-                registry.insert(entity, Banker { next_greet: 0 });
+                registry.insert(entity, Banker);
             }
             if record.vendor {
                 registry.insert(entity, Vendor);
+            }
+            // The trade, without which a restored NPC is a mute statue: every
+            // keyword it answers is looked up by this string.
+            if let Some(title) = record.title {
+                registry.insert(entity, Title(title));
+            }
+            if let Some((x, y, z)) = record.night_home {
+                registry.insert(entity, NightHome(Point::new(x, y, z)));
+            }
+            if let Some(shelf) = record.restock {
+                registry.insert(
+                    entity,
+                    Restock {
+                        at: boot_ticks + shelf.in_seconds * TICKS_PER_SECOND,
+                        lines: shelf
+                            .lines
+                            .into_iter()
+                            .map(|(graphic, hue, amount, price, name)| StockRecord {
+                                graphic,
+                                hue,
+                                amount,
+                                price,
+                                name,
+                            })
+                            .collect(),
+                    },
+                );
             }
             if let Some((x, y, z)) = record.npc_home {
                 registry.insert(
@@ -972,6 +1017,7 @@ impl World {
                         home: Point::new(x, y, z),
                         wander: record.npc_wander,
                         next_beat: 0,
+                        next_greet: 0,
                     },
                 );
             }

@@ -57,7 +57,18 @@ use serde::{Deserialize, Serialize};
 ///   bump above shares. What replaces it: a character's quests and their
 ///   cooldowns, and, on a mobile, whether it gives quests or can be escorted —
 ///   the last two being why quest givers went inert after every restart.
-pub const SCHEMA_VERSION: u32 = 13;
+/// - v14: a townsperson's **trade** (`MobileRecord::title`) and, with the optional
+///   routine, where it sleeps (`night_home`). The trade is the key its outfit, its
+///   generated name and — every time anyone speaks near it — its keyword table are
+///   all looked up by, so an NPC restored without it is a mute statue that a save
+///   file cannot tell apart from a working one. This is the `quest_giver` lesson
+///   applied before it could bite: a binding that lives only in the spawn call that
+///   placed it is lost at the first restart, silently. Added with `serde(default)`,
+///   so an older save reads as a town of trade-less NPCs rather than failing. It
+///   also carries a vendor's **full shelf** (`restock`), for the same reason: the
+///   crate's live contents are what is *left*, so a restock timer with nothing to
+///   compare them against would forget what full meant at every reboot.
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// An account, as saved.
 ///
@@ -444,8 +455,27 @@ pub struct MobileRecord {
     pub banker: bool,
     /// Whether it keeps a shop.
     pub vendor: bool,
+    /// The trade it plies, ServUO-style ("the blacksmith"). `None` for a creature.
+    ///
+    /// Saved because it is a *key*, not decoration: the speech table an NPC answers
+    /// from is looked up by it on every word spoken nearby. Its generated outfit and
+    /// name need it only once, at spawn, and those are already saved as worn items
+    /// and a `Name` — this is what keeps it answering after a reboot.
+    #[serde(default)]
+    pub title: Option<String>,
     /// A townsperson's post `(x, y, z)`, if it keeps one.
     pub npc_home: Option<(u16, u16, i8)>,
+    /// Where it sleeps, for the optional daily routine. `None` on every NPC unless
+    /// the pack gave it one, and read only when `gameplay.npc_schedule` is on.
+    #[serde(default)]
+    pub night_home: Option<(u16, u16, i8)>,
+    /// A vendor's shelf when full, and the seconds until it next refills.
+    ///
+    /// The seconds and not a tick count, for the reason `SpawnerRecord` states: a
+    /// tick counter restarts at boot, so a saved tick would come back either already
+    /// due or an hour early.
+    #[serde(default)]
+    pub restock: Option<RestockRecord>,
     /// How far from its post a townsperson drifts; meaningful with `npc_home`.
     pub npc_wander: u8,
     /// The spawn region that maintains it, if one does — restored so the region
@@ -472,6 +502,15 @@ pub struct MobileRecord {
     /// chosen when someone accepts.
     #[serde(default)]
     pub escort_destination: Option<String>,
+}
+
+/// A vendor's shelf when full, as saved. See [`MobileRecord::restock`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RestockRecord {
+    /// How many seconds until the shelf next refills.
+    pub in_seconds: u64,
+    /// The full shelf: `(graphic, hue, amount, price, name)` per line.
+    pub lines: Vec<(u16, u16, u16, u32, String)>,
 }
 
 /// A shut-and-openable door's live state, inside a [`DecorationRecord`].

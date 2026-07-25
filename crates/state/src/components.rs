@@ -1119,17 +1119,77 @@ pub struct Ghost {
 /// The service, not the person — the graphic, name and standing-still are ordinary
 /// mobile data a spawn sets; this is the one bit that makes saying "bank" near it
 /// do something. A player within reach of any banker gets their own bank box, the
-/// same container the bank holds for them everywhere. `next_greet` is the tick it
-/// may next greet a passer-by, so it welcomes rather than natters.
+/// same container the bank holds for them everywhere.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Banker {
-    /// The earliest tick it may greet someone again.
-    pub next_greet: u64,
+pub struct Banker;
+
+/// The trade a townsperson plies, in ServUO's form — "the blacksmith", "the
+/// banker". The `Title` beside a `BaseVendor`'s `Name`.
+///
+/// # Why it is a component and not just part of the name
+///
+/// It is a *key*. Three separate rules look a townsperson's trade up: the outfit
+/// generated at spawn, the personal name put in front of it, and — every time
+/// anyone speaks nearby — the keyword table that decides what it answers. A trade
+/// that lived only inside the `Name` string would have to be parsed back out of
+/// it, and one that lived only in the spawn call that placed it would be lost at
+/// the first restart, which is exactly how the quest givers went inert (see
+/// `MobileRecord::quest_giver`). So it is saved with the mobile.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Title(pub String);
+
+/// A vendor's shelf as it was first stocked, and when it next refills.
+///
+/// ServUO's `BaseVendor.Restock`, which tops each `IBuyItemInfo` back up to its
+/// original amount on `OnRestock`, checked when the shop is opened
+/// (`DelayRestock`, an hour). Without it a bought-out shelf stays bought out for the
+/// life of the shard, which is what this engine did.
+///
+/// The original amounts have to be *remembered*, not recomputed: the crate's live
+/// contents are what is left, and there is nothing else to compare them against. So
+/// the list is kept whole on the vendor and saved with it — a restock timer that
+/// forgot its shelf at every restart would be a slower version of the same bug.
+///
+/// `at` is a tick count, like [`Decays`] and every other timer here, so a shard's
+/// economy replays.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Restock {
+    /// The tick at or after which the next shop-open refills the shelf.
+    pub at: u64,
+    /// What the shelf holds when full.
+    pub lines: Vec<StockRecord>,
 }
 
-/// A townsperson's AI base — what makes a banker or a vendor *live* rather than
-/// stand frozen. The shared part every profession reuses; the profession itself
-/// is a marker beside it ([`Banker`], and vendors to come).
+/// One line of a vendor's full shelf, inside a [`Restock`].
+///
+/// The price and the label are part of it, not just the count: a line that sold out
+/// entirely leaves no item behind to copy them from, so a restock that only
+/// remembered graphics would put nameless goods back on the shelf at a price of one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StockRecord {
+    /// The goods' graphic.
+    pub graphic: u16,
+    /// Their hue.
+    pub hue: u16,
+    /// How many the shelf holds when full.
+    pub amount: u16,
+    /// What one unit costs.
+    pub price: u32,
+    /// The label the client shows.
+    pub name: String,
+}
+
+/// Where a townsperson sleeps, for the optional daily routine.
+///
+/// Read only when [`Gameplay::npc_schedule`](crate::Gameplay::npc_schedule) is on;
+/// without it an NPC keeps to its post around the clock, which is what both
+/// references do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NightHome(pub Point);
+
+/// A townsperson's AI base — what makes a townsperson *live* rather than stand
+/// frozen. The shared part every trade reuses; the trade itself is a [`Title`]
+/// beside it, and a service a marker like [`Banker`].
 ///
 /// It keeps to a home: the tile it was placed on, and how far it may drift. A
 /// beat every so often lets it greet a passer-by, turn to face them, or take an
@@ -1142,6 +1202,10 @@ pub struct Npc {
     pub wander: u8,
     /// The tick it next gets a beat.
     pub next_beat: u64,
+    /// The earliest tick it may greet or bark again, so it welcomes rather than
+    /// natters. It sat on [`Banker`] while bankers were the only townsfolk that
+    /// spoke; every trade greets now, so it belongs on the base.
+    pub next_greet: u64,
 }
 
 /// A mobile's fighting state: whether it is in war mode, whom it is attacking,
