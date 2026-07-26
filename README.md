@@ -166,4 +166,4 @@ V8 (`deno_core`) for gameplay. React and Next.js for tooling.
 
 ## Licence
 
-MIT OR Apache-2.0.
+This project is licensed under the GNU General Public License v3.0
