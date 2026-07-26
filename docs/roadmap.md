@@ -972,11 +972,28 @@ Roughly in dependency order, each script-first:
       clumsy peek is noticed by name.
       Deferred: **Tracking** (two gumps and the `0x9A` quest-arrow packet) and the
       AoS per-material stealth-armour table.
-    - [ ] **Bard is a subsystem too.** Peacemaking, Provocation and Discordance go
-      through `BaseInstrument` — items with uses, a bard range of `8 + value/15`, a
-      `Musicianship` check per attempt, and ServUO's `GetBaseDifficulty` over the
-      target's pools and skills. Discordance is a new kind on the existing effects
-      ledger; Provocation reuses the `Combat` component the AI already drives.
+    - [x] **Bard is a subsystem too**, and it landed as one. `state::instrument` is
+      the core table (six classic instruments, each with the pair of sounds its
+      ServUO class passes to `base(graphic, well, badly)`), an `Instrument
+      { uses_left }` on the item is spent by every attempt, and the three skills
+      share a **bard range** (`8 + value/15`), a **Musicianship check before the
+      skill's own roll** — which is what makes Musicianship worth training on its
+      own — and one `base_difficulty` computed from the target's pools and skills
+      rather than a fixed band. A bard with no instrument in the pack gets no cursor
+      at all.
+      The two lasting effects are components with a tick expiry and **neither is
+      folded into anything**. `Pacified` is read where a blow would land
+      (`combat::swings`) and where the AI decides (`ai::think_one`), so a calmed
+      creature neither swings nor hunts. `Discorded` is read in **`skill_value`** —
+      the one question every other system already asks about how good somebody is —
+      so a discorded creature hits worse, resists worse and casts worse without
+      combat, magic or the AI knowing what a lute is. Provocation reuses the
+      `Combat` component the AI already drives, so there is no second fight loop.
+      **Musicianship** is the one bard skill with no target: it comes through the
+      double-click seam (`tick/skills_wire.rs`'s `use_item_skill`), run *after* the
+      `ItemUsed` the pack sees — default in core, customise in the pack, in that
+      order. Deferred: the per-target duration scaling (a flat thirty seconds here),
+      and the AoS/SE resistance-mod form of Discordance.
     - [ ] **Taming wants pets**, which the engine does not have at all — an owner,
       follower slots that mean something (the status bar counts a mount and
       nothing else), control commands through `chat`, and stabling. Animal Taming,

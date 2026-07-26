@@ -685,6 +685,14 @@ pub fn swings(state: &mut WorldState) {
         // The attacker's serial rides along so a lethal blow can be blamed —
         // `damage` is the one place murder is tallied, melee or spell alike.
         let by = state.registry.serial_of(attacker);
+        // A mobile a bard has calmed does not swing — ServUO's `BardPacified`,
+        // checked where the blow would land rather than folded into the target.
+        if state
+            .registry
+            .has::<openshard_state::components::Pacified>(attacker)
+        {
+            continue;
+        }
         // Swinging at somebody is the loudest thing you can do — ServUO calls
         // `RevealingAction` in the combat timer, before the blow is even rolled.
         state.break_cover(attacker);

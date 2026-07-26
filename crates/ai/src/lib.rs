@@ -100,6 +100,15 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
     if brain.guard_until > state.ticks {
         return None;
     }
+    // A creature a bard has calmed picks no fights and chases nobody — ServUO's
+    // `BardPacified`, read where the decision is made rather than folded into the
+    // brain, so it needs no undoing when the song wears off.
+    if state
+        .registry
+        .has::<openshard_state::components::Pacified>(creature)
+    {
+        return None;
+    }
 
     // Keep after a target that is still alive and in sight — close in if out of
     // reach, and leave the hitting to `swings`.

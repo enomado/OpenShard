@@ -13,8 +13,8 @@ use super::tests::{enter, enter_as, packets_for, spawn_mobile_at, world, START};
 use super::*;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::components::{
-    Amount, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Mana, Meditating, Name, PoisonCharges,
-    Poisoned, Stealthing, POISON_POTION_GRAPHIC,
+    Amount, Contained, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Mana, Meditating, Name,
+    PoisonCharges, Poisoned, Stealthing, POISON_POTION_GRAPHIC,
 };
 use openshard_state::Skill;
 
@@ -1041,5 +1041,136 @@ fn detecting_hidden_strips_a_worse_hider_and_not_a_better_one() {
     assert!(
         !world.state.registry.has::<Hidden>(novice_entity),
         "an untrained hider standing next to a grandmaster is found"
+    );
+}
+
+/// Put an instrument in the player's backpack and return its entity.
+fn give_instrument(world: &mut World, connection: ConnectionId, graphic: u16) -> EntityId {
+    let player = world.state.players[&connection];
+    let owner = world.state.registry.serial_of(player).unwrap();
+    let backpack = openshard_items::backpack_of(&world.state, owner).expect("a backpack");
+    let (item, _) = world
+        .state
+        .registry
+        .spawn_with_serial(SerialKind::Item)
+        .unwrap();
+    world.state.registry.insert(
+        item,
+        Graphic {
+            id: graphic,
+            hue: 0,
+        },
+    );
+    world.state.registry.insert(
+        item,
+        Contained {
+            container: backpack,
+            x: 20,
+            y: 20,
+            grid: 0,
+        },
+    );
+    world.state.registry.insert(
+        item,
+        openshard_state::components::Instrument { uses_left: 10 },
+    );
+    item
+}
+
+#[test]
+fn peacemaking_calms_a_creature_and_it_stops_swinging() {
+    // The bard shape end to end: an instrument in the pack, a Musicianship check
+    // *before* the skill's own roll, a use spent, and a `Pacified` the fight reads
+    // where it would swing rather than having anything folded into it.
+    let now = Instant::now();
+    let mut world = world();
+    let bard = enter(&mut world, now);
+    train(&mut world, bard, Skill::Peacemaking, 1000);
+    train(&mut world, bard, Skill::Musicianship, 1000);
+    world.tick(now);
+    let lute = give_instrument(&mut world, bard, 0x0EB3);
+    let creature = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 20, now);
+    let creature_entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(creature).unwrap())
+        .unwrap();
+    let _ = packets_for(&mut world, bard);
+
+    let said = use_skill_on(&mut world, bard, Skill::Peacemaking, creature, now);
+    assert!(
+        world
+            .state
+            .registry
+            .has::<openshard_state::components::Pacified>(creature_entity),
+        "a grandmaster calms a rat: {said:?}"
+    );
+    let uses = world
+        .state
+        .registry
+        .get::<openshard_state::components::Instrument>(lute)
+        .map(|i| i.uses_left);
+    assert_eq!(uses, Some(9), "and it cost a tune");
+}
+
+#[test]
+fn a_bard_with_no_instrument_gets_no_cursor() {
+    // ServUO refuses in `OnUse`, before any target goes up: the instrument is the
+    // whole precondition of the family.
+    let now = Instant::now();
+    let mut world = world();
+    let bard = enter(&mut world, now);
+    let entity = world.state.players[&bard];
+    train(&mut world, bard, Skill::Provocation, 1000);
+    world.tick(now);
+    world.queue(Command::UseSkillButton {
+        connection: bard,
+        skill: Skill::Provocation.id(),
+    });
+    world.tick(now);
+    assert!(!world.state.pending_targets.contains_key(&entity));
+    assert!(clilocs(&mut world, bard).contains(&500_617));
+}
+
+#[test]
+fn discordance_makes_a_creature_worse_at_everything_at_once() {
+    // The penalty is read in `skill_value` — the one question every other system
+    // asks about how good somebody is — so it reaches the to-hit roll, the damage
+    // scaling and a spell's casting roll without any of them knowing what a lute
+    // is. This asserts the seam, not three separate consumers.
+    let now = Instant::now();
+    let mut world = world();
+    let bard = enter(&mut world, now);
+    train(&mut world, bard, Skill::Discordance, 1000);
+    train(&mut world, bard, Skill::Musicianship, 1000);
+    world.tick(now);
+    give_instrument(&mut world, bard, 0x0EB3);
+    let creature = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 20, now);
+    let entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(creature).unwrap())
+        .unwrap();
+    world.queue(Command::SetSkill {
+        serial: creature,
+        skill: Skill::Wrestling.id(),
+        value: 1000,
+    });
+    world.tick(now);
+    let before = openshard_skills::skill_value(&world.state, entity, Skill::Wrestling.id());
+    let _ = packets_for(&mut world, bard);
+
+    let said = use_skill_on(&mut world, bard, Skill::Discordance, creature, now);
+    assert!(
+        world
+            .state
+            .registry
+            .has::<openshard_state::components::Discorded>(entity),
+        "a grandmaster puts a rat out of tune: {said:?}"
+    );
+    let after = openshard_skills::skill_value(&world.state, entity, Skill::Wrestling.id());
+    assert!(
+        after < before,
+        "and it is worse at everything: {before} → {after}"
     );
 }

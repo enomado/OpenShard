@@ -140,3 +140,22 @@ impl World {
         }
     }
 }
+
+impl World {
+    /// The core's own answer to a double-clicked item that a *skill* knows what to
+    /// do with — ServUO's per-item `OnDoubleClick` overrides.
+    ///
+    /// The counterpart of `handlers::start` for the items that are their own skill
+    /// button: an instrument is struck up rather than pressed for. It runs after
+    /// the `ItemUsed` event the pack sees, so the split stays "default in core,
+    /// customise in the pack" — a pack that gives a graphic its own meaning has
+    /// already been heard.
+    pub(super) fn use_item_skill(&mut self, player: EntityId, item: EntityId) {
+        let Some(graphic) = self.state.registry.get::<Graphic>(item).map(|g| g.id) else {
+            return;
+        };
+        if openshard_state::instrument::instrument_data(graphic).is_some() {
+            skills::play_instrument(&mut self.state, player, item);
+        }
+    }
+}

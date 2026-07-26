@@ -151,6 +151,8 @@ pub struct World {
     fumbled: Cursor<openshard_skills::PoisonedSelf>,
     /// Beggars who were given something, for the tick to put in their pack.
     begged: Cursor<openshard_skills::Begged>,
+    /// Instruments that played their last tune, for the tick to remove.
+    spent_instruments: Cursor<openshard_skills::InstrumentSpent>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     turned: Cursor<MobileTurned>,
     /// Skill gains this tick, to push the single-line `0x3A` update to the owner.
@@ -256,6 +258,7 @@ impl World {
             damaged: Cursor::default(),
             fumbled: Cursor::default(),
             begged: Cursor::default(),
+            spent_instruments: Cursor::default(),
             turned: Cursor::default(),
             changed: Cursor::default(),
             disturbed: Cursor::default(),
@@ -546,6 +549,20 @@ impl World {
             self.notify_self(entity, "You are no longer frozen.");
         }
         skills::expire_ghost_contact(&mut self.state);
+        skills::expire_songs(&mut self.state);
+        // An instrument that played its last tune. `skills` decides, `items`
+        // removes — the same split the poison fumble and the beggar's coin use.
+        let spent: Vec<openshard_skills::InstrumentSpent> = self
+            .state
+            .bus
+            .read(&mut self.spent_instruments)
+            .copied()
+            .collect();
+        for gone in spent {
+            if let Some(serial) = self.state.registry.serial_of(gone.item) {
+                items::consume(&mut self.state, serial, 0);
+            }
+        }
         magic::regen_mana(&mut self.state);
         combat::regen_stamina(&mut self.state);
         combat::regen_hits(&mut self.state);
@@ -930,6 +947,17 @@ impl World {
                     // use rule.
                     if !snoop_refused && !npc::open_shop(&mut self.state, connection, serial) {
                         items::double_click(&mut self.state, connection, serial);
+                        // And the core's own answer for an item a skill knows what
+                        // to do with — an instrument struck up, and the bandage and
+                        // lockpick to come. Run *after* `double_click`, so the pack
+                        // has already had the `ItemUsed` event: default in core,
+                        // customise in the pack, in that order.
+                        if let (Some(&player), Some(item)) = (
+                            self.state.players.get(&connection),
+                            Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        ) {
+                            self.use_item_skill(player, item);
+                        }
                     }
                 }
             }

@@ -35,6 +35,7 @@
 pub mod armor;
 pub mod components;
 pub mod dialogue;
+pub mod instrument;
 pub mod obstruct;
 pub mod quest;
 pub mod region;
@@ -48,12 +49,13 @@ pub mod weapon;
 pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
-    Decoration, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic, Guard,
-    Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana,
-    Meditating, MeleeDamage, Movement, MurderDecay, Murders, Name, NightHome, Npc, PoisonCharges,
-    Poisoned, Position, Resistance, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina,
-    StatLock, StatLocks, StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Trap, TrapKind,
-    DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, POISON_POTION_GRAPHIC,
+    Decoration, Discorded, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic,
+    Guard, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Instrument, Karma, KeyValue,
+    LastStatGain, Lock, Mana, Meditating, MeleeDamage, Movement, MurderDecay, Murders, Name,
+    NightHome, Npc, Pacified, PoisonCharges, Poisoned, Position, Resistance, Scripted,
+    SkillCooldown, Skills, SpawnedBy, Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods,
+    Stats, Stealthing, SwingSpeed, Title, Trap, TrapKind, DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC,
+    FIELD_HEIGHT, POISON_POTION_GRAPHIC,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};

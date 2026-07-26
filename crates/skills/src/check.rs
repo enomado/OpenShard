@@ -60,10 +60,14 @@ const SKILL_100: u16 = 1000;
 /// anywhere and nothing to undo when it expires.
 #[must_use]
 pub fn skill_value(state: &WorldState, entity: EntityId, id: u8) -> u16 {
-    let base = state
-        .registry
-        .get::<Skills>(entity)
-        .map_or(0, |s| s.get(id));
+    let base = discorded(
+        state,
+        entity,
+        state
+            .registry
+            .get::<Skills>(entity)
+            .map_or(0, |s| s.get(id)),
+    );
     // From AoS the stat influence is gone: ServUO calls `AOS.DisableStatInfluences()`
     // at startup, which zeroes the three scale columns in place. An `if` says the
     // same thing without a mutable table.
@@ -98,6 +102,22 @@ pub fn skill_value(state: &WorldState, entity: EntityId, id: u8) -> u16 {
     let inv = u32::from(SKILL_100.saturating_sub(base));
     let bonus = offset.min(ceiling) * inv / u32::from(SKILL_100);
     base.saturating_add(u16::try_from(bonus).unwrap_or(u16::MAX))
+}
+
+/// Take Discordance's cut off a skill, if a bard has put this mobile out of tune.
+///
+/// Applied here, at the *one* question every system asks about how good somebody
+/// is, so a discorded creature hits worse, resists worse and casts worse without
+/// combat, magic or the AI knowing what a lute is. The penalty is a percentage and
+/// the value is in tenths, so the arithmetic is exact.
+fn discorded(state: &WorldState, entity: EntityId, base: u16) -> u16 {
+    let Some(song) = state
+        .registry
+        .get::<openshard_state::components::Discorded>(entity)
+    else {
+        return base;
+    };
+    base.saturating_sub(base * song.penalty.min(100) / 100)
 }
 
 /// Roll a skill against a difficulty band, and teach from the attempt.

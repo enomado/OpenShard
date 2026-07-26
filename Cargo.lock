@@ -1425,6 +1425,7 @@ name = "openshard-skills"
 version = "0.0.1"
 dependencies = [
  "openshard-entities",
+ "openshard-gateway",
  "openshard-items",
  "openshard-protocol",
  "openshard-state",

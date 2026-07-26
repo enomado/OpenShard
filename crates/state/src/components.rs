@@ -445,6 +445,44 @@ pub struct PoisonCharges {
     pub charges: u16,
 }
 
+/// A musical instrument, and how many tunes are left in it — ServUO's
+/// `BaseInstrument.UsesRemaining`.
+///
+/// The bard skills all need one in the pack, and each attempt spends a use. Which
+/// *sounds* it makes is a property of the class, so it lives in the core table
+/// keyed by graphic; how worn this particular one is lives here.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Instrument {
+    /// Tunes left. At zero the instrument plays its last and is gone.
+    pub uses_left: u16,
+}
+
+/// A mobile a bard has calmed — ServUO's `BaseCreature.BardPacified`.
+///
+/// It does not swing and it does not pick fights while this holds, which is read at
+/// combat's and the AI's own decision points rather than folded into either. A tick
+/// count, like every other expiry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Pacified {
+    /// The tick the calm lifts.
+    pub until: u64,
+}
+
+/// A mobile a bard has put out of tune — ServUO's Discordance.
+///
+/// `penalty` is a percentage taken off everything the target is good at. It is read
+/// in exactly one place, `skills::skill_value`, which is what every other system
+/// asks when it wants to know how good somebody is — so a discorded creature hits
+/// worse, resists worse and casts worse without any of those three knowing what a
+/// lute is.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Discorded {
+    /// How much worse at everything, as a percentage.
+    pub penalty: u16,
+    /// The tick the song wears off.
+    pub until: u64,
+}
+
 /// What a trap on a container does when it goes off — ServUO's `TrapType`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TrapKind {

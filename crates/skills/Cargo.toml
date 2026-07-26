@@ -18,6 +18,9 @@ workspace = true
 # closes.
 openshard-items.workspace = true
 openshard-entities.workspace = true
+# For `ConnectionId` alone — a handler that raises its own cursor has to name the
+# connection it sends to.
+openshard-gateway.workspace = true
 # For `SkillLock` alone — the up/down/lock arrow is a wire value the client sets,
 # and the gain reads it, so both ends name the same type.
 openshard-protocol.workspace = true

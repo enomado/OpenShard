@@ -12,6 +12,7 @@
 //! this", which is cliloc 500014 and is decided a step earlier.
 
 mod appraise;
+mod bard;
 mod forensics;
 mod lore;
 mod mind;
@@ -19,11 +20,13 @@ mod poison;
 mod social;
 mod stealth;
 
+pub use bard::{expire_songs, play_instrument, InstrumentSpent};
 pub use poison::PoisonedSelf;
 pub use social::Begged;
 pub use stealth::{snooping, Stolen};
 
 use openshard_entities::{EntityId, Serial};
+use openshard_gateway::ConnectionId;
 use openshard_protocol::encode_target_cursor_object;
 use openshard_state::components::{Client, HearsGhosts, Position};
 use openshard_state::{in_range, Skill, TargetPurpose, WorldState};
@@ -107,6 +110,12 @@ pub(crate) fn start(state: &mut WorldState, actor: EntityId, id: u8) -> bool {
             stealth::detect_hidden(state, actor);
             true
         }
+        // The bard skills raise their own cursors, because the reach is the bard's
+        // (`8 + value/15`) rather than a constant, and each wants an instrument in
+        // the pack before it asks anything.
+        Some(Skill::Peacemaking | Skill::Provocation | Skill::Discordance) => {
+            bard::start(state, actor, id)
+        }
         _ => false,
     }
 }
@@ -136,6 +145,22 @@ pub fn expire_ghost_contact(state: &mut WorldState) {
 /// an item into a pack is `items`' door and turning a thief criminal is `combat`'s,
 /// so this decides and the tick applies — the split `ai::think_one` uses.
 pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -> Option<Stolen> {
+    // The bard skills judge their own reach, which widens with the skill, so they
+    // are not in the fixed table.
+    if let Some(skill @ (Skill::Peacemaking | Skill::Provocation | Skill::Discordance)) =
+        Skill::from_id(id)
+    {
+        let target = Serial::new(target).and_then(|s| state.registry.entity_of(s))?;
+        if !within(state, actor, target, bard::bard_range(state, actor, id)) {
+            return None;
+        }
+        match skill {
+            Skill::Peacemaking => bard::peacemaking(state, actor, target),
+            Skill::Provocation => bard::provoke_first(state, actor, target),
+            _ => bard::discordance(state, actor, target),
+        }
+        return None;
+    }
     let ask = ask_for(id)?;
     let target = Serial::new(target).and_then(|s| state.registry.entity_of(s))?;
     // Checked server-side even though the cursor was raised with a range: the range
@@ -175,6 +200,15 @@ pub fn on_second_target(
     first: EntityId,
     target: u32,
 ) {
+    if Skill::from_id(id) == Some(Skill::Provocation) {
+        let range = bard::bard_range(state, actor, id);
+        if let Some(victim) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) {
+            if within(state, actor, victim, range) {
+                bard::provoke_second(state, actor, first, victim);
+            }
+        }
+        return;
+    }
     let Some(ask) = ask_for(id) else {
         return;
     };
@@ -189,8 +223,16 @@ pub fn on_second_target(
     }
 }
 
+/// A mobile's connection and wire serial, for the handlers that raise their own
+/// cursor.
+pub(super) fn client_of(state: &WorldState, mobile: EntityId) -> Option<(ConnectionId, u32)> {
+    let client = state.registry.get::<Client>(mobile)?;
+    let serial = state.registry.serial_of(mobile)?;
+    Some((client.connection, serial.raw()))
+}
+
 /// Whether two things are on the same facet and within `range` tiles.
-fn within(state: &WorldState, a: EntityId, b: EntityId, range: u32) -> bool {
+pub(super) fn within(state: &WorldState, a: EntityId, b: EntityId, range: u32) -> bool {
     let (Some(&Position(at)), Some(&Position(other))) = (
         state.registry.get::<Position>(a),
         state.registry.get::<Position>(b),
@@ -203,7 +245,7 @@ fn within(state: &WorldState, a: EntityId, b: EntityId, range: u32) -> bool {
 /// Put up a cursor that must pick an object, remembering which skill asked, and
 /// prompt the asker with the skill's own line. Returns whether a cursor went up —
 /// a creature has none, and a skill that cannot ask has not started.
-fn raise_cursor(state: &mut WorldState, actor: EntityId, id: u8, prompt: u32) -> bool {
+pub(super) fn raise_cursor(state: &mut WorldState, actor: EntityId, id: u8, prompt: u32) -> bool {
     let Some(&Client { connection, .. }) = state.registry.get::<Client>(actor) else {
         return false; // a creature has no cursor to raise
     };
