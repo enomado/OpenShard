@@ -423,10 +423,131 @@ impl MobileIncoming {
     }
 }
 
+/// The three stat arrows on the status bar, as the wire carries them.
+///
+/// Two bits each inside one byte of the `0xBF 0x19` extended-status packet, and
+/// the mirror of [`SkillLock`](crate::SkillLock) for strength, dexterity and
+/// intelligence. Ported from ServUO's `StatLockInfo` (out) and its `0x1A`
+/// handler (in).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct StatLockBits {
+    /// Strength's arrow: 0 up, 1 down, 2 locked.
+    pub strength: u8,
+    /// Dexterity's arrow.
+    pub dexterity: u8,
+    /// Intelligence's arrow.
+    pub intelligence: u8,
+}
+
+/// `0xBF` subcommand `0x19` type `2` — tell a client which way its stats train,
+/// so the paperdoll draws the three arrows.
+///
+/// ServUO's `StatLockInfo`: the subcommand, the type byte, the mobile's serial, a
+/// zero, and one byte holding all three arrows two bits apiece —
+/// `str << 4 | dex << 2 | int`.
+#[must_use]
+pub fn encode_stat_locks(serial: u32, locks: StatLockBits) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(12);
+    writer.u8(0xBF);
+    writer.u16(12); // fixed length: this subcommand is always twelve bytes
+    writer.u16(0x19);
+    writer.u8(2); // the classic client's type; the enhanced one wants 5
+    writer.u32(serial);
+    writer.u8(0);
+    writer.u8((locks.strength << 4) | (locks.dexterity << 2) | locks.intelligence);
+    writer.into_bytes()
+}
+
+/// `0xBF` subcommand `0x1A` — the player clicked one of the status bar's stat
+/// arrows.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct StatLockRequest {
+    /// Which stat: 0 strength, 1 dexterity, 2 intelligence.
+    pub stat: u8,
+    /// The new arrow: 0 up, 1 down, 2 locked.
+    pub lock: u8,
+}
+
+impl StatLockRequest {
+    /// The packet id — the extended-command envelope.
+    pub const ID: u8 = 0xBF;
+    /// The subcommand that means "a stat's arrow moved".
+    pub const SUBCOMMAND: u16 = 0x1A;
+
+    /// Decode a `0xBF`, returning the request if that is its subcommand. Any other
+    /// `0xBF` reads as `None`, so the dispatcher can pass on the ones it does not
+    /// handle — the same shape as [`ContextMenuRequest`](crate::ContextMenuRequest).
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, LoginDecodeError> {
+        let mut reader = expect_id(bytes, Self::ID)?;
+        let _length = reader.u16()?;
+        if reader.u16()? != Self::SUBCOMMAND {
+            return Ok(None);
+        }
+        let stat = reader.u8()?;
+        // ServUO folds anything past "locked" back to "up" rather than refusing
+        // the packet, and a stat past the third is simply ignored upstream.
+        let lock = reader.u8()?;
+        Ok(Some(Self {
+            stat,
+            lock: if lock > 2 { 0 } else { lock },
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::direction::Direction;
+
+    #[test]
+    fn the_stat_locks_pack_three_arrows_into_one_byte() {
+        // ServUO's `StatLockInfo`: str in bits 4-5, dex in 2-3, int in 0-1.
+        let packet = encode_stat_locks(
+            0x0000_0007,
+            StatLockBits {
+                strength: 2,     // locked
+                dexterity: 1,    // down
+                intelligence: 0, // up
+            },
+        );
+        assert_eq!(packet[0], 0xBF);
+        assert_eq!(
+            u16::from_be_bytes([packet[1], packet[2]]) as usize,
+            packet.len()
+        );
+        assert_eq!(u16::from_be_bytes([packet[3], packet[4]]), 0x19);
+        assert_eq!(packet[5], 2, "the classic client's extended-status type");
+        assert_eq!(
+            u32::from_be_bytes([packet[6], packet[7], packet[8], packet[9]]),
+            7
+        );
+        assert_eq!(packet[10], 0);
+        assert_eq!(packet[11], 0b10_01_00);
+        assert_eq!(packet.len(), 12);
+    }
+
+    #[test]
+    fn a_stat_lock_request_reads_its_stat_and_arrow() {
+        // 0xBF, length, subcommand 0x1A, stat 1 (dexterity), lock 1 (down).
+        let packet = [0xBF, 0x00, 0x07, 0x00, 0x1A, 0x01, 0x01];
+        let request = StatLockRequest::decode(&packet).unwrap().unwrap();
+        assert_eq!(request.stat, 1);
+        assert_eq!(request.lock, 1);
+    }
+
+    #[test]
+    fn an_impossible_stat_arrow_reads_as_up() {
+        // ServUO folds anything past "locked" back to "up" rather than refusing.
+        let packet = [0xBF, 0x00, 0x07, 0x00, 0x1A, 0x00, 0x63];
+        assert_eq!(StatLockRequest::decode(&packet).unwrap().unwrap().lock, 0);
+    }
+
+    #[test]
+    fn another_extended_command_is_not_a_stat_lock() {
+        // 0x13 is the context-menu request; this decoder must pass it on.
+        let packet = [0xBF, 0x00, 0x09, 0x00, 0x13, 0x00, 0x00, 0x00, 0x01];
+        assert_eq!(StatLockRequest::decode(&packet).unwrap(), None);
+    }
 
     #[test]
     fn a_single_click_decodes_the_clicked_serial() {

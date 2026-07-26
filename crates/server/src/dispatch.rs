@@ -379,10 +379,36 @@ pub(crate) fn dispatch(
                             serial: select.serial,
                             index: select.index,
                         });
+                    } else if let Ok(Some(request)) = StatLockRequest::decode(packet) {
+                        world.queue(Command::SetStatLock {
+                            connection: id,
+                            stat: request.stat,
+                            lock: StatLock::from_bits(request.lock),
+                        });
                     }
                 }
                 Err(_) => {
                     warn!(%id, "malformed 0xBF cast");
+                    return false;
+                }
+            }
+            true
+        }
+        Some(UseSkillRequest::ID) => {
+            // `0x12` is the client's text-command envelope, and "use skill" is one
+            // command inside it; anything else — an emote, a `go` — decodes as
+            // `None` and is passed over rather than treated as an error.
+            if !session.in_world {
+                return true;
+            }
+            match UseSkillRequest::decode(packet) {
+                Ok(Some(request)) => world.queue(Command::UseSkillButton {
+                    connection: id,
+                    skill: request.skill,
+                }),
+                Ok(None) => debug!(%id, "0x12 text command we do not act on"),
+                Err(_) => {
+                    warn!(%id, "malformed 0x12 text command");
                     return false;
                 }
             }

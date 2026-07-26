@@ -14,9 +14,11 @@
 //! casting and combat's to-hit train through the very same call a mined ore does,
 //! so there is one gain curve in the engine and not three.
 
+mod button;
 mod check;
 mod stats;
 
+pub use button::{set_skill_delay, use_skill_button, SkillRequested, DEFAULT_SKILL_DELAY_TICKS};
 pub use check::{gain_chance, roll_skill_band, roll_skill_chance, skill_value};
 pub use stats::gain_stat;
 

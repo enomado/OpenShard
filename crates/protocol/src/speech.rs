@@ -166,6 +166,52 @@ pub fn encode_message(
     bytes
 }
 
+/// `0xC1` — a **localized** message: the client looks the text up in its own
+/// `cliloc.enu` and draws it, so nothing but a number travels.
+///
+/// The workhorse of every stock line the client already has a translation for —
+/// "That skill cannot be used directly", "You have no free hands", the whole
+/// skill and craft vocabulary. Ported from ServUO's `MessageLocalized`.
+///
+/// `arguments` are the `\t`-separated substitutions the cliloc's `~1_val~` slots
+/// take, and they are UTF-16 **little-endian** — ServUO's `WriteLittleUniNull`.
+/// That is the opposite of the `0xAE` speech packet two functions up, which is
+/// big-endian, and it is exactly the detail a copy from there gets wrong: the
+/// client draws an empty line and says nothing about why.
+// One argument past clippy's limit, and the list is the packet's own field order —
+// the same shape `encode_message` above has, with the cliloc in place of the text.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_localized_message(
+    serial: u32,
+    graphic: u16,
+    mode: u8,
+    hue: u16,
+    font: u16,
+    cliloc: u32,
+    name: &str,
+    arguments: &str,
+) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(50 + arguments.len() * 2);
+    writer.u8(0xC1);
+    writer.u16(0); // length, patched below
+    writer.u32(serial);
+    writer.u16(graphic);
+    writer.u8(mode);
+    writer.u16(hue);
+    writer.u16(font);
+    writer.u32(cliloc);
+    writer.fixed_string(name, NAME_LENGTH);
+    for unit in arguments.encode_utf16() {
+        writer.u16(unit.swap_bytes()); // little-endian, unlike 0xAE above
+    }
+    writer.u16(0);
+
+    let mut bytes = writer.into_bytes();
+    let length = u16::try_from(bytes.len()).expect("a localized message outgrew its u16 length");
+    bytes[1..3].copy_from_slice(&length.to_be_bytes());
+    bytes
+}
+
 /// The language tag in a `0xAE` is a fixed four bytes, ASCII with a NUL.
 const LANGUAGE_LENGTH: usize = 4;
 /// The default language a `0xAE` carries when the source did not name one.
@@ -225,6 +271,43 @@ pub const NO_GRAPHIC: u16 = 0xFFFF;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_localized_message_carries_a_number_and_little_endian_arguments() {
+        // 1042764 is "~1_NAME~ seems to belong to someone else." — one slot.
+        let packet = encode_localized_message(
+            0xFFFF_FFFF,
+            0xFFFF,
+            0,
+            0x03B2,
+            3,
+            1_042_764,
+            "System",
+            "Iolo",
+        );
+        assert_eq!(packet[0], 0xC1);
+        assert_eq!(
+            u16::from_be_bytes([packet[1], packet[2]]) as usize,
+            packet.len(),
+            "the length field matches the packet"
+        );
+        // id(1) length(2) serial(4) graphic(2) mode(1) hue(2) font(2) → cliloc at 14.
+        assert_eq!(
+            u32::from_be_bytes([packet[14], packet[15], packet[16], packet[17]]),
+            1_042_764
+        );
+        // Then thirty bytes of name, and the arguments after them.
+        let args = &packet[48..];
+        let expected: Vec<u8> = "Iolo"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            args, expected,
+            "the arguments are UTF-16 little-endian, not the big-endian 0xAE uses"
+        );
+    }
 
     #[test]
     fn a_talk_request_reads_its_parts() {

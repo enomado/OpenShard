@@ -370,6 +370,10 @@ impl World {
         // The skill window's full contents, so it is filled the moment the player
         // opens it — ServUO sends `SkillUpdate` on world entry the same way.
         self.send_skills(connection, entity);
+        // And the three stat arrows, which come out of their own packet: a client
+        // that never receives one draws every arrow pointing up, whatever the
+        // character actually saved.
+        self.send_stat_locks(connection, entity);
         // The player's own `0x78`, so its client learns its equipment — and the
         // serial of the backpack it must be able to double-click open. The client
         // draws its body from `0x1B`, but its worn items come from here; `reveal`

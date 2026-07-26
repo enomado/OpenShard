@@ -164,6 +164,18 @@ pub enum Event {
         /// The skill's value now, in tenths.
         value: u16,
     },
+    /// A player pressed a skill's button on the window, and every gate passed —
+    /// alive, off cooldown, and the skill is one that *can* be used that way.
+    ///
+    /// What the use does is the reader's: the core runs the skills it knows, and
+    /// a pack overrides any of them off this event. The passive skills never reach
+    /// here — the client is told "that skill cannot be used directly" instead.
+    SkillRequested {
+        /// Whose, by wire identity.
+        serial: Serial,
+        /// Which skill, by id.
+        skill: u8,
+    },
     /// A spell was cast: mana paid, skill rolled. The script reads this and gives
     /// the spell its effect — damage, a heal, a summon.
     SpellCast {

@@ -111,8 +111,9 @@ pub use login::{
     MIN_CHARACTER_SLOTS, ML_FEATURE_FLAGS, PASSWORD_LENGTH, SE_FEATURE_FLAGS, SHARD_NAME_LENGTH,
 };
 pub use mobile::{
-    encode_open_paperdoll, encode_remove, Equipment, LookRequest, MobileIncoming, MobileMove,
-    MobileStatus, Notoriety, StatusFlags, LABEL_MODE, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE,
+    encode_open_paperdoll, encode_remove, encode_stat_locks, Equipment, LookRequest,
+    MobileIncoming, MobileMove, MobileStatus, Notoriety, StatLockBits, StatLockRequest,
+    StatusFlags, LABEL_MODE, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE,
 };
 pub use packet::{
     client_packet_length, frame_client_packet, Frame, FrameError, PacketLength, MAX_PACKET_SIZE,
@@ -125,8 +126,8 @@ pub use skill::{
     UseSkillRequest,
 };
 pub use speech::{
-    encode_message, encode_unicode_message, TalkRequest, UnicodeTalkRequest, DEFAULT_LANGUAGE_TAG,
-    NO_GRAPHIC, SYSTEM_SERIAL,
+    encode_localized_message, encode_message, encode_unicode_message, TalkRequest,
+    UnicodeTalkRequest, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC, SYSTEM_SERIAL,
 };
 pub use spellbook::encode_spellbook_content;
 pub use target::{encode_target_cursor, TargetResponse};

@@ -36,11 +36,12 @@ use openshard_protocol::{
     AttackRequest, CastSpellRequest, CharacterPlay, ClientVersion, ContextMenuRequest,
     ContextMenuSelect, CreateCharacter, DeleteCharacter, DeleteResult, DoubleClick, DropItem,
     EncodedCommand, EquipItemRequest, GameServerLogin, GumpResponse, LookRequest, PickUpItem,
-    Point, PropertyQueryRequest, SkillLock, SkillLockRequest, StartLocation, TalkRequest,
-    TargetResponse, UnicodeTalkRequest, WalkRequest, WarModeRequest,
+    Point, PropertyQueryRequest, SkillLock, SkillLockRequest, StartLocation, StatLockRequest,
+    TalkRequest, TargetResponse, UnicodeTalkRequest, UseSkillRequest, WalkRequest, WarModeRequest,
 };
 use openshard_world::{
-    Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, TileData, World, TICK_INTERVAL,
+    Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TileData, World,
+    TICK_INTERVAL,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;

@@ -38,6 +38,7 @@ pub struct Scripts {
     left: Cursor<PlayerLeft>,
     died: Cursor<MobileDied>,
     used: Cursor<SkillUsed>,
+    requested: Cursor<openshard_world::SkillRequested>,
     cast: Cursor<SpellCast>,
     spoke: Cursor<MobileSpoke>,
     item_used: Cursor<ItemUsed>,
@@ -89,6 +90,7 @@ impl Scripts {
             left: world.bus().cursor(),
             died: world.bus().cursor(),
             used: world.bus().cursor(),
+            requested: world.bus().cursor(),
             cast: world.bus().cursor(),
             spoke: world.bus().cursor(),
             item_used: world.bus().cursor(),
@@ -183,6 +185,12 @@ impl Scripts {
                     skill: e.skill,
                     success: e.success,
                     value: e.value,
+                });
+            }
+            for e in bus.read(&mut self.requested) {
+                events.push(ScriptEvent::SkillRequested {
+                    serial: e.serial.raw(),
+                    skill: e.skill,
                 });
             }
             for e in bus.read(&mut self.cast) {

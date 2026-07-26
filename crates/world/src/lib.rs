@@ -54,7 +54,7 @@ pub use openshard_combat::{MobileDamaged, MobileDied};
 pub use openshard_items::{ItemSpawned, ItemUsed, ItemsTaken, MobileUsed};
 pub use openshard_magic::SpellCast;
 pub use openshard_npc::StockLine;
-pub use openshard_skills::{SkillChanged, SkillUsed};
+pub use openshard_skills::{SkillChanged, SkillRequested, SkillUsed};
 pub use openshard_state::components;
 pub use openshard_state::Outbound;
 pub use openshard_state::{distance, in_range, sectors, Sectors, SECTOR_SIZE, VIEW_RANGE};
@@ -63,7 +63,7 @@ pub use openshard_state::{
     Decays, Equipped, Facet, Graphic, Heading, Hitpoints, Mana, MeleeDamage, Movement, MurderDecay,
     Murders, Name, Position, Resistance, Scripted, Skills, Stackable, Stats, SwingSpeed,
 };
-pub use openshard_state::{CastStyle, Gameplay, TooltipMode};
+pub use openshard_state::{CastStyle, Gameplay, StatLock, TooltipMode};
 pub use openshard_state::{Dialogue, SpeechEntry, SpeechTable};
 pub use openshard_state::{ObjectiveDef, ObjectiveKind, QuestDef, RewardDef, RewardKind};
 pub use openshard_state::{Region, RegionFlags, RegionRect};

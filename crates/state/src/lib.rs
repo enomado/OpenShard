@@ -43,9 +43,9 @@ pub use components::{
     Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Decoration, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic, Guard,
     Heading, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana, MeleeDamage, Movement,
-    MurderDecay, Murders, Name, NightHome, Npc, Position, Resistance, Scripted, Skills, SpawnedBy,
-    Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods, Stats, SwingSpeed, Title,
-    DEFAULT_SKILL_CAP, FIELD_HEIGHT,
+    MurderDecay, Murders, Name, NightHome, Npc, Position, Resistance, Scripted, SkillCooldown,
+    Skills, SpawnedBy, Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods, Stats,
+    SwingSpeed, Title, DEFAULT_SKILL_CAP, FIELD_HEIGHT,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};

@@ -735,6 +735,30 @@ impl WorldState {
         self.send(connection, packet);
     }
 
+    /// Send `mobile` a private **localized** line — a cliloc the client looks up
+    /// in its own translation file and draws.
+    ///
+    /// The form nearly every stock message takes: a number travels, the player
+    /// reads it in their own language, and the shard ships no English. `arguments`
+    /// fills the cliloc's `~1_val~` slots, tab-separated, and is usually empty.
+    /// A mobile with no client hears nothing, like [`system_message`](Self::system_message).
+    pub fn localized_message(&mut self, mobile: EntityId, cliloc: u32, arguments: &str) {
+        let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
+            return;
+        };
+        let packet = openshard_protocol::encode_localized_message(
+            openshard_protocol::SYSTEM_SERIAL,
+            openshard_protocol::NO_GRAPHIC,
+            0, // regular mode
+            SYSTEM_HUE,
+            SYSTEM_FONT,
+            cliloc,
+            "System",
+            arguments,
+        );
+        self.send(connection, packet);
+    }
+
     /// Play `sound` for `mobile` alone — a sound about the player, not about the
     /// world.
     ///

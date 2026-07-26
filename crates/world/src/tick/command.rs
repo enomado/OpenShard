@@ -436,6 +436,27 @@ pub enum Command {
         /// The upper edge, in tenths.
         max_skill: i32,
     },
+    /// A client pressed a skill's button on the window (`0x12` type `0x24`).
+    ///
+    /// Whether anything happens is `skills`' to decide — a passive skill answers
+    /// "that skill cannot be used directly", a skill with behaviour emits a
+    /// [`SkillRequested`](openshard_skills::SkillRequested) for whoever owns its
+    /// effect.
+    UseSkillButton {
+        /// Which connection.
+        connection: ConnectionId,
+        /// Which skill, by id.
+        skill: u8,
+    },
+    /// A client moved one of the status bar's stat arrows (`0xBF` `0x1A`).
+    SetStatLock {
+        /// Which connection.
+        connection: ConnectionId,
+        /// Which stat: 0 strength, 1 dexterity, 2 intelligence.
+        stat: u8,
+        /// The new arrow.
+        lock: openshard_state::StatLock,
+    },
     /// A client moved a skill's up/down/lock arrow (`0x3A`).
     SetSkillLock {
         /// Which connection.

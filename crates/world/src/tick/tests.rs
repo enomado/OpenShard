@@ -6108,6 +6108,189 @@ fn trained_strength(dex_lock: StatLock) -> u16 {
 }
 
 #[test]
+fn a_passive_skills_button_says_so_and_starts_nothing() {
+    // Thirty-five of the fifty-eight cannot be used from the window, and the
+    // client has its own line for exactly that: cliloc 500014. Before this, the
+    // 0x12 that carries the click was decoded and routed nowhere, so pressing a
+    // skill did nothing at all — no message, no error, nothing in a log.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::Tactics.id(), // passive: there is no using it directly
+    });
+    world.tick(now);
+
+    let cliloc = localized_cliloc(&mut world, player);
+    assert_eq!(
+        cliloc,
+        Some(500_014),
+        "\"That skill cannot be used directly.\""
+    );
+    assert!(
+        !world
+            .state
+            .registry
+            .has::<openshard_state::SkillCooldown>(world.state.players[&player]),
+        "and nothing was started, so nothing is on cooldown"
+    );
+}
+
+#[test]
+fn a_usable_skills_button_announces_it_and_holds_the_button() {
+    // The twenty-three that *can* be used raise a `SkillRequested` for whoever
+    // owns the effect, and arm the cooldown before the handler runs — so a
+    // handler that forgets to set its own delay still cannot be spammed.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let mut asked: Cursor<openshard_skills::SkillRequested> = world.bus().cursor();
+
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::Hiding.id(),
+    });
+    world.tick(now);
+
+    let events: Vec<_> = world.bus().read(&mut asked).copied().collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].skill, Skill::Hiding.id());
+    assert!(world
+        .state
+        .registry
+        .has::<openshard_state::SkillCooldown>(entity));
+
+    // A second press inside the cooldown is refused out loud, and announces
+    // nothing.
+    let _ = packets_for(&mut world, player);
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::Hiding.id(),
+    });
+    world.tick(now);
+    assert_eq!(
+        localized_cliloc(&mut world, player),
+        Some(500_118),
+        "\"You must wait a few moments to use another skill.\""
+    );
+    assert!(
+        world.bus().read(&mut asked).next().is_none(),
+        "and the second press started nothing"
+    );
+}
+
+#[test]
+fn a_ghost_cannot_use_a_skill_at_all() {
+    // ServUO's `CheckAlive` gate, and it is silent on purpose: there is no
+    // message for this, the button simply does not work.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    world.state.registry.insert(
+        entity,
+        openshard_state::Ghost {
+            body: Body { id: 0x0190, hue: 0 },
+        },
+    );
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::Hiding.id(),
+    });
+    world.tick(now);
+    assert_eq!(localized_cliloc(&mut world, player), None, "not a word");
+}
+
+#[test]
+fn a_stat_arrow_is_stored_and_relayed() {
+    // Unlike a skill arrow, this one is sent back: the status bar's arrows come
+    // out of their own `0xBF 0x19`, and a client that never gets one draws all
+    // three pointing up whatever the character saved.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::SetStatLock {
+        connection: player,
+        stat: 1, // dexterity
+        lock: StatLock::Down,
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<openshard_state::StatLocks>(entity)
+            .expect("the arrows are stored")
+            .dexterity,
+        StatLock::Down
+    );
+    let relay = packets_for(&mut world, player)
+        .into_iter()
+        .find(|p| p[0] == 0xBF && u16::from_be_bytes([p[3], p[4]]) == 0x19)
+        .expect("the client is told what it now draws");
+    assert_eq!(relay[11], 0b00_01_00, "str up, dex down, int up");
+}
+
+#[test]
+fn the_window_shows_the_effective_value_beside_the_trained_one() {
+    // The `0x3A` has carried two numbers since the beginning and they were the
+    // same number: nothing lent a skill anything. Parrying leans on strength and
+    // dexterity, so a strong character's parry is worth more than it is trained.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let serial = serial_of(&world, player);
+    world.queue(Command::SetStats {
+        serial,
+        strength: 100,
+        dexterity: 100,
+        intelligence: 10,
+    });
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Parry.id(),
+        value: 200,
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::RequestSkills { connection: player });
+    world.tick(now);
+    let full = packets_for(&mut world, player)
+        .into_iter()
+        .find(|p| p[0] == 0x3A && p[3] == 0x02)
+        .expect("the full skill list");
+    // Entries are nine bytes each from offset 4: id+1, value, base, lock, cap.
+    let parry = 4 + usize::from(Skill::Parry.id()) * 9;
+    assert_eq!(
+        u16::from_be_bytes([full[parry], full[parry + 1]]),
+        u16::from(Skill::Parry.id()) + 1
+    );
+    let value = u16::from_be_bytes([full[parry + 2], full[parry + 3]]);
+    let base = u16::from_be_bytes([full[parry + 4], full[parry + 5]]);
+    assert_eq!(base, 200, "the trained number");
+    assert!(value > base, "and the effective one is higher: {value}");
+}
+
+/// The cliloc of the last `0xC1` localized message sent to a connection, if any.
+fn localized_cliloc(world: &mut World, connection: ConnectionId) -> Option<u32> {
+    packets_for(world, connection)
+        .into_iter()
+        .rfind(|p| p[0] == 0xC1)
+        .map(|p| u32::from_be_bytes([p[14], p[15], p[16], p[17]]))
+}
+
+#[test]
 fn stats_lend_a_skill_its_effective_value_before_aos() {
     // ServUO's `Skill.NonRacialValue`: Parrying scales 7.5 with strength and 2.5
     // with dexterity, so a strong character parries better than the trained
@@ -7650,13 +7833,15 @@ fn entering_sends_the_sequence_the_client_needs() {
     let ids: Vec<u8> = world.drain_outbound().map(|out| out.packet[0]).collect();
     assert_eq!(
         ids,
-        vec![0x1B, 0xBF, 0xB9, 0xBC, 0x20, 0x4F, 0x11, 0x3A, 0x78, 0x55],
+        vec![0x1B, 0xBF, 0xB9, 0xBC, 0x20, 0x4F, 0x11, 0x3A, 0xBF, 0x78, 0x55],
         "0x1B first or there is no body; 0x55 last or the client draws early; \
              0xB9 AoS features after the map change (ServUO's DoLogin order), or a \
              modern client shows no tooltips; 0xBC season between the map change and \
              the player update, as ServUO sends it; 0x11 status and the 0x78 of the \
              player's own equipment before it, or the client has no stamina and no \
-             backpack serial to open; 0x3A fills the skill window"
+             backpack serial to open; 0x3A fills the skill window, and the second \
+             0xBF after it carries the three stat arrows — nothing else sends them, \
+             so without it the bar draws all three pointing up"
     );
 }
 

@@ -802,6 +802,16 @@ impl World {
                 skill,
                 lock,
             } => self.set_skill_lock(connection, skill, lock),
+            Command::UseSkillButton { connection, skill } => {
+                if let Some(&player) = self.state.players.get(&connection) {
+                    skills::use_skill_button(&mut self.state, player, skill);
+                }
+            }
+            Command::SetStatLock {
+                connection,
+                stat,
+                lock,
+            } => self.set_stat_lock(connection, stat, lock),
             Command::WarMode { connection, war } => {
                 combat::war_mode(&mut self.state, connection, war)
             }

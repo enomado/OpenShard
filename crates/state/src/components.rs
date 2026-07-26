@@ -757,6 +757,17 @@ impl StatLock {
     }
 }
 
+/// When a mobile may next use a skill from the window.
+///
+/// ServUO's `Mobile.NextSkillTime`, as a tick count like every other timer here.
+/// One clock for all skills, not one per skill: the classic client's window is a
+/// list of buttons, and holding any of them down is the thing being prevented.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SkillCooldown {
+    /// The tick the next use is allowed on.
+    pub until: u64,
+}
+
 /// Which way each of a mobile's three stats trains.
 ///
 /// All `Up` by default, so a mobile that has never been told otherwise behaves
