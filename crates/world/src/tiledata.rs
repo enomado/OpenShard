@@ -201,6 +201,14 @@ pub struct StaticTile {
     pub height: u8,
     /// 255 means immovable.
     pub weight: u8,
+    /// Which paperdoll layer a wearable copy of it sits on.
+    ///
+    /// UO's file documentation calls this field *quality*, and for a piece of
+    /// equipment the value is its layer — ServUO reads it exactly that way
+    /// (`BaseWeapon`: `Layer = (Layer)ItemData.Quality`), which is how a halberd
+    /// knows to take both hands. It was read past for most of this reader's life
+    /// because nothing asked; Arms Lore does.
+    pub layer: u8,
     /// Its name.
     pub name: String,
 }
@@ -381,6 +389,7 @@ impl TileData {
         Some(StaticTile {
             flags,
             weight: raw[fixed],
+            layer: raw[fixed + 1],
             height: raw[fixed + 12],
             name: read_name(&raw[fixed + 13..]),
         })
@@ -507,6 +516,7 @@ mod tests {
         bytes[entry..entry + 8]
             .copy_from_slice(&(TileFlags::WALL | TileFlags::BLOCK).to_le_bytes());
         bytes[entry + 8] = 255; // weight
+        bytes[entry + 9] = 2; // quality, which for equipment is the layer
         bytes[entry + 20] = 20; // height
         bytes[entry + 21..entry + 32].copy_from_slice(b"wooden wall");
         bytes
@@ -526,6 +536,11 @@ mod tests {
         assert_eq!(wall.name, "wooden wall", "name at 21, not 20");
         assert_eq!(wall.height, 20, "height at 20, not 19");
         assert_eq!(wall.weight, 255);
+        // The byte after the weight: the quality field, which for a piece of
+        // equipment is the paperdoll layer. Pinned here because it sits between two
+        // fields that are already read, and an off-by-one would report a plausible
+        // layer for every item in the game.
+        assert_eq!(wall.layer, 2, "quality/layer at 9, right after the weight");
         assert!(wall.flags.is_blocking());
     }
 

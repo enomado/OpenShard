@@ -920,6 +920,33 @@ pub const CORPSE_GRAPHIC: u16 = 0x2006;
 /// The gump the client opens for a corpse — the loot window, not a chest.
 pub const CORPSE_GUMP: u16 = 0x0009;
 
+/// What a corpse remembers about how it came to be one — ServUO's `Corpse` fields
+/// (`Owner`, `Killer`, `m_Forensicist`, `Looters`).
+///
+/// A corpse is already a container item with a graphic, a name and a decay clock;
+/// this is the part only Forensic Evaluation reads, and it is on the corpse rather
+/// than in a side table for the reason every other fact about an item is: the item
+/// is swept whole by the save, so the story survives a restart with it.
+///
+/// The killer and the looters are kept as **names**, not serials. ServUO holds live
+/// `Mobile` references and reads `.Name` when the corpse is examined, which cannot
+/// answer once the killer has logged out — and a corpse outliving its killer's
+/// session is the ordinary case, not the corner one.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Corpse {
+    /// Who this was.
+    pub owner: String,
+    /// Who struck the killing blow, if anybody did. An unattributed death (a fall
+    /// into a fire field with no caster, say) leaves `None`, which Forensics reads
+    /// out as ServUO's "no one".
+    pub killer: Option<String>,
+    /// The first forensicist to read it, so a second one is told the work is done —
+    /// ServUO's `m_Forensicist`, which it sets on the first successful examination.
+    pub examined_by: Option<String>,
+    /// Everyone who has taken something off it, in the order they did.
+    pub looters: Vec<String>,
+}
+
 /// The death shroud a fresh ghost wears — item `0x204E` on the outer-torso
 /// layer, the grey robe a dead player rises in. ServUO's `deathShroud`.
 pub const DEATH_SHROUD_GRAPHIC: u16 = 0x204E;

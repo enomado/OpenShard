@@ -109,6 +109,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         }
         // Out of a container. The client with the gump open removes the lifted
         // item from the gump itself; the server just drops the containment.
+        note_looter(state, contained.container, player);
         state.registry.remove::<Contained>(item);
         state.held.insert(
             connection,
@@ -355,6 +356,31 @@ pub fn restore(state: &mut WorldState, held: HeldItem) {
             }
         }
     }
+}
+
+/// Remember that `taker` took something out of `container`, if the container is a
+/// corpse — ServUO's `Corpse.Looters`, which Forensic Evaluation reads back out.
+///
+/// Only a corpse keeps the list: an ordinary chest has no story, and a shard that
+/// logged who opened every crate would grow a list nothing ever reads. A name is
+/// recorded once, however many items are taken, and it is a *name* for the same
+/// reason the killer is — the corpse outlives the session.
+fn note_looter(state: &mut WorldState, container: Serial, taker: EntityId) {
+    let Some(container) = state.registry.entity_of(container) else {
+        return;
+    };
+    let Some(story) = state.registry.get::<Corpse>(container) else {
+        return; // not a corpse: nothing keeps a guest list
+    };
+    let Some(name) = state.registry.get::<Name>(taker).map(|n| n.0.clone()) else {
+        return;
+    };
+    if story.looters.contains(&name) {
+        return;
+    }
+    let mut story = story.clone();
+    story.looters.push(name);
+    state.registry.insert(container, story);
 }
 
 /// Send a `0x27`, cancelling whatever drag the client thinks it has.

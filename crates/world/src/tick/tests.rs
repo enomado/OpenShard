@@ -3084,7 +3084,7 @@ fn an_even_unskilled_duel_sometimes_misses() {
     let hit = combat::MELEE_HIT_SOUND.to_be_bytes();
     // A longsword whiffs with its own class sound (ServUO's DefMissSound), not the
     // generic bare-hands swish.
-    let miss = combat::weapons::weapon_data(0x0F61)
+    let miss = openshard_state::weapon::weapon_data(0x0F61)
         .unwrap()
         .miss_sound
         .to_be_bytes();

@@ -81,7 +81,13 @@ use serde::{Deserialize, Serialize};
 ///   decides whether a stat may rise at all. Kept only in memory they reset at
 ///   every restart, which reads as the arrows the player set quietly snapping
 ///   back to "up" — the `Murders` lesson from v15, caught before it shipped.
-pub const SCHEMA_VERSION: u32 = 16;
+/// - v17: a **corpse's story** — who it was, who killed it, who has read it with
+///   Forensic Evaluation and who has rifled it. A corpse lies for seven minutes
+///   and a shard restarts inside that window, so without this the body somebody
+///   was investigating comes back anonymous, killed by nobody and disturbed by
+///   no one. One nullable JSON column on the item row, `None` for every item that
+///   is not a corpse.
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// An account, as saved.
 ///
@@ -378,8 +384,33 @@ pub struct ItemRecord {
     /// to open. Defaulted so a pre-v8 save loads.
     #[serde(default)]
     pub spellbook: Option<u64>,
+    /// How this corpse came to be one, if it is a corpse — what Forensic
+    /// Evaluation reads. `None` for every other item, and defaulted so a pre-v17
+    /// save loads.
+    #[serde(default)]
+    pub corpse: Option<CorpseData>,
     /// Where it is.
     pub location: ItemLocation,
+}
+
+/// A corpse's story, as saved — a plain mirror of the world's `Corpse` component.
+///
+/// Saved because a corpse lies for seven minutes and a shard restarts inside that
+/// window: without it, the body of the character somebody was investigating comes
+/// back anonymous, killed by nobody, disturbed by no one.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct CorpseData {
+    /// Who this was.
+    pub owner: String,
+    /// Who struck the killing blow, by name.
+    #[serde(default)]
+    pub killer: Option<String>,
+    /// The first forensicist to read it.
+    #[serde(default)]
+    pub examined_by: Option<String>,
+    /// Everyone who has taken something off it.
+    #[serde(default)]
+    pub looters: Vec<String>,
 }
 
 /// One creature kind a spawn region may put down, as saved — a plain mirror of
@@ -731,6 +762,12 @@ mod tests {
                 price: Some(11),
                 name: Some("scissors".into()),
                 spellbook: Some(0x0000_0000_00FF_00FF),
+                corpse: Some(CorpseData {
+                    owner: "Reginald".into(),
+                    killer: Some("an orc".into()),
+                    examined_by: Some("Mordred".into()),
+                    looters: vec!["Vesper".into()],
+                }),
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");

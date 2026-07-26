@@ -22,11 +22,17 @@
 //!   in, and what holds there (guards, light, music).
 //! - [`skill`] — what the fifty-eight skills are: their client ids, their names,
 //!   and the per-skill numbers the check and the gain read.
+//! - [`weapon`], [`armor`], [`title`] — the same shape for gear and standing: data
+//!   keyed by graphic (or by fame and karma) that more than one system above reads,
+//!   so it sits below all of them. `combat` turns a weapon row into a swing and a
+//!   blow; `skills` reads the same row to answer an Arms Lore question. The rules
+//!   stay in the crate that owns them.
 //! - [`Rng`] — the seeded generator behind every roll. Deterministic on purpose:
 //!   advanced only by the tick, never the OS, so a world replays roll for roll.
 //!
 //! The tick that drives all this, and the systems that act on it, live above.
 
+pub mod armor;
 pub mod components;
 pub mod dialogue;
 pub mod obstruct;
@@ -37,6 +43,7 @@ pub mod runtime;
 pub mod sectors;
 pub mod skill;
 pub mod title;
+pub mod weapon;
 
 pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,

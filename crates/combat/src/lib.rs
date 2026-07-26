@@ -321,7 +321,7 @@ pub struct MobileDied {
 /// The eras are Sphere's `m_iCombatSpeedEra` (`CResourceCalc.cpp`): `0` custom,
 /// `1` pre-AoS, `2` AoS, `3` SE, `4` ML. Each takes a different `base` — pre-AoS
 /// eras the `old_speed`, AoS/SE the `aos_speed`, ML the `ml_speed` in hundredths of
-/// a second — which [`weapons::swing_base`] picks. `scale` is the operator's
+/// a second — which [`openshard_state::weapon::swing_base`] picks. `scale` is the operator's
 /// `speed_scale_factor` (15000 pre-AoS, 40000 AoS, 80000 SE; ML ignores it).
 #[must_use]
 pub const fn swing_ticks(dex: u16, base: u64, era: u8, scale: u64) -> u64 {
@@ -978,7 +978,7 @@ pub fn swing_speed(state: &WorldState, mobile: EntityId) -> u64 {
     // invalidate when the weapon swaps.
     let era = state.gameplay.combat_era;
     let base = weapons::equipped_weapon(state, mobile).map_or(WRESTLING_SPEED, |weapon| {
-        u64::from(weapons::swing_base(&weapon, era))
+        u64::from(openshard_state::weapon::swing_base(&weapon, era))
     });
     swing_ticks(
         dex,
@@ -1000,8 +1000,8 @@ pub fn melee_blow(state: &mut WorldState, attacker: EntityId) -> u16 {
     }
     if let Some(weapon) = weapons::equipped_weapon(state, attacker) {
         let era = state.gameplay.combat_era;
-        let min = weapons::by_era(weapon.old_min, weapon.aos_min, era);
-        let max = weapons::by_era(weapon.old_max, weapon.aos_max, era);
+        let min = openshard_state::weapon::by_era(weapon.old_min, weapon.aos_min, era);
+        let max = openshard_state::weapon::by_era(weapon.old_max, weapon.aos_max, era);
         let span = u32::from(max.saturating_sub(min)) + 1;
         return min + state.rng.below(span) as u16;
     }

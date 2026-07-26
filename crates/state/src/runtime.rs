@@ -801,6 +801,29 @@ impl WorldState {
         self.send(connection, packet);
     }
 
+    /// Draw `text` over `source` for `watcher` alone — ServUO's
+    /// `PrivateOverheadMessage` with a plain string rather than a cliloc.
+    ///
+    /// The cliloc form ([`private_overhead_cliloc`](Self::private_overhead_cliloc))
+    /// is what nearly everything should use, and this is for the one case it cannot
+    /// serve: a line whose *content* is a name the client has no number for — Item
+    /// Identification saying what an item turned out to be. Ships no English of its
+    /// own; the text is a name already in the world.
+    pub fn private_overhead_text(&mut self, watcher: EntityId, source: EntityId, text: &str) {
+        let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
+            return;
+        };
+        let serial = self.registry.serial_of(source).map_or(0, |s| s.raw());
+        let graphic = self
+            .registry
+            .get::<Body>(source)
+            .map(|body| body.id)
+            .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
+            .unwrap_or(openshard_protocol::NO_GRAPHIC);
+        let packet = encode_message(serial, graphic, 0, SYSTEM_HUE, SYSTEM_FONT, "", text);
+        self.send(connection, packet);
+    }
+
     /// Play `sound` for `mobile` alone — a sound about the player, not about the
     /// world.
     ///

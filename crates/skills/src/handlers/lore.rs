@@ -1,9 +1,9 @@
-//! The lore skills: looking at something and being told about it.
+//! The lore skills that read a living body: Anatomy and Evaluating Intelligence.
 //!
-//! Anatomy, Evaluating Intelligence, Arms Lore, Item Identification and Taste
-//! Identification. Each raises a cursor, and each answers with a **cliloc over
-//! the thing looked at**, seen by the asker alone — ServUO's
-//! `PrivateOverheadMessage`, so a busy street does not read everybody's checks.
+//! Each raises a cursor, and each answers with a **cliloc over the thing looked
+//! at**, seen by the asker alone — ServUO's `PrivateOverheadMessage`, so a busy
+//! street does not read everybody's checks. The skills that read an *object* are
+//! [`super::appraise`]; the one that reads a crime is [`super::forensics`].
 //!
 //! They share one shape, and it is worth naming because the rest of the skill
 //! handlers follow it: a margin of error that narrows as the skill rises, a

@@ -110,7 +110,10 @@ CREATE TABLE IF NOT EXISTS items (
     price    BIGINT,
     name     TEXT,
     -- a spellbook's learned-spell bitmask, so a bought book still opens after a relog.
-    spellbook BIGINT
+    spellbook BIGINT,
+    -- a corpse's story as JSON (who it was, who killed it, who has read and
+    -- rifled it). NULL for every other item.
+    corpse TEXT
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 CREATE TABLE IF NOT EXISTS mobiles (
@@ -474,7 +477,8 @@ impl Store for PgStore {
         let rows = client
             .query(
                 "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
-                 loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook \
+                 loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
+                 corpse \
                  FROM items",
                 &[],
             )
@@ -662,15 +666,17 @@ async fn insert_item(
         .execute(
             "INSERT INTO items \
              (serial, owner, graphic, hue, amount, stackable, gump, \
-              loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) \
+              loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
+              corpse) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) \
              ON CONFLICT (serial) DO UPDATE SET \
              owner = EXCLUDED.owner, graphic = EXCLUDED.graphic, hue = EXCLUDED.hue, \
              amount = EXCLUDED.amount, stackable = EXCLUDED.stackable, gump = EXCLUDED.gump, \
              loc_kind = EXCLUDED.loc_kind, \
              facet = EXCLUDED.facet, x = EXCLUDED.x, y = EXCLUDED.y, z = EXCLUDED.z, \
              parent = EXCLUDED.parent, grid = EXCLUDED.grid, layer = EXCLUDED.layer, \
-             price = EXCLUDED.price, name = EXCLUDED.name, spellbook = EXCLUDED.spellbook",
+             price = EXCLUDED.price, name = EXCLUDED.name, spellbook = EXCLUDED.spellbook, \
+             corpse = EXCLUDED.corpse",
             &[
                 &i64::from(item.serial),
                 &i64::from(item.owner),
@@ -692,6 +698,14 @@ async fn insert_item(
                 // A u64 mask reinterpreted as i64 (Postgres BIGINT is signed);
                 // the full book is u64::MAX, so it must be bit-cast, not widened.
                 &item.spellbook.map(|mask| mask as i64),
+                // Four fields only useful together, so JSON, like the skills on a
+                // character.
+                &item
+                    .corpse
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?,
             ],
         )
         .await
@@ -743,6 +757,9 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
             name: row.get(16),
             // Bit-cast back from the i64 the mask was stored as.
             spellbook: row.get::<_, Option<i64>>(17).map(|mask| mask as u64),
+            corpse: row
+                .get::<_, Option<String>>(18)
+                .and_then(|json| serde_json::from_str(&json).ok()),
             location,
         }))
     }

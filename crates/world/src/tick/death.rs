@@ -1,7 +1,7 @@
 use super::*;
 use openshard_protocol::encode_death_status;
 use openshard_state::components::{
-    creature_name, ghost_body, Decays, CORPSE_GRAPHIC, CORPSE_GUMP, DEATH_SHROUD_GRAPHIC,
+    creature_name, ghost_body, Corpse, Decays, CORPSE_GRAPHIC, CORPSE_GUMP, DEATH_SHROUD_GRAPHIC,
 };
 
 /// How long a corpse lies before it rots away with its loot — ServUO's default
@@ -39,10 +39,17 @@ impl World {
             {
                 continue;
             }
+            // Who struck last, by name and now, while the killer is certainly still
+            // in the world: the corpse remembers a name rather than a serial, so
+            // Forensics can still answer once the killer has logged out.
+            let killer = killer
+                .and_then(|s| self.state.registry.entity_of(s))
+                .and_then(|k| self.state.registry.get::<Name>(k))
+                .map(|name| name.0.clone());
             if self.state.registry.has::<Client>(entity) {
-                self.become_ghost(entity, serial);
+                self.become_ghost(entity, serial, killer);
             } else {
-                self.lay_corpse(entity, serial);
+                self.lay_corpse(entity, serial, killer);
             }
         }
     }
@@ -95,18 +102,28 @@ impl World {
     /// that is monster loot), then enter the ghost state, wearing a fresh death
     /// shroud. The player keeps their connection and can walk as a ghost;
     /// resurrection reverses every step of this.
-    fn become_ghost(&mut self, entity: EntityId, serial: Serial) {
+    fn become_ghost(&mut self, entity: EntityId, serial: Serial, killer: Option<String>) {
         // The corpse first, while the gear is still worn — `move_gear_to_corpse`
         // reads the `Equipped` items off the mobile.
         if let Some(&Position(at)) = self.state.registry.get::<Position>(entity) {
             let facet = self.state.facet_of(entity);
             let body = self.state.registry.get::<Body>(entity).copied();
-            let name = self
+            let owner = self
                 .state
                 .registry
                 .get::<Name>(entity)
-                .map_or_else(|| "a corpse".to_owned(), |n| format!("a corpse of {}", n.0));
-            if let Some(corpse) = self.spawn_corpse(at, facet, body, name) {
+                .map_or_else(String::new, |n| n.0.clone());
+            let name = if owner.is_empty() {
+                "a corpse".to_owned()
+            } else {
+                format!("a corpse of {owner}")
+            };
+            let story = Corpse {
+                owner,
+                killer,
+                ..Corpse::default()
+            };
+            if let Some(corpse) = self.spawn_corpse(at, facet, body, name, story) {
                 // A ghost keeps its backpack and bank box — worn containers, not
                 // loot — and its mount saddle, which the `Riding` link still points
                 // at (sweeping it into the corpse would strand the ridden creature
@@ -334,7 +351,7 @@ impl World {
 
     /// Turn one dead creature into a corpse holding its gear and a little gold,
     /// then despawn the creature.
-    fn lay_corpse(&mut self, entity: EntityId, serial: Serial) {
+    fn lay_corpse(&mut self, entity: EntityId, serial: Serial, killer: Option<String>) {
         let Some(&Position(at)) = self.state.registry.get::<Position>(entity) else {
             // No position (a mount in limbo, say) — nothing to lay a corpse on.
             self.despawn_creature(entity, serial);
@@ -347,11 +364,23 @@ impl World {
             .registry
             .get::<Hitpoints>(entity)
             .map_or(0, |h| h.max);
-        let name = body
-            .and_then(|b| creature_name(b.id))
+        // A creature's own name if the pack gave it one, else its kind's.
+        let owner = self
+            .state
+            .registry
+            .get::<Name>(entity)
+            .map(|n| n.0.clone())
+            .or_else(|| body.and_then(|b| creature_name(b.id)).map(str::to_owned));
+        let name = owner
+            .as_ref()
             .map_or_else(|| "a corpse".to_owned(), |n| format!("a corpse of {n}"));
+        let story = Corpse {
+            owner: owner.unwrap_or_default(),
+            killer,
+            ..Corpse::default()
+        };
 
-        let Some(corpse) = self.spawn_corpse(at, facet, body, name) else {
+        let Some(corpse) = self.spawn_corpse(at, facet, body, name, story) else {
             self.despawn_creature(entity, serial);
             return;
         };
@@ -386,6 +415,7 @@ impl World {
         facet: u8,
         body: Option<Body>,
         name: String,
+        story: Corpse,
     ) -> Option<Serial> {
         let (entity, serial) = self
             .state
@@ -410,6 +440,9 @@ impl World {
             .registry
             .insert(entity, Container { gump: CORPSE_GUMP });
         self.state.registry.insert(entity, Name(name));
+        // How it came to be a corpse: what Forensic Evaluation reads, and what the
+        // save sweeps along with the rest of the item.
+        self.state.registry.insert(entity, story);
         // A corpse rots like clutter, but it is a container, so `mark_decay`
         // skips it — the timer is set here directly, and `items::decay` takes the
         // loot down with it.

@@ -18,9 +18,9 @@ use openshard_protocol::{
     ContainedItem, DragCancelReason, Point, DROP_TO_GROUND, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE,
 };
 use openshard_state::components::{
-    mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Decays,
-    Decoration, Door, Equipped, Facet, Graphic, KeyValue, Lock, Name, Position, Ridden, Riding,
-    Spellbook, Stackable, Weapon, SPELLBOOK_GRAPHIC,
+    mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Corpse,
+    Decays, Decoration, Door, Equipped, Facet, Graphic, KeyValue, Lock, Name, Position, Ridden,
+    Riding, Spellbook, Stackable, Weapon, SPELLBOOK_GRAPHIC,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{HeldItem, Origin, Outbound, WorldState, TICKS_PER_SECOND};

@@ -1,7 +1,9 @@
 use super::*;
-use openshard_persistence::{DoneQuestRecord, EffectRecord, QuestRecord, RestockRecord};
+use openshard_persistence::{
+    CorpseData, DoneQuestRecord, EffectRecord, QuestRecord, RestockRecord,
+};
 use openshard_state::components::{
-    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, DoneQuest,
+    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, DoneQuest,
     Escortable, Field, Frozen, NightHome, Npc, Poisoned, Price, QuestGiver, QuestLog, QuestState,
     RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title,
     Vendor,
@@ -275,6 +277,15 @@ impl World {
             // A spellbook carries its learned spells; without the mask a
             // restored book is a graphic that no longer opens.
             spellbook: registry.get::<Spellbook>(item).map(|b| b.0),
+            // And a corpse carries how it came to be one, so a shard that restarts
+            // inside the seven minutes a body lies does not hand the investigator
+            // an anonymous one.
+            corpse: registry.get::<Corpse>(item).map(|story| CorpseData {
+                owner: story.owner.clone(),
+                killer: story.killer.clone(),
+                examined_by: story.examined_by.clone(),
+                looters: story.looters.clone(),
+            }),
             location,
         })
     }
@@ -796,6 +807,9 @@ impl World {
         if let Some(mask) = record.spellbook {
             self.state.registry.insert(entity, Spellbook(mask));
         }
+        if let Some(story) = &record.corpse {
+            self.state.registry.insert(entity, corpse_from(story));
+        }
         // Loose clutter resumes rotting; a container does not (mark_decay skips
         // it) — except a corpse, which is a container that *must* rot, so it gets
         // a fresh timer here (the decay tick is not itself saved, so a restored
@@ -862,6 +876,9 @@ impl World {
             }
             if let Some(mask) = record.spellbook {
                 self.state.registry.insert(entity, Spellbook(mask));
+            }
+            if let Some(story) = &record.corpse {
+                self.state.registry.insert(entity, corpse_from(story));
             }
         }
         // Pass two: where each item goes.
@@ -1262,5 +1279,16 @@ impl World {
         self.state.registry.insert(mount, Facet(facet));
         self.state.registry.insert(mount, Ridden { rider });
         self.state.registry.insert(rider, Riding { mount, item });
+    }
+}
+
+/// A saved corpse story back into the component. The two shapes are deliberately
+/// separate types (see `persistence::record`), so one conversion, in one place.
+fn corpse_from(story: &CorpseData) -> Corpse {
+    Corpse {
+        owner: story.owner.clone(),
+        killer: story.killer.clone(),
+        examined_by: story.examined_by.clone(),
+        looters: story.looters.clone(),
     }
 }

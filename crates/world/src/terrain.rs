@@ -387,6 +387,10 @@ impl Terrain for MapTerrain {
         }
     }
 
+    fn item_layer(&self, graphic: u16) -> u8 {
+        self.tiles.static_tile(graphic).layer
+    }
+
     fn can_step(&self, from: Point, to: Point) -> Option<Point> {
         let from_z = i32::from(from.z);
         // Reach the next tile from the top of what we stand on, not from our feet:
@@ -1004,6 +1008,38 @@ mod tests {
                     return;
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_layer_byte_reads_the_hand_a_weapon_is_held_in() {
+        // The quality byte sits between the weight and the height, both of which
+        // are already read, so an off-by-one here would report a plausible layer
+        // for every item in the game. Pinned against a real file: a halberd,
+        // bardiche, quarter staff and spear take both hands, a katana and a dagger
+        // one. The file is *wrong* about the bow (it files it one-handed), which is
+        // the reason `weapon::weapon_layer` lets six classes override it.
+        let Some(terrain) = real_terrain() else {
+            return;
+        };
+        assert_eq!(
+            terrain.item_layer(0x13B2),
+            openshard_state::weapon::LAYER_ONE_HANDED,
+            "the bow, which is why the override exists"
+        );
+        for graphic in [0x143E, 0x0F4D, 0x0E89, 0x0F62] {
+            assert_eq!(
+                terrain.item_layer(graphic),
+                openshard_state::weapon::LAYER_TWO_HANDED,
+                "0x{graphic:04X} should be two-handed"
+            );
+        }
+        for graphic in [0x13FF, 0x0F52, 0x0F61, 0x0F5C] {
+            assert_eq!(
+                terrain.item_layer(graphic),
+                openshard_state::weapon::LAYER_ONE_HANDED,
+                "0x{graphic:04X} should be one-handed"
+            );
         }
     }
 

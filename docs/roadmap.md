@@ -279,6 +279,12 @@ connection takes the mobile off every screen that had it.
   saved with their mobile as an `EffectRecord` list on the character or mobile row,
   so a relog cannot wash a debuff off — see the `magic` effects work in §6 for the
   shape (`World::effects_of`/`apply_effects`, the ledger-only restore for buffs).
+- [x] **A corpse's story persists (schema v17).** Who it was, who killed it, who
+  has read it with Forensic Evaluation and who has rifled it, as one nullable JSON
+  column on the item row. A corpse lies for seven minutes and a shard restarts
+  inside that window, so without it the body a player was investigating comes back
+  anonymous, killed by nobody and disturbed by no one. See the Forensics entry in
+  §6 `skills`.
 
 Two backends, one choice. A shard runs on SQLite or on PostgreSQL, and which is
 the operator's to make: neither is "the production one", and SQLite runs a real
@@ -822,10 +828,51 @@ Roughly in dependency order, each script-first:
     to one connection. Adds `encode_localized_message` (`0xC1`) — whose arguments
     are UTF-16 **little-endian**, the opposite of the `0xAE` a few lines above it
     in the same file.
+  - [x] **The gear tables are data, in `state`.** Arms Lore needs a weapon's kind
+    and damage and an armour piece's rating — the same rows `combat` reads to swing
+    and to absorb — so the tables moved down to `state::weapon` and `state::armor`,
+    the `state::title`/`combat::titles` split already in the tree: data below,
+    rules in the crate that owns them. `equipped_weapon`, `swing_ticks` and
+    `absorb_physical` did not move. The weapon table grew ServUO's `WeaponType`
+    (Slashing/Piercing/Bashing/Axe/Polearm/Staff/Ranged), which is *not* derivable
+    from the skill column — a war axe is an axe that bashes, a dagger a knife that
+    pierces, and Arms Lore reads five different cliloc blocks off exactly that.
+  - [x] **And the tiledata layer byte is read at last.** Whether a weapon takes
+    both hands is in `tiledata.mul` — the *quality* field, which ServUO reads
+    straight into `Layer` (`BaseWeapon`: `Layer = (Layer)ItemData.Quality`) — and
+    this reader dropped it. It is `StaticTile::layer` and `Terrain::item_layer`
+    now, pinned against a real file. Six weapon classes override it in code and
+    only those six carry a `WeaponData::hands`, because measured against a real
+    `tiledata.mul` the file is simply **wrong** about them: it files the bow, the
+    crossbow, the heavy crossbow, the battle axe and the war hammer as one-handed.
+    That is why the fact is read from the client *and* overridable, rather than
+    either alone.
   - [ ] **The other twenty-one usable skills.** In rough order of what they cost:
-    - [ ] **Lore, the rest of the family** — Arms Lore, Item Identification, Taste
-      Identification, Forensic Evaluation, Animal Lore. Same shape as the two that
-      are done; Animal Lore wants a gump, Forensics wants corpses to read.
+    - [x] **Arms Lore, Item Identification and Forensic Evaluation.** The same
+      shape as Anatomy and Eval Int, over three different subjects, so the handlers
+      split by what they read: `handlers/lore.rs` (a living body),
+      `handlers/appraise.rs` (an object), `handlers/forensics.rs` (a crime). The
+      cursor's **prompt and reach are per skill** now (a table, not one shared
+      range): Arms Lore reaches 2 tiles, Item ID 8, Forensics 10, each with
+      ServUO's own prompt cliloc, which the two skills that were already done had
+      been sending none of.
+      **Forensics needed the world to keep notes**, and that is the interesting
+      part: a `Corpse` component (owner, killer, forensicist, looters) is written
+      where a corpse is *laid* and a looter is recorded where an item is *lifted*,
+      so the skill only reads what somebody else's rule already recorded — and it
+      **persists** (schema v17), because a body lies for seven minutes and a shard
+      restarts inside that window. The killer is kept as a **name**, not a serial:
+      ServUO holds a live `Mobile` and reads `.Name` at examination time, which
+      cannot answer once the killer has logged out, and a corpse outliving its
+      killer's session is the ordinary case. Arms Lore's durability lines are
+      deliberately absent (an item here has no hit points) and Item ID prices only
+      what the pack priced — a guessed value would read as authoritative.
+    - [ ] **Taste Identification** — lands with Poisoning below, because what it
+      tastes *for* is the poison that slice adds.
+    - [ ] **Animal Lore** — lands with pets below, for the same reason: its gump is
+      loyalty and tameability, and its skill gates are "only a tamed creature",
+      "tamed or tameable", "anything". Without pets it is a window of dashes behind
+      a gate nobody can pass.
     - [ ] **Meditation, Spirit Speak, Begging, Inscribe, Poisoning, Remove Trap** —
       each self-contained, each wanting one small thing (free hands, a corpse
       nearby, a poison potion, a trapped container).

@@ -172,7 +172,11 @@ CREATE TABLE IF NOT EXISTS items (
     price    INTEGER,
     name     TEXT,
     -- a spellbook's learned-spell bitmask, so a bought book still opens after a relog.
-    spellbook INTEGER
+    spellbook INTEGER,
+    -- a corpse's story as JSON (who it was, who killed it, who has read and
+    -- rifled it), like the skills on a character: four fields only useful
+    -- together, and only on corpses. NULL for every other item.
+    corpse TEXT
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 -- NPC mobiles and placed decoration, each a JSON record keyed by serial: a
@@ -390,8 +394,9 @@ impl Store for SqliteStore {
                     tx.execute(
                         "INSERT OR REPLACE INTO items \
                      (serial, owner, graphic, hue, amount, stackable, gump, \
-                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
+                      corpse) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                         params![
                             item.serial,
                             item.owner,
@@ -414,6 +419,13 @@ impl Store for SqliteStore {
                             // 64-bit); read back the same way. The full book is
                             // u64::MAX, which does not fit an i64 unless bit-cast.
                             item.spellbook.map(|mask| mask as i64),
+                            // Four fields only useful together, so JSON, like the
+                            // skills on a character.
+                            item.corpse
+                                .as_ref()
+                                .map(serde_json::to_string)
+                                .transpose()
+                                .unwrap_or_default(),
                         ],
                     )?;
                     Ok(())
@@ -607,7 +619,8 @@ impl Store for SqliteStore {
             let mut statement = guard
                 .prepare(
                     "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
-                     loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook \
+                     loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
+                     corpse \
                      FROM items",
                 )
                 .map_err(database)?;
@@ -636,6 +649,9 @@ impl Store for SqliteStore {
                             name: row.get(16)?,
                             // Bit-cast back from the i64 the mask was stored as.
                             spellbook: row.get::<_, Option<i64>>(17)?.map(|mask| mask as u64),
+                            corpse: row
+                                .get::<_, Option<String>>(18)?
+                                .and_then(|json| serde_json::from_str(&json).ok()),
                             // A placeholder overwritten below; the location cannot be
                             // built inside `query_map`'s closure return type cleanly.
                             location: ItemLocation::Ground {
@@ -920,6 +936,7 @@ mod tests {
             price: None,
             name: None,
             spellbook: None,
+            corpse: None,
             location: ItemLocation::Contained {
                 container,
                 x: 0,
@@ -1183,6 +1200,39 @@ mod tests {
             let items = store.items().await.expect("read");
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].spellbook, Some(full));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn a_corpses_story_survives_a_reopen() {
+        // A corpse lies for seven minutes; a shard can restart inside that. Who it
+        // was, who killed it, who has read it and who has rifled it all have to
+        // come back, or the investigation a player was halfway through resets to a
+        // body nobody has touched.
+        let path = temp_db("corpse-story");
+        let story = crate::record::CorpseData {
+            owner: "a lich".into(),
+            killer: Some("Rowena".into()),
+            examined_by: Some("Mordred".into()),
+            looters: vec!["Vesper".into(), "Rowena".into()],
+        };
+        {
+            let store = SqliteStore::open(&path).expect("open");
+            let mut item = contained(0x4000_0001, 1, 1);
+            item.corpse = Some(story.clone());
+            let mut snap = snapshot(vec![character(1, 100)], vec![]);
+            snap.inventories = vec![crate::record::Inventory {
+                owner: 1,
+                items: vec![item],
+            }];
+            store.save(&snap).await.expect("save");
+        }
+        {
+            let store = SqliteStore::open(&path).expect("reopen");
+            let items = store.items().await.expect("read");
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].corpse.as_ref(), Some(&story));
         }
         let _ = std::fs::remove_file(&path);
     }

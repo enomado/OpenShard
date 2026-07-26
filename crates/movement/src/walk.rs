@@ -131,6 +131,19 @@ pub trait Terrain {
         0
     }
 
+    /// The paperdoll layer `graphic` is worn on, by its tiledata — the field UO
+    /// documents as the *quality* byte and ServUO reads straight into `Layer`
+    /// (`BaseWeapon`: `Layer = (Layer)ItemData.Quality`).
+    ///
+    /// It is what makes a halberd two-handed and a katana not, and it is the
+    /// client's own answer, which is why it is read here rather than written into
+    /// the weapon table twice. A terrain with no tiledata reports `0` — no layer —
+    /// so a shard running without client files treats every weapon as one-handed,
+    /// the same bargain its terrain makes by allowing every step.
+    fn item_layer(&self, _graphic: u16) -> u8 {
+        0
+    }
+
     /// Whether a straight sight line from `from` to `to` is clear of walls.
     ///
     /// What gates a creature noticing prey: both reference emulators require

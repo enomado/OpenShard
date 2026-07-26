@@ -1288,6 +1288,8 @@ mod quest_tests;
 #[cfg(test)]
 mod region_tests;
 #[cfg(test)]
+mod skills_tests;
+#[cfg(test)]
 mod status_tests;
 #[cfg(test)]
 pub(crate) mod tests;
