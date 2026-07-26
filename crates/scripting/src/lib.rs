@@ -452,8 +452,10 @@ pub enum Command {
         target: u32,
         /// The mana cost.
         mana: u16,
-        /// The casting difficulty, 0–100.
-        difficulty: u16,
+        /// The lower edge of the skill band, in tenths: below it the cast fails.
+        min_skill: i32,
+        /// The upper edge, in tenths: at or above it the cast cannot fail.
+        max_skill: i32,
         /// The skill id it rolls (Magery).
         skill: u8,
         /// The container to draw reagents from, or 0 for none.
@@ -492,15 +494,21 @@ pub enum Command {
         /// Maximum damage before resistance.
         max: u16,
     },
-    /// Use a skill against a difficulty (0–100): roll, gain, and report back
-    /// through a [`SkillUsed`](Event::SkillUsed) event.
+    /// Use a skill against a difficulty band: roll, gain, and report back through
+    /// a [`SkillUsed`](Event::SkillUsed) event.
+    ///
+    /// Both edges are in tenths, like the skill itself, and may be negative. Under
+    /// the lower one the attempt is beyond the mobile; at the upper it is no
+    /// challenge and teaches nothing.
     UseSkill {
         /// Whose.
         serial: Serial,
         /// Which skill, by id.
         skill: u8,
-        /// The difficulty, 0–100.
-        difficulty: u16,
+        /// The lower edge of the band, in tenths.
+        min_skill: i32,
+        /// The upper edge, in tenths.
+        max_skill: i32,
     },
     /// Make a mobile speak — an NPC's line, a keyword answer.
     Speak {

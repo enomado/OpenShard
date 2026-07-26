@@ -26,7 +26,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::journal::Snapshot;
 use crate::record::{
     AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord,
-    RegionRecord, SpawnerRecord, SCHEMA_VERSION,
+    RegionRecord, SpawnerRecord, StatLockRecord, SCHEMA_VERSION,
 };
 use crate::store::{Store, StoreError};
 
@@ -147,7 +147,10 @@ CREATE TABLE IF NOT EXISTS characters (
     murders  INTEGER NOT NULL DEFAULT 0,
     -- The player's quest log — an opaque JSON blob the pack owns. '' for none.
     quests TEXT NOT NULL DEFAULT '[]',
-    done_quests TEXT NOT NULL DEFAULT '[]'
+    done_quests TEXT NOT NULL DEFAULT '[]',
+    -- Which way the three stats train, and how long since each last rose. JSON,
+    -- like the skills beside it: six small numbers that are only useful together.
+    stat_locks TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    INTEGER PRIMARY KEY,
@@ -316,14 +319,16 @@ impl Store for SqliteStore {
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 let done_quests = serde_json::to_string(&record.done_quests)
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let stat_locks = serde_json::to_string(&record.stat_locks)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 transaction
                     .execute(
                         "INSERT OR REPLACE INTO characters \
                          (serial, account, name, body, hue, facet, x, y, z, facing, \
                           strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                           quests, done_quests) \
+                           quests, done_quests, stat_locks) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
-                                 ?19, ?20, ?21)",
+                                 ?19, ?20, ?21, ?22)",
                         params![
                             record.serial,
                             record.account,
@@ -346,6 +351,7 @@ impl Store for SqliteStore {
                             record.murders,
                             quests,
                             done_quests,
+                            stat_locks,
                         ],
                     )
                     .map_err(database)?;
@@ -527,7 +533,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                      strength, dexterity, intelligence, skills, effects, dead, fame, karma, \
-                     murders, quests, done_quests \
+                     murders, quests, done_quests, stat_locks \
                      FROM characters",
                 )
                 .map_err(database)?;
@@ -537,6 +543,7 @@ impl Store for SqliteStore {
                     let effects: String = row.get(14)?;
                     let quests: String = row.get(19)?;
                     let done_quests: String = row.get(20)?;
+                    let stat_locks: String = row.get(21)?;
                     Ok((
                         CharacterRecord {
                             serial: row.get(0)?,
@@ -560,17 +567,20 @@ impl Store for SqliteStore {
                             murders: row.get(18)?,
                             quests: Vec::new(),
                             done_quests: Vec::new(),
+                            stat_locks: StatLockRecord::default(),
                         },
                         skills,
                         effects,
                         quests,
                         done_quests,
+                        stat_locks,
                     ))
                 })
                 .map_err(database)?;
             let mut characters = Vec::new();
             for row in rows {
-                let (mut record, skills, effects, quests, done_quests) = row.map_err(database)?;
+                let (mut record, skills, effects, quests, done_quests, stat_locks) =
+                    row.map_err(database)?;
                 record.skills = serde_json::from_str(&skills)
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 record.effects = serde_json::from_str(&effects)
@@ -578,6 +588,8 @@ impl Store for SqliteStore {
                 record.quests = serde_json::from_str(&quests)
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 record.done_quests = serde_json::from_str(&done_quests)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.stat_locks = serde_json::from_str(&stat_locks)
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 characters.push(record);
             }
@@ -876,6 +888,7 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            stat_locks: StatLockRecord::default(),
         }
     }
 

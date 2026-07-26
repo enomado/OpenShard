@@ -60,8 +60,25 @@ pub struct Gameplay {
     pub combat_era: u8,
     /// The swing formula's numerator (Sphere's `SpeedScaleFactor`).
     pub speed_scale_factor: u64,
-    /// The ceiling any one skill trains to, in tenths.
+    /// The ceiling any one skill trains to, in tenths — the cap a character's
+    /// skills are given when nothing raises one of them.
     pub skill_cap: u16,
+    /// The ceiling on *all* skills added together, in tenths — ServUO's
+    /// `PlayerCaps.TotalSkillCap`, the classic 700.0. What makes a character a
+    /// build rather than a list: past it, one skill only rises if another gives
+    /// ground.
+    pub total_skill_cap: u32,
+    /// The ceiling on the three stats added together — the classic 225.
+    pub stat_cap: u16,
+    /// The ceiling on any one stat — the classic 125.
+    pub stat_cap_individual: u16,
+    /// How long after a stat rises before it may rise again, in ticks. ServUO
+    /// ships the long delay *off*, leaving half a second.
+    pub stat_gain_ticks: u64,
+    /// The chance, in per-mille, that a skill gain also tries for a stat — only
+    /// the ML mechanic (`combat_era` 4) reads it; the older one rolls each stat's
+    /// own weight from the skill table instead.
+    pub stat_gain_chance: u32,
     /// How long an item lies on the ground before it rots, in ticks.
     pub decay_ticks: u64,
     /// How long a criminal flag lasts, in ticks.
@@ -198,73 +215,25 @@ impl CastStyle {
 }
 
 impl Gameplay {
-    /// Build the runtime rules from operator values, converting the two
-    /// second-valued timers to ticks. The defaults an operator does not override
-    /// are what [`Default`] gives — the numbers the systems used as constants.
-    // One argument past clippy's limit, and every one is a distinct config knob;
-    // a struct would only move the same list one call up.
-    #[allow(clippy::too_many_arguments)]
+    /// Seconds, as a count of ticks.
+    ///
+    /// The operator writes seconds; every system counts ticks, because a tick
+    /// count replays and a wall clock does not. One conversion, here, so no
+    /// caller has to remember the tick rate.
     #[must_use]
-    pub fn new(
-        combat_era: u8,
-        speed_scale_factor: u64,
-        skill_cap: u16,
-        decay_seconds: u64,
-        criminal_seconds: u64,
-        distance_talk: u32,
-        distance_whisper: u32,
-        distance_yell: u32,
-        creature_step_ms: u64,
-        cast_style: CastStyle,
-        spell_disturb: bool,
-        tooltip_mode: TooltipMode,
-        context_menus: bool,
-        reagents: bool,
-        mana_loss_on_fail: bool,
-        reagent_loss_on_fail: bool,
-        bank_gold_in_status: bool,
-        vendor_bank_payment: bool,
-        lod: bool,
-        lod_radius: u32,
-        lod_idle_factor: u64,
-        uo_minute_seconds: u64,
-        season: u8,
-        guards: bool,
-        npc_schedule: bool,
-        npc_work_hour: u8,
-        npc_home_hour: u8,
-    ) -> Self {
-        Self {
-            combat_era,
-            speed_scale_factor,
-            skill_cap,
-            decay_ticks: decay_seconds * TICKS_PER_SECOND,
-            criminal_ticks: criminal_seconds * TICKS_PER_SECOND,
-            distance_talk,
-            distance_whisper,
-            distance_yell,
-            // 50ms per tick; anything under one tick is one tick.
-            creature_step_ticks: (creature_step_ms / 50).max(1),
-            cast_style,
-            spell_disturb,
-            tooltip_mode,
-            context_menus,
-            reagents,
-            mana_loss_on_fail,
-            reagent_loss_on_fail,
-            bank_gold_in_status,
-            vendor_bank_payment,
-            lod,
-            lod_radius,
-            lod_idle_factor,
-            // A UO minute of zero would stop the clock; one tick is the fastest
-            // a day can sensibly run.
-            uo_minute_ticks: (uo_minute_seconds * TICKS_PER_SECOND).max(1),
-            season,
-            guards,
-            npc_schedule,
-            npc_work_hour,
-            npc_home_hour,
+    pub const fn ticks(seconds: u64) -> u64 {
+        seconds * TICKS_PER_SECOND
+    }
+
+    /// Milliseconds, as a count of ticks — at least one, so a sub-tick interval
+    /// still advances.
+    #[must_use]
+    pub const fn ticks_from_ms(milliseconds: u64) -> u64 {
+        let ticks = milliseconds / (1000 / TICKS_PER_SECOND);
+        if ticks == 0 {
+            1
+        } else {
+            ticks
         }
     }
 }
@@ -272,36 +241,52 @@ impl Gameplay {
 impl Default for Gameplay {
     /// The pre-AoS feel the systems were built with — the values that were
     /// compile-time constants before an operator could tune them.
+    ///
+    /// Written as a literal, and the one place the defaults live. This used to be
+    /// a twenty-seven-argument `new`, which is how a config knob ends up
+    /// positionally next to the wrong one; a caller now names each field it means
+    /// to change and takes the rest from here.
     fn default() -> Self {
-        Self::new(
-            1,
-            15000,
-            1000,
-            20 * 60,
-            2 * 60,
-            18,
-            3,
-            31,
-            400,
-            CastStyle::Stop,
-            true,
-            TooltipMode::SendVersion,
-            true,
-            true,  // reagents
-            true,  // mana_loss_on_fail
-            true,  // reagent_loss_on_fail
-            false, // bank_gold_in_status (the bank is not on the bar)
-            true,  // vendor_bank_payment (a vendor falls back to the bank)
-            false, // lod (opt-in, off)
-            32,    // lod_radius
-            8,     // lod_idle_factor
-            5,     // uo_minute_seconds (ServUO's rate: a UO day in two hours)
-            0,     // season (spring)
-            true,  // guards (a guarded region has guards)
-            false, // npc_schedule (ours, not the references'; opt-in, off)
-            7,     // npc_work_hour
-            21,    // npc_home_hour
-        )
+        Self {
+            combat_era: 1,
+            speed_scale_factor: 15000,
+            skill_cap: 1000,
+            total_skill_cap: 7000,
+            stat_cap: 225,
+            stat_cap_individual: 125,
+            // ServUO ships the fifteen-minute delay switched off, which leaves
+            // the half second its config falls back to.
+            stat_gain_ticks: Self::ticks_from_ms(500),
+            stat_gain_chance: 50, // 5%, ServUO's PlayerChanceToGainStats
+            decay_ticks: Self::ticks(20 * 60),
+            criminal_ticks: Self::ticks(2 * 60),
+            distance_talk: 18,
+            distance_whisper: 3,
+            distance_yell: 31,
+            creature_step_ticks: Self::ticks_from_ms(400),
+            cast_style: CastStyle::Stop,
+            spell_disturb: true,
+            tooltip_mode: TooltipMode::SendVersion,
+            context_menus: true,
+            reagents: true,
+            mana_loss_on_fail: true,
+            reagent_loss_on_fail: true,
+            // The bank is not a second pocket, so its gold is not on the bar.
+            bank_gold_in_status: false,
+            // But a vendor does fall back to it, as ServUO's does.
+            vendor_bank_payment: true,
+            lod: false, // opt-in
+            lod_radius: 32,
+            lod_idle_factor: 8,
+            // ServUO's rate: a whole UO day in two real hours.
+            uo_minute_ticks: Self::ticks(5),
+            season: 0, // spring
+            guards: true,
+            // Ours, not the references'; opt-in, and inert without pack data.
+            npc_schedule: false,
+            npc_work_hour: 7,
+            npc_home_hour: 21,
+        }
     }
 }
 

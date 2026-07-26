@@ -20,6 +20,8 @@
 //!   Chebyshev distance, the square region a UO client draws.
 //! - [`Regions`] — the named areas of a facet: which town or dungeon a point is
 //!   in, and what holds there (guards, light, music).
+//! - [`skill`] — what the fifty-eight skills are: their client ids, their names,
+//!   and the per-skill numbers the check and the gain read.
 //! - [`Rng`] — the seeded generator behind every roll. Deterministic on purpose:
 //!   advanced only by the tick, never the OS, so a world replays roll for roll.
 //!
@@ -33,15 +35,17 @@ pub mod region;
 pub mod rng;
 pub mod runtime;
 pub mod sectors;
+pub mod skill;
 pub mod title;
 
 pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Decoration, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic, Guard,
-    Heading, Hitpoints, InRegion, Karma, KeyValue, Lock, Mana, MeleeDamage, Movement, MurderDecay,
-    Murders, Name, NightHome, Npc, Position, Resistance, Scripted, Skills, SpawnedBy, Stackable,
-    Stamina, StatMod, StatMods, Stats, SwingSpeed, Title, FIELD_HEIGHT,
+    Heading, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana, MeleeDamage, Movement,
+    MurderDecay, Murders, Name, NightHome, Npc, Position, Resistance, Scripted, Skills, SpawnedBy,
+    Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods, Stats, SwingSpeed, Title,
+    DEFAULT_SKILL_CAP, FIELD_HEIGHT,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
@@ -53,4 +57,5 @@ pub use runtime::{
     QuestSection, TargetPurpose, TooltipMode, WorldState, TICKS_PER_SECOND,
 };
 pub use sectors::{distance, in_range, Sectors, SECTOR_SIZE, VIEW_RANGE};
+pub use skill::{Skill, SkillInfo, StatCode, SKILLS, SKILL_COUNT};
 pub use title::{compute_title, titled_name};

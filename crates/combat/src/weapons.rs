@@ -18,29 +18,37 @@
 
 use openshard_entities::EntityId;
 use openshard_state::components::{Equipped, Graphic, Weapon};
-use openshard_state::WorldState;
+use openshard_state::{Skill, WorldState};
 
 /// The paperdoll layer a one-handed weapon sits on (UO layer 1).
 pub const LAYER_ONE_HANDED: u8 = 1;
 /// The paperdoll layer a two-handed weapon or shield sits on (UO layer 2).
 pub const LAYER_TWO_HANDED: u8 = 2;
 
-/// Classic UO skill ids the combat rolls read (`Skills` is keyed by these `u8`s).
-pub const ANATOMY_SKILL: u8 = 1;
+/// The skill ids the combat rolls read (`Skills` is keyed by these `u8`s).
+///
+/// Off [`openshard_state::Skill`] rather than written out, because five of the
+/// eight were **wrong** while they were hand-written constants — Fencing sat on
+/// Cooking's id, Macing on Discordance's, Tactics on Poisoning's, Wrestling on
+/// Tailoring's and Swords on Mace Fighting's. Nothing in the engine noticed: the
+/// roll trained whatever id it was handed, so a swordsman's gains appeared on the
+/// client's Mace Fighting bar and Tactics scaling read a skill nobody trains.
+/// The ids belong to the client, so they come from the client's own table.
+pub const ANATOMY_SKILL: u8 = Skill::Anatomy.id();
 /// Fencing.
-pub const FENCING_SKILL: u8 = 13;
+pub const FENCING_SKILL: u8 = Skill::Fencing.id();
 /// Mace fighting.
-pub const MACING_SKILL: u8 = 15;
+pub const MACING_SKILL: u8 = Skill::Macing.id();
 /// Tactics — the damage-scaling skill both eras read.
-pub const TACTICS_SKILL: u8 = 30;
+pub const TACTICS_SKILL: u8 = Skill::Tactics.id();
 /// Archery.
-pub const ARCHERY_SKILL: u8 = 31;
+pub const ARCHERY_SKILL: u8 = Skill::Archery.id();
 /// Wrestling — the bare-hands weapon skill, and the defender's fallback.
-pub const WRESTLING_SKILL: u8 = 34;
+pub const WRESTLING_SKILL: u8 = Skill::Wrestling.id();
 /// Swordsmanship.
-pub const SWORDS_SKILL: u8 = 41;
+pub const SWORDS_SKILL: u8 = Skill::Swords.id();
 /// Lumberjacking — lends an axe a damage bonus.
-pub const LUMBERJACKING_SKILL: u8 = 44;
+pub const LUMBERJACKING_SKILL: u8 = Skill::Lumberjacking.id();
 
 /// Which combat skill a weapon trains and hits with. Carried from ServUO's
 /// `DefSkill` for the slice that wires hit chance and gain; unused today, but free

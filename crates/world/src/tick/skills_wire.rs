@@ -10,7 +10,7 @@ use super::*;
 use openshard_protocol::{
     encode_skill_update, encode_skills_full, skill_count, Feature, SkillEntry, SkillLock,
 };
-use openshard_skills::SkillRaised;
+use openshard_skills::SkillChanged;
 use openshard_state::components::Skills;
 
 impl World {
@@ -62,11 +62,13 @@ impl World {
         self.state.send(connection, packet);
     }
 
-    /// Push the single-line `0x3A` update for each skill that rose this tick, so
-    /// an open window follows the gain live. Reads the `SkillRaised` a gain emits.
+    /// Push the single-line `0x3A` update for each skill that moved this tick, so
+    /// an open window follows live. Reads the `SkillChanged` the gain emits — for
+    /// a skill that *fell* as much as one that rose, since a "down" arrow gives
+    /// ground the moment another skill needs the room.
     pub(super) fn send_skill_updates(&mut self) {
-        let raised: Vec<SkillRaised> = self.state.bus.read(&mut self.raised).copied().collect();
-        for event in raised {
+        let moved: Vec<SkillChanged> = self.state.bus.read(&mut self.changed).copied().collect();
+        for event in moved {
             let Some(&Client {
                 connection,
                 version,

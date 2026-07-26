@@ -25,8 +25,14 @@ pub struct CharacterSheet {
     pub dexterity: u16,
     /// Intelligence.
     pub intelligence: u16,
-    /// Trained skills as `(id, value in tenths, lock)`.
-    pub skills: Vec<(u8, u16, openshard_protocol::SkillLock)>,
+    /// Trained skills as `(id, value in tenths, lock, cap in tenths)`. A cap of
+    /// zero means "the shard's own", and `enter` fills it from `[gameplay]
+    /// skill_cap` — so a newly created character does not have to know the knob.
+    pub skills: Vec<(u8, u16, openshard_protocol::SkillLock, u16)>,
+    /// Which way the three stats train, and how long ago each last rose (in
+    /// ticks, counted back from the moment the character enters). Both halves are
+    /// inputs the stat gain reads, and both used to reset at every login.
+    pub stat_locks: openshard_persistence::StatLockRecord,
     /// Active effects — a poison a relog must not wash off, and the buffs and
     /// debuffs that will join it. Empty for a clean character.
     pub effects: Vec<openshard_persistence::EffectRecord>,
@@ -357,8 +363,11 @@ pub enum Command {
         target: u32,
         /// The mana it costs.
         mana: u16,
-        /// The casting difficulty, 0–100.
-        difficulty: u16,
+        /// The lower edge of the skill band it is cast against, in tenths: below
+        /// it the cast cannot succeed.
+        min_skill: i32,
+        /// The upper edge, in tenths: at or above it the cast cannot fail.
+        max_skill: i32,
         /// The skill it rolls (Magery, and its id is the caller's to name).
         skill: u8,
         /// The container to draw reagents from, or zero for a spell that needs
@@ -389,7 +398,7 @@ pub enum Command {
         intelligence: u16,
     },
     /// Set a mobile's skill value — a script configuring a character. `value` is
-    /// in tenths, capped at [`SKILL_CAP`](openshard_skills::SKILL_CAP).
+    /// in tenths, capped at that skill's own ceiling.
     SetSkill {
         /// Whose, by wire serial.
         serial: u32,
@@ -409,15 +418,23 @@ pub enum Command {
         /// Maximum damage before resistance.
         max: u16,
     },
-    /// Use a skill against a difficulty (0–100): roll it, gain from it, and say
-    /// what happened with a [`SkillUsed`](openshard_skills::SkillUsed) event.
+    /// Use a skill against a difficulty band: roll it, gain from it, and say what
+    /// happened with a [`SkillUsed`](openshard_skills::SkillUsed) event.
+    ///
+    /// The band is ServUO's `CheckSkill(skill, minSkill, maxSkill)` — under the
+    /// lower edge the attempt is beyond the mobile and fails without a draw, at
+    /// the upper it is no challenge and succeeds without one, and how far between
+    /// them the skill sits decides both the odds and how much is learned. Both
+    /// edges are in tenths, like the skill, and may be negative.
     UseSkill {
         /// Whose, by wire serial.
         serial: u32,
         /// Which skill, by id.
         skill: u8,
-        /// The difficulty, 0–100.
-        difficulty: u16,
+        /// The lower edge of the band, in tenths.
+        min_skill: i32,
+        /// The upper edge, in tenths.
+        max_skill: i32,
     },
     /// A client moved a skill's up/down/lock arrow (`0x3A`).
     SetSkillLock {

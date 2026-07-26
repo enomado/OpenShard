@@ -258,8 +258,8 @@ fn op_heal(state: &mut OpState, serial: u32, amount: u32) {
 }
 
 /// What a script passes to cast a spell — a plain object, so reagents can be a
-/// list and the fields that default (target, difficulty, pack, reagents) can be
-/// left off.
+/// list and the fields that default (target, the skill band, pack, reagents) can
+/// be left off.
 #[derive(serde::Deserialize)]
 struct CastSpec {
     serial: u32,
@@ -267,8 +267,13 @@ struct CastSpec {
     #[serde(default)]
     target: u32,
     mana: u16,
+    /// The skill band, in tenths. Both default to zero, which is a band with no
+    /// width: the cast always succeeds and never trains — right for a script that
+    /// only wants the mana and reagent gate.
     #[serde(default)]
-    difficulty: u16,
+    min_skill: i32,
+    #[serde(default)]
+    max_skill: i32,
     skill: u8,
     #[serde(default)]
     pack: u32,
@@ -286,7 +291,8 @@ fn op_cast_spell(state: &mut OpState, #[serde] spec: CastSpec) {
         spell: spec.spell,
         target: spec.target,
         mana: spec.mana,
-        difficulty: spec.difficulty.min(100),
+        min_skill: spec.min_skill,
+        max_skill: spec.max_skill,
         skill: spec.skill,
         pack: spec.pack,
         reagents: spec.reagents,
@@ -333,15 +339,16 @@ fn op_set_stats(
     });
 }
 
-/// Use a skill against a difficulty (0–100). The result comes back as a
-/// `SkillUsed` event, not a return value: the roll and any gain happen on the
-/// tick, not in the op.
+/// Use a skill against a difficulty band, both edges in tenths. The result comes
+/// back as a `SkillUsed` event, not a return value: the roll and any gain happen
+/// on the tick, not in the op.
 #[op2(fast)]
-fn op_use_skill(state: &mut OpState, serial: u32, skill: u32, difficulty: u32) {
+fn op_use_skill(state: &mut OpState, serial: u32, skill: u32, min_skill: i32, max_skill: i32) {
     state.borrow_mut::<Host>().outbox.push(Command::UseSkill {
         serial,
         skill: skill as u8,
-        difficulty: difficulty.min(100) as u16,
+        min_skill,
+        max_skill,
     });
 }
 

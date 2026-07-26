@@ -6,11 +6,10 @@
 //! no freeze mechanic until the Paralyze spell brings one.
 
 use super::*;
+use openshard_magic::MAGERY_SKILL;
 use openshard_state::components::{Field, FieldKind, Skills, FIELD_HEIGHT};
 use openshard_state::DamageType;
 
-/// The skill a field's duration scales from — Magery, id 25.
-const MAGERY_SKILL: u8 = 25;
 /// Fire Field's damage per pulse (pre-AoS, era 1).
 const FIRE_FIELD_DAMAGE: u16 = 2;
 /// Poison Field applies the regular (lowest) poison — the deadlier levels want the

@@ -86,7 +86,10 @@ CREATE TABLE IF NOT EXISTS characters (
     karma   INTEGER NOT NULL DEFAULT 0,
     murders INTEGER NOT NULL DEFAULT 0,
     quests TEXT NOT NULL DEFAULT '[]',
-    done_quests TEXT NOT NULL DEFAULT '[]'
+    done_quests TEXT NOT NULL DEFAULT '[]',
+    -- Which way the three stats train, and how long since each last rose. JSON,
+    -- like the skills beside it: six small numbers only useful together.
+    stat_locks TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS items (
     serial    BIGINT PRIMARY KEY,
@@ -250,13 +253,25 @@ impl Store for PgStore {
                 .map_err(|e| StoreError::Corrupt(e.to_string()))?;
             let done_quests = serde_json::to_string(&record.done_quests)
                 .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let stat_locks = serde_json::to_string(&record.stat_locks)
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
             transaction
                 .execute(
+                    // The placeholder list has to match the column list exactly. It
+                    // did not: three columns were added over time (fame, karma,
+                    // murders, then the two quest ones) and the `VALUES` stopped at
+                    // $18 while the bindings went on to twenty-one. PostgreSQL
+                    // rejects that outright — "INSERT has more target columns than
+                    // expressions" — so every save on a PostgreSQL shard failed at
+                    // the first character. SQLite's numbered `?n` params made the
+                    // same mistake impossible on the other store, which is why it
+                    // went unnoticed.
                     "INSERT INTO characters \
                      (serial, account, name, body, hue, facet, x, y, z, facing, \
                       strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                       quests, done_quests) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
+                       quests, done_quests, stat_locks) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
+                             $17, $18, $19, $20, $21, $22) \
                      ON CONFLICT (serial) DO UPDATE SET \
                      account = EXCLUDED.account, name = EXCLUDED.name, \
                      body = EXCLUDED.body, hue = EXCLUDED.hue, facet = EXCLUDED.facet, \
@@ -265,7 +280,8 @@ impl Store for PgStore {
                      intelligence = EXCLUDED.intelligence, skills = EXCLUDED.skills, \
                      effects = EXCLUDED.effects, dead = EXCLUDED.dead, \
                      fame = EXCLUDED.fame, karma = EXCLUDED.karma, murders = EXCLUDED.murders, \
-                     quests = EXCLUDED.quests, done_quests = EXCLUDED.done_quests",
+                     quests = EXCLUDED.quests, done_quests = EXCLUDED.done_quests, \
+                     stat_locks = EXCLUDED.stat_locks",
                     &[
                         &i64::from(record.serial),
                         &record.account,
@@ -288,6 +304,7 @@ impl Store for PgStore {
                         &i32::from(record.murders),
                         &quests,
                         &done_quests,
+                        &stat_locks,
                     ],
                 )
                 .await
@@ -443,7 +460,7 @@ impl Store for PgStore {
             .query(
                 "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                  strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
-                 quests, done_quests \
+                 quests, done_quests, stat_locks \
                  FROM characters",
                 &[],
             )
@@ -596,6 +613,8 @@ fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
         quests: serde_json::from_str(row.get::<_, &str>(19))
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
         done_quests: serde_json::from_str(row.get::<_, &str>(20))
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+        stat_locks: serde_json::from_str(row.get::<_, &str>(21))
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,
     })
 }
@@ -766,6 +785,7 @@ fn database(error: tokio_postgres::Error) -> StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::StatLockRecord;
 
     // These tests need a real PostgreSQL. They read a connection URL from
     // `OPENSHARD_POSTGRES` and skip when it is unset, the same bargain the
@@ -801,6 +821,7 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            stat_locks: StatLockRecord::default(),
         }
     }
 

@@ -4,6 +4,7 @@ use openshard_combat::{swing_ticks, MobileDamaged, MobileDied, WRESTLING_SPEED};
 use openshard_events::Cursor;
 use openshard_magic::{SpellCast, MANA_REGEN_TICKS};
 use openshard_movement::WALK_INTERVAL;
+use openshard_protocol::SkillLock;
 use openshard_protocol::{encode_remove, DROP_TO_GROUND};
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
@@ -13,6 +14,7 @@ use openshard_state::components::{
 };
 use openshard_state::components::{Banker, SwingSpeed};
 use openshard_state::sectors::distance;
+use openshard_state::{Skill, StatLock};
 
 pub(super) const START: (u16, u16) = (1363, 1600);
 
@@ -1661,35 +1663,14 @@ fn gameplay_config_reaches_the_systems() {
     // decay here gives a spawned item a clock of a hundred ticks, not the
     // twenty-minute default's twenty-four thousand.
     let now = Instant::now();
-    let gameplay = Gameplay::new(
-        2,
-        40000,
-        700,
-        5,
-        60,
-        18,
-        3,
-        31,
-        400,
-        openshard_state::CastStyle::Stop,
-        true,
-        openshard_state::TooltipMode::SendVersion,
-        true,
-        true,
-        true,
-        true,
-        false, // bank_gold_in_status
-        true,  // vendor_bank_payment
-        false, // lod
-        32,    // lod_radius
-        8,     // lod_idle_factor
-        5,     // uo_minute_seconds
-        0,     // season
-        true,  // guards
-        false, // npc_schedule
-        7,     // npc_work_hour
-        21,    // npc_home_hour
-    );
+    let gameplay = Gameplay {
+        combat_era: 2,
+        speed_scale_factor: 40000,
+        skill_cap: 700,
+        decay_ticks: Gameplay::ticks(5),
+        criminal_ticks: Gameplay::ticks(60),
+        ..Gameplay::default()
+    };
     let mut world = World::new(START).with_gameplay(gameplay);
     world.queue(Command::SpawnItem {
         graphic: 0x0EED,
@@ -3948,7 +3929,8 @@ fn a_skill_gain_updates_the_open_window() {
         world.queue(Command::UseSkill {
             serial,
             skill: 1,
-            difficulty: 0,
+            min_skill: 0,
+            max_skill: 500,
         });
         world.tick(now);
         saw_update |= packets_for(&mut world, connection)
@@ -4036,9 +4018,10 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
             skills: record
                 .skills
                 .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock)))
+                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
                 .collect(),
             effects: record.effects.clone(),
+            stat_locks: record.stat_locks,
             dead: record.dead,
             fame: 0,
             karma: 0,
@@ -4416,9 +4399,10 @@ fn poison_survives_a_relogin() {
             skills: record
                 .skills
                 .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock)))
+                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
                 .collect(),
             effects: record.effects.clone(),
+            stat_locks: record.stat_locks,
             dead: record.dead,
             fame: 0,
             karma: 0,
@@ -4642,9 +4626,10 @@ fn a_stat_buff_survives_a_relogin() {
             skills: record
                 .skills
                 .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock)))
+                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
                 .collect(),
             effects: record.effects.clone(),
+            stat_locks: record.stat_locks,
             dead: record.dead,
             fame: 0,
             karma: 0,
@@ -5018,9 +5003,10 @@ fn a_behaviour_buff_survives_a_relogin() {
             skills: record
                 .skills
                 .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock)))
+                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
                 .collect(),
             effects: record.effects.clone(),
+            stat_locks: record.stat_locks,
             dead: record.dead,
             fame: 0,
             karma: 0,
@@ -5456,9 +5442,10 @@ fn paralysis_survives_a_relogin() {
             skills: record
                 .skills
                 .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock)))
+                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
                 .collect(),
             effects: record.effects.clone(),
+            stat_locks: record.stat_locks,
             dead: record.dead,
             fame: 0,
             karma: 0,
@@ -5778,7 +5765,8 @@ fn using_a_skill_announces_the_outcome() {
     world.queue(Command::UseSkill {
         serial,
         skill: 1,
-        difficulty: 0,
+        min_skill: 0,
+        max_skill: 500,
     });
     world.tick(now);
 
@@ -5807,7 +5795,8 @@ fn a_skill_gains_from_use() {
         world.queue(Command::UseSkill {
             serial,
             skill: 1,
-            difficulty: 0,
+            min_skill: 0,
+            max_skill: 500,
         });
         world.tick(now);
     }
@@ -5827,7 +5816,7 @@ fn a_capped_skill_does_not_gain() {
     world.queue(Command::SetSkill {
         serial,
         skill: 1,
-        value: skills::SKILL_CAP,
+        value: openshard_state::DEFAULT_SKILL_CAP,
     });
     world.tick(now);
 
@@ -5835,14 +5824,352 @@ fn a_capped_skill_does_not_gain() {
         world.queue(Command::UseSkill {
             serial,
             skill: 1,
-            difficulty: 0,
+            min_skill: 0,
+            max_skill: 1500,
         });
         world.tick(now);
     }
     assert_eq!(
         skill_value(&world, entity, 1),
-        skills::SKILL_CAP,
+        openshard_state::DEFAULT_SKILL_CAP,
         "there is nothing left to learn at the cap"
+    );
+}
+
+#[test]
+fn a_locked_skill_does_not_gain() {
+    // The arrow the player set on the window is a rule now, not decoration:
+    // `Locked` holds a skill exactly where it is, however much it is used.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Mining.id(),
+        value: 500,
+    });
+    world.queue(Command::SetSkillLock {
+        connection: player,
+        skill: Skill::Mining.id(),
+        lock: SkillLock::Locked,
+    });
+    world.tick(now);
+
+    for _ in 0..200 {
+        world.queue(Command::UseSkill {
+            serial,
+            skill: Skill::Mining.id(),
+            min_skill: 0,
+            max_skill: 1000,
+        });
+        world.tick(now);
+    }
+    assert_eq!(
+        skill_value(&world, entity, Skill::Mining.id()),
+        500,
+        "a locked skill is held exactly where it was"
+    );
+}
+
+#[test]
+fn a_down_skill_gives_ground_at_the_total_cap() {
+    // The rule that makes a character a build rather than a list: at the total
+    // cap a skill only rises if another, set to "down", gives up the same amount.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    fill_to_the_total_cap(&mut world, player, serial, now);
+    world.queue(Command::SetSkillLock {
+        connection: player,
+        skill: Skill::Fishing.id(),
+        lock: SkillLock::Down,
+    });
+    world.tick(now);
+    let fishing_before = skill_value(&world, entity, Skill::Fishing.id());
+
+    for _ in 0..200 {
+        world.queue(Command::UseSkill {
+            serial,
+            skill: Skill::Mining.id(),
+            min_skill: 0,
+            max_skill: 1000,
+        });
+        world.tick(now);
+    }
+
+    let mining = skill_value(&world, entity, Skill::Mining.id());
+    let fishing = skill_value(&world, entity, Skill::Fishing.id());
+    assert!(mining > 500, "mining still climbed: {mining}");
+    assert!(
+        fishing < fishing_before,
+        "and fishing paid for it: {fishing} was {fishing_before}"
+    );
+    assert!(
+        total_skill(&world, entity) <= world.state.gameplay.total_skill_cap,
+        "the total cap held throughout"
+    );
+}
+
+#[test]
+fn the_total_cap_stops_a_gain_with_nothing_to_give_ground() {
+    // The same corner with every arrow left pointing up: there is nowhere for the
+    // points to come from, so the skill simply stops.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    fill_to_the_total_cap(&mut world, player, serial, now);
+    for _ in 0..200 {
+        world.queue(Command::UseSkill {
+            serial,
+            skill: Skill::Mining.id(),
+            min_skill: 0,
+            max_skill: 1000,
+        });
+        world.tick(now);
+    }
+    assert_eq!(
+        skill_value(&world, entity, Skill::Mining.id()),
+        500,
+        "full is full"
+    );
+}
+
+/// Train a character up to exactly the shard's total skill cap, spread over as
+/// many skills as it takes — no single skill may hold it, since each is capped at
+/// 100.0 of its own. Mining and Fishing are left at 500 as the two the caller
+/// plays with; the rest are filled to their individual caps.
+fn fill_to_the_total_cap(world: &mut World, connection: ConnectionId, serial: u32, now: Instant) {
+    let per = world.state.gameplay.skill_cap;
+    let total = world.state.gameplay.total_skill_cap;
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Mining.id(),
+        value: 500,
+    });
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Fishing.id(),
+        value: 500,
+    });
+    let mut filled = u32::from(per); // the two above
+                                     // Any skills but those two, and none that the caller then trains.
+    let mut spare = [
+        Skill::Alchemy,
+        Skill::Anatomy,
+        Skill::ArmsLore,
+        Skill::Begging,
+        Skill::Blacksmith,
+        Skill::Camping,
+        Skill::Carpentry,
+        Skill::Cartography,
+        Skill::Cooking,
+        Skill::Herding,
+    ]
+    .into_iter();
+    while filled < total {
+        let skill = spare.next().expect("enough spare skills to reach the cap");
+        let value = u16::try_from(total - filled).unwrap_or(per).min(per);
+        world.queue(Command::SetSkill {
+            serial,
+            skill: skill.id(),
+            value,
+        });
+        // Every filler is locked, so only the caller's two can move.
+        world.queue(Command::SetSkillLock {
+            connection,
+            skill: skill.id(),
+            lock: SkillLock::Locked,
+        });
+        filled += u32::from(value);
+    }
+    world.tick(now);
+    assert_eq!(
+        total_skill(world, world.state.players[&connection]),
+        total,
+        "the character starts exactly at the total cap"
+    );
+}
+
+/// Everything a mobile is trained in, added up, in tenths.
+fn total_skill(world: &World, entity: EntityId) -> u32 {
+    world
+        .state
+        .registry
+        .get::<Skills>(entity)
+        .map_or(0, Skills::total)
+}
+
+#[test]
+fn a_skill_that_trains_nudges_its_stat() {
+    // Mining leans wholly on strength (its row gives dexterity and intelligence
+    // nothing), so a miner gets stronger and no quicker or wiser.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    world.queue(Command::SetStats {
+        serial,
+        strength: 20,
+        dexterity: 20,
+        intelligence: 20,
+    });
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Mining.id(),
+        value: 300,
+    });
+    world.tick(now);
+
+    for _ in 0..400 {
+        world.queue(Command::UseSkill {
+            serial,
+            skill: Skill::Mining.id(),
+            min_skill: 0,
+            max_skill: 1000,
+        });
+        world.tick(now);
+    }
+    let stats = *world
+        .state
+        .registry
+        .get::<openshard_state::Stats>(entity)
+        .expect("the character has stats");
+    assert!(stats.strength > 20, "strength rose: {}", stats.strength);
+    assert_eq!(stats.dexterity, 20, "and dexterity did not");
+    assert_eq!(stats.intelligence, 20, "nor intelligence");
+}
+
+#[test]
+fn a_stat_stops_at_the_total_cap_unless_one_gives_ground() {
+    // The classic 225 is a budget, not a wall: with nothing set to "down" a
+    // character at the cap gains nothing, and with dexterity set to fall,
+    // strength climbs on its points.
+    let stiff = trained_strength(StatLock::Up);
+    let giving = trained_strength(StatLock::Down);
+    assert_eq!(stiff, 75, "at the cap with nothing to give, nothing moves");
+    assert!(
+        giving > stiff,
+        "a stat set to fall funds the one that rises: {giving} against {stiff}"
+    );
+}
+
+/// Train Mining hard on a character sitting exactly at the total stat cap, with
+/// dexterity's arrow set to `dex_lock`, and report the strength it reaches.
+fn trained_strength(dex_lock: StatLock) -> u16 {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    world.queue(Command::SetStats {
+        serial,
+        strength: 75,
+        dexterity: 75,
+        intelligence: 75, // 225 exactly: the cap
+    });
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Mining.id(),
+        value: 300,
+    });
+    world.tick(now);
+    // The stat arrows are their own component, and the only way to move one
+    // today is directly — the `0xBF` packet that carries them is the next slice.
+    world.state.registry.insert(
+        entity,
+        openshard_state::StatLocks {
+            strength: StatLock::Up,
+            dexterity: dex_lock,
+            intelligence: StatLock::Up,
+        },
+    );
+    for _ in 0..400 {
+        world.queue(Command::UseSkill {
+            serial,
+            skill: Skill::Mining.id(),
+            min_skill: 0,
+            max_skill: 1000,
+        });
+        world.tick(now);
+    }
+    world
+        .state
+        .registry
+        .get::<openshard_state::Stats>(entity)
+        .expect("the character has stats")
+        .strength
+}
+
+#[test]
+fn stats_lend_a_skill_its_effective_value_before_aos() {
+    // ServUO's `Skill.NonRacialValue`: Parrying scales 7.5 with strength and 2.5
+    // with dexterity, so a strong character parries better than the trained
+    // number alone — and the bonus fades as the training rises.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    world.queue(Command::SetStats {
+        serial,
+        strength: 100,
+        dexterity: 100,
+        intelligence: 10,
+    });
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Parry.id(),
+        value: 0,
+    });
+    world.tick(now);
+    // 100 strength at 7.5 plus 100 dexterity at 2.5 is ten skill points, and the
+    // row's ceiling is exactly that, so an untrained parry is worth 10.0.
+    assert_eq!(
+        openshard_skills::skill_value(&world.state, entity, Skill::Parry.id()),
+        100
+    );
+    // A skill with no stat scales at all is worth exactly what is trained.
+    assert_eq!(
+        openshard_skills::skill_value(&world.state, entity, Skill::Hiding.id()),
+        0
+    );
+}
+
+#[test]
+fn the_stat_bonus_is_gone_from_aos_on() {
+    // ServUO zeroes the three scale columns at startup on an AoS shard
+    // (`AOS.DisableStatInfluences`), so the effective value is the base.
+    let now = Instant::now();
+    let mut world = World::new(START).with_gameplay(Gameplay {
+        combat_era: 2,
+        ..Gameplay::default()
+    });
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    world.queue(Command::SetStats {
+        serial,
+        strength: 100,
+        dexterity: 100,
+        intelligence: 100,
+    });
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Parry.id(),
+        value: 0,
+    });
+    world.tick(now);
+    assert_eq!(
+        openshard_skills::skill_value(&world.state, entity, Skill::Parry.id()),
+        0,
+        "no stat lends to a skill from AoS on"
     );
 }
 
@@ -5866,7 +6193,8 @@ fn skill_rolls_are_replayable() {
             world.queue(Command::UseSkill {
                 serial,
                 skill: 3,
-                difficulty: 40,
+                min_skill: 0,
+                max_skill: 1000,
             });
             world.tick(now);
         }
@@ -5896,7 +6224,8 @@ fn casting_a_spell_pays_mana_and_announces_it() {
         spell: 5,
         target: 0,
         mana: 10,
-        difficulty: 0,
+        min_skill: 0,
+        max_skill: 0,
         skill: 1,
         pack: 0,
         reagents: Vec::new(),
@@ -5961,7 +6290,8 @@ fn reagents_are_consumed_on_a_cast_and_a_short_pack_fizzles() {
         spell: 5,
         target: 0,
         mana: 10,
-        difficulty: 0,
+        min_skill: 0,
+        max_skill: 0,
         skill: 1,
         pack,
         reagents,
@@ -6053,7 +6383,8 @@ fn consuming_a_reagent_redraws_an_open_pack() {
         spell: 5,
         target: 0,
         mana: 10,
-        difficulty: 0,
+        min_skill: 0,
+        max_skill: 0,
         skill: 1,
         pack,
         reagents: vec![(REAGENT, 1)],
@@ -6082,7 +6413,8 @@ fn a_spell_beyond_the_mana_fizzles() {
         spell: 1,
         target: 0,
         mana: 200, // more than the 100 on hand
-        difficulty: 0,
+        min_skill: 0,
+        max_skill: 0,
         skill: 1,
         pack: 0,
         reagents: Vec::new(),
@@ -6149,7 +6481,8 @@ fn mana_trickles_back() {
         spell: 1,
         target: 0,
         mana: 20,
-        difficulty: 0,
+        min_skill: 0,
+        max_skill: 0,
         skill: 1,
         pack: 0,
         reagents: Vec::new(),
@@ -8526,6 +8859,7 @@ fn a_murderer_stays_red_across_a_restart() {
             intelligence: record.intelligence,
             skills: Vec::new(),
             effects: Vec::new(),
+            stat_locks: Default::default(),
             dead: false,
             fame: record.fame,
             karma: record.karma,
@@ -10969,35 +11303,10 @@ fn the_chase_pace_is_the_operators_knob() {
     // shard's creature closes on its prey and the classic one lags behind.
     let chased_distance = |step_ms: u64| {
         let now = Instant::now();
-        let gameplay = Gameplay::new(
-            1,
-            15000,
-            1000,
-            20 * 60,
-            2 * 60,
-            18,
-            3,
-            31,
-            step_ms,
-            openshard_state::CastStyle::Stop,
-            true,
-            openshard_state::TooltipMode::SendVersion,
-            true,
-            true,
-            true,
-            true,
-            false, // bank_gold_in_status
-            true,  // vendor_bank_payment
-            false, // lod
-            32,    // lod_radius
-            8,     // lod_idle_factor
-            5,     // uo_minute_seconds
-            0,     // season
-            true,  // guards
-            false, // npc_schedule
-            7,     // npc_work_hour
-            21,    // npc_home_hour
-        );
+        let gameplay = Gameplay {
+            creature_step_ticks: Gameplay::ticks_from_ms(step_ms),
+            ..Gameplay::default()
+        };
         let mut world = World::new(START).with_gameplay(gameplay);
         let _gm = enter_gm(&mut world, now);
         let player_at = Point::new(START.0, START.1, 0);

@@ -13,7 +13,7 @@
 //! delay, target all resolve), but its effect is left to the pack until the
 //! subsystem lands.
 
-use openshard_state::{DamageType, FieldKind};
+use openshard_state::{DamageType, FieldKind, Skill};
 
 /// A reagent's item graphic — the eight classic Magery reagents.
 const BLACK_PEARL: u16 = 0x0F7A;
@@ -568,18 +568,35 @@ pub fn info(spell: u16) -> Option<&'static SpellInfo> {
     MAGERY.get(spell as usize)
 }
 
+/// The skill every Magery cast rolls and trains.
+///
+/// One name for it, here with the spell table, because it was a private `const
+/// MAGERY_SKILL: u8 = 25` in *two* modules of `world` and a bare `get(25)` in a
+/// third — three copies of a number that belongs to whichever crate owns casting.
+pub const MAGERY_SKILL: u8 = Skill::Magery.id();
+
 /// The mana a spell costs, from its circle.
 #[must_use]
 pub fn mana(info: &SpellInfo) -> u16 {
     CIRCLE_MANA[(info.circle.clamp(1, 8) - 1) as usize]
 }
 
-/// The casting difficulty, 0..100 — higher circles are harder to hold. Fed to
-/// the same skill roll a mined ore uses.
+/// The Magery band a spell is cast against, `(min, max)` in tenths — higher
+/// circles are harder to hold. Fed to the same band roll a mined ore uses.
 #[must_use]
-pub fn difficulty(info: &SpellInfo) -> u16 {
-    u16::from(info.circle.saturating_sub(1)) * 10
+pub fn cast_skills(info: &SpellInfo) -> (i32, i32) {
+    // ServUO's `MagerySpell.GetCastSkills`: the band's centre climbs 100/7 skill
+    // points a circle, so the first circle sits at 0.0 and the eighth at 100.0,
+    // and the band is twenty points either side of it. In tenths.
+    let centre = i32::from(info.circle.clamp(1, 8) - 1) * 1000 / 7;
+    (centre - CAST_CHANCE_OFFSET, centre + CAST_CHANCE_OFFSET)
 }
+
+/// How far either side of a circle's centre the casting band reaches, in tenths —
+/// ServUO's `ChanceOffset`, 20.0 skill points. A first-circle spell therefore has
+/// a band starting *below zero*, which is the point: everyone casts it, and a
+/// beginner still learns from doing so.
+const CAST_CHANCE_OFFSET: i32 = 200;
 
 /// How long the cast takes, in ticks, before it resolves — the delay the
 /// "servuo" cast style waits out. Scales with the circle: half a second at the

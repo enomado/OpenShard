@@ -331,6 +331,7 @@ impl Store for MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::StatLockRecord;
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
@@ -355,6 +356,7 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            stat_locks: StatLockRecord::default(),
         }
     }
 

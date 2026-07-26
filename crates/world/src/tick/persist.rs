@@ -574,9 +574,31 @@ impl World {
                     id,
                     value,
                     lock: lock.to_bits(),
+                    cap: s.cap(id),
                 })
                 .collect()
         });
+        // The stat arrows, and how long ago each stat last rose. The age is
+        // relative on purpose: the tick counter restarts with the shard, so an
+        // absolute stamp from the last run would sit in this run's future and
+        // freeze the stat until the counter caught up.
+        let locks = registry
+            .get::<openshard_state::components::StatLocks>(entity)
+            .copied()
+            .unwrap_or_default();
+        let last = registry
+            .get::<openshard_state::components::LastStatGain>(entity)
+            .copied()
+            .unwrap_or_default();
+        let age = |then: u64| now.saturating_sub(then);
+        let stat_locks = openshard_persistence::StatLockRecord {
+            strength: locks.strength.to_bits(),
+            dexterity: locks.dexterity.to_bits(),
+            intelligence: locks.intelligence.to_bits(),
+            strength_age: age(last.strength),
+            dexterity_age: age(last.dexterity),
+            intelligence_age: age(last.intelligence),
+        };
         Some(CharacterRecord {
             serial: serial.raw(),
             account: account.0.clone(),
@@ -605,6 +627,7 @@ impl World {
                 .map_or(0, |m| m.0),
             quests: Self::quests_of(registry, entity),
             done_quests: Self::done_quests_of(registry, entity, now),
+            stat_locks,
         })
     }
 

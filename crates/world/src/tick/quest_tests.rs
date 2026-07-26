@@ -795,6 +795,7 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
             intelligence: record.intelligence,
             skills: Vec::new(),
             effects: Vec::new(),
+            stat_locks: Default::default(),
             dead: false,
             fame: 0,
             karma: 0,

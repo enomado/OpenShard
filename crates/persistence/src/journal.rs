@@ -307,6 +307,7 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::StatLockRecord;
     use openshard_entities::{Registry, SerialKind};
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
@@ -332,6 +333,7 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            stat_locks: StatLockRecord::default(),
         }
     }
 

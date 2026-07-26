@@ -98,6 +98,31 @@ pub struct GameplayConfig {
     /// The ceiling any one skill trains to, in tenths (so `1000` is 100.0).
     #[serde(default = "default_skill_cap")]
     pub skill_cap: u16,
+    /// The ceiling on every skill added together, in tenths — the classic
+    /// `7000` (700.0). ServUO's `PlayerCaps.TotalSkillCap`, and what makes a
+    /// character a build: at the cap a skill only rises if one set to "down"
+    /// gives ground.
+    #[serde(default = "default_total_skill_cap")]
+    pub total_skill_cap: u32,
+    /// The ceiling on strength, dexterity and intelligence added together — the
+    /// classic `225`. Read by the stat gain, and shown on the status bar.
+    #[serde(default = "default_stat_cap")]
+    pub stat_cap: u16,
+    /// The ceiling on any one stat — the classic `125`.
+    #[serde(default = "default_stat_cap_individual")]
+    pub stat_cap_individual: u16,
+    /// How long after a stat rises before it may rise again, in milliseconds.
+    /// ServUO ships its fifteen-minute delay switched off, leaving the `500` its
+    /// config falls back to; raise it for a shard that wants stat gain to be a
+    /// long haul.
+    #[serde(default = "default_stat_gain_ms")]
+    pub stat_gain_ms: u64,
+    /// The chance, in per-mille, that a skill gain also tries for a stat. Only
+    /// the ML mechanic (`combat_era = 4`) reads it — ServUO's
+    /// `PlayerChanceToGainStats`, 5%; below ML each stat rolls its own weight
+    /// from the skill table instead.
+    #[serde(default = "default_stat_gain_chance")]
+    pub stat_gain_chance: u32,
     /// How long an item lies on the ground before it rots, in seconds.
     #[serde(default = "default_decay_seconds")]
     pub decay_seconds: u64,
@@ -277,6 +302,21 @@ fn default_speed_scale_factor() -> u64 {
 fn default_skill_cap() -> u16 {
     1000
 }
+fn default_total_skill_cap() -> u32 {
+    7000
+}
+fn default_stat_cap() -> u16 {
+    225
+}
+fn default_stat_cap_individual() -> u16 {
+    125
+}
+fn default_stat_gain_ms() -> u64 {
+    500
+}
+fn default_stat_gain_chance() -> u32 {
+    50
+}
 fn default_decay_seconds() -> u64 {
     20 * 60
 }
@@ -352,6 +392,11 @@ impl Default for GameplayConfig {
             combat_era: default_combat_era(),
             speed_scale_factor: default_speed_scale_factor(),
             skill_cap: default_skill_cap(),
+            total_skill_cap: default_total_skill_cap(),
+            stat_cap: default_stat_cap(),
+            stat_cap_individual: default_stat_cap_individual(),
+            stat_gain_ms: default_stat_gain_ms(),
+            stat_gain_chance: default_stat_gain_chance(),
             decay_seconds: default_decay_seconds(),
             criminal_seconds: default_criminal_seconds(),
             distance_talk: default_distance_talk(),
@@ -655,6 +700,20 @@ pub enum ConfigError {
         /// The hour given for closing.
         home: u8,
     },
+    /// `gameplay.skill_cap` or `total_skill_cap` is zero. The gain chance reads
+    /// the headroom under both as a fraction, so a zero divides by nothing.
+    ZeroSkillCap,
+    /// `gameplay.stat_cap` or `stat_cap_individual` is zero, which would leave
+    /// every character unable to hold a single point of anything.
+    ZeroStatCap,
+    /// `gameplay.stat_cap_individual` is above `stat_cap`, so one stat is allowed
+    /// more than all three together — a ceiling nothing can reach.
+    StatCapBelowIndividual {
+        /// The cap on all three stats.
+        total: u16,
+        /// The cap given for one.
+        individual: u16,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -703,6 +762,18 @@ impl fmt::Display for ConfigError {
                 f,
                 "gameplay.npc_work_hour {work} and npc_home_hour {home} must both be under 24 \
                  with work before home; a working day that wraps midnight is not supported",
+            ),
+            Self::ZeroSkillCap => f.write_str(
+                "gameplay.skill_cap and total_skill_cap must not be zero; the skill gain \
+                 chance is a fraction of the headroom under each",
+            ),
+            Self::ZeroStatCap => {
+                f.write_str("gameplay.stat_cap and stat_cap_individual must not be zero")
+            }
+            Self::StatCapBelowIndividual { total, individual } => write!(
+                f,
+                "gameplay.stat_cap_individual {individual} is above stat_cap {total}; one \
+                 stat cannot be allowed more than all three together",
             ),
             Self::UnknownSeason { season } => write!(
                 f,
@@ -816,6 +887,21 @@ impl Config {
         if self.gameplay.season > 4 {
             return Err(ConfigError::UnknownSeason {
                 season: self.gameplay.season,
+            });
+        }
+        // The gain chance divides by the total skill cap, and a per-stat cap above
+        // the total one is a ceiling that can never be reached — both read as the
+        // caps "not working" rather than as a bad setting.
+        if self.gameplay.total_skill_cap == 0 || self.gameplay.skill_cap == 0 {
+            return Err(ConfigError::ZeroSkillCap);
+        }
+        if self.gameplay.stat_cap == 0 || self.gameplay.stat_cap_individual == 0 {
+            return Err(ConfigError::ZeroStatCap);
+        }
+        if self.gameplay.stat_cap_individual > self.gameplay.stat_cap {
+            return Err(ConfigError::StatCapBelowIndividual {
+                total: self.gameplay.stat_cap,
+                individual: self.gameplay.stat_cap_individual,
             });
         }
         Ok(())

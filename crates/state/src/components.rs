@@ -637,6 +637,10 @@ pub struct MurderDecay {
     pub at_tick: u64,
 }
 
+/// The ceiling one skill trains to when nothing has raised or lowered it, in
+/// tenths — 100.0. ServUO's per-`Skill` `m_Cap` default.
+pub const DEFAULT_SKILL_CAP: u16 = 1000;
+
 /// What a mobile is trained in: each skill it has, by id, as a value in tenths
 /// (so 75.5 is stored as 755, and the skill cap is 1000).
 ///
@@ -648,6 +652,11 @@ pub struct Skills {
     /// How the window trains each skill — `Up` unless the player set an arrow.
     /// Sparse like the values: an untouched skill trains up.
     locks: HashMap<u8, SkillLock>,
+    /// The ceiling on each skill, in tenths. Sparse like the rest: an untouched
+    /// skill caps at [`DEFAULT_SKILL_CAP`]. Per-skill and not one shard-wide
+    /// number because the gain chance reads *this* skill's headroom, and because
+    /// a reward or a profession raises one skill's ceiling alone.
+    caps: HashMap<u8, u16>,
 }
 
 impl Skills {
@@ -671,17 +680,110 @@ impl Skills {
         self.locks.insert(skill, lock);
     }
 
+    /// The ceiling on `skill`, in tenths; [`DEFAULT_SKILL_CAP`] unless one was set.
+    pub fn cap(&self, skill: u8) -> u16 {
+        self.caps.get(&skill).copied().unwrap_or(DEFAULT_SKILL_CAP)
+    }
+
+    /// Set the ceiling on `skill`, in tenths.
+    pub fn set_cap(&mut self, skill: u8, cap: u16) {
+        self.caps.insert(skill, cap);
+    }
+
+    /// Everything trained, added up, in tenths — ServUO's `Skills.Total`, the
+    /// number the total cap is weighed against and the gain chance reads.
+    ///
+    /// Summed on demand rather than kept as a running field: a mirror updated
+    /// beside every `set` is one more thing to forget, and the map holds a
+    /// handful of entries, not fifty-eight.
+    pub fn total(&self) -> u32 {
+        self.values.values().map(|&v| u32::from(v)).sum()
+    }
+
     /// Every trained skill and its lock, for persistence — `(id, value, lock)`,
     /// in no particular order. A skill at zero with a moved arrow still counts,
     /// so a "down" lock the player set is not forgotten.
     pub fn entries(&self) -> impl Iterator<Item = (u8, u16, SkillLock)> + '_ {
+        self.ids().map(move |id| (id, self.get(id), self.lock(id)))
+    }
+
+    /// Every skill id this mobile has a value, a lock or a cap for, ascending.
+    /// The one place the three sparse maps are unioned.
+    pub fn ids(&self) -> impl Iterator<Item = u8> + '_ {
         self.values
             .keys()
             .chain(self.locks.keys())
+            .chain(self.caps.keys())
+            .copied()
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
-            .map(move |&id| (id, self.get(id), self.lock(id)))
     }
+}
+
+/// How a stat is set to train — ServUO's `StatLockType`, the arrows on the
+/// paperdoll's status bar. The mirror of [`SkillLock`] for strength, dexterity
+/// and intelligence, and read by the same gain path: a skill that trains nudges
+/// its governing stat only where that stat's arrow points up.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum StatLock {
+    /// Train up on use — the default.
+    #[default]
+    Up,
+    /// Give ground, so another stat can rise past the total cap.
+    Down,
+    /// Held fixed.
+    Locked,
+}
+
+impl StatLock {
+    /// The wire bits — two per stat inside the `0xBF 0x19` lock byte.
+    #[must_use]
+    pub const fn to_bits(self) -> u8 {
+        match self {
+            Self::Up => 0,
+            Self::Down => 1,
+            Self::Locked => 2,
+        }
+    }
+
+    /// From the wire byte. ServUO's handler folds anything above 2 to `Up`.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => Self::Down,
+            2 => Self::Locked,
+            _ => Self::Up,
+        }
+    }
+}
+
+/// Which way each of a mobile's three stats trains.
+///
+/// All `Up` by default, so a mobile that has never been told otherwise behaves
+/// like every character does on a fresh shard.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct StatLocks {
+    /// Strength's arrow.
+    pub strength: StatLock,
+    /// Dexterity's arrow.
+    pub dexterity: StatLock,
+    /// Intelligence's arrow.
+    pub intelligence: StatLock,
+}
+
+/// When each stat last went up, as a tick count.
+///
+/// ServUO's `LastStrGain`/`LastDexGain`/`LastIntGain` — a per-stat cooldown so a
+/// flurry of skill uses cannot pour points into one stat. A tick count and not a
+/// clock, like [`Decays`] and [`CriminalUntil`], so it replays.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct LastStatGain {
+    /// The tick strength last rose.
+    pub strength: u64,
+    /// The tick dexterity last rose.
+    pub dexterity: u64,
+    /// The tick intelligence last rose.
+    pub intelligence: u64,
 }
 
 /// A spell in progress — the rooted cast delay of the "servuo" cast style. The

@@ -17,15 +17,13 @@
 //! *does* beyond dispatching on the table's archetype.
 
 use super::*;
-use openshard_magic::{SpellEffect, SpellTarget};
+use openshard_magic::{SpellEffect, SpellTarget, MAGERY_SKILL};
 use openshard_protocol::{
     encode_graphical_effect, encode_play_sound, encode_target_cursor, EffectKind, EffectPoint,
 };
 use openshard_state::components::{Casting, Skills};
 use openshard_state::{CastStyle, DamageType, FieldKind, TargetPurpose};
 
-/// The skill a spell rolls — Magery, id 25.
-const MAGERY_SKILL: u8 = 25;
 /// The layer a backpack rides on, where reagents are kept.
 const BACKPACK_LAYER: u8 = 0x15;
 
@@ -140,11 +138,13 @@ impl World {
             Vec::new()
         };
         let pack = self.caster_pack(serial);
+        let (min_skill, max_skill) = magic::cast_skills(info);
         let Some(success) = magic::pay_and_roll(
             &mut self.state,
             caster,
             magic::mana(info),
-            magic::difficulty(info),
+            min_skill,
+            max_skill,
             MAGERY_SKILL,
             pack,
             &reagents,
@@ -281,7 +281,7 @@ impl World {
                         .state
                         .registry
                         .get::<Skills>(caster)
-                        .map_or(0, |s| s.get(25));
+                        .map_or(0, |s| s.get(MAGERY_SKILL));
                     let level = ((magery / 300) as u8).min(2);
                     let now = self.state.ticks;
                     combat::apply_poison(&mut self.state, target_serial, level, now);

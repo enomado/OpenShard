@@ -74,7 +74,14 @@ use serde::{Deserialize, Serialize};
 ///   washed every murderer blue while the decay clock and the notoriety rule around it
 ///   were both already correct. Creature fame/karma rides the JSON `MobileRecord` and
 ///   `CreatureData` with no column of its own.
-pub const SCHEMA_VERSION: u32 = 15;
+/// - v16: a character's **skill caps** and its three **stat arrows**, together
+///   with when each stat last rose. All three are inputs the gain reads every
+///   time it fires: a per-skill cap decides how much headroom is left, a "down"
+///   arrow decides which skill gives ground at the total cap, and a stat arrow
+///   decides whether a stat may rise at all. Kept only in memory they reset at
+///   every restart, which reads as the arrows the player set quietly snapping
+///   back to "up" — the `Murders` lesson from v15, caught before it shipped.
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// An account, as saved.
 ///
@@ -136,10 +143,13 @@ pub struct CharacterRecord {
     /// Intelligence — caps mana.
     #[serde(default = "default_stat")]
     pub intelligence: u16,
-    /// Every trained skill, as `(id, value in tenths, lock byte)`. Empty for a
-    /// character that has none yet.
+    /// Every trained skill, as `(id, value in tenths, lock byte, cap)`. Empty for
+    /// a character that has none yet.
     #[serde(default)]
     pub skills: Vec<SkillRecord>,
+    /// Which way the three stats are set to train, and how long since each rose.
+    #[serde(default)]
+    pub stat_locks: StatLockRecord,
     /// Every timed effect working through it — poison, buffs, debuffs — so a
     /// relog cannot wash them off. Empty for a clean character.
     #[serde(default)]
@@ -244,6 +254,40 @@ pub struct SkillRecord {
     pub value: u16,
     /// The lock arrow as its wire byte (0 up, 1 down, 2 locked).
     pub lock: u8,
+    /// The ceiling on this skill, in tenths. Defaulted so a pre-v16 save reads as
+    /// the ordinary 100.0 rather than as a skill capped at nothing.
+    #[serde(default = "default_skill_cap")]
+    pub cap: u16,
+}
+
+/// The cap a pre-v16 save (which stored none) loads each skill with — the classic
+/// 100.0.
+fn default_skill_cap() -> u16 {
+    1000
+}
+
+/// Which way a character's three stats are set to train, and when each last rose.
+///
+/// Saved together because the gain reads them together, and because all four
+/// numbers are worthless apart: an arrow with no timestamp lets a relog pour
+/// points in, and a timestamp with no arrow has nothing to gate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct StatLockRecord {
+    /// Strength's arrow as its wire bits (0 up, 1 down, 2 locked).
+    pub strength: u8,
+    /// Dexterity's arrow.
+    pub dexterity: u8,
+    /// Intelligence's arrow.
+    pub intelligence: u8,
+    /// How many ticks ago strength last rose. Stored as an *age* and not as the
+    /// absolute tick it happened on, because the tick counter restarts with the
+    /// shard: an absolute stamp from the last run would sit in the future of this
+    /// one and freeze the stat for ever.
+    pub strength_age: u64,
+    /// The same for dexterity.
+    pub dexterity_age: u64,
+    /// The same for intelligence.
+    pub intelligence_age: u64,
 }
 
 /// The stat a pre-v6 save (which stored none) loads with — the flat hundred the
@@ -720,11 +764,13 @@ mod tests {
                     id: 25, // Magery
                     value: 501,
                     lock: 1, // down
+                    cap: 1000,
                 },
                 SkillRecord {
                     id: 45, // Mining
                     value: 300,
                     lock: 0,
+                    cap: 1200, // a raised cap: the field has to survive the trip
                 },
             ],
             effects: vec![EffectRecord {
@@ -747,6 +793,14 @@ mod tests {
                 key: "silk_gather".into(),
                 restart_in_secs: 3600,
             }],
+            stat_locks: StatLockRecord {
+                strength: 0,     // up
+                dexterity: 1,    // down
+                intelligence: 2, // locked
+                strength_age: 40,
+                dexterity_age: 0,
+                intelligence_age: 900,
+            },
         };
         let json = serde_json::to_string(&record).expect("a record must serialise");
         let back: CharacterRecord = serde_json::from_str(&json).expect("and come back");
@@ -780,6 +834,7 @@ mod tests {
             murders: 0,
             quests: Vec::new(),
             done_quests: Vec::new(),
+            stat_locks: StatLockRecord::default(),
         };
         let json = serde_json::to_string(&record).expect("a record must serialise");
         let back: CharacterRecord = serde_json::from_str(&json).expect("and come back");

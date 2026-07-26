@@ -20,8 +20,8 @@ use openshard_state::WorldState;
 
 mod spells;
 pub use spells::{
-    cast_delay_ticks, difficulty, info, mana, SpellEffect, SpellInfo, SpellTarget, AREA_RADIUS,
-    MAGERY,
+    cast_delay_ticks, cast_skills, info, mana, SpellEffect, SpellInfo, SpellTarget, AREA_RADIUS,
+    MAGERY, MAGERY_SKILL,
 };
 
 /// How often, in ticks, a mobile with spent mana gets a point back.
@@ -57,8 +57,10 @@ pub struct Cast<'a> {
     pub target: u32,
     /// The mana it costs.
     pub mana: u16,
-    /// The casting difficulty, 0–100.
-    pub difficulty: u16,
+    /// The lower edge of the skill band it is cast against, in tenths.
+    pub min_skill: i32,
+    /// The upper edge, in tenths — at or above it the cast cannot fail.
+    pub max_skill: i32,
     /// The skill it rolls (Magery).
     pub skill: u8,
     /// The container reagents come out of, or zero for a spell that needs none.
@@ -81,7 +83,8 @@ pub fn cast_spell(state: &mut WorldState, cast: Cast<'_>) {
         spell,
         target,
         mana,
-        difficulty,
+        min_skill,
+        max_skill,
         skill,
         pack,
         reagents,
@@ -121,7 +124,7 @@ pub fn cast_spell(state: &mut WorldState, cast: Cast<'_>) {
             },
         );
     }
-    let success = openshard_skills::roll_skill(state, caster, skill, difficulty);
+    let success = openshard_skills::roll_skill_band(state, caster, skill, min_skill, max_skill);
     state.bus.send(SpellCast {
         caster,
         serial,
@@ -150,7 +153,8 @@ pub fn pay_and_roll(
     state: &mut WorldState,
     caster: EntityId,
     mana: u16,
-    difficulty: u16,
+    min_skill: i32,
+    max_skill: i32,
     skill: u8,
     pack: u32,
     reagents: &[(u16, u16)],
@@ -162,7 +166,7 @@ pub fn pay_and_roll(
         return None; // cannot cast — nothing is spent
     }
     // Roll before spending, so we know success in time to honour the loss flags.
-    let success = openshard_skills::roll_skill(state, caster, skill, difficulty);
+    let success = openshard_skills::roll_skill_band(state, caster, skill, min_skill, max_skill);
     if success || mana_loss_on_fail {
         if let Some(&Mana { current, max }) = state.registry.get::<Mana>(caster) {
             state.registry.insert(

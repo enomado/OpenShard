@@ -149,7 +149,7 @@ pub struct World {
     /// Read to find out what to mark dirty. See `mark_dirty`.
     turned: Cursor<MobileTurned>,
     /// Skill gains this tick, to push the single-line `0x3A` update to the owner.
-    raised: Cursor<openshard_skills::SkillRaised>,
+    changed: Cursor<openshard_skills::SkillChanged>,
     /// Damage this tick, read to disturb a spell mid-cast (the `spell_disturb`
     /// rule); a separate cursor from `damaged`, which the AI reads for its own.
     disturbed: Cursor<openshard_combat::MobileDamaged>,
@@ -250,7 +250,7 @@ impl World {
             moved: Cursor::default(),
             damaged: Cursor::default(),
             turned: Cursor::default(),
-            raised: Cursor::default(),
+            changed: Cursor::default(),
             disturbed: Cursor::default(),
             dead: Cursor::default(),
             slain: Cursor::default(),
@@ -754,7 +754,8 @@ impl World {
                 spell,
                 target,
                 mana,
-                difficulty,
+                min_skill,
+                max_skill,
                 skill,
                 pack,
                 reagents,
@@ -765,7 +766,8 @@ impl World {
                     spell,
                     target,
                     mana,
-                    difficulty,
+                    min_skill,
+                    max_skill,
                     skill,
                     pack,
                     reagents: &reagents,
@@ -792,8 +794,9 @@ impl World {
             Command::UseSkill {
                 serial,
                 skill,
-                difficulty,
-            } => skills::use_skill(&mut self.state, serial, skill, difficulty),
+                min_skill,
+                max_skill,
+            } => skills::use_skill(&mut self.state, serial, skill, min_skill, max_skill),
             Command::SetSkillLock {
                 connection,
                 skill,

@@ -54,7 +54,7 @@ pub use openshard_combat::{MobileDamaged, MobileDied};
 pub use openshard_items::{ItemSpawned, ItemUsed, ItemsTaken, MobileUsed};
 pub use openshard_magic::SpellCast;
 pub use openshard_npc::StockLine;
-pub use openshard_skills::SkillUsed;
+pub use openshard_skills::{SkillChanged, SkillUsed};
 pub use openshard_state::components;
 pub use openshard_state::Outbound;
 pub use openshard_state::{distance, in_range, sectors, Sectors, SECTOR_SIZE, VIEW_RANGE};

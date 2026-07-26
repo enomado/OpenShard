@@ -176,9 +176,11 @@ impl World {
             }
             if !sheet.skills.is_empty() {
                 let mut skills = openshard_state::components::Skills::default();
-                for (id, value, lock) in sheet.skills {
+                let shard_cap = self.state.gameplay.skill_cap;
+                for (id, value, lock, cap) in sheet.skills {
                     skills.set(id, value);
                     skills.set_lock(id, lock);
+                    skills.set_cap(id, if cap == 0 { shard_cap } else { cap });
                 }
                 self.state.registry.insert(entity, skills);
             }
@@ -186,6 +188,27 @@ impl World {
             // on relog — logging out and in is not a cure. Its pulses resume from
             // this tick.
             let now = self.state.ticks;
+            // The stat arrows the player set, and how long ago each stat rose.
+            // The saved value is an *age*, so it is added back onto the current
+            // tick: a stamp from the previous run would sit in this one's future
+            // and freeze the stat until the counter caught up.
+            let locks = sheet.stat_locks;
+            self.state.registry.insert(
+                entity,
+                openshard_state::components::StatLocks {
+                    strength: openshard_state::StatLock::from_bits(locks.strength),
+                    dexterity: openshard_state::StatLock::from_bits(locks.dexterity),
+                    intelligence: openshard_state::StatLock::from_bits(locks.intelligence),
+                },
+            );
+            self.state.registry.insert(
+                entity,
+                openshard_state::components::LastStatGain {
+                    strength: now.saturating_sub(locks.strength_age),
+                    dexterity: now.saturating_sub(locks.dexterity_age),
+                    intelligence: now.saturating_sub(locks.intelligence_age),
+                },
+            );
             Self::apply_effects(&mut self.state.registry, entity, &sheet.effects, now);
             // And the quest log, with every clock re-based on this tick — a relog
             // is not a way to reset a cooldown or stop a timer.

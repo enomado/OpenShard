@@ -40,8 +40,9 @@ pub(crate) fn dispatch(
                         skills: record
                             .skills
                             .iter()
-                            .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock)))
+                            .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
                             .collect(),
+                        stat_locks: record.stat_locks,
                         effects: record.effects.clone(),
                         dead: record.dead,
                         fame: record.fame,
@@ -546,8 +547,13 @@ pub(crate) fn create_character(
                 .skills
                 .iter()
                 .filter(|choice| choice.value > 0)
-                .map(|choice| (choice.skill, u16::from(choice.value) * 10, SkillLock::Up))
+                // A cap of zero means "whatever this shard caps a skill at" —
+                // `enter` fills it in from `[gameplay] skill_cap`, so the knob is
+                // read in one place and this end needs to know nothing about it.
+                .map(|choice| (choice.skill, u16::from(choice.value) * 10, SkillLock::Up, 0))
                 .collect(),
+            // A new character's arrows all point up, and no stat has ever risen.
+            stat_locks: openshard_persistence::StatLockRecord::default(),
             // A new character is clean, and unknown.
             effects: Vec::new(),
             dead: false,

@@ -257,6 +257,7 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
             intelligence: 100,
             skills: Vec::new(),
             effects: Vec::new(),
+            stat_locks: Default::default(),
             dead: true,
             fame: 0,
             karma: 0,

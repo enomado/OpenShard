@@ -66,37 +66,46 @@ pub(crate) fn is_postgres_url(target: &str) -> bool {
 
 /// Turn the validated `[gameplay]` config into the world's runtime rules,
 /// converting the operator's seconds into the tick counts the systems run on.
+///
+/// Every field is named, and none is left to `Default`: a new `[gameplay]` knob
+/// should fail to compile here until it is wired, rather than quietly run on its
+/// default because nobody remembered this function.
 pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
     let g = &config.gameplay;
-    Gameplay::new(
-        g.combat_era,
-        g.speed_scale_factor,
-        g.skill_cap,
-        g.decay_seconds,
-        g.criminal_seconds,
-        g.distance_talk,
-        g.distance_whisper,
-        g.distance_yell,
-        g.creature_step_ms,
-        openshard_world::CastStyle::parse(&g.cast_style),
-        g.spell_disturb,
-        openshard_world::TooltipMode::parse(&g.tooltips),
-        g.context_menus,
-        g.reagents,
-        g.mana_loss_on_fail,
-        g.reagent_loss_on_fail,
-        g.bank_gold_in_status,
-        g.vendor_bank_payment,
-        g.lod,
-        g.lod_radius,
-        g.lod_idle_factor,
-        g.uo_minute_seconds,
-        g.season,
-        g.guards,
-        g.npc_schedule,
-        g.npc_work_hour,
-        g.npc_home_hour,
-    )
+    Gameplay {
+        combat_era: g.combat_era,
+        speed_scale_factor: g.speed_scale_factor,
+        skill_cap: g.skill_cap,
+        total_skill_cap: g.total_skill_cap,
+        stat_cap: g.stat_cap,
+        stat_cap_individual: g.stat_cap_individual,
+        stat_gain_ticks: Gameplay::ticks_from_ms(g.stat_gain_ms),
+        stat_gain_chance: g.stat_gain_chance,
+        decay_ticks: Gameplay::ticks(g.decay_seconds),
+        criminal_ticks: Gameplay::ticks(g.criminal_seconds),
+        distance_talk: g.distance_talk,
+        distance_whisper: g.distance_whisper,
+        distance_yell: g.distance_yell,
+        creature_step_ticks: Gameplay::ticks_from_ms(g.creature_step_ms),
+        cast_style: openshard_world::CastStyle::parse(&g.cast_style),
+        spell_disturb: g.spell_disturb,
+        tooltip_mode: openshard_world::TooltipMode::parse(&g.tooltips),
+        context_menus: g.context_menus,
+        reagents: g.reagents,
+        mana_loss_on_fail: g.mana_loss_on_fail,
+        reagent_loss_on_fail: g.reagent_loss_on_fail,
+        bank_gold_in_status: g.bank_gold_in_status,
+        vendor_bank_payment: g.vendor_bank_payment,
+        lod: g.lod,
+        lod_radius: g.lod_radius,
+        lod_idle_factor: g.lod_idle_factor,
+        uo_minute_ticks: Gameplay::ticks(g.uo_minute_seconds).max(1),
+        season: g.season,
+        guards: g.guards,
+        npc_schedule: g.npc_schedule,
+        npc_work_hour: g.npc_work_hour,
+        npc_home_hour: g.npc_home_hour,
+    }
 }
 
 /// The `0xB9` SupportedFeatures mask this shard advertises, from the tooltip and
