@@ -49,10 +49,10 @@ pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Decoration, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic, Guard,
-    Heading, HearsGhosts, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana,
+    Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana,
     Meditating, MeleeDamage, Movement, MurderDecay, Murders, Name, NightHome, Npc, PoisonCharges,
     Poisoned, Position, Resistance, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina,
-    StatLock, StatLocks, StatMod, StatMods, Stats, SwingSpeed, Title, Trap, TrapKind,
+    StatLock, StatLocks, StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Trap, TrapKind,
     DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, POISON_POTION_GRAPHIC,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};

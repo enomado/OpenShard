@@ -946,12 +946,32 @@ Roughly in dependency order, each script-first:
       same silent loss as one that forgets a lock.
     - [ ] **Inscribe** — the last of the six, and the one that wants a writable book
       to copy.
-    - [ ] **Stealth is a subsystem, not a skill.** Hiding, Stealth, Detect Hidden,
-      Tracking, Snooping and Stealing all sit on a `Hidden` component wired into
-      the one `WorldState::can_see_mobile` gate where `Ghost` already lives — and
-      on *revealing*, which means every action that should break it: attacking,
-      casting, speaking, lifting. That touches `combat`, `magic`, `chat` and
-      `items`, which is why it is its own line.
+    - [x] **Stealth is a subsystem, not a skill** — and it landed as one. `Hidden`
+      and `Stealthing { steps_left }` live in `state`, read by the *one* gate
+      `WorldState::can_see_mobile` (where `Ghost` already lives) and broken by the
+      *one* call `WorldState::break_cover` (ServUO's `RevealingAction`, whose last
+      line is `DisruptiveAction` — so it disrupts a trance too, and the two are one
+      call here as they are there). That is what lets attacking, speaking and
+      lifting each give a hider away without a single one of them knowing what
+      hiding is: `combat::swings`, `combat::damage`, `chat::speak` and
+      `items::pick_up` call `break_cover`, and the two movement paths call
+      `step_while_hidden`, which spends a stealth step or gives you away.
+      **Hiding** is ServUO's, including the gate that matters: you cannot hide from
+      somebody who is *fighting* you within `(100-skill)/2 + 8` tiles, checked both
+      ways, which is what stops hiding being a combat escape. **Stealth** wants
+      80.0 Hiding and armour under 26 (the plain worn rating pre-AoS — which moved
+      `worn_armor_rating` down to `state::armor` beside its data, three readers
+      now), and buys `value/10` steps. **Detect Hidden** is a contest
+      (`detect/1.5` against each hider's Hiding), not a flat roll, over
+      `1 + value/10` tiles. **Stealing** is weight-gated (`10 + value/10` stones)
+      and tells the victim *by name* when it fails; the theft itself is returned as
+      an intent, because moving an item is `items`' door and flagging a criminal is
+      `combat`'s. **Snooping** has no button at all — the action that uses it is an
+      ordinary double-click on a container in somebody else's pack, so it is called
+      from the tick where the click is dispatched, costs karma every time, and a
+      clumsy peek is noticed by name.
+      Deferred: **Tracking** (two gumps and the `0x9A` quest-arrow packet) and the
+      AoS per-material stealth-armour table.
     - [ ] **Bard is a subsystem too.** Peacemaking, Provocation and Discordance go
       through `BaseInstrument` — items with uses, a bard range of `8 + value/15`, a
       `Musicianship` check per attempt, and ServUO's `GetBaseDifficulty` over the

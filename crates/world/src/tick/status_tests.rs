@@ -253,21 +253,21 @@ fn worn_plate_shows_an_armour_rating() {
     let player = world.state.players[&connection];
 
     assert_eq!(
-        openshard_combat::armor::worn_armor_rating(&world.state, player),
+        openshard_state::armor::worn_armor_rating(&world.state, player),
         0,
         "a character in a shirt rates nothing"
     );
 
     wear(&mut world, connection, 0x1415, 0x0D); // plate chest, InnerTorso
     assert_eq!(
-        openshard_combat::armor::worn_armor_rating(&world.state, player),
+        openshard_state::armor::worn_armor_rating(&world.state, player),
         14,
         "40 rating over 35% of a body"
     );
 
     wear(&mut world, connection, 0x1412, 0x06); // plate helm, Helm
     assert_eq!(
-        openshard_combat::armor::worn_armor_rating(&world.state, player),
+        openshard_state::armor::worn_armor_rating(&world.state, player),
         19,
         "and 40 more over 14% of it"
     );

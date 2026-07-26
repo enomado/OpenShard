@@ -17,9 +17,11 @@ mod lore;
 mod mind;
 mod poison;
 mod social;
+mod stealth;
 
 pub use poison::PoisonedSelf;
 pub use social::Begged;
+pub use stealth::{snooping, Stolen};
 
 use openshard_entities::{EntityId, Serial};
 use openshard_protocol::encode_target_cursor_object;
@@ -54,6 +56,7 @@ const ASKS: &[(Skill, Ask)] = &[
     (Skill::Poisoning, Ask { prompt: 502_137, range: 2 }),  // Select the poison you wish to use
     (Skill::Begging,   Ask { prompt: 500_397, range: 2 }),  // To whom do you wish to grovel?
     (Skill::RemoveTrap, Ask { prompt: 502_368, range: 2 }), // Which trap will you attempt to disarm?
+    (Skill::Stealing,  Ask { prompt: 502_698, range: stealth::STEAL_RANGE }), // What do you wish to steal?
 ];
 
 /// The ask for a skill id, if the core raises a cursor for it.
@@ -92,6 +95,18 @@ pub(crate) fn start(state: &mut WorldState, actor: EntityId, id: u8) -> bool {
             mind::spirit_speak(state, actor);
             true
         }
+        Some(Skill::Hiding) => {
+            stealth::hiding(state, actor);
+            true
+        }
+        Some(Skill::Stealth) => {
+            stealth::stealth(state, actor);
+            true
+        }
+        Some(Skill::DetectHidden) => {
+            stealth::detect_hidden(state, actor);
+            true
+        }
         _ => false,
     }
 }
@@ -116,18 +131,21 @@ pub fn expire_ghost_contact(state: &mut WorldState) {
 }
 
 /// A skill's cursor came back with something. Runs the skill against it.
-pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) {
-    let Some(ask) = ask_for(id) else {
-        return;
-    };
-    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
-        return; // the cursor picked bare ground, or something that has since gone
-    };
+///
+/// Returns a theft to carry out, if the skill was Stealing and it resolved: moving
+/// an item into a pack is `items`' door and turning a thief criminal is `combat`'s,
+/// so this decides and the tick applies — the split `ai::think_one` uses.
+pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -> Option<Stolen> {
+    let ask = ask_for(id)?;
+    let target = Serial::new(target).and_then(|s| state.registry.entity_of(s))?;
     // Checked server-side even though the cursor was raised with a range: the range
     // on a `0x6C` is the client's own courtesy, and a client is never the judge of
     // reach — the same rule `ITEM_REACH` holds for a lift.
     if !within(state, actor, target, ask.range) {
-        return;
+        return None;
+    }
+    if Skill::from_id(id) == Some(Skill::Stealing) {
+        return stealth::stealing(state, actor, target);
     }
     match Skill::from_id(id) {
         Some(Skill::Anatomy) => lore::anatomy(state, actor, target),
@@ -143,6 +161,7 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) {
         Some(Skill::RemoveTrap) => social::remove_trap(state, actor, target),
         _ => {}
     }
+    None
 }
 
 /// A skill's *second* cursor came back. Only Poisoning asks twice.

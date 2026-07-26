@@ -909,10 +909,26 @@ impl World {
                     ) {
                         self.spring_trap(player, target);
                     }
+                    // A container inside somebody else's pack is a snoop, not an
+                    // open: Snooping is one of the skills with no button, because
+                    // the action that uses it is an ordinary double-click. A failed
+                    // peek keeps the gump shut, and every peek costs karma.
+                    let snoop_refused = match (
+                        self.state.players.get(&connection).copied(),
+                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                    ) {
+                        (Some(player), Some(target))
+                            if self.state.registry.has::<Container>(target)
+                                && self.state.registry.has::<Contained>(target) =>
+                        {
+                            !skills::snooping(&mut self.state, player, target)
+                        }
+                        _ => false,
+                    };
                     // Then the interaction: a vendor's shop first, if the click
                     // was a shopkeeper in range; anything else is the ordinary
                     // use rule.
-                    if !npc::open_shop(&mut self.state, connection, serial) {
+                    if !snoop_refused && !npc::open_shop(&mut self.state, connection, serial) {
                         items::double_click(&mut self.state, connection, serial);
                     }
                 }

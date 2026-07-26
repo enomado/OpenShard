@@ -83,8 +83,12 @@ impl World {
             Walk::Moved { position, facing } => {
                 // A step breaks concentration — ServUO's `Mobile.Move` ends with
                 // `DisruptiveAction`, and a trance is over the moment you walk out
-                // of it. A *turn* is not a step and does not.
+                // of it. A *turn* is not a step and does not. Hiding is spent one
+                // step at a time instead of broken outright, which is what Stealth
+                // buys; running or riding gives you away whatever your budget.
                 self.state.disrupt(entity);
+                self.state
+                    .step_while_hidden(entity, request.facing.running, mounted);
                 self.state.registry.insert(entity, Position(position));
                 self.state.registry.insert(entity, Heading(facing));
                 // The index is a second copy of the position; this is the line
@@ -222,8 +226,11 @@ impl World {
         let facing = Facing::walking(direction);
         walker.position = landed;
         walker.facing = facing;
-        // Same as a client's walk: moving breaks concentration, whoever ordered it.
+        // Same as a client's walk: moving breaks concentration, whoever ordered
+        // it, and spends a step of anyone's cover. A server-side step is never a
+        // run, and a decree does not put anyone on a horse.
         self.state.disrupt(entity);
+        self.state.step_while_hidden(entity, false, false);
         self.state.registry.insert(entity, Movement(walker));
         self.state.registry.insert(entity, Position(landed));
         self.state.registry.insert(entity, Heading(facing));

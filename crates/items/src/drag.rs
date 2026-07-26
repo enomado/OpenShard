@@ -150,9 +150,10 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     }
-    // Reaching for something breaks concentration — ServUO calls
-    // `DisruptiveAction` from `Mobile.Lift` and from both `Use` overloads.
-    state.disrupt(player);
+    // Reaching for something gives you away and breaks concentration — ServUO
+    // calls `DisruptiveAction` from `Mobile.Lift` and from both `Use` overloads,
+    // and a thief who could loot from hiding would never need Stealing at all.
+    state.break_cover(player);
     debug!(%item_serial, "lifted onto the cursor");
 }
 

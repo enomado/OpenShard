@@ -250,3 +250,47 @@ pub fn total_weight_with(
     let stones = u16::try_from(hundredths / 100).unwrap_or(u16::MAX);
     stones.saturating_add(body_weight)
 }
+
+/// Whose container this is, following the containment chain up to a mobile.
+///
+/// A pack inside a pack inside a bank box still belongs to somebody, and Stealing
+/// needs to know whose pocket it just reached into. `None` for a chest on the
+/// ground, which belongs to nobody and cannot be stolen from — it is simply looted.
+#[must_use]
+pub fn owner_of_container(state: &WorldState, container: Serial) -> Option<EntityId> {
+    let mut current = container;
+    // Bounded rather than `loop`: containment is a tree, but a corrupt save or a
+    // future bug could make it a cycle, and a hang is worse than a wrong answer.
+    for _ in 0..16 {
+        let entity = state.registry.entity_of(current)?;
+        if let Some(worn) = state.registry.get::<Equipped>(entity) {
+            return state.registry.entity_of(worn.mobile);
+        }
+        let contained = state.registry.get::<Contained>(entity)?;
+        current = contained.container;
+    }
+    None
+}
+
+/// What one item weighs in stones, by its tiledata — gold at its own rate, and a
+/// stack by its amount, the same two rules [`carried`] applies.
+#[must_use]
+pub fn weight_of(state: &WorldState, item: EntityId) -> u16 {
+    let Some(graphic) = state.registry.get::<Graphic>(item).map(|g| g.id) else {
+        return 0;
+    };
+    let amount = u32::from(state.registry.get::<Amount>(item).map_or(1, |a| a.0.max(1)));
+    let facet = state.facet_of(item);
+    let each = if graphic == GOLD_GRAPHIC {
+        GOLD_WEIGHT_HUNDREDTHS
+    } else {
+        u32::from(
+            state
+                .facets
+                .get(&facet)
+                .and_then(|facet| facet.terrain.as_deref())
+                .map_or(0, |terrain| terrain.item_weight(graphic)),
+        ) * 100
+    };
+    u16::try_from(each.saturating_mul(amount) / 100).unwrap_or(u16::MAX)
+}

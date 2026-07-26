@@ -6,9 +6,11 @@
 //! `state`, because `skills` reads the same ratings to answer an Arms Lore
 //! question. Two numbers come out of it here.
 //!
-//! [`worn_armor_rating`] is the wearer's total, the `ArmorRating` a status bar shows
-//! (ServUO's `PlayerMobile.ArmorRating`: each piece scaled by how much of a body it
-//! covers). [`absorb_physical`] is what a swing loses to it pre-AoS — ServUO's
+//! `worn_armor_rating` — the wearer's total, the `ArmorRating` a status bar shows —
+//! moved down to the data with it, because three crates read it now (the bar, this,
+//! and Stealth, which refuses to move quietly in plate). What is left here is what
+//! only a fight and a trance care about. [`absorb_physical`] is what a swing loses
+//! to armour pre-AoS — ServUO's
 //! `BaseWeapon.AbsorbDamage`, which rolls a hit location, lets that piece and any
 //! shield eat their share, and then takes a cut of the wearer's total. Both are
 //! read-site derivations: nothing is mirrored onto the mobile, so armour coming off
@@ -16,62 +18,12 @@
 
 use openshard_entities::EntityId;
 use openshard_state::armor::{
-    armor_data, hit_layer, layer_coverage, MedAllowance, LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES,
-    LAYER_GORGET, LAYER_HELM, LAYER_LEGS, LAYER_SHIELD,
+    armor_data, hit_layer, layer_coverage, piece_rating, worn_armor_rating, worn_on_layer,
+    MedAllowance, LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES, LAYER_GORGET, LAYER_HELM, LAYER_LEGS,
+    LAYER_SHIELD,
 };
-use openshard_state::components::{Armor, Equipped, Graphic};
+use openshard_state::components::{Equipped, Graphic};
 use openshard_state::WorldState;
-
-/// One worn piece's rating: the pack's [`Armor`] override if the item carries
-/// one (an enchanted breastplate), else the core table's row for its graphic,
-/// else nothing.
-#[must_use]
-pub fn piece_rating(state: &WorldState, item: EntityId) -> u16 {
-    if let Some(&Armor { rating }) = state.registry.get::<Armor>(item) {
-        return rating;
-    }
-    state
-        .registry
-        .get::<Graphic>(item)
-        .and_then(|graphic| armor_data(graphic.id))
-        .map_or(0, |armor| armor.rating)
-}
-
-/// The item a mobile wears on `layer`, if any.
-#[must_use]
-pub fn worn_on_layer(state: &WorldState, mobile: EntityId, layer: u8) -> Option<EntityId> {
-    let serial = state.registry.serial_of(mobile)?;
-    state
-        .registry
-        .query::<Equipped>()
-        .find(|(_, worn)| worn.mobile == serial && worn.layer == layer)
-        .map(|(entity, _)| entity)
-}
-
-/// A mobile's whole armour rating — every worn piece scaled by how much of the
-/// body it covers, ServUO's `PlayerMobile.ArmorRating`.
-///
-/// This is the number the status bar carries (pre-AoS it is the armour rating
-/// itself; from AoS the client labels the same field physical resistance). A
-/// mobile in nothing rates zero, which is why every existing combat test — none
-/// of which dresses anybody — is unchanged by armour landing.
-#[must_use]
-pub fn worn_armor_rating(state: &WorldState, mobile: EntityId) -> u16 {
-    let Some(serial) = state.registry.serial_of(mobile) else {
-        return 0;
-    };
-    let worn: Vec<(EntityId, u8)> = state
-        .registry
-        .query::<Equipped>()
-        .filter(|(_, worn)| worn.mobile == serial)
-        .map(|(entity, worn)| (entity, worn.layer))
-        .collect();
-    let hundredths: u32 = worn
-        .into_iter()
-        .map(|(item, layer)| u32::from(piece_rating(state, item)) * layer_coverage(layer))
-        .sum();
-    u16::try_from(hundredths / 100).unwrap_or(u16::MAX)
-}
 
 /// How much a mobile's worn armour gets in the way of meditating, in hundredths
 /// of a rating point — ServUO's `RegenRates.GetArmorOffset`.

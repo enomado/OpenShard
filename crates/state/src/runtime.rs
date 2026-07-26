@@ -26,7 +26,8 @@ use openshard_protocol::{
 
 use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
-    Heading, HearsGhosts, Hitpoints, Meditating, Movement, Name, Position, Staff,
+    Heading, HearsGhosts, Hidden, Hitpoints, Meditating, Movement, Name, Position, Staff,
+    Stealthing,
 };
 use crate::dialogue::Dialogue;
 use crate::obstruct::{LiveTerrain, Obstructions};
@@ -1392,10 +1393,83 @@ impl WorldState {
     /// a disembodied voice either.
     #[must_use]
     pub fn can_see_mobile(&self, watcher: EntityId, other: EntityId) -> bool {
+        if watcher == other {
+            return true; // you always see yourself, hidden or dead
+        }
+        // Hidden is the stricter of the two: nobody sees you but staff.
+        if self.registry.has::<Hidden>(other) && !self.is_staff(watcher) {
+            return false;
+        }
         if !self.registry.has::<Ghost>(other) {
             return true;
         }
-        watcher == other || self.registry.has::<Ghost>(watcher) || self.is_staff(watcher)
+        self.registry.has::<Ghost>(watcher) || self.is_staff(watcher)
+    }
+
+    /// A mobile did something that gives away where it is — ServUO's
+    /// `Mobile.RevealingAction`.
+    ///
+    /// Attacking, speaking, casting, lifting, dying: the list is ServUO's, and it
+    /// also disrupts (`DisruptiveAction` is the last line of `RevealingAction`,
+    /// with the comment "anything that unhides you will also disrupt meditation"),
+    /// so the two are one call here as they are there.
+    ///
+    /// Substrate, not a rule, for the same reason [`disrupt`](Self::disrupt) is:
+    /// every crate that does something revealing has to be able to say so, and none
+    /// of them can depend on the crate that owns Hiding.
+    pub fn break_cover(&mut self, mobile: EntityId) {
+        self.registry.remove::<Stealthing>(mobile);
+        if self.registry.remove::<Hidden>(mobile).is_some() {
+            // Back onto every screen in range. `reveal` is the one draw path, so
+            // this is the only line that has to know a mobile just became visible.
+            self.refresh_around(mobile);
+        }
+        self.disrupt(mobile);
+    }
+
+    /// Take a mobile off every screen but its own — the mirror of
+    /// [`break_cover`](Self::break_cover), and the only place a mobile becomes
+    /// hidden.
+    ///
+    /// The marker alone would be enough for anything drawn *after* it, since
+    /// `can_see_mobile` gates every draw; what this adds is telling the clients that
+    /// already have it on screen to forget it, which is the same `0x1D` a mobile
+    /// walking out of range gets.
+    pub fn conceal(&mut self, mobile: EntityId) {
+        self.registry.insert(mobile, Hidden);
+        let Some(serial) = self.registry.serial_of(mobile) else {
+            return;
+        };
+        for watcher in self.watchers_of(mobile) {
+            if watcher != mobile && !self.is_staff(watcher) {
+                self.forget(watcher, mobile, serial);
+            }
+        }
+    }
+
+    /// A hidden mobile took a step. Spends a stealth step, or gives it away.
+    ///
+    /// ServUO's `Mobile.OnMove`: running or riding breaks cover outright, and so
+    /// does a step past the budget Stealth bought. Called from both movement paths —
+    /// there is no shared step, which is why it is called twice and lives here once.
+    pub fn step_while_hidden(&mut self, mobile: EntityId, running: bool, mounted: bool) {
+        if !self.registry.has::<Hidden>(mobile) || self.is_staff(mobile) {
+            return;
+        }
+        let budget = self
+            .registry
+            .get::<Stealthing>(mobile)
+            .map_or(0, |s| s.steps_left);
+        if running || mounted || budget == 0 {
+            self.break_cover(mobile);
+            return;
+        }
+        self.registry.insert(
+            mobile,
+            Stealthing {
+                steps_left: budget - 1,
+            },
+        );
     }
 
     /// A mobile did something that breaks concentration — ServUO's

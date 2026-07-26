@@ -83,10 +83,10 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
         return;
     };
     let facet = state.facet_of(entity);
-    // Speaking breaks concentration — ServUO's `OnSaid` reaches
-    // `DisruptiveAction` through `RevealingAction`, and a trance you can talk
-    // through is not a trance.
-    state.disrupt(entity);
+    // Speaking gives you away, and breaks concentration with it — ServUO's
+    // `OnSaid` calls `RevealingAction`, whose last line is `DisruptiveAction`. A
+    // trance you can talk through is not a trance, and nor is a hiding place.
+    state.break_cover(entity);
     let graphic = state
         .registry
         .get::<Body>(entity)

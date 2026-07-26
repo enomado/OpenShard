@@ -874,6 +874,27 @@ pub struct HearsGhosts {
     pub until: u64,
 }
 
+/// A mobile nobody can see — ServUO's `Mobile.Hidden`.
+///
+/// The marker the whole stealth family hangs off. It is read in exactly one place,
+/// [`WorldState::can_see_mobile`], which is the same choke point `Ghost` uses and
+/// the reason a hidden mobile is drawn to nobody without a single draw site knowing
+/// what hiding is.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Hidden;
+
+/// A hidden mobile that may move without being seen, for a few steps — ServUO's
+/// `AllowedStealthSteps`.
+///
+/// Hiding alone is broken by the first step; Stealth buys `value / 10` of them
+/// (pre-AoS), counted down by the movement paths. When they run out the next step
+/// breaks cover, which is what makes the skill a budget rather than a switch.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Stealthing {
+    /// Steps left before the next one gives you away.
+    pub steps_left: u16,
+}
+
 /// A mobile sitting in a meditative trance — ServUO's `Mobile.Meditating`.
 ///
 /// A marker, not a timer: a trance has no duration and ends when something breaks

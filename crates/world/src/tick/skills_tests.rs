@@ -13,8 +13,8 @@ use super::tests::{enter, enter_as, packets_for, spawn_mobile_at, world, START};
 use super::*;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::components::{
-    Amount, Corpse, Equipped, Graphic, HearsGhosts, Mana, Meditating, Name, PoisonCharges,
-    Poisoned, POISON_POTION_GRAPHIC,
+    Amount, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Mana, Meditating, Name, PoisonCharges,
+    Poisoned, Stealthing, POISON_POTION_GRAPHIC,
 };
 use openshard_state::Skill;
 
@@ -911,4 +911,135 @@ fn remove_trap_refuses_before_it_raises_a_cursor() {
         "no cursor for someone who knows nothing about locks"
     );
     assert!(clilocs(&mut world, player).contains(&502_366));
+}
+
+#[test]
+fn hiding_takes_you_off_every_screen_and_a_word_puts_you_back() {
+    // The whole subsystem in one test, because the point of it is that the state
+    // lives in *one* gate and *one* break: hiding tells every watcher to forget
+    // you, `can_see_mobile` keeps them from being told again, and speaking — which
+    // knows nothing about hiding — gives you away through `break_cover`.
+    let now = Instant::now();
+    let mut world = world();
+    let hider = enter(&mut world, now);
+    let entity = world.state.players[&hider];
+    let watcher = enter_as(&mut world, ConnectionId::from_raw(2), now);
+    let onlooker = world.state.players[&watcher];
+    train(&mut world, hider, Skill::Hiding, 1000);
+    world.tick(now);
+    assert!(
+        world.state.can_see_mobile(onlooker, entity),
+        "seen to start"
+    );
+    let _ = packets_for(&mut world, watcher);
+
+    world.queue(Command::UseSkillButton {
+        connection: hider,
+        skill: Skill::Hiding.id(),
+    });
+    world.tick(now);
+    assert!(
+        world.state.registry.has::<Hidden>(entity),
+        "a grandmaster hides: {:?}",
+        clilocs(&mut world, hider)
+    );
+    assert!(!world.state.can_see_mobile(onlooker, entity));
+    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    assert!(
+        packets_for(&mut world, watcher)
+            .iter()
+            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == serial),
+        "and the watcher is told to forget them"
+    );
+
+    world.queue(Command::Say {
+        connection: hider,
+        mode: 0,
+        hue: 0,
+        font: 3,
+        text: "here I am".to_owned(),
+    });
+    world.tick(now);
+    assert!(
+        !world.state.registry.has::<Hidden>(entity),
+        "speaking gives you away"
+    );
+    assert!(world.state.can_see_mobile(onlooker, entity));
+}
+
+#[test]
+fn stealth_buys_a_few_quiet_steps_and_no_more() {
+    // The budget is the skill: `value / 10` steps pre-AoS, spent by the movement
+    // path itself, so nothing about walking has to know what Stealth is.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    train(&mut world, player, Skill::Hiding, 1000);
+    train(&mut world, player, Skill::Stealth, 1000);
+    world.tick(now);
+    world.state.registry.insert(entity, Hidden);
+
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::Stealth.id(),
+    });
+    world.tick(now);
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Stealthing>(entity)
+            .map(|s| s.steps_left),
+        Some(10),
+        "a grandmaster gets ten quiet steps: {:?}",
+        clilocs(&mut world, player)
+    );
+
+    // Walk the budget down to its last step, then take two more: the first spends
+    // it, the second is past it.
+    world
+        .state
+        .registry
+        .insert(entity, Stealthing { steps_left: 1 });
+    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    for _ in 0..3 {
+        world.queue(Command::Step {
+            serial,
+            direction: Direction::North.to_bits(),
+        });
+        world.tick(now);
+    }
+    assert!(
+        !world.state.registry.has::<Hidden>(entity),
+        "a step past the budget gives them away"
+    );
+}
+
+#[test]
+fn detecting_hidden_strips_a_worse_hider_and_not_a_better_one() {
+    // The contest is `detect / 1.5` against the hider's Hiding, so a searcher does
+    // not simply out-roll everybody by having the skill at all.
+    let now = Instant::now();
+    let mut world = world();
+    let seeker = enter(&mut world, now);
+    train(&mut world, seeker, Skill::DetectHidden, 1000);
+    world.tick(now);
+    let novice = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 50, now);
+    let novice_entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(novice).unwrap())
+        .unwrap();
+    world.state.registry.insert(novice_entity, Hidden);
+
+    world.queue(Command::UseSkillButton {
+        connection: seeker,
+        skill: Skill::DetectHidden.id(),
+    });
+    world.tick(now);
+    assert!(
+        !world.state.registry.has::<Hidden>(novice_entity),
+        "an untrained hider standing next to a grandmaster is found"
+    );
 }

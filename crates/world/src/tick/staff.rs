@@ -23,7 +23,11 @@ impl World {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
             openshard_state::TargetPurpose::Skill { skill } => {
-                skills::on_target(&mut self.state, actor, skill, response.serial);
+                if let Some(theft) =
+                    skills::on_target(&mut self.state, actor, skill, response.serial)
+                {
+                    self.carry_out_theft(theft);
+                }
             }
             openshard_state::TargetPurpose::SkillSecond { skill, first } => {
                 skills::on_second_target(&mut self.state, actor, skill, first, response.serial);
@@ -130,5 +134,35 @@ impl World {
             });
         }
         gm::notify(&mut self.state, actor, &format!("Admin: {verb}."));
+    }
+}
+
+impl World {
+    /// Finish a theft `skills` decided on: move the item, or make a criminal.
+    ///
+    /// Two doors this crate is above and `skills` is below — `items` moves a thing
+    /// into a pack, `combat` turns somebody grey — so the decision arrives as a
+    /// value and the tick spends it, the `ai::think_one` split.
+    fn carry_out_theft(&mut self, theft: skills::Stolen) {
+        let Some(thief) = self.state.registry.serial_of(theft.thief) else {
+            return;
+        };
+        if theft.took {
+            if let Some(backpack) = items::backpack_of(&self.state, thief) {
+                self.state.registry.insert(
+                    theft.item,
+                    openshard_state::components::Contained {
+                        container: backpack,
+                        x: 60,
+                        y: 60,
+                        grid: 0,
+                    },
+                );
+            }
+        }
+        // Caught or not, reaching into somebody's pack is a crime — ServUO flags a
+        // thief the moment the attempt is made, not only when it fails.
+        combat::flag_criminal(&mut self.state, theft.thief);
+        let _ = theft.victim;
     }
 }

@@ -437,7 +437,8 @@ pub fn damage(
     // concentration with it: nobody holds a trance through a sword.
     if amount > 0 {
         state.registry.remove::<Frozen>(entity);
-        state.disrupt(entity);
+        // And it gives away anyone hiding: you cannot be struck and stay unseen.
+        state.break_cover(entity);
     }
     // Reactive Armor bounces a share of a melee physical blow back at the
     // attacker. The reflected hit is unattributed (attacker `None`), which both
@@ -684,6 +685,9 @@ pub fn swings(state: &mut WorldState) {
         // The attacker's serial rides along so a lethal blow can be blamed —
         // `damage` is the one place murder is tallied, melee or spell alike.
         let by = state.registry.serial_of(attacker);
+        // Swinging at somebody is the loudest thing you can do — ServUO calls
+        // `RevealingAction` in the combat timer, before the blow is even rolled.
+        state.break_cover(attacker);
         // The swing animates whether it lands or not — a miss still gestures.
         state.animate(attacker, Action::Attack);
         // Roll to hit (and train the weapon skill by trying). A miss whistles past

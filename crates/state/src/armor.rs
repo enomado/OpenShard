@@ -108,6 +108,61 @@ pub fn armor_data(graphic: u16) -> Option<&'static ArmorData> {
     ARMOR.iter().find(|a| a.graphic == graphic)
 }
 
+use crate::components::{Armor, Equipped, Graphic};
+use crate::WorldState;
+use openshard_entities::EntityId;
+
+/// One worn piece's rating: the pack's [`Armor`] override if the item carries
+/// one (an enchanted breastplate), else the core table's row for its graphic,
+/// else nothing.
+#[must_use]
+pub fn piece_rating(state: &WorldState, item: EntityId) -> u16 {
+    if let Some(&Armor { rating }) = state.registry.get::<Armor>(item) {
+        return rating;
+    }
+    state
+        .registry
+        .get::<Graphic>(item)
+        .and_then(|graphic| armor_data(graphic.id))
+        .map_or(0, |armor| armor.rating)
+}
+
+/// The item a mobile wears on `layer`, if any.
+#[must_use]
+pub fn worn_on_layer(state: &WorldState, mobile: EntityId, layer: u8) -> Option<EntityId> {
+    let serial = state.registry.serial_of(mobile)?;
+    state
+        .registry
+        .query::<Equipped>()
+        .find(|(_, worn)| worn.mobile == serial && worn.layer == layer)
+        .map(|(entity, _)| entity)
+}
+
+/// A mobile's whole armour rating — every worn piece scaled by how much of the
+/// body it covers, ServUO's `PlayerMobile.ArmorRating`.
+///
+/// This is the number the status bar carries (pre-AoS it is the armour rating
+/// itself; from AoS the client labels the same field physical resistance). A
+/// mobile in nothing rates zero, which is why every existing combat test — none
+/// of which dresses anybody — is unchanged by armour landing.
+#[must_use]
+pub fn worn_armor_rating(state: &WorldState, mobile: EntityId) -> u16 {
+    let Some(serial) = state.registry.serial_of(mobile) else {
+        return 0;
+    };
+    let worn: Vec<(EntityId, u8)> = state
+        .registry
+        .query::<Equipped>()
+        .filter(|(_, worn)| worn.mobile == serial)
+        .map(|(entity, worn)| (entity, worn.layer))
+        .collect();
+    let hundredths: u32 = worn
+        .into_iter()
+        .map(|(item, layer)| u32::from(piece_rating(state, item)) * layer_coverage(layer))
+        .sum();
+    u16::try_from(hundredths / 100).unwrap_or(u16::MAX)
+}
+
 /// The classic pre-AoS armour set, ported from
 /// `ServUO/Scripts/Items/Equipment/Armor/*.cs`: each row's rating is the class's
 /// `ArmorBase` getter, and its graphics are the constructor's `: base(0x…)` plus

@@ -127,7 +127,7 @@ impl World {
                     .get::<Resistance>(entity)
                     .map_or(0, |r| u16::from(r.physical))
             } else {
-                openshard_combat::armor::worn_armor_rating(&self.state, entity)
+                openshard_state::armor::worn_armor_rating(&self.state, entity)
             },
             weight: items::total_weight_with(&self.state, contents, entity, BODY_WEIGHT),
             // A mount takes a follower slot in both references. Real pet slots
