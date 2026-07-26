@@ -1274,28 +1274,48 @@ Roughly in dependency order, each script-first:
     (`night_home`), which is what makes the setting reachable at all — it was briefly
     a flag with no path to data, restored from a record nothing ever wrote.
 
-    **Where the homes come from is a derivation, and it is ours.** Neither reference
-    has the data: ServUO's townsfolk stand at their posts around the clock, its only
-    scheduled-movement mechanism is a hand-placed `WayPoint` chain Britannia ships none
-    of, and `Data/Decoration` has no notion of which floor tile belongs to whom. So the
-    converter sends each townsperson to **another townsperson's post in the same
-    town** — a tile ServUO itself stood a mobile on, so it is on the floor and
-    reachable — choosing the nearest between six and twenty tiles away. Both bounds
-    earn their place: under six the NPC never leaves its two-tile wander range, and
-    over twenty the bounded A\* (`PATH_BUDGET`, 400 nodes) starts failing, at which
-    point `step_toward`'s naive fallback noses it into a wall all night. A first
-    attempt shifted by index rather than distance produced a median walk of 79 tiles
-    and a worst case of 442. 277 of Felucca's 710 townsfolk have a neighbour in that
-    band; the rest keep to their posts, which is what the setting being off looks like
-    anyway.
+    **Where the homes come from is a derivation, and it is ours — and the first one
+    was the bug.** It sent each townsperson to *another townsperson's post in the same
+    town*, on the reasoning that those are tiles ServUO itself stood a mobile on, so
+    they are on the floor and reachable. They are, and every one of them is somebody's
+    workplace. Measured on the file it produced: 292 townsfolk homed, **292 of 292
+    landing exactly on another NPC's post**, 187 of them on a *vendor's*, and 118
+    mutual swaps. A vendor's stock crate is worn, so a shop is wherever the shopkeeper
+    is standing: at dusk the tavernkeeper walked to the innkeeper's counter and the
+    innkeeper to the tavernkeeper's, each with its shop on its back, and the person
+    behind the smithy counter opened the tailor's buy window.
 
-    Two things make the cost bearable. LOD already dozes an NPC no player is near, so
-    the towns nobody is standing in do not path at all. And `spawn` now **jitters an
-    NPC's first beat** across one beat's span, the way `register_spawner` jitters a
-    fresh region's first spawn: a `Populate` places seven hundred townsfolk on one
-    tick, and a shared `next_beat` of zero put every one of their beats on the same
-    tick for ever after — invisible until dusk, when a whole facet's A\* bill would
-    land at once.
+    `Data/Decoration` has no bedrooms, which is where that version stopped. It does
+    have **chairs** — `WoodenChair`, `BambooChair`, the cushioned pair, `FootStool`,
+    `WoodenBench`, `Stool`, both thrones, and the handful of beds. 401 placements in
+    `britain.cfg` alone and well over a thousand across the two facets: more seats
+    than there are townsfolk, every one indoors in a real room, and none of them
+    anybody's post. So the destination is the nearest **unclaimed** seat, claimed as
+    it is taken — which makes the assignment a matching rather than a set of
+    independent nearest-picks, so a collision is impossible rather than unlikely.
+
+    Four rules, three of them asserted at generation time because a regression here is
+    silent for days and then looks like confused shopkeepers: never a vendor's *tile*
+    (checked against the tile, since ServUO stands two of its shopkeepers on their own
+    furniture), never a tile already claimed, never a post whose owner is already
+    walking here, and still the nearest candidate between six and twenty tiles. Both
+    bounds earn their place: under six the NPC never leaves its two-tile wander range,
+    and over twenty the bounded A\* (`PATH_BUDGET`, 400 nodes) starts failing, at which
+    point `step_toward`'s naive fallback noses it into a wall all night — a first
+    attempt shifted by index rather than distance produced a median walk of 79 tiles
+    and a worst case of 442. Now: **404 of 726 homed, 0 on a vendor post, 0 shared, 0
+    swaps**, walks of 6/9/20 tiles min/median/max. The 322 with nothing free in the
+    band keep to their posts, which is what the setting being off looks like anyway.
+
+    The engine settles an NPC *near* its post rather than on it — `wander_step` walks
+    home only while further than the wander radius — so this reads as people drifting
+    to the taverns at dusk, not as a town standing on the furniture. And **the shop
+    shuts** outside working hours, at `check_vendor_access`, the predicate all four
+    doors into a shop already call: with the stock crate riding on the shopkeeper's
+    body, a destination is only ever a matter of flavour once the shop itself is
+    closed.
+
+    LOD makes the cost bearable — the towns nobody is standing in do not path at all.
   - [x] **Barks, and the travellers speak up.** `npc::live` says a trade's `barks`
     when nobody is within greeting range, on its own long cooldown. The lines are the
     same derivation the wares answer uses — the trade names itself and what it
