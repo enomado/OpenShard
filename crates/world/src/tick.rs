@@ -343,6 +343,16 @@ impl World {
         self.state.players.len()
     }
 
+    /// The wire serial of everyone connected. For a benchmark that wants to walk
+    /// them; a shard addresses players by connection, not by serial.
+    pub fn player_serials(&self) -> Vec<u32> {
+        self.state
+            .players
+            .values()
+            .filter_map(|&entity| self.state.registry.serial_of(entity).map(Serial::raw))
+            .collect()
+    }
+
     /// Queue a command for the next tick.
     ///
     /// Never acts immediately. That is the whole point: a command that took
