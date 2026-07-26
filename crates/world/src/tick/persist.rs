@@ -1241,6 +1241,7 @@ impl World {
                     entity,
                     openshard_state::components::Lock {
                         key_value: record.key_value,
+                        ..Default::default()
                     },
                 );
             }

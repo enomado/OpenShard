@@ -154,8 +154,41 @@ impl World {
         let Some(graphic) = self.state.registry.get::<Graphic>(item).map(|g| g.id) else {
             return;
         };
-        if openshard_state::instrument::instrument_data(graphic).is_some() {
-            skills::play_instrument(&mut self.state, player, item);
+        match graphic {
+            _ if openshard_state::instrument::instrument_data(graphic).is_some() => {
+                skills::play_instrument(&mut self.state, player, item);
+            }
+            skills::BANDAGE_GRAPHIC => {
+                skills::use_bandage(&mut self.state, player, item);
+            }
+            skills::LOCKPICK_GRAPHIC => {
+                skills::use_lockpick(&mut self.state, player, item);
+            }
+            _ => {}
+        }
+    }
+
+    /// Finish the bandages whose time is up, and spend what each did through the
+    /// crate that owns it: hit points and a cure through `magic`/`combat`, a
+    /// resurrection through the world's own one.
+    pub(super) fn finish_bandages(&mut self) {
+        for done in skills::finish_bandages(&mut self.state) {
+            let Some(serial) = self.state.registry.serial_of(done.patient) else {
+                continue;
+            };
+            if done.resurrected {
+                self.resurrect(done.patient);
+                continue;
+            }
+            if done.cured {
+                self.state
+                    .registry
+                    .remove::<openshard_state::components::Poisoned>(done.patient);
+                self.state.broadcast_health(done.patient);
+            }
+            if done.healed > 0 {
+                magic::heal(&mut self.state, serial.raw(), done.healed);
+            }
         }
     }
 }

@@ -550,6 +550,7 @@ impl World {
         }
         skills::expire_ghost_contact(&mut self.state);
         skills::expire_songs(&mut self.state);
+        self.finish_bandages();
         // An instrument that played its last tune. `skills` decides, `items`
         // removes — the same split the poison fumble and the beggar's coin use.
         let spent: Vec<openshard_skills::InstrumentSpent> = self

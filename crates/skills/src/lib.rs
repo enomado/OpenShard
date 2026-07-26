@@ -22,8 +22,10 @@ mod stats;
 pub use button::{set_skill_delay, use_skill_button, SkillRequested, DEFAULT_SKILL_DELAY_TICKS};
 pub use check::{gain_chance, roll_skill_band, roll_skill_chance, skill_value};
 pub use handlers::{
-    expire_ghost_contact, expire_songs, on_second_target, on_target, play_instrument, snooping,
-    Begged, InstrumentSpent, PoisonedSelf, Stolen,
+    expire_ghost_contact, expire_songs, finish_bandages, on_item_target, on_second_target,
+    on_target, play_instrument, snooping, use_bandage, use_lockpick, BandageFinished,
+    BandageStarted, Begged, InstrumentSpent, LockpickBroke, PoisonedSelf, Stolen, BANDAGE_GRAPHIC,
+    LOCKPICK_GRAPHIC,
 };
 pub use stats::gain_stat;
 

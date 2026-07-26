@@ -12,6 +12,7 @@
 //! this", which is cliloc 500014 and is decided a step earlier.
 
 mod appraise;
+mod bandage;
 mod bard;
 mod forensics;
 mod lore;
@@ -20,6 +21,10 @@ mod poison;
 mod social;
 mod stealth;
 
+pub use bandage::{
+    finish_bandages, use_bandage, use_lockpick, BandageFinished, BandageStarted, LockpickBroke,
+    BANDAGE_GRAPHIC, LOCKPICK_GRAPHIC,
+};
 pub use bard::{expire_songs, play_instrument, InstrumentSpent};
 pub use poison::PoisonedSelf;
 pub use social::Begged;
@@ -220,6 +225,31 @@ pub fn on_second_target(
     }
     if Skill::from_id(id) == Some(Skill::Poisoning) {
         poison::apply_to(state, actor, first, target);
+    }
+}
+
+/// The second cursor of an *item*-started skill — a bandage or a lockpick, whose
+/// first "answer" is the item itself.
+///
+/// Returned rather than applied for the usual reason: spending a bandage is
+/// `items`' door, and so is snapping a pick.
+pub fn on_item_target(
+    state: &mut WorldState,
+    actor: EntityId,
+    id: u8,
+    item: EntityId,
+    target: u32,
+) -> (Option<BandageStarted>, Option<LockpickBroke>) {
+    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+        return (None, None);
+    };
+    if !within(state, actor, target, bandage::HEAL_RANGE) {
+        return (None, None);
+    }
+    match Skill::from_id(id) {
+        Some(Skill::Healing) => (bandage::begin_heal(state, actor, item, target), None),
+        Some(Skill::Lockpicking) => (None, bandage::pick_lock(state, actor, item, target)),
+        _ => (None, None),
     }
 }
 

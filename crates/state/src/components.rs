@@ -295,10 +295,16 @@ pub struct Karma(pub i32);
 ///
 /// `key_value` is ServUO's: a key fits when its own value matches, and `0` is a lock
 /// no key in the world opens — a set-piece door, not a mistake.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Lock {
     /// Which key opens it. `0` fits no key.
     pub key_value: u32,
+    /// The Lockpicking a thief needs before the lock will even be tried, in tenths
+    /// — ServUO's `LockLevel`. Zero is a lock anybody may attempt.
+    pub required_skill: u16,
+    /// The skill at which it is no challenge at all, in tenths — ServUO's
+    /// `MaxLockLevel`, the top of the band a pick is rolled against.
+    pub max_skill: u16,
 }
 
 /// A key, and what it opens — ServUO's `Key.KeyValue`.
@@ -931,6 +937,19 @@ pub struct Hidden;
 pub struct Stealthing {
     /// Steps left before the next one gives you away.
     pub steps_left: u16,
+}
+
+/// A healer part way through a bandage — ServUO's `BandageContext`.
+///
+/// The one skill in the engine whose *duration* is the mechanic: it takes seconds,
+/// the patient can be hurt again meanwhile, and it finishes on the tick counter
+/// like everything else that waits.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Bandaging {
+    /// Who is being patched up.
+    pub patient: EntityId,
+    /// The tick the work is done.
+    pub done_at: u64,
 }
 
 /// A mobile sitting in a meditative trance — ServUO's `Mobile.Meditating`.

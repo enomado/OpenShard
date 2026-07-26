@@ -999,12 +999,23 @@ Roughly in dependency order, each script-first:
       nothing else), control commands through `chat`, and stabling. Animal Taming,
       Herding and Veterinary ride on it. Listed as its own pillar in the gaps
       below, and this is the same entry.
-  - [ ] **Item-triggered skills** — Healing and Veterinary through a bandage
-    (ServUO's `Bandage.cs`: a 250ms timer, `chance = (healing + 10) / 100`, cure
-    and resurrect thresholds), Lockpicking through a lockpick (the `Lock`
-    component exists; it wants `lock_level`/`max_lock_level`/`required_skill`),
-    Camping through kindling, Musicianship through an instrument. All four enter
-    through the `ItemUsed` double-click seam that already exists.
+  - [x] **Item-triggered skills** — Healing, Veterinary and Lockpicking, through
+    the double-click seam rather than the window, because the action that uses them
+    *is* a double-click on the bandage or the pick. They come in through
+    `tick/skills_wire.rs`'s `use_item_skill`, run after the `ItemUsed` the pack
+    sees, and each raises its own cursor by reusing `TargetPurpose::SkillSecond` —
+    the item is the first answer, the patient or the lock the second.
+    **A bandage is the one skill whose duration is the mechanic**, so unlike
+    Poisoning (whose two-second beat is flavour and resolves at once) it really does
+    keep a `Bandaging { patient, done_at }` and finish on the tick counter: ServUO's
+    pre-AoS timing off dexterity (about ten seconds on yourself, three on somebody
+    else, five more for a resurrection), the bandage spent when the work *begins*,
+    and the three outcomes — mend, cure, resurrect — with their own thresholds and
+    chances. Each is returned as an intent and applied by the tick through the crate
+    that owns the door. **Lockpicking** gave `Lock` the two levels ServUO has
+    (`required_skill`/`max_skill`): without them every lock is either free or
+    impossible, and a failed pick snaps. Deferred: **Camping**, which wants a reason
+    to light a fire (logging out safely in the wild) more than it wants the fire.
   - [ ] Sphere's per-skill `AdvRate` tables and its "learn only from a challenge"
     `GainRadius` — **dropped, not deferred**: ServUO's band *is* the
     learn-from-a-challenge rule, and its `gain_factor` column is the per-skill

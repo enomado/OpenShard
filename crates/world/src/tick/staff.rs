@@ -30,6 +30,20 @@ impl World {
                 }
             }
             openshard_state::TargetPurpose::SkillSecond { skill, first } => {
+                // The item-started skills (a bandage, a lockpick) answer with what
+                // to spend; the rest resolve on their own.
+                let (bandage, pick) =
+                    skills::on_item_target(&mut self.state, actor, skill, first, response.serial);
+                if let Some(started) = bandage {
+                    if let Some(serial) = self.state.registry.serial_of(started.bandage) {
+                        items::consume(&mut self.state, serial, 1);
+                    }
+                }
+                if let Some(broke) = pick {
+                    if let Some(serial) = self.state.registry.serial_of(broke.pick) {
+                        items::consume(&mut self.state, serial, 1);
+                    }
+                }
                 skills::on_second_target(&mut self.state, actor, skill, first, response.serial);
             }
             openshard_state::TargetPurpose::SetTrap { kind, power } => {

@@ -13,8 +13,8 @@ use super::tests::{enter, enter_as, packets_for, spawn_mobile_at, world, START};
 use super::*;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::components::{
-    Amount, Contained, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Mana, Meditating, Name,
-    PoisonCharges, Poisoned, Stealthing, POISON_POTION_GRAPHIC,
+    Amount, Contained, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Hitpoints, Mana, Meditating,
+    Name, PoisonCharges, Poisoned, Stealthing, POISON_POTION_GRAPHIC,
 };
 use openshard_state::Skill;
 
@@ -1172,5 +1172,150 @@ fn discordance_makes_a_creature_worse_at_everything_at_once() {
     assert!(
         after < before,
         "and it is worse at everything: {before} → {after}"
+    );
+}
+
+/// Put a plain item in the player's backpack and return its serial.
+fn give_item(world: &mut World, connection: ConnectionId, graphic: u16) -> u32 {
+    let player = world.state.players[&connection];
+    let owner = world.state.registry.serial_of(player).unwrap();
+    let backpack = openshard_items::backpack_of(&world.state, owner).expect("a backpack");
+    let (item, serial) = world
+        .state
+        .registry
+        .spawn_with_serial(SerialKind::Item)
+        .unwrap();
+    world.state.registry.insert(
+        item,
+        Graphic {
+            id: graphic,
+            hue: 0,
+        },
+    );
+    world.state.registry.insert(
+        item,
+        Contained {
+            container: backpack,
+            x: 20,
+            y: 20,
+            grid: 0,
+        },
+    );
+    serial.raw()
+}
+
+#[test]
+fn a_bandage_takes_time_and_then_mends() {
+    // The one skill whose *duration* is the mechanic: the bandage is spent when the
+    // work begins, the healing lands seconds later on the tick counter, and the
+    // patient can be hurt again in between.
+    let now = Instant::now();
+    let mut world = world();
+    let healer = enter(&mut world, now);
+    let entity = world.state.players[&healer];
+    train(&mut world, healer, Skill::Healing, 1000);
+    train(&mut world, healer, Skill::Anatomy, 1000);
+    world.tick(now);
+    let bandage = give_item(&mut world, healer, openshard_skills::BANDAGE_GRAPHIC);
+    // A wound to mend.
+    world.state.registry.insert(
+        entity,
+        Hitpoints {
+            current: 20,
+            max: 100,
+        },
+    );
+    let _ = packets_for(&mut world, healer);
+
+    // Double-click the bandage, then point it at yourself.
+    world.queue(Command::DoubleClick {
+        connection: healer,
+        serial: bandage,
+    });
+    world.tick(now);
+    assert!(
+        world.state.pending_targets.contains_key(&entity),
+        "the bandage asks who it is for: {:?}",
+        clilocs(&mut world, healer)
+    );
+    let self_serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let _ = answer_cursor(&mut world, healer, self_serial, now);
+    assert!(
+        world
+            .state
+            .registry
+            .has::<openshard_state::components::Bandaging>(entity),
+        "and the work has begun"
+    );
+    assert!(
+        world
+            .state
+            .registry
+            .entity_of(Serial::new(bandage).unwrap())
+            .is_none(),
+        "the bandage is spent at the start, not the end"
+    );
+
+    // It is not instant: a hundred dexterity self-heals in about ten seconds.
+    for _ in 0..(11 * openshard_state::TICKS_PER_SECOND) {
+        world.tick(now);
+    }
+    let hits = world
+        .state
+        .registry
+        .get::<Hitpoints>(entity)
+        .map_or(0, |h| h.current);
+    assert!(hits > 20, "the wound closed: {hits}");
+}
+
+#[test]
+fn a_lockpick_opens_a_lock_it_is_good_enough_for() {
+    // And refuses one it is not, which is the point of the two levels on a `Lock`:
+    // without them every lock is either free or impossible.
+    let now = Instant::now();
+    let mut world = world();
+    let thief = enter(&mut world, now);
+    train(&mut world, thief, Skill::Lockpicking, 1000);
+    world.tick(now);
+    let pick = give_item(&mut world, thief, openshard_skills::LOCKPICK_GRAPHIC);
+
+    world.queue(Command::SpawnContainer {
+        graphic: 0x0E3C,
+        gump: 0x003C,
+        hue: 0,
+        position: Point::new(START.0 + 1, START.1, 0),
+        facet: 0,
+    });
+    world.tick(now);
+    let (chest, _) = world
+        .state
+        .registry
+        .query::<Container>()
+        .find(|(e, _)| !world.state.registry.has::<Equipped>(*e))
+        .expect("a chest");
+    world.state.registry.insert(
+        chest,
+        openshard_state::components::Lock {
+            key_value: 42,
+            required_skill: 0,
+            max_skill: 500,
+        },
+    );
+    let chest_serial = world.state.registry.serial_of(chest).unwrap().raw();
+    let _ = packets_for(&mut world, thief);
+
+    world.queue(Command::DoubleClick {
+        connection: thief,
+        serial: pick,
+    });
+    world.tick(now);
+    let said = answer_cursor(&mut world, thief, chest_serial, now);
+    assert!(said.contains(&502_076), "the lock yields: {said:?}");
+    assert!(
+        !world
+            .state
+            .registry
+            .has::<openshard_state::components::Lock>(chest),
+        "and is open for good"
     );
 }

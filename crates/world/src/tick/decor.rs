@@ -51,6 +51,7 @@ impl World {
                     entity,
                     openshard_state::components::Lock {
                         key_value: door.key_value,
+                        ..Default::default()
                     },
                 );
             }
@@ -80,6 +81,7 @@ impl World {
                     entity,
                     openshard_state::components::Lock {
                         key_value: container.key_value,
+                        ..Default::default()
                     },
                 );
             }

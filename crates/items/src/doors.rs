@@ -94,7 +94,7 @@ pub fn turn_key(state: &mut WorldState, player: EntityId, key: EntityId, target:
     }
     match state.registry.get::<Lock>(target).copied() {
         // Locked, and this key fits: unlock it.
-        Some(Lock { key_value }) if key_value == value && value != 0 => {
+        Some(Lock { key_value, .. }) if key_value == value && value != 0 => {
             state.registry.remove::<Lock>(target);
             state.system_message(player, "You unlock it.");
             true
@@ -106,7 +106,13 @@ pub fn turn_key(state: &mut WorldState, player: EntityId, key: EntityId, target:
         }
         // Unlocked: the same key locks it again.
         None if value != 0 => {
-            state.registry.insert(target, Lock { key_value: value });
+            state.registry.insert(
+                target,
+                Lock {
+                    key_value: value,
+                    ..Default::default()
+                },
+            );
             state.system_message(player, "You lock it.");
             true
         }
