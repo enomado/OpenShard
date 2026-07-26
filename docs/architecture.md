@@ -78,7 +78,7 @@ crate, owning its domain events:
 | Crate | System | Events |
 |---|---|---|
 | `chat` | `say`/`speak`, speech ranges | `MobileSpoke` |
-| `skills` | skill/stat checks, the gain curve, the shared `roll_skill` | `SkillUsed`, `SkillRaised` |
+| `skills` | the skill table's rules: the band check, the gain curve, stat gain, the usable skills | `SkillUsed`, `SkillChanged`, `SkillRequested` |
 | `magic` | the 64-spell Magery table, `pay_and_roll`/`heal`/`regen_mana`, the timed stat buffs (`apply_stat_buff`/`expire_buffs`) | `SpellCast` |
 | `combat` | `damage`/`die`/`swings`/`volleys`/`attack`, poison pulses, criminal flagging, the swing formula | `MobileDamaged`, `MobileDied` |
 | `items` | spawn/drag/stack/decay/containers/equip/doors/mounts, one module each | `ItemSpawned` |

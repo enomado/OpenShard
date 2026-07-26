@@ -552,7 +552,7 @@ Roughly in dependency order, each script-first:
       the swing still animates) and does no damage; the timer resets either way. The
       roll **is** a `CheckSkill`, so the same call trains the weapon skill — a new
       `skills::roll_skill_chance` (ServUO's `CheckSkill(skill, chance)`) shares the
-      gain half with `roll_skill`, and a player's Swords/Archery/… creeps up with use,
+      gain half with `roll_skill_band`, and a player's Swords/Archery/… creeps up with use,
       surfacing in the `0x3A` window with no extra wiring.
     - **Damage scaling.** A landed blow scales by the attacker's Tactics, Strength and
       Anatomy — ServUO's `ScaleDamageOld` (era 1: Tactics its own ±50% about parity,
@@ -754,53 +754,112 @@ Roughly in dependency order, each script-first:
     vs pierce), mounted, or per-monster action ServUO computes from the body
     tables. The modern `0xE2` path is exact; this only refines the old 2D client,
     the minority path, and wants the body-animation tables.
-- [x] `skills` — usage checks, gain curves
-  - [x] **The check and the gain.** A mobile carries `Skills` (a sparse map of id
-    → tenths). A script sets one (`op_set_skill`) and uses it against a difficulty
-    (`op_use_skill`); the world rolls success on an S-curve of the gap between
-    skill and difficulty — ported straight from Sphere's `Calc_GetSCurve`, 50% at
-    parity, 75% ten points ahead — and rolls a gain that falls as the skill
-    rises. The result comes back as a `SkillUsed` event the server delivers to
-    scripts, so the reward — the ore, the pick's turn — is the script's to grant,
-    combat's `MobileDied` decoupling again.
+- [x] `skills` — the table, the check, the gain
+  - [x] **The fifty-eight skills are data now** (`state::skill`, ported whole from
+    ServUO's `Server/Skills.cs`): each skill's client id, its name and title, the
+    stats it leans on and the weight it lends each of them, its gain factor, and
+    whether it can be used from the window at all. Fixed point, not floats —
+    scales in hundredths, gains in thousandths, factors per-mille — because the
+    tick replays. **This turned up a real bug:** five of the eight skill ids
+    combat used were wrong (Fencing on Cooking's, Macing on Discordance's,
+    Tactics on Poisoning's, Wrestling on Tailoring's, Swords on Mace Fighting's).
+    They are the client's own `skills.mul` indices and they ride the `0x3A` both
+    ways, so a swordsman's gains showed on the Mace Fighting bar. Nothing noticed:
+    a roll trains whatever id it is handed.
+  - [x] **The check and the gain are ServUO's.** Sphere's `Calc_GetSCurve` against
+    a single difficulty is gone, and so is the flat linear gain that stood in for a
+    curve. In its place: `CheckSkill` over a difficulty **band** — under it you
+    cannot, at it you learn nothing — and `GetGainChance`, which averages the
+    headroom under the skill's own cap and under the **total** one. That total cap
+    (700.0) is the point: it is what makes a character a build rather than a list,
+    and the engine had no notion of it. With it come the rules that hang off it —
+    a `Locked` skill holds, a `Down` skill gives ground so another can rise past
+    the cap, and a creature is exempt as ServUO exempts it.
+  - [x] **Stat gain**, in both of ServUO's mechanics: before ML each stat rolls its
+    own weight from the skill's row (`StrGain / 33.3`), from ML one flat chance
+    picks the skill's primary stat three times in four. Per-stat and total caps
+    bind, a stat at the total cap takes its point from one set to fall, and a
+    per-stat cooldown (a tick count, so it replays) stops a flurry of uses pouring
+    into one stat. Three `StatLocks` of their own, on the wire in both directions.
+  - [x] **A skill is worth more than it is trained.** `skill_value` is ServUO's
+    `Skill.NonRacialValue`: the base plus what the mobile's stats lend it, fading
+    as the base rises and capped at the row's own ceiling. A **read-site
+    derivation**, so a Strength spell raises a smith's effective skill with no
+    bookkeeping and nothing to undo. Gone from AoS on, as
+    `AOS.DisableStatInfluences` makes it. The `0x3A`'s `value` and `base` are two
+    different numbers at last — they had carried the same one since the beginning.
   - [x] **A seeded generator in the world.** A roll is randomness inside a tick,
     and the tick must replay. So `Rng` (xorshift64\*) is a plain field the world
     owns, seeded once from a fixed default and advanced only by the tick — two
     identical runs reach the same skill, roll for roll (there is a test that
-    asserts exactly this). A live shard that wanted unpredictable rolls seeds
-    from the clock and saves the seed; additive, one value.
-  - [x] **stats** (str/dex/int), the foundation combat's weapon/dexterity-derived
-    numbers were waiting on. A mobile carries `Stats { strength, dexterity,
+    asserts exactly this).
+  - [x] **stats** (str/dex/int). A mobile carries `Stats { strength, dexterity,
     intelligence }`; `enter` gives a character the classic 100/100/100 and derives
-    its `Hitpoints.max` from strength and `Mana.max` from intelligence, the UO
-    identity where those bars *are* the stats. `Command::SetStats` (op `op_set_stats`)
-    re-caps both when a stat changes, dragging a current value down under a lowered
-    cap and leaving room to heal into a raised one. Dexterity is stored now and
-    read next, by the swing speed below.
-  - [x] **The skills window on the client** (`0x3A`, ported both ways from ServUO's
-    `SkillUpdate`/`SkillChange`). Login sends a player its whole list — every skill
-    the client's era knows, trained or not, each with value, base, lock arrow and
-    cap (`SkillCaps`-gated for the cap field) — a gain pushes the single-line update
-    so an open window follows it live (`SkillRaised`, from the one `roll_skill`
-    every gain passes through), and the up/down/lock arrow the player clicks rides
-    back as `SkillLockRequest`, stored per skill on `Skills`. Skills and stats
-    persist with the character (schema v6, §4), applied from the creation screen or
-    the save through the `CharacterSheet`.
-  - [ ] **Route client-initiated skill use** (`0x12` type `0x24`, decoded by
-    `UseSkillRequest`) — using a skill *from the client* is not wired yet. It wants
-    the same script-effect seam casting has, so the effect — the mined ore, the
-    picked lock — stays a script's, granted off a `SkillUsed`-style event rather
-    than baked into the engine.
-  - [ ] **stat gain from skill use** — a skill that trains also nudges its
-    governing stat; wants Sphere's per-skill stat map, so it rides with the
-    `AdvRate` tables below
-  - [ ] Sphere's per-skill `AdvRate` gain tables and the "learn only from a
-    challenge" `GainRadius` — data-driven config, a refinement on the flat curve
+    its `Hitpoints.max` from strength, `Mana.max` from intelligence and
+    `Stamina.max` from dexterity. `skills::apply_stats` is the one door they change
+    through, so the three pools can never drift from them.
+  - [x] **The skills window on the client** (`0x3A`, both ways from ServUO's
+    `SkillUpdate`/`SkillChange`), with per-skill caps and the lock arrows, and the
+    status bar's three stat arrows beside it (`0xBF 0x1A` in, `0xBF 0x19` type 2
+    out — relayed, unlike a skill arrow, because nothing else sends the stat bits
+    and a client that never gets them draws all three pointing up).
+  - [x] **The window's buttons work** (`0x12` type `0x24`). It was decoded, tested
+    and routed nowhere, so pressing a skill did nothing at all — no message, no
+    error, nothing in a log. Now it runs ServUO's `Skills.UseSkill`: a ghost is
+    silent, a use inside another's cooldown is refused out loud (cliloc 500118),
+    and the thirty-five skills that cannot be used this way get the client's own
+    line for it (**cliloc 500014**), which is the right core default and not a gap.
+    The twenty-three that can emit a `SkillRequested` for the pack *and* run the
+    core's own handler — the "default in core, customise in the pack" split spells
+    and loot have.
+  - [x] **The cursor seam**, and the first two skills through it. An object cursor
+    (`0x6C` type 0) goes up, the world remembers which skill asked
+    (`TargetPurpose::Skill`), and the answer reaches the skill a packet later, its
+    reach re-checked server-side. **Anatomy** and **Evaluating Intelligence** are
+    done and set the shape: a margin of error narrowing with skill, a roll that
+    both decides and trains, and an answer chosen by arithmetic on a base cliloc
+    (`1038045 + strength*11 + dexterity`), drawn over the thing looked at and sent
+    to one connection. Adds `encode_localized_message` (`0xC1`) — whose arguments
+    are UTF-16 **little-endian**, the opposite of the `0xAE` a few lines above it
+    in the same file.
+  - [ ] **The other twenty-one usable skills.** In rough order of what they cost:
+    - [ ] **Lore, the rest of the family** — Arms Lore, Item Identification, Taste
+      Identification, Forensic Evaluation, Animal Lore. Same shape as the two that
+      are done; Animal Lore wants a gump, Forensics wants corpses to read.
+    - [ ] **Meditation, Spirit Speak, Begging, Inscribe, Poisoning, Remove Trap** —
+      each self-contained, each wanting one small thing (free hands, a corpse
+      nearby, a poison potion, a trapped container).
+    - [ ] **Stealth is a subsystem, not a skill.** Hiding, Stealth, Detect Hidden,
+      Tracking, Snooping and Stealing all sit on a `Hidden` component wired into
+      the one `WorldState::can_see_mobile` gate where `Ghost` already lives — and
+      on *revealing*, which means every action that should break it: attacking,
+      casting, speaking, lifting. That touches `combat`, `magic`, `chat` and
+      `items`, which is why it is its own line.
+    - [ ] **Bard is a subsystem too.** Peacemaking, Provocation and Discordance go
+      through `BaseInstrument` — items with uses, a bard range of `8 + value/15`, a
+      `Musicianship` check per attempt, and ServUO's `GetBaseDifficulty` over the
+      target's pools and skills. Discordance is a new kind on the existing effects
+      ledger; Provocation reuses the `Combat` component the AI already drives.
+    - [ ] **Taming wants pets**, which the engine does not have at all — an owner,
+      follower slots that mean something (the status bar counts a mount and
+      nothing else), control commands through `chat`, and stabling. Animal Taming,
+      Herding and Veterinary ride on it. Listed as its own pillar in the gaps
+      below, and this is the same entry.
+  - [ ] **Item-triggered skills** — Healing and Veterinary through a bandage
+    (ServUO's `Bandage.cs`: a 250ms timer, `chance = (healing + 10) / 100`, cure
+    and resurrect thresholds), Lockpicking through a lockpick (the `Lock`
+    component exists; it wants `lock_level`/`max_lock_level`/`required_skill`),
+    Camping through kindling, Musicianship through an instrument. All four enter
+    through the `ItemUsed` double-click seam that already exists.
+  - [ ] Sphere's per-skill `AdvRate` tables and its "learn only from a challenge"
+    `GainRadius` — **dropped, not deferred**: ServUO's band *is* the
+    learn-from-a-challenge rule, and its `gain_factor` column is the per-skill
+    rate. Kept here only so nobody re-adds it from the old plan.
 - [x] `magic` — spells, reagents, casting
   - [x] **Mana, casting, and the effect seam.** A mobile carries `Mana` (spent by
     casting, trickling back on a tick-counter regen). `Command::CastSpell` is the
     gate every spell passes: it checks the mana, rolls the casting skill (through
-    the same `roll_skill` a mined ore uses, so casting trains Magery), spends the
+    the same band roll a mined ore uses, so casting trains Magery), spends the
     mana, and emits `SpellCast { caster, spell, target, success }`. What the spell
     *does* — a fireball's damage, a heal, a summon — is not here: a script reads
     `SpellCast` and gives it its effect, `MobileDied`'s decoupling a third time.
@@ -832,7 +891,7 @@ Roughly in dependency order, each script-first:
     `SpellInfo` + the classic reagent lists): each spell's circle — which sets its
     mana, cast delay and difficulty — its reagents, what it targets, and its
     *default effect*. `RequestCast` → `World::begin_cast` runs the sequence in the
-    core: mana and reagents from the pack, the Magery roll (the same `roll_skill`
+    core: mana and reagents from the pack, the Magery roll (the same band roll
     a mined ore uses), the target cursor, and the effect. The core runs the
     archetypes the engine can do — direct and area typed damage, heal, teleport —
     and tags the rest `SpellEffect::Scripted`: they still *cast* fully and emit
@@ -1560,16 +1619,52 @@ started.
 - **Fame, karma and titles.** Absent, which is why the Felucca converter falls
   back to a karma-sign heuristic for notoriety and why a murder count is the only
   standing a character accumulates.
-- **Crafting and resource gathering.** Mining, lumberjacking and fishing, and the
-  craft gumps behind blacksmithy, tailoring, carpentry, alchemy and inscription —
-  a whole pillar with no line anywhere in this file. It sits directly on the
-  already-listed "route client-initiated skill use (`0x12` type `0x24`)", which is
-  its first step and the reason it was worth listing separately.
+- **Resource gathering.** Mining, lumberjacking and fishing. Its first step —
+  routing the client's skill use — is done (§6 `skills`), and what is left is the
+  harvest system itself, a port of ServUO's `Scripts/Services/Harvest/`:
+  - `HarvestDefinition`/`HarvestBank`/`HarvestVein`/`HarvestResource`, about six
+    hundred lines of structure. A **bank** is the depletion-and-respawn unit —
+    one per block of tiles, per facet — and belongs on `FacetState` beside the
+    sector grid and the obstruction index. Banks are **not** persisted, as they
+    are not in ServUO; a restart repays every vein, and that fact wants writing
+    down beside the struct or it will be reported as a bug.
+  - The roll is `CheckHarvestSkill`: `value >= resource.req_skill` and then the
+    band, so the same `roll_skill_band` everything else uses.
+  - The flow is a timer: a cursor, then N beats of `effect_delay` each with its
+    swing animation and sound, and the last one delivers. In **ticks**, never a
+    `Duration` — the same reason decay and swing timers are.
+  - Three systems with their real numbers: **Lumberjacking** (bank 4×3, 20–45,
+    respawn 20–30 min, 10 a swing and 20 in Felucca, seven woods and their veins),
+    **Mining** (bank 8×8, 10–34, respawn 10–20 min, the nine ores from Iron at
+    49.6% down to Valorite at 1.4%, plus sand), **Fishing** (bank 8×8, 5–15,
+    reach 4). Each carries a big table of tile ids — pin a few known values in a
+    test beside the constant, the `NO_SHOOT` rule.
+  - The resources are new stackable items (ore, logs, fish) through the existing
+    `items` crate.
+- **Crafting.** The craft gumps behind blacksmithy, tailoring, carpentry, alchemy,
+  inscription and the rest — about 13.5k lines of C# in
+  `Scripts/Services/Craft/`, of which ~5.5k are the eleven `Def*` recipe tables.
+  - The **system** is `CraftSystem`/`CraftItem`/`CraftRes`/`CraftSubRes`, and the
+    chance is `chance_at_min + ((val - min) / (max - min)) * (1 - chance_at_min)`,
+    with a passive `roll_skill_band` per required skill folded into the same
+    calculation.
+  - The **recipes** belong in the core, like `magic::spells` and
+    `combat::weapons` — a bare shard has to be able to forge. Generate them once
+    from ServUO with a throwaway script, then edit them as ordinary source.
+  - The **gump** is a port of `CraftGump`/`CraftGumpItem` through the typed
+    `GumpLayout` builder `protocol` already has, the same path `MondainQuestGump`
+    took. Its reply is checked against what the server remembers drawing.
+  - The **way in** is the tool's double-click, through the `ItemUsed` seam.
+  - Deliberately out of scope, each its own system hanging off crafting: Enhance,
+    AlterItem, Repair, Resmelt, locked Recipes, bulk order deeds, and Imbuing.
 - **Party (`0xBF 0x06`) and chat channels (`0xB3`/`0xB5`).** Group play has no
   protocol surface at all.
-- **Pets and taming.** Animal Taming and Lore, ownership, control commands,
-  stabling. The status bar's follower slots read a mount today and nothing else,
-  because a mount is the only follower the engine can have.
+- **Pets and taming.** Ownership, follower slots that mean something, control
+  commands through speech (all/come/stay/kill), and stabling. The status bar's
+  follower count reads a mount today and nothing else, because a mount is the
+  only follower the engine can have. Animal Taming, Herding and Veterinary in
+  §6 `skills` all wait on this — they are the same entry seen from the other
+  side, and none of them is a small skill sitting on top of a solved problem.
 - **CI.** `.github/workflows` holds a release workflow and nothing that runs
   `cargo test` / `clippy` / `fmt` on a push, though "all three silent" is a stated
   rule of the project. The one gap here that is about the project rather than the
