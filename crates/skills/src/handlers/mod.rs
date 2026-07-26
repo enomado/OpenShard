@@ -11,6 +11,7 @@
 //! is the difference between "the core has no opinion" and "the client cannot do
 //! this", which is cliloc 500014 and is decided a step earlier.
 
+mod animal;
 mod appraise;
 mod bandage;
 mod bard;
@@ -68,6 +69,7 @@ const ASKS: &[(Skill, Ask)] = &[
     (Skill::RemoveTrap, Ask { prompt: 502_368, range: 2 }), // Which trap will you attempt to disarm?
     (Skill::Stealing,  Ask { prompt: 502_698, range: stealth::STEAL_RANGE }), // What do you wish to steal?
     (Skill::AnimalTaming, Ask { prompt: 502_789, range: taming::TAME_RANGE }), // Tame which animal?
+    (Skill::AnimalLore, Ask { prompt: 500_328, range: 8 }), // What animal should I look at?
 ];
 
 /// The ask for a skill id, if the core raises a cursor for it.
@@ -204,6 +206,7 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -
         Some(Skill::ArmsLore) => appraise::arms_lore(state, actor, target),
         Some(Skill::ItemId) => appraise::item_id(state, actor, target),
         Some(Skill::Forensics) => forensics::forensics(state, actor, target),
+        Some(Skill::AnimalLore) => animal::animal_lore(state, actor, target),
         Some(Skill::TasteId) => poison::taste_id(state, actor, target),
         // Poisoning is the one skill that asks twice: this was the potion, and the
         // next cursor asks what to put it on.

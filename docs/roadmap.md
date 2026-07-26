@@ -876,10 +876,14 @@ Roughly in dependency order, each script-first:
       what the pack priced — a guessed value would read as authoritative.
     - [ ] **Taste Identification** — lands with Poisoning below, because what it
       tastes *for* is the poison that slice adds.
-    - [ ] **Animal Lore** — lands with pets below, for the same reason: its gump is
-      loyalty and tameability, and its skill gates are "only a tamed creature",
-      "tamed or tameable", "anything". Without pets it is a window of dashes behind
-      a gate nobody can pass.
+    - [x] **Animal Lore**, once pets existed — which is exactly why it waited. Its
+      three gates *are* the skill (under 100.0 only a tamed creature, under 110.0
+      that or a tameable one, above it anything), and every one of them asks a
+      question only the pet slice can answer. The window is ServUO's
+      `AnimalLoreGump` in its ML frame through the typed `GumpLayout` builder, in
+      **two pages rather than five**: this engine has the attributes and the combat
+      ratings, and the three pages it drops are numbers nothing in the world sets
+      yet — a column of dashes is worse than a page that is not there.
     - [x] **Meditation and Spirit Speak** — the two skills a mobile turns on itself,
       so pressing the button *is* the whole use and no cursor goes up.
       **Meditation** is one `Meditating` marker and no timer: what ends a trance is

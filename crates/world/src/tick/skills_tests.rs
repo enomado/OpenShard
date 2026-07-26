@@ -1531,3 +1531,66 @@ fn a_shop_bottle_holds_the_poison_its_label_names() {
         "greater is level two"
     );
 }
+
+#[test]
+fn animal_lore_reads_a_pet_and_refuses_a_wild_thing_to_a_novice() {
+    // The gates *are* the skill, and they only mean anything now that pets exist —
+    // which is why it waited for them. Under 100.0 you may read what somebody has
+    // tamed and nothing else.
+    let now = Instant::now();
+    let mut world = world();
+    let looker = enter(&mut world, now);
+    let player = world.state.players[&looker];
+    let serial = world.state.registry.serial_of(player).unwrap();
+    train(&mut world, looker, Skill::AnimalLore, 500);
+    world.tick(now);
+    let horse = spawn_mobile_body(&mut world, 0x00C8, Point::new(START.0 + 1, START.1, 0), now);
+    let entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(horse).unwrap())
+        .unwrap();
+    let _ = packets_for(&mut world, looker);
+
+    let said = use_skill_on(&mut world, looker, Skill::AnimalLore, horse, now);
+    assert!(
+        said.contains(&1_049_674),
+        "at your skill level, only tamed creatures: {said:?}"
+    );
+
+    // Tame it, and the same look opens the window.
+    world.state.registry.insert(
+        entity,
+        openshard_state::components::Pet {
+            owner: serial,
+            slots: 1,
+            order: openshard_state::components::PetOrder::Follow,
+            order_target: None,
+        },
+    );
+    for _ in 0..=DEFAULT_SKILL_DELAY_TICKS {
+        world.tick(now);
+    }
+    let _ = packets_for(&mut world, looker);
+    world.queue(Command::UseSkillButton {
+        connection: looker,
+        skill: Skill::AnimalLore.id(),
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, looker);
+    world.queue(Command::TargetResponse {
+        connection: looker,
+        response: openshard_protocol::TargetResponse {
+            cursor_id: serial.raw(),
+            serial: horse,
+            location: Point::new(START.0 + 1, START.1, 0),
+            graphic: 0,
+            cancelled: false,
+        },
+    });
+    world.tick(now);
+    assert!(
+        packets_for(&mut world, looker).iter().any(|p| p[0] == 0xB0),
+        "the window opened"
+    );
+}
