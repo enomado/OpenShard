@@ -101,7 +101,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
                 karma: 0,
                 night_home: None,
                 banker: false,
-                vendor: placed % 3 == 0,
+                vendor: placed.is_multiple_of(3),
                 equipment: Vec::new(),
                 skills: Vec::new(),
             });

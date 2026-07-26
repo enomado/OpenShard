@@ -193,6 +193,18 @@ impl Registry {
         self.column_mut::<T>()?.remove(entity)
     }
 
+    /// How many times the `T` column's membership has changed.
+    ///
+    /// A read-site derivation that has to scan a whole column to answer one
+    /// question — "what is this mobile wearing", "what is in this container" —
+    /// can cache its index against this and rebuild only when the column really
+    /// changed, instead of asking every mutation site to remember to invalidate
+    /// it. Zero for a column nothing has ever been put in.
+    #[must_use]
+    pub fn column_version<T: Component>(&self) -> u64 {
+        self.column::<T>().map_or(0, SparseSet::version)
+    }
+
     /// Borrow `entity`'s `T`.
     #[inline]
     pub fn get<T: Component>(&self, entity: EntityId) -> Option<&T> {

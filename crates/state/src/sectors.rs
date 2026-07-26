@@ -99,8 +99,16 @@ pub struct Sectors {
     /// indexes both — but two different orders in one crate is a trap for
     /// whoever reads them next.
     buckets: Vec<Vec<(EntityId, Point)>>,
-    /// Which bucket an entity is in, so a move does not scan.
-    located: HashMap<EntityId, usize>,
+    /// Which bucket an entity is in *and* where in it, so neither a move nor a
+    /// removal scans.
+    ///
+    /// The slot half is not an optimisation of an optimisation. A bucket is 64
+    /// tiles square and holds every mobile, ground item and piece of decoration
+    /// in it; in a decorated town that is thousands of entries, and finding an
+    /// entity's own row in it by scanning was paid on *every step by anyone*.
+    /// Keeping the row index costs one `usize` and a repair when `swap_remove`
+    /// moves another entity's row — see [`remove_from`](Sectors::remove_from).
+    located: HashMap<EntityId, (usize, usize)>,
 }
 
 impl Sectors {
@@ -147,50 +155,44 @@ impl Sectors {
     /// Put an entity in the index, or move it if it is already there.
     pub fn insert(&mut self, entity: EntityId, point: Point) {
         let bucket = self.bucket_of(point);
-        if let Some(&current) = self.located.get(&entity) {
+        if let Some(&(current, slot)) = self.located.get(&entity) {
             if current == bucket {
                 // Same sector: just update the point. The common case by far —
                 // a step moves 64 tiles' worth of sector only once every 64
                 // steps.
-                if let Some(slot) = self.buckets[bucket]
-                    .iter_mut()
-                    .find(|(id, _)| *id == entity)
-                {
-                    slot.1 = point;
-                }
+                self.buckets[bucket][slot].1 = point;
                 return;
             }
-            self.remove_from(current, entity);
+            self.remove_from(current, slot);
         }
+        let slot = self.buckets[bucket].len();
         self.buckets[bucket].push((entity, point));
-        self.located.insert(entity, bucket);
+        self.located.insert(entity, (bucket, slot));
     }
 
     /// Take an entity out of the index.
     pub fn remove(&mut self, entity: EntityId) {
-        if let Some(bucket) = self.located.remove(&entity) {
-            self.remove_from(bucket, entity);
+        if let Some((bucket, slot)) = self.located.remove(&entity) {
+            self.remove_from(bucket, slot);
         }
     }
 
-    fn remove_from(&mut self, bucket: usize, entity: EntityId) {
+    /// Drop the row at `slot` in `bucket`, repairing whoever `swap_remove` moves
+    /// into its place.
+    fn remove_from(&mut self, bucket: usize, slot: usize) {
         // `swap_remove`: order within a bucket means nothing, and a `retain`
         // would be O(n) in the bucket for every step anyone takes.
-        if let Some(index) = self.buckets[bucket]
-            .iter()
-            .position(|(id, _)| *id == entity)
-        {
-            self.buckets[bucket].swap_remove(index);
+        self.buckets[bucket].swap_remove(slot);
+        // The last row moved into `slot` — unless the removed row *was* the last.
+        if let Some(&(moved, _)) = self.buckets[bucket].get(slot) {
+            self.located.insert(moved, (bucket, slot));
         }
     }
 
     /// Where the index thinks an entity is.
     pub fn position_of(&self, entity: EntityId) -> Option<Point> {
-        let bucket = *self.located.get(&entity)?;
-        self.buckets[bucket]
-            .iter()
-            .find(|(id, _)| *id == entity)
-            .map(|(_, point)| *point)
+        let &(bucket, slot) = self.located.get(&entity)?;
+        self.buckets[bucket].get(slot).map(|(_, point)| *point)
     }
 
     /// Everything within `range` of `centre`, Chebyshev.

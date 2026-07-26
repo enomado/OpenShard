@@ -398,6 +398,19 @@ pub enum Origin {
 /// boundary. The boundary that matters is the event bus (systems emit, they do
 /// not call), not field privacy. Nothing here is a static; a test builds as many
 /// as it likes.
+/// The worn-items index behind [`WorldState::equipment_of`] — a cache of which
+/// items each mobile has on, and the `Equipped` column version it was built from.
+///
+/// Not a mirror: nothing maintains it. It is rebuilt whole the first time it is
+/// read after the column changes, which the column reports for itself.
+#[derive(Debug, Default)]
+pub struct WornIndex {
+    /// The `Registry::column_version::<Equipped>` this was built from.
+    version: u64,
+    /// Mobile serial -> the item entities it is wearing.
+    by_mobile: HashMap<Serial, Vec<EntityId>>,
+}
+
 pub struct WorldState {
     /// Everything in the world.
     pub registry: Registry,
@@ -428,6 +441,10 @@ pub struct WorldState {
     pub rng: Rng,
     /// How many ticks have run.
     pub ticks: u64,
+    /// Who is wearing what, rebuilt from the `Equipped` column when it changes.
+    /// A cache with no contents of its own — read it through
+    /// [`equipment_of`](WorldState::equipment_of), never directly.
+    pub worn: WornIndex,
     /// The world's hour, 0–23, refreshed once per tick from the tick counter.
     ///
     /// Derived, not stored — `world/tick/ambient.rs` computes it and drops it
@@ -906,11 +923,28 @@ impl WorldState {
             return;
         };
 
+        // A mobile with no client has no screen, and `show` says so on its first
+        // line — so for an NPC every one of the two directions below but one is
+        // work done to be thrown away. Only "who can see *me*" means anything, and
+        // the answer to that is a walk of the players, of whom there are a
+        // handful, rather than a sweep of the sector block, which in a decorated
+        // town hands back several hundred statics to sift for a few neighbours.
+        //
+        // This is the difference between an NPC step costing O(everything nearby)
+        // and O(players), and almost every step taken in a populated shard is an
+        // NPC's.
+        if !self.registry.has::<Client>(entity) {
+            self.refresh_watchers(entity, centre, facet);
+            self.broadcast_move(entity);
+            return;
+        }
+
         // Collect first. The lookup borrows the index and the sends borrow `self`
-        // mutably, and more importantly a `Vec` here is what makes the set of
-        // neighbours a snapshot rather than something that shifts while it is
-        // walked.
-        let neighbours: Vec<EntityId> = sectors
+        // mutably, and more importantly a snapshot here is what keeps the set of
+        // neighbours from shifting while it is walked. A set and not a `Vec`:
+        // it is membership-tested once per remembered entity and once per watcher
+        // below, which on a `Vec` is a linear scan inside two loops.
+        let neighbours: HashSet<EntityId> = sectors
             .nearby(centre, VIEW_RANGE)
             .map(|(id, _)| id)
             .filter(|id| *id != entity)
@@ -949,6 +983,30 @@ impl WorldState {
         }
 
         self.broadcast_move(entity);
+    }
+
+    /// The half of [`refresh_around`](Self::refresh_around) that matters for a
+    /// mobile with no screen of its own: draw it for the players who can now see
+    /// it, and take it off the screens of those who cannot.
+    ///
+    /// Reached by walking the players, not the sector index — see the caller.
+    fn refresh_watchers(&mut self, entity: EntityId, centre: Point, facet: u8) {
+        let players: Vec<EntityId> = self.players.values().copied().collect();
+        for player in players {
+            if player == entity {
+                continue;
+            }
+            let near = self.facet_of(player) == facet
+                && self
+                    .registry
+                    .get::<Position>(player)
+                    .is_some_and(|at| crate::sectors::in_range(at.0, centre, VIEW_RANGE));
+            if near {
+                self.show(player, entity);
+            } else if let Some(serial) = self.registry.serial_of(entity) {
+                self.forget(player, entity, serial);
+            }
+        }
     }
 
     /// Tell everyone already watching `entity` that it moved.
@@ -1096,7 +1154,7 @@ impl WorldState {
     /// drawable. A mobile is a `0x78`, an item a `0x1A` — the interest system does
     /// not care which, only that there is one packet per thing on screen.
     #[must_use]
-    pub fn draw_packet(&self, entity: EntityId, version: ClientVersion) -> Option<Vec<u8>> {
+    pub fn draw_packet(&mut self, entity: EntityId, version: ClientVersion) -> Option<Vec<u8>> {
         if self.registry.has::<Body>(entity) {
             Some(self.mobile_incoming(entity)?.encode(version))
         } else if self.registry.has::<Graphic>(entity) {
@@ -1220,7 +1278,7 @@ impl WorldState {
 
     /// Build a `0x78` for an entity, if it is a drawable mobile.
     #[must_use]
-    pub fn mobile_incoming(&self, entity: EntityId) -> Option<MobileIncoming> {
+    pub fn mobile_incoming(&mut self, entity: EntityId) -> Option<MobileIncoming> {
         let serial = self.registry.serial_of(entity)?;
         let Position(position) = *self.registry.get::<Position>(entity)?;
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
@@ -1238,13 +1296,49 @@ impl WorldState {
     }
 
     /// What a mobile is wearing, as the `0x78` equipment list.
+    ///
+    /// # Why this keeps an index
+    ///
+    /// This is called on every *first sight* of a mobile — each `0x78` carries
+    /// what its subject is wearing — and the honest version of it filters the
+    /// whole `Equipped` column by owner. That is fine until a shard is populated:
+    /// 726 dressed townsfolk is a column of ~3,800 rows, scanned in full to find
+    /// the five a single NPC has on, once per NPC as a player walks past. One
+    /// walk across a market square is millions of comparisons.
+    ///
+    /// The index is a *cache*, not a mirror. It is keyed on
+    /// [`Registry::column_version`], which the column bumps for itself whenever
+    /// an entity gains or loses the component, so it rebuilds when it is stale
+    /// and nothing anywhere has to remember to invalidate it. That distinction is
+    /// the whole design: a hand-maintained "what is worn by whom" map is a
+    /// `touch` beside every equip, and the first system that equips something
+    /// without knowing the map exists breaks it silently.
+    ///
+    /// It holds *entities*, not the finished list, so a re-dyed or re-graphicked
+    /// item still reads its current `Graphic` here — only membership is cached,
+    /// and only membership is what the version tracks.
     #[must_use]
-    pub fn equipment_of(&self, mobile: Serial) -> Vec<Equipment> {
-        self.registry
-            .query::<Equipped>()
-            .filter(|(_, worn)| worn.mobile == mobile)
-            .filter_map(|(item, worn)| {
+    pub fn equipment_of(&mut self, mobile: Serial) -> Vec<Equipment> {
+        let version = self.registry.column_version::<Equipped>();
+        if self.worn.version != version {
+            self.worn.by_mobile.clear();
+            for (item, worn) in self.registry.query::<Equipped>() {
+                self.worn
+                    .by_mobile
+                    .entry(worn.mobile)
+                    .or_default()
+                    .push(item);
+            }
+            self.worn.version = version;
+        }
+        let Some(items) = self.worn.by_mobile.get(&mobile) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|&item| {
                 let serial = self.registry.serial_of(item)?;
+                let worn = self.registry.get::<Equipped>(item)?;
                 let Graphic { id, hue } = *self.registry.get::<Graphic>(item)?;
                 Some(Equipment {
                     serial: serial.raw(),

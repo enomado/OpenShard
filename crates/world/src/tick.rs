@@ -232,6 +232,7 @@ impl World {
                 rng: Rng::new(DEFAULT_SEED),
                 ticks: 0,
                 hour: 0,
+                worn: Default::default(),
                 outbox: Vec::new(),
                 open_containers: HashMap::new(),
                 pending_targets: HashMap::new(),

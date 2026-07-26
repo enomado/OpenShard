@@ -53,6 +53,17 @@ pub struct SparseSet<T> {
     dense_entities: Vec<EntityId>,
     /// The component values, parallel to `dense_entities`.
     dense_data: Vec<T>,
+    /// How many times the *membership* of this column has changed — an entity
+    /// gaining or losing the component, never a value being overwritten.
+    ///
+    /// What it is for: a read-site derivation that has to scan a whole column to
+    /// answer one question ("what is this mobile wearing") can cache its index
+    /// against this number and rebuild only when the column really changed. The
+    /// alternative is a `touch` beside every mutation, which works and decays —
+    /// the first system that equips something without knowing the cache exists
+    /// leaves it stale, and nothing fails until a client sees the wrong thing.
+    /// Counting here means there is nothing to remember.
+    version: u64,
 }
 
 impl<T> Default for SparseSet<T> {
@@ -77,7 +88,16 @@ impl<T> SparseSet<T> {
             sparse: Vec::new(),
             dense_entities: Vec::new(),
             dense_data: Vec::new(),
+            version: 0,
         }
+    }
+
+    /// How many times this column's membership has changed. See [`version`].
+    ///
+    /// [`version`]: SparseSet::version
+    #[inline]
+    pub const fn version(&self) -> u64 {
+        self.version
     }
 
     /// How many entities have this component.
@@ -146,8 +166,11 @@ impl<T> SparseSet<T> {
             // whose component was never cleaned up. Take over its dense
             // position instead of pushing, which would orphan the old entry:
             // unreachable through `sparse`, yet still visible to `iter`.
+            // A dead entity's orphaned slot taken over by a live one: the set of
+            // *live* owners changed, so this counts.
             self.dense_entities[pos] = entity;
             self.dense_data[pos] = value;
+            self.version += 1;
             return None;
         }
 
@@ -160,6 +183,7 @@ impl<T> SparseSet<T> {
         self.sparse[slot] = pos as u32;
         self.dense_entities.push(entity);
         self.dense_data.push(value);
+        self.version += 1;
         None
     }
 
@@ -171,6 +195,7 @@ impl<T> SparseSet<T> {
 
         // swap_remove keeps the dense arrays packed; the element that moved into
         // `pos` needs its sparse pointer repaired.
+        self.version += 1;
         self.dense_entities.swap_remove(pos);
         let value = self.dense_data.swap_remove(pos);
         if pos < self.dense_entities.len() {
@@ -182,6 +207,7 @@ impl<T> SparseSet<T> {
 
     /// Drop every component in this column.
     pub fn clear(&mut self) {
+        self.version += 1;
         self.sparse.clear();
         self.dense_entities.clear();
         self.dense_data.clear();
