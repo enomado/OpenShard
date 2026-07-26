@@ -1477,3 +1477,57 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> u
         .next_back()
         .expect("the creature was spawned")
 }
+
+#[test]
+fn a_shop_bottle_holds_the_poison_its_label_names() {
+    // The four strengths share one graphic, so a bought bottle would be inert
+    // glass without this — and the pack's alchemists already stock all four, since
+    // the converter reads ServUO's own shop tables. The label is what says which.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let serial = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
+    let bottle = world
+        .state
+        .registry
+        .entity_of(Serial::new(serial).unwrap())
+        .unwrap();
+    // Spawned bare, it is the middling poison.
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<PoisonCharges>(bottle)
+            .map(|p| p.level),
+        Some(1)
+    );
+    let _ = player;
+
+    // Named as a shop names it, it is what the label says.
+    let (labelled, _) = world
+        .state
+        .registry
+        .spawn_with_serial(SerialKind::Item)
+        .unwrap();
+    world.state.registry.insert(
+        labelled,
+        Graphic {
+            id: POISON_POTION_GRAPHIC,
+            hue: 0,
+        },
+    );
+    world
+        .state
+        .registry
+        .insert(labelled, Name("a greater poison potion".to_owned()));
+    openshard_items::apply_core_defaults(&mut world.state, labelled, POISON_POTION_GRAPHIC);
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<PoisonCharges>(labelled)
+            .map(|p| p.level),
+        Some(2),
+        "greater is level two"
+    );
+}

@@ -163,6 +163,10 @@ fn place_stock_line(state: &mut WorldState, stock_serial: Serial, line: &StockLi
     state.registry.insert(entity, Amount(line.amount));
     state.registry.insert(entity, Price(line.price));
     state.registry.insert(entity, Name(line.name.clone()));
+    // And whatever the graphic implies: a lute's tunes, a bottle's poison. After
+    // the name, because which poison a bottle holds is read off its label — all
+    // four strengths share one graphic.
+    openshard_items::apply_core_defaults(state, entity, line.graphic);
 }
 
 /// Top a vendor's shelf back up if its timer has run out — ServUO's

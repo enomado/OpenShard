@@ -1038,6 +1038,15 @@ Roughly in dependency order, each script-first:
     (`required_skill`/`max_skill`): without them every lock is either free or
     impossible, and a failed pick snaps. Deferred: **Camping**, which wants a reason
     to light a fire (logging out safely in the wild) more than it wants the fire.
+  - [x] **And the shops already sell what the new skills need.** The converter reads
+    ServUO's own `SB*.cs`, so the Community Pack's vendors were already stocking
+    bandages (37 of them), lockpicks (19), instruments (15) and poison potions (26)
+    — they were simply inert. An item's core state now lands where the item is
+    *made* (`items::apply_core_defaults`, called from the shelf, the spawn and the
+    staff `.add`), because a graphic alone cannot say how many tunes are left in a
+    lute or which of the four poisons is in a bottle. The poison is read off the
+    **label**, which the converter carries through from ServUO: "a greater poison
+    potion" is level two, and an unlabelled bottle is the middling one.
   - [ ] Sphere's per-skill `AdvRate` tables and its "learn only from a challenge"
     `GainRadius` — **dropped, not deferred**: ServUO's band *is* the
     learn-from-a-challenge rule, and its `gain_factor` column is the per-skill

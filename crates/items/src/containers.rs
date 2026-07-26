@@ -406,6 +406,9 @@ pub fn place_one(
     if amount > 1 {
         state.registry.insert(entity, Amount(amount));
     }
+    // A lute gets its tunes and a bottle its poison here, because a graphic alone
+    // cannot say how many are left in either.
+    crate::apply_core_defaults(state, entity, graphic);
     tell_watchers_updated(state, container, entity);
     Some(entity)
 }

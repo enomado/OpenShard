@@ -94,6 +94,7 @@ pub fn spawn_item(
     });
     state.reveal(entity);
     debug!(%serial, graphic, position = %position, "item on the ground");
+    crate::apply_core_defaults(state, entity, graphic);
     Some(entity)
 }
 
