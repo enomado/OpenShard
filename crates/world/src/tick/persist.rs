@@ -6,7 +6,7 @@ use openshard_state::components::{
     body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, DoneQuest,
     Escortable, Field, Frozen, NightHome, Npc, PoisonCharges, Poisoned, Price, QuestGiver,
     QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods, StockRecord,
-    SwingSpeed, Title, Vendor,
+    SwingSpeed, Title, Trap, TrapKind, Vendor,
 };
 
 impl World {
@@ -291,6 +291,11 @@ impl World {
             poison: registry
                 .get::<PoisonCharges>(item)
                 .map(|poison| (poison.level, poison.charges)),
+            // And the trap on it, so a restart does not quietly disarm every chest
+            // on the shard.
+            trap: registry
+                .get::<Trap>(item)
+                .map(|trap| (trap_kind_code(trap.kind), trap.power, trap.level)),
             location,
         })
     }
@@ -820,6 +825,16 @@ impl World {
                 .registry
                 .insert(entity, PoisonCharges { level, charges });
         }
+        if let Some((kind, power, level)) = record.trap {
+            self.state.registry.insert(
+                entity,
+                Trap {
+                    kind: trap_kind_from(kind),
+                    power,
+                    level,
+                },
+            );
+        }
         // Loose clutter resumes rotting; a container does not (mark_decay skips
         // it) — except a corpse, which is a container that *must* rot, so it gets
         // a fresh timer here (the decay tick is not itself saved, so a restored
@@ -894,6 +909,16 @@ impl World {
                 self.state
                     .registry
                     .insert(entity, PoisonCharges { level, charges });
+            }
+            if let Some((kind, power, level)) = record.trap {
+                self.state.registry.insert(
+                    entity,
+                    Trap {
+                        kind: trap_kind_from(kind),
+                        power,
+                        level,
+                    },
+                );
             }
         }
         // Pass two: where each item goes.
@@ -1305,5 +1330,29 @@ fn corpse_from(story: &CorpseData) -> Corpse {
         killer: story.killer.clone(),
         examined_by: story.examined_by.clone(),
         looters: story.looters.clone(),
+    }
+}
+
+/// A trap kind as one saved byte, and back. Written out rather than derived so the
+/// on-disk numbering cannot drift when the enum gains a variant — the same reason
+/// the effect kinds are numbered by hand in `state::effect`.
+const fn trap_kind_code(kind: TrapKind) -> u8 {
+    match kind {
+        TrapKind::Magic => 0,
+        TrapKind::Explosion => 1,
+        TrapKind::Dart => 2,
+        TrapKind::Poison => 3,
+    }
+}
+
+/// The inverse. An unknown code reads as a magic trap rather than dropping the
+/// trap entirely: a chest that quietly stops being trapped is the failure this
+/// column exists to prevent.
+const fn trap_kind_from(code: u8) -> TrapKind {
+    match code {
+        1 => TrapKind::Explosion,
+        2 => TrapKind::Dart,
+        3 => TrapKind::Poison,
+        _ => TrapKind::Magic,
     }
 }

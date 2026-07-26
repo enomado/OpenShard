@@ -187,7 +187,7 @@ fn attend(
     now: u64,
 ) {
     // Turn to face them, and let watchers see the turn.
-    if let Some(dir) = openshard_ai::direction_toward(at, visitor_at) {
+    if let Some(dir) = openshard_movement::direction_toward(at, visitor_at) {
         let facing = Facing::walking(dir);
         if state.registry.get::<Heading>(npc).map(|h| h.0) != Some(facing) {
             state.registry.insert(npc, Heading(facing));

@@ -180,7 +180,12 @@ CREATE TABLE IF NOT EXISTS items (
     -- the poison on it: level and doses left, NULL for a clean item. Two small
     -- numbers that are meaningless apart, so one column.
     poison_level INTEGER,
-    poison_charges INTEGER
+    poison_charges INTEGER,
+    -- the trap on it: kind, power and the chest's level. NULL for an untrapped
+    -- item, which is nearly all of them.
+    trap_kind INTEGER,
+    trap_power INTEGER,
+    trap_level INTEGER
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 -- NPC mobiles and placed decoration, each a JSON record keyed by serial: a
@@ -399,9 +404,10 @@ impl Store for SqliteStore {
                         "INSERT OR REPLACE INTO items \
                      (serial, owner, graphic, hue, amount, stackable, gump, \
                       loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                      corpse, poison_level, poison_charges) \
+                      corpse, poison_level, poison_charges, trap_kind, trap_power, \
+                      trap_level) \
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,\
-                             ?20,?21)",
+                             ?20,?21,?22,?23,?24)",
                         params![
                             item.serial,
                             item.owner,
@@ -433,6 +439,9 @@ impl Store for SqliteStore {
                                 .unwrap_or_default(),
                             item.poison.map(|(level, _)| level),
                             item.poison.map(|(_, charges)| charges),
+                            item.trap.map(|(kind, _, _)| kind),
+                            item.trap.map(|(_, power, _)| power),
+                            item.trap.map(|(_, _, level)| level),
                         ],
                     )?;
                     Ok(())
@@ -627,7 +636,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                     corpse, poison_level, poison_charges \
+                     corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level \
                      FROM items",
                 )
                 .map_err(database)?;
@@ -662,6 +671,16 @@ impl Store for SqliteStore {
                             poison: row
                                 .get::<_, Option<u8>>(19)?
                                 .zip(row.get::<_, Option<u16>>(20)?),
+                            trap: match (
+                                row.get::<_, Option<u8>>(21)?,
+                                row.get::<_, Option<u16>>(22)?,
+                                row.get::<_, Option<u8>>(23)?,
+                            ) {
+                                (Some(kind), Some(power), Some(level)) => {
+                                    Some((kind, power, level))
+                                }
+                                _ => None,
+                            },
                             // A placeholder overwritten below; the location cannot be
                             // built inside `query_map`'s closure return type cleanly.
                             location: ItemLocation::Ground {
@@ -948,6 +967,7 @@ mod tests {
             spellbook: None,
             corpse: None,
             poison: None,
+            trap: None,
             location: ItemLocation::Contained {
                 container,
                 x: 0,

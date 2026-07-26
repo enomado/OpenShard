@@ -16,8 +16,10 @@ mod forensics;
 mod lore;
 mod mind;
 mod poison;
+mod social;
 
 pub use poison::PoisonedSelf;
+pub use social::Begged;
 
 use openshard_entities::{EntityId, Serial};
 use openshard_protocol::encode_target_cursor_object;
@@ -50,6 +52,8 @@ const ASKS: &[(Skill, Ask)] = &[
     (Skill::Forensics, Ask { prompt: 501_000, range: 10 }), // Show me the crime.
     (Skill::TasteId,   Ask { prompt: 502_807, range: 2 }),  // What would you like to taste?
     (Skill::Poisoning, Ask { prompt: 502_137, range: 2 }),  // Select the poison you wish to use
+    (Skill::Begging,   Ask { prompt: 500_397, range: 2 }),  // To whom do you wish to grovel?
+    (Skill::RemoveTrap, Ask { prompt: 502_368, range: 2 }), // Which trap will you attempt to disarm?
 ];
 
 /// The ask for a skill id, if the core raises a cursor for it.
@@ -69,6 +73,13 @@ pub(crate) fn start(state: &mut WorldState, actor: EntityId, id: u8) -> bool {
     // A skill that asks a question puts up its cursor and waits; the answer arrives
     // in [`on_target`] a packet later.
     if let Some(ask) = ask_for(id) {
+        // Remove Trap is the one that refuses *before* the cursor: ServUO checks
+        // the two skills it leans on in `OnUse` and never raises a target for
+        // someone who could not disarm anything anyway.
+        if Skill::from_id(id) == Some(Skill::RemoveTrap) && !social::may_remove_traps(state, actor)
+        {
+            return true;
+        }
         return raise_cursor(state, actor, id, ask.prompt);
     }
     // And a skill a mobile turns on itself resolves here and now.
@@ -128,6 +139,8 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) {
         // Poisoning is the one skill that asks twice: this was the potion, and the
         // next cursor asks what to put it on.
         Some(Skill::Poisoning) => poison::chose_potion(state, actor, target),
+        Some(Skill::Begging) => social::begging(state, actor, target),
+        Some(Skill::RemoveTrap) => social::remove_trap(state, actor, target),
         _ => {}
     }
 }

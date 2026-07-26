@@ -550,6 +550,13 @@ pub enum TargetPurpose {
         /// What its first cursor came back with.
         first: EntityId,
     },
+    /// A staff `.trap` waiting for the container to put a trap on.
+    SetTrap {
+        /// What the trap will do.
+        kind: crate::components::TrapKind,
+        /// How hard it hits, and how hard it is to take off.
+        power: u16,
+    },
     /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
     /// raises a cursor rather than guessing which of several nearby doors was meant.
     TurnKey {
@@ -861,6 +868,33 @@ impl WorldState {
         self.send(connection, packet);
     }
 
+    /// Turn `mobile` to look at `other`, and tell everyone watching.
+    ///
+    /// Two people talking face each other; ServUO does it with `GetDirectionTo`
+    /// before a greeting or a beg. A no-op if either has no position, or if the
+    /// mobile is already facing that way — the broadcast is not free.
+    pub fn face_toward(&mut self, mobile: EntityId, other: EntityId) {
+        let (Some(&Position(from)), Some(&Position(to))) = (
+            self.registry.get::<Position>(mobile),
+            self.registry.get::<Position>(other),
+        ) else {
+            return;
+        };
+        let Some(direction) = openshard_movement::direction_toward(from, to) else {
+            return; // standing on the same tile: no way to face
+        };
+        let facing = openshard_protocol::Facing::walking(direction);
+        if self.registry.get::<Heading>(mobile).map(|h| h.0) == Some(facing) {
+            return;
+        }
+        self.registry.insert(mobile, Heading(facing));
+        if let Some(Movement(mut walker)) = self.registry.get::<Movement>(mobile).copied() {
+            walker.facing = facing;
+            self.registry.insert(mobile, Movement(walker));
+        }
+        self.broadcast_move(mobile);
+    }
+
     /// Animate `mobile` performing `action` — a swing, a death throe, a cast
     /// gesture — for everyone who can see it.
     ///
@@ -922,17 +956,21 @@ pub enum Action {
     Die,
     /// A spellcasting gesture.
     Cast,
+    /// A bow — what a beggar does before asking, and the one action here that is a
+    /// courtesy rather than a blow.
+    Bow,
 }
 
 impl Action {
     /// The `0xE2` [`AnimationType`](Action) — ServUO's enum: Attack 0, Die 3,
-    /// Spell 11. The client maps it to the right frames for whatever body it is,
-    /// so no body table is needed on this path.
+    /// Spell 11, Bow 9. The client maps it to the right frames for whatever body it
+    /// is, so no body table is needed on this path.
     const fn animation_type(self) -> u16 {
         match self {
             Self::Attack => 0, // Attack
             Self::Die => 3,    // Die
             Self::Cast => 11,  // Spell
+            Self::Bow => 9,    // Bow
         }
     }
 
@@ -949,6 +987,10 @@ impl Action {
             (Self::Die, false) => (2, 4),    // monster die
             (Self::Cast, true) => (16, 7),   // human directed-cast
             (Self::Cast, false) => (12, 7),  // monster cast
+            // Only a person bows; a creature that is asked for money simply looks
+            // at you, so the classic path animates nothing body-specific for it.
+            (Self::Bow, true) => (32, 5), // human bow
+            (Self::Bow, false) => (4, 4), // nothing better on a monster
         }
     }
 }

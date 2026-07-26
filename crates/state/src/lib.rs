@@ -52,8 +52,8 @@ pub use components::{
     Heading, HearsGhosts, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana,
     Meditating, MeleeDamage, Movement, MurderDecay, Murders, Name, NightHome, Npc, PoisonCharges,
     Poisoned, Position, Resistance, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina,
-    StatLock, StatLocks, StatMod, StatMods, Stats, SwingSpeed, Title, DEFAULT_SKILL_CAP,
-    EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, POISON_POTION_GRAPHIC,
+    StatLock, StatLocks, StatMod, StatMods, Stats, SwingSpeed, Title, Trap, TrapKind,
+    DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, POISON_POTION_GRAPHIC,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};

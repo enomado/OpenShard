@@ -14,7 +14,7 @@ use openshard_combat as combat;
 use openshard_combat::MobileDamaged;
 use openshard_entities::{EntityId, Serial};
 use openshard_items as items;
-use openshard_movement::{find_path, step_from, Terrain};
+use openshard_movement::{direction_toward, find_path, step_from, Terrain};
 use openshard_protocol::{Direction, Point};
 use openshard_state::components::{
     Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Position, RangedAttack,
@@ -489,26 +489,5 @@ pub fn retaliate(state: &mut WorldState, blows: &[MobileDamaged]) {
                 next_swing,
             },
         );
-    }
-}
-
-/// The eight-way step that most reduces the gap from `from` to `to`, or `None`
-/// when they share a tile. What a chaser walks along.
-/// The eight-way direction from one tile toward another, or `None` when they are
-/// the same tile. Shared by the creature brain and the townsfolk who turn to face
-/// whoever they greet.
-pub fn direction_toward(from: Point, to: Point) -> Option<Direction> {
-    let dx = (i32::from(to.x) - i32::from(from.x)).signum();
-    let dy = (i32::from(to.y) - i32::from(from.y)).signum();
-    match (dx, dy) {
-        (0, 0) => None,
-        (0, -1) => Some(Direction::North),
-        (1, -1) => Some(Direction::NorthEast),
-        (1, 0) => Some(Direction::East),
-        (1, 1) => Some(Direction::SouthEast),
-        (0, 1) => Some(Direction::South),
-        (-1, 1) => Some(Direction::SouthWest),
-        (-1, 0) => Some(Direction::West),
-        _ => Some(Direction::NorthWest),
     }
 }

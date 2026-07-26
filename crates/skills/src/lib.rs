@@ -21,7 +21,7 @@ mod stats;
 
 pub use button::{set_skill_delay, use_skill_button, SkillRequested, DEFAULT_SKILL_DELAY_TICKS};
 pub use check::{gain_chance, roll_skill_band, roll_skill_chance, skill_value};
-pub use handlers::{expire_ghost_contact, on_second_target, on_target, PoisonedSelf};
+pub use handlers::{expire_ghost_contact, on_second_target, on_target, Begged, PoisonedSelf};
 pub use stats::gain_stat;
 
 use openshard_entities::{EntityId, Serial};

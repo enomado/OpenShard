@@ -52,6 +52,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "add" => add_item(state, actor, &args),
         "key" => make_key(state, actor, &args),
         "poison" => make_poison(state, actor, &args),
+        "trap" => set_trap(state, actor, &args),
         "spellbook" => full_spellbook(state, actor),
         "quests" => openshard_quests::open_log_for(state, actor),
         "set" => set_stat(state, actor, &args),
@@ -147,6 +148,54 @@ fn make_poison(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         openshard_state::components::Name(names[usize::from(level)].to_owned()),
     );
     notify(state, actor, "A poison potion is at your feet.");
+}
+
+/// `.trap <kind> <power>` — raise a cursor and put a trap on a container.
+///
+/// Neither reference traps anything in Britannia's own data (ServUO's whole
+/// decoration set has one locked container and no trapped one), so like `.key` this
+/// exists to make the rule reachable: without it Remove Trap would be a skill with
+/// nothing in the world to use it on.
+fn set_trap(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    use openshard_state::components::TrapKind;
+    let kind = match args.first().copied() {
+        Some("magic") => TrapKind::Magic,
+        Some("explosion") => TrapKind::Explosion,
+        Some("dart") => TrapKind::Dart,
+        Some("poison") => TrapKind::Poison,
+        _ => {
+            notify(
+                state,
+                actor,
+                "Usage: .trap <magic|explosion|dart|poison> [power].",
+            );
+            return;
+        }
+    };
+    let power: u16 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(30);
+    state.pending_targets.insert(
+        actor,
+        openshard_state::TargetPurpose::SetTrap { kind, power },
+    );
+    if let Some((connection, serial)) = connection_and_serial(state, actor) {
+        state.send(
+            connection,
+            openshard_protocol::encode_target_cursor_object(serial),
+        );
+    }
+    notify(state, actor, "Which container shall I trap?");
+}
+
+/// A connection and wire serial for a mobile, for the cursor commands.
+fn connection_and_serial(
+    state: &WorldState,
+    actor: EntityId,
+) -> Option<(openshard_gateway::ConnectionId, u32)> {
+    let client = state
+        .registry
+        .get::<openshard_state::components::Client>(actor)?;
+    let serial = state.registry.serial_of(actor)?;
+    Some((client.connection, serial.raw()))
 }
 
 /// `.gm [on|off]` — turn staff mode on or off, or toggle it.

@@ -785,3 +785,130 @@ fn taste_identification_finds_the_poison_on_a_blade() {
     let said = use_skill_on(&mut world, player, Skill::TasteId, clean, now);
     assert!(said.contains(&1_038_284), "poison smeared on it: {said:?}");
 }
+
+#[test]
+fn begging_takes_coin_from_a_townsperson_and_karma_from_the_beggar() {
+    // The trade: a handful of gold in the pack, and up to forty karma gone. Both
+    // halves matter — a beggar who lost nothing would be the best gold faucet in
+    // the game, and ServUO's floor of −3000 is what stops the loss running away.
+    let now = Instant::now();
+    let mut world = world();
+    let beggar = enter(&mut world, now);
+    let entity = world.state.players[&beggar];
+    train(&mut world, beggar, Skill::Begging, 1000);
+    world.tick(now);
+    let townsperson = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 50, now);
+    let _ = packets_for(&mut world, beggar);
+
+    let said = use_skill_on(&mut world, beggar, Skill::Begging, townsperson, now);
+    assert!(said.contains(&500_405), "I feel sorry for thee: {said:?}");
+    world.tick(now); // the payout is applied on the next pass of the tick
+    let karma = world
+        .state
+        .registry
+        .get::<openshard_state::components::Karma>(entity)
+        .map_or(0, |k| k.0);
+    assert!(karma < 0, "begging costs karma: {karma}");
+}
+
+#[test]
+fn a_trapped_chest_goes_off_when_it_is_opened_and_remove_trap_takes_it_off() {
+    // Both halves of a trap. Without the trigger it is decoration; without the
+    // disarm it is a wall — and ServUO is explicit that a *failed* disarm does not
+    // set it off, which is what makes the skill worth trying at all.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let hits_before = world
+        .state
+        .registry
+        .get::<Hitpoints>(entity)
+        .map_or(0, |h| h.current);
+
+    world.queue(Command::SpawnContainer {
+        graphic: 0x0E3C,
+        gump: 0x003C,
+        hue: 0,
+        position: Point::new(START.0 + 1, START.1, 0),
+        facet: 0,
+    });
+    world.tick(now);
+    let (chest, _) = world
+        .state
+        .registry
+        .query::<Container>()
+        .find(|(e, _)| !world.state.registry.has::<Equipped>(*e))
+        .expect("a chest on the ground");
+    world.state.registry.insert(
+        chest,
+        openshard_state::components::Trap {
+            kind: openshard_state::components::TrapKind::Dart,
+            power: 20,
+            level: 0,
+        },
+    );
+    let chest_serial = world.state.registry.serial_of(chest).unwrap().raw();
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::DoubleClick {
+        connection: player,
+        serial: chest_serial,
+    });
+    world.tick(now);
+    let hurt = world
+        .state
+        .registry
+        .get::<Hitpoints>(entity)
+        .map_or(0, |h| h.current);
+    assert!(hurt < hits_before, "the dart found flesh: {hurt}");
+    assert!(
+        !world
+            .state
+            .registry
+            .has::<openshard_state::components::Trap>(chest),
+        "and a sprung trap is spent"
+    );
+
+    // Now the disarm, on a fresh trap: the two prerequisite skills, then the roll.
+    world.state.registry.insert(
+        chest,
+        openshard_state::components::Trap {
+            kind: openshard_state::components::TrapKind::Dart,
+            power: 0,
+            level: 0,
+        },
+    );
+    train(&mut world, player, Skill::Lockpicking, 1000);
+    train(&mut world, player, Skill::DetectHidden, 1000);
+    train(&mut world, player, Skill::RemoveTrap, 1000);
+    world.tick(now);
+    let _ = packets_for(&mut world, player);
+    let said = use_skill_on(&mut world, player, Skill::RemoveTrap, chest_serial, now);
+    assert!(said.contains(&502_377), "rendered harmless: {said:?}");
+    assert!(!world
+        .state
+        .registry
+        .has::<openshard_state::components::Trap>(chest));
+}
+
+#[test]
+fn remove_trap_refuses_before_it_raises_a_cursor() {
+    // ServUO checks Lockpicking and Detect Hidden in `OnUse`, so somebody who could
+    // not disarm anything never gets a target at all — a refusal with the client's
+    // own line, not a cursor that goes nowhere.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::RemoveTrap.id(),
+    });
+    world.tick(now);
+    assert!(
+        !world.state.pending_targets.contains_key(&entity),
+        "no cursor for someone who knows nothing about locks"
+    );
+    assert!(clilocs(&mut world, player).contains(&502_366));
+}

@@ -28,6 +28,29 @@ impl World {
             openshard_state::TargetPurpose::SkillSecond { skill, first } => {
                 skills::on_second_target(&mut self.state, actor, skill, first, response.serial);
             }
+            openshard_state::TargetPurpose::SetTrap { kind, power } => {
+                let target = openshard_entities::Serial::new(response.serial)
+                    .and_then(|s| self.state.registry.entity_of(s));
+                match target {
+                    Some(target)
+                        if self
+                            .state
+                            .registry
+                            .has::<openshard_state::components::Container>(target) =>
+                    {
+                        self.state.registry.insert(
+                            target,
+                            openshard_state::components::Trap {
+                                kind,
+                                power,
+                                level: 0,
+                            },
+                        );
+                        self.notify_self(actor, "It is trapped now.");
+                    }
+                    _ => self.notify_self(actor, "Only a container can be trapped."),
+                }
+            }
             openshard_state::TargetPurpose::TurnKey { key } => {
                 // The key may have gone while the cursor was up, and the target may be
                 // nothing at all — a key turned on the sky opens nothing and says so.

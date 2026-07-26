@@ -116,7 +116,11 @@ CREATE TABLE IF NOT EXISTS items (
     corpse TEXT,
     -- the poison on it: level and doses left, NULL for a clean item.
     poison_level INTEGER,
-    poison_charges INTEGER
+    poison_charges INTEGER,
+    -- the trap on it: kind, power and the chest's level. NULL for an untrapped item.
+    trap_kind INTEGER,
+    trap_power INTEGER,
+    trap_level INTEGER
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 CREATE TABLE IF NOT EXISTS mobiles (
@@ -481,7 +485,7 @@ impl Store for PgStore {
             .query(
                 "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                  loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                 corpse, poison_level, poison_charges \
+                 corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level \
                  FROM items",
                 &[],
             )
@@ -670,8 +674,9 @@ async fn insert_item(
             "INSERT INTO items \
              (serial, owner, graphic, hue, amount, stackable, gump, \
               loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-              corpse, poison_level, poison_charges) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) \
+              corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, \
+                     $22,$23,$24) \
              ON CONFLICT (serial) DO UPDATE SET \
              owner = EXCLUDED.owner, graphic = EXCLUDED.graphic, hue = EXCLUDED.hue, \
              amount = EXCLUDED.amount, stackable = EXCLUDED.stackable, gump = EXCLUDED.gump, \
@@ -680,7 +685,8 @@ async fn insert_item(
              parent = EXCLUDED.parent, grid = EXCLUDED.grid, layer = EXCLUDED.layer, \
              price = EXCLUDED.price, name = EXCLUDED.name, spellbook = EXCLUDED.spellbook, \
              corpse = EXCLUDED.corpse, poison_level = EXCLUDED.poison_level, \
-             poison_charges = EXCLUDED.poison_charges",
+             poison_charges = EXCLUDED.poison_charges, trap_kind = EXCLUDED.trap_kind, \
+             trap_power = EXCLUDED.trap_power, trap_level = EXCLUDED.trap_level",
             &[
                 &i64::from(item.serial),
                 &i64::from(item.owner),
@@ -712,6 +718,9 @@ async fn insert_item(
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                 &item.poison.map(|(level, _)| i32::from(level)),
                 &item.poison.map(|(_, charges)| i32::from(charges)),
+                &item.trap.map(|(kind, _, _)| i32::from(kind)),
+                &item.trap.map(|(_, power, _)| i32::from(power)),
+                &item.trap.map(|(_, _, level)| i32::from(level)),
             ],
         )
         .await
@@ -775,6 +784,18 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
                         u16::try_from(charges).unwrap_or(0),
                     )
                 }),
+            trap: match (
+                row.get::<_, Option<i32>>(21),
+                row.get::<_, Option<i32>>(22),
+                row.get::<_, Option<i32>>(23),
+            ) {
+                (Some(kind), Some(power), Some(level)) => Some((
+                    u8::try_from(kind).unwrap_or(0),
+                    u16::try_from(power).unwrap_or(0),
+                    u8::try_from(level).unwrap_or(0),
+                )),
+                _ => None,
+            },
             location,
         }))
     }

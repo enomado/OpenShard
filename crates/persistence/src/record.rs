@@ -92,7 +92,10 @@ use serde::{Deserialize, Serialize};
 ///   mask does: all four poison potions are the same graphic, so an unsaved bottle
 ///   comes back as an empty one, and a coated sword a player spent a potion on
 ///   comes back clean.
-pub const SCHEMA_VERSION: u32 = 18;
+/// - v19: the **trap on a container**. A restart that quietly disarms every chest
+///   on the shard is the same class of silent loss as one that forgets a lock, and
+///   the disarm is a skill somebody spent points on.
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// An account, as saved.
 ///
@@ -399,6 +402,10 @@ pub struct ItemRecord {
     /// pre-v18 save loads.
     #[serde(default)]
     pub poison: Option<(u8, u16)>,
+    /// The trap on it, if it is a trapped container — `(kind, power, level)`.
+    /// `None` for everything else, and defaulted so a pre-v19 save loads.
+    #[serde(default)]
+    pub trap: Option<(u8, u16, u8)>,
     /// Where it is.
     pub location: ItemLocation,
 }
@@ -779,6 +786,7 @@ mod tests {
                     looters: vec!["Vesper".into()],
                 }),
                 poison: Some((2, 14)),
+                trap: Some((3, 40, 2)),
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");

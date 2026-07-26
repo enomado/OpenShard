@@ -279,6 +279,9 @@ connection takes the mobile off every screen that had it.
   saved with their mobile as an `EffectRecord` list on the character or mobile row,
   so a relog cannot wash a debuff off — see the `magic` effects work in §6 for the
   shape (`World::effects_of`/`apply_effects`, the ledger-only restore for buffs).
+- [x] **A container's trap persists (schema v19).** A restart that quietly disarms
+  every chest on the shard is the same class of silent loss as one that forgets a
+  lock — and the disarm is a skill somebody spent points on.
 - [x] **The poison on an item persists (schema v18).** A bottled dose or the
   coating the Poisoning skill put on a blade. The same lesson as the spellbook mask:
   all four poison potions are one graphic, so an unsaved bottle comes back empty and
@@ -920,8 +923,29 @@ Roughly in dependency order, each script-first:
       because `combat` already depends on `skills`. The file's own note had said a
       crate of its own "would depend on combat for its only input" — a kill stopped
       being the only input, so standing now lives beside the table it feeds.
-    - [ ] **Begging, Inscribe, Remove Trap** — each self-contained, each wanting one
-      small thing (a townsperson to beg from, a writable book, a trapped container).
+    - [x] **Begging and Remove Trap.** Begging is ServUO's, with one deliberate
+      change: its beggar takes a tenth of what is actually in the target's pack,
+      because its NPCs carry pack gold — ours carry none and a corpse's gold is
+      already invented at death, so a townsperson gives from a notional purse and a
+      *vendor* refuses (its till is a stock crate, not a purse). The karma cost is
+      exact: up to forty, down to a floor of −3000, which is what stops the loss
+      running away and a career beggar being free. It also added the two small
+      substrate pieces it needed — `WorldState::face_toward` (two people talking
+      face each other, ServUO's `GetDirectionTo`, which moved `direction_toward`
+      down into `movement` beside its inverse `step_from`) and an `Action::Bow`.
+      **Remove Trap** brought traps with it: a `Trap { kind, power, level }` on a
+      container, ServUO's four kinds and their damage, sprung when the chest is
+      opened by anyone but staff (a sprung trap hurts, it does not bar the lid) and
+      taken off by the skill. The trigger lives in `tick/traps.rs` rather than in
+      `items`, because the damage has to go through `combat::damage` and `items`
+      cannot depend on `combat` without closing the `skills → items → combat →
+      skills` loop. Neither reference traps anything in Britannia's own data, so —
+      exactly like the `Lock` slice before it — it ships with a staff `.trap` and a
+      path to pack data rather than as a rule nothing can reach. It **persists**
+      (schema v19): a restart that quietly disarms every chest on the shard is the
+      same silent loss as one that forgets a lock.
+    - [ ] **Inscribe** — the last of the six, and the one that wants a writable book
+      to copy.
     - [ ] **Stealth is a subsystem, not a skill.** Hiding, Stealth, Detect Hidden,
       Tracking, Snooping and Stealing all sit on a `Hidden` component wired into
       the one `WorldState::can_see_mobile` gate where `Ghost` already lives — and

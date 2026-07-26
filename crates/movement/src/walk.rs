@@ -294,6 +294,25 @@ impl Walker {
     }
 }
 
+/// The eight-way direction from one tile toward another, or `None` when they are
+/// the same tile. Shared by the creature brain and the townsfolk who turn to face
+/// whoever they greet.
+pub fn direction_toward(from: Point, to: Point) -> Option<Direction> {
+    let dx = (i32::from(to.x) - i32::from(from.x)).signum();
+    let dy = (i32::from(to.y) - i32::from(from.y)).signum();
+    match (dx, dy) {
+        (0, 0) => None,
+        (0, -1) => Some(Direction::North),
+        (1, -1) => Some(Direction::NorthEast),
+        (1, 0) => Some(Direction::East),
+        (1, 1) => Some(Direction::SouthEast),
+        (0, 1) => Some(Direction::South),
+        (-1, 1) => Some(Direction::SouthWest),
+        (-1, 0) => Some(Direction::West),
+        _ => Some(Direction::NorthWest),
+    }
+}
+
 /// Where one step from `position` lands, or `None` at the world's edge.
 ///
 /// The map is addressed with `u16`s, so a step west from x=0 has no

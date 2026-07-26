@@ -445,6 +445,37 @@ pub struct PoisonCharges {
     pub charges: u16,
 }
 
+/// What a trap on a container does when it goes off — ServUO's `TrapType`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TrapKind {
+    /// A flash and a jolt: damage to whoever is standing at the lid.
+    Magic,
+    /// A blast: the heaviest damage, and it reaches three tiles.
+    Explosion,
+    /// A dart in the flesh — physical damage.
+    Dart,
+    /// A noxious green cloud: poison rather than damage.
+    Poison,
+}
+
+/// A trap on a container: what it does, how hard it hits, and how hard it is to
+/// take off — ServUO's `TrapableContainer` fields (`TrapType`, `TrapPower`,
+/// `TrapLevel`).
+///
+/// It springs when the container is opened by anyone but staff, and Remove Trap is
+/// the skill that takes it off. Both halves matter: without the trigger a trap is a
+/// decoration, and without the disarm it is a wall.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Trap {
+    /// What it does.
+    pub kind: TrapKind,
+    /// How hard it hits when `level` is zero, and the difficulty Remove Trap is
+    /// rolled against either way (`power .. power + 10`).
+    pub power: u16,
+    /// The chest's level, which scales the damage instead of `power` when set.
+    pub level: u8,
+}
+
 /// The item graphic every poison potion shares — `0x0F0A`, ServUO's
 /// `BasePoisonPotion : base(0xF0A, effect)`.
 ///

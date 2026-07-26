@@ -91,6 +91,7 @@ mod speech;
 mod spells;
 mod staff;
 mod status;
+mod traps;
 mod wake;
 
 pub use command::{Appearance, CharacterSheet, Command, DecorContainer, DecorDoor};
@@ -148,6 +149,8 @@ pub struct World {
     damaged: Cursor<openshard_combat::MobileDamaged>,
     /// Poisoners who fumbled a dose onto themselves, for the tick to apply.
     fumbled: Cursor<openshard_skills::PoisonedSelf>,
+    /// Beggars who were given something, for the tick to put in their pack.
+    begged: Cursor<openshard_skills::Begged>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     turned: Cursor<MobileTurned>,
     /// Skill gains this tick, to push the single-line `0x3A` update to the owner.
@@ -252,6 +255,7 @@ impl World {
             moved: Cursor::default(),
             damaged: Cursor::default(),
             fumbled: Cursor::default(),
+            begged: Cursor::default(),
             turned: Cursor::default(),
             changed: Cursor::default(),
             disturbed: Cursor::default(),
@@ -500,6 +504,19 @@ impl World {
         let ticks = self.state.ticks;
         for fumble in fumbles {
             combat::apply_poison(&mut self.state, fumble.serial, fumble.level, ticks);
+        }
+        // And a beggar who talked somebody out of some coin. Same shape: `skills`
+        // decides, and the crate that owns backpacks pays.
+        let begged: Vec<openshard_skills::Begged> =
+            self.state.bus.read(&mut self.begged).copied().collect();
+        for beg in begged {
+            let Some(serial) = self.state.registry.serial_of(beg.entity) else {
+                continue;
+            };
+            let Some(backpack) = items::backpack_of(&self.state, serial) else {
+                continue;
+            };
+            items::give(&mut self.state, backpack, items::GOLD_GRAPHIC, 0, beg.gold);
         }
         combat::expire_criminality(&mut self.state);
         combat::decay_murders(&mut self.state);
@@ -882,6 +899,15 @@ impl World {
                         Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
                     ) {
                         quests::talk_to(&mut self.state, player, target);
+                    }
+                    // A trapped chest goes off before it opens — and then opens
+                    // anyway, which is ServUO's `ExecuteTrap`: a trap hurts, it
+                    // does not bar the lid.
+                    if let (Some(&player), Some(target)) = (
+                        self.state.players.get(&connection),
+                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                    ) {
+                        self.spring_trap(player, target);
                     }
                     // Then the interaction: a vendor's shop first, if the click
                     // was a shopkeeper in range; anything else is the ordinary
