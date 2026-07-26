@@ -83,6 +83,10 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
         return;
     };
     let facet = state.facet_of(entity);
+    // Speaking breaks concentration — ServUO's `OnSaid` reaches
+    // `DisruptiveAction` through `RevealingAction`, and a trance you can talk
+    // through is not a trance.
+    state.disrupt(entity);
     let graphic = state
         .registry
         .get::<Body>(entity)
@@ -117,13 +121,16 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
         .filter(|(_, listener_pos)| in_range(pos, *listener_pos, range))
         .map(|(id, _)| id)
         .collect();
-    // The living do not hear the dead. A ghost is already drawn only to other
-    // ghosts and to staff (`can_see_mobile`, ServUO's `CanSee`), and speech runs
-    // through the same gate there — without it a ghost is invisible but audible,
-    // which reads as a bug in the client and is one here.
+    // The living do not hear the dead — unless they have reached for them. A ghost
+    // is drawn only to other ghosts and to staff (`can_see_mobile`, ServUO's
+    // `CanSee`), and without a gate here it would be invisible but audible, which
+    // reads as a bug in the client and is one here. The gate is the *hearing* one
+    // (`can_hear_mobile`), which is the same question plus Spirit Speak: a living
+    // mobile that has contacted the netherworld catches the voice without the
+    // speaker becoming visible.
     let listeners: Vec<EntityId> = listeners
         .into_iter()
-        .filter(|&listener| state.can_see_mobile(listener, entity))
+        .filter(|&listener| state.can_hear_mobile(listener, entity))
         .collect();
     for listener in listeners {
         if let Some(&Client { connection, .. }) = state.registry.get::<Client>(listener) {

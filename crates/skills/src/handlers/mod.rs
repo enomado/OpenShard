@@ -14,10 +14,14 @@
 mod appraise;
 mod forensics;
 mod lore;
+mod mind;
+mod poison;
+
+pub use poison::PoisonedSelf;
 
 use openshard_entities::{EntityId, Serial};
 use openshard_protocol::encode_target_cursor_object;
-use openshard_state::components::{Client, Position};
+use openshard_state::components::{Client, HearsGhosts, Position};
 use openshard_state::{in_range, Skill, TargetPurpose, WorldState};
 
 /// A skill that answers a question about something: the line it asks with, and how
@@ -44,6 +48,8 @@ const ASKS: &[(Skill, Ask)] = &[
     (Skill::ArmsLore,  Ask { prompt: 500_349, range: 2 }),  // What item do you wish to get information about?
     (Skill::ItemId,    Ask { prompt: 500_343, range: 8 }),  // What do you wish to appraise and identify?
     (Skill::Forensics, Ask { prompt: 501_000, range: 10 }), // Show me the crime.
+    (Skill::TasteId,   Ask { prompt: 502_807, range: 2 }),  // What would you like to taste?
+    (Skill::Poisoning, Ask { prompt: 502_137, range: 2 }),  // Select the poison you wish to use
 ];
 
 /// The ask for a skill id, if the core raises a cursor for it.
@@ -60,10 +66,42 @@ fn ask_for(id: u8) -> Option<&'static Ask> {
 /// mean something else has already seen it and the core is the fallback, not the
 /// competition.
 pub(crate) fn start(state: &mut WorldState, actor: EntityId, id: u8) -> bool {
-    let Some(ask) = ask_for(id) else {
-        return false;
-    };
-    raise_cursor(state, actor, id, ask.prompt)
+    // A skill that asks a question puts up its cursor and waits; the answer arrives
+    // in [`on_target`] a packet later.
+    if let Some(ask) = ask_for(id) {
+        return raise_cursor(state, actor, id, ask.prompt);
+    }
+    // And a skill a mobile turns on itself resolves here and now.
+    match Skill::from_id(id) {
+        Some(Skill::Meditation) => {
+            mind::meditation(state, actor);
+            true
+        }
+        Some(Skill::SpiritSpeak) => {
+            mind::spirit_speak(state, actor);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Let a Spirit Speak contact with the netherworld lapse, telling whoever held it.
+///
+/// The counterpart of every other expiry the tick runs (`magic::expire_frozen`,
+/// `expire_buffs`), on the tick counter for the same reason: a contact measured
+/// against a wall clock would not replay.
+pub fn expire_ghost_contact(state: &mut WorldState) {
+    let now = state.ticks;
+    let lapsed: Vec<EntityId> = state
+        .registry
+        .query::<HearsGhosts>()
+        .filter(|(_, contact)| now >= contact.until)
+        .map(|(entity, _)| entity)
+        .collect();
+    for entity in lapsed {
+        state.registry.remove::<HearsGhosts>(entity);
+        mind::contact_faded(state, entity);
+    }
 }
 
 /// A skill's cursor came back with something. Runs the skill against it.
@@ -86,7 +124,36 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) {
         Some(Skill::ArmsLore) => appraise::arms_lore(state, actor, target),
         Some(Skill::ItemId) => appraise::item_id(state, actor, target),
         Some(Skill::Forensics) => forensics::forensics(state, actor, target),
+        Some(Skill::TasteId) => poison::taste_id(state, actor, target),
+        // Poisoning is the one skill that asks twice: this was the potion, and the
+        // next cursor asks what to put it on.
+        Some(Skill::Poisoning) => poison::chose_potion(state, actor, target),
         _ => {}
+    }
+}
+
+/// A skill's *second* cursor came back. Only Poisoning asks twice.
+///
+/// The reach is the same as the first ask's, and re-checked here for the same
+/// reason: a `0x6C` range is the client's courtesy, never the judge.
+pub fn on_second_target(
+    state: &mut WorldState,
+    actor: EntityId,
+    id: u8,
+    first: EntityId,
+    target: u32,
+) {
+    let Some(ask) = ask_for(id) else {
+        return;
+    };
+    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+        return;
+    };
+    if !within(state, actor, target, ask.range) {
+        return;
+    }
+    if Skill::from_id(id) == Some(Skill::Poisoning) {
+        poison::apply_to(state, actor, first, target);
     }
 }
 

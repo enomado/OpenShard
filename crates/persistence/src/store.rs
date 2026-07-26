@@ -454,6 +454,7 @@ mod tests {
             name: None,
             spellbook: None,
             corpse: None,
+            poison: None,
             location: crate::record::ItemLocation::Contained {
                 container,
                 x: 0,
@@ -476,6 +477,7 @@ mod tests {
             name: None,
             spellbook: None,
             corpse: None,
+            poison: None,
             location: crate::record::ItemLocation::Ground {
                 facet: 0,
                 x: 1400,

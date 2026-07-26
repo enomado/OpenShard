@@ -13,10 +13,10 @@
 use openshard_entities::{EntityId, Serial};
 use openshard_items::{count_in_container, take_from_container};
 use openshard_state::components::{
-    stat_shift, BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Stamina, StatMod, StatMods,
-    Stats,
+    stat_shift, BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina,
+    StatMod, StatMods, Stats,
 };
-use openshard_state::WorldState;
+use openshard_state::{Skill, WorldState, TICKS_PER_SECOND};
 
 mod spells;
 pub use spells::{
@@ -24,8 +24,12 @@ pub use spells::{
     MAGERY, MAGERY_SKILL,
 };
 
-/// How often, in ticks, a mobile with spent mana gets a point back.
-pub const MANA_REGEN_TICKS: u64 = 60;
+/// What intelligence a mobile with no stat sheet regenerates as if it had — the
+/// same convention the status bar and the lore skills use for a missing stat.
+const DEFAULT_INTELLIGENCE: u16 = 100;
+
+/// Meditation's skill id, which sets the mana regen rate.
+const MEDITATION_SKILL: u8 = Skill::Meditation.id();
 
 /// A spell was cast: the mana was paid and the skill rolled. What the spell
 /// *does* is a script's to decide — this only says who cast what at whom, and
@@ -492,12 +496,78 @@ pub fn expire_frozen(state: &mut WorldState, now: u64) -> Vec<EntityId> {
     thawed
 }
 
-/// Trickle mana back for everyone who has any, one point each regen tick. Runs
-/// against the tick counter, so it needs no clock and stays replayable.
-pub fn regen_mana(state: &mut WorldState) {
-    if !state.ticks.is_multiple_of(MANA_REGEN_TICKS) {
-        return;
+/// How often a mobile gets a point of mana back, in ticks — ServUO's pre-AoS
+/// `Mobile_ManaRegenRate`, in fixed point.
+///
+/// `medPoints = (Int + Meditation) / 2` drives a curve from seven seconds a point
+/// down to three quarters of one:
+///
+/// ```text
+/// rate = 7.0                                        medPoints <= 0
+///      = 7.0 - 239·mp/2400 + 19·mp²/48000           medPoints <= 100
+///      = 1.0                                        medPoints <  120
+///      = 0.75                                       otherwise
+/// rate += armour offset;  halved while meditating;  clamped to 0.5 ..= 7.0
+/// ```
+///
+/// Two things make this worth reading rather than skimming. The **armour offset**
+/// (`combat::armor::meditation_offset`) is added in *seconds*, so a mage in plate
+/// regenerates like a warrior however much Meditation they have — that is what the
+/// skill's free-hands and armour rules are all about. And the whole thing is
+/// hundredths of a second throughout, then ticks, because a floating rate would
+/// make the trickle drift between two replays of the same world.
+///
+/// A read-site derivation: nothing is stored, so taking a helmet off changes the
+/// next point of mana with nothing to invalidate.
+#[must_use]
+pub fn mana_regen_ticks(state: &WorldState, entity: EntityId) -> u64 {
+    // Hundredths of a second throughout.
+    let intelligence = u32::from(
+        state
+            .registry
+            .get::<Stats>(entity)
+            .map_or(DEFAULT_INTELLIGENCE, |stats| stats.intelligence),
+    );
+    let meditation = u32::from(openshard_skills::skill_value(
+        state,
+        entity,
+        MEDITATION_SKILL,
+    )) / 10;
+    // `(Int + Meditation) * 0.5`, in tenths of a point so the halving is exact.
+    let med_points = (intelligence * 10 + meditation * 10) / 2;
+    let mut rate = if med_points == 0 {
+        700
+    } else if med_points <= 1000 {
+        // 7.0 - 239·mp/2400 + 19·mp²/48000, with mp in tenths: the quadratic is
+        // evaluated in hundredths of a second and cannot go negative over 0..=100.
+        let mp = i64::from(med_points);
+        let linear = 239 * mp * 100 / 24_000;
+        let quadratic = 19 * mp * mp * 100 / 4_800_000;
+        (700 - linear + quadratic).max(0) as u32
+    } else if med_points < 1200 {
+        100
+    } else {
+        75
+    };
+    rate += openshard_combat::armor::meditation_offset(state, entity);
+    if state.registry.has::<Meditating>(entity) {
+        rate /= 2;
     }
+    let rate = rate.clamp(50, 700);
+    // Hundredths of a second into ticks, never below one: a rate faster than the
+    // tick would otherwise mean "every tick" by accident rather than by rule.
+    (u64::from(rate) * TICKS_PER_SECOND / 100).max(1)
+}
+
+/// Trickle mana back, at each mobile's own rate. Runs against the tick counter, so
+/// it needs no clock and stays replayable.
+///
+/// The rate is per mobile ([`mana_regen_ticks`]), so the cadence cannot be one
+/// global modulus. It is still stateless: a mobile gets a point when the tick
+/// counter divides its *own* rate, which needs no per-mobile timer to keep in step
+/// and no field to save. Two mobiles with different rates simply fall on different
+/// ticks.
+pub fn regen_mana(state: &mut WorldState) {
     let thirsty: Vec<EntityId> = state
         .registry
         .query::<Mana>()
@@ -505,6 +575,9 @@ pub fn regen_mana(state: &mut WorldState) {
         .map(|(entity, _)| entity)
         .collect();
     for entity in thirsty {
+        if !state.ticks.is_multiple_of(mana_regen_ticks(state, entity)) {
+            continue;
+        }
         if let Some(&Mana { current, max }) = state.registry.get::<Mana>(entity) {
             state.registry.insert(
                 entity,

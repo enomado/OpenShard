@@ -429,6 +429,34 @@ pub struct Poisoned {
     pub pulses_left: u8,
 }
 
+/// Poison an *item* carries: a dose in a bottle, or a coating on a blade.
+///
+/// One component for both because they are the same fact — how strong the poison is
+/// and how much of it is left — and what an item can *do* with it is decided by
+/// what the item is, exactly as ServUO decides (`targeted is BasePoisonPotion`
+/// against `targeted is BaseWeapon`). A potion holds one dose; a blade the Poisoning
+/// skill has coated holds `18 - level * 2`, spent a charge per landed blow.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PoisonCharges {
+    /// The poison level, 0 (lesser) .. 4 (lethal) — the same scale [`Poisoned`] uses.
+    pub level: u8,
+    /// Doses left. Zero means spent, and a spent coating is removed rather than
+    /// kept at zero, so this is never `0` on a live component.
+    pub charges: u16,
+}
+
+/// The item graphic every poison potion shares — `0x0F0A`, ServUO's
+/// `BasePoisonPotion : base(0xF0A, effect)`.
+///
+/// All four strengths are the same bottle: which poison one holds is on the item
+/// (a [`PoisonCharges`]), not in its graphic, which is why the core cannot key
+/// poison off a table the way it keys a weapon's damage.
+pub const POISON_POTION_GRAPHIC: u16 = 0x0F0A;
+
+/// The empty bottle a used potion leaves behind — ServUO hands one back on every
+/// `Consume`.
+pub const EMPTY_BOTTLE_GRAPHIC: u16 = 0x0F0E;
+
 /// What a persistent field does — the behaviour a field-tile entity carries.
 ///
 /// A spell lays a row of ground tiles that either pulse harm or bar the way, on
@@ -796,6 +824,33 @@ pub struct LastStatGain {
     /// The tick intelligence last rose.
     pub intelligence: u64,
 }
+
+/// A living mobile that can hear the dead, until `until` — ServUO's
+/// `Mobile.CanHearGhosts`, which Spirit Speak turns on for a while.
+///
+/// It gates **hearing only**, never drawing: a ghost stays invisible to the living
+/// however much Spirit Speak they have, and the point of the classic skill is that
+/// you catch a voice with nobody there. So the two questions are two predicates —
+/// [`WorldState::can_see_mobile`] and [`WorldState::can_hear_mobile`] — and only the
+/// second consults this.
+///
+/// A tick count, like every other expiry in the engine, and deliberately **not**
+/// saved: fifteen seconds to three minutes puts it in the same class as a cast in
+/// flight or a field on the ground.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct HearsGhosts {
+    /// The tick the contact fades.
+    pub until: u64,
+}
+
+/// A mobile sitting in a meditative trance — ServUO's `Mobile.Meditating`.
+///
+/// A marker, not a timer: a trance has no duration and ends when something breaks
+/// it, which is any *disruptive* action (the same set that reveals someone hidden).
+/// While it holds, mana comes back twice as fast — see the mana regen rate, which
+/// reads this at the moment it decides, with nothing folded in and nothing to undo.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Meditating;
 
 /// A spell in progress — the rooted cast delay of the "servuo" cast style. The
 /// mobile is committed to `spell` and cannot walk until `complete_at`, the tick

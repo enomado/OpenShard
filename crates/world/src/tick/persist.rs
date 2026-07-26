@@ -4,9 +4,9 @@ use openshard_persistence::{
 };
 use openshard_state::components::{
     body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, DoneQuest,
-    Escortable, Field, Frozen, NightHome, Npc, Poisoned, Price, QuestGiver, QuestLog, QuestState,
-    RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title,
-    Vendor,
+    Escortable, Field, Frozen, NightHome, Npc, PoisonCharges, Poisoned, Price, QuestGiver,
+    QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods, StockRecord,
+    SwingSpeed, Title, Vendor,
 };
 
 impl World {
@@ -286,6 +286,11 @@ impl World {
                 examined_by: story.examined_by.clone(),
                 looters: story.looters.clone(),
             }),
+            // And the poison on it, bottled or smeared: all four potions are the
+            // same graphic, so an unsaved bottle comes back empty.
+            poison: registry
+                .get::<PoisonCharges>(item)
+                .map(|poison| (poison.level, poison.charges)),
             location,
         })
     }
@@ -810,6 +815,11 @@ impl World {
         if let Some(story) = &record.corpse {
             self.state.registry.insert(entity, corpse_from(story));
         }
+        if let Some((level, charges)) = record.poison {
+            self.state
+                .registry
+                .insert(entity, PoisonCharges { level, charges });
+        }
         // Loose clutter resumes rotting; a container does not (mark_decay skips
         // it) — except a corpse, which is a container that *must* rot, so it gets
         // a fresh timer here (the decay tick is not itself saved, so a restored
@@ -879,6 +889,11 @@ impl World {
             }
             if let Some(story) = &record.corpse {
                 self.state.registry.insert(entity, corpse_from(story));
+            }
+            if let Some((level, charges)) = record.poison {
+                self.state
+                    .registry
+                    .insert(entity, PoisonCharges { level, charges });
             }
         }
         // Pass two: where each item goes.

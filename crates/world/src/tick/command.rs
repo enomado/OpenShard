@@ -418,6 +418,21 @@ pub enum Command {
         /// Maximum damage before resistance.
         max: u16,
     },
+    /// Put poison on an item — a dose in a bottle, or a coating on a blade.
+    ///
+    /// The pack's door to the poison economy, and the only one: all four poison
+    /// potions share a graphic (`0x0F0A`), so which poison a bottle holds cannot be
+    /// keyed off a core table the way a weapon's damage is. A shard's alchemist
+    /// stocks bottles and calls this on them; the Poisoning skill does the rest.
+    /// `charges` of zero removes any poison instead.
+    SetPoison {
+        /// The item, by wire serial.
+        serial: u32,
+        /// The poison level, 0 (lesser) .. 4 (lethal).
+        level: u8,
+        /// Doses. One for a bottle; zero clears the poison.
+        charges: u16,
+    },
     /// Use a skill against a difficulty band: roll it, gain from it, and say what
     /// happened with a [`SkillUsed`](openshard_skills::SkillUsed) event.
     ///

@@ -11,7 +11,7 @@
 
 use openshard_entities::EntityId;
 use openshard_state::armor::armor_data;
-use openshard_state::components::{Body, Graphic, Name, Price};
+use openshard_state::components::{Body, Graphic, Name, PoisonCharges, Price};
 use openshard_state::weapon::{by_era, weapon_data, weapon_layer, WeaponKind, LAYER_TWO_HANDED};
 use openshard_state::{Skill, WorldState};
 
@@ -40,6 +40,9 @@ const ARMS_DAMAGE_STRIDE: u32 = 9;
 /// "This armor offers no defense against attackers." — the base of eight lines
 /// climbing to "superbly crafted to provide maximum protection".
 const ARMS_ARMOR: u32 = 1_038_295;
+/// "It appears to have poison smeared on it." — the same line Taste ID uses, which
+/// is ServUO's: a weapon master notices a coated blade without having to lick it.
+const SMEARED_WITH_POISON: u32 = 1_038_284;
 
 /// "You have no idea how much it might be worth." — Item ID's failure.
 const ITEM_ID_FAILED: u32 = 1_041_352;
@@ -53,7 +56,9 @@ const ITEM_ID_VALUE: u32 = 1_041_351;
 /// ServUO's `ArmsLore.InternalTarget.OnTarget`. Its durability lines
 /// (`1038285 + hp`) are deliberately absent: an item in this engine has no hit
 /// points, so there is no wear to report, and inventing a number would read as a
-/// worn sword to anyone who looked.
+/// worn sword to anyone who looked. Poison on the blade *is* reported, as ServUO
+/// does — the same line Taste Identification gives, and the reason a weapon master
+/// does not have to lick a sword to know.
 pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityId) {
     let Some(&Graphic { id: graphic, .. }) = state.registry.get::<Graphic>(target) else {
         // A mobile, not a thing you can weigh in your hands.
@@ -93,6 +98,10 @@ pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityI
         };
         if roll_skill_band(state, actor, id, 0, 1000) {
             state.localized_message(actor, line, "");
+            // And whether somebody has been at it with a bottle.
+            if state.registry.has::<PoisonCharges>(target) {
+                state.localized_message(actor, SMEARED_WITH_POISON, "");
+            }
         } else {
             state.localized_message(actor, NOT_CERTAIN, "");
         }

@@ -87,7 +87,12 @@ use serde::{Deserialize, Serialize};
 ///   was investigating comes back anonymous, killed by nobody and disturbed by
 ///   no one. One nullable JSON column on the item row, `None` for every item that
 ///   is not a corpse.
-pub const SCHEMA_VERSION: u32 = 17;
+/// - v18: the **poison on an item** — a bottled dose or the coating the Poisoning
+///   skill put on a blade. It has to be saved for the same reason a spellbook's
+///   mask does: all four poison potions are the same graphic, so an unsaved bottle
+///   comes back as an empty one, and a coated sword a player spent a potion on
+///   comes back clean.
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// An account, as saved.
 ///
@@ -389,6 +394,11 @@ pub struct ItemRecord {
     /// save loads.
     #[serde(default)]
     pub corpse: Option<CorpseData>,
+    /// The poison on it, if any — `(level, charges)`. A bottled dose or a coating
+    /// the Poisoning skill put on a blade; `None` for a clean item. Defaulted so a
+    /// pre-v18 save loads.
+    #[serde(default)]
+    pub poison: Option<(u8, u16)>,
     /// Where it is.
     pub location: ItemLocation,
 }
@@ -768,6 +778,7 @@ mod tests {
                     examined_by: Some("Mordred".into()),
                     looters: vec!["Vesper".into()],
                 }),
+                poison: Some((2, 14)),
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");

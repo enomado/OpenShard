@@ -451,6 +451,15 @@ fn into_world(command: ScriptCommand) -> Command {
             min,
             max,
         },
+        ScriptCommand::SetPoison {
+            serial,
+            level,
+            charges,
+        } => Command::SetPoison {
+            serial,
+            level,
+            charges,
+        },
         ScriptCommand::UseSkill {
             serial,
             skill,

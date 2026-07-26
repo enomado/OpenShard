@@ -49,10 +49,11 @@ pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Decoration, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic, Guard,
-    Heading, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana, MeleeDamage, Movement,
-    MurderDecay, Murders, Name, NightHome, Npc, Position, Resistance, Scripted, SkillCooldown,
-    Skills, SpawnedBy, Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods, Stats,
-    SwingSpeed, Title, DEFAULT_SKILL_CAP, FIELD_HEIGHT,
+    Heading, HearsGhosts, Hitpoints, InRegion, Karma, KeyValue, LastStatGain, Lock, Mana,
+    Meditating, MeleeDamage, Movement, MurderDecay, Murders, Name, NightHome, Npc, PoisonCharges,
+    Poisoned, Position, Resistance, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina,
+    StatLock, StatLocks, StatMod, StatMods, Stats, SwingSpeed, Title, DEFAULT_SKILL_CAP,
+    EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, POISON_POTION_GRAPHIC,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
@@ -65,4 +66,4 @@ pub use runtime::{
 };
 pub use sectors::{distance, in_range, Sectors, SECTOR_SIZE, VIEW_RANGE};
 pub use skill::{Skill, SkillInfo, StatCode, SKILLS, SKILL_COUNT};
-pub use title::{compute_title, titled_name};
+pub use title::{award_fame, award_karma, award_message, compute_title, titled_name};

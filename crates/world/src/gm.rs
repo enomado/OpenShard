@@ -51,6 +51,7 @@ pub fn run(state: &mut WorldState, actor: EntityId, rest: &str) {
         "go" => go_to(state, actor, &args),
         "add" => add_item(state, actor, &args),
         "key" => make_key(state, actor, &args),
+        "poison" => make_poison(state, actor, &args),
         "spellbook" => full_spellbook(state, actor),
         "quests" => openshard_quests::open_log_for(state, actor),
         "set" => set_stat(state, actor, &args),
@@ -105,6 +106,47 @@ fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         actor,
         &format!("A key for lock {value} is in your pack."),
     );
+}
+
+/// `.poison <level>` — drop a bottle of poison at the operator's feet.
+///
+/// The four strengths are the same bottle on the wire (`0x0F0A`), so which poison
+/// one holds is on the item and something has to put it there. On a live shard that
+/// is the pack's alchemist through `op_set_poison`; this is how the Poisoning skill
+/// is tested on a shard with no pack at all.
+fn make_poison(state: &mut WorldState, actor: EntityId, args: &[&str]) {
+    let level: u8 = match args.first().map(|v| v.parse::<u8>()) {
+        Some(Ok(level)) if level <= 4 => level,
+        _ => {
+            notify(state, actor, "Usage: .poison <level 0-4>.");
+            return;
+        }
+    };
+    let Some(&Position(at)) = state.registry.get::<Position>(actor) else {
+        return;
+    };
+    let facet = state.facet_of(actor);
+    let graphic = openshard_state::components::POISON_POTION_GRAPHIC;
+    let Some(potion) = items::spawn_item(state, graphic, 0, 1, false, at, facet) else {
+        notify(state, actor, "No room for a potion.");
+        return;
+    };
+    state.registry.insert(
+        potion,
+        openshard_state::components::PoisonCharges { level, charges: 1 },
+    );
+    let names = [
+        "a lesser poison potion",
+        "a poison potion",
+        "a greater poison potion",
+        "a deadly poison potion",
+        "a lethal poison potion",
+    ];
+    state.registry.insert(
+        potion,
+        openshard_state::components::Name(names[usize::from(level)].to_owned()),
+    );
+    notify(state, actor, "A poison potion is at your feet.");
 }
 
 /// `.gm [on|off]` — turn staff mode on or off, or toggle it.

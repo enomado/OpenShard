@@ -506,6 +506,18 @@ pub enum Command {
         /// Maximum damage before resistance.
         max: u16,
     },
+    /// Put poison on an item — a dose in a bottle, or a coating on a blade.
+    ///
+    /// All four poison potions share one graphic, so which poison a bottle holds is
+    /// on the item and the pack is what puts it there. `charges` of zero clears it.
+    SetPoison {
+        /// The item, by serial.
+        serial: Serial,
+        /// The poison level, 0 (lesser) .. 4 (lethal).
+        level: u8,
+        /// Doses; one for a bottle, zero to clear.
+        charges: u16,
+    },
     /// Use a skill against a difficulty band: roll, gain, and report back through
     /// a [`SkillUsed`](Event::SkillUsed) event.
     ///

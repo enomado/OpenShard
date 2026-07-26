@@ -113,7 +113,10 @@ CREATE TABLE IF NOT EXISTS items (
     spellbook BIGINT,
     -- a corpse's story as JSON (who it was, who killed it, who has read and
     -- rifled it). NULL for every other item.
-    corpse TEXT
+    corpse TEXT,
+    -- the poison on it: level and doses left, NULL for a clean item.
+    poison_level INTEGER,
+    poison_charges INTEGER
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 CREATE TABLE IF NOT EXISTS mobiles (
@@ -478,7 +481,7 @@ impl Store for PgStore {
             .query(
                 "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                  loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                 corpse \
+                 corpse, poison_level, poison_charges \
                  FROM items",
                 &[],
             )
@@ -667,8 +670,8 @@ async fn insert_item(
             "INSERT INTO items \
              (serial, owner, graphic, hue, amount, stackable, gump, \
               loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-              corpse) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) \
+              corpse, poison_level, poison_charges) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) \
              ON CONFLICT (serial) DO UPDATE SET \
              owner = EXCLUDED.owner, graphic = EXCLUDED.graphic, hue = EXCLUDED.hue, \
              amount = EXCLUDED.amount, stackable = EXCLUDED.stackable, gump = EXCLUDED.gump, \
@@ -676,7 +679,8 @@ async fn insert_item(
              facet = EXCLUDED.facet, x = EXCLUDED.x, y = EXCLUDED.y, z = EXCLUDED.z, \
              parent = EXCLUDED.parent, grid = EXCLUDED.grid, layer = EXCLUDED.layer, \
              price = EXCLUDED.price, name = EXCLUDED.name, spellbook = EXCLUDED.spellbook, \
-             corpse = EXCLUDED.corpse",
+             corpse = EXCLUDED.corpse, poison_level = EXCLUDED.poison_level, \
+             poison_charges = EXCLUDED.poison_charges",
             &[
                 &i64::from(item.serial),
                 &i64::from(item.owner),
@@ -706,6 +710,8 @@ async fn insert_item(
                     .map(serde_json::to_string)
                     .transpose()
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+                &item.poison.map(|(level, _)| i32::from(level)),
+                &item.poison.map(|(_, charges)| i32::from(charges)),
             ],
         )
         .await
@@ -760,6 +766,15 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
             corpse: row
                 .get::<_, Option<String>>(18)
                 .and_then(|json| serde_json::from_str(&json).ok()),
+            poison: row
+                .get::<_, Option<i32>>(19)
+                .zip(row.get::<_, Option<i32>>(20))
+                .map(|(level, charges)| {
+                    (
+                        u8::try_from(level).unwrap_or(0),
+                        u16::try_from(charges).unwrap_or(0),
+                    )
+                }),
             location,
         }))
     }

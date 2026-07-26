@@ -1321,6 +1321,7 @@ dependencies = [
 name = "openshard-magic"
 version = "0.0.1"
 dependencies = [
+ "openshard-combat",
  "openshard-entities",
  "openshard-items",
  "openshard-skills",

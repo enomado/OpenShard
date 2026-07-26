@@ -26,6 +26,26 @@ pub fn set_weapon(state: &mut WorldState, serial: u32, speed: u16, min: u16, max
     state.registry.insert(entity, Weapon { speed, min, max });
 }
 
+/// Put poison on an item, or take it off. See `Command::SetPoison`.
+///
+/// The pack's door to the poison economy: all four poison potions are the same
+/// bottle on the wire, so which poison one holds is on the item and something has to
+/// put it there. `charges` of zero clears it, which is also how a spent coating is
+/// wiped — one door in and out, so "is this poisoned" never has two answers.
+pub fn set_poison(state: &mut WorldState, serial: u32, level: u8, charges: u16) {
+    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial))
+    else {
+        return;
+    };
+    if charges == 0 {
+        state.registry.remove::<PoisonCharges>(entity);
+        return;
+    }
+    state
+        .registry
+        .insert(entity, PoisonCharges { level, charges });
+}
+
 /// Put an item on the ground. See `Command::SpawnItem`.
 ///
 /// Returns the entity so `spawn_container` can make

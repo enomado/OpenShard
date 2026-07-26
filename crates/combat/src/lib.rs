@@ -20,15 +20,15 @@ use openshard_protocol::{
 };
 use openshard_state::components::{
     body_is_female, body_opens_doors, creature_base_sound, effect, BehaviourBuffs, Body, Client,
-    Combat, CriminalUntil, DamageType, Frozen, Ghost, Guard, Hitpoints, MeleeDamage, MurderDecay,
-    Murders, Poisoned, Position, RangedAttack, Resistance, Skills, Stamina, Stats, Steps,
-    SwingSpeed,
+    Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard, Hitpoints, MeleeDamage,
+    MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack, Resistance, Skills,
+    Stamina, Stats, Steps, SwingSpeed,
 };
 use openshard_state::sectors::in_range;
+use openshard_state::weapon::{LAYER_ONE_HANDED, LAYER_TWO_HANDED};
 use openshard_state::{Action, WorldState};
 
 pub mod armor;
-pub mod titles;
 pub mod weapons;
 
 /// How near, in tiles (Chebyshev), a mobile must be to land a melee blow: the
@@ -433,9 +433,11 @@ pub fn damage(
     });
     state.broadcast_health(entity);
     // A blow wakes a paralyzed mobile — ServUO clears `Paralyzed` inline in
-    // `Mobile.Damage`. Any real (post-resist) damage lifts it at once.
+    // `Mobile.Damage`. Any real (post-resist) damage lifts it at once, and breaks
+    // concentration with it: nobody holds a trance through a sword.
     if amount > 0 {
         state.registry.remove::<Frozen>(entity);
+        state.disrupt(entity);
     }
     // Reactive Armor bounces a share of a melee physical blow back at the
     // attacker. The reflected hit is unattributed (attacker `None`), which both
@@ -698,6 +700,8 @@ pub fn swings(state: &mut WorldState) {
         let sound = attack_sound(state, attacker, MELEE_HIT_SOUND);
         damage(state, target_serial.raw(), blow, DamageType::Physical, by);
         state.play_sound(attacker, sound);
+        // A coated blade spends a dose into whatever it just cut.
+        deliver_weapon_poison(state, attacker, target_serial.raw(), now);
         set_next_swing(state, attacker, now + swing_speed(state, attacker));
         // The blow may have killed it; a dead target is no target. Dead means gone
         // *or* standing at zero hits — a creature killed this tick is not swept off
@@ -863,6 +867,53 @@ pub const fn poison_damage(level: u8) -> u16 {
 
 /// Poison a mobile at `level` (0 lesser .. 4 lethal), starting its pulses at
 /// `now`. A stronger poison overrides a weaker one; a weaker never downgrades a
+/// Deliver a poisoned weapon's dose into the mobile it just hit, and spend a charge.
+///
+/// ServUO's `BaseWeapon.OnHit`: a blade the Poisoning skill has coated carries
+/// `18 - level*2` doses and gives one up per landed blow, poisoning what it cuts.
+/// The last dose takes the coating with it — the component is removed rather than
+/// left at zero, so "is this blade poisoned" stays one question with one answer.
+///
+/// Nothing here decides *whether* the blow landed: it is called from the one place
+/// that knows, after the damage has gone through the one damage door.
+fn deliver_weapon_poison(state: &mut WorldState, attacker: EntityId, target: u32, now: u64) {
+    let Some(serial) = state.registry.serial_of(attacker) else {
+        return;
+    };
+    // The item on a weapon layer, whatever it is — the poison is on the *item*, so
+    // this does not go through the weapon table.
+    let Some(weapon) = state
+        .registry
+        .query::<Equipped>()
+        .find(|(_, worn)| {
+            worn.mobile == serial
+                && (worn.layer == LAYER_ONE_HANDED || worn.layer == LAYER_TWO_HANDED)
+        })
+        .map(|(entity, _)| entity)
+    else {
+        return;
+    };
+    let Some(&PoisonCharges { level, charges }) = state.registry.get::<PoisonCharges>(weapon)
+    else {
+        return;
+    };
+    apply_poison(state, target, level, now);
+    match charges.saturating_sub(1) {
+        0 => {
+            state.registry.remove::<PoisonCharges>(weapon);
+        }
+        left => {
+            state.registry.insert(
+                weapon,
+                PoisonCharges {
+                    level,
+                    charges: left,
+                },
+            );
+        }
+    }
+}
+
 /// stronger one already working — ServUO's rule.
 pub fn apply_poison(state: &mut WorldState, serial: u32, level: u8, now: u64) {
     let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {

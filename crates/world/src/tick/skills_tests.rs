@@ -1,17 +1,21 @@
-//! The skills that answer a question about something: Arms Lore, Item
-//! Identification, Forensic Evaluation.
+//! The skills the window's button runs: the ones that ask about something (Arms
+//! Lore, Item Identification, Forensic Evaluation) and the ones a mobile turns on
+//! itself (Meditation, Spirit Speak).
 //!
 //! A child module rather than more of `tests.rs`, which is long past the size a
 //! file should be. These go through the whole path a player does — press the
 //! button, get a cursor, click a thing, read the line that comes back — because
-//! every one of the three has been wrong at a different link in that chain before:
+//! every one of them has been wrong at a different link in that chain before:
 //! a cliloc block chosen by the wrong arithmetic reads as a plausible sentence
 //! about the wrong object, which no client will report.
 
-use super::tests::{enter, packets_for, spawn_mobile_at, world, START};
+use super::tests::{enter, enter_as, packets_for, spawn_mobile_at, world, START};
 use super::*;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
-use openshard_state::components::{Amount, Corpse, Graphic, Name};
+use openshard_state::components::{
+    Amount, Corpse, Equipped, Graphic, HearsGhosts, Mana, Meditating, Name, PoisonCharges,
+    Poisoned, POISON_POTION_GRAPHIC,
+};
 use openshard_state::Skill;
 
 /// Give the player a skill outright, so a roll is a sure thing.
@@ -381,4 +385,403 @@ fn a_corpses_story_comes_back_after_a_restart() {
         reborn.state.registry.get::<Amount>(corpse).is_some(),
         "and still draws as the body it was"
     );
+}
+
+#[test]
+fn meditation_enters_a_trance_and_a_step_breaks_it() {
+    // The whole shape of the skill: a trance is one marker and no timer, and what
+    // ends it is somebody doing something. ServUO's `DisruptiveAction` is called
+    // from the move, the blow, the word and the lift; this asserts the first,
+    // because a trance you can walk out of and keep is the bug that shape prevents.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    train(&mut world, player, Skill::Meditation, 1000);
+    world.tick(now);
+    // Spend some mana, or the answer is "you are at peace".
+    world.state.registry.insert(
+        entity,
+        Mana {
+            current: 1,
+            max: 50,
+        },
+    );
+
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::Meditation.id(),
+    });
+    world.tick(now);
+    assert!(
+        world.state.registry.has::<Meditating>(entity),
+        "a grandmaster with an empty pool always focuses: {:?}",
+        clilocs(&mut world, player)
+    );
+
+    world.queue(Command::Step {
+        serial: world.state.registry.serial_of(entity).unwrap().raw(),
+        direction: Direction::North.to_bits(),
+    });
+    world.tick(now);
+    // The first Step turns; the second moves, and the move is what breaks it.
+    world.queue(Command::Step {
+        serial: world.state.registry.serial_of(entity).unwrap().raw(),
+        direction: Direction::North.to_bits(),
+    });
+    world.tick(now);
+    assert!(
+        !world.state.registry.has::<Meditating>(entity),
+        "walking out of a trance ends it"
+    );
+    assert!(
+        clilocs(&mut world, player).contains(&500_134),
+        "and says so: you stop meditating"
+    );
+}
+
+#[test]
+fn meditation_wants_free_hands() {
+    // 502626, and the reason Meditation is a mage's skill: a shield or a sword in
+    // hand refuses outright, a spellbook does not.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let owner = world.state.registry.serial_of(entity).unwrap();
+    train(&mut world, player, Skill::Meditation, 1000);
+    world.tick(now);
+    world.state.registry.insert(
+        entity,
+        Mana {
+            current: 1,
+            max: 50,
+        },
+    );
+
+    // A katana on the one-handed layer.
+    let (sword, _) = world
+        .state
+        .registry
+        .spawn_with_serial(SerialKind::Item)
+        .unwrap();
+    world
+        .state
+        .registry
+        .insert(sword, Graphic { id: 0x13FF, hue: 0 });
+    world.state.registry.insert(
+        sword,
+        Equipped {
+            mobile: owner,
+            layer: 1,
+        },
+    );
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::UseSkillButton {
+        connection: player,
+        skill: Skill::Meditation.id(),
+    });
+    world.tick(now);
+    assert!(!world.state.registry.has::<Meditating>(entity));
+    assert!(
+        clilocs(&mut world, player).contains(&502_626),
+        "your hands must be free"
+    );
+}
+
+#[test]
+fn a_trance_doubles_the_rate_mana_comes_back_at() {
+    // The rate is ServUO's pre-AoS curve over Intelligence and Meditation, halved
+    // while meditating — a read-site derivation, so the trance is not folded into
+    // anything and taking it away needs no undoing.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    train(&mut world, player, Skill::Meditation, 1000);
+    world.tick(now);
+
+    let awake = openshard_magic::mana_regen_ticks(&world.state, entity);
+    world.state.registry.insert(entity, Meditating);
+    let entranced = openshard_magic::mana_regen_ticks(&world.state, entity);
+    assert_eq!(entranced * 2, awake, "a trance halves the interval");
+    // And a plate chest puts it back where an untrained character started: the
+    // armour offset is added in seconds, which is what makes the skill's armour
+    // rule bite rather than merely nag.
+    let owner = world.state.registry.serial_of(entity).unwrap();
+    let (plate, _) = world
+        .state
+        .registry
+        .spawn_with_serial(SerialKind::Item)
+        .unwrap();
+    world
+        .state
+        .registry
+        .insert(plate, Graphic { id: 0x1415, hue: 0 });
+    world.state.registry.insert(
+        plate,
+        Equipped {
+            mobile: owner,
+            layer: 0x0D,
+        },
+    );
+    assert!(
+        openshard_magic::mana_regen_ticks(&world.state, entity) > entranced,
+        "a mage in plate regenerates like a warrior"
+    );
+}
+
+#[test]
+fn spirit_speak_lets_the_living_hear_the_dead_without_seeing_them() {
+    // The two questions are two predicates on purpose. A ghost stays invisible to
+    // a listener under Spirit Speak — if `can_see_mobile` had been relaxed to
+    // cover this, contacting the netherworld would make the dead walk visibly
+    // among the living.
+    let now = Instant::now();
+    let mut world = world();
+    let living = enter(&mut world, now);
+    let listener = world.state.players[&living];
+    train(&mut world, living, Skill::SpiritSpeak, 1000);
+    world.tick(now);
+
+    let dead = enter_as(&mut world, ConnectionId::from_raw(2), now);
+    let ghost = world.state.players[&dead];
+    world.state.registry.insert(
+        ghost,
+        openshard_state::components::Ghost {
+            body: Body { id: 0x0190, hue: 0 },
+        },
+    );
+
+    assert!(!world.state.can_hear_mobile(listener, ghost), "not yet");
+    world.queue(Command::UseSkillButton {
+        connection: living,
+        skill: Skill::SpiritSpeak.id(),
+    });
+    world.tick(now);
+    assert!(
+        world.state.registry.has::<HearsGhosts>(listener),
+        "a grandmaster contacts the netherworld: {:?}",
+        clilocs(&mut world, living)
+    );
+    assert!(world.state.can_hear_mobile(listener, ghost), "and hears it");
+    assert!(
+        !world.state.can_see_mobile(listener, ghost),
+        "but still cannot see it"
+    );
+
+    // And the contact lapses on the tick counter, with the client told.
+    let until = world
+        .state
+        .registry
+        .get::<HearsGhosts>(listener)
+        .unwrap()
+        .until;
+    while world.state.ticks <= until {
+        world.tick(now);
+    }
+    assert!(!world.state.registry.has::<HearsGhosts>(listener));
+    assert!(
+        clilocs(&mut world, living).contains(&502_445),
+        "your contact with the netherworld fades"
+    );
+}
+
+/// Answer a *second* cursor — the one Poisoning raises after the potion.
+fn answer_cursor(
+    world: &mut World,
+    connection: ConnectionId,
+    target: u32,
+    now: Instant,
+) -> Vec<u32> {
+    let cursor_id = {
+        let entity = world.state.players[&connection];
+        world.state.registry.serial_of(entity).unwrap().raw()
+    };
+    world.queue(Command::TargetResponse {
+        connection,
+        response: openshard_protocol::TargetResponse {
+            cursor_id,
+            serial: target,
+            location: Point::new(START.0 + 1, START.1, 0),
+            graphic: 0,
+            cancelled: false,
+        },
+    });
+    world.tick(now);
+    clilocs(world, connection)
+}
+
+#[test]
+fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
+    // The whole chain, because every link has somewhere to go wrong: two cursors,
+    // a potion that is consumed either way, `18 - level*2` doses on the blade, and
+    // a landed blow that spends one into whatever it cut.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let owner = world.state.registry.serial_of(entity).unwrap();
+    train(&mut world, player, Skill::Poisoning, 1000);
+    world.tick(now);
+
+    // A bottle of greater poison (level 2) and a katana, both beside the player.
+    let potion = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
+    let potion_entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(potion).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        potion_entity,
+        PoisonCharges {
+            level: 2,
+            charges: 1,
+        },
+    );
+    let katana = item_beside(&mut world, 0x13FF, now);
+    let blade = world
+        .state
+        .registry
+        .entity_of(Serial::new(katana).unwrap())
+        .unwrap();
+    let _ = packets_for(&mut world, player);
+
+    // Press the button, pick the potion, then pick the blade.
+    let asked = use_skill_on(&mut world, player, Skill::Poisoning, potion, now);
+    assert!(
+        asked.contains(&502_142),
+        "to what do you wish to apply the poison: {asked:?}"
+    );
+    let applied = answer_cursor(&mut world, player, katana, now);
+    assert!(
+        applied.contains(&1_010_517),
+        "you apply the poison: {applied:?}"
+    );
+    assert_eq!(
+        world.state.registry.get::<PoisonCharges>(blade).copied(),
+        Some(PoisonCharges {
+            level: 2,
+            charges: 14
+        }),
+        "18 - level*2 doses"
+    );
+    // The bottle is spent either way, and what is left is an empty one.
+    assert!(!world.state.registry.has::<PoisonCharges>(potion_entity));
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<Graphic>(potion_entity)
+            .unwrap()
+            .id,
+        openshard_state::components::EMPTY_BOTTLE_GRAPHIC
+    );
+
+    // Wield it and hit something: the target is poisoned and a dose is gone.
+    world.state.registry.insert(
+        blade,
+        Equipped {
+            mobile: owner,
+            layer: 1,
+        },
+    );
+    let victim = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 200, now);
+    world.queue(Command::WarMode {
+        connection: player,
+        war: true,
+    });
+    world.queue(Command::Attack {
+        connection: player,
+        target: victim,
+    });
+    // Swing until one lands — the to-hit roll can miss, and a miss spends nothing.
+    let victim_entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(victim).unwrap())
+        .unwrap();
+    for _ in 0..400 {
+        world.tick(now);
+        if world.state.registry.has::<Poisoned>(victim_entity) {
+            break;
+        }
+    }
+    assert!(
+        world.state.registry.has::<Poisoned>(victim_entity),
+        "a coated blade poisons what it cuts"
+    );
+    let left = world
+        .state
+        .registry
+        .get::<PoisonCharges>(blade)
+        .map_or(0, |p| p.charges);
+    assert!(left < 14, "and spends doses doing it: {left} left");
+}
+
+#[test]
+fn poison_only_goes_on_a_bladed_or_piercing_weapon() {
+    // 502145 — pre-AoS you may coat a blade, not a mace.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    train(&mut world, player, Skill::Poisoning, 1000);
+    world.tick(now);
+    let potion = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
+    let potion_entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(potion).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        potion_entity,
+        PoisonCharges {
+            level: 0,
+            charges: 1,
+        },
+    );
+    let mace = item_beside(&mut world, 0x0F5C, now);
+    let _ = packets_for(&mut world, player);
+
+    let _ = use_skill_on(&mut world, player, Skill::Poisoning, potion, now);
+    let refused = answer_cursor(&mut world, player, mace, now);
+    assert!(
+        refused.contains(&502_145),
+        "you cannot poison that: {refused:?}"
+    );
+}
+
+#[test]
+fn taste_identification_finds_the_poison_on_a_blade() {
+    // The other end of the same fact. A clean blade gets a different line, which is
+    // the point — a taster who always says "poisoned" is no taster.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    train(&mut world, player, Skill::TasteId, 1000);
+    world.tick(now);
+    let clean = item_beside(&mut world, 0x13FF, now);
+    let _ = packets_for(&mut world, player);
+    let said = use_skill_on(&mut world, player, Skill::TasteId, clean, now);
+    assert!(said.contains(&1_010_600), "nothing unusual: {said:?}");
+
+    let blade = world
+        .state
+        .registry
+        .entity_of(Serial::new(clean).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        blade,
+        PoisonCharges {
+            level: 3,
+            charges: 12,
+        },
+    );
+    for _ in 0..=DEFAULT_SKILL_DELAY_TICKS {
+        world.tick(now);
+    }
+    let _ = packets_for(&mut world, player);
+    let said = use_skill_on(&mut world, player, Skill::TasteId, clean, now);
+    assert!(said.contains(&1_038_284), "poison smeared on it: {said:?}");
 }

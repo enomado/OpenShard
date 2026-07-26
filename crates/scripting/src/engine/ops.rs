@@ -321,6 +321,16 @@ fn op_set_weapon(state: &mut OpState, serial: u32, speed: u32, min: u32, max: u3
     });
 }
 
+/// Put poison on an item — a bottled dose, or a coating on a blade.
+#[op2(fast)]
+fn op_set_poison(state: &mut OpState, serial: u32, level: u32, charges: u32) {
+    state.borrow_mut::<Host>().outbox.push(Command::SetPoison {
+        serial,
+        level: level.min(4) as u8,
+        charges: charges.min(u32::from(u16::MAX)) as u16,
+    });
+}
+
 /// Set a mobile's stats; strength re-caps hits, intelligence re-caps mana.
 #[op2(fast)]
 fn op_set_stats(
@@ -1135,6 +1145,7 @@ extension!(
         op_set_stats,
         op_set_skill,
         op_set_weapon,
+        op_set_poison,
         op_use_skill,
         op_say,
         op_register_spawner,

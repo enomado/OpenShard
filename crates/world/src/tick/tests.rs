@@ -2,7 +2,7 @@ use super::*;
 use openshard_chat::{MobileSpoke, TALKMODE_WHISPER, TALKMODE_YELL};
 use openshard_combat::{swing_ticks, MobileDamaged, MobileDied, WRESTLING_SPEED};
 use openshard_events::Cursor;
-use openshard_magic::{SpellCast, MANA_REGEN_TICKS};
+use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
 use openshard_protocol::SkillLock;
 use openshard_protocol::{encode_remove, DROP_TO_GROUND};
@@ -6740,7 +6740,10 @@ fn mana_trickles_back() {
     world.tick(now);
     let spent = world.state.registry.get::<Mana>(entity).unwrap().current;
 
-    for _ in 0..MANA_REGEN_TICKS {
+    // The regen cadence is per mobile now (Intelligence and Meditation set it),
+    // so wait out this character's own rate rather than a shard-wide constant.
+    let rate = openshard_magic::mana_regen_ticks(&world.state, entity);
+    for _ in 0..=rate {
         world.tick(now);
     }
     assert!(

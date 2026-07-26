@@ -15,7 +15,10 @@
 //! needs no undoing.
 
 use openshard_entities::EntityId;
-use openshard_state::armor::{armor_data, hit_layer, layer_coverage, LAYER_SHIELD};
+use openshard_state::armor::{
+    armor_data, hit_layer, layer_coverage, MedAllowance, LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES,
+    LAYER_GORGET, LAYER_HELM, LAYER_LEGS, LAYER_SHIELD,
+};
 use openshard_state::components::{Armor, Equipped, Graphic};
 use openshard_state::WorldState;
 
@@ -69,6 +72,62 @@ pub fn worn_armor_rating(state: &WorldState, mobile: EntityId) -> u16 {
         .sum();
     u16::try_from(hundredths / 100).unwrap_or(u16::MAX)
 }
+
+/// How much a mobile's worn armour gets in the way of meditating, in hundredths
+/// of a rating point — ServUO's `RegenRates.GetArmorOffset`.
+///
+/// Each piece contributes by its material (`MedAllowance`: leather nothing,
+/// studded half its rating, metal all of it) and the total is quartered. Pre-AoS
+/// the shield counts too, which is the one difference from the AoS version and the
+/// reason a sword-and-board mage regenerates like a warrior.
+///
+/// In hundredths because the quarter and the half are both fractions and the tick
+/// must replay: the whole regen formula is fixed point for that reason.
+#[must_use]
+pub fn meditation_offset(state: &WorldState, mobile: EntityId) -> u32 {
+    let Some(serial) = state.registry.serial_of(mobile) else {
+        return 0;
+    };
+    let worn: Vec<(EntityId, u8)> = state
+        .registry
+        .query::<Equipped>()
+        .filter(|(_, worn)| worn.mobile == serial)
+        .map(|(entity, worn)| (entity, worn.layer))
+        .collect();
+    let hundredths: u32 = worn
+        .into_iter()
+        .filter(|(_, layer)| MEDITATION_LAYERS.contains(layer))
+        .map(|(item, _)| {
+            let rating = u32::from(piece_rating(state, item)) * 100;
+            match state
+                .registry
+                .get::<Graphic>(item)
+                .and_then(|graphic| armor_data(graphic.id))
+                .map_or(MedAllowance::All, |armor| armor.meditation)
+            {
+                // A piece the tables do not know is not armour, so it hinders
+                // nothing — the same answer they give for its rating.
+                MedAllowance::All => 0,
+                MedAllowance::Half => rating / 2,
+                MedAllowance::None => rating,
+            }
+        })
+        .sum();
+    hundredths / 4
+}
+
+/// The layers `meditation_offset` counts, pre-AoS: the six armour positions and
+/// the shield. ServUO adds the shield only outside AoS, and it is the difference
+/// between a mage who can meditate and one who cannot.
+const MEDITATION_LAYERS: [u8; 7] = [
+    LAYER_SHIELD,
+    LAYER_LEGS,
+    LAYER_HELM,
+    LAYER_GLOVES,
+    LAYER_GORGET,
+    LAYER_CHEST,
+    LAYER_ARMS,
+];
 
 /// What a physical blow loses to the defender's armour, pre-AoS.
 ///

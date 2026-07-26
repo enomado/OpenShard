@@ -74,6 +74,23 @@ pub const fn hit_layer(roll: u32) -> u8 {
     }
 }
 
+/// How much of a piece's rating gets in the way of meditating in it — ServUO's
+/// `ArmorMeditationAllowance`, a property of the *material* rather than of the
+/// piece.
+///
+/// It is the whole reason Meditation is a mage's skill and not everyone's: leather
+/// costs nothing, studded costs half, and every metal suit costs its full rating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MedAllowance {
+    /// Meditate freely — leather.
+    All,
+    /// Half the rating counts against you — studded.
+    Half,
+    /// The whole rating does. ServUO's default for anything that does not say
+    /// otherwise, which is every metal and bone suit, every helm and every shield.
+    None,
+}
+
 /// One armour class's rating, keyed by its item [`Graphic`](crate::Graphic) id.
 #[derive(Debug, Clone, Copy)]
 pub struct ArmorData {
@@ -81,6 +98,8 @@ pub struct ArmorData {
     pub graphic: u16,
     /// ServUO's `ArmorBase` — the class rating before body coverage.
     pub rating: u16,
+    /// How much it hinders meditation — its material's `DefMedAllowance`.
+    pub meditation: MedAllowance,
 }
 
 /// The armour row for an item graphic, or `None` for anything not armour.
@@ -96,75 +115,88 @@ pub fn armor_data(graphic: u16) -> Option<&'static ArmorData> {
 /// when it is turned, and the flipped graphic must rate the same or a rotated
 /// breastplate would stop being armour.
 ///
+/// The meditation column is the material's `DefMedAllowance`, and it is uniform per
+/// material in ServUO's own data: leather `All`, studded `Half`, and everything
+/// else the base class's default, `None`.
+///
 /// Deliberately only the classic suits, helms and shields: the Samurai/Ninja,
 /// gargoyle and artifact sets belong to expansions this shard does not run, and a
 /// graphic with no row simply rates nothing.
 #[rustfmt::skip]
 static ARMOR: &[ArmorData] = &[
     // -- Leather (ArmorBase 13) ------------------------------------------------
-    a(0x13CC, 13), a(0x13D3, 13), // Leather chest
-    a(0x13CD, 13), a(0x13C5, 13), // Leather sleeves
-    a(0x13CB, 13), a(0x13D2, 13), // Leather leggings
-    a(0x13C6, 13),                // Leather gloves
-    a(0x13C7, 13),                // Leather gorget
-    a(0x1DB9, 13), a(0x1DBA, 13), // Leather cap
-    a(0x1C06, 13), a(0x1C07, 13), // Female leather chest
-    a(0x1C00, 13), a(0x1C01, 13), // Leather shorts
-    a(0x1C08, 13), a(0x1C09, 13), // Leather skirt
-    a(0x1C0A, 13), a(0x1C0B, 13), // Leather bustier sleeves
+    a(0x13CC, 13, ALL), a(0x13D3, 13, ALL), // Leather chest
+    a(0x13CD, 13, ALL), a(0x13C5, 13, ALL), // Leather sleeves
+    a(0x13CB, 13, ALL), a(0x13D2, 13, ALL), // Leather leggings
+    a(0x13C6, 13, ALL),                // Leather gloves
+    a(0x13C7, 13, ALL),                // Leather gorget
+    a(0x1DB9, 13, ALL), a(0x1DBA, 13, ALL), // Leather cap
+    a(0x1C06, 13, ALL), a(0x1C07, 13, ALL), // Female leather chest
+    a(0x1C00, 13, ALL), a(0x1C01, 13, ALL), // Leather shorts
+    a(0x1C08, 13, ALL), a(0x1C09, 13, ALL), // Leather skirt
+    a(0x1C0A, 13, ALL), a(0x1C0B, 13, ALL), // Leather bustier sleeves
     // -- Studded (16) ----------------------------------------------------------
-    a(0x13DB, 16), a(0x13E2, 16), // Studded chest
-    a(0x13DC, 16), a(0x13D4, 16), // Studded sleeves
-    a(0x13DA, 16), a(0x13E1, 16), // Studded leggings
-    a(0x13D5, 16), a(0x13DD, 16), // Studded gloves
-    a(0x13D6, 16),                // Studded gorget
-    a(0x1C02, 16), a(0x1C03, 16), // Female studded chest
-    a(0x1C0C, 16), a(0x1C0D, 16), // Studded bustier sleeves
+    a(0x13DB, 16, HALF), a(0x13E2, 16, HALF), // Studded chest
+    a(0x13DC, 16, HALF), a(0x13D4, 16, HALF), // Studded sleeves
+    a(0x13DA, 16, HALF), a(0x13E1, 16, HALF), // Studded leggings
+    a(0x13D5, 16, HALF), a(0x13DD, 16, HALF), // Studded gloves
+    a(0x13D6, 16, HALF),                // Studded gorget
+    a(0x1C02, 16, HALF), a(0x1C03, 16, HALF), // Female studded chest
+    a(0x1C0C, 16, HALF), a(0x1C0D, 16, HALF), // Studded bustier sleeves
     // -- Ringmail (22) ---------------------------------------------------------
-    a(0x13EC, 22), a(0x13ED, 22), // Ringmail tunic
-    a(0x13EE, 22), a(0x13EF, 22), // Ringmail sleeves
-    a(0x13F0, 22), a(0x13F1, 22), // Ringmail leggings
-    a(0x13EB, 22), a(0x13F2, 22), // Ringmail gloves
+    a(0x13EC, 22, NONE), a(0x13ED, 22, NONE), // Ringmail tunic
+    a(0x13EE, 22, NONE), a(0x13EF, 22, NONE), // Ringmail sleeves
+    a(0x13F0, 22, NONE), a(0x13F1, 22, NONE), // Ringmail leggings
+    a(0x13EB, 22, NONE), a(0x13F2, 22, NONE), // Ringmail gloves
     // -- Chainmail (28) --------------------------------------------------------
-    a(0x13BF, 28), a(0x13C4, 28), // Chain tunic
-    a(0x13BE, 28), a(0x13C3, 28), // Chain leggings
-    a(0x13BB, 28), a(0x13C0, 28), // Chain coif
+    a(0x13BF, 28, NONE), a(0x13C4, 28, NONE), // Chain tunic
+    a(0x13BE, 28, NONE), a(0x13C3, 28, NONE), // Chain leggings
+    a(0x13BB, 28, NONE), a(0x13C0, 28, NONE), // Chain coif
     // -- Platemail (40) --------------------------------------------------------
-    a(0x1415, 40), a(0x1416, 40), // Plate chest
-    a(0x1410, 40), a(0x1417, 40), // Plate arms
-    a(0x1411, 40), a(0x141A, 40), // Plate legs
-    a(0x1414, 40), a(0x1418, 40), // Plate gloves
-    a(0x1413, 40),                // Plate gorget
-    a(0x1412, 40),                // Plate helm
-    a(0x1C04, 30), a(0x1C05, 30), // Female plate chest
+    a(0x1415, 40, NONE), a(0x1416, 40, NONE), // Plate chest
+    a(0x1410, 40, NONE), a(0x1417, 40, NONE), // Plate arms
+    a(0x1411, 40, NONE), a(0x141A, 40, NONE), // Plate legs
+    a(0x1414, 40, NONE), a(0x1418, 40, NONE), // Plate gloves
+    a(0x1413, 40, NONE),                // Plate gorget
+    a(0x1412, 40, NONE),                // Plate helm
+    a(0x1C04, 30, NONE), a(0x1C05, 30, NONE), // Female plate chest
     // -- Bone (30) -------------------------------------------------------------
-    a(0x144F, 30), a(0x1454, 30), // Bone chest
-    a(0x144E, 30), a(0x1453, 30), // Bone arms
-    a(0x1452, 30), a(0x1457, 30), // Bone legs
-    a(0x1450, 30), a(0x1455, 30), // Bone gloves
-    a(0x1451, 30), a(0x1456, 30), // Bone helm
+    a(0x144F, 30, NONE), a(0x1454, 30, NONE), // Bone chest
+    a(0x144E, 30, NONE), a(0x1453, 30, NONE), // Bone arms
+    a(0x1452, 30, NONE), a(0x1457, 30, NONE), // Bone legs
+    a(0x1450, 30, NONE), a(0x1455, 30, NONE), // Bone gloves
+    a(0x1451, 30, NONE), a(0x1456, 30, NONE), // Bone helm
     // -- Helms -----------------------------------------------------------------
-    a(0x140C, 18),                // Bascinet
-    a(0x1408, 30),                // Close helm
-    a(0x140A, 30),                // Helmet
-    a(0x140E, 30),                // Norse helm
-    a(0x1F0B, 20),                // Orc helm
+    a(0x140C, 18, NONE),                // Bascinet
+    a(0x1408, 30, NONE),                // Close helm
+    a(0x140A, 30, NONE),                // Helmet
+    a(0x140E, 30, NONE),                // Norse helm
+    a(0x1F0B, 20, NONE),                // Orc helm
     // -- Shields ---------------------------------------------------------------
-    a(0x1B73,  7),                // Buckler
-    a(0x1B7A,  8),                // Wooden shield
-    a(0x1B72, 10),                // Bronze shield
-    a(0x1B7B, 11),                // Metal shield
-    a(0x1B78, 12),                // Wooden kite shield
-    a(0x1B74, 16),                // Metal kite shield
-    a(0x1B76, 23),                // Heater shield
-    a(0x1BC4, 30),                // Order shield
-    a(0x1BC3, 32),                // Chaos shield
+    a(0x1B73,  7, NONE),                // Buckler
+    a(0x1B7A,  8, NONE),                // Wooden shield
+    a(0x1B72, 10, NONE),                // Bronze shield
+    a(0x1B7B, 11, NONE),                // Metal shield
+    a(0x1B78, 12, NONE),                // Wooden kite shield
+    a(0x1B74, 16, NONE),                // Metal kite shield
+    a(0x1B76, 23, NONE),                // Heater shield
+    a(0x1BC4, 30, NONE),                // Order shield
+    a(0x1BC3, 32, NONE),                // Chaos shield
 ];
 
 /// A row, so the table above reads as data.
-const fn a(graphic: u16, rating: u16) -> ArmorData {
-    ArmorData { graphic, rating }
+const fn a(graphic: u16, rating: u16, meditation: MedAllowance) -> ArmorData {
+    ArmorData {
+        graphic,
+        rating,
+        meditation,
+    }
 }
+
+// Short names for the allowance column, so a row still fits on one line.
+const ALL: MedAllowance = MedAllowance::All;
+const HALF: MedAllowance = MedAllowance::Half;
+const NONE: MedAllowance = MedAllowance::None;
 
 #[cfg(test)]
 mod tests {
@@ -176,6 +208,20 @@ mod tests {
         assert_eq!(armor_data(0x13CC).expect("leather chest").rating, 13);
         assert_eq!(armor_data(0x1B73).expect("buckler").rating, 7);
         assert!(armor_data(0x0000).is_none());
+    }
+
+    #[test]
+    fn only_leather_and_studded_let_you_meditate() {
+        // The one fact that makes Meditation a mage's skill: a leather suit costs
+        // nothing, studded costs half its rating, and every metal piece — down to
+        // the buckler on your arm — costs all of it.
+        let med = |graphic: u16| armor_data(graphic).expect("in the table").meditation;
+        assert_eq!(med(0x13CC), MedAllowance::All); // leather chest
+        assert_eq!(med(0x13DB), MedAllowance::Half); // studded chest
+        assert_eq!(med(0x1415), MedAllowance::None); // plate chest
+        assert_eq!(med(0x13BF), MedAllowance::None); // chain tunic
+        assert_eq!(med(0x1B73), MedAllowance::None); // buckler
+        assert_eq!(med(0x144F), MedAllowance::None); // bone chest
     }
 
     #[test]

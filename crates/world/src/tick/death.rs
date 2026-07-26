@@ -82,13 +82,13 @@ impl World {
         if fame == 0 && karma == 0 {
             return; // a creature with no standing to give
         }
-        let gained_fame = combat::titles::award_fame(&mut self.state, killer, fame);
-        let gained_karma = combat::titles::award_karma(&mut self.state, killer, -karma);
+        let gained_fame = openshard_state::title::award_fame(&mut self.state, killer, fame);
+        let gained_karma = openshard_state::title::award_karma(&mut self.state, killer, -karma);
         // Only a player is told; a creature has nobody to tell.
         if self.state.registry.has::<Client>(killer) {
             for line in [
-                combat::titles::award_message(gained_fame, false),
-                combat::titles::award_message(gained_karma, true),
+                openshard_state::title::award_message(gained_fame, false),
+                openshard_state::title::award_message(gained_karma, true),
             ]
             .into_iter()
             .flatten()

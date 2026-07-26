@@ -146,6 +146,8 @@ pub struct World {
     moved: Cursor<MobileMoved>,
     /// What combat reported hit, for the AI's retaliation.
     damaged: Cursor<openshard_combat::MobileDamaged>,
+    /// Poisoners who fumbled a dose onto themselves, for the tick to apply.
+    fumbled: Cursor<openshard_skills::PoisonedSelf>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     turned: Cursor<MobileTurned>,
     /// Skill gains this tick, to push the single-line `0x3A` update to the owner.
@@ -249,6 +251,7 @@ impl World {
             entered: Cursor::default(),
             moved: Cursor::default(),
             damaged: Cursor::default(),
+            fumbled: Cursor::default(),
             turned: Cursor::default(),
             changed: Cursor::default(),
             disturbed: Cursor::default(),
@@ -489,6 +492,15 @@ impl World {
         }
         combat::swings(&mut self.state);
         combat::volleys(&mut self.state);
+        // A poisoner who fumbled a dose onto themselves. `skills` decides it and
+        // says so; applying poison is combat's one door, and this is the tick
+        // closing the gap — the decide-then-apply split again.
+        let fumbles: Vec<openshard_skills::PoisonedSelf> =
+            self.state.bus.read(&mut self.fumbled).copied().collect();
+        let ticks = self.state.ticks;
+        for fumble in fumbles {
+            combat::apply_poison(&mut self.state, fumble.serial, fumble.level, ticks);
+        }
         combat::expire_criminality(&mut self.state);
         combat::decay_murders(&mut self.state);
         combat::poison_tick(&mut self.state);
@@ -516,6 +528,7 @@ impl World {
         for entity in magic::expire_frozen(&mut self.state, now) {
             self.notify_self(entity, "You are no longer frozen.");
         }
+        skills::expire_ghost_contact(&mut self.state);
         magic::regen_mana(&mut self.state);
         combat::regen_stamina(&mut self.state);
         combat::regen_hits(&mut self.state);
@@ -791,6 +804,11 @@ impl World {
                 min,
                 max,
             } => items::set_weapon(&mut self.state, serial, speed, min, max),
+            Command::SetPoison {
+                serial,
+                level,
+                charges,
+            } => items::set_poison(&mut self.state, serial, level, charges),
             Command::UseSkill {
                 serial,
                 skill,

@@ -150,6 +150,9 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     }
+    // Reaching for something breaks concentration — ServUO calls
+    // `DisruptiveAction` from `Mobile.Lift` and from both `Use` overloads.
+    state.disrupt(player);
     debug!(%item_serial, "lifted onto the cursor");
 }
 

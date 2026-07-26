@@ -26,7 +26,7 @@ use openshard_protocol::{
 
 use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
-    Heading, Hitpoints, Movement, Name, Position, Staff,
+    Heading, HearsGhosts, Hitpoints, Meditating, Movement, Name, Position, Staff,
 };
 use crate::dialogue::Dialogue;
 use crate::obstruct::{LiveTerrain, Obstructions};
@@ -37,6 +37,9 @@ use crate::sectors::{Sectors, VIEW_RANGE};
 
 /// A character's height above the ground when the facet has no map to ask.
 const Z_WITHOUT_A_MAP: i8 = 0;
+
+/// "You stop meditating." — the line a broken trance says, ServUO's 500134.
+const STOP_MEDITATING: u32 = 500_134;
 
 /// The hue and font a private system line is drawn in — the client's usual muted
 /// grey, so it reads as the server talking rather than as a mobile speaking.
@@ -533,6 +536,19 @@ pub enum TargetPurpose {
     Skill {
         /// Which skill, by id.
         skill: u8,
+    },
+    /// A skill's *second* cursor: it has one answer and wants another.
+    ///
+    /// Poisoning is the reason — ServUO asks for the potion, then for the blade —
+    /// and it is a separate variant rather than an `Option` on
+    /// [`Skill`](Self::Skill) so that the common case stays a skill and one click.
+    /// The first answer is carried as an entity and re-checked when the second
+    /// lands: a potion drunk or dropped while the cursor was up poisons nothing.
+    SkillSecond {
+        /// Which skill, by id.
+        skill: u8,
+        /// What its first cursor came back with.
+        first: EntityId,
     },
     /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
     /// raises a cursor rather than guessing which of several nearby doors was meant.
@@ -1338,6 +1354,37 @@ impl WorldState {
             return true;
         }
         watcher == other || self.registry.has::<Ghost>(watcher) || self.is_staff(watcher)
+    }
+
+    /// A mobile did something that breaks concentration — ServUO's
+    /// `Mobile.DisruptiveAction`.
+    ///
+    /// Today that means one thing: a meditative trance ends and the mobile is told
+    /// so. It is substrate rather than a rule for the same reason `can_see_mobile`
+    /// is — every crate that *does* something disruptive has to be able to say so
+    /// (a step, a blow taken, a word spoken, an item lifted), and none of them can
+    /// depend on the crate that owns Meditation. ServUO calls it from exactly those
+    /// places, and this is called from their counterparts here.
+    pub fn disrupt(&mut self, mobile: EntityId) {
+        if self.registry.remove::<Meditating>(mobile).is_some() {
+            self.localized_message(mobile, STOP_MEDITATING, "");
+        }
+    }
+
+    /// Whether `listener` may *hear* mobile `other` speak.
+    ///
+    /// Everything anyone can see, they can hear — and one thing more: a living
+    /// mobile under Spirit Speak catches what the dead are saying, which is the
+    /// whole point of the classic skill. The two questions are deliberately two
+    /// predicates: a ghost stays *invisible* to that listener, so `can_see_mobile`
+    /// must not be relaxed to cover it, or contacting the netherworld would make
+    /// the dead walk visibly among the living.
+    #[must_use]
+    pub fn can_hear_mobile(&self, listener: EntityId, other: EntityId) -> bool {
+        if self.can_see_mobile(listener, other) {
+            return true;
+        }
+        self.registry.has::<Ghost>(other) && self.registry.has::<HearsGhosts>(listener)
     }
 
     /// A mobile's standing — the colour of its health bar. Absent reads as

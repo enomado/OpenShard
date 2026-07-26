@@ -279,6 +279,10 @@ connection takes the mobile off every screen that had it.
   saved with their mobile as an `EffectRecord` list on the character or mobile row,
   so a relog cannot wash a debuff off — see the `magic` effects work in §6 for the
   shape (`World::effects_of`/`apply_effects`, the ledger-only restore for buffs).
+- [x] **The poison on an item persists (schema v18).** A bottled dose or the
+  coating the Poisoning skill put on a blade. The same lesson as the spellbook mask:
+  all four poison potions are one graphic, so an unsaved bottle comes back empty and
+  a blade somebody spent a potion on comes back clean.
 - [x] **A corpse's story persists (schema v17).** Who it was, who killed it, who
   has read it with Forensic Evaluation and who has rifled it, as one nullable JSON
   column on the item row. A corpse lies for seven minutes and a shard restarts
@@ -873,9 +877,51 @@ Roughly in dependency order, each script-first:
       loyalty and tameability, and its skill gates are "only a tamed creature",
       "tamed or tameable", "anything". Without pets it is a window of dashes behind
       a gate nobody can pass.
-    - [ ] **Meditation, Spirit Speak, Begging, Inscribe, Poisoning, Remove Trap** —
-      each self-contained, each wanting one small thing (free hands, a corpse
-      nearby, a poison potion, a trapped container).
+    - [x] **Meditation and Spirit Speak** — the two skills a mobile turns on itself,
+      so pressing the button *is* the whole use and no cursor goes up.
+      **Meditation** is one `Meditating` marker and no timer: what ends a trance is
+      somebody doing something, and that is now a real seam — `WorldState::disrupt`
+      (ServUO's `DisruptiveAction`) called from the step, the blow, the word and the
+      lift, which is the same call list the stealth slice will reveal on. Its gates
+      are ServUO's in order (busy 501845, body under a tenth 501849, at peace
+      501846, hands not free 502626 — a spellbook allowed, a shield not).
+      **And the trance had to be worth something**, so mana regen stopped being a
+      flat sixty ticks for everybody and became ServUO's pre-AoS curve:
+      `medPoints = (Int + Meditation)/2` from seven seconds a point down to three
+      quarters of one, plus an **armour offset in seconds** — which is what makes a
+      mage in plate regenerate like a warrior and the free-hands rule mean anything.
+      The offset needed one more column of ServUO's armour data
+      (`MedAllowance`: leather `All`, studded `Half`, metal `None`), and the per-mobile
+      rate is **stateless** — a mobile gets its point when the tick counter divides
+      its *own* rate, so nothing is stored and nothing is saved.
+      **Spirit Speak** is the pre-AoS form: `HearsGhosts { until }` for
+      `base/50*90` seconds (floor fifteen), and the gate it feeds is a *second*
+      predicate — `can_hear_mobile`, not a relaxed `can_see_mobile`, because a ghost
+      must stay invisible to the listener or contacting the netherworld would make
+      the dead walk visibly among the living. It does not persist, being seconds long,
+      like a cast in flight.
+    - [x] **Poisoning and Taste Identification**, the two ends of one fact. A
+      `PoisonCharges { level, charges }` on an *item* is both a bottled dose and a
+      coating on a blade — ServUO tells them apart by what the item is, and so does
+      this. Poisoning is the engine's only **two-cursor** skill (the potion, then the
+      blade), which added `TargetPurpose::SkillSecond`; the potion is spent either
+      way and leaves the empty bottle; a coated blade holds `18 - level*2` doses and
+      `combat` spends one into whatever it cuts, through the one `apply_poison` door.
+      A fumble under grandmaster can poison the poisoner — decided in `skills`,
+      *emitted*, and applied by the tick through combat, because applying poison is
+      combat's door and `skills` sits below it. Taste ID reads the same component; so
+      does Arms Lore, which is ServUO's behaviour (a weapon master does not have to
+      lick a sword). The four potions **share a graphic** (`0x0F0A`), so which poison
+      a bottle holds cannot come from a core table: it is on the item, put there by
+      the pack (`op_set_poison`) or a staff `.poison <level>`, and **persisted**
+      (schema v18) for exactly the reason a spellbook's mask is.
+      **Awarding fame and karma moved out of `combat` into `state::title`** with
+      this: Poisoning costs twenty karma, and `skills` cannot depend on `combat`
+      because `combat` already depends on `skills`. The file's own note had said a
+      crate of its own "would depend on combat for its only input" — a kill stopped
+      being the only input, so standing now lives beside the table it feeds.
+    - [ ] **Begging, Inscribe, Remove Trap** — each self-contained, each wanting one
+      small thing (a townsperson to beg from, a writable book, a trapped container).
     - [ ] **Stealth is a subsystem, not a skill.** Hiding, Stealth, Detect Hidden,
       Tracking, Snooping and Stealing all sit on a `Hidden` component wired into
       the one `WorldState::can_see_mobile` gate where `Ghost` already lives — and

@@ -176,7 +176,11 @@ CREATE TABLE IF NOT EXISTS items (
     -- a corpse's story as JSON (who it was, who killed it, who has read and
     -- rifled it), like the skills on a character: four fields only useful
     -- together, and only on corpses. NULL for every other item.
-    corpse TEXT
+    corpse TEXT,
+    -- the poison on it: level and doses left, NULL for a clean item. Two small
+    -- numbers that are meaningless apart, so one column.
+    poison_level INTEGER,
+    poison_charges INTEGER
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 -- NPC mobiles and placed decoration, each a JSON record keyed by serial: a
@@ -395,8 +399,9 @@ impl Store for SqliteStore {
                         "INSERT OR REPLACE INTO items \
                      (serial, owner, graphic, hue, amount, stackable, gump, \
                       loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                      corpse) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                      corpse, poison_level, poison_charges) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,\
+                             ?20,?21)",
                         params![
                             item.serial,
                             item.owner,
@@ -426,6 +431,8 @@ impl Store for SqliteStore {
                                 .map(serde_json::to_string)
                                 .transpose()
                                 .unwrap_or_default(),
+                            item.poison.map(|(level, _)| level),
+                            item.poison.map(|(_, charges)| charges),
                         ],
                     )?;
                     Ok(())
@@ -620,7 +627,7 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                     corpse \
+                     corpse, poison_level, poison_charges \
                      FROM items",
                 )
                 .map_err(database)?;
@@ -652,6 +659,9 @@ impl Store for SqliteStore {
                             corpse: row
                                 .get::<_, Option<String>>(18)?
                                 .and_then(|json| serde_json::from_str(&json).ok()),
+                            poison: row
+                                .get::<_, Option<u8>>(19)?
+                                .zip(row.get::<_, Option<u16>>(20)?),
                             // A placeholder overwritten below; the location cannot be
                             // built inside `query_map`'s closure return type cleanly.
                             location: ItemLocation::Ground {
@@ -937,6 +947,7 @@ mod tests {
             name: None,
             spellbook: None,
             corpse: None,
+            poison: None,
             location: ItemLocation::Contained {
                 container,
                 x: 0,
@@ -1233,6 +1244,32 @@ mod tests {
             let items = store.items().await.expect("read");
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].corpse.as_ref(), Some(&story));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn the_poison_on_an_item_survives_a_reopen() {
+        // All four poison potions are the same graphic, so an unsaved bottle comes
+        // back as an empty one and a blade a player spent a potion coating comes
+        // back clean — the `spellbook` lesson, one schema bump later.
+        let path = temp_db("item-poison");
+        {
+            let store = SqliteStore::open(&path).expect("open");
+            let mut item = contained(0x4000_0001, 1, 1);
+            item.poison = Some((3, 12));
+            let mut snap = snapshot(vec![character(1, 100)], vec![]);
+            snap.inventories = vec![crate::record::Inventory {
+                owner: 1,
+                items: vec![item],
+            }];
+            store.save(&snap).await.expect("save");
+        }
+        {
+            let store = SqliteStore::open(&path).expect("reopen");
+            let items = store.items().await.expect("read");
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].poison, Some((3, 12)));
         }
         let _ = std::fs::remove_file(&path);
     }
