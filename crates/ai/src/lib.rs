@@ -17,8 +17,8 @@ use openshard_items as items;
 use openshard_movement::{direction_toward, find_path, step_from, Terrain};
 use openshard_protocol::{Direction, Point};
 use openshard_state::components::{
-    Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Position, RangedAttack,
-    Scripted,
+    Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position,
+    RangedAttack, Scripted,
 };
 use openshard_state::sectors::{distance, in_range};
 use openshard_state::WorldState;
@@ -498,5 +498,52 @@ pub fn retaliate(state: &mut WorldState, blows: &[MobileDamaged]) {
                 next_swing,
             },
         );
+    }
+}
+
+/// How close a pet stays to its owner when following — ServUO's `WalkMobileRange`
+/// with a gap of one, so it stands beside you rather than on you.
+const PET_FOLLOW_GAP: u32 = 2;
+/// And how far it will chase before giving up and coming back.
+const PET_LEASH: u32 = 15;
+
+/// A pet's beat: what it does about the last thing it was told.
+///
+/// The same shape as [`think_one`] and deliberately *not* part of it: a pet does
+/// not decide anything for itself, it carries out an order. What it shares is the
+/// return — a direction for the tick to step — so a pet moves through the same
+/// `step` a wild creature and a townsperson use.
+#[must_use]
+pub fn pet_beat(state: &mut WorldState, pet: EntityId) -> Option<u8> {
+    let order = *state.registry.get::<Pet>(pet)?;
+    let &Position(at) = state.registry.get::<Position>(pet)?;
+    let facet = state.facet_of(pet);
+    let owner = state.registry.entity_of(order.owner)?;
+    match order.order {
+        PetOrder::Stay | PetOrder::Stop => None,
+        PetOrder::Attack => {
+            // The fighting itself is `combat::swings`, exactly as for any other
+            // mobile with a `Combat`; this only closes the distance.
+            let target = order
+                .order_target
+                .and_then(|serial| state.registry.entity_of(serial))?;
+            let &Position(target_at) = state.registry.get::<Position>(target)?;
+            if openshard_state::in_range(at, target_at, 1) {
+                return None;
+            }
+            step_toward(state, facet, at, target_at, true)
+        }
+        PetOrder::Guard | PetOrder::Follow | PetOrder::Come => {
+            let &Position(owner_at) = state.registry.get::<Position>(owner)?;
+            if openshard_state::in_range(at, owner_at, PET_FOLLOW_GAP) {
+                return None;
+            }
+            if !openshard_state::in_range(at, owner_at, PET_LEASH) {
+                // Too far to walk back sensibly — a pet left behind waits rather
+                // than pathing across the map, the same give-up the chase has.
+                return None;
+            }
+            step_toward(state, facet, at, owner_at, true)
+        }
     }
 }

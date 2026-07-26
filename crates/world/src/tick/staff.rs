@@ -23,10 +23,18 @@ impl World {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
             openshard_state::TargetPurpose::Skill { skill } => {
-                if let Some(theft) =
-                    skills::on_target(&mut self.state, actor, skill, response.serial)
-                {
+                let outcome = skills::on_target(&mut self.state, actor, skill, response.serial);
+                if let Some(theft) = outcome.stolen {
                     self.carry_out_theft(theft);
+                }
+                if let Some(tamed) = outcome.tamed {
+                    npc::tame(
+                        &mut self.state,
+                        tamed.creature,
+                        tamed.tamer,
+                        tamed.slots,
+                        tamed.angered,
+                    );
                 }
             }
             openshard_state::TargetPurpose::SkillSecond { skill, first } => {

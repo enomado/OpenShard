@@ -1120,6 +1120,7 @@ mod tests {
                 npc_home: Some((1400, 1600, 0)),
                 npc_wander: 2,
                 night_home: None,
+                pet: None,
                 restock: None,
                 spawned_by: None,
                 effects: Vec::new(),

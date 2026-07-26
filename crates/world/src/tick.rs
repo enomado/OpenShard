@@ -1152,7 +1152,18 @@ impl World {
                     }
                 }
             }
-            if let Some(dir) = ai::think_one(&mut self.state, creature) {
+            // A pet does not decide anything: it carries out its last order, which
+            // is a different beat from a wild brain's and takes the place of it.
+            let step = if self
+                .state
+                .registry
+                .has::<openshard_state::components::Pet>(creature)
+            {
+                ai::pet_beat(&mut self.state, creature)
+            } else {
+                ai::think_one(&mut self.state, creature)
+            };
+            if let Some(dir) = step {
                 if let Some(serial) = self.state.registry.serial_of(creature) {
                     self.step(serial.raw(), dir);
                 }

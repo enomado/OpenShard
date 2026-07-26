@@ -20,6 +20,7 @@ mod mind;
 mod poison;
 mod social;
 mod stealth;
+mod taming;
 
 pub use bandage::{
     finish_bandages, use_bandage, use_lockpick, BandageFinished, BandageStarted, LockpickBroke,
@@ -29,6 +30,7 @@ pub use bard::{expire_songs, play_instrument, InstrumentSpent};
 pub use poison::PoisonedSelf;
 pub use social::Begged;
 pub use stealth::{snooping, Stolen};
+pub use taming::{followers_of, Tamed, MAX_FOLLOWERS};
 
 use openshard_entities::{EntityId, Serial};
 use openshard_gateway::ConnectionId;
@@ -65,6 +67,7 @@ const ASKS: &[(Skill, Ask)] = &[
     (Skill::Begging,   Ask { prompt: 500_397, range: 2 }),  // To whom do you wish to grovel?
     (Skill::RemoveTrap, Ask { prompt: 502_368, range: 2 }), // Which trap will you attempt to disarm?
     (Skill::Stealing,  Ask { prompt: 502_698, range: stealth::STEAL_RANGE }), // What do you wish to steal?
+    (Skill::AnimalTaming, Ask { prompt: 502_789, range: taming::TAME_RANGE }), // Tame which animal?
 ];
 
 /// The ask for a skill id, if the core raises a cursor for it.
@@ -149,33 +152,51 @@ pub fn expire_ghost_contact(state: &mut WorldState) {
 /// Returns a theft to carry out, if the skill was Stealing and it resolved: moving
 /// an item into a pack is `items`' door and turning a thief criminal is `combat`'s,
 /// so this decides and the tick applies — the split `ai::think_one` uses.
-pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -> Option<Stolen> {
+pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -> Outcome {
     // The bard skills judge their own reach, which widens with the skill, so they
     // are not in the fixed table.
     if let Some(skill @ (Skill::Peacemaking | Skill::Provocation | Skill::Discordance)) =
         Skill::from_id(id)
     {
-        let target = Serial::new(target).and_then(|s| state.registry.entity_of(s))?;
+        let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+            return Outcome::default();
+        };
         if !within(state, actor, target, bard::bard_range(state, actor, id)) {
-            return None;
+            return Outcome::default();
         }
         match skill {
             Skill::Peacemaking => bard::peacemaking(state, actor, target),
             Skill::Provocation => bard::provoke_first(state, actor, target),
             _ => bard::discordance(state, actor, target),
         }
-        return None;
+        return Outcome::default();
     }
-    let ask = ask_for(id)?;
-    let target = Serial::new(target).and_then(|s| state.registry.entity_of(s))?;
+    let Some(ask) = ask_for(id) else {
+        return Outcome::default();
+    };
+    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+        return Outcome::default();
+    };
     // Checked server-side even though the cursor was raised with a range: the range
     // on a `0x6C` is the client's own courtesy, and a client is never the judge of
     // reach — the same rule `ITEM_REACH` holds for a lift.
     if !within(state, actor, target, ask.range) {
-        return None;
+        return Outcome::default();
     }
-    if Skill::from_id(id) == Some(Skill::Stealing) {
-        return stealth::stealing(state, actor, target);
+    match Skill::from_id(id) {
+        Some(Skill::Stealing) => {
+            return Outcome {
+                stolen: stealth::stealing(state, actor, target),
+                ..Outcome::default()
+            }
+        }
+        Some(Skill::AnimalTaming) => {
+            return Outcome {
+                tamed: taming::taming(state, actor, target),
+                ..Outcome::default()
+            }
+        }
+        _ => {}
     }
     match Skill::from_id(id) {
         Some(Skill::Anatomy) => lore::anatomy(state, actor, target),
@@ -191,7 +212,17 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -
         Some(Skill::RemoveTrap) => social::remove_trap(state, actor, target),
         _ => {}
     }
-    None
+    Outcome::default()
+}
+
+/// What a resolved skill wants the tick to do, where the doing belongs to another
+/// crate. Empty for the great majority, which finish where they stand.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Outcome {
+    /// A theft to carry out: `items` moves it, `combat` flags the thief.
+    pub stolen: Option<Stolen>,
+    /// A taming: `npc` owns what a creature is, so it makes the pet.
+    pub tamed: Option<Tamed>,
 }
 
 /// A skill's *second* cursor came back. Only Poisoning asks twice.

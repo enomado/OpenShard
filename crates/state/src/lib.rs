@@ -43,6 +43,7 @@ pub mod rng;
 pub mod runtime;
 pub mod sectors;
 pub mod skill;
+pub mod tame;
 pub mod title;
 pub mod weapon;
 

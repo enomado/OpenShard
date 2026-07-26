@@ -6,7 +6,8 @@
 //! them was a lie the client had no way to check. They are **read-site
 //! derivations** now, in the shape `combat::equipped_weapon` established: gold and
 //! weight come from `items::carried` walking the pack, armour from
-//! `combat::armor` summing what is worn, followers from whether a mount is under
+//! `combat::armor` summing what is worn, followers from the pets you have and the
+//! mount under
 //! the rider. Nothing is mirrored onto the mobile, so an item moving needs no
 //! bookkeeping — and none of the item code has to know the status bar exists.
 //!
@@ -133,7 +134,10 @@ impl World {
             // A mount takes a follower slot in both references. Real pet slots
             // wait on taming; this is the one follower the engine can have today,
             // and reporting it is truer than reporting none.
-            followers: u8::from(self.state.registry.has::<Riding>(entity)),
+            // Pets plus the mount under you — a read-site derivation
+            // (`skills::followers_of`), so a pet that dies or is released stops
+            // counting the instant it does, with nothing to keep in step.
+            followers: skills::followers_of(&self.state, entity),
         }
     }
 

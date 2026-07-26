@@ -565,6 +565,7 @@ mod tests {
             title: None,
             npc_home: None,
             night_home: None,
+            pet: None,
             restock: None,
             npc_wander: 0,
             spawned_by: Some(1),

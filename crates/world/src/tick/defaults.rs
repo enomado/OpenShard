@@ -59,7 +59,9 @@ pub(super) const BODY_WEIGHT: u16 = 14;
 /// The sum of the three stats a character may train to — the classic 225.
 pub(super) const STAT_CAP: u16 = 225;
 /// How many pets may follow a character. Only the shape matters until pets do.
-pub(super) const MAX_FOLLOWERS: u8 = 5;
+/// How many followers a character may keep at once — the same number the taming
+/// gate reads, so the bar and the refusal can never disagree.
+pub(super) const MAX_FOLLOWERS: u8 = openshard_skills::MAX_FOLLOWERS;
 
 /// The weight a character can carry before it is overloaded, from its strength.
 ///

@@ -994,11 +994,33 @@ Roughly in dependency order, each script-first:
       `ItemUsed` the pack sees — default in core, customise in the pack, in that
       order. Deferred: the per-target duration scaling (a flat thirty seconds here),
       and the AoS/SE resistance-mod form of Discordance.
-    - [ ] **Taming wants pets**, which the engine does not have at all — an owner,
-      follower slots that mean something (the status bar counts a mount and
-      nothing else), control commands through `chat`, and stabling. Animal Taming,
-      Herding and Veterinary ride on it. Listed as its own pillar in the gaps
-      below, and this is the same entry.
+    - [x] **Taming, and the pets it wanted.** A `Pet { owner, slots, order,
+      order_target }` on the creature and a `Tamable { min_skill, slots }` for the
+      kind, with a core table keyed by body (`state::tame`) that a spawn may
+      override — and **every rideable body is tamable**, derived from the mount
+      table rather than listed twice, because a horse you cannot tame is a horse
+      nobody can have (the `mount_body_for` lesson, applied before it could bite
+      again).
+      **Animal Taming** keeps every gate in ServUO's order — not tamable, already
+      tame, too many followers, no chance — and the anger roll, which is what makes
+      taming a bear a decision rather than a formality; its timer is dropped the way
+      Poisoning's is. The taming itself is an intent: `npc::tame` makes the pet,
+      because `npc` owns what a creature *is*, and it gives a brainless prop animal
+      a brain, without which a pet would never beat and so never follow.
+      **A pet does not decide anything**: `ai::pet_beat` carries out its last order
+      and returns a direction, so a pet moves through the same `step` a wild
+      creature and a townsperson use, and an attack order simply points the `Combat`
+      the AI already drives. **Orders come through speech** (`npc::pets`) — "all
+      kill", "<name> stay" — matched on the words, because the `0xAD` keyword block
+      is skipped by the parser; ServUO's keyword ids are recorded beside the table
+      for the day it is decoded. **Follower slots** are a read-site derivation
+      (`skills::followers_of`, pets plus the mount), so the bar and the taming
+      refusal can never disagree, and the pet **persists** on the mobile's JSON
+      record — a restart that quietly released every pet on the shard would be the
+      `Murders` lesson again, over property somebody spent an hour earning.
+      Deferred: **stabling** (which wants a pet saved with no position, the
+      logged-out-character shape), **loyalty** (which is pointless without feeding),
+      and **Herding**.
   - [x] **Item-triggered skills** — Healing, Veterinary and Lockpicking, through
     the double-click seam rather than the window, because the action that uses them
     *is* a double-click on the bandage or the pick. They come in through

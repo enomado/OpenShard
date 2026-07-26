@@ -1319,3 +1319,161 @@ fn a_lockpick_opens_a_lock_it_is_good_enough_for() {
         "and is open for good"
     );
 }
+
+#[test]
+fn taming_makes_a_creature_yours_and_it_follows() {
+    // The whole pillar in one path: the skill decides, `npc::tame` makes the pet,
+    // the pet's own beat walks it after you through the same `step` a wild creature
+    // uses, and the status bar counts it as a follower.
+    let now = Instant::now();
+    let mut world = world();
+    let tamer = enter(&mut world, now);
+    let player = world.state.players[&tamer];
+    train(&mut world, tamer, Skill::AnimalTaming, 1000);
+    world.tick(now);
+    // A horse, two tiles off: rideable, so tamable, and inside the cursor's reach.
+    let horse = spawn_mobile_body(&mut world, 0x00C8, Point::new(START.0 + 2, START.1, 0), now);
+    let entity = world
+        .state
+        .registry
+        .entity_of(Serial::new(horse).unwrap())
+        .unwrap();
+    let _ = packets_for(&mut world, tamer);
+
+    let said = use_skill_on(&mut world, tamer, Skill::AnimalTaming, horse, now);
+    // The anger roll can turn it instead; retry until one of the two lands, since
+    // both are real outcomes and only one makes a pet.
+    let mut tries = 0;
+    while !world
+        .state
+        .registry
+        .has::<openshard_state::components::Pet>(entity)
+        && tries < 40
+    {
+        for _ in 0..=(40 * openshard_state::TICKS_PER_SECOND) {
+            world.tick(now);
+        }
+        let _ = packets_for(&mut world, tamer);
+        let _ = use_skill_on(&mut world, tamer, Skill::AnimalTaming, horse, now);
+        tries += 1;
+    }
+    assert!(
+        world
+            .state
+            .registry
+            .has::<openshard_state::components::Pet>(entity),
+        "a grandmaster tames a horse eventually: {said:?}"
+    );
+    assert_eq!(
+        openshard_skills::followers_of(&world.state, player),
+        1,
+        "and it counts against the follower cap"
+    );
+
+    // It follows: put it well out of arm's reach and it walks back. Two tiles is
+    // *already* close enough (the follow gap), which is why it is moved first.
+    let far = Point::new(START.0 + 7, START.1, 0);
+    world.state.registry.insert(entity, Position(far));
+    world.state.facet_state_mut(0).sectors.insert(entity, far);
+    let before = world.state.registry.get::<Position>(entity).unwrap().0;
+    for _ in 0..200 {
+        world.tick(now);
+    }
+    let after = world.state.registry.get::<Position>(entity).unwrap().0;
+    assert!(
+        openshard_state::distance(after, Point::new(START.0, START.1, 0))
+            < openshard_state::distance(before, Point::new(START.0, START.1, 0)),
+        "the pet walked toward its owner: {before:?} → {after:?}"
+    );
+}
+
+#[test]
+fn a_pet_hears_all_stay_and_stops() {
+    // The order surface is speech: "all <order>" for everything you own in earshot,
+    // "<name> <order>" for one. ServUO matches the client's keyword ids; this
+    // matches the words, because the parser skips the keyword block.
+    let now = Instant::now();
+    let mut world = world();
+    let owner = enter(&mut world, now);
+    let player = world.state.players[&owner];
+    let serial = world.state.registry.serial_of(player).unwrap();
+    let horse = spawn_mobile_body(&mut world, 0x00C8, Point::new(START.0 + 3, START.1, 0), now);
+    let pet = world
+        .state
+        .registry
+        .entity_of(Serial::new(horse).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        pet,
+        openshard_state::components::Pet {
+            owner: serial,
+            slots: 1,
+            order: openshard_state::components::PetOrder::Follow,
+            order_target: None,
+        },
+    );
+
+    world.queue(Command::Say {
+        connection: owner,
+        mode: 0,
+        hue: 0,
+        font: 3,
+        text: "all stay".to_owned(),
+    });
+    world.tick(now);
+    assert_eq!(
+        world
+            .state
+            .registry
+            .get::<openshard_state::components::Pet>(pet)
+            .map(|p| p.order),
+        Some(openshard_state::components::PetOrder::Stay)
+    );
+    // And it stops: a staying pet takes no step however far its owner walks.
+    let before = world.state.registry.get::<Position>(pet).unwrap().0;
+    for _ in 0..100 {
+        world.tick(now);
+    }
+    assert_eq!(world.state.registry.get::<Position>(pet).unwrap().0, before);
+}
+
+/// Spawn a creature with a chosen body — what the tamable table is keyed by.
+fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> u32 {
+    world.queue(Command::SpawnMobile {
+        body,
+        hue: 0,
+        hits: 50,
+        notoriety: 5,
+        damage: 5,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 0,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: at,
+        facet: 0,
+        name: None,
+        title: None,
+        shoe: 0,
+        fame: 0,
+        karma: 0,
+        night_home: None,
+        banker: false,
+        vendor: false,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    world
+        .state
+        .registry
+        .query::<Body>()
+        .filter(|(entity, b)| b.id == body && !world.state.registry.has::<Client>(*entity))
+        .filter_map(|(entity, _)| world.state.registry.serial_of(entity))
+        .map(openshard_entities::Serial::raw)
+        .next_back()
+        .expect("the creature was spawned")
+}

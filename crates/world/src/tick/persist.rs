@@ -1,12 +1,12 @@
 use super::*;
 use openshard_persistence::{
-    CorpseData, DoneQuestRecord, EffectRecord, QuestRecord, RestockRecord,
+    CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord,
 };
 use openshard_state::components::{
     body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, DoneQuest,
-    Escortable, Field, Frozen, NightHome, Npc, PoisonCharges, Poisoned, Price, QuestGiver,
-    QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods, StockRecord,
-    SwingSpeed, Title, Trap, TrapKind, Vendor,
+    Escortable, Field, Frozen, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price,
+    QuestGiver, QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods,
+    StockRecord, SwingSpeed, Title, Trap, TrapKind, Vendor,
 };
 
 impl World {
@@ -373,6 +373,14 @@ impl World {
                 night_home: registry
                     .get::<NightHome>(entity)
                     .map(|h| (h.0.x, h.0.y, h.0.z)),
+                // A tamed creature is property: a restart that quietly released
+                // every pet on the shard would be the `Murders` lesson again.
+                pet: registry.get::<Pet>(entity).map(|pet| PetData {
+                    owner: pet.owner.raw(),
+                    slots: pet.slots,
+                    order: pet_order_code(pet.order),
+                    order_target: pet.order_target.map(Serial::raw),
+                }),
                 restock: registry.get::<Restock>(entity).map(|shelf| RestockRecord {
                     // Seconds, not the tick: a tick counter restarts at boot, so a
                     // saved tick comes back either already due or an hour early.
@@ -1099,6 +1107,19 @@ impl World {
             if let Some(title) = record.title {
                 registry.insert(entity, Title(title));
             }
+            if let Some(pet) = &record.pet {
+                if let Some(owner) = Serial::new(pet.owner) {
+                    registry.insert(
+                        entity,
+                        Pet {
+                            owner,
+                            slots: pet.slots,
+                            order: pet_order_from(pet.order),
+                            order_target: pet.order_target.and_then(Serial::new),
+                        },
+                    );
+                }
+            }
             if let Some((x, y, z)) = record.night_home {
                 registry.insert(entity, NightHome(Point::new(x, y, z)));
             }
@@ -1355,5 +1376,31 @@ const fn trap_kind_from(code: u8) -> TrapKind {
         2 => TrapKind::Dart,
         3 => TrapKind::Poison,
         _ => TrapKind::Magic,
+    }
+}
+
+/// A pet's standing order as one saved byte, and back. Written out by hand for the
+/// same reason the trap kinds and the effect kinds are: the on-disk numbering must
+/// not drift when the enum gains a variant.
+const fn pet_order_code(order: PetOrder) -> u8 {
+    match order {
+        PetOrder::Follow => 0,
+        PetOrder::Come => 1,
+        PetOrder::Stay => 2,
+        PetOrder::Guard => 3,
+        PetOrder::Attack => 4,
+        PetOrder::Stop => 5,
+    }
+}
+
+/// The inverse. An unknown code reads as "follow", the harmless order.
+const fn pet_order_from(code: u8) -> PetOrder {
+    match code {
+        1 => PetOrder::Come,
+        2 => PetOrder::Stay,
+        3 => PetOrder::Guard,
+        4 => PetOrder::Attack,
+        5 => PetOrder::Stop,
+        _ => PetOrder::Follow,
     }
 }

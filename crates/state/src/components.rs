@@ -918,6 +918,55 @@ pub struct HearsGhosts {
     pub until: u64,
 }
 
+/// A creature that can be tamed, and what it takes — ServUO's `BaseCreature`
+/// `Tamable`/`MinTameSkill`/`ControlSlots`.
+///
+/// Data about the *kind*, which is why the core keeps a table of it keyed by body
+/// ([`crate::tame`]) and a spawn may override it: a shard's pack decides what walks
+/// in its woods, and the engine decides what a horse is.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Tamable {
+    /// The Animal Taming needed even to try, in tenths — ServUO's `MinTameSkill`.
+    pub min_skill: u16,
+    /// How much of a tamer's following it takes up, in slots.
+    pub slots: u8,
+}
+
+/// What a tamed creature is doing, and for whom — ServUO's `ControlOrder`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum PetOrder {
+    /// Walk at the owner's heel.
+    Follow,
+    /// Come here, then stand.
+    Come,
+    /// Stay where you are.
+    Stay,
+    /// Stand watch and answer anything that strikes the owner.
+    Guard,
+    /// Kill what the owner named.
+    Attack,
+    /// Stop whatever you were doing.
+    Stop,
+}
+
+/// A tamed creature: whose it is, and what it was last told.
+///
+/// The pet's *brain* reads this and decides a step, exactly as a wild creature's
+/// does — a pet is not a second kind of mobile, it is a creature with an owner and
+/// an order.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Pet {
+    /// Whose it is, by wire serial — a serial rather than an entity because the
+    /// owner logs out and comes back while the pet stands where it was.
+    pub owner: Serial,
+    /// How many follower slots it fills.
+    pub slots: u8,
+    /// What it was last told to do.
+    pub order: PetOrder,
+    /// Whom that order was about, for Attack.
+    pub order_target: Option<Serial>,
+}
+
 /// A mobile nobody can see — ServUO's `Mobile.Hidden`.
 ///
 /// The marker the whole stealth family hangs off. It is read in exactly one place,

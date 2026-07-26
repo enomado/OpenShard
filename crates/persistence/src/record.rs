@@ -410,6 +410,23 @@ pub struct ItemRecord {
     pub location: ItemLocation,
 }
 
+/// A pet's ownership and standing order, as saved — a plain mirror of the world's
+/// `Pet` component.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct PetData {
+    /// Whose it is, by wire serial.
+    pub owner: u32,
+    /// How many follower slots it fills.
+    pub slots: u8,
+    /// What it was last told: 0 follow, 1 come, 2 stay, 3 guard, 4 attack, 5 stop.
+    /// Numbered by hand, like the effect kinds, so the on-disk meaning cannot drift
+    /// when the enum gains a variant.
+    pub order: u8,
+    /// Whom that order was about, for an attack.
+    #[serde(default)]
+    pub order_target: Option<u32>,
+}
+
 /// A corpse's story, as saved — a plain mirror of the world's `Corpse` component.
 ///
 /// Saved because a corpse lies for seven minutes and a shard restarts inside that
@@ -583,6 +600,16 @@ pub struct MobileRecord {
     /// and a `Name` — this is what keeps it answering after a reboot.
     #[serde(default)]
     pub title: Option<String>,
+    /// Whose pet it is and what it was told, if it is one — `(owner serial, slots,
+    /// order, order target)`. A mobile record is a JSON blob, so this needs no
+    /// column and no schema bump; it is defaulted, so an older save loads as a
+    /// world of wild animals.
+    ///
+    /// Saved because a tamed creature is *property*: a restart that quietly
+    /// released every pet on the shard is the `Murders` lesson again, and this time
+    /// it would be released property somebody spent an hour taming.
+    #[serde(default)]
+    pub pet: Option<PetData>,
     /// A townsperson's post `(x, y, z)`, if it keeps one.
     pub npc_home: Option<(u16, u16, i8)>,
     /// Where it sleeps, for the optional daily routine. `None` on every NPC unless

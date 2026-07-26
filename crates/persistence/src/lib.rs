@@ -42,9 +42,9 @@ pub use journal::{Journal, Snapshot};
 pub use pg::PgStore;
 pub use record::{
     AccountRecord, CharacterRecord, CorpseData, CreatureData, DecorationRecord, DoneQuestRecord,
-    DoorState, EffectRecord, Inventory, ItemLocation, ItemRecord, MobileRecord, QuestRecord,
-    RegionRecord, RestockRecord, SkillRecord, SpawnerRecord, StatLockRecord, WorldRecord,
-    EFFECT_POISON, SCHEMA_VERSION,
+    DoorState, EffectRecord, Inventory, ItemLocation, ItemRecord, MobileRecord, PetData,
+    QuestRecord, RegionRecord, RestockRecord, SkillRecord, SpawnerRecord, StatLockRecord,
+    WorldRecord, EFFECT_POISON, SCHEMA_VERSION,
 };
 pub use sqlite::SqliteStore;
 pub use store::{MemoryStore, Store, StoreError};

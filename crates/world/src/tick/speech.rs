@@ -63,6 +63,10 @@ impl World {
             // nearest in a crowded bank. Keywords are whole words now, and a bare
             // "buy"/"sell" needs the shopkeeper named.
             npc::overhear(&mut self.state, connection, actor, &text);
+            // And your own pets hear you: "all kill", "<name> stay". ServUO matches
+            // the client's keyword ids here; this matches the words, because the
+            // parser skips the keyword block and the text arrives either way.
+            npc::hear_pet_order(&mut self.state, actor, &text);
             // And "quest" near a quest giver offers what it has. The same shape
             // again — the word was spoken, and whoever is standing there answers.
             if let Some(serial) = self.state.registry.serial_of(actor) {
