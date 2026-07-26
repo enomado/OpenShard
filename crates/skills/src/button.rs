@@ -92,6 +92,10 @@ pub fn use_skill_button(state: &mut WorldState, entity: EntityId, id: u8) -> boo
         serial,
         skill: id,
     });
+    // Then the core's own behaviour. The pack has already seen the event, so this
+    // is the default and not a competitor: a skill the core has no opinion on
+    // simply does nothing here, having announced itself.
+    crate::handlers::start(state, entity, id);
     true
 }
 

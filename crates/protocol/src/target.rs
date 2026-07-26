@@ -10,7 +10,11 @@ use crate::codec::PacketWriter;
 use crate::login::{expect_id, LoginDecodeError};
 use crate::world::Point;
 
-/// The `type` byte: what kind of thing the cursor may pick.
+/// The `type` byte: what kind of thing the cursor may pick. `0` restricts it to
+/// an object — a mobile or an item — and the client refuses a click on bare
+/// ground; `1` accepts either, and reports a tile when that is what was clicked.
+const TARGET_OBJECT: u8 = 0;
+/// The `type` byte for a cursor that will take a spot on the ground.
 const TARGET_LOCATION: u8 = 1;
 /// The `cursorType` byte a cancelled (right-clicked) target comes back as.
 const CURSOR_CANCEL: u8 = 3;
@@ -21,9 +25,24 @@ const CURSOR_CANCEL: u8 = 3;
 /// the request that asked for it. This asks for a *location* (a ground target);
 /// the object form is a later need.
 pub fn encode_target_cursor(cursor_id: u32) -> Vec<u8> {
+    cursor(cursor_id, TARGET_LOCATION)
+}
+
+/// `0x6C` — raise a cursor that must pick an **object**: a mobile or an item.
+///
+/// The client itself refuses a click on bare ground, which is what nearly every
+/// skill wants — "whom shall I examine?" has no answer in a patch of grass. The
+/// server still checks what comes back; this only saves the player a wasted click.
+#[must_use]
+pub fn encode_target_cursor_object(cursor_id: u32) -> Vec<u8> {
+    cursor(cursor_id, TARGET_OBJECT)
+}
+
+/// The two cursors differ by one byte.
+fn cursor(cursor_id: u32, kind: u8) -> Vec<u8> {
     let mut writer = PacketWriter::with_capacity(19);
     writer.u8(0x6C);
-    writer.u8(TARGET_LOCATION);
+    writer.u8(kind);
     writer.u32(cursor_id);
     writer.u8(0); // cursor type: neutral
                   // The rest the client fills in on the way back: object serial(4), x(2), y(2),

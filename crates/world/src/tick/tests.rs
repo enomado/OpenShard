@@ -6282,6 +6282,73 @@ fn the_window_shows_the_effective_value_beside_the_trained_one() {
     assert!(value > base, "and the effective one is higher: {value}");
 }
 
+#[test]
+fn anatomy_raises_a_cursor_and_reads_the_target() {
+    // The whole shape of a lore skill: press the button, get a cursor, click
+    // somebody, and be told about them — over their head, and only on your own
+    // screen.
+    let now = Instant::now();
+    let mut world = world();
+    let looker = enter(&mut world, now);
+    let entity = world.state.players[&looker];
+    let serial = serial_of(&world, looker);
+    world.queue(Command::SetSkill {
+        serial,
+        skill: Skill::Anatomy.id(),
+        value: 1000, // a grandmaster: the roll is a sure thing and the guess exact
+    });
+    world.tick(now);
+
+    // Somebody to look at, one tile away.
+    let mob = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 50, now);
+    let _ = packets_for(&mut world, looker);
+
+    world.queue(Command::UseSkillButton {
+        connection: looker,
+        skill: Skill::Anatomy.id(),
+    });
+    world.tick(now);
+    let cursor = packets_for(&mut world, looker)
+        .into_iter()
+        .find(|p| p[0] == 0x6C)
+        .expect("a targeting cursor went up");
+    assert_eq!(cursor[1], 0, "an object cursor: bare ground has no anatomy");
+    assert!(
+        world.state.pending_targets.contains_key(&entity),
+        "and the world remembers which skill asked"
+    );
+
+    world.queue(Command::TargetResponse {
+        connection: looker,
+        response: openshard_protocol::TargetResponse {
+            cursor_id: serial,
+            serial: mob,
+            location: Point::new(START.0 + 1, START.1, 0),
+            graphic: 0,
+            cancelled: false,
+        },
+    });
+    world.tick(now);
+
+    let said = packets_for(&mut world, looker)
+        .into_iter()
+        .find(|p| p[0] == 0xC1)
+        .expect("the answer came back");
+    let cliloc = u32::from_be_bytes([said[14], said[15], said[16], said[17]]);
+    // 1038045 is "That looks [very weak] and [very clumsy]", the base of an
+    // eleven-by-eleven block; a hundred-strength, hundred-dexterity creature
+    // lands on 10*11 + 10 past it.
+    assert!(
+        (1_038_045..=1_038_045 + 120).contains(&cliloc),
+        "an Anatomy result line, not something else: {cliloc}"
+    );
+    assert_eq!(
+        u32::from_be_bytes([said[3], said[4], said[5], said[6]]),
+        mob,
+        "drawn over the thing looked at, not over the system"
+    );
+}
+
 /// The cliloc of the last `0xC1` localized message sent to a connection, if any.
 fn localized_cliloc(world: &mut World, connection: ConnectionId) -> Option<u32> {
     packets_for(world, connection)

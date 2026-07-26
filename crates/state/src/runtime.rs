@@ -528,6 +528,12 @@ pub enum TargetPurpose {
         /// Whether the cast's skill roll passed.
         success: bool,
     },
+    /// A skill waiting for the thing it was pointed at — "whom shall I examine?".
+    /// Which skill asked is all that needs remembering; the rest is the skill's own.
+    Skill {
+        /// Which skill, by id.
+        skill: u8,
+    },
     /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
     /// raises a cursor rather than guessing which of several nearby doors was meant.
     TurnKey {
@@ -754,6 +760,42 @@ impl WorldState {
             SYSTEM_FONT,
             cliloc,
             "System",
+            arguments,
+        );
+        self.send(connection, packet);
+    }
+
+    /// Draw a localized line over `source`'s head, for `watcher` alone.
+    ///
+    /// ServUO's `PrivateOverheadMessage`: the same `0xC1`, but addressed with the
+    /// looked-at thing's serial and graphic rather than the system's, so the text
+    /// floats over *it* — and sent to one connection, so a crowded street does not
+    /// read everybody's Anatomy check. The whole lore family answers this way.
+    pub fn private_overhead_cliloc(
+        &mut self,
+        watcher: EntityId,
+        source: EntityId,
+        cliloc: u32,
+        arguments: &str,
+    ) {
+        let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
+            return;
+        };
+        let serial = self.registry.serial_of(source).map_or(0, |s| s.raw());
+        let graphic = self
+            .registry
+            .get::<Body>(source)
+            .map(|body| body.id)
+            .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
+            .unwrap_or(openshard_protocol::NO_GRAPHIC);
+        let packet = openshard_protocol::encode_localized_message(
+            serial,
+            graphic,
+            0, // regular mode
+            SYSTEM_HUE,
+            SYSTEM_FONT,
+            cliloc,
+            "",
             arguments,
         );
         self.send(connection, packet);

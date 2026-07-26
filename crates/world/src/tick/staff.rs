@@ -22,6 +22,9 @@ impl World {
             openshard_state::TargetPurpose::Teleport => {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
+            openshard_state::TargetPurpose::Skill { skill } => {
+                skills::on_target(&mut self.state, actor, skill, response.serial);
+            }
             openshard_state::TargetPurpose::TurnKey { key } => {
                 // The key may have gone while the cursor was up, and the target may be
                 // nothing at all — a key turned on the sky opens nothing and says so.

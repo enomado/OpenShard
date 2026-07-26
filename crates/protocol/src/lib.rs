@@ -130,7 +130,7 @@ pub use speech::{
     UnicodeTalkRequest, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC, SYSTEM_SERIAL,
 };
 pub use spellbook::encode_spellbook_content;
-pub use target::{encode_target_cursor, TargetResponse};
+pub use target::{encode_target_cursor, encode_target_cursor_object, TargetResponse};
 pub use vendor::{
     encode_buy_list, encode_sell_list, BuyLine, BuyReply, Purchase, Sale, SellLine, SellReply,
 };
