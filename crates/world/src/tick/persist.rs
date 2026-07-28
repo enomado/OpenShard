@@ -3,10 +3,10 @@ use openshard_persistence::{
     CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord,
 };
 use openshard_state::components::{
-    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, DoneQuest,
-    Escortable, Field, Frozen, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price,
-    QuestGiver, QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods,
-    StockRecord, SwingSpeed, Title, Trap, TrapKind, Vendor,
+    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy,
+    DoneQuest, Escortable, Field, Frozen, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned,
+    Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook,
+    StatMod, StatMods, StockRecord, SwingSpeed, Title, Trap, TrapKind, Vendor,
 };
 
 impl World {
@@ -300,8 +300,41 @@ impl World {
             // an instrument's tunes. One field for both, as they are one interface
             // in ServUO; without it a half-played lute comes back full.
             uses: items::uses_left(registry, item),
+            // And whose work it is, if it is anybody's. Without this every
+            // exceptional piece on the shard quietly becomes ordinary at the
+            // next restart — the `Murders` bug, over property somebody spent an
+            // hour earning.
+            crafted: registry
+                .get::<Quality>(item)
+                .map(|quality| quality.exceptional)
+                .or_else(|| registry.has::<CraftedBy>(item).then_some(false))
+                .map(|fine| {
+                    (
+                        fine,
+                        registry.get::<CraftedBy>(item).map(|maker| maker.0.clone()),
+                    )
+                }),
             location,
         })
+    }
+
+    /// Put a saved item's craftsmanship back: the exceptional mark, and the name
+    /// of whoever made it.
+    ///
+    /// One helper because both restore paths — a logged-out character's inventory
+    /// and the ground sweep — want the same two components, and a second copy is
+    /// the pair of hand-kept halves that lets a bank-boxed masterpiece come back
+    /// ordinary while a ground one does not.
+    fn restore_craftsmanship(&mut self, entity: EntityId, record: &ItemRecord) {
+        let Some((exceptional, ref maker)) = record.crafted else {
+            return;
+        };
+        if exceptional {
+            self.state.registry.insert(entity, Quality { exceptional });
+        }
+        if let Some(maker) = maker {
+            self.state.registry.insert(entity, CraftedBy(maker.clone()));
+        }
     }
 
     /// Every NPC mobile — townsperson, vendor, creature — as a saveable record:
@@ -852,6 +885,7 @@ impl World {
         if let Some(uses) = record.uses {
             items::restore_uses(&mut self.state, entity, record.graphic, uses);
         }
+        self.restore_craftsmanship(entity, record);
         // Loose clutter resumes rotting; a container does not (mark_decay skips
         // it) — except a corpse, which is a container that *must* rot, so it gets
         // a fresh timer here (the decay tick is not itself saved, so a restored
@@ -940,6 +974,7 @@ impl World {
             if let Some(uses) = record.uses {
                 items::restore_uses(&mut self.state, entity, record.graphic, uses);
             }
+            self.restore_craftsmanship(entity, record);
         }
         // Pass two: where each item goes.
         for record in &records {

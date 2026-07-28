@@ -189,7 +189,13 @@ CREATE TABLE IF NOT EXISTS items (
     -- how many uses are left in a thing that wears out: a tool's swings or an
     -- instrument's tunes. One column for both, as ServUO gives both one
     -- interface; the graphic says which it comes back as.
-    uses INTEGER
+    uses INTEGER,
+    -- what a player made: whether it came out exceptional, and whose name is on
+    -- it. NULL for everything nobody crafted, which is nearly every item on a
+    -- shard. The maker is a name and not a serial, because the smith logs out and
+    -- the sword does not.
+    exceptional INTEGER,
+    crafter TEXT
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 -- NPC mobiles and placed decoration, each a JSON record keyed by serial: a
@@ -409,9 +415,9 @@ impl Store for SqliteStore {
                      (serial, owner, graphic, hue, amount, stackable, gump, \
                       loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                       corpse, poison_level, poison_charges, trap_kind, trap_power, \
-                      trap_level, uses) \
+                      trap_level, uses, exceptional, crafter) \
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,\
-                             ?20,?21,?22,?23,?24,?25)",
+                             ?20,?21,?22,?23,?24,?25,?26,?27)",
                         params![
                             item.serial,
                             item.owner,
@@ -447,6 +453,10 @@ impl Store for SqliteStore {
                             item.trap.map(|(_, power, _)| power),
                             item.trap.map(|(_, _, level)| level),
                             item.uses,
+                            item.crafted.as_ref().map(|(fine, _)| *fine),
+                            item.crafted
+                                .as_ref()
+                                .and_then(|(_, maker)| maker.as_deref()),
                         ],
                     )?;
                     Ok(())
@@ -642,7 +652,7 @@ impl Store for SqliteStore {
                     "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                      corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, \
-                     uses FROM items",
+                     uses, exceptional, crafter FROM items",
                 )
                 .map_err(database)?;
             let rows = statement
@@ -687,6 +697,9 @@ impl Store for SqliteStore {
                                 _ => None,
                             },
                             uses: row.get(24)?,
+                            crafted: row.get::<_, Option<bool>>(25)?.map(|fine| {
+                                (fine, row.get::<_, Option<String>>(26).ok().flatten())
+                            }),
                             // A placeholder overwritten below; the location cannot be
                             // built inside `query_map`'s closure return type cleanly.
                             location: ItemLocation::Ground {
@@ -975,6 +988,7 @@ mod tests {
             poison: None,
             trap: None,
             uses: None,
+            crafted: None,
             location: ItemLocation::Contained {
                 container,
                 x: 0,

@@ -25,9 +25,9 @@ use openshard_protocol::{
 };
 
 use crate::components::{
-    body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
-    Heading, HearsGhosts, Hidden, Hitpoints, Meditating, Movement, Name, Position, Staff,
-    Stealthing,
+    body_opens_doors, Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost,
+    Graphic, Heading, HearsGhosts, Hidden, Hitpoints, Meditating, Movement, Name, Position,
+    Quality, Staff, Stealthing,
 };
 use crate::dialogue::Dialogue;
 use crate::harvest::Banks;
@@ -500,6 +500,14 @@ pub struct WorldState {
     /// exists only while someone is looking at it, and a reply that arrives for a
     /// window this side never opened is a reply to nothing. Cleared on logout.
     pub open_quest_gumps: HashMap<EntityId, QuestGumpContext>,
+    /// Which craft window each player has open, on which category and material.
+    ///
+    /// Session state beside [`open_quest_gumps`](Self::open_quest_gumps), and for
+    /// the same reason — but it carries more weight than the quest log's does:
+    /// the selected category, the chosen metal and the tool in hand all live
+    /// here and never in the packet, so a reply cannot name a material the
+    /// player did not pick. Cleared on logout.
+    pub open_craft_gumps: HashMap<EntityId, CraftGumpContext>,
     /// The tunable rules — swing era, speech ranges, timers — the systems read.
     pub gameplay: Gameplay,
     /// Set by a staff `.save` to ask the tick for an immediate snapshot. The world
@@ -550,6 +558,40 @@ pub struct QuestGumpContext {
     pub completed: bool,
     /// The giver the dialog was opened at, so a turn-in knows who to thank.
     pub giver: Option<Serial>,
+}
+
+/// Which part of the craft window a player is looking at.
+///
+/// ServUO keeps this as a `CraftPage` plus a separate `CraftGumpItem` gump; the
+/// two are one window here with one id, because they are the same reply channel
+/// and a second id is a second thing to route.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CraftGumpPage {
+    /// The recipe list of the selected category.
+    Items,
+    /// The material list, in place of the recipe list.
+    Resources,
+    /// One recipe's detail page, by its index in the system's table.
+    Details(u16),
+}
+
+/// What a player's open craft window is showing, and what it will make.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CraftGumpContext {
+    /// Which trade, by its index in the core table.
+    pub system: u8,
+    /// The tool the window was opened from. Re-checked on every attempt: a tool
+    /// dropped with the window still up makes nothing.
+    pub tool: EntityId,
+    /// The selected category.
+    pub group: u16,
+    /// The selected material, indexed into the system's axis.
+    pub sub_res: u8,
+    /// Which page.
+    pub page: CraftGumpPage,
+    /// The cliloc in the window's notice box — what the last attempt had to say.
+    /// Zero for none.
+    pub notice: u32,
 }
 
 /// What a raised targeting cursor is waiting to do with the click.
@@ -1361,6 +1403,20 @@ impl WorldState {
             }
         } else {
             return None;
+        }
+        // What a player made says so, and says whose work it is — ServUO's
+        // `AddCraftedProperties`. Both lines are appended rather than folded into
+        // the name, so an exceptional dagger is still "a dagger" to everything
+        // that reads the name.
+        if self
+            .registry
+            .get::<Quality>(entity)
+            .is_some_and(|quality| quality.exceptional)
+        {
+            list.add(1_060_636); // Exceptional
+        }
+        if let Some(CraftedBy(maker)) = self.registry.get::<CraftedBy>(entity) {
+            list.add_args(1_050_043, maker); // crafted by ~1_NAME~
         }
         Some(list.finish())
     }

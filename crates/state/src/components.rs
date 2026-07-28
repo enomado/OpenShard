@@ -508,6 +508,56 @@ pub struct Harvesting {
     pub next_sound: u64,
 }
 
+/// A craft in progress — ServUO's `CraftItem.InternalTimer`.
+///
+/// The sibling of [`Harvesting`], and stateful for the same reason: a craft takes
+/// a beat or several, and in between the crafter can walk away from the forge,
+/// hand the ingots to a friend, or wear the tongs out on something else. Every
+/// gate is re-checked on the last beat rather than trusted from the first, which
+/// is why the recipe is held as a pair of indices and not as a resolved plan.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Crafting {
+    /// Which craft system, by its index in the core table.
+    pub system: u8,
+    /// Which of that system's recipes, by index.
+    pub recipe: u16,
+    /// The tool in hand. Re-checked each beat: tongs dropped mid-craft make
+    /// nothing.
+    pub tool: EntityId,
+    /// Which material off the system's axis — the ore or wood the player chose in
+    /// the gump.
+    pub sub_res: u8,
+    /// Beats still to come. The last one resolves.
+    pub beats_left: u8,
+    /// The tick the next beat falls on.
+    pub next_beat: u64,
+}
+
+/// How well a crafted item came out — ServUO's `IQuality.Quality`.
+///
+/// Only ever present on an *exceptional* piece: an ordinary item carries no
+/// component at all, which is what keeps the column the size of the handful of
+/// masterpieces on a shard rather than the size of every item in it.
+///
+/// Read where it matters and folded into nothing — the armour rating derives it
+/// at the read site the way a weapon's speed derives from what is on the hand, so
+/// a fine breastplate coming off leaves no bookkeeping behind.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Quality {
+    /// Whether it is exceptional. A field rather than a bare marker because
+    /// ServUO's scale has a low grade too, and a shard that wants it should widen
+    /// this rather than add a second component.
+    pub exceptional: bool,
+}
+
+/// Who made it — ServUO's `ICraftable.Crafter`, the maker's mark.
+///
+/// A **name and not a serial**, for the reason [`Corpse`]'s killer is one: the
+/// smith logs out, retires, or is deleted, and the sword outlives all three. A
+/// serial would leave "crafted by (nobody)" on every good blade on the shard.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CraftedBy(pub String);
+
 /// A mobile a bard has calmed — ServUO's `BaseCreature.BardPacified`.
 ///
 /// It does not swing and it does not pick fights while this holds, which is read at

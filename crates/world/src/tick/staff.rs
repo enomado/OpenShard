@@ -140,6 +140,12 @@ impl World {
         if openshard_quests::handle(&mut self.state, connection, &response) {
             return;
         }
+        // And so does the craft window, for the same reason and by the same
+        // rule: the reply is matched against the context the server remembers
+        // drawing, so one for a window this side never opened does nothing.
+        if crafting::handle(&mut self.state, connection, &response) {
+            return;
+        }
         // A reply to a gump that is *not* the engine's own belongs to the pack
         // that opened it (a notice board, a shard's custom menu). Forward it as a
         // `GumpAnswered` rather than dropping it, then stop — only the admin gump

@@ -607,8 +607,12 @@ const FISHING: HarvestDef = HarvestDef {
 /// with four piles of iron ore that refuse to merge, because a merge matches on
 /// graphic *and* hue — so this takes the common one (75% of ServUO's roll) and
 /// the pile-size art is a recorded gap, not an oversight.
+/// Public because two crates read the metals: `skills` pays a miner in them, and
+/// `crafting` smelts them into ingots and offers them as a smith's material axis.
+/// One table, so a hue can never mean valorite on the ground and copper at the
+/// forge.
 #[rustfmt::skip]
-static ORES: &[HarvestResource] = &[
+pub static ORES: &[HarvestResource] = &[
     ore(   0,    0, 1000, 1_007_072, 0x0000), // iron
     ore( 650,  250, 1050, 1_007_073, 0x0973), // dull copper
     ore( 700,  300, 1100, 1_007_074, 0x0966), // shadow iron

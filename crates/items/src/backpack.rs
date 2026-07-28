@@ -73,6 +73,23 @@ pub fn take_from_backpack(
     graphic: u16,
     amount: u16,
 ) -> u16 {
+    take_from_backpack_of_hue(state, mobile, graphic, None, amount)
+}
+
+/// [`take_from_backpack`], for a particular hue.
+///
+/// A crafting material's hue *is* its identity — valorite ingots and iron ingots
+/// are one graphic and two colours, exactly as [`openshard_state::harvest`] keeps
+/// the nine ores — so a recipe that asks for verite must not be paid in iron.
+/// `None` takes any hue, which is what every caller that predates materials wants:
+/// a quest that asks for ten apples does not care whether one of them was dyed.
+pub fn take_from_backpack_of_hue(
+    state: &mut WorldState,
+    mobile: Serial,
+    graphic: u16,
+    hue: Option<u16>,
+    amount: u16,
+) -> u16 {
     let Some(backpack) = backpack_of(state, mobile) else {
         return 0;
     };
@@ -84,7 +101,7 @@ pub fn take_from_backpack(
                 && state
                     .registry
                     .get::<Graphic>(*item)
-                    .is_some_and(|g| g.id == graphic)
+                    .is_some_and(|g| g.id == graphic && hue.is_none_or(|want| g.hue == want))
         })
         .filter_map(|(item, _)| {
             state
@@ -123,6 +140,33 @@ pub fn take_from_backpack(
 #[must_use]
 pub fn carried_amount(state: &WorldState, mobile: Serial, graphic: u16) -> u32 {
     carried_amount_with(state, &crate::contents_index(state), mobile, graphic)
+}
+
+/// [`carried_amount`], for a particular hue — the read half of
+/// [`take_from_backpack_of_hue`], and what a craft's "have you enough metal"
+/// check asks before it takes anything.
+#[must_use]
+pub fn carried_amount_of_hue(
+    state: &WorldState,
+    mobile: Serial,
+    graphic: u16,
+    hue: Option<u16>,
+) -> u32 {
+    let Some(backpack) = backpack_of(state, mobile) else {
+        return 0;
+    };
+    crate::contents_index(state)
+        .get(&backpack)
+        .into_iter()
+        .flatten()
+        .filter(|item| {
+            state
+                .registry
+                .get::<Graphic>(**item)
+                .is_some_and(|g| g.id == graphic && hue.is_none_or(|want| g.hue == want))
+        })
+        .map(|item| u32::from(crate::amount_of(state, *item)))
+        .sum()
 }
 
 /// [`carried_amount`], against an index already built.

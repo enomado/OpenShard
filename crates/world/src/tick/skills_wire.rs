@@ -164,14 +164,50 @@ impl World {
             skills::LOCKPICK_GRAPHIC => {
                 skills::use_lockpick(&mut self.state, player, item);
             }
-            // A pickaxe, a shovel, an axe or a fishing pole. Last, because it is
-            // the only arm that asks a *table* rather than matching a constant —
-            // and because the axes come out of the weapon table, which a hatchet
-            // is in for two reasons at once.
+            openshard_state::harvest::ORE_GRAPHIC => {
+                // Ore into ingots at a forge — the one step between what mining
+                // pays and what a smith spends. Nothing else in the engine turns
+                // one into the other.
+                crafting::smelt(&mut self.state, player, item);
+            }
+            // A pickaxe, a shovel, an axe or a fishing pole, then a smith's tongs
+            // or a tailor's kit. Last, because these are the arms that ask a
+            // *table* rather than match a constant — and because the axes come
+            // out of the weapon table, which a hatchet is in for two reasons at
+            // once.
             _ => {
-                skills::use_tool(&mut self.state, player, item);
+                if skills::use_tool(&mut self.state, player, item) {
+                    return;
+                }
+                self.open_craft_window(player, item);
             }
         }
+    }
+
+    /// A double-clicked craft tool: open its trade's window.
+    ///
+    /// The context is built here rather than in `crafting` because the world is
+    /// what knows the click happened; from the moment the window is drawn the
+    /// crate owns everything, including the reply.
+    fn open_craft_window(&mut self, player: EntityId, tool: EntityId) {
+        let Some(graphic) = self.state.registry.get::<Graphic>(tool).map(|g| g.id) else {
+            return;
+        };
+        let Some(system) = crafting::tool_system(graphic) else {
+            return;
+        };
+        crafting::open(
+            &mut self.state,
+            player,
+            openshard_state::CraftGumpContext {
+                system,
+                tool,
+                group: 0,
+                sub_res: 0,
+                page: openshard_state::CraftGumpPage::Items,
+                notice: 0,
+            },
+        );
     }
 
     /// Finish the bandages whose time is up, and spend what each did through the

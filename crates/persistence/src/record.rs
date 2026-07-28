@@ -100,7 +100,7 @@ use serde::{Deserialize, Serialize};
 ///   (`IUsesRemaining`) and so one column here. The instrument half is a bug this
 ///   fixes rather than a feature it adds: a lute bought and half played came back
 ///   full at every reboot, because nothing saved the count.
-pub const SCHEMA_VERSION: u32 = 20;
+pub const SCHEMA_VERSION: u32 = 21;
 
 /// An account, as saved.
 ///
@@ -418,6 +418,15 @@ pub struct ItemRecord {
     /// save loads.
     #[serde(default)]
     pub uses: Option<u16>,
+    /// Whether it came out of a craft exceptional, and whose name is on it —
+    /// `(exceptional, maker)`. `None` for everything a player did not make, which
+    /// is nearly every item on a shard, so the column is empty far more often
+    /// than not. Defaulted so a pre-v21 save loads.
+    ///
+    /// The maker is a **name and not a serial**, for the reason the corpse's
+    /// killer is one: the smith logs out and the sword outlives the session.
+    #[serde(default)]
+    pub crafted: Option<(bool, Option<String>)>,
     /// Where it is.
     pub location: ItemLocation,
 }
@@ -827,6 +836,7 @@ mod tests {
                 poison: Some((2, 14)),
                 trap: Some((3, 40, 2)),
                 uses: Some(37),
+                crafted: Some((true, Some("Rowena".into()))),
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");

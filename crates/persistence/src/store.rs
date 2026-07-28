@@ -457,6 +457,7 @@ mod tests {
             poison: None,
             trap: None,
             uses: None,
+            crafted: None,
             location: crate::record::ItemLocation::Contained {
                 container,
                 x: 0,
@@ -482,6 +483,7 @@ mod tests {
             poison: None,
             trap: None,
             uses: None,
+            crafted: None,
             location: crate::record::ItemLocation::Ground {
                 facet: 0,
                 x: 1400,

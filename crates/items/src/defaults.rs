@@ -12,6 +12,7 @@
 //! one.
 
 use openshard_state::components::{Instrument, Name, PoisonCharges, Tool, POISON_POTION_GRAPHIC};
+use openshard_state::craft::craft_tool;
 use openshard_state::harvest::tool_data;
 use openshard_state::instrument::{instrument_data, INSTRUMENT_MAX_USES, INSTRUMENT_MIN_USES};
 use openshard_state::WorldState;
@@ -41,6 +42,16 @@ pub fn apply_core_defaults(state: &mut WorldState, item: EntityId, graphic: u16)
         state.registry.insert(item, Tool { uses_left });
         return;
     }
+    if let Some(data) = craft_tool(graphic) {
+        // The same for a smith's tongs or a tailor's sewing kit. The two tables
+        // are separate because a pickaxe and a saw answer different questions —
+        // which ground, which trade — and one of them ends up on `Skill` either
+        // way, so merging them would only hide the difference.
+        let span = u32::from(data.max_uses - data.min_uses) + 1;
+        let uses_left = data.min_uses + u16::try_from(state.rng.below(span)).unwrap_or(0);
+        state.registry.insert(item, Tool { uses_left });
+        return;
+    }
     if graphic == POISON_POTION_GRAPHIC {
         let level = poison_level_of(state, item);
         state
@@ -58,7 +69,7 @@ pub fn apply_core_defaults(state: &mut WorldState, item: EntityId, graphic: u16)
 pub fn restore_uses(state: &mut WorldState, item: EntityId, graphic: u16, uses_left: u16) {
     if instrument_data(graphic).is_some() {
         state.registry.insert(item, Instrument { uses_left });
-    } else if tool_data(graphic).is_some() {
+    } else if tool_data(graphic).is_some() || craft_tool(graphic).is_some() {
         state.registry.insert(item, Tool { uses_left });
     }
 }

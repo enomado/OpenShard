@@ -61,6 +61,7 @@ use openshard_state::{
 use openshard_ai as ai;
 use openshard_chat as chat;
 use openshard_combat as combat;
+use openshard_crafting as crafting;
 use openshard_items as items;
 use openshard_magic as magic;
 use openshard_npc as npc;
@@ -248,6 +249,7 @@ impl World {
                 quests: openshard_state::QuestDefs::default(),
                 dialogue: openshard_state::Dialogue::default(),
                 open_quest_gumps: HashMap::new(),
+                open_craft_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
             },
@@ -562,6 +564,10 @@ impl World {
                 items::consume(&mut self.state, serial, 0);
             }
         }
+        // And every hammer, saw and pestle in flight. After the harvest for no
+        // reason but reading order: the two are independent, and a craft's
+        // materials are already in a pack before its first beat.
+        crafting::advance_crafts(&mut self.state);
         // An instrument that played its last tune. `skills` decides, `items`
         // removes — the same split the poison fumble and the beggar's coin use.
         let spent: Vec<openshard_skills::InstrumentSpent> = self
@@ -1390,6 +1396,8 @@ impl World {
     }
 }
 
+#[cfg(test)]
+mod crafting_tests;
 #[cfg(test)]
 mod harvest_tests;
 #[cfg(test)]

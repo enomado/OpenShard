@@ -19,6 +19,7 @@ openshard-movement.workspace = true
 openshard-ai.workspace = true
 openshard-chat.workspace = true
 openshard-combat.workspace = true
+openshard-crafting.workspace = true
 openshard-items.workspace = true
 openshard-magic.workspace = true
 openshard-npc.workspace = true

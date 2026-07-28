@@ -30,6 +30,7 @@ openshard-ai = { path = "crates/ai", version = "0.0.1" }
 openshard-chat = { path = "crates/chat", version = "0.0.1" }
 openshard-combat = { path = "crates/combat", version = "0.0.1" }
 openshard-config = { path = "crates/config", version = "0.0.1" }
+openshard-crafting = { path = "crates/crafting", version = "0.0.1" }
 openshard-entities = { path = "crates/entities", version = "0.0.1" }
 openshard-events = { path = "crates/events", version = "0.0.1" }
 openshard-gateway = { path = "crates/gateway", version = "0.0.1" }
