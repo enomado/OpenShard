@@ -44,7 +44,7 @@ pub use backpack::*;
 pub use consume::*;
 pub use containers::*;
 pub use decay::*;
-pub use defaults::apply_core_defaults;
+pub use defaults::{apply_core_defaults, restore_uses, uses_left};
 pub use doors::*;
 pub use drag::*;
 pub use equip::*;

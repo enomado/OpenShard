@@ -413,6 +413,10 @@ impl Terrain for MapTerrain {
         i8::try_from(self.average_land_z(x, y)).ok()
     }
 
+    fn land_tile(&self, x: u16, y: u16) -> Option<u16> {
+        self.map().land(x, y).map(|cell| cell.tile)
+    }
+
     fn statics_at(&self, x: u16, y: u16, out: &mut Vec<(u16, i8)>) {
         // `tile` is the static's graphic id — for statics it is the item graphic
         // itself, which is what the door-frame tables match against.

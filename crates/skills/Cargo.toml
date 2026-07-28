@@ -18,6 +18,10 @@ workspace = true
 # closes.
 openshard-items.workspace = true
 openshard-entities.workspace = true
+# For the `Terrain` trait alone — the harvest slice reads what the ground *is*
+# (a mountain land tile, a tree static) through the same abstraction movement
+# checks steps against.
+openshard-movement.workspace = true
 # For `ConnectionId` alone — a handler that raises its own cursor has to name the
 # connection it sends to.
 openshard-gateway.workspace = true

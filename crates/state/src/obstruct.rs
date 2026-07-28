@@ -208,6 +208,10 @@ impl Terrain for LiveTerrain<'_> {
         self.map.and_then(|m| m.ground_z(x, y))
     }
 
+    fn land_tile(&self, x: u16, y: u16) -> Option<u16> {
+        self.map.and_then(|m| m.land_tile(x, y))
+    }
+
     fn statics_at(&self, x: u16, y: u16, out: &mut Vec<(u16, i8)>) {
         if let Some(map) = self.map {
             map.statics_at(x, y, out);

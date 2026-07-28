@@ -105,6 +105,10 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
         npc_schedule: g.npc_schedule,
         npc_work_hour: g.npc_work_hour,
         npc_home_hour: g.npc_home_hour,
+        // The same setting the `0xB9` mask is built from, as an ordinal: the
+        // paperdoll the client draws and the content the shard runs read one
+        // value, so they cannot disagree about which expansion this is.
+        expansion: expansion_index(&g.expansion),
     }
 }
 
@@ -116,6 +120,19 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
 /// `FeatureFlags` `T2A|UOR|UOTD|LBR|AOS` = `0x1F`), whose AOS bit is what turns on
 /// object tooltips and context menus. The lower expansion bits ride along as
 /// ServUO's core-expansion default; a 2D client ignores the ones it does not use.
+/// The expansion name as the ordinal `Gameplay` compares against.
+///
+/// The same three names `supported_features_of` maps to `0xB9` masks, read once
+/// more: one setting, two consumers, and `config` has already refused anything
+/// else, so an unknown name is the ML default rather than an error here.
+fn expansion_index(name: &str) -> u8 {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "aos" => Gameplay::AOS,
+        "se" => Gameplay::SE,
+        _ => Gameplay::ML,
+    }
+}
+
 pub(crate) fn supported_features_of(config: &Config) -> u32 {
     let g = &config.gameplay;
     // The expansion the operator asked for. This is what the client builds its

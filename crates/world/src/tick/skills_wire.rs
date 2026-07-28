@@ -164,7 +164,13 @@ impl World {
             skills::LOCKPICK_GRAPHIC => {
                 skills::use_lockpick(&mut self.state, player, item);
             }
-            _ => {}
+            // A pickaxe, a shovel, an axe or a fishing pole. Last, because it is
+            // the only arm that asks a *table* rather than matching a constant —
+            // and because the axes come out of the weapon table, which a hatchet
+            // is in for two reasons at once.
+            _ => {
+                skills::use_tool(&mut self.state, player, item);
+            }
         }
     }
 

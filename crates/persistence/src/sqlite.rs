@@ -185,7 +185,11 @@ CREATE TABLE IF NOT EXISTS items (
     -- item, which is nearly all of them.
     trap_kind INTEGER,
     trap_power INTEGER,
-    trap_level INTEGER
+    trap_level INTEGER,
+    -- how many uses are left in a thing that wears out: a tool's swings or an
+    -- instrument's tunes. One column for both, as ServUO gives both one
+    -- interface; the graphic says which it comes back as.
+    uses INTEGER
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 -- NPC mobiles and placed decoration, each a JSON record keyed by serial: a
@@ -405,9 +409,9 @@ impl Store for SqliteStore {
                      (serial, owner, graphic, hue, amount, stackable, gump, \
                       loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                       corpse, poison_level, poison_charges, trap_kind, trap_power, \
-                      trap_level) \
+                      trap_level, uses) \
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,\
-                             ?20,?21,?22,?23,?24)",
+                             ?20,?21,?22,?23,?24,?25)",
                         params![
                             item.serial,
                             item.owner,
@@ -442,6 +446,7 @@ impl Store for SqliteStore {
                             item.trap.map(|(kind, _, _)| kind),
                             item.trap.map(|(_, power, _)| power),
                             item.trap.map(|(_, _, level)| level),
+                            item.uses,
                         ],
                     )?;
                     Ok(())
@@ -636,8 +641,8 @@ impl Store for SqliteStore {
                 .prepare(
                     "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                     corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level \
-                     FROM items",
+                     corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, \
+                     uses FROM items",
                 )
                 .map_err(database)?;
             let rows = statement
@@ -681,6 +686,7 @@ impl Store for SqliteStore {
                                 }
                                 _ => None,
                             },
+                            uses: row.get(24)?,
                             // A placeholder overwritten below; the location cannot be
                             // built inside `query_map`'s closure return type cleanly.
                             location: ItemLocation::Ground {
@@ -968,6 +974,7 @@ mod tests {
             corpse: None,
             poison: None,
             trap: None,
+            uses: None,
             location: ItemLocation::Contained {
                 container,
                 x: 0,

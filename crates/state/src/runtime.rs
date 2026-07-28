@@ -30,6 +30,7 @@ use crate::components::{
     Stealthing,
 };
 use crate::dialogue::Dialogue;
+use crate::harvest::Banks;
 use crate::obstruct::{LiveTerrain, Obstructions};
 use crate::quest::QuestDefs;
 use crate::region::{Region, Regions};
@@ -162,6 +163,15 @@ pub struct Gameplay {
     /// [`npc_work_hour`](Self::npc_work_hour) — `config` rejects a working day that
     /// wraps midnight, so nothing downstream has to reason about one.
     pub npc_home_hour: u8,
+    /// Which expansion the shard runs, as an index into `config::EXPANSIONS`:
+    /// `0` AoS, `1` SE, `2` ML.
+    ///
+    /// An ordinal rather than the config's string, because this crate is below
+    /// `config` and a rule wants a comparison, not a name. It is the same setting
+    /// the `0xB9` mask is built from, so the paperdoll a client draws and the
+    /// content the shard runs cannot disagree — see
+    /// [`is_ml`](Self::is_ml), which the seven-wood lumber table reads.
+    pub expansion: u8,
 }
 
 /// How AoS object tooltips (the "cliloc" hover names) are served — Sphere's
@@ -219,6 +229,22 @@ impl CastStyle {
 }
 
 impl Gameplay {
+    /// [`expansion`](Self::expansion) for Age of Shadows.
+    pub const AOS: u8 = 0;
+    /// For Samurai Empire.
+    pub const SE: u8 = 1;
+    /// For Mondain's Legacy — the default, and where the quest system comes from.
+    pub const ML: u8 = 2;
+
+    /// Whether the shard runs Mondain's Legacy or later.
+    ///
+    /// ServUO's `Core.ML`, which several content tables key off: the seven woods a
+    /// lumberjack can find are ML's, and before it there is one kind of log.
+    #[must_use]
+    pub const fn is_ml(&self) -> bool {
+        self.expansion >= Self::ML
+    }
+
     /// Seconds, as a count of ticks.
     ///
     /// The operator writes seconds; every system counts ticks, because a tick
@@ -290,6 +316,7 @@ impl Default for Gameplay {
             npc_schedule: false,
             npc_work_hour: 7,
             npc_home_hour: 21,
+            expansion: Gameplay::ML,
         }
     }
 }
@@ -323,6 +350,13 @@ pub struct FacetState {
     pub obstructions: Obstructions,
     /// The named areas of this facet — towns, dungeons, guarded zones.
     pub regions: Regions,
+    /// What each block of this facet's ground still has left to give: the
+    /// mining, lumberjacking and fishing stock, per [`crate::harvest`] bank.
+    ///
+    /// Beside the sector grid and the obstruction index because it is the same
+    /// kind of thing — a fact about *this ground*, keyed by coordinates, that no
+    /// entity owns. Not persisted; see [`Banks`].
+    pub banks: Banks,
 }
 
 impl FacetState {
@@ -557,6 +591,16 @@ pub enum TargetPurpose {
         kind: crate::components::TrapKind,
         /// How hard it hits, and how hard it is to take off.
         power: u16,
+    },
+    /// A harvesting tool waiting for the ground it will be swung at.
+    ///
+    /// The one purpose that raises a *location* cursor and needs the whole answer:
+    /// a mountain face is not an entity, so the reply's point and tile graphic are
+    /// the target, and the serial is nothing. See `skills`' harvest handler.
+    Harvest {
+        /// The tool, by entity. Re-checked when the click lands: a pickaxe dropped
+        /// while the cursor was up mines nothing.
+        tool: EntityId,
     },
     /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
     /// raises a cursor rather than guessing which of several nearby doors was meant.
@@ -875,10 +919,19 @@ impl WorldState {
     /// before a greeting or a beg. A no-op if either has no position, or if the
     /// mobile is already facing that way — the broadcast is not free.
     pub fn face_toward(&mut self, mobile: EntityId, other: EntityId) {
-        let (Some(&Position(from)), Some(&Position(to))) = (
-            self.registry.get::<Position>(mobile),
-            self.registry.get::<Position>(other),
-        ) else {
+        let Some(&Position(to)) = self.registry.get::<Position>(other) else {
+            return;
+        };
+        self.face_point(mobile, to);
+    }
+
+    /// The same, at a spot on the ground rather than at somebody.
+    ///
+    /// A harvester turns to the rock face it is about to swing at, and there is
+    /// nothing there to be an entity — ServUO's `DoHarvestingEffect` opens with
+    /// `from.Direction = from.GetDirectionTo(loc)`.
+    pub fn face_point(&mut self, mobile: EntityId, to: Point) {
+        let Some(&Position(from)) = self.registry.get::<Position>(mobile) else {
             return;
         };
         let Some(direction) = openshard_movement::direction_toward(from, to) else {
@@ -917,7 +970,12 @@ impl WorldState {
             .get::<Body>(mobile)
             .is_some_and(|body| body_opens_doors(body.id));
         // Built once each; the per-recipient choice is only which to send.
-        let new_packet = encode_new_action(serial.raw(), action.animation_type(), 0, 0);
+        let new_packet = encode_new_action(
+            serial.raw(),
+            action.animation_type(),
+            action.sub_action(),
+            0,
+        );
         let (old_action, frames) = action.classic_action(humanoid);
         let old_packet = encode_action(serial.raw(), old_action, frames, 1, true, false, 0);
 
@@ -957,6 +1015,12 @@ pub enum Action {
     Die,
     /// A spellcasting gesture.
     Cast,
+    /// Swinging a pick at a rock face.
+    Mine,
+    /// Swinging an axe at a tree.
+    Chop,
+    /// Casting a line.
+    Fish,
     /// A bow — what a beggar does before asking, and the one action here that is a
     /// courtesy rather than a blow.
     Bow,
@@ -972,6 +1036,25 @@ impl Action {
             Self::Die => 3,    // Die
             Self::Cast => 11,  // Spell
             Self::Bow => 9,    // Bow
+            // ServUO's `DoHarvestingEffect` animates a harvest as an *attack* and
+            // says which one in the sub-action — see [`sub_action`](Self::sub_action).
+            Self::Mine | Self::Chop | Self::Fish => 0, // Attack
+        }
+    }
+
+    /// The `0xE2` sub-action, which narrows the category above.
+    ///
+    /// Zero — "whatever this body does for that category" — for everything the
+    /// client can pick itself. Harvesting is the exception: ServUO passes
+    /// `AnimationType.Attack` with the number of the swing it wants
+    /// (`DoHarvestingEffect`, the `Core.SA` branch), because mining, chopping and
+    /// casting a line are three different motions and none of them is "attack".
+    const fn sub_action(self) -> u16 {
+        match self {
+            Self::Mine => 3,
+            Self::Fish => 6,
+            Self::Chop => 7,
+            _ => 0,
         }
     }
 
@@ -992,6 +1075,13 @@ impl Action {
             // at you, so the classic path animates nothing body-specific for it.
             (Self::Bow, true) => (32, 5), // human bow
             (Self::Bow, false) => (4, 4), // nothing better on a monster
+            // The pre-SA harvest actions, ServUO's `EffectActions`. Only a person
+            // swings a pick or casts a line; the creature arm is unreachable in
+            // practice, since a tool is double-clicked by a client.
+            (Self::Mine, true) => (11, 5), // human bend down / mine
+            (Self::Chop, true) => (13, 6), // human two-handed swing
+            (Self::Fish, true) => (12, 5), // human cast a line
+            (Self::Mine | Self::Chop | Self::Fish, false) => (4, 4),
         }
     }
 }

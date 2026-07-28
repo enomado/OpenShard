@@ -50,6 +50,7 @@ use openshard_state::components::{
     Movement, Name, Position, Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook,
     Stackable, Stamina, Stats, Vendor,
 };
+use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
 use openshard_state::sectors::Sectors;
 use openshard_state::{
@@ -224,6 +225,7 @@ impl World {
                 sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
                 obstructions: Obstructions::default(),
                 regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
+                banks: Banks::default(),
             },
         );
         Self {
@@ -324,6 +326,7 @@ impl World {
                 sectors,
                 obstructions: Obstructions::default(),
                 regions: Regions::new(width, height),
+                banks: Banks::default(),
             },
         );
         self
@@ -551,6 +554,14 @@ impl World {
         skills::expire_ghost_contact(&mut self.state);
         skills::expire_songs(&mut self.state);
         self.finish_bandages();
+        // Swing every pick, axe and line whose beat has come, and remove the tools
+        // that broke doing it — the `InstrumentSpent` split once more, since a
+        // worn-out pickaxe is `items`' to make gone.
+        for worn in skills::advance_harvests(&mut self.state) {
+            if let Some(serial) = self.state.registry.serial_of(worn.tool) {
+                items::consume(&mut self.state, serial, 0);
+            }
+        }
         // An instrument that played its last tune. `skills` decides, `items`
         // removes — the same split the poison fumble and the beggar's coin use.
         let spent: Vec<openshard_skills::InstrumentSpent> = self
@@ -1379,6 +1390,8 @@ impl World {
     }
 }
 
+#[cfg(test)]
+mod harvest_tests;
 #[cfg(test)]
 mod interest_tests;
 #[cfg(test)]

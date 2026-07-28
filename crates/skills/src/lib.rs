@@ -22,10 +22,11 @@ mod stats;
 pub use button::{set_skill_delay, use_skill_button, SkillRequested, DEFAULT_SKILL_DELAY_TICKS};
 pub use check::{gain_chance, roll_skill_band, roll_skill_chance, skill_value};
 pub use handlers::{
-    expire_ghost_contact, expire_songs, finish_bandages, followers_of, on_item_target,
-    on_second_target, on_target, play_instrument, snooping, use_bandage, use_lockpick,
-    BandageFinished, BandageStarted, Begged, InstrumentSpent, LockpickBroke, Outcome, PoisonedSelf,
-    Stolen, Tamed, BANDAGE_GRAPHIC, LOCKPICK_GRAPHIC, MAX_FOLLOWERS,
+    advance_harvests, begin_harvest, expire_ghost_contact, expire_songs, finish_bandages,
+    followers_of, on_item_target, on_second_target, on_target, play_instrument,
+    resolve_harvest_target, snooping, use_bandage, use_lockpick, use_tool, BandageFinished,
+    BandageStarted, Begged, HarvestTarget, Harvested, InstrumentSpent, LockpickBroke, Outcome,
+    PoisonedSelf, Stolen, Tamed, ToolWorn, BANDAGE_GRAPHIC, LOCKPICK_GRAPHIC, MAX_FOLLOWERS,
 };
 pub use stats::gain_stat;
 

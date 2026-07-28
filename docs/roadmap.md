@@ -1051,6 +1051,61 @@ Roughly in dependency order, each script-first:
     lute or which of the four poisons is in a bottle. The poison is read off the
     **label**, which the converter carries through from ServUO: "a greater poison
     potion" is level two, and an unlabelled bottle is the middling one.
+  - [x] **Mining, Lumberjacking and Fishing — the harvest system.** ServUO's
+    `Scripts/Services/Harvest/`, and the pillar Crafting was waiting on: nothing
+    in the engine could produce a raw material. The four definitions (ore, sand,
+    lumber, fishing) are core data in `state::harvest` with their real numbers —
+    ore a bank of 8×8 holding 10–34, respawning in 10–20 minutes at reach 2, nine
+    veins from iron at 49.6% down to valorite at 1.4%, each richer vein
+    disappointing into iron one swing in two hundred; lumber a bank of 4×3 holding
+    20–45 over 20–30 minutes, ten logs a swing and twenty in Felucca; sand six
+    beats to a swing; fishing a single eight-second cast at reach 4. Skills in
+    tenths, chances in hundredths of a percent, every duration a tick count.
+
+    **A bank belongs to the ground, not to an entity**, so `Banks` sits on
+    `FacetState` beside the sector grid and the obstruction index, keyed by kind
+    and block. It is **deliberately not persisted**, as ServUO does not persist
+    it — a restart repays every vein, which is written beside the struct so it is
+    not filed as a bug later. What *is* saved is the vein's *position*: where
+    ServUO seeds a `Random` with `(x*17)+(y*11)+(map*3)`, this hashes the same
+    three inputs, because a bank that is not saved must still find the same ore
+    under the same block after a reboot or a valorite vein wanders.
+
+    **The load-bearing half is reading the tile.** A `0x6C` location reply carries
+    a graphic only when a *static* was clicked; a click on bare land arrives with
+    a graphic of **zero** and the land tile id is never on the wire, so the server
+    looks it up — a new `Terrain::land_tile`, beside `statics_at`. And a claimed
+    static is verified against the map at that exact id *and* z before it is
+    believed (ServUO's `PacketHandlers.cs` cancels the target otherwise): without
+    that a client names a tree at its feet and mines the middle of Britain. A
+    static is matched as `(id & 0x3FFF) | 0x4000` and land raw, which is why the
+    mountain *ground* and the mountain *wall* both reach the ore definition.
+
+    The rest is the shape the bandage slice set: a double-click on the tool
+    (`use_item_skill`, so an axe is a lumberjack's tool and a weapon at once —
+    derived from `state::weapon`'s `is_axe`, not listed twice), a **location**
+    cursor under `TargetPurpose::Harvest`, a `Harvesting` component beaten down on
+    the tick counter with its ServUO gesture and sound each time, and on the last
+    beat `CheckHarvestSkill` — the flat `req_skill` *and* `roll_skill_band`, the
+    same call combat's to-hit makes, so a miner trains from the attempt. Every
+    gate is re-checked on every beat, because all of them change under a swing
+    that takes seconds; walking away mid-swing gets a **different** line from
+    clicking too far off, which is ServUO's distinction and the whole feedback.
+    A tool spends a use per swing and breaks, which needed schema **v20**: one
+    nullable `uses` column serving both the new `Tool` and the existing
+    `Instrument` — the latter a bug this fixes, since a half-played lute came back
+    full at every reboot. The seven woods are gated on `[gameplay] expansion`
+    (ML by default), which threaded `expansion` into `Gameplay` as an ordinal so
+    the `0xB9` mask and the content tables read one setting.
+
+    The vendors already stocked the tools — 46 pickaxes, 40 hatchets, 21 fishing
+    poles — and were inert, exactly as the bandages and lutes were before their
+    slice. Deferred: ML **bonus resources** (gems, bark fragments, pearls), whose
+    items do not exist yet; **granite** and the special deep-water catches;
+    `BaseOre`'s pile-size art swap, without which rolling ServUO's four ore
+    graphics would leave four piles that refuse to merge; High Seas' lava tiles;
+    and a real **pack-capacity** refusal, since nothing in `items` caps what a
+    backpack holds — "your pack is full" fires only when there is no pack at all.
   - [ ] Sphere's per-skill `AdvRate` tables and its "learn only from a challenge"
     `GainRadius` — **dropped, not deferred**: ServUO's band *is* the
     learn-from-a-challenge rule, and its `gain_factor` column is the per-skill
@@ -1320,9 +1375,12 @@ Roughly in dependency order, each script-first:
     left dormant** — its timer held, nothing spawned — until someone approaches,
     the standard "smart spawning". The three together turn a whole-facet Populate
     from a stall into a shrug.
-  - [ ] **Body-type tables** — door-opening and rideability are body-id lists
-    until a real table (tiledata or data-driven config) names which bodies have
-    hands and which carry a rider.
+  - [x] **Body-type tables** — ServUO's `Data/bodyTable.cfg` is ported
+    (`state::components::body_type`), so `body_opens_doors` is its rule verbatim
+    (`!Body.IsAnimal && !Body.IsSea`) rather than a list of eight human ids, and
+    rideability is derived from the `BaseMount` subclasses — thirty bodies, with
+    `mount_body_for` derived from the same table rather than kept as a second
+    hand-written half.
   - [ ] **Path to a tile *adjacent* to the quarry** rather than onto it — the
     remaining refinement from the A\* work; today a chase plans onto the target's
     own tile and stops one short by the reach check.
@@ -1816,31 +1874,11 @@ started.
   that entry: `0x65` weather, a calendar that turns the season, and the
   `no_recall`/`safe` flags, which are carried in the data and have no consumer
   until travel and PvP rules exist.
-- **Fame, karma and titles.** Absent, which is why the Felucca converter falls
-  back to a karma-sign heuristic for notoriety and why a murder count is the only
-  standing a character accumulates.
-- **Resource gathering.** Mining, lumberjacking and fishing. Its first step —
-  routing the client's skill use — is done (§6 `skills`), and what is left is the
-  harvest system itself, a port of ServUO's `Scripts/Services/Harvest/`:
-  - `HarvestDefinition`/`HarvestBank`/`HarvestVein`/`HarvestResource`, about six
-    hundred lines of structure. A **bank** is the depletion-and-respawn unit —
-    one per block of tiles, per facet — and belongs on `FacetState` beside the
-    sector grid and the obstruction index. Banks are **not** persisted, as they
-    are not in ServUO; a restart repays every vein, and that fact wants writing
-    down beside the struct or it will be reported as a bug.
-  - The roll is `CheckHarvestSkill`: `value >= resource.req_skill` and then the
-    band, so the same `roll_skill_band` everything else uses.
-  - The flow is a timer: a cursor, then N beats of `effect_delay` each with its
-    swing animation and sound, and the last one delivers. In **ticks**, never a
-    `Duration` — the same reason decay and swing timers are.
-  - Three systems with their real numbers: **Lumberjacking** (bank 4×3, 20–45,
-    respawn 20–30 min, 10 a swing and 20 in Felucca, seven woods and their veins),
-    **Mining** (bank 8×8, 10–34, respawn 10–20 min, the nine ores from Iron at
-    49.6% down to Valorite at 1.4%, plus sand), **Fishing** (bank 8×8, 5–15,
-    reach 4). Each carries a big table of tile ids — pin a few known values in a
-    test beside the constant, the `NO_SHOOT` rule.
-  - The resources are new stackable items (ore, logs, fish) through the existing
-    `items` crate.
+- ~~**Fame, karma and titles.**~~ Landed; see **A character has a standing** in
+  §6. The Felucca converter still falls back to a karma-sign heuristic for
+  *notoriety*, which is a converter gap and is listed as one below.
+- ~~**Resource gathering.**~~ Landed; see **Mining, Lumberjacking and Fishing**
+  in §6 below. Crafting is what it unblocks, and is the next thing here.
 - **Crafting.** The craft gumps behind blacksmithy, tailoring, carpentry, alchemy,
   inscription and the rest — about 13.5k lines of C# in
   `Scripts/Services/Craft/`, of which ~5.5k are the eleven `Def*` recipe tables.
@@ -1859,12 +1897,10 @@ started.
     AlterItem, Repair, Resmelt, locked Recipes, bulk order deeds, and Imbuing.
 - **Party (`0xBF 0x06`) and chat channels (`0xB3`/`0xB5`).** Group play has no
   protocol surface at all.
-- **Pets and taming.** Ownership, follower slots that mean something, control
-  commands through speech (all/come/stay/kill), and stabling. The status bar's
-  follower count reads a mount today and nothing else, because a mount is the
-  only follower the engine can have. Animal Taming, Herding and Veterinary in
-  §6 `skills` all wait on this — they are the same entry seen from the other
-  side, and none of them is a small skill sitting on top of a solved problem.
+- ~~**Pets and taming.**~~ Landed with Animal Taming; see **Taming, and the pets
+  it wanted** in §6 `skills`. Still open from that entry: **stabling** (which
+  wants a pet saved with no position, the logged-out-character shape),
+  **loyalty** (pointless without feeding) and **Herding**.
 - **CI.** `.github/workflows` holds a release workflow and nothing that runs
   `cargo test` / `clippy` / `fmt` on a push, though "all three silent" is a stated
   rule of the project. The one gap here that is about the project rather than the

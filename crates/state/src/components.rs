@@ -463,6 +463,51 @@ pub struct Instrument {
     pub uses_left: u16,
 }
 
+/// A harvesting tool, and how many swings are left in it — ServUO's
+/// `BaseHarvestTool.UsesRemaining`.
+///
+/// The sibling of [`Instrument`], and the same interface in ServUO
+/// (`IUsesRemaining`): which *system* a tool drives is a property of its class and
+/// lives in the core table ([`crate::harvest::tool_data`]), how worn this
+/// particular pickaxe is lives here. At zero the tool breaks and is gone.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Tool {
+    /// Swings left.
+    pub uses_left: u16,
+}
+
+/// A harvest in progress — ServUO's `HarvestTimer`.
+///
+/// The one gathering fact that is genuinely stateful, and the reason it is a
+/// component rather than a local: a swing takes several beats, and between them
+/// the harvester can walk away, the vein can be emptied by somebody else, or the
+/// shard can tick a hundred times. Every field but the target is answered by the
+/// tick counter, like [`Decays`] and a swing timer, so a harvest replays.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Harvesting {
+    /// The tool being swung. Re-checked each beat: a pickaxe dropped mid-swing
+    /// mines nothing.
+    pub tool: EntityId,
+    /// The tile being worked.
+    pub at: Point,
+    /// Which system this is, so the beat needs no second lookup.
+    pub kind: crate::harvest::HarvestKind,
+    /// The tile id, as [`crate::harvest::tile_key`] matched it — kept so the beat
+    /// can confirm the ground has not changed under the swing.
+    pub tile: u16,
+    /// Beats still to come. The last one delivers.
+    pub beats_left: u16,
+    /// The tick the next beat falls on.
+    pub next_beat: u64,
+    /// The tick this beat's *sound* falls on, or [`u64::MAX`] once it has played.
+    ///
+    /// A second clock rather than one, because ServUO gives the swing and the
+    /// noise it makes different delays (`EffectDelay` against `EffectSoundDelay`):
+    /// a pick is raised, and the chink comes most of a second later. Collapsing
+    /// them makes a miner sound like a metronome.
+    pub next_sound: u64,
+}
+
 /// A mobile a bard has calmed — ServUO's `BaseCreature.BardPacified`.
 ///
 /// It does not swing and it does not pick fights while this holds, which is read at

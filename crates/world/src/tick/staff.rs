@@ -77,6 +77,22 @@ impl World {
                     _ => self.notify_self(actor, "Only a container can be trapped."),
                 }
             }
+            openshard_state::TargetPurpose::Harvest { tool } => {
+                // The one purpose that wants the *ground* rather than an object,
+                // so it reads the reply's point and tile graphic and ignores the
+                // serial. What the tile actually is, the map decides — see
+                // `skills::resolve_harvest_target`, which is where a client naming
+                // a static that is not there is refused.
+                let facet = self.state.facet_of(actor);
+                if let Some(target) = skills::resolve_harvest_target(
+                    &self.state,
+                    facet,
+                    response.location,
+                    response.graphic,
+                ) {
+                    skills::begin_harvest(&mut self.state, actor, tool, target);
+                }
+            }
             openshard_state::TargetPurpose::TurnKey { key } => {
                 // The key may have gone while the cursor was up, and the target may be
                 // nothing at all — a key turned on the sky opens nothing and says so.

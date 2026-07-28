@@ -10627,6 +10627,7 @@ fn add_empty_facet(world: &mut World, facet: u8) {
             sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
             obstructions: Obstructions::default(),
             regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
+            banks: Banks::default(),
         },
     );
 }

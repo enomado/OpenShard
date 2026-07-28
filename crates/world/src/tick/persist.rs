@@ -296,6 +296,10 @@ impl World {
             trap: registry
                 .get::<Trap>(item)
                 .map(|trap| (trap_kind_code(trap.kind), trap.power, trap.level)),
+            // And how much is left in a thing that wears out — a tool's swings or
+            // an instrument's tunes. One field for both, as they are one interface
+            // in ServUO; without it a half-played lute comes back full.
+            uses: items::uses_left(registry, item),
             location,
         })
     }
@@ -843,6 +847,11 @@ impl World {
                 },
             );
         }
+        // The graphic says whether a saved use count is an instrument's tunes or a
+        // tool's swings, so `items` decides which component it comes back as.
+        if let Some(uses) = record.uses {
+            items::restore_uses(&mut self.state, entity, record.graphic, uses);
+        }
         // Loose clutter resumes rotting; a container does not (mark_decay skips
         // it) — except a corpse, which is a container that *must* rot, so it gets
         // a fresh timer here (the decay tick is not itself saved, so a restored
@@ -927,6 +936,9 @@ impl World {
                         level,
                     },
                 );
+            }
+            if let Some(uses) = record.uses {
+                items::restore_uses(&mut self.state, entity, record.graphic, uses);
             }
         }
         // Pass two: where each item goes.

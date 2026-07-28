@@ -120,7 +120,11 @@ CREATE TABLE IF NOT EXISTS items (
     -- the trap on it: kind, power and the chest's level. NULL for an untrapped item.
     trap_kind INTEGER,
     trap_power INTEGER,
-    trap_level INTEGER
+    trap_level INTEGER,
+    -- how many uses are left in a thing that wears out: a tool's swings or an
+    -- instrument's tunes. One column for both, as ServUO gives both one
+    -- interface; the graphic says which it comes back as.
+    uses INTEGER
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 CREATE TABLE IF NOT EXISTS mobiles (
@@ -485,8 +489,8 @@ impl Store for PgStore {
             .query(
                 "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                  loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-                 corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level \
-                 FROM items",
+                 corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, \
+                 uses FROM items",
                 &[],
             )
             .await
@@ -674,9 +678,9 @@ async fn insert_item(
             "INSERT INTO items \
              (serial, owner, graphic, hue, amount, stackable, gump, \
               loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
-              corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level) \
+              corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, uses) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, \
-                     $22,$23,$24) \
+                     $22,$23,$24,$25) \
              ON CONFLICT (serial) DO UPDATE SET \
              owner = EXCLUDED.owner, graphic = EXCLUDED.graphic, hue = EXCLUDED.hue, \
              amount = EXCLUDED.amount, stackable = EXCLUDED.stackable, gump = EXCLUDED.gump, \
@@ -686,7 +690,8 @@ async fn insert_item(
              price = EXCLUDED.price, name = EXCLUDED.name, spellbook = EXCLUDED.spellbook, \
              corpse = EXCLUDED.corpse, poison_level = EXCLUDED.poison_level, \
              poison_charges = EXCLUDED.poison_charges, trap_kind = EXCLUDED.trap_kind, \
-             trap_power = EXCLUDED.trap_power, trap_level = EXCLUDED.trap_level",
+             trap_power = EXCLUDED.trap_power, trap_level = EXCLUDED.trap_level, \
+             uses = EXCLUDED.uses",
             &[
                 &i64::from(item.serial),
                 &i64::from(item.owner),
@@ -721,6 +726,7 @@ async fn insert_item(
                 &item.trap.map(|(kind, _, _)| i32::from(kind)),
                 &item.trap.map(|(_, power, _)| i32::from(power)),
                 &item.trap.map(|(_, _, level)| i32::from(level)),
+                &item.uses.map(i32::from),
             ],
         )
         .await
@@ -796,6 +802,10 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
                 )),
                 _ => None,
             },
+            uses: row
+                .get::<_, Option<i32>>(24)
+                .map(|uses| u16::try_from(uses).map_err(|_| corrupt("uses")))
+                .transpose()?,
             location,
         }))
     }

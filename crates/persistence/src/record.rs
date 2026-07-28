@@ -95,7 +95,12 @@ use serde::{Deserialize, Serialize};
 /// - v19: the **trap on a container**. A restart that quietly disarms every chest
 ///   on the shard is the same class of silent loss as one that forgets a lock, and
 ///   the disarm is a skill somebody spent points on.
-pub const SCHEMA_VERSION: u32 = 19;
+/// - v20: **how much is left in a thing that wears out** — a harvesting tool's
+///   swings and an instrument's tunes, which are one interface in ServUO
+///   (`IUsesRemaining`) and so one column here. The instrument half is a bug this
+///   fixes rather than a feature it adds: a lute bought and half played came back
+///   full at every reboot, because nothing saved the count.
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// An account, as saved.
 ///
@@ -406,6 +411,13 @@ pub struct ItemRecord {
     /// `None` for everything else, and defaulted so a pre-v19 save loads.
     #[serde(default)]
     pub trap: Option<(u8, u16, u8)>,
+    /// How many uses are left in it, if it is a thing that wears out — a
+    /// harvesting tool's swings or an instrument's tunes. One field for both,
+    /// because ServUO gives both the one `IUsesRemaining` interface, and the
+    /// *graphic* decides which component it comes back as. Defaulted so a pre-v20
+    /// save loads.
+    #[serde(default)]
+    pub uses: Option<u16>,
     /// Where it is.
     pub location: ItemLocation,
 }
@@ -814,6 +826,7 @@ mod tests {
                 }),
                 poison: Some((2, 14)),
                 trap: Some((3, 40, 2)),
+                uses: Some(37),
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");
