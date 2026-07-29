@@ -662,6 +662,44 @@ mod tests {
         assert!(info(64).is_none(), "there is no 65th spell");
     }
 
+    /// The travel family's rows, pinned against ServUO's own `SpellInfo`.
+    ///
+    /// Worth a test of its own because a wrong reagent is invisible from every
+    /// other direction: the spell still casts, still costs, still works — it
+    /// just charges for something the player never needed to buy, and the only
+    /// symptom is a mage who cannot open a gate with a pack the reference says
+    /// is enough. Gate Travel's row *was* wrong (blood moss for black pearl) and
+    /// nothing in the suite pointed at the table when it was.
+    #[test]
+    fn the_travel_spells_cost_what_the_reference_says() {
+        let recall = info(31).unwrap();
+        assert_eq!(recall.name, "Recall");
+        assert_eq!(recall.reagents, &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT]);
+
+        let mark = info(44).unwrap();
+        assert_eq!(mark.name, "Mark");
+        assert_eq!(mark.reagents, &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT]);
+
+        let gate = info(51).unwrap();
+        assert_eq!(gate.name, "Gate Travel");
+        assert_eq!(
+            gate.reagents,
+            &[BLACK_PEARL, MANDRAKE_ROOT, SULFUROUS_ASH],
+            "black pearl, not blood moss — ServUO's GateTravel.cs"
+        );
+
+        // And all three aim at an object, which is what raises the cursor the
+        // client refuses to answer with bare ground.
+        for spell in [recall, mark, gate] {
+            assert_eq!(
+                spell.target,
+                SpellTarget::Item,
+                "{} aims at an item",
+                spell.name
+            );
+        }
+    }
+
     #[test]
     fn mana_and_delay_climb_with_the_circle() {
         assert_eq!(mana(info(4).unwrap()), 4, "a first-circle spell is cheap");

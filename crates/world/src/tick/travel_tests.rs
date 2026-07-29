@@ -1124,3 +1124,67 @@ fn a_reply_for_a_row_the_book_does_not_hold_does_nothing() {
         "nobody went anywhere"
     );
 }
+
+#[test]
+fn a_plain_teleport_resets_the_walk_sequence_too() {
+    // The facet-change test above covers the new path. This covers the old one,
+    // which is where the bug actually lived: `teleport` has moved players since
+    // the first staff command and never reset the sequence, so the client —
+    // which zeroes its own count on a jump it did not predict — had its next
+    // step refused as out of order, and the two ends stayed out of phase for the
+    // rest of the session. Nothing errors and nothing else in the suite walks
+    // after a teleport.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let player = world.state.players[&connection];
+
+    // Take a step, so the sequence is no longer fresh.
+    for step in 0..2 {
+        world.queue(Command::Walk {
+            connection,
+            request: walk(step, Direction::North),
+        });
+        world.tick(now);
+    }
+    assert!(
+        !world
+            .registry()
+            .get::<Movement>(player)
+            .unwrap()
+            .0
+            .sequence
+            .is_fresh(),
+        "it has walked"
+    );
+
+    // A teleport on the very same facet — no `move_to`, no facet argument.
+    world
+        .state
+        .teleport(player, Point::new(START.0 + 6, START.1 + 6, 0));
+
+    assert!(
+        world
+            .registry()
+            .get::<Movement>(player)
+            .unwrap()
+            .0
+            .sequence
+            .is_fresh(),
+        "and the jump put the server back to zero, where the client already is"
+    );
+
+    // And the proof it matters: the client's next step *is* a zero, and it is
+    // accepted rather than refused.
+    world.queue(Command::Walk {
+        connection,
+        request: walk(0, Direction::North),
+    });
+    world.tick(now);
+    assert!(
+        !packets_for(&mut world, connection)
+            .iter()
+            .any(|p| p[0] == 0x21),
+        "no walk rejection followed the teleport"
+    );
+}
