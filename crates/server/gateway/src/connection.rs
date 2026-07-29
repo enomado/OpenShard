@@ -2,7 +2,7 @@
 
 use openshard_protocol::client_packet::{ClientDecodeError, ClientPacket};
 use openshard_protocol::login::{ClientLoginDecodeError, LoginStagePacket};
-use openshard_protocol::packet::{frame_client_packet, Frame, FrameError, MAX_PACKET_SIZE};
+use openshard_protocol::packet::{Frame, FrameError, MAX_PACKET_SIZE, frame_client_packet};
 use openshard_protocol::seed::{Seed, SeedReader};
 use openshard_protocol::version::ClientVersion;
 
@@ -22,13 +22,13 @@ pub struct RawPacket(pub(crate) Vec<u8>);
 
 /// Which half of the shard owns a packet, decoded exactly once.
 ///
-/// `packet.first()` alone cannot tell: [`ClientLoginPacket`] and
+/// `packet.first()` alone cannot tell: [`LoginStagePacket`] and
 /// [`ClientPacket`] each cover a disjoint slice of the id space, so the only
 /// way to know which one a byte belongs to is to ask the login side first —
 /// see [`RawPacket::parse_packet`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Packet {
-    /// Decoded by [`ClientLoginPacket::decode`]. Routed to `login.handle`,
+    /// Decoded by [`LoginStagePacket::decode`]. Routed to `login.handle`,
     /// except for `CreateCharacter`/`DeleteCharacter`, which the server
     /// intercepts first.
     Login(LoginStagePacket),
@@ -58,7 +58,7 @@ impl RawPacket {
     /// it carries beyond the id is still untrusted client input — `Err` is the
     /// ordinary outcome for a known id with a malformed body, not a bug.
     ///
-    /// [`ClientLoginPacket::decode`] is tried first because it is the
+    /// [`LoginStagePacket::decode`] is tried first because it is the
     /// smaller, closed id set; anything it does not recognize (`Unknown`) is
     /// not a login packet at all, so [`ClientPacket::decode`] gets the only
     /// other chance to claim it.
@@ -355,11 +355,7 @@ mod tests {
 
         // 0xAD talk, variable length, five bytes total.
         connection.receive(&[0xAD, 0x00]);
-        assert_eq!(
-            drain(&mut connection).unwrap(),
-            vec![],
-            "no length field yet"
-        );
+        assert_eq!(drain(&mut connection).unwrap(), vec![], "no length field yet");
 
         connection.receive(&[0x05, 0xAA]);
         assert_eq!(

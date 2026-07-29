@@ -11,11 +11,11 @@
 //! handful of things ServUO checks at the moment of arrival.
 
 use super::*;
-use openshard_protocol::gump::{CloseGump, GumpButton, GumpDisplay, GumpLayout, GUMP_WHITE};
+use openshard_protocol::gump::{CloseGump, GUMP_WHITE, GumpButton, GumpDisplay, GumpLayout};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::{
-    Combat, Contained, CriminalUntil, Equipped, Position, RuneMark, Runebook, RunebookEntry,
-    RECALL_RUNE_GRAPHIC,
+    Combat, Contained, CriminalUntil, Equipped, Position, RECALL_RUNE_GRAPHIC, RuneMark, Runebook,
+    RunebookEntry,
 };
 
 /// The layer a backpack rides on. Mark wants the rune *in* it, which is stricter
@@ -75,8 +75,7 @@ impl World {
 
     /// Write the caster's own spot onto a recall rune — the Mark spell.
     pub(super) fn mark_rune(&mut self, caster: EntityId, target_serial: u32) {
-        let Some(rune) =
-            Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
+        let Some(rune) = Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
         else {
             return;
         };
@@ -136,8 +135,7 @@ impl World {
 
     /// Take the caster to where a marked rune points — the Recall spell.
     pub(super) fn recall(&mut self, caster: EntityId, target_serial: u32) {
-        let Some(rune) =
-            Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
+        let Some(rune) = Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
         else {
             return;
         };
@@ -355,10 +353,7 @@ impl World {
             30,
             14,
             GUMP_WHITE,
-            format!(
-                "Runebook — {} of {} charges",
-                owned.charges, owned.max_charges
-            ),
+            format!("Runebook — {} of {} charges", owned.charges, owned.max_charges),
         );
         if owned.entries.is_empty() {
             layout.label(30, 46, GUMP_WHITE, "This book is empty.");
@@ -384,42 +379,10 @@ impl World {
                 0,
                 BOOK_USE_CHARGE + slot,
             );
-            layout.button(
-                280,
-                y,
-                0x00FA,
-                0x00FB,
-                GumpButton::Reply,
-                0,
-                BOOK_RECALL + slot,
-            );
-            layout.button(
-                310,
-                y,
-                0x00FA,
-                0x00FB,
-                GumpButton::Reply,
-                0,
-                BOOK_GATE + slot,
-            );
-            layout.button(
-                340,
-                y,
-                0x00FA,
-                0x00FB,
-                GumpButton::Reply,
-                0,
-                BOOK_DEFAULT + slot,
-            );
-            layout.button(
-                370,
-                y,
-                0x00FA,
-                0x00FB,
-                GumpButton::Reply,
-                0,
-                BOOK_DROP + slot,
-            );
+            layout.button(280, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_RECALL + slot);
+            layout.button(310, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_GATE + slot);
+            layout.button(340, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_DEFAULT + slot);
+            layout.button(370, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_DROP + slot);
         }
         layout.label(250, 30, GUMP_WHITE, "use  rec  gate  def  drop");
 

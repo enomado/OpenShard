@@ -11,13 +11,13 @@
 //! coordinates that now mean somewhere else.
 
 use super::tests::{
-    add_empty_facet, add_empty_facet_sized, backpack_serial, enter, enter_as, enter_on_facet,
-    packets_for, serial_of, walk, world, START,
+    START, add_empty_facet, add_empty_facet_sized, backpack_serial, enter, enter_as, enter_on_facet,
+    packets_for, serial_of, walk, world,
 };
 use super::*;
 use openshard_state::components::{
     Contained, CriminalUntil, Decays, Facet, InRegion, Mana, Moongate, Movement, Position,
-    RuneMark, Spellbook, RECALL_RUNE_GRAPHIC, SPELLBOOK_GRAPHIC,
+    RECALL_RUNE_GRAPHIC, RuneMark, SPELLBOOK_GRAPHIC, Spellbook,
 };
 use openshard_state::{Region, RegionFlags, RegionRect};
 
@@ -91,8 +91,7 @@ fn a_watcher_on_the_old_facet_is_told_to_forget_the_traveller() {
     assert!(
         packets_for(&mut world, watcher_connection)
             .iter()
-            .any(|p| p[0] == 0x1D
-                && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == traveller_serial),
+            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == traveller_serial),
         "and was told to take it off the screen"
     );
 }
@@ -193,10 +192,7 @@ fn login_sends_the_dimensions_of_the_facet_the_character_is_on() {
         ILSHENAR.0 as u16,
         "the facet it logged in on"
     );
-    assert_eq!(
-        u16::from_be_bytes([start[29], start[30]]),
-        ILSHENAR.1 as u16,
-    );
+    assert_eq!(u16::from_be_bytes([start[29], start[30]]), ILSHENAR.1 as u16,);
 }
 
 #[test]
@@ -394,10 +390,7 @@ fn marking_a_rune_writes_where_you_stand_and_recalling_takes_you_back() {
         .entity_of(Serial::new(rune_serial).unwrap())
         .unwrap();
     assert_eq!(
-        world
-            .registry()
-            .get::<RuneMark>(rune)
-            .map(|m| m.destination),
+        world.registry().get::<RuneMark>(rune).map(|m| m.destination),
         Some(marked_at),
         "the rune remembers the tile it was marked on"
     );
@@ -407,10 +400,7 @@ fn marking_a_rune_writes_where_you_stand_and_recalling_takes_you_back() {
         .state
         .teleport(caster, Point::new(START.0 + 40, START.1 + 40, 0));
     world.tick(now);
-    assert_ne!(
-        world.registry().get::<Position>(caster).unwrap().0,
-        marked_at
-    );
+    assert_ne!(world.registry().get::<Position>(caster).unwrap().0, marked_at);
 
     cast_at(&mut world, connection, RECALL, rune_serial, now);
 
@@ -528,9 +518,7 @@ fn a_no_recall_region_bars_arriving_and_marking_but_not_leaving() {
             destination: inside,
         },
     );
-    world
-        .state
-        .teleport(caster, Point::new(START.0, START.1, 0));
+    world.state.teleport(caster, Point::new(START.0, START.1, 0));
     cast_at(&mut world, connection, RECALL, rune_serial, now);
     assert_ne!(
         world.registry().get::<Position>(caster).unwrap().0,
@@ -607,10 +595,7 @@ fn a_criminal_cannot_recall_away_and_it_costs_them_nothing_to_find_out() {
             destination: Point::new(START.0 + 9, START.1, 0),
         },
     );
-    world
-        .state
-        .registry
-        .insert(caster, CriminalUntil { tick: 9_999 });
+    world.state.registry.insert(caster, CriminalUntil { tick: 9_999 });
     let mana_before = world.registry().get::<Mana>(caster).unwrap().current;
     let at = world.registry().get::<Position>(caster).unwrap().0;
 
@@ -658,14 +643,8 @@ fn a_gate_opens_at_both_ends_and_each_leads_to_the_other() {
 
     let near = world.gate_at(0, here).expect("a gate at the caster");
     let far = world.gate_at(0, there).expect("and one at the destination");
-    assert_eq!(
-        world.registry().get::<Moongate>(near).unwrap().destination,
-        there
-    );
-    assert_eq!(
-        world.registry().get::<Moongate>(far).unwrap().destination,
-        here
-    );
+    assert_eq!(world.registry().get::<Moongate>(near).unwrap().destination, there);
+    assert_eq!(world.registry().get::<Moongate>(far).unwrap().destination, here);
 }
 
 #[test]
@@ -743,10 +722,7 @@ fn a_gate_closes_on_its_own_and_leaves_nothing_behind() {
         world.tick(later);
     }
 
-    assert!(
-        world.registry().get::<Moongate>(gate).is_none(),
-        "it closed"
-    );
+    assert!(world.registry().get::<Moongate>(gate).is_none(), "it closed");
     assert_eq!(
         world.state.facet_state(0).sectors.position_of(gate),
         None,
@@ -828,11 +804,7 @@ fn placing_the_city_moongates_twice_places_them_once() {
         openshard_magic::PUBLIC_MOONGATES.len(),
         "all nine went down"
     );
-    assert_eq!(
-        world.place_public_moongates(),
-        0,
-        "and none did the second time"
-    );
+    assert_eq!(world.place_public_moongates(), 0, "and none did the second time");
 }
 
 #[test]
@@ -1008,8 +980,7 @@ fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
     world.state.registry.insert(book, owned);
 
     let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
-    let scrolls =
-        openshard_items::give(&mut world.state, backpack, RECALL_SCROLL, 0, 3).expect("scrolls");
+    let scrolls = openshard_items::give(&mut world.state, backpack, RECALL_SCROLL, 0, 3).expect("scrolls");
     let scroll_serial = world.state.registry.serial_of(scrolls).unwrap().raw();
 
     openshard_items::pick_up(&mut world.state, connection, scroll_serial, 3);
@@ -1030,11 +1001,7 @@ fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
         .registry()
         .get::<openshard_state::components::Amount>(scrolls)
         .map(|a| a.0);
-    assert_eq!(
-        left,
-        Some(2),
-        "and the two it had no room for were not eaten"
-    );
+    assert_eq!(left, Some(2), "and the two it had no room for were not eaten");
 }
 
 #[test]
@@ -1050,13 +1017,11 @@ fn a_charge_takes_you_there_for_free_and_is_spent() {
         .get::<openshard_state::components::Runebook>(book)
         .cloned()
         .unwrap();
-    owned
-        .entries
-        .push(openshard_state::components::RunebookEntry {
-            facet: 0,
-            destination: there,
-            description: "Britain".into(),
-        });
+    owned.entries.push(openshard_state::components::RunebookEntry {
+        facet: 0,
+        destination: there,
+        description: "Britain".into(),
+    });
     let charges_before = owned.charges;
     world.state.registry.insert(book, owned);
     let mana_before = world.registry().get::<Mana>(caster).unwrap().current;
@@ -1182,9 +1147,7 @@ fn a_plain_teleport_resets_the_walk_sequence_too() {
     });
     world.tick(now);
     assert!(
-        !packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x21),
+        !packets_for(&mut world, connection).iter().any(|p| p[0] == 0x21),
         "no walk rejection followed the teleport"
     );
 }

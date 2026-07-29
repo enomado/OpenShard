@@ -13,12 +13,12 @@
 //! animation for a craft that was never possible.
 
 use openshard_entities::EntityId;
-use openshard_state::components::{CraftedBy, Crafting, Name, Position, Quality, Tool};
 use openshard_state::WorldState;
+use openshard_state::components::{CraftedBy, Crafting, Name, Position, Quality, Tool};
 
 use crate::chance::{roll, train_per_item};
 use crate::consume::{self, Refusal, Share};
-use crate::defs::{system, SYSTEMS};
+use crate::defs::{SYSTEMS, system};
 use crate::environment;
 use crate::recipe::Recipe;
 use crate::system::{CraftSystemDef, SystemId};

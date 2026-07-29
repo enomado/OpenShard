@@ -124,10 +124,7 @@ fn advertise_needs_a_port() {
             advertise = "127.0.0.1:0"
             "#,
     );
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::AdvertisedPortZero)
-    ));
+    assert!(matches!(config.validate(), Err(ConfigError::AdvertisedPortZero)));
 }
 
 #[test]
@@ -143,10 +140,7 @@ fn advertise_may_differ_from_listen() {
             "#,
     );
     config.validate().unwrap();
-    assert_eq!(
-        config.advertise_v4().unwrap().ip().octets(),
-        [203, 0, 113, 10]
-    );
+    assert_eq!(config.advertise_v4().unwrap().ip().octets(), [203, 0, 113, 10]);
 }
 
 #[test]
@@ -162,10 +156,7 @@ fn an_ipv6_advertise_has_nowhere_to_go_on_the_wire() {
             advertise = "[2001:db8::1]:2593"
             "#,
     );
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::AdvertisedNotIpv4)
-    ));
+    assert!(matches!(config.validate(), Err(ConfigError::AdvertisedNotIpv4)));
     assert_eq!(config.advertise_v4(), None);
 }
 
@@ -265,10 +256,7 @@ fn an_empty_account_name_is_refused() {
             password = "a"
             "#,
     );
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::EmptyAccountName)
-    ));
+    assert!(matches!(config.validate(), Err(ConfigError::EmptyAccountName)));
 }
 
 #[test]
@@ -445,8 +433,5 @@ fn a_zero_lod_idle_factor_is_refused_when_lod_is_on() {
     let mut config = config(MINIMAL);
     config.gameplay.lod = true;
     config.gameplay.lod_idle_factor = 0;
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::ZeroLodIdleFactor)
-    ));
+    assert!(matches!(config.validate(), Err(ConfigError::ZeroLodIdleFactor)));
 }

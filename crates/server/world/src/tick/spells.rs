@@ -17,7 +17,7 @@
 //! *does* beyond dispatching on the table's archetype.
 
 use super::*;
-use openshard_magic::{SpellEffect, SpellTarget, MAGERY_SKILL};
+use openshard_magic::{MAGERY_SKILL, SpellEffect, SpellTarget};
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
@@ -193,8 +193,7 @@ impl World {
                 // An item-targeted spell raises the *object* cursor, so the client
                 // itself refuses bare ground — "Select Marked item." wants a thing,
                 // not a place. What comes back is still re-checked server-side.
-                if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(caster)
-                {
+                if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(caster) {
                     let kind = if info.target == SpellTarget::Item {
                         TargetKind::Object
                     } else {
@@ -237,9 +236,7 @@ impl World {
             SpellEffect::Damage(..) | SpellEffect::Poison | SpellEffect::Paralyze
         ) && target_serial != 0
         {
-            if let Some(target) =
-                Serial::new(target_serial).and_then(|s| self.state.registry.entity_of(s))
-            {
+            if let Some(target) = Serial::new(target_serial).and_then(|s| self.state.registry.entity_of(s)) {
                 if magic::consume_behaviour_buff(
                     &mut self.state,
                     target,
@@ -275,12 +272,8 @@ impl World {
                     .facet_state(facet)
                     .sectors
                     .nearby(centre, magic::AREA_RADIUS)
-                    .filter(|(entity, _)| {
-                        *entity != caster && self.state.registry.has::<Body>(*entity)
-                    })
-                    .filter_map(|(entity, _)| {
-                        self.state.registry.serial_of(entity).map(|s| s.raw())
-                    })
+                    .filter(|(entity, _)| *entity != caster && self.state.registry.has::<Body>(*entity))
+                    .filter_map(|(entity, _)| self.state.registry.serial_of(entity).map(|s| s.raw()))
                     .collect();
                 for victim in victims {
                     combat::damage(&mut self.state, victim, base, kind, by);
@@ -325,9 +318,7 @@ impl World {
                     .sectors
                     .nearby(target_location, magic::AREA_RADIUS)
                     .filter(|(entity, _)| self.state.registry.has::<Body>(*entity))
-                    .filter_map(|(entity, _)| {
-                        self.state.registry.serial_of(entity).map(|s| s.raw())
-                    })
+                    .filter_map(|(entity, _)| self.state.registry.serial_of(entity).map(|s| s.raw()))
                     .collect();
                 for mobile in healed {
                     combat::cure_poison(&mut self.state, mobile);
@@ -529,8 +520,7 @@ impl World {
                 explode: false,
             },
         };
-        self.state
-            .broadcast_packet(caster, &ServerPacket::Effect(packet));
+        self.state.broadcast_packet(caster, &ServerPacket::Effect(packet));
         // The sound at the point of the effect — target_pos is the aimed spot for
         // an area spell, since its target_serial is 0.
         self.state.broadcast_packet(
@@ -616,8 +606,7 @@ impl World {
     /// Send a mobile its personal light level, if it has a client — the seam Night
     /// Sight lights and its expiry restores. A creature (no `Client`) is a no-op.
     pub(super) fn send_light(&mut self, serial: u32, level: u8) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-        else {
+        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) {
@@ -636,17 +625,14 @@ impl World {
         if pack == 0 {
             return false;
         }
-        self.state
-            .registry
-            .query::<Spellbook>()
-            .any(|(book, mask)| {
-                mask.has(spell as u8)
-                    && self
-                        .state
-                        .registry
-                        .get::<Contained>(book)
-                        .is_some_and(|c| c.container.raw() == pack)
-            })
+        self.state.registry.query::<Spellbook>().any(|(book, mask)| {
+            mask.has(spell as u8)
+                && self
+                    .state
+                    .registry
+                    .get::<Contained>(book)
+                    .is_some_and(|c| c.container.raw() == pack)
+        })
     }
 
     /// The backpack serial reagents come out of, or `0` if the caster wears none.

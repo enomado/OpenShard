@@ -133,11 +133,7 @@ pub struct WeaponData {
 /// uses the `aos` numbers, the pre-AoS family (eras 0 custom, 1 pre-AoS) the `old`.
 #[must_use]
 pub const fn by_era(old: u16, aos: u16, era: u8) -> u16 {
-    if era >= 2 {
-        aos
-    } else {
-        old
-    }
+    if era >= 2 { aos } else { old }
 }
 
 /// The swing-speed base a weapon lends under each era's formula: `ml_speed` for ML
@@ -335,11 +331,7 @@ mod tests {
     fn no_two_weapons_share_a_graphic() {
         for (i, a) in WEAPONS.iter().enumerate() {
             for b in &WEAPONS[i + 1..] {
-                assert_ne!(
-                    a.graphic, b.graphic,
-                    "duplicate graphic 0x{:04X}",
-                    a.graphic
-                );
+                assert_ne!(a.graphic, b.graphic, "duplicate graphic 0x{:04X}", a.graphic);
             }
         }
     }
@@ -361,9 +353,8 @@ mod tests {
 
     #[test]
     fn the_six_classes_that_distrust_tiledata_win_over_it() {
-        let layer = |graphic: u16, tiledata: u8| {
-            weapon_layer(weapon_data(graphic).expect("in the table"), tiledata)
-        };
+        let layer =
+            |graphic: u16, tiledata: u8| weapon_layer(weapon_data(graphic).expect("in the table"), tiledata);
         // A real `tiledata.mul` files all five of these as one-handed. They are not.
         for graphic in [0x13B2, 0x0F50, 0x13FD, 0x0F47, 0x1439] {
             assert_eq!(

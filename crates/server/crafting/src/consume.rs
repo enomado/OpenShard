@@ -129,12 +129,7 @@ pub fn check(
 /// Each line is all-or-nothing through `items`' own door, so a craft that finds
 /// itself short between the check and the take removes nothing on that line
 /// rather than eating part of it.
-pub fn take(
-    state: &mut WorldState,
-    crafter: EntityId,
-    materials: &Materials,
-    share: Share,
-) -> bool {
+pub fn take(state: &mut WorldState, crafter: EntityId, materials: &Materials, share: Share) -> bool {
     let Some(pack) = state.registry.serial_of(crafter) else {
         return false;
     };

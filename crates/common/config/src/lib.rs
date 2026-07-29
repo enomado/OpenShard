@@ -831,22 +831,17 @@ impl fmt::Display for ConfigError {
                 "gameplay.combat_era is {era}; only Sphere's 0 (custom), 1 (pre-AoS), \
                  2 (AoS), 3 (SE) and 4 (ML) are implemented",
             ),
-            Self::ZeroSpeedScaleFactor => {
-                f.write_str("gameplay.speed_scale_factor must not be zero")
-            }
+            Self::ZeroSpeedScaleFactor => f.write_str("gameplay.speed_scale_factor must not be zero"),
             Self::ZeroLodRadius => {
                 f.write_str("gameplay.lod_radius must not be zero when gameplay.lod is on")
             }
             Self::ZeroLodIdleFactor => {
                 f.write_str("gameplay.lod_idle_factor must be at least 1 when gameplay.lod is on")
             }
-            Self::ZeroUoMinuteSeconds => {
-                f.write_str("gameplay.uo_minute_seconds must be at least 1")
+            Self::ZeroUoMinuteSeconds => f.write_str("gameplay.uo_minute_seconds must be at least 1"),
+            Self::UnknownExpansion { expansion } => {
+                write!(f, "gameplay.expansion \"{expansion}\" is not one of aos, se, ml")
             }
-            Self::UnknownExpansion { expansion } => write!(
-                f,
-                "gameplay.expansion \"{expansion}\" is not one of aos, se, ml"
-            ),
             Self::BadNpcHours { work, home } => write!(
                 f,
                 "gameplay.npc_work_hour {work} and npc_home_hour {home} must both be under 24 \
@@ -856,9 +851,7 @@ impl fmt::Display for ConfigError {
                 "gameplay.skill_cap and total_skill_cap must not be zero; the skill gain \
                  chance is a fraction of the headroom under each",
             ),
-            Self::ZeroStatCap => {
-                f.write_str("gameplay.stat_cap and stat_cap_individual must not be zero")
-            }
+            Self::ZeroStatCap => f.write_str("gameplay.stat_cap and stat_cap_individual must not be zero"),
             Self::StatCapBelowIndividual { total, individual } => write!(
                 f,
                 "gameplay.stat_cap_individual {individual} is above stat_cap {total}; one \
@@ -960,9 +953,7 @@ impl Config {
         }
         // A routine whose day wraps midnight would leave every NPC permanently at
         // one end of it, which reads as the setting doing nothing.
-        if self.gameplay.npc_work_hour >= self.gameplay.npc_home_hour
-            || self.gameplay.npc_home_hour > 23
-        {
+        if self.gameplay.npc_work_hour >= self.gameplay.npc_home_hour || self.gameplay.npc_home_hour > 23 {
             return Err(ConfigError::BadNpcHours {
                 work: self.gameplay.npc_work_hour,
                 home: self.gameplay.npc_home_hour,

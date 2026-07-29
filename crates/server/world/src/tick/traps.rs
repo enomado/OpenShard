@@ -37,10 +37,7 @@ impl World {
             return;
         };
         if self.state.is_staff(opener) {
-            self.notify_self(
-                opener,
-                "That is trapped, but you open it with your godly powers.",
-            );
+            self.notify_self(opener, "That is trapped, but you open it with your godly powers.");
             return;
         }
         // A trap is spent when it goes off, whatever it did.
@@ -64,26 +61,14 @@ impl World {
         match kind {
             TrapKind::Magic => {
                 self.state.localized_message(opener, SET_OFF_A_TRAP, "");
-                combat::damage(
-                    &mut self.state,
-                    serial.raw(),
-                    power,
-                    DamageType::Energy,
-                    None,
-                );
+                combat::damage(&mut self.state, serial.raw(), power, DamageType::Energy, None);
                 self.state.play_sound(container, BLAST_SOUND);
                 self.location_effect(container, BLAST_GRAPHIC);
             }
             TrapKind::Explosion => {
                 self.state.localized_message(opener, SET_OFF_A_TRAP, "");
                 let damage = scaled(10, 30, &mut self.state);
-                combat::damage(
-                    &mut self.state,
-                    serial.raw(),
-                    damage,
-                    DamageType::Fire,
-                    None,
-                );
+                combat::damage(&mut self.state, serial.raw(), damage, DamageType::Fire, None);
                 self.state.localized_message(opener, SKIN_BLISTERS, "");
                 self.state.play_sound(container, BLAST_SOUND);
                 self.location_effect(container, BLAST_GRAPHIC);
@@ -91,13 +76,7 @@ impl World {
             TrapKind::Dart => {
                 self.state.localized_message(opener, SET_OFF_A_TRAP, "");
                 let damage = scaled(5, 15, &mut self.state);
-                combat::damage(
-                    &mut self.state,
-                    serial.raw(),
-                    damage,
-                    DamageType::Physical,
-                    None,
-                );
+                combat::damage(&mut self.state, serial.raw(), damage, DamageType::Physical, None);
                 self.state.localized_message(opener, DART_IN_FLESH, "");
                 self.state.play_sound(container, DART_SOUND);
             }
@@ -106,13 +85,7 @@ impl World {
                 // ServUO poisons by the chest's level where it has one, and hits
                 // for `power` and greater poison where it does not.
                 let poison = if level == 0 {
-                    combat::damage(
-                        &mut self.state,
-                        serial.raw(),
-                        power,
-                        DamageType::Poison,
-                        None,
-                    );
+                    combat::damage(&mut self.state, serial.raw(), power, DamageType::Poison, None);
                     2 // greater
                 } else {
                     level.saturating_sub(1).min(4)

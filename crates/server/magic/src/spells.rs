@@ -117,13 +117,13 @@ pub struct SpellInfo {
     pub effect: SpellEffect,
 }
 
-use openshard_state::effect;
 use DamageType::{Cold, Energy, Fire, Physical};
 use SpellEffect::{
-    AreaCure, AreaDamage, BehaviourBuff, Cure, Damage, Field, Heal, Paralyze, Poison, Scripted,
-    StatMod, Teleport,
+    AreaCure, AreaDamage, BehaviourBuff, Cure, Damage, Field, Heal, Paralyze, Poison, Scripted, StatMod,
+    Teleport,
 };
 use SpellTarget::{Item, Location, Mobile, SelfCast};
+use openshard_state::effect;
 
 /// One table entry, kept terse so all 64 read at a glance.
 const fn spell(
@@ -168,13 +168,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         Mobile,
         StatMod(effect::FEEBLEMIND),
     ),
-    spell(
-        "Heal",
-        1,
-        &[GARLIC, GINSENG, SPIDERS_SILK],
-        Mobile,
-        Heal(15),
-    ),
+    spell("Heal", 1, &[GARLIC, GINSENG, SPIDERS_SILK], Mobile, Heal(15)),
     spell("Magic Arrow", 1, &[SULFUROUS_ASH], Mobile, Damage(Fire, 6)),
     spell(
         "Night Sight",
@@ -213,13 +207,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         StatMod(effect::CUNNING),
     ),
     spell("Cure", 2, &[GARLIC, GINSENG], Mobile, Cure),
-    spell(
-        "Harm",
-        2,
-        &[NIGHTSHADE, SPIDERS_SILK],
-        Mobile,
-        Damage(Cold, 8),
-    ),
+    spell("Harm", 2, &[NIGHTSHADE, SPIDERS_SILK], Mobile, Damage(Cold, 8)),
     spell(
         "Magic Trap",
         2,
@@ -265,27 +253,9 @@ pub static MAGERY: [SpellInfo; 64] = [
         Scripted,
     ),
     spell("Poison", 3, &[NIGHTSHADE], Mobile, Poison),
-    spell(
-        "Telekinesis",
-        3,
-        &[BLOOD_MOSS, MANDRAKE_ROOT],
-        Location,
-        Scripted,
-    ),
-    spell(
-        "Teleport",
-        3,
-        &[BLOOD_MOSS, MANDRAKE_ROOT],
-        Location,
-        Teleport,
-    ),
-    spell(
-        "Unlock",
-        3,
-        &[BLOOD_MOSS, SULFUROUS_ASH],
-        Location,
-        Scripted,
-    ),
+    spell("Telekinesis", 3, &[BLOOD_MOSS, MANDRAKE_ROOT], Location, Scripted),
+    spell("Teleport", 3, &[BLOOD_MOSS, MANDRAKE_ROOT], Location, Teleport),
+    spell("Unlock", 3, &[BLOOD_MOSS, SULFUROUS_ASH], Location, Scripted),
     spell(
         "Wall of Stone",
         3,
@@ -429,13 +399,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         Mobile,
         Damage(Fire, 20),
     ),
-    spell(
-        "Invisibility",
-        6,
-        &[BLOOD_MOSS, NIGHTSHADE],
-        Mobile,
-        Scripted,
-    ),
+    spell("Invisibility", 6, &[BLOOD_MOSS, NIGHTSHADE], Mobile, Scripted),
     spell(
         "Mark",
         6,
@@ -457,13 +421,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         Location,
         Field(FieldKind::Paralyze),
     ),
-    spell(
-        "Reveal",
-        6,
-        &[BLOOD_MOSS, SULFUROUS_ASH],
-        Location,
-        Scripted,
-    ),
+    spell("Reveal", 6, &[BLOOD_MOSS, SULFUROUS_ASH], Location, Scripted),
     // -- Seventh circle ------------------------------------------------------
     spell(
         "Chain Lightning",
@@ -691,12 +649,7 @@ mod tests {
         // And all three aim at an object, which is what raises the cursor the
         // client refuses to answer with bare ground.
         for spell in [recall, mark, gate] {
-            assert_eq!(
-                spell.target,
-                SpellTarget::Item,
-                "{} aims at an item",
-                spell.name
-            );
+            assert_eq!(spell.target, SpellTarget::Item, "{} aims at an item", spell.name);
         }
     }
 

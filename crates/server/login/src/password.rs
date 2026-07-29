@@ -11,8 +11,8 @@
 //! change. The salt is drawn from the OS entropy pool through `getrandom`, the
 //! same source the auth keys use, so no PRNG feature is pulled in for it.
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use openshard_protocol::identity::{PlaintextPassword, RawPlaintextPassword};
 
 /// Hash a plaintext password into a PHC string for storage.

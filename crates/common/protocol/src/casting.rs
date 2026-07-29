@@ -69,10 +69,7 @@ mod tests {
         // The client sends the sixth spell as 6; the engine sees 5.
         let packet = cast_packet(Some(0x4000_0001), 6);
         let request = ExtendedRequest::decode(&packet).unwrap();
-        assert_eq!(
-            request,
-            ExtendedRequest::Cast(CastSpellRequest { spell: 5 })
-        );
+        assert_eq!(request, ExtendedRequest::Cast(CastSpellRequest { spell: 5 }));
     }
 
     #[test]

@@ -13,8 +13,8 @@
 
 use openshard_entities::EntityId;
 use openshard_state::components::{Equipped, Graphic, Weapon};
-use openshard_state::weapon::{weapon_data, WeaponData, WeaponSkill, LAYER_ONE_HANDED};
-use openshard_state::weapon::{WeaponKind, LAYER_TWO_HANDED};
+use openshard_state::weapon::{LAYER_ONE_HANDED, WeaponData, WeaponSkill, weapon_data};
+use openshard_state::weapon::{LAYER_TWO_HANDED, WeaponKind};
 use openshard_state::{Skill, WorldState};
 
 /// The skill ids the combat rolls read (`Skills` is keyed by these `u8`s).
@@ -59,8 +59,7 @@ pub fn equipped_weapon(state: &WorldState, mobile: EntityId) -> Option<WeaponDat
         .registry
         .query::<Equipped>()
         .find(|(_, worn)| {
-            worn.mobile == serial
-                && (worn.layer == LAYER_ONE_HANDED || worn.layer == LAYER_TWO_HANDED)
+            worn.mobile == serial && (worn.layer == LAYER_ONE_HANDED || worn.layer == LAYER_TWO_HANDED)
         })
         .map(|(entity, _)| entity)?;
     let base = state

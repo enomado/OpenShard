@@ -30,9 +30,7 @@ pub(crate) fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Erro
 /// Opening the database can fail, and that is fatal: a shard told to persist that
 /// cannot is not a shard anyone wants started in memory by surprise, losing
 /// everything at the next stop.
-pub(crate) async fn open_store(
-    config: &Config,
-) -> Result<Arc<dyn Store>, Box<dyn std::error::Error>> {
+pub(crate) async fn open_store(config: &Config) -> Result<Arc<dyn Store>, Box<dyn std::error::Error>> {
     let target = config.persistence.database.trim();
     if target.is_empty() {
         warn!(
@@ -150,11 +148,7 @@ pub(crate) fn supported_features_of(config: &Config) -> u32 {
     // pre-AoS feel, which is a choice an operator can still make.
     let aos = openshard_world::TooltipMode::parse(&g.tooltips) != openshard_world::TooltipMode::Off
         || g.context_menus;
-    if aos {
-        expansion
-    } else {
-        0
-    }
+    if aos { expansion } else { 0 }
 }
 
 /// The `0xA9` character-list flags this shard advertises, from the tooltip and

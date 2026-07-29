@@ -1,5 +1,5 @@
 use super::*;
-use openshard_movement::{step_from, Terrain, Walker};
+use openshard_movement::{Terrain, Walker, step_from};
 use openshard_protocol::mobile::Notoriety;
 use openshard_state::components::{Aggression, Brain, Heading, Hitpoints, Movement};
 
@@ -22,12 +22,7 @@ const MOUNT_SIGHT: u8 = 8;
 /// client, and within arm's reach — and the player must be on foot. Returns
 /// whether the double-click was a mounting, so the caller knows not to open a
 /// paperdoll over it.
-pub fn try_mount(
-    state: &mut WorldState,
-    player: EntityId,
-    target: EntityId,
-    target_serial: Serial,
-) -> bool {
+pub fn try_mount(state: &mut WorldState, player: EntityId, target: EntityId, target_serial: Serial) -> bool {
     let Some(&Body { id: body, hue }) = state.registry.get::<Body>(target) else {
         return false;
     };
@@ -84,13 +79,7 @@ pub fn try_mount(
     state.facet_state_mut(facet).sectors.remove(target);
     state.registry.remove::<Position>(target);
     state.registry.insert(target, Ridden { rider: player });
-    state.registry.insert(
-        player,
-        Riding {
-            mount: target,
-            item,
-        },
-    );
+    state.registry.insert(player, Riding { mount: target, item });
 
     // Everyone who sees the rider sees the saddle: the 0x2E draws the mount.
     broadcast_equip(state, item, player);
@@ -137,11 +126,7 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
     for dir in 0..8u8 {
         let dir = openshard_protocol::direction::Direction::from_bits(dir);
         if let Some(tile) = step_from(rider_at, dir) {
-            if let Some(landed) = state
-                .facet_state(facet)
-                .live_terrain()
-                .can_step(rider_at, tile)
-            {
+            if let Some(landed) = state.facet_state(facet).live_terrain().can_step(rider_at, tile) {
                 landing = landed;
                 break;
             }
@@ -153,13 +138,9 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
     // Reconstitute what the ride (or a save) stripped. The horse faces the way
     // its rider faces — and without a `Heading` the `0x78` encoder refuses to
     // draw it at all, which was the invisible-horse bug after a mounted relogin.
-    let heading = state
-        .registry
-        .get::<Heading>(player)
-        .copied()
-        .unwrap_or(Heading(openshard_protocol::direction::Facing::walking(
-            openshard_protocol::direction::Direction::South,
-        )));
+    let heading = state.registry.get::<Heading>(player).copied().unwrap_or(Heading(
+        openshard_protocol::direction::Facing::walking(openshard_protocol::direction::Direction::South),
+    ));
     state.registry.insert(mount, heading);
     // The walker restarts at the landing, always: the ride never moved it, so a
     // horse ridden across the map would otherwise take its next step from where

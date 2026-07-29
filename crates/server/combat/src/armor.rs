@@ -17,13 +17,12 @@
 //! needs no undoing.
 
 use openshard_entities::EntityId;
+use openshard_state::WorldState;
 use openshard_state::armor::{
+    LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES, LAYER_GORGET, LAYER_HELM, LAYER_LEGS, LAYER_SHIELD, MedAllowance,
     armor_data, hit_layer, layer_coverage, piece_rating, worn_armor_rating, worn_on_layer,
-    MedAllowance, LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES, LAYER_GORGET, LAYER_HELM, LAYER_LEGS,
-    LAYER_SHIELD,
 };
 use openshard_state::components::{Equipped, Graphic};
-use openshard_state::WorldState;
 
 /// How much a mobile's worn armour gets in the way of meditating, in hundredths
 /// of a rating point — ServUO's `RegenRates.GetArmorOffset`.
@@ -101,12 +100,7 @@ pub fn absorb_physical(state: &mut WorldState, defender: EntityId, damage: u16) 
         // `HalfAr + HalfAr * RandomDouble()` — half the rating always, up to half
         // again by luck. In integer terms: half, plus 0..=half.
         let half = u32::from(rating) / 2;
-        let absorbed = half
-            + if half == 0 {
-                0
-            } else {
-                state.rng.below(half + 1)
-            };
+        let absorbed = half + if half == 0 { 0 } else { state.rng.below(half + 1) };
         left = left.saturating_sub(absorbed);
     }
 

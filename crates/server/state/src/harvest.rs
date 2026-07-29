@@ -227,11 +227,7 @@ pub fn definition(kind: HarvestKind, ml: bool) -> &'static HarvestDef {
 
 /// The four definitions this shard runs.
 const fn definitions(ml: bool) -> &'static [HarvestDef] {
-    if ml {
-        DEFINITIONS_ML
-    } else {
-        DEFINITIONS_PRE_ML
-    }
+    if ml { DEFINITIONS_ML } else { DEFINITIONS_PRE_ML }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,15 +323,7 @@ impl Banks {
     /// `facet` only seeds the positional vein, so two facets' banks over the same
     /// coordinates do not hold the same ore — they are already separate entries,
     /// since `Banks` is per-facet.
-    pub fn get(
-        &mut self,
-        def: &HarvestDef,
-        x: u16,
-        y: u16,
-        facet: u8,
-        now: u64,
-        rng: &mut Rng,
-    ) -> &mut Bank {
+    pub fn get(&mut self, def: &HarvestDef, x: u16, y: u16, facet: u8, now: u64, rng: &mut Rng) -> &mut Bank {
         let key = (def.kind, x / def.bank_w, y / def.bank_h);
         let bank = self.banks.entry(key).or_insert_with(|| {
             let span = u32::from(def.max_total - def.min_total) + 1;
@@ -502,9 +490,9 @@ const SAND: HarvestDef = HarvestDef {
         double_harvest: 1_044_629,   // There is no sand here to mine.
         out_of_range: 500_446,       // That is too far away.
         timed_out_of_range: 503_041, // You have moved too far away to continue mining.
-        fail: 1_044_630, // You dig for a while but fail to find any of sufficient quality.
-        pack_full: 1_044_632, // Your backpack can't hold the sand, and it is lost!
-        tool_broke: 1_044_038, // You have worn out your tool!
+        fail: 1_044_630,             // You dig for a while but fail to find any of sufficient quality.
+        pack_full: 1_044_632,        // Your backpack can't hold the sand, and it is lost!
+        tool_broke: 1_044_038,       // You have worn out your tool!
     },
     resources: SANDS,
     veins: ONE_VEIN,
@@ -736,12 +724,7 @@ static ONE_VEIN: &[HarvestVein] = &[HarvestVein {
 }];
 
 /// A vein row.
-const fn vein(
-    chance: u32,
-    fallback_chance: u32,
-    primary: usize,
-    fallback: Option<usize>,
-) -> HarvestVein {
+const fn vein(chance: u32, fallback_chance: u32, primary: usize, fallback: Option<usize>) -> HarvestVein {
     HarvestVein {
         chance,
         fallback_chance,
@@ -991,10 +974,7 @@ mod tests {
         assert_eq!(banks.get(def, 10, 10, 0, 0, &mut rng).current, 0);
         // Still empty a minute later; full again after the longest window.
         assert_eq!(banks.get(def, 10, 10, 0, MINUTE, &mut rng).current, 0);
-        assert_eq!(
-            banks.get(def, 10, 10, 0, 20 * MINUTE, &mut rng).current,
-            full
-        );
+        assert_eq!(banks.get(def, 10, 10, 0, 20 * MINUTE, &mut rng).current, full);
     }
 
     #[test]
@@ -1021,10 +1001,7 @@ mod tests {
         assert_eq!(tool_data(0x0E86).map(|t| t.skill), Some(Skill::Mining));
         assert_eq!(tool_data(0x0DC0).map(|t| t.skill), Some(Skill::Fishing));
         // Derived from the weapon table's `is_axe`, not listed twice: a hatchet.
-        assert_eq!(
-            tool_data(0x0F43).map(|t| t.skill),
-            Some(Skill::Lumberjacking)
-        );
+        assert_eq!(tool_data(0x0F43).map(|t| t.skill), Some(Skill::Lumberjacking));
         // A katana is a weapon and nothing else.
         assert!(tool_data(0x13FF).is_none());
     }

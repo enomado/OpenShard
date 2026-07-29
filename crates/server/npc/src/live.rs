@@ -179,14 +179,7 @@ pub fn live(state: &mut WorldState) -> Vec<(u32, u8)> {
 /// Attend to a visitor: turn to face them (ServUO's `VendorAI.DoActionInteract`)
 /// and greet them if the cooldown has passed. Every trade greets, not only the
 /// bankers — the greeting line itself comes from the trade's speech table.
-fn attend(
-    state: &mut WorldState,
-    npc: EntityId,
-    at: Point,
-    visitor: EntityId,
-    visitor_at: Point,
-    now: u64,
-) {
+fn attend(state: &mut WorldState, npc: EntityId, at: Point, visitor: EntityId, visitor_at: Point, now: u64) {
     // Turn to face them, and let watchers see the turn.
     if let Some(dir) = openshard_movement::direction_toward(at, visitor_at) {
         let facing = Facing::walking(dir);
@@ -330,12 +323,7 @@ pub fn working_hours(state: &WorldState) -> bool {
 }
 
 /// The nearest player to `at` within `range` on `facet`, and where it stands.
-fn nearest_player(
-    state: &WorldState,
-    facet: u8,
-    at: Point,
-    range: u32,
-) -> Option<(EntityId, Point)> {
+fn nearest_player(state: &WorldState, facet: u8, at: Point, range: u32) -> Option<(EntityId, Point)> {
     state
         .players
         .values()

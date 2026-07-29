@@ -68,7 +68,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use openshard_gateway::{outbox_channel, version_channel, OutboxRx};
+    use openshard_gateway::{OutboxRx, outbox_channel, version_channel};
 
     use super::*;
 

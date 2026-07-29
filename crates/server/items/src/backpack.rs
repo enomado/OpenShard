@@ -67,12 +67,7 @@ pub fn give_to_backpack(
 ///
 /// Piles are drawn down oldest first, which is only the registry's order — no
 /// rule depends on which identical pile is emptied.
-pub fn take_from_backpack(
-    state: &mut WorldState,
-    mobile: Serial,
-    graphic: u16,
-    amount: u16,
-) -> u16 {
+pub fn take_from_backpack(state: &mut WorldState, mobile: Serial, graphic: u16, amount: u16) -> u16 {
     take_from_backpack_of_hue(state, mobile, graphic, None, amount)
 }
 
@@ -146,12 +141,7 @@ pub fn carried_amount(state: &WorldState, mobile: Serial, graphic: u16) -> u32 {
 /// [`take_from_backpack_of_hue`], and what a craft's "have you enough metal"
 /// check asks before it takes anything.
 #[must_use]
-pub fn carried_amount_of_hue(
-    state: &WorldState,
-    mobile: Serial,
-    graphic: u16,
-    hue: Option<u16>,
-) -> u32 {
+pub fn carried_amount_of_hue(state: &WorldState, mobile: Serial, graphic: u16, hue: Option<u16>) -> u32 {
     let Some(backpack) = backpack_of(state, mobile) else {
         return 0;
     };

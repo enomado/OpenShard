@@ -8,7 +8,7 @@
 //! moment it happened; nothing here reconstructs anything.
 
 use openshard_entities::EntityId;
-use openshard_state::components::{body_type, Amount, BodyType, Corpse};
+use openshard_state::components::{Amount, BodyType, Corpse, body_type};
 use openshard_state::{Skill, WorldState};
 
 use crate::check::roll_skill_band;
@@ -44,10 +44,7 @@ pub(super) fn forensics(state: &mut WorldState, actor: EntityId, target: EntityI
     let skill = crate::skill_value(state, actor, id);
     if state.registry.has::<Corpse>(target) {
         read_corpse(state, actor, target, skill);
-    } else if state
-        .registry
-        .has::<openshard_state::components::Body>(target)
-    {
+    } else if state.registry.has::<openshard_state::components::Body>(target) {
         read_the_living(state, actor, skill);
     } else {
         // An item that is not a corpse. ServUO reads a picked lock here and a few

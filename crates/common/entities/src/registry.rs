@@ -4,7 +4,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::{fmt, iter, option};
 
-use crate::component::{split_two, Column, Component, Iter, IterMut, SparseSet};
+use crate::component::{Column, Component, Iter, IterMut, SparseSet, split_two};
 use crate::entity::{EntityAllocator, EntityId};
 use openshard_protocol::serial::{Serial, SerialKind};
 
@@ -117,10 +117,7 @@ impl Registry {
     }
 
     /// Create an entity and bind it to a fresh serial from `kind`'s pool.
-    pub fn spawn_with_serial(
-        &mut self,
-        kind: SerialKind,
-    ) -> Result<(EntityId, Serial), SpawnError> {
+    pub fn spawn_with_serial(&mut self, kind: SerialKind) -> Result<(EntityId, Serial), SpawnError> {
         // Allocate the serial first: if the pool is exhausted we must not leave
         // a dangling entity behind.
         let serial = self.serials.alloc(kind).map_err(SpawnError)?;
@@ -294,10 +291,7 @@ impl Registry {
     /// Yields nothing if no entity has ever had a `T`; an unknown component is
     /// an empty query, not an error.
     pub fn query<T: Component>(&self) -> Query<'_, T> {
-        self.column::<T>()
-            .map(SparseSet::iter)
-            .into_iter()
-            .flatten()
+        self.column::<T>().map(SparseSet::iter).into_iter().flatten()
     }
 
     /// Every `(entity, &mut T)`.
@@ -313,9 +307,7 @@ impl Registry {
     /// Unlike [`Registry::for_each2_mut`] this needs no column splitting, since
     /// overlapping shared borrows are fine — `A` and `B` may even be the same
     /// type.
-    pub fn query2<A: Component, B: Component>(
-        &self,
-    ) -> impl Iterator<Item = (EntityId, &A, &B)> + '_ {
+    pub fn query2<A: Component, B: Component>(&self) -> impl Iterator<Item = (EntityId, &A, &B)> + '_ {
         let b = self.column::<B>();
         self.query::<A>()
             .filter_map(move |(entity, a)| Some((entity, a, b?.get(entity)?)))
@@ -338,15 +330,11 @@ impl Registry {
     {
         let type_a = TypeId::of::<A>();
         let type_b = TypeId::of::<B>();
-        assert_ne!(
-            type_a, type_b,
-            "for_each2_mut needs two distinct component types"
-        );
+        assert_ne!(type_a, type_b, "for_each2_mut needs two distinct component types");
 
-        let (Some(&index_a), Some(&index_b)) = (
-            self.column_index.get(&type_a),
-            self.column_index.get(&type_b),
-        ) else {
+        let (Some(&index_a), Some(&index_b)) =
+            (self.column_index.get(&type_a), self.column_index.get(&type_b))
+        else {
             // One of the components has never been inserted, so no entity can
             // have both.
             return;
@@ -380,9 +368,7 @@ impl Registry {
 
     fn column_mut<T: Component>(&mut self) -> Option<&mut SparseSet<T>> {
         let index = *self.column_index.get(&TypeId::of::<T>())?;
-        self.columns[index]
-            .as_any_mut()
-            .downcast_mut::<SparseSet<T>>()
+        self.columns[index].as_any_mut().downcast_mut::<SparseSet<T>>()
     }
 
     fn column_or_insert<T: Component>(&mut self) -> &mut SparseSet<T> {
@@ -565,10 +551,7 @@ mod tests {
         reg.bind_serial(a, s).unwrap();
         assert_eq!(
             reg.bind_serial(b, s),
-            Err(BindSerialError::SerialTaken {
-                serial: s,
-                holder: a
-            })
+            Err(BindSerialError::SerialTaken { serial: s, holder: a })
         );
         assert_eq!(
             reg.bind_serial(a, other),

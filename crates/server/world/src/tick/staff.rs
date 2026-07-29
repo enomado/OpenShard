@@ -133,11 +133,7 @@ impl World {
     /// the client echoes back is the only thing saying which. Three destinations:
     /// the engine's own admin menu, the quest dialogs, and everything else, which
     /// belongs to the pack that opened it and leaves as a `GumpAnswered`.
-    pub(super) fn handle_gump_response(
-        &mut self,
-        connection: ConnectionId,
-        response: GumpResponse,
-    ) {
+    pub(super) fn handle_gump_response(&mut self, connection: ConnectionId, response: GumpResponse) {
         // The quest dialogs answer themselves — the core owns that window, the
         // way it owns the container and vendor ones.
         if openshard_quests::handle(&mut self.state, connection, &response) {
@@ -176,8 +172,7 @@ impl World {
             }
             return;
         }
-        let Some((actor, verb)) = crate::admin::button_action(&self.state, connection, &response)
-        else {
+        let Some((actor, verb)) = crate::admin::button_action(&self.state, connection, &response) else {
             return;
         };
         // The engine holds no spawn data: it emits the verb, and the script pack —

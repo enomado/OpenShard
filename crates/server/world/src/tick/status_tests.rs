@@ -6,7 +6,7 @@
 //! file should be: this slice's tests read private world state, so they stay
 //! inside the module, but they do not have to pile into the same file.
 
-use super::tests::{enter, enter_gm, packets_for, world, START};
+use super::tests::{START, enter, enter_gm, packets_for, world};
 use super::*;
 use openshard_protocol::packet::EncodePacket;
 use openshard_state::components::{Amount, Contained, Equipped, Graphic, Stackable};
@@ -28,9 +28,7 @@ fn worn_container_on(world: &World, connection: ConnectionId, layer: u8) -> Seri
         .registry
         .query::<Equipped>()
         .find(|(entity, worn)| {
-            worn.mobile == owner
-                && worn.layer == layer
-                && world.state.registry.has::<Container>(*entity)
+            worn.mobile == owner && worn.layer == layer && world.state.registry.has::<Container>(*entity)
         })
         .expect("a character wears a container there");
     world.state.registry.serial_of(entity).unwrap()
@@ -38,18 +36,8 @@ fn worn_container_on(world: &World, connection: ConnectionId, layer: u8) -> Seri
 
 /// Put `amount` of `graphic` inside a container, as a stack.
 fn put_in(world: &mut World, container: Serial, graphic: u16, amount: u16) -> EntityId {
-    let (item, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world.state.registry.insert(
-        item,
-        Graphic {
-            id: graphic,
-            hue: 0,
-        },
-    );
+    let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
     world.state.registry.insert(item, Amount(amount));
     world.state.registry.insert(item, Stackable);
     world.state.registry.insert(
@@ -68,22 +56,9 @@ fn put_in(world: &mut World, container: Serial, graphic: u16, amount: u16) -> En
 fn wear(world: &mut World, connection: ConnectionId, graphic: u16, layer: u8) -> EntityId {
     let player = world.state.players[&connection];
     let mobile = world.state.registry.serial_of(player).unwrap();
-    let (item, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world.state.registry.insert(
-        item,
-        Graphic {
-            id: graphic,
-            hue: 0,
-        },
-    );
-    world
-        .state
-        .registry
-        .insert(item, Equipped { mobile, layer });
+    let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
+    world.state.registry.insert(item, Equipped { mobile, layer });
     item
 }
 
@@ -104,19 +79,9 @@ fn the_status_bar_counts_the_gold_in_the_pack() {
     assert_eq!(items::total_gold(&world.state, player), 1_000);
 
     // A pouch in the pack, with more in it: still the player's gold.
-    let (pouch, pouch_serial) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(pouch, Graphic { id: 0x0E79, hue: 0 });
-    world
-        .state
-        .registry
-        .insert(pouch, Container { gump: 0x003C });
+    let (pouch, pouch_serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(pouch, Graphic { id: 0x0E79, hue: 0 });
+    world.state.registry.insert(pouch, Container { gump: 0x003C });
     world.state.registry.insert(
         pouch,
         Contained {
@@ -376,12 +341,7 @@ fn a_wound_closes_on_its_own_and_poison_stops_it() {
         world.tick(now);
     }
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(player)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(player).unwrap().current,
         max / 2 + 1,
         "a point back after the regen interval"
     );
@@ -394,22 +354,12 @@ fn a_wound_closes_on_its_own_and_poison_stops_it() {
             pulses_left: 10,
         },
     );
-    let poisoned_at = world
-        .state
-        .registry
-        .get::<Hitpoints>(player)
-        .unwrap()
-        .current;
+    let poisoned_at = world.state.registry.get::<Hitpoints>(player).unwrap().current;
     for _ in 0..=openshard_combat::HITS_REGEN_TICKS {
         world.tick(now);
     }
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(player)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(player).unwrap().current,
         poisoned_at,
         "the poisoned do not mend"
     );
@@ -452,10 +402,7 @@ fn an_overloaded_walker_tires_and_is_finally_refused() {
         refusal.is_some_and(|message| message.contains("too fatigued")),
         "an exhausted overloaded walker is told why it cannot move"
     );
-    assert_eq!(
-        world.state.registry.get::<Stamina>(player).unwrap().current,
-        0
-    );
+    assert_eq!(world.state.registry.get::<Stamina>(player).unwrap().current, 0);
 }
 
 #[test]
@@ -477,10 +424,7 @@ fn a_crushing_load_cannot_be_walked_off_at_all() {
         world.spend_step_stamina(player, false).is_some(),
         "the very first step is refused"
     );
-    assert_eq!(
-        world.state.registry.get::<Stamina>(player).unwrap().current,
-        0
-    );
+    assert_eq!(world.state.registry.get::<Stamina>(player).unwrap().current, 0);
 }
 
 #[test]
@@ -564,10 +508,7 @@ fn gm_mode_off_makes_a_game_master_a_player() {
     let pack = backpack_of(&world, connection);
     put_in(&mut world, pack, GOLD, 22_000); // 440 stones, past the 394 cap
 
-    assert!(
-        world.state.is_staff(player),
-        "a staff login starts in GM mode"
-    );
+    assert!(world.state.is_staff(player), "a staff login starts in GM mode");
     assert!(
         world.spend_step_stamina(player, false).is_none()
             && world.state.registry.get::<Stamina>(player).unwrap().current
@@ -661,19 +602,9 @@ fn a_purse_inside_the_bank_is_still_banked() {
     let player = world.state.players[&connection];
     let bank = worn_container_on(&world, connection, items::BANK_LAYER);
 
-    let (pouch, pouch_serial) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(pouch, Graphic { id: 0x0E79, hue: 0 });
-    world
-        .state
-        .registry
-        .insert(pouch, Container { gump: 0x003C });
+    let (pouch, pouch_serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(pouch, Graphic { id: 0x0E79, hue: 0 });
+    world.state.registry.insert(pouch, Container { gump: 0x003C });
     world.state.registry.insert(
         pouch,
         Contained {
@@ -700,8 +631,7 @@ fn a_vendor_takes_the_bank_when_the_pack_is_short() {
     let player = world.state.players[&connection];
     let bank = worn_container_on(&world, connection, items::BANK_LAYER);
     put_in(&mut world, bank, GOLD, 500);
-    let vendor =
-        super::tests::spawn_stocked_vendor(&mut world, Point::new(START.0 + 1, START.1, 0), now);
+    let vendor = super::tests::spawn_stocked_vendor(&mut world, Point::new(START.0 + 1, START.1, 0), now);
     let stock = stock_line_serial(&world, vendor);
     let _ = packets_for(&mut world, connection);
 
@@ -740,8 +670,7 @@ fn with_bank_payment_off_a_banked_fortune_buys_nothing() {
     let player = world.state.players[&connection];
     let bank = worn_container_on(&world, connection, items::BANK_LAYER);
     put_in(&mut world, bank, GOLD, 500);
-    let vendor =
-        super::tests::spawn_stocked_vendor(&mut world, Point::new(START.0 + 1, START.1, 0), now);
+    let vendor = super::tests::spawn_stocked_vendor(&mut world, Point::new(START.0 + 1, START.1, 0), now);
     let stock = stock_line_serial(&world, vendor);
 
     world.queue(Command::Buy {

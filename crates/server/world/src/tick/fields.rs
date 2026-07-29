@@ -7,8 +7,8 @@
 
 use super::*;
 use openshard_magic::MAGERY_SKILL;
-use openshard_state::components::{Field, FieldKind, Skills, FIELD_HEIGHT};
 use openshard_state::DamageType;
+use openshard_state::components::{FIELD_HEIGHT, Field, FieldKind, Skills};
 
 /// Fire Field's damage per pulse (pre-AoS, era 1).
 const FIRE_FIELD_DAMAGE: u16 = 2;
@@ -41,11 +41,7 @@ impl World {
         let east_to_west = field_east_to_west(from, target);
         // Five tiles for a hazard, three for a wall — centre on the aimed spot,
         // running along the axis perpendicular to the line of fire.
-        let reach: i32 = if matches!(kind, FieldKind::Stone) {
-            1
-        } else {
-            2
-        };
+        let reach: i32 = if matches!(kind, FieldKind::Stone) { 1 } else { 2 };
         let graphic = field_graphic(kind, east_to_west);
         let field = Field {
             kind,
@@ -76,20 +72,13 @@ impl World {
             warn!("out of item serials; not laying a field tile");
             return;
         };
-        self.state.registry.insert(
-            entity,
-            Graphic {
-                id: graphic,
-                hue: 0,
-            },
-        );
+        self.state
+            .registry
+            .insert(entity, Graphic { id: graphic, hue: 0 });
         self.state.registry.insert(entity, Position(pos));
         self.state.registry.insert(entity, Facet(facet));
         self.state.registry.insert(entity, field);
-        self.state
-            .facet_state_mut(facet)
-            .sectors
-            .insert(entity, pos);
+        self.state.facet_state_mut(facet).sectors.insert(entity, pos);
         if field.blocks {
             self.state.facet_state_mut(facet).obstructions.block(
                 pos.x,

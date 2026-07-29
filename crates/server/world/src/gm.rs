@@ -18,9 +18,7 @@ use openshard_protocol::speech::SpokenMessage;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
 use openshard_protocol::world::Point;
-use openshard_state::components::{
-    Client, Equipped, Position, Spellbook, Staff, Stats, SPELLBOOK_GRAPHIC,
-};
+use openshard_state::components::{Client, Equipped, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats};
 use openshard_state::{TargetPurpose, WorldState};
 
 use openshard_items as items;
@@ -80,11 +78,7 @@ fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     let value: u32 = match args.first().map(|v| v.parse()) {
         Some(Ok(value)) if value != 0 => value,
         _ => {
-            notify(
-                state,
-                actor,
-                "Usage: .key <value>, where value is not zero.",
-            );
+            notify(state, actor, "Usage: .key <value>, where value is not zero.");
             return;
         }
     };
@@ -102,15 +96,10 @@ fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     state
         .registry
         .insert(key, openshard_state::components::KeyValue(value));
-    state.registry.insert(
-        key,
-        openshard_state::components::Name(format!("a key ({value})")),
-    );
-    notify(
-        state,
-        actor,
-        &format!("A key for lock {value} is in your pack."),
-    );
+    state
+        .registry
+        .insert(key, openshard_state::components::Name(format!("a key ({value})")));
+    notify(state, actor, &format!("A key for lock {value} is in your pack."));
 }
 
 /// `.poison <level>` — drop a bottle of poison at the operator's feet.
@@ -177,10 +166,9 @@ fn set_trap(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         }
     };
     let power: u16 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(30);
-    state.pending_targets.insert(
-        actor,
-        openshard_state::TargetPurpose::SetTrap { kind, power },
-    );
+    state
+        .pending_targets
+        .insert(actor, openshard_state::TargetPurpose::SetTrap { kind, power });
     if let Some((connection, serial)) = connection_and_serial(state, actor) {
         state.send_packet(
             connection,
@@ -198,9 +186,7 @@ fn connection_and_serial(
     state: &WorldState,
     actor: EntityId,
 ) -> Option<(openshard_gateway::ConnectionId, u32)> {
-    let client = state
-        .registry
-        .get::<openshard_state::components::Client>(actor)?;
+    let client = state.registry.get::<openshard_state::components::Client>(actor)?;
     let serial = state.registry.serial_of(actor)?;
     Some((client.connection, serial.raw()))
 }
@@ -282,10 +268,7 @@ fn where_am_i(state: &mut WorldState, actor: EntityId) {
 /// else in the shard moves a mobile between them, so without it the whole
 /// cross-facet path would be code no one could run.
 fn go_to(state: &mut WorldState, actor: EntityId, args: &[&str]) {
-    let (Some(x), Some(y)) = (
-        args.first().and_then(parse_u16),
-        args.get(1).and_then(parse_u16),
-    ) else {
+    let (Some(x), Some(y)) = (args.first().and_then(parse_u16), args.get(1).and_then(parse_u16)) else {
         notify(state, actor, "Usage: .go <x> <y> [z] [facet]");
         return;
     };
@@ -309,11 +292,7 @@ fn go_to(state: &mut WorldState, actor: EntityId, args: &[&str]) {
             .unwrap_or(0),
     };
     state.move_to(actor, facet, Point::new(x, y, z));
-    notify(
-        state,
-        actor,
-        &format!("Went to {x}, {y}, {z} on facet {facet}."),
-    );
+    notify(state, actor, &format!("Went to {x}, {y}, {z} on facet {facet}."));
 }
 
 /// `.tele` — Sphere's cursor teleport: raise a targeting cursor, and jump to the
@@ -412,15 +391,11 @@ fn set_stat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     let Some(serial) = state.registry.serial_of(actor) else {
         return;
     };
-    let current = state
-        .registry
-        .get::<Stats>(actor)
-        .copied()
-        .unwrap_or(Stats {
-            strength: 0,
-            dexterity: 0,
-            intelligence: 0,
-        });
+    let current = state.registry.get::<Stats>(actor).copied().unwrap_or(Stats {
+        strength: 0,
+        dexterity: 0,
+        intelligence: 0,
+    });
     let (strength, dexterity, intelligence) = match stat.to_lowercase().as_str() {
         "str" | "strength" => (value, current.dexterity, current.intelligence),
         "dex" | "dexterity" => (current.strength, value, current.intelligence),
@@ -458,10 +433,7 @@ fn parse_u16(text: &&str) -> Option<u16> {
     let text = *text;
     text.strip_prefix("0x")
         .or_else(|| text.strip_prefix("0X"))
-        .map_or_else(
-            || text.parse().ok(),
-            |hex| u16::from_str_radix(hex, 16).ok(),
-        )
+        .map_or_else(|| text.parse().ok(), |hex| u16::from_str_radix(hex, 16).ok())
 }
 
 /// Parse a signed height, decimal only.

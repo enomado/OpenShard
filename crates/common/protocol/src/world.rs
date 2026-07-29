@@ -72,10 +72,7 @@ pub struct CharacterPlay {
 impl DecodePacket for CharacterPlay {
     const ID: u8 = 0x5D;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         // A constant the client always sends. Sphere ignores it and so do we:
         // rejecting on it would be a compatibility risk for no gain.
         reader.skip(4)?;
@@ -217,7 +214,7 @@ impl CreateCharacter {
                 return Err(DecodeError::WrongPacket(WrongPacket {
                     expected: Self::ID_HIGH_SEAS,
                     found,
-                }))
+                }));
             }
         };
 
@@ -486,10 +483,7 @@ pub struct WalkRequest {
 impl DecodePacket for WalkRequest {
     const ID: u8 = 0x02;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             facing: Facing::from_bits(reader.u8()?),
             sequence: reader.u8()?,
@@ -757,10 +751,7 @@ mod tests {
             Some(PacketLength::Fixed(73))
         );
         assert_eq!(bytes.len(), 73, "the table and the encoder must agree");
-        assert_eq!(
-            decode_packet::<CharacterPlay>(&bytes, version()).unwrap(),
-            play
-        );
+        assert_eq!(decode_packet::<CharacterPlay>(&bytes, version()).unwrap(), play);
     }
 
     #[test]
@@ -770,18 +761,9 @@ mod tests {
 
     fn sample_create(high_seas: bool) -> CreateCharacter {
         let mut skills = vec![
-            SkillChoice {
-                skill: 1,
-                value: 50,
-            },
-            SkillChoice {
-                skill: 2,
-                value: 30,
-            },
-            SkillChoice {
-                skill: 3,
-                value: 20,
-            },
+            SkillChoice { skill: 1, value: 50 },
+            SkillChoice { skill: 2, value: 30 },
+            SkillChoice { skill: 3, value: 20 },
         ];
         if high_seas {
             skills.push(SkillChoice { skill: 4, value: 0 });
@@ -842,13 +824,7 @@ mod tests {
         assert_eq!(decoded.name, "Lord British");
         assert_eq!(decoded.skin_hue, 0x83EA);
         assert_eq!(decoded.skills.len(), 4);
-        assert_eq!(
-            decoded.skills[0],
-            SkillChoice {
-                skill: 1,
-                value: 50
-            }
-        );
+        assert_eq!(decoded.skills[0], SkillChoice { skill: 1, value: 50 });
         assert_eq!(decoded.start_location, 0);
     }
 
@@ -972,10 +948,7 @@ mod tests {
             Some(PacketLength::Fixed(7))
         );
         assert_eq!(bytes.len(), 7);
-        assert_eq!(
-            decode_packet::<WalkRequest>(&bytes, version()).unwrap(),
-            request
-        );
+        assert_eq!(decode_packet::<WalkRequest>(&bytes, version()).unwrap(), request);
     }
 
     #[test]
@@ -1026,10 +999,7 @@ mod tests {
     #[test]
     fn the_small_entry_packets_are_the_right_shape() {
         assert_eq!(encode_packet(&LoginComplete, version()), vec![0x55]);
-        assert_eq!(
-            encode_packet(&LightLevel { level: 0 }, version()),
-            vec![0x4F, 0]
-        );
+        assert_eq!(encode_packet(&LightLevel { level: 0 }, version()), vec![0x4F, 0]);
         // Music and season: three bytes each, the track big-endian. Both
         // references write exactly this.
         assert_eq!(
@@ -1074,11 +1044,7 @@ mod tests {
         let map = encode_packet(&MapChange { map: 1 }, version());
         assert_eq!(map.len(), 6);
         assert_eq!(map[0], 0xBF);
-        assert_eq!(
-            u16::from_be_bytes([map[1], map[2]]),
-            6,
-            "declares its length"
-        );
+        assert_eq!(u16::from_be_bytes([map[1], map[2]]), 6, "declares its length");
         assert_eq!(u16::from_be_bytes([map[3], map[4]]), 0x08, "subcommand");
         assert_eq!(map[5], 1, "Trammel");
     }

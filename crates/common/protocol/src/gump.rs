@@ -160,12 +160,7 @@ impl GumpLayout {
     pub fn alpha_region(&mut self, x: i32, y: i32, width: i32, height: i32) {
         self.element(
             "checkertrans",
-            &[
-                i64::from(x),
-                i64::from(y),
-                i64::from(width),
-                i64::from(height),
-            ],
+            &[i64::from(x), i64::from(y), i64::from(width), i64::from(height)],
         );
     }
 
@@ -245,10 +240,7 @@ impl GumpLayout {
     /// A one-line label in a hue.
     pub fn label(&mut self, x: i32, y: i32, hue: u32, text: impl Into<String>) {
         let line = self.text(text);
-        self.element(
-            "text",
-            &[i64::from(x), i64::from(y), i64::from(hue), line as i64],
-        );
+        self.element("text", &[i64::from(x), i64::from(y), i64::from(hue), line as i64]);
     }
 
     /// A label clipped to a box rather than overflowing it.
@@ -417,12 +409,7 @@ impl GumpLayout {
         } else {
             self.element(
                 "tilepichue",
-                &[
-                    i64::from(x),
-                    i64::from(y),
-                    i64::from(graphic),
-                    i64::from(hue),
-                ],
+                &[i64::from(x), i64::from(y), i64::from(graphic), i64::from(hue)],
             );
         }
     }
@@ -579,10 +566,7 @@ impl DecodePacket for GumpResponse {
 
     /// `decode_packet` has already skipped the length field for a `Variable`
     /// id — see its doc comment — so this starts straight at the serial.
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let serial = reader.u32()?;
         let gump_id = reader.u32()?;
         let button = reader.u32()?;
@@ -689,18 +673,13 @@ mod tests {
         );
         let (string, lines) = layout.finish();
         assert_eq!(string, "{ htmlgump 98 156 312 180 0 0 1 }");
-        assert_eq!(
-            lines,
-            ["<BASEFONT COLOR=#B8E080>Slay five rats.</BASEFONT>"]
-        );
+        assert_eq!(lines, ["<BASEFONT COLOR=#B8E080>Slay five rats.</BASEFONT>"]);
     }
 
     #[test]
     fn a_localized_line_with_arguments_ends_in_its_argument_run() {
         let mut layout = GumpLayout::new();
-        layout.html_localized_args(
-            98, 140, 312, 16, 1_074_782, "Britain", GUMP_WHITE, false, false,
-        );
+        layout.html_localized_args(98, 140, 312, 16, 1_074_782, "Britain", GUMP_WHITE, false, false);
         assert_eq!(
             layout.finish().0,
             "{ xmfhtmltok 98 140 312 16 0 0 32767 1074782 @Britain@ }"
@@ -789,11 +768,7 @@ mod tests {
         );
         assert_eq!(bytes[0], 0xB0);
         let declared = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
-        assert_eq!(
-            declared,
-            bytes.len(),
-            "the length word must match the bytes"
-        );
+        assert_eq!(declared, bytes.len(), "the length word must match the bytes");
         assert_eq!(
             u32::from_be_bytes([bytes[7], bytes[8], bytes[9], bytes[10]]),
             0x00AD_0001,

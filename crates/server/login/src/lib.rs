@@ -12,7 +12,7 @@
 //!
 //! # Sans-io, like the gateway
 //!
-//! [`LoginServer::handle`] takes an already-decoded [`ClientLoginPacket`] and
+//! [`LoginServer::handle`] takes an already-decoded [`LoginStagePacket`] and
 //! returns a [`Response`]. No sockets, no packet buffers, and no clock of its
 //! own — `now` is a parameter, so key expiry is tested with arithmetic rather
 //! than `sleep`. Decoding is the caller's job: the `server` crate's
@@ -23,7 +23,7 @@
 //! use std::time::Instant;
 //! use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
 //! use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
-//! use openshard_protocol::login::{AccountLogin, ClientLoginPacket};
+//! use openshard_protocol::login::{AccountLogin, LoginStagePacket};
 //!
 //! let mut server = LoginServer::new(
 //!     DevAccounts::new().with_account("admin", "hunter2"),
@@ -36,7 +36,7 @@
 //!     account: RawAccountName("admin".to_owned()),
 //!     password: RawPlaintextPassword("hunter2".to_owned()),
 //! };
-//! let packet = ClientLoginPacket::decode(&login.encode(), session.version()).unwrap();
+//! let packet = LoginStagePacket::decode(&login.encode(), session.version()).unwrap();
 //! let response = server.handle(&mut session, packet, Instant::now());
 //!
 //! // The shard list goes back.
@@ -68,4 +68,4 @@ mod session;
 
 pub use accounts::{Accounts, DevAccount, DevAccounts};
 pub use auth::{AuthKeys, PendingLogin};
-pub use session::{single_shard, LoginServer, LoginSession, Response};
+pub use session::{LoginServer, LoginSession, Response, single_shard};

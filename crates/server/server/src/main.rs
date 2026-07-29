@@ -27,8 +27,8 @@ use std::time::Instant;
 
 use openshard_config::{Config, DEFAULT_TOML};
 use openshard_gateway::{
-    ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, PacketError, ServerEvent,
-    ServerEventRx, VersionTx,
+    ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, PacketError, ServerEvent, ServerEventRx,
+    VersionTx,
 };
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_persistence::{
@@ -39,8 +39,8 @@ use openshard_protocol::encoded::EncodedCommand;
 use openshard_protocol::extended::ExtendedRequest;
 use openshard_protocol::identity::CharacterName;
 use openshard_protocol::login::{
-    CharacterListUpdate, ClientLoginDecodeError, DeleteCharacter, DeleteReject, DeleteResult,
-    LoginDenied, LoginStagePacket, StartLocation,
+    CharacterListUpdate, ClientLoginDecodeError, DeleteCharacter, DeleteReject, DeleteResult, LoginDenied,
+    LoginStagePacket, StartLocation,
 };
 use openshard_protocol::mobile::StatusQueryKind;
 use openshard_protocol::server_packet::ServerPacket;
@@ -49,8 +49,7 @@ use openshard_protocol::trade::SecureTradeAction;
 use openshard_protocol::world::{CreateCharacter, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_world::{
-    Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TileData, World,
-    TICK_INTERVAL,
+    Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TICK_INTERVAL, TileData, World,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -76,9 +75,7 @@ const CONFIG_PATH: &str = "openshard.toml";
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     match run().await {

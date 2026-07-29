@@ -187,18 +187,11 @@ pub fn start_escort(state: &mut WorldState, npc: Serial, escorter: Serial) -> bo
 /// The destination is chosen here rather than at registration so a shard's
 /// travellers do not all want the same town — ServUO's `PickRandomDestination`,
 /// on the world's seeded generator so the choice replays with the tick.
-pub(crate) fn begin_escort(
-    state: &mut WorldState,
-    player: EntityId,
-    giver: Serial,
-) -> Option<String> {
+pub(crate) fn begin_escort(state: &mut WorldState, player: EntityId, giver: Serial) -> Option<String> {
     let npc = state.registry.entity_of(giver)?;
     let escort = state.registry.get::<Escortable>(npc).cloned()?;
     let player_serial = state.registry.serial_of(player)?;
-    if escort
-        .escorter
-        .is_some_and(|current| current != player_serial)
-    {
+    if escort.escorter.is_some_and(|current| current != player_serial) {
         state.system_message(player, "That person is already being escorted.");
         return None;
     }

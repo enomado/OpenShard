@@ -199,11 +199,7 @@ impl Sectors {
     ///
     /// Exact: the sectors overlapping the box are scanned and each entity is
     /// checked, so nothing outside `range` comes back.
-    pub fn nearby(
-        &self,
-        centre: Point,
-        range: u32,
-    ) -> impl Iterator<Item = (EntityId, Point)> + '_ {
+    pub fn nearby(&self, centre: Point, range: u32) -> impl Iterator<Item = (EntityId, Point)> + '_ {
         // The box in sector coordinates. `saturating_sub` because a range that
         // reaches past the west or north edge is normal — a player standing at
         // x=5 is not a bug.
@@ -272,11 +268,7 @@ mod tests {
         // empty — which looks like mobiles popping in and out at the edges.
         let origin = Point::new(100, 100, 0);
         assert_eq!(distance(origin, Point::new(118, 100, 0)), 18, "straight");
-        assert_eq!(
-            distance(origin, Point::new(118, 118, 0)),
-            18,
-            "diagonal, same"
-        );
+        assert_eq!(distance(origin, Point::new(118, 118, 0)), 18, "diagonal, same");
 
         // Euclidean would call the diagonal 25.5 and hide it.
         assert!(in_range(origin, Point::new(118, 118, 0), VIEW_RANGE));
@@ -316,10 +308,7 @@ mod tests {
         sectors.insert(ids[1], Point::new(1010, 1000, 0)); // 10 away
         sectors.insert(ids[2], Point::new(1100, 1000, 0)); // 100 away
 
-        let found: Vec<_> = sectors
-            .nearby(centre, VIEW_RANGE)
-            .map(|(id, _)| id)
-            .collect();
+        let found: Vec<_> = sectors.nearby(centre, VIEW_RANGE).map(|(id, _)| id).collect();
         assert_eq!(found.len(), 2);
         assert!(found.contains(&ids[0]));
         assert!(found.contains(&ids[1]));
@@ -338,10 +327,7 @@ mod tests {
         sectors.insert(ids[0], Point::new(1000 + VIEW_RANGE as u16, 1000, 0));
         sectors.insert(ids[1], Point::new(1000 + VIEW_RANGE as u16 + 1, 1000, 0));
 
-        let found: Vec<_> = sectors
-            .nearby(centre, VIEW_RANGE)
-            .map(|(id, _)| id)
-            .collect();
+        let found: Vec<_> = sectors.nearby(centre, VIEW_RANGE).map(|(id, _)| id).collect();
         assert_eq!(found, vec![ids[0]], "the range is inclusive");
     }
 

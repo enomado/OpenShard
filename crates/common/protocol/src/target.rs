@@ -56,8 +56,8 @@ impl EncodePacket for TargetCursor {
         out.u8(self.kind as u8);
         out.u32(self.cursor_id.0);
         out.u8(0); // cursor type: neutral
-                   // The rest the client fills in on the way back: object serial(4),
-                   // x(2), y(2), a pad byte, z(1), tile graphic(2) — twelve bytes.
+        // The rest the client fills in on the way back: object serial(4),
+        // x(2), y(2), a pad byte, z(1), tile graphic(2) — twelve bytes.
         out.zeros(12);
     }
 }
@@ -85,10 +85,7 @@ impl DecodePacket for TargetResponse {
 
     /// Layout: type, cursor id, cursor type, clicked serial, x, y, a pad byte, z,
     /// tile graphic. A cursor type of 3 — or an `x` of `0xFFFF` — is a cancel.
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let _kind = reader.u8()?;
         let cursor_id = CursorId(reader.u32()?);
         let cursor_type = reader.u8()?;

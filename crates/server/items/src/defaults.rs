@@ -11,13 +11,13 @@
 //! reads ServUO's own `SB*.cs`), and the skills that use them would refuse every
 //! one.
 
+use openshard_state::WorldState;
 use openshard_state::components::{
-    Instrument, Name, PoisonCharges, Runebook, Tool, POISON_POTION_GRAPHIC, RUNEBOOK_GRAPHIC,
+    Instrument, Name, POISON_POTION_GRAPHIC, PoisonCharges, RUNEBOOK_GRAPHIC, Runebook, Tool,
 };
 use openshard_state::craft::craft_tool;
 use openshard_state::harvest::tool_data;
-use openshard_state::instrument::{instrument_data, INSTRUMENT_MAX_USES, INSTRUMENT_MIN_USES};
-use openshard_state::WorldState;
+use openshard_state::instrument::{INSTRUMENT_MAX_USES, INSTRUMENT_MIN_USES, instrument_data};
 
 use openshard_entities::{EntityId, Registry};
 
@@ -56,9 +56,7 @@ pub fn apply_core_defaults(state: &mut WorldState, item: EntityId, graphic: u16)
     }
     if graphic == POISON_POTION_GRAPHIC {
         let level = poison_level_of(state, item);
-        state
-            .registry
-            .insert(item, PoisonCharges { level, charges: 1 });
+        state.registry.insert(item, PoisonCharges { level, charges: 1 });
         return;
     }
     if graphic == RUNEBOOK_GRAPHIC {

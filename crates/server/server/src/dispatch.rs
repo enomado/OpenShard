@@ -182,10 +182,7 @@ pub(crate) fn dispatch_world_packet(
                         container,
                     });
                 }
-                SecureTradeAction::Accept {
-                    container,
-                    accepted,
-                } => {
+                SecureTradeAction::Accept { container, accepted } => {
                     world.queue(Command::TradeAction {
                         connection: id,
                         container,
@@ -588,12 +585,7 @@ pub(crate) fn delete_character(
 
     // The slot indexes the very list the client was last sent, which is the
     // account's in-memory character list.
-    let Some(entry) = login
-        .accounts
-        .characters(&account)
-        .into_iter()
-        .nth(slot as usize)
-    else {
+    let Some(entry) = login.accounts.characters(&account).into_iter().nth(slot as usize) else {
         let _ = session.send_packet(
             ServerPacket::DeleteReject(DeleteReject {
                 result: DeleteResult::CharNotExist,

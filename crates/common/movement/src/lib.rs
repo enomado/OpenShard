@@ -42,7 +42,7 @@ mod path;
 mod sequence;
 mod walk;
 
-pub use pace::{Pace, WalkPace, RUN_INTERVAL, WALK_BUFFER, WALK_INTERVAL};
+pub use pace::{Pace, RUN_INTERVAL, WALK_BUFFER, WALK_INTERVAL, WalkPace};
 pub use path::find_path;
 pub use sequence::{OutOfSequence, WalkSequence};
-pub use walk::{direction_toward, line_tiles, step_from, OpenWorld, Terrain, Walk, Walker};
+pub use walk::{OpenWorld, Terrain, Walk, Walker, direction_toward, line_tiles, step_from};

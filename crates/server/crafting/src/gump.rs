@@ -385,12 +385,7 @@ fn resources(layout: &mut GumpLayout, state: &WorldState, player: EntityId, def:
 /// The two percentages are the only place a player can read what the chance
 /// curve is doing, which is why they are drawn from the same [`chance`] the roll
 /// uses rather than from an approximation of it.
-fn details(
-    state: &WorldState,
-    player: EntityId,
-    def: &CraftSystemDef,
-    recipe: &Recipe,
-) -> GumpLayout {
+fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &Recipe) -> GumpLayout {
     let mut layout = GumpLayout::new();
     layout.page(0);
     layout.background(0, 0, 530, 417, 5054);
@@ -425,31 +420,13 @@ fn details(
         other += 1;
     }
     if recipe.markable {
-        layout.html_localized_colored(
-            170,
-            302 + other * 20,
-            310,
-            18,
-            1_044_059,
-            LABEL,
-            false,
-            false,
-        ); // may hold a maker's mark
+        layout.html_localized_colored(170, 302 + other * 20, 310, 18, 1_044_059, LABEL, false, false); // may hold a maker's mark
     }
 
     // One row per required skill, at the value it starts to be possible.
     for (i, want) in recipe.skills.iter().enumerate() {
         let y = 132 + i32::try_from(i).unwrap_or(0) * 20;
-        layout.html_localized_colored(
-            170,
-            y,
-            200,
-            18,
-            skill_label(want.skill),
-            LABEL,
-            false,
-            false,
-        );
+        layout.html_localized_colored(170, y, 200, 18, skill_label(want.skill), LABEL, false, false);
         layout.label(430, y, LABEL_HUE, tenths(want.min.max(0)));
     }
 

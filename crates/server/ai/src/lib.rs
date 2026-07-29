@@ -14,16 +14,16 @@ use openshard_combat as combat;
 use openshard_combat::MobileDamaged;
 use openshard_entities::EntityId;
 use openshard_items as items;
-use openshard_movement::{direction_toward, find_path, step_from, Terrain};
+use openshard_movement::{Terrain, direction_toward, find_path, step_from};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
+use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position,
-    RangedAttack, Scripted,
+    Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position, RangedAttack,
+    Scripted,
 };
 use openshard_state::sectors::{distance, in_range};
-use openshard_state::WorldState;
 
 /// The chance in eight, per beat, that an idle wanderer takes a step. Low enough
 /// that a field of creatures drifts rather than marches.
@@ -66,13 +66,7 @@ const KITE_GAP: u32 = 2;
 /// does not wedge itself against a wall. Falls back to the straight-line direction
 /// when there is no map, or no route within the budget — better to close the gap
 /// roughly and re-plan than to freeze.
-pub fn step_toward(
-    state: &WorldState,
-    facet: u8,
-    from: Point,
-    to: Point,
-    through_doors: bool,
-) -> Option<u8> {
+pub fn step_toward(state: &WorldState, facet: u8, from: Point, to: Point, through_doors: bool) -> Option<u8> {
     // The live terrain, not the bare map: a route must not thread a placed
     // crate the step would then refuse. A door-opener plans through doors and
     // opens them on arrival.
@@ -114,13 +108,8 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
 
     // Keep after a target that is still alive and in sight — close in if out of
     // reach, and leave the hitting to `swings`.
-    if let Some(target_serial) = state
-        .registry
-        .get::<Combat>(creature)
-        .and_then(|c| c.target)
-    {
-        if let Some(target_pos) = foe_in_sight(state, target_serial, pos, facet, chase_limit(sight))
-        {
+    if let Some(target_serial) = state.registry.get::<Combat>(creature).and_then(|c| c.target) {
+        if let Some(target_pos) = foe_in_sight(state, target_serial, pos, facet, chase_limit(sight)) {
             if should_flee(state, creature, brain) {
                 state.registry.remove::<ChasePath>(creature);
                 return flee_step(state, creature, facet, pos, target_pos);
@@ -128,8 +117,7 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
             // A ranged fighter kites: back off from a foe at its heels, stand
             // and shoot inside its reach (the volley system does the firing),
             // and only close in when out of range or out of sight line.
-            if let Some(&RangedAttack { range, .. }) = state.registry.get::<RangedAttack>(creature)
-            {
+            if let Some(&RangedAttack { range, .. }) = state.registry.get::<RangedAttack>(creature) {
                 let gap = distance(pos, target_pos);
                 if gap <= KITE_GAP {
                     state.registry.remove::<ChasePath>(creature);
@@ -205,13 +193,7 @@ fn chase_limit(sight: u8) -> u32 {
 /// on `facet`, or `None` if it has died, fled or vanished. Range only, no sight
 /// line: both references acquire with line of sight and *pursue* on the cheaper
 /// check, so a quarry that ducks behind a wall is chased around it, not lost.
-fn foe_in_sight(
-    state: &WorldState,
-    target: Serial,
-    from: Point,
-    facet: u8,
-    range: u32,
-) -> Option<Point> {
+fn foe_in_sight(state: &WorldState, target: Serial, from: Point, facet: u8, range: u32) -> Option<Point> {
     let entity = state.registry.entity_of(target)?;
     let &Position(pos) = state.registry.get::<Position>(entity)?;
     let alive = state
@@ -389,11 +371,7 @@ fn nearest_player_in_sight(
         if !live.sight_clear(from, pos) {
             continue;
         }
-        if state
-            .registry
-            .get::<Hitpoints>(id)
-            .is_none_or(|h| h.current == 0)
-        {
+        if state.registry.get::<Hitpoints>(id).is_none_or(|h| h.current == 0) {
             continue;
         }
         let Some(serial) = state.registry.serial_of(id) else {

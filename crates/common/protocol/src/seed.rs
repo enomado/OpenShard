@@ -134,22 +134,14 @@ impl SeedReader {
             // 0xEF plus a full body: new-style. Sphere disambiguates purely on
             // length, since a legacy seed is four arbitrary bytes and could
             // legitimately begin with 0xEF.
-            Some(&SEED_COMMAND) if buffer.len() >= SEED_LENGTH_NEW => {
-                self.read_modern_body(buffer, 1)
-            }
+            Some(&SEED_COMMAND) if buffer.len() >= SEED_LENGTH_NEW => self.read_modern_body(buffer, 1),
             // Still short of a full modern seed. It could become one on the next
             // read, so we cannot yet decide it is legacy — wait.
             Some(&SEED_COMMAND) => (0, None),
             Some(_) if buffer.len() >= SEED_LENGTH_OLD => {
                 let value = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
                 self.done = true;
-                (
-                    SEED_LENGTH_OLD,
-                    Some(Seed {
-                        value,
-                        version: None,
-                    }),
-                )
+                (SEED_LENGTH_OLD, Some(Seed { value, version: None }))
             }
             Some(_) => (0, None),
         }
@@ -260,10 +252,7 @@ mod tests {
 
         let (used, seed) = reader.feed(&modern_seed()[1..]);
         assert_eq!(used, SEED_LENGTH_NEW - 1);
-        assert_eq!(
-            seed.unwrap().version,
-            Some(ClientVersion::new(7, 0, 45, 65))
-        );
+        assert_eq!(seed.unwrap().version, Some(ClientVersion::new(7, 0, 45, 65)));
     }
 
     #[test]
@@ -368,10 +357,7 @@ mod tests {
 
         let mut reader = SeedReader::new();
         let (_, seed) = reader.feed(&bytes);
-        assert_eq!(
-            seed.unwrap().version,
-            Some(ClientVersion::new(255, 255, 0, 0))
-        );
+        assert_eq!(seed.unwrap().version, Some(ClientVersion::new(255, 255, 0, 0)));
     }
 
     #[test]

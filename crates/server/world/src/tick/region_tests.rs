@@ -6,7 +6,7 @@
 //! gives: these read private world state, so they stay inside the module, but
 //! they need not pile into the same file.
 
-use super::tests::{enter, enter_as, enter_gm, packets_for, teleport, world, START};
+use super::tests::{START, enter, enter_as, enter_gm, packets_for, teleport, world};
 use super::*;
 use openshard_state::components::{CriminalUntil, Guard, Hitpoints, Murders, Staff};
 use openshard_state::{Region, RegionFlags, RegionRect};
@@ -73,12 +73,7 @@ fn walking_into_a_town_is_one_crossing_and_standing_still_is_none() {
 
     teleport(&mut world, player, inside);
     world.tick(now);
-    let entered: Vec<_> = world
-        .state
-        .bus
-        .read(&mut crossings)
-        .cloned()
-        .collect::<Vec<_>>();
+    let entered: Vec<_> = world.state.bus.read(&mut crossings).cloned().collect::<Vec<_>>();
     assert_eq!(entered.len(), 1, "one crossing for one boundary");
     assert_eq!(entered[0].name, "Britain");
     assert_eq!(entered[0].from, None, "it came out of unnamed land");
@@ -100,11 +95,7 @@ fn leaving_a_town_reports_the_region_it_left() {
     let mut world = world();
     let now = Instant::now();
     let player = enter(&mut world, now);
-    register(
-        &mut world,
-        vec![town("Britain", RegionFlags::default())],
-        now,
-    );
+    register(&mut world, vec![town("Britain", RegionFlags::default())], now);
     world.tick(now);
     let mut crossings = world.state.bus.cursor::<crate::events::RegionChanged>();
 
@@ -126,18 +117,11 @@ fn a_region_plays_its_music_once() {
     let _ = packets_for(&mut world, player);
     // Registering ticks, and that tick is the crossing: everyone already standing
     // inside the new region has just arrived in it.
-    register(
-        &mut world,
-        vec![town("Britain", RegionFlags::default())],
-        now,
-    );
+    register(&mut world, vec![town("Britain", RegionFlags::default())], now);
 
     let music = packets_of(&mut world, player, 0x6D);
     assert_eq!(music.len(), 1, "the town's track starts on the crossing");
-    assert_eq!(
-        u16::from_be_bytes([music[0][1], music[0][2]]),
-        BRITAIN_MUSIC
-    );
+    assert_eq!(u16::from_be_bytes([music[0][1], music[0][2]]), BRITAIN_MUSIC);
 
     // Stepping about inside must not restart it: re-sending 0x6D plays the track
     // from the top, so a player pacing a town line would hear the first bar over
@@ -157,11 +141,7 @@ fn the_light_follows_the_hour() {
     // midnight — night. ServUO's curve: night until 04:00, full day from 06:00.
     assert_eq!(world.daylight_at(0), LIGHT_NIGHT, "midnight is night");
 
-    let at = |hour: u64| {
-        super::tests::world()
-            .with_clock_minutes(hour * 60)
-            .daylight_at(0)
-    };
+    let at = |hour: u64| super::tests::world().with_clock_minutes(hour * 60).daylight_at(0);
     assert_eq!(at(3), LIGHT_NIGHT, "before dawn");
     assert!(
         at(5) < LIGHT_NIGHT && at(5) > LIGHT_DAY,
@@ -522,14 +502,14 @@ fn a_no_teleport_region_refuses_both_ways() {
     assert!(!world.state.may_teleport(entity, barred));
     // Out is refused too — a jail one can cast out of is not a jail.
     teleport(&mut world, player, barred);
-    assert!(!world
-        .state
-        .may_teleport(entity, Point::new(START.0, START.1, 0)));
+    assert!(!world.state.may_teleport(entity, Point::new(START.0, START.1, 0)));
     // And ordinary ground is open in both directions.
     teleport(&mut world, player, Point::new(START.0, START.1, 0));
-    assert!(world
-        .state
-        .may_teleport(entity, Point::new(START.0 + 1, START.1, 0)));
+    assert!(
+        world
+            .state
+            .may_teleport(entity, Point::new(START.0 + 1, START.1, 0))
+    );
 }
 
 #[test]
@@ -598,10 +578,7 @@ fn regions_and_the_clock_survive_a_restart() {
     // Move the clock somewhere that is plainly not midnight.
     world = world.with_clock_minutes(13 * 60);
     world.take_snapshot();
-    let snapshot = world
-        .drain_saves()
-        .next()
-        .expect("regions are worth a snapshot");
+    let snapshot = world.drain_saves().next().expect("regions are worth a snapshot");
     let saved = snapshot.regions.clone().expect("the sweep took them");
     assert_eq!(saved.len(), 2);
     assert_eq!(snapshot.clock_minutes, Some(13 * 60));
@@ -624,19 +601,12 @@ fn regions_and_the_clock_survive_a_restart() {
     assert_eq!(dungeon.light, Some(DUNGEON_LIGHT));
     assert!(dungeon.flags.no_teleport);
     assert!(
-        restored
-            .state
-            .region_at(0, Point::new(105, 105, 0))
-            .is_none(),
+        restored.state.region_at(0, Point::new(105, 105, 0)).is_none(),
         "the surface above it is still open sky"
     );
 
     let restored = restored.with_clock_minutes(snapshot.clock_minutes.unwrap());
-    assert_eq!(
-        restored.uo_time_at(0).0,
-        13,
-        "and it is one in the afternoon"
-    );
+    assert_eq!(restored.uo_time_at(0).0, 13, "and it is one in the afternoon");
 }
 
 #[test]
@@ -644,16 +614,8 @@ fn registering_again_replaces_the_set() {
     let mut world = world();
     let now = Instant::now();
     let _ = enter(&mut world, now);
-    register(
-        &mut world,
-        vec![town("Britain", RegionFlags::default())],
-        now,
-    );
-    register(
-        &mut world,
-        vec![town("Trinsic", RegionFlags::default())],
-        now,
-    );
+    register(&mut world, vec![town("Britain", RegionFlags::default())], now);
+    register(&mut world, vec![town("Trinsic", RegionFlags::default())], now);
 
     let here = world
         .state

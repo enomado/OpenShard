@@ -15,11 +15,9 @@
 //! batch of commands, which is an ordinary thing for the inbox to hold.
 
 use super::*;
-use openshard_protocol::gump::{
-    CloseGump, GumpButton, GumpDisplay, GumpLayout, GumpResponse, GUMP_WHITE,
-};
+use openshard_protocol::gump::{CloseGump, GUMP_WHITE, GumpButton, GumpDisplay, GumpLayout, GumpResponse};
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_state::components::{Moongate, Position, MOONGATE_GRAPHIC, MOONGATE_REACH};
+use openshard_state::components::{MOONGATE_GRAPHIC, MOONGATE_REACH, Moongate, Position};
 
 /// The gump id the destination list is drawn under.
 ///
@@ -46,8 +44,7 @@ impl World {
     /// Open a gate at the caster and another at `destination`, each leading to
     /// the other.
     pub(super) fn open_gate_pair(&mut self, caster: EntityId, target_serial: u32) {
-        let Some(rune) =
-            Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
+        let Some(rune) = Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
         else {
             return;
         };
@@ -83,23 +80,11 @@ impl World {
         }
         // Both ends, each against its own kind — the same pairing Recall makes,
         // and the reason `may_travel` takes one end at a time.
-        if !magic::may_travel(
-            &self.state,
-            caster,
-            magic::TravelKind::GateFrom,
-            here_facet,
-            here,
-        ) {
+        if !magic::may_travel(&self.state, caster, magic::TravelKind::GateFrom, here_facet, here) {
             self.notify_self(caster, magic::TravelKind::GateFrom.refusal());
             return;
         }
-        if !magic::may_travel(
-            &self.state,
-            caster,
-            magic::TravelKind::GateTo,
-            there_facet,
-            there,
-        ) {
+        if !magic::may_travel(&self.state, caster, magic::TravelKind::GateTo, there_facet, there) {
             self.notify_self(caster, magic::TravelKind::GateTo.refusal());
             return;
         }
@@ -185,8 +170,7 @@ impl World {
             // gate has to be walked into. A blocked one is not a slightly worse
             // gate — it is a gate whose walk-in trigger is dead code, which reads
             // as a movement bug rather than a missing rule.
-            let Ok((entity, _serial)) = self.state.registry.spawn_with_serial(SerialKind::Item)
-            else {
+            let Ok((entity, _serial)) = self.state.registry.spawn_with_serial(SerialKind::Item) else {
                 warn!("out of item serials; stopping moongate placement");
                 break;
             };
@@ -391,11 +375,7 @@ impl World {
         self.state.send_packet(
             connection,
             &ServerPacket::GumpDisplay(GumpDisplay {
-                serial: self
-                    .state
-                    .registry
-                    .serial_of(traveller)
-                    .map_or(0, |s| s.raw()),
+                serial: self.state.registry.serial_of(traveller).map_or(0, |s| s.raw()),
                 gump_id: MOONGATE_GUMP,
                 x: 50,
                 y: 50,
@@ -409,11 +389,7 @@ impl World {
     }
 
     /// Answer a destination list. Returns whether the reply was one of ours.
-    pub(super) fn handle_gate_gump(
-        &mut self,
-        connection: ConnectionId,
-        response: &GumpResponse,
-    ) -> bool {
+    pub(super) fn handle_gate_gump(&mut self, connection: ConnectionId, response: &GumpResponse) -> bool {
         if response.gump_id != MOONGATE_GUMP {
             return false;
         }

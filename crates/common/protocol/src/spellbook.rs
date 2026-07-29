@@ -72,10 +72,7 @@ mod tests {
             ClientVersion::new(7, 0, 45, 65),
         );
         assert_eq!(packet[0], 0xBF);
-        assert_eq!(
-            u16::from_be_bytes([packet[1], packet[2]]),
-            packet.len() as u16
-        );
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]), packet.len() as u16);
         assert_eq!(&packet[3..5], &0x1Bu16.to_be_bytes(), "subcommand");
         assert_eq!(&packet[5..7], &0x01u16.to_be_bytes());
         assert_eq!(&packet[7..11], &0x4000_0001u32.to_be_bytes(), "the book");

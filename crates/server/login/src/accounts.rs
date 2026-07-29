@@ -4,11 +4,10 @@ use std::collections::HashMap;
 
 use openshard_protocol::access::AccessLevel;
 use openshard_protocol::identity::{
-    AccountName, CharacterName, PlaintextPassword, RawAccountName, RawCharacterName,
-    RawPlaintextPassword,
+    AccountName, CharacterName, PlaintextPassword, RawAccountName, RawCharacterName, RawPlaintextPassword,
 };
 use openshard_protocol::login::{
-    CharacterEntry, DenyReason, ACCOUNT_NAME_LENGTH, CHARACTER_NAME_LENGTH, MIN_CHARACTER_SLOTS,
+    ACCOUNT_NAME_LENGTH, CHARACTER_NAME_LENGTH, CharacterEntry, DenyReason, MIN_CHARACTER_SLOTS,
     PASSWORD_LENGTH,
 };
 
@@ -195,11 +194,7 @@ impl DevAccounts {
     }
 
     /// Add a character to an existing account. Ignored if there is no account.
-    pub fn with_character(
-        mut self,
-        account: impl Into<AccountName>,
-        name: impl Into<CharacterName>,
-    ) -> Self {
+    pub fn with_character(mut self, account: impl Into<AccountName>, name: impl Into<CharacterName>) -> Self {
         if let Some(entry) = self.accounts.get_mut(&account.into().normalized()) {
             entry.characters.push(CharacterEntry { name: name.into() });
         }
@@ -339,19 +334,13 @@ mod tests {
 
     #[test]
     fn rejects_the_wrong_password() {
-        assert_eq!(
-            store().verify("admin", "hunter3"),
-            Err(DenyReason::BadPassword)
-        );
+        assert_eq!(store().verify("admin", "hunter3"), Err(DenyReason::BadPassword));
         assert_eq!(store().verify("admin", ""), Err(DenyReason::BadPassword));
     }
 
     #[test]
     fn rejects_an_unknown_account() {
-        assert_eq!(
-            store().verify("nobody", "hunter2"),
-            Err(DenyReason::NoAccount)
-        );
+        assert_eq!(store().verify("nobody", "hunter2"), Err(DenyReason::NoAccount));
     }
 
     #[test]
@@ -378,10 +367,7 @@ mod tests {
 
     #[test]
     fn passwords_are_case_sensitive() {
-        assert_eq!(
-            store().verify("admin", "HUNTER2"),
-            Err(DenyReason::BadPassword)
-        );
+        assert_eq!(store().verify("admin", "HUNTER2"), Err(DenyReason::BadPassword));
     }
 
     #[test]
@@ -469,9 +455,11 @@ mod tests {
     fn create_character_refuses_a_sixth_character() {
         let mut store = DevAccounts::new().with_account("a", "p");
         for index in 0..MIN_CHARACTER_SLOTS {
-            assert!(store
-                .create_character("a".into(), format!("C{index}").into())
-                .is_ok());
+            assert!(
+                store
+                    .create_character("a".into(), format!("C{index}").into())
+                    .is_ok()
+            );
         }
         assert_eq!(
             store.create_character("a".into(), "TooMany".into()),
@@ -535,14 +523,8 @@ mod tests {
     fn delete_character_refuses_an_empty_or_out_of_range_slot() {
         let mut store = DevAccounts::new().with_account("a", "p");
         let _ = store.create_character("a".into(), "Only".into());
-        assert_eq!(
-            store.delete_character("a", 1),
-            Err(DenyReason::BadCharacter)
-        );
-        assert_eq!(
-            store.delete_character("nobody", 0),
-            Err(DenyReason::NoAccount)
-        );
+        assert_eq!(store.delete_character("a", 1), Err(DenyReason::BadCharacter));
+        assert_eq!(store.delete_character("nobody", 0), Err(DenyReason::NoAccount));
     }
 
     #[test]
@@ -555,10 +537,7 @@ mod tests {
             Ok(AccountName("admin".to_owned()))
         );
         let credential = &store.accounts["admin"].credential;
-        assert!(
-            !credential.contains("hunter2"),
-            "plaintext must not survive"
-        );
+        assert!(!credential.contains("hunter2"), "plaintext must not survive");
         assert!(credential.starts_with("$argon2"), "an argon2 PHC hash");
     }
 
@@ -573,9 +552,6 @@ mod tests {
             store.verify("returning", "secret"),
             Ok(AccountName("returning".to_owned()))
         );
-        assert_eq!(
-            store.accounts["returning"].credential, phc,
-            "loaded verbatim"
-        );
+        assert_eq!(store.accounts["returning"].credential, phc, "loaded verbatim");
     }
 }

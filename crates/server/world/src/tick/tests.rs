@@ -1,6 +1,6 @@
 use super::*;
 use openshard_chat::{MobileSpoke, TALKMODE_WHISPER, TALKMODE_YELL};
-use openshard_combat::{swing_ticks, MobileDamaged, MobileDied, WRESTLING_SPEED};
+use openshard_combat::{MobileDamaged, MobileDied, WRESTLING_SPEED, swing_ticks};
 use openshard_events::Cursor;
 use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
@@ -11,8 +11,8 @@ use openshard_protocol::skill::SkillLock;
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
 use openshard_state::components::{
-    Amount, Contained, Container, CriminalUntil, Decays, Equipped, Graphic, MurderDecay, Murders,
-    Skills, Stackable,
+    Amount, Contained, Container, CriminalUntil, Decays, Equipped, Graphic, MurderDecay, Murders, Skills,
+    Stackable,
 };
 use openshard_state::components::{Banker, SwingSpeed};
 use openshard_state::sectors::distance;
@@ -101,11 +101,7 @@ pub(super) fn teleport(world: &mut World, connection: ConnectionId, point: Point
         world.state.registry.insert(entity, Movement(walker));
     }
     let facet = world.state.facet_of(entity);
-    world
-        .state
-        .facet_state_mut(facet)
-        .sectors
-        .insert(entity, point);
+    world.state.facet_state_mut(facet).sectors.insert(entity, point);
     world.state.refresh_around(entity);
 }
 
@@ -134,13 +130,7 @@ fn a_server_step_turns_first_then_moves() {
     let entity = world.state.players[&connection];
     let serial = serial_of(&world, connection);
 
-    let facing0 = world
-        .state
-        .registry
-        .get::<Heading>(entity)
-        .unwrap()
-        .0
-        .direction;
+    let facing0 = world.state.registry.get::<Heading>(entity).unwrap().0.direction;
     let dir = if facing0 == Direction::North {
         Direction::South
     } else {
@@ -347,10 +337,7 @@ fn a_stacked_item_keeps_its_amount_when_drawn() {
     world.tick(now);
 
     let packets = packets_for(&mut world, connection);
-    let item = packets
-        .iter()
-        .find(|p| p[0] == 0x1A)
-        .expect("the item was drawn");
+    let item = packets.iter().find(|p| p[0] == 0x1A).expect("the item was drawn");
     // The amount bit on the serial says a stack; a single item would not set it.
     assert_ne!(item[3] & 0x80, 0, "the stack sets the amount flag");
 }
@@ -389,9 +376,7 @@ fn picking_up_then_dropping_moves_an_item_on_everyone_elses_screen() {
     });
     world.tick(now);
     assert!(
-        packets_for(&mut world, watcher)
-            .iter()
-            .any(|p| p[0] == 0x1D),
+        packets_for(&mut world, watcher).iter().any(|p| p[0] == 0x1D),
         "the other player is told to forget the lifted item"
     );
 
@@ -403,9 +388,7 @@ fn picking_up_then_dropping_moves_an_item_on_everyone_elses_screen() {
     });
     world.tick(now);
     assert!(
-        packets_for(&mut world, watcher)
-            .iter()
-            .any(|p| p[0] == 0x1A),
+        packets_for(&mut world, watcher).iter().any(|p| p[0] == 0x1A),
         "and to draw it again where it was dropped"
     );
 }
@@ -432,9 +415,7 @@ fn picking_up_out_of_reach_is_rejected_and_leaves_the_item() {
     world.tick(now);
 
     assert!(
-        packets_for(&mut world, picker)
-            .iter()
-            .any(|p| p == &[0x27, 0x01]),
+        packets_for(&mut world, picker).iter().any(|p| p == &[0x27, 0x01]),
         "the client is told the item is out of range"
     );
     assert!(
@@ -519,9 +500,7 @@ fn logging_out_while_holding_an_item_returns_it_to_the_ground() {
         "the item is back on the ground, not lost with the cursor"
     );
     assert!(
-        packets_for(&mut world, watcher)
-            .iter()
-            .any(|p| p[0] == 0x1A),
+        packets_for(&mut world, watcher).iter().any(|p| p[0] == 0x1A),
         "and the player still online sees it reappear"
     );
 }
@@ -544,9 +523,7 @@ fn you_cannot_pick_up_a_mobile() {
     });
     world.tick(now);
     assert!(
-        packets_for(&mut world, picker)
-            .iter()
-            .any(|p| p == &[0x27, 0x00]),
+        packets_for(&mut world, picker).iter().any(|p| p == &[0x27, 0x00]),
         "cannot-lift is the reason"
     );
 }
@@ -791,12 +768,7 @@ fn dropping_an_item_into_your_worn_backpack_stores_it() {
         "the item is now inside the worn bag"
     );
     assert_eq!(
-        world
-            .registry()
-            .get::<Contained>(item)
-            .unwrap()
-            .container
-            .raw(),
+        world.registry().get::<Contained>(item).unwrap().container.raw(),
         pack
     );
     assert!(
@@ -986,10 +958,7 @@ fn picking_an_item_out_of_a_container_holds_it() {
         !world.state.registry.has::<Contained>(item),
         "lifting it out drops the containment"
     );
-    assert!(
-        world.state.held.contains_key(&player),
-        "and it is on the cursor"
-    );
+    assert!(world.state.held.contains_key(&player), "and it is on the cursor");
 }
 
 #[test]
@@ -1065,16 +1034,9 @@ fn take_loose_item(world: &mut World, connection: ConnectionId, now: Instant) ->
         .registry
         .query::<Position>()
         .filter(|(entity, _)| {
-            world.state.registry.has::<Graphic>(*entity)
-                && !world.state.registry.has::<Container>(*entity)
+            world.state.registry.has::<Graphic>(*entity) && !world.state.registry.has::<Container>(*entity)
         })
-        .filter_map(|(entity, _)| {
-            world
-                .state
-                .registry
-                .serial_of(entity)
-                .map(|s| (entity, s.raw()))
-        })
+        .filter_map(|(entity, _)| world.state.registry.serial_of(entity).map(|s| (entity, s.raw())))
         .max_by_key(|(_, serial)| *serial)
         .expect("a ground item to lift");
     world.queue(Command::PickUpItem {
@@ -1174,18 +1136,11 @@ fn unequipping_lifts_the_item_off_and_forgets_it_for_others() {
     world.tick(now);
 
     assert!(!world.state.registry.has::<Equipped>(item), "it comes off");
+    assert!(world.state.held.contains_key(&player), "and onto the cursor");
     assert!(
-        world.state.held.contains_key(&player),
-        "and onto the cursor"
-    );
-    assert!(
-        packets_for(&mut world, watcher).iter().any(|p| p
-            == &encode_packet(
-                &Remove {
-                    serial: item_serial
-                },
-                ClientVersion::TOL
-            )),
+        packets_for(&mut world, watcher)
+            .iter()
+            .any(|p| p == &encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL)),
         "the other player is told to forget it"
     );
 }
@@ -1257,18 +1212,11 @@ fn consuming_a_contained_item_removes_it_from_the_open_gump() {
     });
     world.tick(now);
 
+    assert!(!world.state.registry.contains(item), "the contained item is gone");
     assert!(
-        !world.state.registry.contains(item),
-        "the contained item is gone"
-    );
-    assert!(
-        packets_for(&mut world, player).iter().any(|p| p
-            == &encode_packet(
-                &Remove {
-                    serial: item_serial
-                },
-                ClientVersion::TOL
-            )),
+        packets_for(&mut world, player)
+            .iter()
+            .any(|p| p == &encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL)),
         "and the open gump is told to forget it"
     );
 }
@@ -1300,18 +1248,10 @@ fn consuming_a_worn_item_takes_it_off_for_everyone_including_the_wearer() {
     });
     world.tick(now);
 
-    assert!(
-        !world.state.registry.contains(item),
-        "the worn item is gone"
-    );
+    assert!(!world.state.registry.contains(item), "the worn item is gone");
     // One drain: `packets_for` empties the whole outbox, so checking two
     // connections means partitioning a single sweep, not calling it twice.
-    let forget = encode_packet(
-        &Remove {
-            serial: item_serial,
-        },
-        ClientVersion::TOL,
-    );
+    let forget = encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL);
     let mut watcher_forgot = false;
     let mut wearer_forgot = false;
     for out in world.drain_outbound() {
@@ -1339,10 +1279,7 @@ fn consuming_part_of_a_stack_leaves_the_rest() {
     world.queue(Command::ConsumeItem { serial, amount: 2 });
     world.tick(now);
 
-    assert!(
-        world.state.registry.contains(item),
-        "the pile is still there"
-    );
+    assert!(world.state.registry.contains(item), "the pile is still there");
     assert_eq!(
         world.state.registry.get::<Amount>(item).map(|a| a.0),
         Some(3),
@@ -1411,10 +1348,7 @@ fn consuming_a_stray_serial_does_nothing() {
     });
     world.tick(now);
 
-    assert!(
-        world.state.registry.contains(item),
-        "the real item is untouched"
-    );
+    assert!(world.state.registry.contains(item), "the real item is untouched");
 }
 
 #[test]
@@ -1660,10 +1594,7 @@ fn a_ground_item_decays_after_its_time() {
     world.state.registry.insert(item, Decays { at_tick: soon });
     world.tick(now);
 
-    assert!(
-        !world.state.registry.contains(item),
-        "the item has rotted away"
-    );
+    assert!(!world.state.registry.contains(item), "the item has rotted away");
     assert!(
         packets_for(&mut world, watcher)
             .iter()
@@ -1737,10 +1668,7 @@ fn a_container_does_not_decay_even_after_being_moved() {
     });
     world.tick(now);
 
-    assert!(
-        world.state.registry.has::<Position>(container_item),
-        "back down"
-    );
+    assert!(world.state.registry.has::<Position>(container_item), "back down");
     assert!(
         !world.state.registry.has::<Decays>(container_item),
         "and still no decay clock after moving it"
@@ -1784,10 +1712,7 @@ fn picking_up_part_of_a_stack_splits_it() {
     // The original, still serial `pile`, is on the cursor holding 30.
     assert!(world.state.held.contains_key(&player));
     assert_eq!(openshard_items::amount_of(&world.state, pile_item), 30);
-    assert!(
-        !world.state.registry.has::<Position>(pile_item),
-        "off the ground"
-    );
+    assert!(!world.state.registry.has::<Position>(pile_item), "off the ground");
 
     // A brand-new pile of 70 sits where the stack was.
     let (leftover, _) = world
@@ -1973,10 +1898,7 @@ fn picking_up_part_of_a_stack_from_a_container_splits_it() {
     });
     world.tick(now);
 
-    assert!(
-        world.state.held.contains_key(&player),
-        "the original is held"
-    );
+    assert!(world.state.held.contains_key(&player), "the original is held");
     assert_eq!(openshard_items::amount_of(&world.state, pile_item), 30);
     assert!(
         !world.state.registry.has::<Contained>(pile_item),
@@ -2245,10 +2167,7 @@ fn a_player_who_dies_becomes_a_ghost() {
         "wearing the male ghost body"
     );
     assert_eq!(
-        world
-            .registry()
-            .get::<Ghost>(player_entity)
-            .map(|g| g.body.id),
+        world.registry().get::<Ghost>(player_entity).map(|g| g.body.id),
         Some(0x0190),
         "with its living body remembered for resurrection"
     );
@@ -2283,15 +2202,8 @@ fn a_dead_player_leaves_a_corpse_but_keeps_its_backpack() {
     let player_entity = world.state.players[&player];
 
     // Wear a robe (outer torso) so there is gear to fall to the corpse.
-    let (robe, robe_serial) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(robe, Graphic { id: 0x1F03, hue: 0 });
+    let (robe, robe_serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(robe, Graphic { id: 0x1F03, hue: 0 });
     world.state.registry.insert(
         robe,
         Equipped {
@@ -2362,10 +2274,7 @@ fn resurrection_brings_a_ghost_back() {
         by: 0,
     });
     world.tick(now);
-    assert!(
-        world.state.registry.has::<Ghost>(player_entity),
-        "dead first"
-    );
+    assert!(world.state.registry.has::<Ghost>(player_entity), "dead first");
     let _ = packets_for(&mut world, player);
 
     // `.res` spoken by the (GM) ghost raises it.
@@ -2441,9 +2350,7 @@ fn a_ghost_is_hidden_from_the_living() {
     );
     let packets = packets_for(&mut world, watcher);
     assert!(
-        packets
-            .iter()
-            .any(|p| p[0] == 0x1D && mentions(p, dying_serial)),
+        packets.iter().any(|p| p[0] == 0x1D && mentions(p, dying_serial)),
         "and was told to remove it (0x1D)"
     );
 }
@@ -2504,13 +2411,7 @@ fn a_player_in_war_mode_swings_at_an_adjacent_target() {
         world.tick(now);
     }
     assert!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current
-            < 50,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current < 50,
         "the target has taken damage"
     );
 }
@@ -2559,17 +2460,14 @@ fn a_dying_creature_plays_its_death_throe() {
         world.tick(now);
     }
     assert!(
-        world
-            .registry()
-            .entity_of(Serial::new(mob).unwrap())
-            .is_none(),
+        world.registry().entity_of(Serial::new(mob).unwrap()).is_none(),
         "the creature died and was removed"
     );
     let mob_serial = mob.to_be_bytes();
     assert!(
-        packets_for(&mut world, player).iter().any(|p| {
-            p[0] == 0xE2 && p.len() >= 7 && p[1..5] == mob_serial && p[5..7] == [0x00, 0x03]
-        }),
+        packets_for(&mut world, player)
+            .iter()
+            .any(|p| { p[0] == 0xE2 && p.len() >= 7 && p[1..5] == mob_serial && p[5..7] == [0x00, 0x03] }),
         "the creature played a 0xE2 Die animation (type 3) on its own serial"
     );
 }
@@ -2627,10 +2525,7 @@ fn a_creature_dies_with_its_own_voice() {
         world.tick(now);
     }
     assert!(
-        world
-            .registry()
-            .entity_of(Serial::new(orc).unwrap())
-            .is_none(),
+        world.registry().entity_of(Serial::new(orc).unwrap()).is_none(),
         "the orc died"
     );
     let cry = ORC_DEATH_SOUND.to_be_bytes();
@@ -2660,10 +2555,7 @@ fn a_slain_creature_leaves_a_corpse_with_loot() {
         world.tick(now);
     }
     assert!(
-        world
-            .registry()
-            .entity_of(Serial::new(mob).unwrap())
-            .is_none(),
+        world.registry().entity_of(Serial::new(mob).unwrap()).is_none(),
         "the creature was reaped off the map"
     );
     let corpse = world
@@ -2793,10 +2685,7 @@ fn add_loot_fills_a_container_and_ignores_a_stray_serial() {
         .query::<Graphic>()
         .filter(|(_, g)| g.id == 0x0EED)
         .count();
-    assert_eq!(
-        gold_piles, 1,
-        "the stray-serial loot was dropped, not floated"
-    );
+    assert_eq!(gold_piles, 1, "the stray-serial loot was dropped, not floated");
 }
 
 #[test]
@@ -2822,16 +2711,13 @@ fn a_decaying_corpse_takes_its_loot_with_it() {
 
     // Bring its decay clock forward to now and let the tick reap it.
     let tick = world.state.ticks;
-    world.state.registry.insert(
-        corpse,
-        openshard_state::components::Decays { at_tick: tick },
-    );
+    world
+        .state
+        .registry
+        .insert(corpse, openshard_state::components::Decays { at_tick: tick });
     world.tick(now);
 
-    assert!(
-        !world.state.registry.contains(corpse),
-        "the corpse rotted away"
-    );
+    assert!(!world.state.registry.contains(corpse), "the corpse rotted away");
     assert_eq!(
         world
             .state
@@ -2862,12 +2748,7 @@ fn no_swing_without_war_mode() {
         world.tick(now);
     }
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
         50,
         "a mobile at peace does not swing"
     );
@@ -2886,12 +2767,7 @@ fn no_swing_out_of_reach() {
         world.tick(now);
     }
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
         50,
         "a swing out of reach lands nothing"
     );
@@ -2945,10 +2821,7 @@ fn taking_the_weapon_off_reverts_to_wrestling() {
     let serial = world.state.registry.serial_of(entity).unwrap();
 
     let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
-    assert_ne!(
-        combat::swing_speed(&world.state, entity),
-        WRESTLING_SWING_TICKS
-    );
+    assert_ne!(combat::swing_speed(&world.state, entity), WRESTLING_SWING_TICKS);
     world.state.registry.despawn(sword);
     assert_eq!(
         combat::swing_speed(&world.state, entity),
@@ -2976,15 +2849,10 @@ fn a_wielded_weapon_rolls_its_damage_within_range_and_replays() {
     let mut seq_a = Vec::new();
     for _ in 0..64 {
         let blow = combat::melee_blow(&mut a.state, ea);
-        assert!(
-            (5..=33).contains(&blow),
-            "blow {blow} out of the weapon's range"
-        );
+        assert!((5..=33).contains(&blow), "blow {blow} out of the weapon's range");
         seq_a.push(blow);
     }
-    let seq_b: Vec<u16> = (0..64)
-        .map(|_| combat::melee_blow(&mut b.state, eb))
-        .collect();
+    let seq_b: Vec<u16> = (0..64).map(|_| combat::melee_blow(&mut b.state, eb)).collect();
     assert_eq!(seq_a, seq_b, "the damage roll replays for a fixed seed");
 }
 
@@ -3053,13 +2921,7 @@ fn a_skilled_swing_lands_and_trains_its_weapon_skill() {
         world.tick(now);
     }
     assert!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current
-            < 1000,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current < 1000,
         "a skilled swordsman's blows land on a skill-less dummy"
     );
     let swords = world
@@ -3134,13 +2996,7 @@ fn tactics_scales_the_blow() {
         for _ in 0..(10 * WRESTLING_SWING_TICKS) {
             world.tick(now);
         }
-        60000
-            - world
-                .state
-                .registry
-                .get::<Hitpoints>(mob_entity)
-                .unwrap()
-                .current
+        60000 - world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current
     }
     assert!(
         total_dealt(1000) > total_dealt(0),
@@ -3168,13 +3024,7 @@ fn lumberjacking_lends_an_axe_its_bite() {
         for _ in 0..(10 * WRESTLING_SWING_TICKS) {
             world.tick(now);
         }
-        60000
-            - world
-                .state
-                .registry
-                .get::<Hitpoints>(mob_entity)
-                .unwrap()
-                .current
+        60000 - world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current
     }
     // 0x0F49 is the Axe (is_axe); 0x0F61 the Longsword (not).
     assert!(
@@ -3314,15 +3164,7 @@ fn a_creatures_notoriety_colours_its_health_bar() {
     let mut world = world();
     let player = enter(&mut world, now);
     let _ = packets_for(&mut world, player);
-    let mob = spawn_mobile_full(
-        &mut world,
-        Point::new(START.0, START.1, 0),
-        50,
-        5,
-        5,
-        0,
-        now,
-    );
+    let mob = spawn_mobile_full(&mut world, Point::new(START.0, START.1, 0), 50, 5, 5, 0, now);
 
     let drawn = packets_for(&mut world, player)
         .into_iter()
@@ -3338,15 +3180,7 @@ fn an_invulnerable_mobile_cannot_be_attacked() {
     let player = enter(&mut world, now);
     let player_entity = world.state.players[&player];
     // Notoriety 7 is invulnerable — a yellow, untouchable townsperson.
-    let mob = spawn_mobile_full(
-        &mut world,
-        Point::new(START.0, START.1, 0),
-        50,
-        7,
-        5,
-        0,
-        now,
-    );
+    let mob = spawn_mobile_full(&mut world, Point::new(START.0, START.1, 0), 50, 7, 5, 0, now);
     let _ = packets_for(&mut world, player);
 
     world.queue(Command::Attack {
@@ -3356,12 +3190,7 @@ fn an_invulnerable_mobile_cannot_be_attacked() {
     world.tick(now);
 
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Combat>(player_entity)
-            .unwrap()
-            .target,
+        world.state.registry.get::<Combat>(player_entity).unwrap().target,
         None,
         "the attack is refused"
     );
@@ -3496,11 +3325,7 @@ fn murder_counts_fade_and_wash_the_killer_blue() {
     world.tick(now);
 
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Murders>(killer_entity)
-            .map(|m| m.0),
+        world.state.registry.get::<Murders>(killer_entity).map(|m| m.0),
         Some(4),
         "one murder aged off"
     );
@@ -3618,10 +3443,7 @@ fn the_criminal_flag_lifts_when_its_time_runs_out() {
         target: openshard_protocol::serial::Serial::new(victim_serial),
     });
     world.tick(now);
-    assert_eq!(
-        world.state.notoriety_of(aggressor_entity),
-        Notoriety::Criminal
-    );
+    assert_eq!(world.state.notoriety_of(aggressor_entity), Notoriety::Criminal);
 
     // Bring the flag's expiry forward rather than run two minutes of ticks.
     let soon = world.state.ticks + 1;
@@ -3665,12 +3487,7 @@ fn resistance_is_by_damage_type() {
     });
     world.tick(now);
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
         95
     );
 
@@ -3683,12 +3500,7 @@ fn resistance_is_by_damage_type() {
     });
     world.tick(now);
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
         85
     );
 }
@@ -3700,15 +3512,7 @@ fn armour_reduces_a_blow() {
     let now = Instant::now();
     let mut world = world();
     let player = enter(&mut world, now);
-    let mob = spawn_mobile_full(
-        &mut world,
-        Point::new(START.0, START.1, 0),
-        50,
-        5,
-        5,
-        50,
-        now,
-    );
+    let mob = spawn_mobile_full(&mut world, Point::new(START.0, START.1, 0), 50, 5, 5, 50, now);
     let mob_entity = entity(&world, mob);
     engage(&mut world, player, mob, now);
 
@@ -3716,12 +3520,7 @@ fn armour_reduces_a_blow() {
         world.tick(now);
     }
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current,
         48,
         "five damage minus half is two"
     );
@@ -3749,13 +3548,7 @@ fn swing_speed_sets_the_cadence() {
         world.tick(now);
     }
     assert!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(mob_entity)
-            .unwrap()
-            .current
-            < 100,
+        world.state.registry.get::<Hitpoints>(mob_entity).unwrap().current < 100,
         "the quicker swing has already landed"
     );
 }
@@ -3801,10 +3594,7 @@ fn dexterity_quickens_the_swing() {
     world.tick(now);
     let fast = combat::swing_speed(&world.state, player_entity);
 
-    assert_eq!(
-        slow, WRESTLING_SWING_TICKS,
-        "default dexterity, default pace"
-    );
+    assert_eq!(slow, WRESTLING_SWING_TICKS, "default dexterity, default pace");
     assert!(fast < slow, "more dexterity swings sooner: {fast} < {slow}");
 }
 
@@ -3827,12 +3617,7 @@ fn killing_the_target_ends_the_attack() {
         "the creature is dead and gone"
     );
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Combat>(player_entity)
-            .unwrap()
-            .target,
+        world.state.registry.get::<Combat>(player_entity).unwrap().target,
         None,
         "and the attacker is no longer swinging at it"
     );
@@ -3955,10 +3740,7 @@ fn a_skill_gain_updates_the_open_window() {
             break;
         }
     }
-    assert!(
-        saw_update,
-        "a gain pushed a single-skill update to the window"
-    );
+    assert!(saw_update, "a gain pushed a single-skill update to the window");
 }
 
 #[test]
@@ -4001,17 +3783,9 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
         .expect("the character was saved");
     assert_eq!(record.strength, 55);
     assert_eq!(record.intelligence, 90);
-    let magery = record
-        .skills
-        .iter()
-        .find(|s| s.id == 25)
-        .expect("magery saved");
+    let magery = record.skills.iter().find(|s| s.id == 25).expect("magery saved");
     assert_eq!(magery.value, 501);
-    assert_eq!(
-        magery.lock,
-        SkillLock::Down.to_bits(),
-        "the lock is saved too"
-    );
+    assert_eq!(magery.lock, SkillLock::Down.to_bits(), "the lock is saved too");
 
     // Relogin, threading the record back through Enter the way the server does.
     world.queue(Command::Disconnect { connection: conn });
@@ -4152,9 +3926,7 @@ fn a_sphere_cast_resolves_at_once() {
         "the mana was paid at once"
     );
     assert!(
-        packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x6C),
+        packets_for(&mut world, connection).iter().any(|p| p[0] == 0x6C),
         "and the target cursor came up at once"
     );
 }
@@ -4203,9 +3975,7 @@ fn a_servuo_cast_waits_out_its_delay_then_targets() {
         "and paid its mana"
     );
     assert!(
-        packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x6C),
+        packets_for(&mut world, connection).iter().any(|p| p[0] == 0x6C),
         "then the target cursor came up"
     );
 }
@@ -4256,10 +4026,12 @@ fn stepping_breaks_a_cast() {
         spell: 17,
     });
     world.tick(now);
-    assert!(world
-        .registry()
-        .get::<openshard_state::components::Casting>(entity)
-        .is_some());
+    assert!(
+        world
+            .registry()
+            .get::<openshard_state::components::Casting>(entity)
+            .is_some()
+    );
 
     world.queue(Command::Walk {
         connection,
@@ -4286,10 +4058,12 @@ fn a_blow_disturbs_a_cast_when_the_shard_says_so() {
         spell: 17,
     });
     world.tick(now);
-    assert!(world
-        .registry()
-        .get::<openshard_state::components::Casting>(entity)
-        .is_some());
+    assert!(
+        world
+            .registry()
+            .get::<openshard_state::components::Casting>(entity)
+            .is_some()
+    );
 
     world.queue(Command::Damage {
         serial,
@@ -4336,12 +4110,7 @@ fn a_fireball_damages_the_mobile_it_is_aimed_at() {
         .entity_of(Serial::new(target).unwrap())
         .expect("the target");
     assert!(
-        world
-            .registry()
-            .get::<Hitpoints>(target_entity)
-            .unwrap()
-            .current
-            < 50,
+        world.registry().get::<Hitpoints>(target_entity).unwrap().current < 50,
         "the fireball hurt what it was aimed at"
     );
 }
@@ -4355,16 +4124,10 @@ fn poison_pulses_damage_then_wears_off() {
     let now = Instant::now();
     let mut world = world();
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 50, now);
-    let entity = world
-        .registry()
-        .entity_of(Serial::new(mob).unwrap())
-        .unwrap();
+    let entity = world.registry().entity_of(Serial::new(mob).unwrap()).unwrap();
     let ticks = world.state.ticks;
     combat::apply_poison(&mut world.state, mob, 2, ticks); // greater
-    assert!(
-        world.registry().get::<Poisoned>(entity).is_some(),
-        "poisoned"
-    );
+    assert!(world.registry().get::<Poisoned>(entity).is_some(), "poisoned");
 
     let hp_before = world.registry().get::<Hitpoints>(entity).unwrap().current;
     let mut later = now;
@@ -4389,10 +4152,7 @@ fn cure_clears_poison() {
     let now = Instant::now();
     let mut world = world();
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 50, now);
-    let entity = world
-        .registry()
-        .entity_of(Serial::new(mob).unwrap())
-        .unwrap();
+    let entity = world.registry().entity_of(Serial::new(mob).unwrap()).unwrap();
     let ticks = world.state.ticks;
     combat::apply_poison(&mut world.state, mob, 2, ticks);
     assert!(
@@ -4593,12 +4353,7 @@ fn recasting_a_buff_refreshes_rather_than_stacks() {
         "a recast refreshes the same +5, it does not stack a second"
     );
     assert_eq!(
-        world
-            .registry()
-            .get::<StatMods>(entity)
-            .unwrap()
-            .active
-            .len(),
+        world.registry().get::<StatMods>(entity).unwrap().active.len(),
         1,
         "one entry, not two"
     );
@@ -4651,10 +4406,7 @@ fn a_stat_buff_survives_a_relogin() {
         .find(|c| c.serial == serial)
         .cloned()
         .expect("saved");
-    assert_eq!(
-        record.strength, buffed.strength,
-        "the buffed stat went to disk"
-    );
+    assert_eq!(record.strength, buffed.strength, "the buffed stat went to disk");
     assert!(
         record.effects.iter().any(|e| e.kind == effect::BLESS),
         "and the buff's ledger entry with it"
@@ -4755,11 +4507,7 @@ fn reactive_armor_reflects_a_share_of_a_blow_to_the_attacker() {
     );
 
     assert_eq!(
-        world
-            .registry()
-            .get::<Hitpoints>(victim_entity)
-            .unwrap()
-            .current,
+        world.registry().get::<Hitpoints>(victim_entity).unwrap().current,
         80,
         "the victim took the whole blow"
     );
@@ -4799,11 +4547,7 @@ fn reactive_armor_does_not_ping_pong() {
     );
 
     assert_eq!(
-        world
-            .registry()
-            .get::<Hitpoints>(victim_entity)
-            .unwrap()
-            .current,
+        world.registry().get::<Hitpoints>(victim_entity).unwrap().current,
         80,
         "the victim took the blow but no bounce came back"
     );
@@ -4893,11 +4637,7 @@ fn magic_reflection_bounces_a_spell_back_at_the_caster() {
         "the caster took his own fireball"
     );
     assert_eq!(
-        world
-            .registry()
-            .get::<Hitpoints>(target_entity)
-            .unwrap()
-            .current,
+        world.registry().get::<Hitpoints>(target_entity).unwrap().current,
         50,
         "the reflecting target was untouched"
     );
@@ -4922,10 +4662,7 @@ fn night_sight_lights_the_targets_screen() {
     let caster_serial = serial_of(&world, connection);
     let _ = packets_for(&mut world, connection);
 
-    world.queue(Command::RequestCast {
-        connection,
-        spell: 5,
-    }); // Night Sight
+    world.queue(Command::RequestCast { connection, spell: 5 }); // Night Sight
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
@@ -4962,20 +4699,8 @@ fn a_behaviour_buff_expires_on_its_tick_and_a_recast_refreshes() {
     let serial = serial_of(&world, connection);
 
     let at = world.state.ticks;
-    magic::apply_behaviour_buff(
-        &mut world.state,
-        serial,
-        effect::REACTIVE_ARMOR,
-        30,
-        at + 50,
-    );
-    magic::apply_behaviour_buff(
-        &mut world.state,
-        serial,
-        effect::REACTIVE_ARMOR,
-        40,
-        at + 100,
-    );
+    magic::apply_behaviour_buff(&mut world.state, serial, effect::REACTIVE_ARMOR, 30, at + 50);
+    magic::apply_behaviour_buff(&mut world.state, serial, effect::REACTIVE_ARMOR, 40, at + 100);
     assert_eq!(
         world
             .registry()
@@ -5014,13 +4739,7 @@ fn a_behaviour_buff_survives_a_relogin() {
     let conn = enter(&mut world, now);
     let serial = serial_of(&world, conn);
     let at = world.state.ticks;
-    magic::apply_behaviour_buff(
-        &mut world.state,
-        serial,
-        effect::REACTIVE_ARMOR,
-        40,
-        at + 500,
-    );
+    magic::apply_behaviour_buff(&mut world.state, serial, effect::REACTIVE_ARMOR, 40, at + 500);
 
     world.take_snapshot();
     let snapshot = world.drain_saves().next_back().expect("a snapshot");
@@ -5130,12 +4849,7 @@ fn fire_field_lays_a_row_and_burns_who_stands_in_it() {
         world.tick(later);
     }
     assert!(
-        world
-            .registry()
-            .get::<Hitpoints>(victim_entity)
-            .unwrap()
-            .current
-            < 50,
+        world.registry().get::<Hitpoints>(victim_entity).unwrap().current < 50,
         "the fire field burned who stood in it"
     );
 }
@@ -5181,8 +4895,8 @@ fn poison_field_poisons_who_stands_in_it() {
 
 #[test]
 fn wall_of_stone_blocks_the_way_then_clears() {
-    use openshard_state::components::Field;
     use openshard_state::FieldKind;
+    use openshard_state::components::Field;
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
@@ -5192,22 +4906,13 @@ fn wall_of_stone_blocks_the_way_then_clears() {
     world.lay_field(caster, FieldKind::Stone, spot);
 
     assert!(
-        world
-            .state
-            .facet_state(0)
-            .obstructions
-            .is_blocked(spot.x, spot.y),
+        world.state.facet_state(0).obstructions.is_blocked(spot.x, spot.y),
         "the wall blocks its centre tile"
     );
 
     // Force expiry rather than run ten seconds of ticks.
     let soon = world.state.ticks + 1;
-    let tiles: Vec<EntityId> = world
-        .state
-        .registry
-        .query::<Field>()
-        .map(|(e, _)| e)
-        .collect();
+    let tiles: Vec<EntityId> = world.state.registry.query::<Field>().map(|(e, _)| e).collect();
     for e in tiles {
         let mut field = world.state.registry.get::<Field>(e).copied().unwrap();
         field.expires_at = soon;
@@ -5221,19 +4926,15 @@ fn wall_of_stone_blocks_the_way_then_clears() {
         "the tiles are gone"
     );
     assert!(
-        !world
-            .state
-            .facet_state(0)
-            .obstructions
-            .is_blocked(spot.x, spot.y),
+        !world.state.facet_state(0).obstructions.is_blocked(spot.x, spot.y),
         "and the way is free again"
     );
 }
 
 #[test]
 fn a_field_row_lies_perpendicular_to_the_line_of_fire() {
-    use openshard_state::components::Field;
     use openshard_state::FieldKind;
+    use openshard_state::components::Field;
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now); // caster at START
@@ -5520,8 +5221,8 @@ fn paralysis_survives_a_relogin() {
 
 #[test]
 fn paralyze_field_freezes_who_stands_in_it() {
-    use openshard_state::components::Frozen;
     use openshard_state::FieldKind;
+    use openshard_state::components::Frozen;
     assert!(
         !FieldKind::Paralyze.blocks(),
         "you must be able to step onto a paralyze field to be caught"
@@ -5622,10 +5323,7 @@ fn the_poison_spell_poisons_what_it_is_aimed_at() {
     });
     world.tick(now);
 
-    let entity = world
-        .registry()
-        .entity_of(Serial::new(target).unwrap())
-        .unwrap();
+    let entity = world.registry().entity_of(Serial::new(target).unwrap()).unwrap();
     assert!(
         world.registry().get::<Poisoned>(entity).is_some(),
         "the Poison spell left its mark"
@@ -5661,14 +5359,8 @@ fn a_resolved_cast_plays_its_sound_and_shows_its_bolt() {
     world.tick(now);
 
     let packets = packets_for(&mut world, connection);
-    assert!(
-        packets.iter().any(|p| p[0] == 0x54),
-        "the cast plays a sound"
-    );
-    assert!(
-        packets.iter().any(|p| p[0] == 0x70),
-        "and flings a visible bolt"
-    );
+    assert!(packets.iter().any(|p| p[0] == 0x54), "the cast plays a sound");
+    assert!(packets.iter().any(|p| p[0] == 0x70), "and flings a visible bolt");
     assert!(
         packets.iter().any(|p| p[0] == 0xE2),
         "and the caster gestures — a 0xE2 animation to the modern client"
@@ -5787,10 +5479,7 @@ fn mana_loss_on_fail_off_refunds_a_fizzle() {
     let succeeded = world.bus().read(&mut cast).any(|e| e.success);
     let mana_after = world.registry().get::<Mana>(entity).unwrap().current;
     if succeeded {
-        assert!(
-            mana_after < mana_before,
-            "a successful cast spends its mana"
-        );
+        assert!(mana_after < mana_before, "a successful cast spends its mana");
     } else {
         assert_eq!(
             mana_after, mana_before,
@@ -5853,10 +5542,7 @@ fn a_skill_gains_from_use() {
         });
         world.tick(now);
     }
-    assert!(
-        skill_value(&world, entity, 1) > 0,
-        "practice taught something"
-    );
+    assert!(skill_value(&world, entity, 1) > 0, "practice taught something");
 }
 
 #[test]
@@ -6011,7 +5697,7 @@ fn fill_to_the_total_cap(world: &mut World, connection: ConnectionId, serial: u3
         value: 500,
     });
     let mut filled = u32::from(per); // the two above
-                                     // Any skills but those two, and none that the caller then trains.
+    // Any skills but those two, and none that the caller then trains.
     let mut spare = [
         Skill::Alchemy,
         Skill::Anatomy,
@@ -6178,11 +5864,7 @@ fn a_passive_skills_button_says_so_and_starts_nothing() {
     world.tick(now);
 
     let cliloc = localized_cliloc(&mut world, player);
-    assert_eq!(
-        cliloc,
-        Some(500_014),
-        "\"That skill cannot be used directly.\""
-    );
+    assert_eq!(cliloc, Some(500_014), "\"That skill cannot be used directly.\"");
     assert!(
         !world
             .state
@@ -6212,10 +5894,7 @@ fn a_usable_skills_button_announces_it_and_holds_the_button() {
     let events: Vec<_> = world.bus().read(&mut asked).copied().collect();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].skill, Skill::Hiding.id());
-    assert!(world
-        .state
-        .registry
-        .has::<openshard_state::SkillCooldown>(entity));
+    assert!(world.state.registry.has::<openshard_state::SkillCooldown>(entity));
 
     // A second press inside the cooldown is refused out loud, and announces
     // nothing.
@@ -6570,13 +6249,7 @@ fn reagents_are_consumed_on_a_cast_and_a_short_pack_fizzles() {
             .registry
             .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
             .unwrap();
-        world.state.registry.insert(
-            item,
-            Graphic {
-                id: REAGENT,
-                hue: 0,
-            },
-        );
+        world.state.registry.insert(item, Graphic { id: REAGENT, hue: 0 });
         world.state.registry.insert(
             item,
             Contained {
@@ -6655,13 +6328,7 @@ fn consuming_a_reagent_redraws_an_open_pack() {
         .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
         .unwrap();
     let item = world.state.registry.entity_of(item_serial).unwrap();
-    world.state.registry.insert(
-        item,
-        Graphic {
-            id: REAGENT,
-            hue: 0,
-        },
-    );
+    world.state.registry.insert(item, Graphic { id: REAGENT, hue: 0 });
     world.state.registry.insert(
         item,
         Contained {
@@ -6752,19 +6419,11 @@ fn healing_raises_hits_but_not_past_max() {
         by: 0,
     });
     world.tick(now); // 100 -> 40
-    world.queue(Command::Heal {
-        serial,
-        amount: 1000,
-    });
+    world.queue(Command::Heal { serial, amount: 1000 });
     world.tick(now);
 
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Hitpoints>(entity)
-            .unwrap()
-            .current,
+        world.state.registry.get::<Hitpoints>(entity).unwrap().current,
         100,
         "healed to the maximum, no further"
     );
@@ -6817,12 +6476,7 @@ fn stamina_is_a_real_pool_that_trickles_back() {
     let entity = world.state.players[&player];
 
     // It exists as its own pool, full at dexterity, not a stand-in for the stat.
-    let full = world
-        .state
-        .registry
-        .get::<Stamina>(entity)
-        .copied()
-        .unwrap();
+    let full = world.state.registry.get::<Stamina>(entity).copied().unwrap();
     assert_eq!(full.current, full.max, "a new character starts rested");
     assert!(full.max > 0, "the pool is dexterity, not zero");
 
@@ -6922,14 +6576,7 @@ fn an_aggressive_creature_chases_a_player() {
         world.tick(now);
     }
     assert!(
-        world
-            .state
-            .registry
-            .get::<Position>(mob_entity)
-            .unwrap()
-            .0
-            .x
-            < start.x,
+        world.state.registry.get::<Position>(mob_entity).unwrap().0.x < start.x,
         "the creature closed the distance"
     );
 }
@@ -6998,11 +6645,7 @@ fn stats_recap_hits_and_mana() {
     let hp = world.state.registry.get::<Hitpoints>(entity).unwrap();
     assert_eq!((hp.current, hp.max), (60, 60), "hits follow strength");
     let mana = world.state.registry.get::<Mana>(entity).unwrap();
-    assert_eq!(
-        (mana.current, mana.max),
-        (40, 40),
-        "mana follows intelligence"
-    );
+    assert_eq!((mana.current, mana.max), (40, 40), "mana follows intelligence");
     assert_eq!(
         world.state.registry.get::<Stats>(entity).unwrap().dexterity,
         80,
@@ -7031,8 +6674,7 @@ fn speech_reaches_nearby_players_and_the_speaker() {
     // Drain once — both players' packets came out of the same tick.
     let all: Vec<Outbound> = world.drain_outbound().collect();
     assert!(
-        all.iter()
-            .any(|o| o.connection == speaker && o.packet[0] == 0xAE),
+        all.iter().any(|o| o.connection == speaker && o.packet[0] == 0xAE),
         "the speaker sees their own words"
     );
     assert!(
@@ -7062,9 +6704,7 @@ fn speech_does_not_carry_out_of_earshot() {
     world.tick(now);
 
     assert!(
-        !packets_for(&mut world, listener)
-            .iter()
-            .any(|p| p[0] == 0xAE),
+        !packets_for(&mut world, listener).iter().any(|p| p[0] == 0xAE),
         "a shout across a field is not heard"
     );
 }
@@ -7090,9 +6730,7 @@ fn a_whisper_carries_only_to_those_right_beside() {
     world.tick(now);
 
     assert!(
-        !packets_for(&mut world, listener)
-            .iter()
-            .any(|p| p[0] == 0xAE),
+        !packets_for(&mut world, listener).iter().any(|p| p[0] == 0xAE),
         "a whisper does not reach ten tiles off"
     );
 }
@@ -7118,9 +6756,7 @@ fn a_yell_carries_past_normal_earshot() {
     });
     world.tick(now);
     assert!(
-        !packets_for(&mut world, listener)
-            .iter()
-            .any(|p| p[0] == 0xAE),
+        !packets_for(&mut world, listener).iter().any(|p| p[0] == 0xAE),
         "normal speech stops short of twenty-five tiles"
     );
 
@@ -7134,9 +6770,7 @@ fn a_yell_carries_past_normal_earshot() {
     });
     world.tick(now);
     assert!(
-        packets_for(&mut world, listener)
-            .iter()
-            .any(|p| p[0] == 0xAE),
+        packets_for(&mut world, listener).iter().any(|p| p[0] == 0xAE),
         "but a yell carries that far"
     );
 }
@@ -7217,11 +6851,7 @@ fn a_gm_dot_command_is_run_not_spoken() {
 
     gm_say(&mut world, gm, ".where", now);
 
-    assert_eq!(
-        world.bus().read(&mut spoke).count(),
-        0,
-        "no one heard a command"
-    );
+    assert_eq!(world.bus().read(&mut spoke).count(), 0, "no one heard a command");
     assert!(
         packets_for(&mut world, gm).iter().any(|p| p[0] == 0x1C),
         "the GM got a private system answer"
@@ -7241,10 +6871,7 @@ fn a_players_dot_text_is_ordinary_speech() {
 
     let events: Vec<MobileSpoke> = world.bus().read(&mut spoke).cloned().collect();
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].text, ".hello",
-        "a player's dot-text is spoken verbatim"
-    );
+    assert_eq!(events[0].text, ".hello", "a player's dot-text is spoken verbatim");
 }
 
 #[test]
@@ -7329,10 +6956,7 @@ fn tele_raises_a_cursor_and_the_click_teleports() {
         "a targeting cursor is sent"
     );
     let before = *world.registry().get::<Position>(entity).unwrap();
-    assert_eq!(
-        before.0.x, START.0,
-        "the GM has not moved on raising the cursor"
-    );
+    assert_eq!(before.0.x, START.0, "the GM has not moved on raising the cursor");
 
     // The click comes back as a 0x6C response; the GM jumps to the spot.
     let target = Point::new(START.0 + 9, START.1 + 3, before.0.z);
@@ -7348,11 +6972,7 @@ fn tele_raises_a_cursor_and_the_click_teleports() {
     });
     world.tick(now);
     let Position(at) = *world.registry().get::<Position>(entity).unwrap();
-    assert_eq!(
-        (at.x, at.y),
-        (target.x, target.y),
-        "the click teleported the GM"
-    );
+    assert_eq!((at.x, at.y), (target.x, target.y), "the click teleported the GM");
 }
 
 #[test]
@@ -7434,10 +7054,7 @@ fn decorate_places_statics_and_clear_removes_them() {
     );
     // Decoration never decays.
     let decor = world.registry().query::<Decoration>().next().unwrap().0;
-    assert!(
-        !world.registry().has::<Decays>(decor),
-        "decoration does not rot"
-    );
+    assert!(!world.registry().has::<Decays>(decor), "decoration does not rot");
 
     world.queue(Command::ClearDecorations);
     world.tick(now);
@@ -7985,10 +7602,7 @@ fn entering_sends_a_status_with_running_stamina() {
         .find(|p| p[0] == 0x11)
         .expect("a status packet on world entry");
     let stamina = u16::from_be_bytes([status[50], status[51]]);
-    assert!(
-        stamina > 0,
-        "stamina is zero; the client will refuse to run"
-    );
+    assert!(stamina > 0, "stamina is zero; the client will refuse to run");
 }
 
 #[test]
@@ -8002,9 +7616,7 @@ fn a_status_request_is_answered_with_a_status() {
     world.tick(Instant::now());
 
     assert!(
-        packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x11),
+        packets_for(&mut world, connection).iter().any(|p| p[0] == 0x11),
         "a 0x34 should be answered with a 0x11"
     );
 }
@@ -8019,10 +7631,7 @@ fn entering_builds_an_entity_out_of_components() {
     assert!(world.registry().has::<Body>(entity));
     assert!(world.registry().has::<Name>(entity));
     assert!(world.registry().has::<Movement>(entity), "a player walks");
-    assert!(
-        world.registry().has::<Client>(entity),
-        "and has a connection"
-    );
+    assert!(world.registry().has::<Client>(entity), "and has a connection");
     assert!(world.registry().serial_of(entity).is_some());
 }
 
@@ -8099,14 +7708,8 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
     let backpack_serial = home.registry().serial_of(backpack).unwrap();
 
     // A stack of gold inside it.
-    let (gold, gold_serial) = home
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    home.state
-        .registry
-        .insert(gold, Graphic { id: 0x0EED, hue: 0 });
+    let (gold, gold_serial) = home.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    home.state.registry.insert(gold, Graphic { id: 0x0EED, hue: 0 });
     home.state.registry.insert(gold, Amount(500));
     home.state.registry.insert(gold, Stackable);
     home.state.registry.insert(
@@ -8169,10 +7772,7 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
         .query::<Equipped>()
         .filter(|(_, worn)| worn.mobile.raw() == char_serial && worn.layer == BACKPACK_LAYER)
         .count();
-    assert_eq!(
-        backpacks, 1,
-        "the saved backpack came back, no starter added"
-    );
+    assert_eq!(backpacks, 1, "the saved backpack came back, no starter added");
     let gold = shard
         .registry()
         .entity_of(gold_serial)
@@ -8192,7 +7792,7 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
 #[test]
 fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     use openshard_protocol::serial::SerialKind;
-    use openshard_state::components::{Spellbook, SPELLBOOK_GRAPHIC};
+    use openshard_state::components::{SPELLBOOK_GRAPHIC, Spellbook};
 
     // A bought spellbook with spells learned into it must open again after a
     // relog: without the mask on disk it comes back as a graphic with no
@@ -8214,11 +7814,7 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     // Spells 0, 5 and 63 learned — 63 is the top bit, which only survives the
     // store's i64 bit-cast if it is treated as an unsigned mask.
     let learned = (1u64 << 0) | (1u64 << 5) | (1u64 << 63);
-    let (book, book_serial) = home
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
+    let (book, book_serial) = home.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
     home.state.registry.insert(
         book,
         Graphic {
@@ -8295,15 +7891,8 @@ fn a_relogin_in_the_same_run_keeps_the_inventory() {
         .find(|(_, w)| w.layer == BACKPACK_LAYER)
         .unwrap();
     let backpack_serial = world.registry().serial_of(backpack).unwrap();
-    let (gold, gold_serial) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(gold, Graphic { id: 0x0EED, hue: 0 });
+    let (gold, gold_serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(gold, Graphic { id: 0x0EED, hue: 0 });
     world.state.registry.insert(gold, Amount(300));
     world.state.registry.insert(
         gold,
@@ -8472,9 +8061,7 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
     let snapshot = home.drain_saves().next_back().expect("a snapshot");
     let mobiles = snapshot.mobiles.clone().expect("a mobile sweep");
     assert!(
-        mobiles
-            .iter()
-            .any(|m| m.serial == vendor_serial && m.vendor),
+        mobiles.iter().any(|m| m.serial == vendor_serial && m.vendor),
         "the vendor is in the mobile sweep, marked as one"
     );
     // What the store would hand back at boot: every saved item, inventories
@@ -8586,13 +8173,9 @@ fn a_wounded_spawner_creature_survives_a_restart_and_is_counted() {
         .expect("the region filled");
     let spawned_serial = home.registry().serial_of(spawned).unwrap().raw();
     // Wound it, as a fight would.
-    home.state.registry.insert(
-        spawned,
-        Hitpoints {
-            current: 3,
-            max: 10,
-        },
-    );
+    home.state
+        .registry
+        .insert(spawned, Hitpoints { current: 3, max: 10 });
 
     home.take_snapshot();
     let snapshot = home.drain_saves().next_back().expect("a snapshot");
@@ -8741,11 +8324,7 @@ fn a_snapshot_saves_an_idle_online_character_and_the_ground() {
         .unwrap();
     let backpack_serial = world.registry().serial_of(backpack).unwrap();
     // A backpack item and a loose ground item.
-    let (bagged, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
+    let (bagged, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
     world
         .state
         .registry
@@ -8850,9 +8429,7 @@ fn entering_the_world_equips_a_bank_box() {
         .unwrap();
     assert!(
         world.registry().query::<Equipped>().any(|(item, worn)| {
-            worn.mobile == owner
-                && worn.layer == npc::BANK_LAYER
-                && world.registry().has::<Container>(item)
+            worn.mobile == owner && worn.layer == npc::BANK_LAYER && world.registry().has::<Container>(item)
         }),
         "a character wears a bank box on the bank layer"
     );
@@ -8868,9 +8445,7 @@ fn saying_bank_near_a_banker_opens_the_bank_box() {
 
     say(&mut world, connection, "bank", now);
     assert!(
-        packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x24),
+        packets_for(&mut world, connection).iter().any(|p| p[0] == 0x24),
         "the bank box gump opened"
     );
 }
@@ -8901,12 +8476,7 @@ fn a_banker_greets_a_nearby_player() {
 }
 
 /// Spawn a townsperson of a trade, dressed and named by the core.
-pub(super) fn spawn_townsperson(
-    world: &mut World,
-    trade: &str,
-    at: Point,
-    now: Instant,
-) -> EntityId {
+pub(super) fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
         body: 0x0190,
         hue: 0,
@@ -8988,14 +8558,8 @@ fn a_townsperson_is_dressed_and_named_by_the_core() {
     // hair, a torso, legs and shoes, on four distinct layers.
     assert!(worn.contains(&0x0B), "hair: {worn:?}");
     assert!(worn.contains(&0x03), "shoes: {worn:?}");
-    assert!(
-        worn.contains(&0x05) || worn.contains(&0x11),
-        "a torso: {worn:?}"
-    );
-    assert!(
-        worn.contains(&0x04) || worn.contains(&0x17),
-        "legs: {worn:?}"
-    );
+    assert!(worn.contains(&0x05) || worn.contains(&0x11), "a torso: {worn:?}");
+    assert!(worn.contains(&0x04) || worn.contains(&0x17), "legs: {worn:?}");
 }
 
 /// Place a door at `at`, locked to `key_value` (0 for unlocked), and return it.
@@ -9052,14 +8616,8 @@ fn a_kill_pays_the_killer_in_fame_and_karma() {
         .registry()
         .get::<openshard_state::components::Karma>(killer)
         .map_or(0, |k| k.0);
-    assert_eq!(
-        fame, 2000,
-        "the victim's fame, undiminished on a first kill"
-    );
-    assert_eq!(
-        karma, 3000,
-        "and the negation of its karma: killing evil is good"
-    );
+    assert_eq!(fame, 2000, "the victim's fame, undiminished on a first kill");
+    assert_eq!(karma, 3000, "and the negation of its karma: killing evil is good");
 
     // An innocent costs. The curve bites now that the killer has standing.
     let innocent = spawn_creature_with_standing(&mut world, 100, 2000, now);
@@ -9083,12 +8641,7 @@ fn a_kill_pays_the_killer_in_fame_and_karma() {
 }
 
 /// Spawn a creature carrying standing to give up.
-fn spawn_creature_with_standing(
-    world: &mut World,
-    fame: i32,
-    karma: i32,
-    now: Instant,
-) -> EntityId {
+fn spawn_creature_with_standing(world: &mut World, fame: i32, karma: i32, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
         body: 0x00D0,
         hue: 0,
@@ -9266,51 +8819,30 @@ fn a_key_turns_only_the_lock_it_fits() {
     );
 
     // A key to another lock does nothing.
-    let wrong = openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0)
-        .expect("a key");
+    let wrong =
+        openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0).expect("a key");
     world
         .state
         .registry
         .insert(wrong, openshard_state::components::KeyValue(0x1234));
-    assert!(!openshard_items::turn_key(
-        &mut world.state,
-        player,
-        wrong,
-        door
-    ));
+    assert!(!openshard_items::turn_key(&mut world.state, player, wrong, door));
     assert!(
-        world
-            .registry()
-            .has::<openshard_state::components::Lock>(door),
+        world.registry().has::<openshard_state::components::Lock>(door),
         "the wrong key leaves it locked"
     );
 
     // The right one unlocks it, and turning it again locks it back.
-    let right = openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0)
-        .expect("a key");
+    let right =
+        openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0).expect("a key");
     world
         .state
         .registry
         .insert(right, openshard_state::components::KeyValue(0xBEEF));
-    assert!(openshard_items::turn_key(
-        &mut world.state,
-        player,
-        right,
-        door
-    ));
-    assert!(!world
-        .registry()
-        .has::<openshard_state::components::Lock>(door));
-    assert!(openshard_items::turn_key(
-        &mut world.state,
-        player,
-        right,
-        door
-    ));
+    assert!(openshard_items::turn_key(&mut world.state, player, right, door));
+    assert!(!world.registry().has::<openshard_state::components::Lock>(door));
+    assert!(openshard_items::turn_key(&mut world.state, player, right, door));
     assert!(
-        world
-            .registry()
-            .has::<openshard_state::components::Lock>(door),
+        world.registry().has::<openshard_state::components::Lock>(door),
         "the same key locks it again"
     );
 
@@ -9333,9 +8865,7 @@ fn a_locked_door_comes_back_locked() {
     let mut world = world();
     let _ = enter(&mut world, now);
     let door = place_lockable_door(&mut world, Point::new(START.0 + 5, START.1, 0), 0xBEEF, now);
-    assert!(world
-        .registry()
-        .has::<openshard_state::components::Lock>(door));
+    assert!(world.registry().has::<openshard_state::components::Lock>(door));
 
     let records = world.decoration_records();
     assert!(
@@ -9411,9 +8941,7 @@ fn a_non_human_townsperson_keeps_its_own_body() {
     // It still lives, greets and answers keywords — the trade is what does that, not
     // the outfit.
     assert!(
-        world
-            .registry()
-            .has::<openshard_state::components::Npc>(dryad),
+        world.registry().has::<openshard_state::components::Npc>(dryad),
         "a non-human townsperson still keeps a beat"
     );
 }
@@ -9448,9 +8976,7 @@ fn a_townspersons_hair_cannot_be_lifted_off_its_head() {
     });
     world.tick(now);
     assert!(
-        packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x27),
+        packets_for(&mut world, connection).iter().any(|p| p[0] == 0x27),
         "the lift is refused with a drag-cancel"
     );
     assert!(
@@ -9475,10 +9001,10 @@ fn a_wandering_townsperson_changes_tiles_and_not_only_its_heading() {
         .registry()
         .get::<openshard_state::components::Npc>(wanderer)
         .expect("a townsperson keeps a beat");
-    world.state.registry.insert(
-        wanderer,
-        openshard_state::components::Npc { wander: 8, ..home },
-    );
+    world
+        .state
+        .registry
+        .insert(wanderer, openshard_state::components::Npc { wander: 8, ..home });
 
     // Fifty beats. Under the old roll that was ~3 translating steps at best; under
     // `WalkRandom` it is a dozen or more, so the two are not close.
@@ -9526,10 +9052,7 @@ fn a_shopkeeper_stands_still_while_a_customer_is_at_the_counter() {
 
     // And it turned to face them rather than staring past.
     let facing = world.registry().get::<Heading>(keeper).unwrap().0;
-    assert_eq!(
-        facing.direction,
-        openshard_protocol::direction::Direction::West
-    );
+    assert_eq!(facing.direction, openshard_protocol::direction::Direction::West);
 }
 
 #[test]
@@ -9885,10 +9408,7 @@ fn a_traveller_asks_for_an_escort_out_loud() {
             String::from_utf8_lossy(&text).contains("will you take me")
         }
     });
-    assert!(
-        !asked_again,
-        "a traveller already being led must not keep asking"
-    );
+    assert!(!asked_again, "a traveller already being led must not keep asking");
 }
 
 #[test]
@@ -9984,8 +9504,8 @@ fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
         world.tick(now);
     }
     let at = world.registry().get::<Position>(peasant).unwrap().0;
-    let moved_toward_home = i32::from(at.x).abs_diff(i32::from(home.x))
-        < i32::from(start.x).abs_diff(i32::from(home.x));
+    let moved_toward_home =
+        i32::from(at.x).abs_diff(i32::from(home.x)) < i32::from(start.x).abs_diff(i32::from(home.x));
     assert!(
         moved_toward_home,
         "at night a townsperson heads home: started {start:?}, reached {at:?}, home {home:?}"
@@ -10098,12 +9618,7 @@ fn single_clicking_a_named_mobile_draws_its_name() {
     let mut world = world();
     let connection = enter(&mut world, now);
     spawn_banker(&mut world, Point::new(START.0 + 1, START.1, 0), now);
-    let banker = world
-        .registry()
-        .query::<Banker>()
-        .next()
-        .map(|(e, _)| e)
-        .unwrap();
+    let banker = world.registry().query::<Banker>().next().map(|(e, _)| e).unwrap();
     let banker_serial = world.registry().serial_of(banker).unwrap().raw();
     let _ = packets_for(&mut world, connection);
 
@@ -10189,10 +9704,7 @@ fn querying_a_stacks_properties_sends_the_amount_cliloc() {
     // The first entry's cliloc sits at offset 15; a stack uses 1050039
     // (~1_NUMBER~ ~2_ITEMNAME~), not the bare tiledata cliloc.
     let cliloc = u32::from_be_bytes([opl[15], opl[16], opl[17], opl[18]]);
-    assert_eq!(
-        cliloc, 1_050_039,
-        "a stack labels through the amount cliloc"
-    );
+    assert_eq!(cliloc, 1_050_039, "a stack labels through the amount cliloc");
 }
 
 #[test]
@@ -10389,13 +9901,7 @@ fn a_drawn_mobile_carries_its_health_bar() {
     let connection = enter(&mut world, now);
     let _ = packets_for(&mut world, connection);
     // A placid creature (sight 0) so nothing but the draw sends a 0xA1.
-    spawn_creature(
-        &mut world,
-        Point::new(START.0 + 1, START.1, 0),
-        0,
-        false,
-        now,
-    );
+    spawn_creature(&mut world, Point::new(START.0 + 1, START.1, 0), 0, false, now);
 
     let packets = packets_for(&mut world, connection);
     assert!(
@@ -10466,9 +9972,7 @@ fn context_menus_off_sends_no_popup() {
     world.tick(now);
 
     assert!(
-        !packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0xBF),
+        !packets_for(&mut world, connection).iter().any(|p| p[0] == 0xBF),
         "context menus off means no popup"
     );
 }
@@ -10551,9 +10055,7 @@ fn a_vendor_at_the_counter_sells() {
     world.tick(now);
 
     assert!(
-        packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x74),
+        packets_for(&mut world, connection).iter().any(|p| p[0] == 0x74),
         "the buy window opens for a customer at the counter"
     );
 }
@@ -10575,9 +10077,7 @@ fn a_vendor_behind_a_wall_will_not_sell() {
     world.tick(now);
 
     assert!(
-        !packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x74),
+        !packets_for(&mut world, connection).iter().any(|p| p[0] == 0x74),
         "no buying through a wall, however near"
     );
 }
@@ -10598,9 +10098,7 @@ fn a_vendor_across_the_street_is_out_of_reach() {
     world.tick(now);
 
     assert!(
-        !packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x74),
+        !packets_for(&mut world, connection).iter().any(|p| p[0] == 0x74),
         "no buying from across the street"
     );
 }
@@ -10616,9 +10114,7 @@ fn saying_bank_with_no_banker_near_does_nothing() {
 
     say(&mut world, connection, "bank", now);
     assert!(
-        !packets_for(&mut world, connection)
-            .iter()
-            .any(|p| p[0] == 0x24),
+        !packets_for(&mut world, connection).iter().any(|p| p[0] == 0x24),
         "no banker in reach, no bank box"
     );
 }
@@ -10735,10 +10231,7 @@ fn two_facets_do_not_see_each_other() {
         !world.state.seen[&a].contains(&b),
         "a mobile on facet 0 must not have drawn one on facet 1"
     );
-    assert!(
-        !world.state.seen[&b].contains(&a),
-        "nor the other way round"
-    );
+    assert!(!world.state.seen[&b].contains(&a), "nor the other way round");
 }
 
 #[test]
@@ -10813,10 +10306,7 @@ fn walking_emits_an_event_and_acks() {
     let moved: Vec<_> = world.bus().read(&mut moves).copied().collect();
     assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].from, Point::new(START.0, START.1, Z_WITHOUT_A_MAP));
-    assert_eq!(
-        moved[0].to,
-        Point::new(START.0, START.1 + 1, Z_WITHOUT_A_MAP)
-    );
+    assert_eq!(moved[0].to, Point::new(START.0, START.1 + 1, Z_WITHOUT_A_MAP));
 }
 
 #[test]
@@ -10874,10 +10364,7 @@ fn a_flood_is_refused_and_says_so() {
     }
     world.tick(now);
 
-    let rejects = world
-        .drain_outbound()
-        .filter(|out| out.packet[0] == 0x21)
-        .count();
+    let rejects = world.drain_outbound().filter(|out| out.packet[0] == 0x21).count();
     assert!(rejects > 150, "only {rejects} of 200 instant steps refused");
 }
 
@@ -10896,10 +10383,7 @@ fn an_honest_walker_is_never_refused_across_ticks() {
             request: walk(sequence, Direction::South),
         });
         world.tick(now);
-        let refused = world
-            .drain_outbound()
-            .filter(|out| out.packet[0] == 0x21)
-            .count();
+        let refused = world.drain_outbound().filter(|out| out.packet[0] == 0x21).count();
         assert_eq!(refused, 0, "step {step} refused");
         sequence = if sequence == u8::MAX { 1 } else { sequence + 1 };
     }
@@ -11062,10 +10546,7 @@ fn the_tick_interval_is_not_a_protocol_constant() {
     // sees acks. Worth stating because the 200ms walk interval *is* the
     // client's, and the two are easy to confuse.
     assert_eq!(TICK_INTERVAL.as_millis(), 50);
-    assert!(
-        TICK_INTERVAL < WALK_INTERVAL,
-        "a step must not span two ticks"
-    );
+    assert!(TICK_INTERVAL < WALK_INTERVAL, "a step must not span two ticks");
 }
 
 /// Decorate one door and return its entity and wire serial. The door sits at
@@ -11261,10 +10742,7 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         world.tick(now);
     }
     assert_eq!(
-        world
-            .registry()
-            .get::<Combat>(creature)
-            .and_then(|c| c.target),
+        world.registry().get::<Combat>(creature).and_then(|c| c.target),
         Some(player_serial),
         "an open doorway is a sight line"
     );
@@ -11337,13 +10815,7 @@ fn an_unreachable_quarry_is_given_up_not_wall_humped() {
     let _gm = enter_gm(&mut world, now);
     // The player fenced in on all eight sides: visible, unreachable.
     fence_around(&mut world, Point::new(START.0, START.1, 0));
-    let creature = spawn_brained(
-        &mut world,
-        0x00D1,
-        Point::new(START.0, START.1 + 4, 0),
-        8,
-        now,
-    );
+    let creature = spawn_brained(&mut world, 0x00D1, Point::new(START.0, START.1 + 4, 0), 8, now);
 
     // Let it notice, try, and conclude.
     for _ in 0..(AI_THINK_TICKS * 4) {
@@ -11392,13 +10864,7 @@ fn a_chase_rounds_a_wall_of_crates() {
             openshard_state::DOOR_HEIGHT,
         );
     }
-    let creature = spawn_brained(
-        &mut world,
-        0x00D1,
-        Point::new(START.0, START.1 + 4, 0),
-        10,
-        now,
-    );
+    let creature = spawn_brained(&mut world, 0x00D1, Point::new(START.0, START.1 + 4, 0), 10, now);
 
     // Enough beats to notice, plan, and walk around either end.
     let mut later = now;
@@ -11427,13 +10893,7 @@ fn a_human_chaser_opens_the_door_in_its_way() {
         serial: door_serial,
     });
     world.tick(now);
-    let creature = spawn_brained(
-        &mut world,
-        0x0190,
-        Point::new(START.0, START.1 + 3, 0),
-        8,
-        now,
-    );
+    let creature = spawn_brained(&mut world, 0x0190, Point::new(START.0, START.1 + 3, 0), 8, now);
     // Only as far as noticing. Ticking a fixed padded count here let it also walk
     // *through* the doorway before the door was slammed, which left nothing in its
     // way and quietly turned this into a test of standing still.
@@ -11476,13 +10936,7 @@ fn a_human_chaser_opens_the_door_in_its_way() {
 }
 
 /// Spawn a creature with an explicit aggression posture, returning its entity.
-fn spawn_postured(
-    world: &mut World,
-    at: Point,
-    sight: u8,
-    aggression: u8,
-    now: Instant,
-) -> EntityId {
+fn spawn_postured(world: &mut World, at: Point, sight: u8, aggression: u8, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
         body: 0x00D1,
         hue: 0,
@@ -11525,10 +10979,7 @@ fn a_defensive_creature_answers_the_blow() {
     let now = Instant::now();
     let mut world = world();
     let gm = enter_gm(&mut world, now);
-    let player_serial = world
-        .registry()
-        .serial_of(world.state.players[&gm])
-        .unwrap();
+    let player_serial = world.registry().serial_of(world.state.players[&gm]).unwrap();
     // Defensive and blind: it hunts nothing, so only the blow can start this.
     let creature = spawn_postured(&mut world, Point::new(START.0, START.1 + 2, 0), 0, 1, now);
     assert!(
@@ -11545,11 +10996,7 @@ fn a_defensive_creature_answers_the_blow() {
     world.tick(now);
     world.tick(now);
     let combat = world.registry().get::<Combat>(creature).expect("engaged");
-    assert_eq!(
-        combat.target,
-        Some(player_serial),
-        "it turned on its attacker"
-    );
+    assert_eq!(combat.target, Some(player_serial), "it turned on its attacker");
     assert!(combat.warmode, "and it means it");
 }
 
@@ -11559,10 +11006,7 @@ fn a_passive_creature_runs_from_its_attacker() {
     let mut world = world();
     let gm = enter_gm(&mut world, now);
     let player_at = Point::new(START.0, START.1, 0);
-    let player_serial = world
-        .registry()
-        .serial_of(world.state.players[&gm])
-        .unwrap();
+    let player_serial = world.registry().serial_of(world.state.players[&gm]).unwrap();
     let start_at = Point::new(START.0, START.1 + 1, 0);
     let creature = spawn_postured(&mut world, start_at, 0, 0, now);
     let creature_serial = world.registry().serial_of(creature).unwrap().raw();
@@ -11593,10 +11037,7 @@ fn a_gutted_monster_turns_tail() {
     let mut world = world();
     let gm = enter_gm(&mut world, now);
     let player_at = Point::new(START.0, START.1, 0);
-    let player_serial = world
-        .registry()
-        .serial_of(world.state.players[&gm])
-        .unwrap();
+    let player_serial = world.registry().serial_of(world.state.players[&gm]).unwrap();
     let start_at = Point::new(START.0, START.1 + 1, 0);
     let creature = spawn_postured(&mut world, start_at, 8, 2, now);
     let creature_serial = world.registry().serial_of(creature).unwrap().raw();
@@ -11634,13 +11075,7 @@ fn the_chase_pace_is_the_operators_knob() {
         let mut world = World::new(START).with_gameplay(gameplay);
         let _gm = enter_gm(&mut world, now);
         let player_at = Point::new(START.0, START.1, 0);
-        spawn_brained(
-            &mut world,
-            0x00D1,
-            Point::new(START.0, START.1 + 7, 0),
-            10,
-            now,
-        );
+        spawn_brained(&mut world, 0x00D1, Point::new(START.0, START.1 + 7, 0), 10, now);
         let creature = world
             .state
             .registry
@@ -11653,10 +11088,7 @@ fn the_chase_pace_is_the_operators_knob() {
             later += TICK_INTERVAL;
             world.tick(later);
         }
-        distance(
-            world.registry().get::<Position>(creature).unwrap().0,
-            player_at,
-        )
+        distance(world.registry().get::<Position>(creature).unwrap().0, player_at)
     };
     let classic = chased_distance(400);
     let fast = chased_distance(250);
@@ -11860,11 +11292,7 @@ fn a_mounted_character_logs_back_in_still_mounted() {
     });
     world.tick(now);
     let mount_graphic = {
-        let riding = world
-            .registry()
-            .get::<Riding>(player)
-            .copied()
-            .expect("mounted");
+        let riding = world.registry().get::<Riding>(player).copied().expect("mounted");
         world.registry().get::<Graphic>(riding.item).unwrap().id
     };
 
@@ -12263,9 +11691,7 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
     world.tick(now);
     let packets = packets_for(&mut world, gm);
     assert!(
-        packets
-            .iter()
-            .any(|p| p[0] == 0xAE && mentions(p, vendor_serial)),
+        packets.iter().any(|p| p[0] == 0xAE && mentions(p, vendor_serial)),
         "the vendor spoke its refusal over its own head"
     );
     assert!(
@@ -12592,12 +12018,7 @@ fn beat_band(interval: u64) -> std::ops::Range<u64> {
 /// hypothetical, since padding the wait for "did the creature notice me" also
 /// gave it time to walk through the open doorway, so the test for opening a
 /// slammed door stopped having a door in front of the creature at all.
-fn tick_until(
-    world: &mut World,
-    from: Instant,
-    limit: u64,
-    done: impl Fn(&World) -> bool,
-) -> Instant {
+fn tick_until(world: &mut World, from: Instant, limit: u64, done: impl Fn(&World) -> bool) -> Instant {
     let mut at = from;
     for _ in 0..limit {
         if done(world) {
@@ -12616,13 +12037,7 @@ fn lod_off_a_far_creature_still_ambles() {
     let now = Instant::now();
     let mut world = world();
     let _conn = enter(&mut world, now);
-    let creature = spawn_brained(
-        &mut world,
-        0x00D1,
-        Point::new(START.0, START.1 + 60, 0),
-        5,
-        now,
-    );
+    let creature = spawn_brained(&mut world, 0x00D1, Point::new(START.0, START.1 + 60, 0), 5, now);
     let base = world.state.gameplay.creature_step_ticks.max(1);
     let gap = beat_gap(&mut world, creature, now);
     let want = beat_band(base * 2);
@@ -12640,13 +12055,7 @@ fn lod_a_far_creature_dozes() {
     let now = Instant::now();
     let mut world = lod_world();
     let _conn = enter(&mut world, now);
-    let creature = spawn_brained(
-        &mut world,
-        0x00D1,
-        Point::new(START.0, START.1 + 60, 0),
-        5,
-        now,
-    );
+    let creature = spawn_brained(&mut world, 0x00D1, Point::new(START.0, START.1 + 60, 0), 5, now);
     let base = world.state.gameplay.creature_step_ticks.max(1);
     let factor = world.state.gameplay.lod_idle_factor;
     let gap = beat_gap(&mut world, creature, now);
@@ -12666,13 +12075,7 @@ fn lod_a_near_creature_thinks_at_full_rate() {
     let mut world = lod_world();
     let _conn = enter(&mut world, now);
     // Well inside `lod_radius` (32) of the player at START.
-    let creature = spawn_brained(
-        &mut world,
-        0x00D1,
-        Point::new(START.0, START.1 + 5, 0),
-        5,
-        now,
-    );
+    let creature = spawn_brained(&mut world, 0x00D1, Point::new(START.0, START.1 + 5, 0), 5, now);
     let base = world.state.gameplay.creature_step_ticks.max(1);
     let factor = world.state.gameplay.lod_idle_factor;
     let brain = *world.registry().get::<Brain>(creature).unwrap();
@@ -12695,13 +12098,7 @@ fn lod_an_engaged_creature_keeps_simulating() {
     let conn = enter(&mut world, now);
     let player = world.state.players[&conn];
     let target = world.state.registry.serial_of(player).unwrap();
-    let creature = spawn_brained(
-        &mut world,
-        0x00D1,
-        Point::new(START.0, START.1 + 60, 0),
-        5,
-        now,
-    );
+    let creature = spawn_brained(&mut world, 0x00D1, Point::new(START.0, START.1 + 60, 0), 5, now);
     // Engage it and let it think again this coming tick.
     world.state.registry.insert(
         creature,
@@ -12945,11 +12342,7 @@ fn take_item_is_all_or_nothing_and_reports_what_it_took() {
     });
     world.tick(now);
     let events: Vec<crate::ItemsTaken> = world.bus().read(&mut taken).copied().collect();
-    assert_eq!(
-        events.last().map(|e| e.taken),
-        Some(0),
-        "short: it took nothing"
-    );
+    assert_eq!(events.last().map(|e| e.taken), Some(0), "short: it took nothing");
     assert_eq!(backpack_gold(&world), 2, "and left the two untouched");
 }
 

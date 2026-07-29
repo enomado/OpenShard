@@ -10,7 +10,7 @@
 //! they are pure. What is here is everything that needs a world: a forge on the
 //! ground, ingots in a pack, a tick counter, and a save.
 
-use super::tests::{enter, packets_for, world, START};
+use super::tests::{START, enter, packets_for, world};
 use super::*;
 use openshard_movement::Terrain;
 use openshard_state::components::{Contained, CraftedBy, Crafting, Quality, Tool};
@@ -53,25 +53,12 @@ fn shop(world: &mut World, statics: &[(u16, i8)]) {
 }
 
 /// Put an item in the player's pack, through the door a vendor's shelf uses.
-fn give(
-    world: &mut World,
-    connection: ConnectionId,
-    graphic: u16,
-    hue: u16,
-    amount: u16,
-) -> EntityId {
+fn give(world: &mut World, connection: ConnectionId, graphic: u16, hue: u16, amount: u16) -> EntityId {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = items::backpack_of(&world.state, owner).expect("a backpack");
-    let (item, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(item, Graphic { id: graphic, hue });
+    let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(item, Graphic { id: graphic, hue });
     world.state.registry.insert(
         item,
         Contained {
@@ -290,10 +277,12 @@ fn an_anvil_alone_is_not_a_smithy() {
     world.tick(now);
 
     craft(&mut world, connection, tongs, recipe, 0, now);
-    assert!(!world
-        .state
-        .registry
-        .has::<Crafting>(world.state.players[&connection]));
+    assert!(
+        !world
+            .state
+            .registry
+            .has::<Crafting>(world.state.players[&connection])
+    );
 }
 
 #[test]
@@ -318,10 +307,12 @@ fn a_valorite_order_cannot_be_paid_in_iron() {
     // Valorite is the ninth entry of the axis, and the player has none of it.
     let valorite = u8::try_from(def.sub_res.unwrap().entries.len() - 1).unwrap();
     craft(&mut world, connection, tongs, recipe, valorite, now);
-    assert!(!world
-        .state
-        .registry
-        .has::<Crafting>(world.state.players[&connection]));
+    assert!(
+        !world
+            .state
+            .registry
+            .has::<Crafting>(world.state.players[&connection])
+    );
     assert_eq!(carried(&world, connection, made, 0), 0);
     assert_eq!(
         carried(&world, connection, INGOT, 0),
@@ -410,13 +401,7 @@ fn a_tailor_needs_no_workshop_at_all() {
         .min_by_key(|(_, r)| (r.skills[0].min, r.resources[0].amount))
         .expect("a simple garment");
     let cloth = recipe.resources[0];
-    give(
-        &mut world,
-        connection,
-        cloth.graphic,
-        cloth.hue,
-        cloth.amount * 2,
-    );
+    give(&mut world, connection, cloth.graphic, cloth.hue, cloth.amount * 2);
 
     assert!(
         openshard_crafting::begin(
@@ -448,11 +433,7 @@ fn ore_becomes_ingots_at_a_forge_and_nowhere_else() {
     world.queue(Command::DoubleClick { connection, serial });
     now += TICK_INTERVAL;
     world.tick(now);
-    assert_eq!(
-        carried(&world, connection, INGOT, 0),
-        0,
-        "no forge, no ingots"
-    );
+    assert_eq!(carried(&world, connection, INGOT, 0), 0, "no forge, no ingots");
     assert_eq!(carried(&world, connection, ORE_GRAPHIC, 0), 10);
 
     shop(&mut world, &[(FORGE, 0)]);
@@ -544,14 +525,8 @@ fn an_exceptional_piece_is_still_exceptional_after_a_restart() {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let sword = give(&mut world, connection, 0x0F5E, 0, 1);
-    world
-        .state
-        .registry
-        .insert(sword, Quality { exceptional: true });
-    world
-        .state
-        .registry
-        .insert(sword, CraftedBy("Rowena".into()));
+    world.state.registry.insert(sword, Quality { exceptional: true });
+    world.state.registry.insert(sword, CraftedBy("Rowena".into()));
     now += TICK_INTERVAL;
     world.tick(now);
 
@@ -598,10 +573,7 @@ fn craftsmanship_is_read_where_the_armour_rating_is_worked_out() {
     let plain = openshard_state::armor::piece_rating(&world.state, plate);
     assert!(plain > 0, "the core table knows a breastplate");
 
-    world
-        .state
-        .registry
-        .insert(plate, Quality { exceptional: true });
+    world.state.registry.insert(plate, Quality { exceptional: true });
     assert_eq!(
         openshard_state::armor::piece_rating(&world.state, plate),
         plain + 8,

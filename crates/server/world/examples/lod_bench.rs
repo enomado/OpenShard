@@ -25,7 +25,7 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::world::Point;
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-use openshard_world::{Brain, Command, Gameplay, World, TICK_INTERVAL};
+use openshard_world::{Brain, Command, Gameplay, TICK_INTERVAL, World};
 
 /// Britain, the same spot the tests use — a real, walkable patch of the map is
 /// not needed here (dev mode allows every step), only a plausible coordinate.
@@ -163,9 +163,7 @@ fn main() {
         // Confirm the load actually built.
         let brains = off.registry().query::<Brain>().count();
 
-        println!(
-            "  {count} creatures ({brains} brains, {awake} within LOD radius of the cluster):"
-        );
+        println!("  {count} creatures ({brains} brains, {awake} within LOD radius of the cluster):");
         let off_per = time_ticks(&mut off, ROUNDS);
         let on_per = time_ticks(&mut on, ROUNDS);
         report("LOD off", off_per);

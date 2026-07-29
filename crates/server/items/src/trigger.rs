@@ -107,12 +107,7 @@ pub(crate) fn emit_mobile_used(
 /// which resolves a ground item by its tile, a carried one by its holder, and a
 /// worn one by its wearer — so a double-click across the map fires nothing. An
 /// item that somehow has no `Graphic` is not a drawable item and is ignored.
-pub(crate) fn item_used(
-    state: &mut WorldState,
-    player: EntityId,
-    target: EntityId,
-    target_serial: Serial,
-) {
+pub(crate) fn item_used(state: &mut WorldState, player: EntityId, target: EntityId, target_serial: Serial) {
     if !in_reach(state, target, player) {
         return;
     }

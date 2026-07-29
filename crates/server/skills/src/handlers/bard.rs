@@ -19,7 +19,7 @@ use openshard_state::components::{
     Contained, Discorded, Equipped, Graphic, Hitpoints, Instrument, Mana, Pacified, Skills, Stamina,
 };
 use openshard_state::instrument::instrument_data;
-use openshard_state::{Skill, TargetPurpose, WorldState, TICKS_PER_SECOND};
+use openshard_state::{Skill, TICKS_PER_SECOND, TargetPurpose, WorldState};
 
 use crate::check::roll_skill_band;
 
@@ -148,18 +148,11 @@ fn play(state: &mut WorldState, bard: EntityId, item: EntityId, well: bool) {
     let left = state
         .registry
         .get::<Instrument>(item)
-        .map_or(openshard_state::instrument::INSTRUMENT_MAX_USES, |i| {
-            i.uses_left
-        });
+        .map_or(openshard_state::instrument::INSTRUMENT_MAX_USES, |i| i.uses_left);
     if left <= 1 {
         state.bus.send(InstrumentSpent { item });
     } else {
-        state.registry.insert(
-            item,
-            Instrument {
-                uses_left: left - 1,
-            },
-        );
+        state.registry.insert(item, Instrument { uses_left: left - 1 });
     }
 }
 
@@ -236,21 +229,12 @@ pub(super) fn peacemaking(state: &mut WorldState, bard: EntityId, target: Entity
         }
         return;
     }
-    if !state
-        .registry
-        .has::<openshard_state::components::Body>(target)
-    {
+    if !state.registry.has::<openshard_state::components::Body>(target) {
         state.localized_message(bard, CANNOT_CALM, "");
         return;
     }
     let difficulty = base_difficulty(state, target);
-    if roll_skill_band(
-        state,
-        bard,
-        id,
-        difficulty - BARD_BAND,
-        difficulty + BARD_BAND,
-    ) {
+    if roll_skill_band(state, bard, id, difficulty - BARD_BAND, difficulty + BARD_BAND) {
         play(state, bard, item, true);
         let until = state.ticks + PACIFY_SECONDS * TICKS_PER_SECOND;
         state.registry.insert(target, Pacified { until });
@@ -271,12 +255,8 @@ pub(super) fn provoke_first(state: &mut WorldState, bard: EntityId, target: Enti
         return;
     };
     // A player is not a creature to be set on somebody.
-    if !state
-        .registry
-        .has::<openshard_state::components::Body>(target)
-        || state
-            .registry
-            .has::<openshard_state::components::Client>(target)
+    if !state.registry.has::<openshard_state::components::Body>(target)
+        || state.registry.has::<openshard_state::components::Client>(target)
     {
         state.localized_message(bard, CANNOT_INCITE, "");
         return;
@@ -296,12 +276,7 @@ pub(super) fn provoke_first(state: &mut WorldState, bard: EntityId, target: Enti
 }
 
 /// Provocation's second target: whom the angered creature should attack.
-pub(super) fn provoke_second(
-    state: &mut WorldState,
-    bard: EntityId,
-    creature: EntityId,
-    victim: EntityId,
-) {
+pub(super) fn provoke_second(state: &mut WorldState, bard: EntityId, creature: EntityId, victim: EntityId) {
     let Some(item) = instrument_in_pack(state, bard) else {
         state.localized_message(bard, NEED_AN_INSTRUMENT, "");
         return;
@@ -319,13 +294,7 @@ pub(super) fn provoke_second(
     // `(diff(a) + diff(b)) * 0.5 - 5`.
     let difficulty = (base_difficulty(state, creature) + base_difficulty(state, victim)) / 2 - 50;
     let id = Skill::Provocation.id();
-    if !roll_skill_band(
-        state,
-        bard,
-        id,
-        difficulty - BARD_BAND,
-        difficulty + BARD_BAND,
-    ) {
+    if !roll_skill_band(state, bard, id, difficulty - BARD_BAND, difficulty + BARD_BAND) {
         state.localized_message(bard, NOT_ANGRY_ENOUGH, "");
         play(state, bard, item, false);
         return;
@@ -355,10 +324,7 @@ pub(super) fn discordance(state: &mut WorldState, bard: EntityId, target: Entity
         state.localized_message(bard, NEED_AN_INSTRUMENT, "");
         return;
     };
-    if !state
-        .registry
-        .has::<openshard_state::components::Body>(target)
-    {
+    if !state.registry.has::<openshard_state::components::Body>(target) {
         state.localized_message(bard, CANNOT_CALM, "");
         return;
     }
@@ -369,13 +335,7 @@ pub(super) fn discordance(state: &mut WorldState, bard: EntityId, target: Entity
     }
     let id = Skill::Discordance.id();
     let difficulty = base_difficulty(state, target);
-    if !roll_skill_band(
-        state,
-        bard,
-        id,
-        difficulty - BARD_BAND,
-        difficulty + BARD_BAND,
-    ) {
+    if !roll_skill_band(state, bard, id, difficulty - BARD_BAND, difficulty + BARD_BAND) {
         state.localized_message(bard, DISCORD_FAILED, "");
         play(state, bard, item, false);
         return;
@@ -447,9 +407,7 @@ fn mobiles_near(state: &WorldState, centre: EntityId, range: u32) -> Vec<EntityI
         .nearby(at, range)
         .filter(|(entity, spot)| {
             openshard_state::in_range(at, *spot, range)
-                && state
-                    .registry
-                    .has::<openshard_state::components::Body>(*entity)
+                && state.registry.has::<openshard_state::components::Body>(*entity)
         })
         .map(|(entity, _)| entity)
         .collect()

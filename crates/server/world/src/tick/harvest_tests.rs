@@ -12,14 +12,12 @@
 //! half that reads a real map, is exercised here too — against a terrain that
 //! knows one static, which is what the anti-spoof check needs to have an opinion.
 
-use super::tests::{enter, packets_for, world, START};
+use super::tests::{START, enter, packets_for, world};
 use super::*;
 use openshard_movement::Terrain;
-use openshard_state::components::{Contained, Harvesting, Tool};
-use openshard_state::harvest::{
-    definition, HarvestKind, TileSource, LOG_GRAPHIC, ORE_GRAPHIC, SAND_GRAPHIC,
-};
 use openshard_state::Skill;
+use openshard_state::components::{Contained, Harvesting, Tool};
+use openshard_state::harvest::{HarvestKind, LOG_GRAPHIC, ORE_GRAPHIC, SAND_GRAPHIC, TileSource, definition};
 
 /// A pickaxe, ServUO's `Pickaxe`.
 const PICKAXE: u16 = 0x0E86;
@@ -74,18 +72,8 @@ fn give_tool(world: &mut World, connection: ConnectionId, graphic: u16) -> Entit
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = items::backpack_of(&world.state, owner).expect("a backpack");
-    let (item, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world.state.registry.insert(
-        item,
-        Graphic {
-            id: graphic,
-            hue: 0,
-        },
-    );
+    let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
     world.state.registry.insert(
         item,
         Contained {
@@ -230,14 +218,12 @@ fn a_pickaxe_swung_at_a_mountain_yields_ore_and_empties_the_vein() {
         "no ore in the pack"
     );
     // Felucca pays double, so the vein is two down, not one.
-    let bank_left = world.state.facet_state_mut(0).banks.get(
-        before,
-        START.0 + 1,
-        START.1,
-        0,
-        0,
-        &mut Rng::new(1),
-    );
+    let bank_left =
+        world
+            .state
+            .facet_state_mut(0)
+            .banks
+            .get(before, START.0 + 1, START.1, 0, 0, &mut Rng::new(1));
     assert_eq!(
         bank_left.current,
         bank_left.maximum - before.consumed_felucca,
@@ -425,10 +411,7 @@ fn a_hatchet_chops_a_tree_static() {
         "the axe should be chopping"
     );
     finish_swing(&mut world, player, now);
-    assert!(
-        carried(&world, player, LOG_GRAPHIC) > 0,
-        "no logs in the pack"
-    );
+    assert!(carried(&world, player, LOG_GRAPHIC) > 0, "no logs in the pack");
 }
 
 #[test]
@@ -474,11 +457,7 @@ fn sand_is_mined_with_the_same_pick_and_takes_six_beats() {
 
     swing_at(&mut world, player, pick, 1, 0, now);
     let entity = world.state.players[&player];
-    let work = *world
-        .state
-        .registry
-        .get::<Harvesting>(entity)
-        .expect("digging");
+    let work = *world.state.registry.get::<Harvesting>(entity).expect("digging");
     assert_eq!(work.kind, HarvestKind::Sand);
     assert_eq!(work.beats_left, definition(HarvestKind::Sand, true).beats);
     finish_swing(&mut world, player, now);
@@ -496,10 +475,10 @@ fn a_half_used_tool_and_a_half_played_lute_both_survive_a_restart() {
     let pick = give_tool(&mut world, player, PICKAXE);
     world.state.registry.insert(pick, Tool { uses_left: 17 });
     let lute = give_tool(&mut world, player, 0x0EB3); // not a tool; the branch below sets it
-    world.state.registry.insert(
-        lute,
-        openshard_state::components::Instrument { uses_left: 42 },
-    );
+    world
+        .state
+        .registry
+        .insert(lute, openshard_state::components::Instrument { uses_left: 42 });
     world.tick(now);
 
     world.take_snapshot();

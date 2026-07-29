@@ -7,17 +7,17 @@ use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::world::Point;
-use openshard_state::components::{
-    body_opens_doors, creature_name, Aggression, Banker, Body, Brain, Facet, Fame, Heading,
-    Hitpoints, Karma, MeleeDamage, Movement, Name, NightHome, Npc, Position, RangedAttack,
-    Resistance, Skills, SwingSpeed, Title,
-};
 use openshard_state::WorldState;
+use openshard_state::components::{
+    Aggression, Banker, Body, Brain, Facet, Fame, Heading, Hitpoints, Karma, MeleeDamage, Movement, Name,
+    NightHome, Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors,
+    creature_name,
+};
 use tracing::{debug, warn};
 
 use openshard_items as items;
 
-use crate::dress::{dress_townsperson, ShoeType};
+use crate::dress::{ShoeType, dress_townsperson};
 use crate::live::BEAT_TICKS;
 use crate::names::townsperson_name;
 
@@ -202,12 +202,8 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
             max: hits,
         },
     );
-    state
-        .registry
-        .insert(entity, Notoriety::from_bits(notoriety));
-    state
-        .registry
-        .insert(entity, MeleeDamage { amount: damage });
+    state.registry.insert(entity, Notoriety::from_bits(notoriety));
+    state.registry.insert(entity, MeleeDamage { amount: damage });
     // Standing, only when it has any: a rat gives up nothing and a dragon a great deal,
     // and an absent component is the same as zero everywhere that reads it.
     if fame != 0 {
@@ -361,10 +357,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     state
         .registry
         .insert(entity, Movement(Walker::new(position, facing)));
-    state
-        .facet_state_mut(facet)
-        .sectors
-        .insert(entity, position);
+    state.facet_state_mut(facet).sectors.insert(entity, position);
     state.reveal(entity);
     // Say who and where, so a script can take control of it: the mobile
     // counterpart of `PlayerEntered`, and how `op_control` learns a serial.

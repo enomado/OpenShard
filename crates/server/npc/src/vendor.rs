@@ -11,13 +11,12 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_items as items;
 use openshard_movement::Terrain;
-use openshard_protocol::containers::{encode_open_container, ContainerContents};
+use openshard_protocol::containers::{ContainerContents, encode_open_container};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
 use openshard_state::components::{
-    Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord,
-    Vendor,
+    Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord, Vendor,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{TooltipMode, WorldState};
@@ -91,10 +90,7 @@ fn in_trade_range(state: &WorldState, player: EntityId, vendor: EntityId) -> boo
     // A wall between the shopper and the counter is a wall: the same line-of-sight
     // ServUO and Sphere gate a vendor on, so there is no buying through it. The
     // ray is the one aggro uses (`Terrain::sight_clear`).
-    state
-        .facet_state(facet)
-        .live_terrain()
-        .sight_clear(at, vendor_at)
+    state.facet_state(facet).live_terrain().sight_clear(at, vendor_at)
 }
 
 /// How long a bought-out shelf takes to refill, in ticks. ServUO's
@@ -115,14 +111,10 @@ pub fn stock(state: &mut WorldState, vendor_serial: u32, lines: Vec<StockLine>) 
     };
     // What "full" means for this shelf, and when it may be filled again. Cumulative,
     // like the stocking itself.
-    let mut record = state
-        .registry
-        .get::<Restock>(vendor)
-        .cloned()
-        .unwrap_or(Restock {
-            at: state.ticks + RESTOCK_TICKS,
-            lines: Vec::new(),
-        });
+    let mut record = state.registry.get::<Restock>(vendor).cloned().unwrap_or(Restock {
+        at: state.ticks + RESTOCK_TICKS,
+        lines: Vec::new(),
+    });
     for line in lines {
         record.lines.push(StockRecord {
             graphic: line.graphic,
@@ -287,14 +279,7 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     // client crashes when the shop opens.
     if worn_container(state, vendor, RESALE_LAYER).is_none() {
         if let Some(vendor_serial) = state.registry.serial_of(vendor) {
-            items::equip_new_container(
-                state,
-                vendor_serial,
-                STOCK_GRAPHIC,
-                STOCK_GUMP,
-                0,
-                RESALE_LAYER,
-            );
+            items::equip_new_container(state, vendor_serial, STOCK_GRAPHIC, STOCK_GUMP, 0, RESALE_LAYER);
         }
     }
 
@@ -332,18 +317,14 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
             lines: lines.clone(),
         }),
     );
-    state.send(
-        connection,
-        encode_open_container(serial, SHOP_GUMP, version),
-    );
+    state.send(connection, encode_open_container(serial, SHOP_GUMP, version));
     // Send each item's tooltip up front, the way ServUO ships the OPLs with the
     // buy packets: a client in OPL mode shows the shop name from the tooltip, so
     // without this the labels read as placeholders until the mouse hovers each row
     // and the client requests the list itself.
     if state.gameplay.tooltip_mode != TooltipMode::Off {
         for item in &contents {
-            if let Some(entity) = Serial::new(item.serial).and_then(|s| state.registry.entity_of(s))
-            {
+            if let Some(entity) = Serial::new(item.serial).and_then(|s| state.registry.entity_of(s)) {
                 state.send_property_list(connection, entity);
             }
         }
@@ -354,12 +335,7 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
 
 /// Settle a purchase: check the gold, take it, hand the goods over. See
 /// `Command::Buy`.
-pub fn buy(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    vendor_serial: u32,
-    list: &[Purchase],
-) {
+pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32, list: &[Purchase]) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
@@ -384,8 +360,7 @@ pub fn buy(
     let mut total: u32 = 0;
     let mut basket: Vec<(EntityId, u16, u16, u16, u32)> = Vec::new();
     for purchase in list {
-        let Some(item) = Serial::new(purchase.serial).and_then(|s| state.registry.entity_of(s))
-        else {
+        let Some(item) = Serial::new(purchase.serial).and_then(|s| state.registry.entity_of(s)) else {
             continue;
         };
         let held_in = state.registry.get::<Contained>(item).map(|c| c.container);
@@ -552,11 +527,7 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32
     // clamping a merge.
     let paid = earned;
     items::give(state, backpack, GOLD_GRAPHIC, 0, paid);
-    vendor_says(
-        state,
-        vendor,
-        &format!("The total of thy sale is {paid} gold."),
-    );
+    vendor_says(state, vendor, &format!("The total of thy sale is {paid} gold."));
 }
 
 /// Half the buy price, never less than one coin.

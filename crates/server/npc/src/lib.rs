@@ -31,10 +31,10 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{SpokenMessage, SYSTEM_SERIAL};
+use openshard_protocol::speech::{SYSTEM_SERIAL, SpokenMessage};
+use openshard_state::WorldState;
 use openshard_state::components::{Banker, Position};
 use openshard_state::sectors::in_range;
-use openshard_state::WorldState;
 
 pub mod dress;
 mod guards;
@@ -44,16 +44,15 @@ mod pets;
 mod spawn;
 mod speech;
 mod vendor;
-pub use dress::{dress_townsperson, Appearance, ShoeType, FIXED_LAYERS};
+pub use dress::{Appearance, FIXED_LAYERS, ShoeType, dress_townsperson};
 pub use guards::{call_guards, expire_guards, guard_keywords, hunt_with_guards};
-pub use live::{beat_jitter, first_beat, live, next_beat, BEAT_JITTER_FRACTION, BEAT_TICKS};
+pub use live::{BEAT_JITTER_FRACTION, BEAT_TICKS, beat_jitter, first_beat, live, next_beat};
 pub use names::{personal_name, townsperson_name};
 pub use pets::{hear_pet_order, tame};
-pub use spawn::{spawn, MobileSpawned, SpawnSpec};
+pub use spawn::{MobileSpawned, SpawnSpec, spawn};
 pub use speech::{check_vendor_access, overhear};
 pub use vendor::{
-    buy, buy_keyword, offer_sell_list, open_shop, sell, stock, StockLine, RESTOCK_TICKS,
-    STOCK_LAYER,
+    RESTOCK_TICKS, STOCK_LAYER, StockLine, buy, buy_keyword, offer_sell_list, open_shop, sell, stock,
 };
 
 /// The bank box graphic and gump — ServUO's `BankBox` on `Layer.Bank`. A
@@ -87,12 +86,7 @@ pub(crate) fn say(state: &mut WorldState, npc: EntityId, line: &str) {
 /// Answer a banker's keywords for a speaking player, if one is in reach. "bank"
 /// opens the box; "balance" reports the gold in it. A banker has to be within
 /// [`BANK_RANGE`] — the service is the townsperson's, not the word's.
-pub fn banker_keywords(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    actor: EntityId,
-    text: &str,
-) {
+pub fn banker_keywords(state: &mut WorldState, connection: ConnectionId, actor: EntityId, text: &str) {
     let lower = text.to_lowercase();
     let wants = |word: &str| lower.split(|c: char| !c.is_alphabetic()).any(|w| w == word);
     if !wants("bank") && !wants("balance") {
@@ -103,11 +97,7 @@ pub fn banker_keywords(
     }
     if wants("balance") {
         let gold = bank_gold(state, actor);
-        notify(
-            state,
-            connection,
-            &format!("Thy bank box holds {gold} gold."),
-        );
+        notify(state, connection, &format!("Thy bank box holds {gold} gold."));
     }
     if wants("bank") {
         openshard_items::open_worn_container(state, connection, actor, BANK_LAYER);

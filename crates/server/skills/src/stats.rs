@@ -20,7 +20,7 @@
 
 use openshard_entities::EntityId;
 use openshard_state::components::{LastStatGain, StatLock, StatLocks, Stats};
-use openshard_state::{skill, StatCode, WorldState};
+use openshard_state::{StatCode, WorldState, skill};
 
 use crate::apply_stats;
 
@@ -120,8 +120,7 @@ pub fn gain_stat(state: &mut WorldState, entity: EntityId, stat: StatCode) {
         return; // this stat is already at its own ceiling
     }
 
-    let total =
-        u32::from(stats.strength) + u32::from(stats.dexterity) + u32::from(stats.intelligence);
+    let total = u32::from(stats.strength) + u32::from(stats.dexterity) + u32::from(stats.intelligence);
     let at_total_cap = total >= u32::from(state.gameplay.stat_cap);
     let mut next = stats;
     if at_total_cap {
@@ -129,29 +128,21 @@ pub fn gain_stat(state: &mut WorldState, entity: EntityId, stat: StatCode) {
         // so a build sheds from where it can least afford to keep — ServUO's
         // `RawDex < RawInt || !CanLower(Int)`.
         let (first, second) = others(stat);
-        let can =
-            |s: StatCode| lock_of(locks, s) == StatLock::Down && value_of(stats, s) > MIN_STAT;
-        let donor =
-            if can(first) && (value_of(stats, first) < value_of(stats, second) || !can(second)) {
-                Some(first)
-            } else if can(second) {
-                Some(second)
-            } else {
-                None
-            };
+        let can = |s: StatCode| lock_of(locks, s) == StatLock::Down && value_of(stats, s) > MIN_STAT;
+        let donor = if can(first) && (value_of(stats, first) < value_of(stats, second) || !can(second)) {
+            Some(first)
+        } else if can(second) {
+            Some(second)
+        } else {
+            None
+        };
         let Some(donor) = donor else {
             return; // at the cap with nothing set to give ground: no gain
         };
         set_value(&mut next, donor, value_of(stats, donor) - 1);
     }
     set_value(&mut next, stat, value_of(stats, stat) + 1);
-    apply_stats(
-        state,
-        entity,
-        next.strength,
-        next.dexterity,
-        next.intelligence,
-    );
+    apply_stats(state, entity, next.strength, next.dexterity, next.intelligence);
 }
 
 /// Whether this stat's cooldown has passed, stamping it if so — ServUO's

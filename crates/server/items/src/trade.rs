@@ -79,9 +79,10 @@ fn trade_index(state: &WorldState, player: EntityId) -> Option<usize> {
 
 /// The trade drawn on `container`, by index.
 fn trade_of_container(state: &WorldState, container: Serial) -> Option<usize> {
-    state.trades.iter().position(|trade| {
-        trade.from.container_serial == container || trade.to.container_serial == container
-    })
+    state
+        .trades
+        .iter()
+        .position(|trade| trade.from.container_serial == container || trade.to.container_serial == container)
 }
 
 /// A held item was dropped on another player: open a trade, or add to the one
@@ -268,12 +269,7 @@ fn send_checks(state: &mut WorldState, index: usize) {
 
 /// The client ticked or unticked its checkbox. When both are ticked the goods
 /// change hands.
-pub fn set_accepted(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    container: u32,
-    accepted: bool,
-) {
+pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container: u32, accepted: bool) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
@@ -321,8 +317,7 @@ fn escrowed(state: &WorldState, index: usize) -> Vec<Serial> {
         .registry
         .query::<Contained>()
         .filter(|(_, held)| {
-            held.container == trade.from.container_serial
-                || held.container == trade.to.container_serial
+            held.container == trade.from.container_serial || held.container == trade.to.container_serial
         })
         .filter_map(|(entity, _)| state.registry.serial_of(entity))
         .collect();
@@ -422,10 +417,7 @@ fn close(state: &mut WorldState, index: usize) {
     // Each client is told about *its own* half — ServUO's `Close`, which sends
     // one packet per side. The client shuts the whole window on it.
     for side in [&trade.from, &trade.to] {
-        state.send(
-            side.connection,
-            encode_trade_close(side.container_serial.raw()),
-        );
+        state.send(side.connection, encode_trade_close(side.container_serial.raw()));
         state.open_containers.remove(&side.container_serial);
         despawn_escrow(state, side.container);
     }
@@ -511,8 +503,7 @@ fn still_valid(state: &WorldState, index: usize) -> bool {
     ) else {
         return false;
     };
-    state.facet_of(trade.from.player) == state.facet_of(trade.to.player)
-        && in_range(from, to, TRADE_RANGE)
+    state.facet_of(trade.from.player) == state.facet_of(trade.to.player) && in_range(from, to, TRADE_RANGE)
 }
 
 /// If either box is ticked and the goods have moved since, untick both.

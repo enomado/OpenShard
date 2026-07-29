@@ -37,10 +37,7 @@ pub struct TalkRequest {
 impl DecodePacket for TalkRequest {
     const ID: u8 = 0x03;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let mode = reader.u8()?;
         let hue = reader.u16()?;
         let font = reader.u16()?;
@@ -85,10 +82,7 @@ pub struct UnicodeTalkRequest {
 impl DecodePacket for UnicodeTalkRequest {
     const ID: u8 = 0xAD;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let mode = reader.u8()?;
         let hue = reader.u16()?;
         let font = reader.u16()?;
@@ -382,7 +376,7 @@ mod tests {
         body.extend_from_slice(&0u16.to_be_bytes()); // hue
         body.extend_from_slice(&3u16.to_be_bytes()); // font
         body.extend_from_slice(b"ENU\0"); // language
-                                          // one keyword: count=1 -> (1<<4) in the top 12 bits -> bytes to skip = ceil((1+1)*12/8)=3
+        // one keyword: count=1 -> (1<<4) in the top 12 bits -> bytes to skip = ceil((1+1)*12/8)=3
         body.extend_from_slice(&(1u16 << 4).to_be_bytes()); // count word (2 bytes)
         body.push(0x00); // the third keyword byte
         body.extend_from_slice(b"hello\0"); // ASCII text
@@ -410,16 +404,13 @@ mod tests {
             version(),
         );
         assert_eq!(packet[0], 0x1C);
-        assert_eq!(
-            u16::from_be_bytes([packet[1], packet[2]]),
-            packet.len() as u16
-        );
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]), packet.len() as u16);
         assert_eq!(&packet[3..7], &0x0000_0002u32.to_be_bytes());
         assert_eq!(&packet[7..9], &0x0190u16.to_be_bytes());
         assert_eq!(packet[9], 0); // mode
         assert_eq!(&packet[10..12], &0x0384u16.to_be_bytes()); // hue
         assert_eq!(&packet[12..14], &3u16.to_be_bytes()); // font
-                                                          // 30-byte name, "British" then zeros
+        // 30-byte name, "British" then zeros
         assert_eq!(&packet[14..21], b"British");
         assert_eq!(packet[21], 0);
         assert_eq!(&packet[44..48], b"hail");
@@ -444,10 +435,7 @@ mod tests {
             version(),
         );
         assert_eq!(packet[0], 0xAE);
-        assert_eq!(
-            u16::from_be_bytes([packet[1], packet[2]]),
-            packet.len() as u16
-        );
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]), packet.len() as u16);
         assert_eq!(&packet[3..7], &0x0000_0002u32.to_be_bytes());
         assert_eq!(&packet[7..9], &0x0190u16.to_be_bytes());
         assert_eq!(packet[9], 0); // mode

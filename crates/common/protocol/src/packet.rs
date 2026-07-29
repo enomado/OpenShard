@@ -19,7 +19,7 @@
 use std::fmt;
 
 use crate::codec::{PacketReader, PacketWriter};
-use crate::error::{expect_id, DecodeError};
+use crate::error::{DecodeError, expect_id};
 use crate::feature::Feature;
 use crate::version::ClientVersion;
 
@@ -260,10 +260,7 @@ pub fn client_packet_length(id: u8, version: Option<ClientVersion>) -> Option<Pa
 /// let talk = [0xAD, 0x00, 0x05, 0xAA, 0xBB];
 /// assert_eq!(frame_client_packet(&talk, None), Ok(Frame::Complete(5)));
 /// ```
-pub fn frame_client_packet(
-    buffer: &[u8],
-    version: Option<ClientVersion>,
-) -> Result<Frame, FrameError> {
+pub fn frame_client_packet(buffer: &[u8], version: Option<ClientVersion>) -> Result<Frame, FrameError> {
     let Some(&id) = buffer.first() else {
         return Ok(Frame::Incomplete { needed: 1 });
     };
@@ -289,10 +286,7 @@ pub fn frame_client_packet(
             // and would advance the caller by 0 or 2 bytes, re-framing the same
             // packet forever. Over the cap is a client trying to make the
             // server reserve 64KB per connection.
-            #[allow(
-                clippy::manual_range_contains,
-                reason = "two failure modes, not one range"
-            )]
+            #[allow(clippy::manual_range_contains, reason = "two failure modes, not one range")]
             if claimed < 3 || claimed > MAX_PACKET_SIZE {
                 return Err(FrameError::BadLength { id, claimed });
             }
@@ -344,10 +338,7 @@ pub trait DecodePacket: Sized {
 
     /// Read the body. The reader is positioned past the id, and for a
     /// variable-length packet past the length field too.
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        version: ClientVersion,
-    ) -> Result<Self, DecodeError>;
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError>;
 }
 
 /// Write `id`, the length field if the packet has one, then the body.
@@ -360,11 +351,7 @@ pub trait DecodePacket: Sized {
 /// length field could not describe it, and truncating instead would desynchronise
 /// the client's stream in silence. That is a server bug in packet construction,
 /// and it costs one connection.
-pub fn frame_body(
-    id: u8,
-    length: PacketLength,
-    write_body: impl FnOnce(&mut PacketWriter),
-) -> Vec<u8> {
+pub fn frame_body(id: u8, length: PacketLength, write_body: impl FnOnce(&mut PacketWriter)) -> Vec<u8> {
     let mut writer = PacketWriter::with_capacity(length.minimum());
     writer.u8(id);
     match length {
@@ -411,10 +398,7 @@ pub fn encode_packet<P: EncodePacket>(packet: &P, version: ClientVersion) -> Vec
 /// exactly one packet, so there is nothing left for the length field to tell
 /// the body — re-checking it here would be the same validation twice, in two
 /// places that could disagree.
-pub fn decode_packet<P: DecodePacket>(
-    bytes: &[u8],
-    version: ClientVersion,
-) -> Result<P, DecodeError> {
+pub fn decode_packet<P: DecodePacket>(bytes: &[u8], version: ClientVersion) -> Result<P, DecodeError> {
     let mut reader = expect_id(bytes, P::ID)?;
     if client_packet_length(P::ID, Some(version)) == Some(PacketLength::Variable) {
         reader.skip(2)?;
@@ -466,10 +450,7 @@ mod tests {
         // id + length field + "hi\0" = 6 bytes, and the length field says so.
         let bytes = encode_packet(&Talk("hi"), any_version());
         assert_eq!(bytes, vec![0xAD, 0x00, 0x06, b'h', b'i', 0x00]);
-        assert_eq!(
-            u16::from_be_bytes([bytes[1], bytes[2]]) as usize,
-            bytes.len()
-        );
+        assert_eq!(u16::from_be_bytes([bytes[1], bytes[2]]) as usize, bytes.len());
     }
 
     #[test]
@@ -525,46 +506,16 @@ mod tests {
     fn spot_checks_against_spheres_table() {
         // A handful pinned by hand from Sphere's receive.h/receive.cpp. If the
         // table is ever regenerated, these are what catch a shift.
-        assert_eq!(
-            client_packet_length(0x00, None),
-            Some(PacketLength::Fixed(104))
-        );
-        assert_eq!(
-            client_packet_length(0x02, None),
-            Some(PacketLength::Fixed(7))
-        );
-        assert_eq!(
-            client_packet_length(0x03, None),
-            Some(PacketLength::Variable)
-        );
-        assert_eq!(
-            client_packet_length(0x5D, None),
-            Some(PacketLength::Fixed(73))
-        );
-        assert_eq!(
-            client_packet_length(0x80, None),
-            Some(PacketLength::Fixed(62))
-        );
-        assert_eq!(
-            client_packet_length(0x91, None),
-            Some(PacketLength::Fixed(65))
-        );
-        assert_eq!(
-            client_packet_length(0xBD, None),
-            Some(PacketLength::Variable)
-        );
-        assert_eq!(
-            client_packet_length(0xBF, None),
-            Some(PacketLength::Variable)
-        );
-        assert_eq!(
-            client_packet_length(0xD9, None),
-            Some(PacketLength::Fixed(268))
-        );
-        assert_eq!(
-            client_packet_length(0xF8, None),
-            Some(PacketLength::Fixed(106))
-        );
+        assert_eq!(client_packet_length(0x00, None), Some(PacketLength::Fixed(104)));
+        assert_eq!(client_packet_length(0x02, None), Some(PacketLength::Fixed(7)));
+        assert_eq!(client_packet_length(0x03, None), Some(PacketLength::Variable));
+        assert_eq!(client_packet_length(0x5D, None), Some(PacketLength::Fixed(73)));
+        assert_eq!(client_packet_length(0x80, None), Some(PacketLength::Fixed(62)));
+        assert_eq!(client_packet_length(0x91, None), Some(PacketLength::Fixed(65)));
+        assert_eq!(client_packet_length(0xBD, None), Some(PacketLength::Variable));
+        assert_eq!(client_packet_length(0xBF, None), Some(PacketLength::Variable));
+        assert_eq!(client_packet_length(0xD9, None), Some(PacketLength::Fixed(268)));
+        assert_eq!(client_packet_length(0xF8, None), Some(PacketLength::Fixed(106)));
     }
 
     #[test]
@@ -614,10 +565,7 @@ mod tests {
 
     #[test]
     fn frames_a_fixed_packet() {
-        assert_eq!(
-            frame_client_packet(&[0x73, 0x00], None),
-            Ok(Frame::Complete(2))
-        );
+        assert_eq!(frame_client_packet(&[0x73, 0x00], None), Ok(Frame::Complete(2)));
     }
 
     #[test]
@@ -625,10 +573,7 @@ mod tests {
         // TCP delivers whatever it likes; two packets often arrive together.
         let buffer = [0x73, 0x00, 0x73, 0x00];
         assert_eq!(frame_client_packet(&buffer, None), Ok(Frame::Complete(2)));
-        assert_eq!(
-            frame_client_packet(&buffer[2..], None),
-            Ok(Frame::Complete(2))
-        );
+        assert_eq!(frame_client_packet(&buffer[2..], None), Ok(Frame::Complete(2)));
     }
 
     #[test]

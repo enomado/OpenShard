@@ -133,9 +133,7 @@ impl FromStr for ClientVersion {
     /// input from the network: anything unparseable is an error, never a
     /// best-effort guess.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let fail = || ParseVersionError {
-            input: s.to_owned(),
-        };
+        let fail = || ParseVersionError { input: s.to_owned() };
 
         let fields: Vec<&str> = s.trim().split('.').map(str::trim).collect();
         // Two fields is the shortest thing worth calling a version; a bare "7"
@@ -370,10 +368,7 @@ mod tests {
             "7.0.0b.0",
             "3.0.7bb",
         ] {
-            assert!(
-                junk.parse::<ClientVersion>().is_err(),
-                "{junk:?} must not parse"
-            );
+            assert!(junk.parse::<ClientVersion>().is_err(), "{junk:?} must not parse");
         }
     }
 
@@ -447,10 +442,7 @@ mod tests {
         // Sphere: v2 at 3.0.8d, v3 at 3.0.8j, v4 at 4.0.0a, v5 at 5.0.0a,
         // v6 at 7.0.30.0.
         assert_eq!(ClientVersion::new(3, 0, 8, 3).status_packet_version(), 1);
-        assert_eq!(
-            ClientVersion::new(3, 255, 255, 255).status_packet_version(),
-            3
-        );
+        assert_eq!(ClientVersion::new(3, 255, 255, 255).status_packet_version(), 3);
         assert_eq!(ClientVersion::new(3, 0, 8, 4).status_packet_version(), 2);
         assert_eq!(ClientVersion::new(3, 0, 8, 9).status_packet_version(), 2);
         assert_eq!(ClientVersion::new(3, 0, 8, 10).status_packet_version(), 3);

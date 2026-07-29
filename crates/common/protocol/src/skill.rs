@@ -10,7 +10,7 @@
 //! and its `ChangeSkillLock`/`TextCommand` handlers.
 
 use crate::codec::{PacketReader, PacketWriter};
-use crate::error::{expect_id, DecodeError};
+use crate::error::{DecodeError, expect_id};
 use crate::feature::Feature;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
@@ -155,10 +155,7 @@ impl DecodePacket for SkillLockRequest {
     const ID: u8 = 0x3A;
 
     /// Decode the incoming skill-lock request.
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         // The wire carries the id as a word; every skill id fits a byte.
         let skill = reader.u16()? as u8;
         let lock = SkillLock::from_bits(reader.u8()?);
@@ -219,11 +216,7 @@ mod tests {
         for lock in [SkillLock::Up, SkillLock::Down, SkillLock::Locked] {
             assert_eq!(SkillLock::from_bits(lock.to_bits()), lock);
         }
-        assert_eq!(
-            SkillLock::from_bits(99),
-            SkillLock::Up,
-            "unknown reads as Up"
-        );
+        assert_eq!(SkillLock::from_bits(99), SkillLock::Up, "unknown reads as Up");
     }
 
     #[test]
@@ -298,11 +291,7 @@ mod tests {
             pre_aos(),
         );
         assert_eq!(packet[3], 0x00, "the uncapped absolute type");
-        assert_eq!(
-            packet.len(),
-            4 + 7 + 2,
-            "type + one 7-byte entry + terminator"
-        );
+        assert_eq!(packet.len(), 4 + 7 + 2, "type + one 7-byte entry + terminator");
     }
 
     #[test]
@@ -317,11 +306,7 @@ mod tests {
         let packet = encode_packet(&SkillUpdate { entry }, aos());
         assert_eq!(packet[0], 0x3A);
         assert_eq!(packet[3], 0xDF, "the capped delta type");
-        assert_eq!(
-            u16::from_be_bytes([packet[4], packet[5]]),
-            25,
-            "zero-based here"
-        );
+        assert_eq!(u16::from_be_bytes([packet[4], packet[5]]), 25, "zero-based here");
         assert_eq!(packet.len(), 13);
     }
 

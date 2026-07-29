@@ -6,9 +6,8 @@ use std::time::Instant;
 
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
-    encode_supported_features, AccountLogin, CharacterList, ClientVersionReport, DenyReason,
-    GameServerLogin, LoginDenied, LoginStagePacket, Relay, SelectShard, ShardEntry, ShardList,
-    StartLocation,
+    AccountLogin, CharacterList, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied,
+    LoginStagePacket, Relay, SelectShard, ShardEntry, ShardList, StartLocation, encode_supported_features,
 };
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::{feature::Feature, seed::Seed, version::ClientVersion};
@@ -105,7 +104,7 @@ pub struct LoginSession {
     /// even checked — so a refused login's reply goes out compressed too. The
     /// caller (the `server` crate, which owns the actual compression flag on
     /// its own `Session`) reads this once `handle` returns instead of peeking
-    /// the packet's id byte itself, which would just be [`ClientLoginPacket`]'s
+    /// the packet's id byte itself, which would just be [`LoginStagePacket`]'s
     /// decode redone by hand.
     game_login: bool,
 }
@@ -207,8 +206,8 @@ impl<A: Accounts> LoginServer<A> {
 
     /// Handle one already-decoded packet.
     ///
-    /// Takes a [`ClientLoginPacket`], not raw bytes: decoding is
-    /// [`ClientLoginPacket::decode`]'s job, called exactly once by whoever
+    /// Takes a [`LoginStagePacket`], not raw bytes: decoding is
+    /// [`LoginStagePacket::decode`]'s job, called exactly once by whoever
     /// routes the connection's packets (the `server` crate's `parse_packet`).
     /// This crate never touches a packet buffer.
     ///
@@ -216,12 +215,7 @@ impl<A: Accounts> LoginServer<A> {
     /// (assist version) or `0xA4` (system info) at any point in login, and
     /// dropping the connection over them would break real clients for no
     /// reason.
-    pub fn handle(
-        &mut self,
-        session: &mut LoginSession,
-        packet: LoginStagePacket,
-        now: Instant,
-    ) -> Response {
+    pub fn handle(&mut self, session: &mut LoginSession, packet: LoginStagePacket, now: Instant) -> Response {
         match self.try_handle(session, packet, now) {
             Ok(response) => response,
             Err(reason) => Response::Close(reason),
@@ -267,7 +261,7 @@ impl<A: Accounts> LoginServer<A> {
 
         // The login state machine: what a packet means depends on where the
         // conversation has got to, so the match is on the pair, not on the
-        // packet alone. `#[non_exhaustive]` on `ClientLoginPacket` and any
+        // packet alone. `#[non_exhaustive]` on `LoginStagePacket` and any
         // state the transition table does not cover both land in the same
         // catch-all, since both mean "not a defined transition".
         let (response, next_state) = match (&session.state, packet) {
@@ -277,10 +271,7 @@ impl<A: Accounts> LoginServer<A> {
             (LoginSessionState::Fresh, LoginStagePacket::GameServerLogin(login)) => {
                 self.on_game_login(session, login, now)
             }
-            (
-                LoginSessionState::ShardListSent { account },
-                LoginStagePacket::SelectShard(select),
-            ) => {
+            (LoginSessionState::ShardListSent { account }, LoginStagePacket::SelectShard(select)) => {
                 let account = account.clone();
                 self.on_select_shard(session, account, select, now)?
             }
@@ -293,11 +284,7 @@ impl<A: Accounts> LoginServer<A> {
         Ok(response)
     }
 
-    fn on_version_report(
-        &self,
-        session: &mut LoginSession,
-        report: ClientVersionReport,
-    ) -> Response {
+    fn on_version_report(&self, session: &mut LoginSession, report: ClientVersionReport) -> Response {
         match report.version() {
             Some(version) => {
                 // Sphere accepts the version once and ignores every later 0xBD.
@@ -319,11 +306,7 @@ impl<A: Accounts> LoginServer<A> {
     /// Handle `0x80` from [`LoginSessionState::Fresh`]. The caller has
     /// already established that this is where the state machine allows it;
     /// this only decides the response and the state that follows.
-    fn on_account_login(
-        &self,
-        session: &LoginSession,
-        login: AccountLogin,
-    ) -> (Response, LoginSessionState) {
+    fn on_account_login(&self, session: &LoginSession, login: AccountLogin) -> (Response, LoginSessionState) {
         let account = match self.accounts.verify(&login.account, &login.password) {
             Ok(account) => account,
             Err(reason) => {
@@ -343,10 +326,7 @@ impl<A: Accounts> LoginServer<A> {
             shards: self.shards.clone(),
         })
         .encode(session.version);
-        (
-            Response::Send(list),
-            LoginSessionState::ShardListSent { account },
-        )
+        (Response::Send(list), LoginSessionState::ShardListSent { account })
     }
 
     /// Handle `0xA0` from [`LoginSessionState::ShardListSent`]. `account` is
@@ -553,8 +533,7 @@ mod tests {
     /// none of this module's `decode_body` impls read it — only encoding
     /// varies by version here.
     fn pkt(bytes: &[u8]) -> LoginStagePacket {
-        LoginStagePacket::decode(bytes, ClientVersion::OLDEST)
-            .expect("test fixture is a valid encoding")
+        LoginStagePacket::decode(bytes, ClientVersion::OLDEST).expect("test fixture is a valid encoding")
     }
 
     /// Take an already-authenticated session through shard select to the relay.
@@ -568,9 +547,7 @@ mod tests {
         else {
             panic!("expected a relay");
         };
-        AuthKey(u32::from_be_bytes([
-            relay[7], relay[8], relay[9], relay[10],
-        ]))
+        AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]))
     }
 
     /// Run the whole conversation and return the auth key from the relay.
@@ -585,9 +562,7 @@ mod tests {
         else {
             panic!("expected a relay");
         };
-        AuthKey(u32::from_be_bytes([
-            relay[7], relay[8], relay[9], relay[10],
-        ]))
+        AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]))
     }
 
     #[test]
@@ -597,9 +572,7 @@ mod tests {
 
         // Login connection.
         let mut session = modern_session();
-        let Response::Send(shards) =
-            server.handle(&mut session, pkt(&login("admin", "hunter2")), now)
-        else {
+        let Response::Send(shards) = server.handle(&mut session, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         assert_eq!(shards[0], 0xA8);
@@ -610,9 +583,7 @@ mod tests {
             panic!("expected a relay");
         };
         assert_eq!(relay[0], 0x8C);
-        let key = AuthKey(u32::from_be_bytes([
-            relay[7], relay[8], relay[9], relay[10],
-        ]));
+        let key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
 
         // Game connection: a new session, as a real client would reconnect.
         let mut session = modern_session();
@@ -621,9 +592,7 @@ mod tests {
             account: RawAccountName("admin".to_owned()),
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
-        let Response::Send(characters) =
-            server.handle(&mut session, pkt(&game_login.encode()), now)
-        else {
+        let Response::Send(characters) = server.handle(&mut session, pkt(&game_login.encode()), now) else {
             panic!("expected the character list");
         };
         assert_eq!(characters[0], 0xA9);
@@ -798,9 +767,7 @@ mod tests {
         else {
             panic!("expected a relay");
         };
-        let alices_key = AuthKey(u32::from_be_bytes([
-            relay[7], relay[8], relay[9], relay[10],
-        ]));
+        let alices_key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
 
         let bob = GameServerLogin {
             auth_key: alices_key,
@@ -873,8 +840,7 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::TOL),
         });
-        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now)
-        else {
+        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
@@ -887,8 +853,7 @@ mod tests {
             "the game socket carries no version of its own"
         );
 
-        let Response::Send(list) = server.handle(&mut second, pkt(&game_login(key, "admin")), now)
-        else {
+        let Response::Send(list) = server.handle(&mut second, pkt(&game_login(key, "admin")), now) else {
             panic!("expected the character list");
         };
         assert_eq!(
@@ -920,15 +885,13 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(2, 0, 0, 0)),
         });
-        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now)
-        else {
+        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
 
         let mut second = LoginSession::new();
-        let Response::Send(_) = server.handle(&mut second, pkt(&game_login(key, "admin")), now)
-        else {
+        let Response::Send(_) = server.handle(&mut second, pkt(&game_login(key, "admin")), now) else {
             panic!("expected the character list");
         };
         assert_eq!(second.version(), ClientVersion::new(2, 0, 0, 0));
@@ -952,8 +915,7 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(4, 0, 0, 0)),
         });
-        let Response::Send(list) = server.handle(&mut modern, pkt(&login("admin", "hunter2")), now)
-        else {
+        let Response::Send(list) = server.handle(&mut modern, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         assert_eq!(&list[42..46], &[1, 0, 0, 127], "reversed since 4.0.0");
@@ -963,9 +925,7 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(3, 255, 255, 255)),
         });
-        let Response::Send(list) =
-            server.handle(&mut ancient, pkt(&login("admin", "hunter2")), now)
-        else {
+        let Response::Send(list) = server.handle(&mut ancient, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         assert_eq!(&list[42..46], &[127, 0, 0, 1], "in order below it");
@@ -1047,11 +1007,7 @@ mod tests {
         }
         // And login still works afterwards.
         assert!(matches!(
-            server.handle(
-                &mut session,
-                pkt(&login("admin", "hunter2")),
-                Instant::now()
-            ),
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), Instant::now()),
             Response::Send(_)
         ));
     }

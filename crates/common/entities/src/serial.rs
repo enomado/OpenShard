@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use openshard_protocol::serial::{Serial, SerialKind, ITEM_MAX, ITEM_MIN, MOBILE_MAX, MOBILE_MIN};
+use openshard_protocol::serial::{ITEM_MAX, ITEM_MIN, MOBILE_MAX, MOBILE_MIN, Serial, SerialKind};
 
 /// The serial pool for one kind is full.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

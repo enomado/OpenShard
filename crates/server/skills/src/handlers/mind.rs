@@ -12,7 +12,7 @@
 use openshard_entities::EntityId;
 use openshard_state::components::{Equipped, HearsGhosts, Hitpoints, Mana, Meditating, Spellbook};
 use openshard_state::weapon::{LAYER_ONE_HANDED, LAYER_TWO_HANDED};
-use openshard_state::{Skill, WorldState, TICKS_PER_SECOND};
+use openshard_state::{Skill, TICKS_PER_SECOND, WorldState};
 
 use crate::check::roll_skill_band;
 

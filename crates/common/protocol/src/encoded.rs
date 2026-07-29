@@ -9,7 +9,7 @@
 //! `PacketHandlers.EncodedCommand` and Sphere's `Event_ExtCmd` equivalent — the
 //! two agree.
 
-use crate::error::{expect_id, DecodeError};
+use crate::error::{DecodeError, expect_id};
 
 /// `0xD7` — a client request named by its subcommand.
 ///
@@ -70,8 +70,7 @@ mod tests {
 
     #[test]
     fn an_encoded_command_reads_its_serial_and_subcommand() {
-        let got = EncodedCommand::decode(&packet(0x0000_1234, EncodedCommand::QUEST_GUMP_REQUEST))
-            .unwrap();
+        let got = EncodedCommand::decode(&packet(0x0000_1234, EncodedCommand::QUEST_GUMP_REQUEST)).unwrap();
         assert_eq!(got.serial, 0x0000_1234);
         assert_eq!(got.subcommand, EncodedCommand::QUEST_GUMP_REQUEST);
     }

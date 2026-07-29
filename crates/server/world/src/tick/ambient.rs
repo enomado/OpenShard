@@ -29,8 +29,8 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::world::LightLevel;
 use openshard_state::components::Position;
 
-use super::defaults::{LIGHT_DAY, LIGHT_NIGHT, LIGHT_NIGHTSIGHT};
 use super::World;
+use super::defaults::{LIGHT_DAY, LIGHT_NIGHT, LIGHT_NIGHTSIGHT};
 
 use openshard_magic as magic;
 
@@ -41,8 +41,7 @@ impl World {
     #[must_use]
     pub fn clock_minutes(&self) -> u64 {
         let per_minute = self.state.gameplay.uo_minute_ticks.max(1);
-        self.clock_base
-            .saturating_add(self.state.ticks / per_minute)
+        self.clock_base.saturating_add(self.state.ticks / per_minute)
     }
 
     /// Publish the world's hour on [`WorldState`] for the systems that read it.
@@ -108,9 +107,7 @@ impl World {
     ///    rather than in a rule here.
     /// 3. **The hour**, at this mobile's longitude.
     fn light_for(&self, entity: EntityId) -> u8 {
-        if magic::behaviour_buff(&self.state, entity, openshard_state::effect::NIGHT_SIGHT)
-            .is_some()
-        {
+        if magic::behaviour_buff(&self.state, entity, openshard_state::effect::NIGHT_SIGHT).is_some() {
             return LIGHT_NIGHTSIGHT;
         }
         if let Some(light) = self.state.region_of(entity).and_then(|region| region.light) {

@@ -3,7 +3,7 @@
 //! Before this, `server/server/src/dispatch.rs` matched the raw id byte to
 //! pick a handler, and each handler decoded the same bytes again — one place
 //! that knew the id, another that knew the type. [`ClientPacket::decode`]
-//! does both in one pass, mirroring [`crate::login::ClientLoginPacket`],
+//! does both in one pass, mirroring [`crate::login::LoginStagePacket`],
 //! which did the same for the login conversation first. `dispatch` matches on
 //! the result and touches no raw packet buffer itself.
 
@@ -15,7 +15,7 @@ use crate::extended::ExtendedRequest;
 use crate::gump::GumpResponse;
 use crate::items::{DropItem, EquipItemRequest, PickUpItem};
 use crate::mobile::{LookRequest, StatusQuery};
-use crate::packet::{decode_packet, DecodePacket};
+use crate::packet::{DecodePacket, decode_packet};
 use crate::properties::PropertyQueryRequest;
 use crate::skill::{SkillLockRequest, UseSkillRequest};
 use crate::speech::{TalkRequest, UnicodeTalkRequest};

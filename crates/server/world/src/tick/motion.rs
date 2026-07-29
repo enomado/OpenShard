@@ -19,8 +19,7 @@ impl World {
                 .get::<openshard_state::components::Frozen>(entity)
         {
             if self.state.ticks < until {
-                if let Some(Movement(walker)) = self.state.registry.get::<Movement>(entity).copied()
-                {
+                if let Some(Movement(walker)) = self.state.registry.get::<Movement>(entity).copied() {
                     self.state.send_packet(
                         connection,
                         &ServerPacket::WalkReject(WalkReject {
@@ -62,8 +61,7 @@ impl World {
         {
             self.notify_self(entity, "Your concentration is broken.");
         }
-        let Some(Movement(mut walker)) = self.state.registry.get::<Movement>(entity).copied()
-        else {
+        let Some(Movement(mut walker)) = self.state.registry.get::<Movement>(entity).copied() else {
             return;
         };
 
@@ -101,10 +99,7 @@ impl World {
                 self.state.registry.insert(entity, Heading(facing));
                 // The index is a second copy of the position; this is the line
                 // that keeps it honest.
-                self.state
-                    .facet_state_mut(facet)
-                    .sectors
-                    .insert(entity, position);
+                self.state.facet_state_mut(facet).sectors.insert(entity, position);
                 self.state.send_packet(
                     connection,
                     &ServerPacket::WalkAck(WalkAck {
@@ -194,8 +189,7 @@ impl World {
         {
             return;
         }
-        let Some(Movement(mut walker)) = self.state.registry.get::<Movement>(entity).copied()
-        else {
+        let Some(Movement(mut walker)) = self.state.registry.get::<Movement>(entity).copied() else {
             return;
         };
         let direction = Direction::from_bits(direction);
@@ -252,10 +246,7 @@ impl World {
         self.state.registry.insert(entity, Movement(walker));
         self.state.registry.insert(entity, Position(landed));
         self.state.registry.insert(entity, Heading(facing));
-        self.state
-            .facet_state_mut(facet)
-            .sectors
-            .insert(entity, landed);
+        self.state.facet_state_mut(facet).sectors.insert(entity, landed);
         self.state.bus.send(MobileMoved {
             entity,
             serial,

@@ -23,10 +23,10 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::Graphic as WireGraphic;
 use openshard_protocol::world::Point;
 use openshard_state::components::{
-    body_is_female, body_opens_doors, creature_base_sound, effect, BehaviourBuffs, Body, Client,
-    Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard, Hitpoints, MeleeDamage,
-    MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack, Resistance, Skills,
-    Stamina, Stats, Steps, SwingSpeed,
+    BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
+    Hitpoints, MeleeDamage, MurderDecay, Murders, PoisonCharges, Poisoned, Position, RangedAttack,
+    Resistance, Skills, Stamina, Stats, Steps, SwingSpeed, body_is_female, body_opens_doors,
+    creature_base_sound, effect,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::weapon::{LAYER_ONE_HANDED, LAYER_TWO_HANDED};
@@ -167,9 +167,7 @@ pub fn regen_hits(state: &mut WorldState) {
         .query::<Hitpoints>()
         .filter(|(_, hits)| hits.current > 0 && hits.current < hits.max)
         .map(|(entity, _)| entity)
-        .filter(|&entity| {
-            !state.registry.has::<Poisoned>(entity) && !state.registry.has::<Ghost>(entity)
-        })
+        .filter(|&entity| !state.registry.has::<Poisoned>(entity) && !state.registry.has::<Ghost>(entity))
         .collect();
     for entity in wounded {
         if let Some(&Hitpoints { current, max }) = state.registry.get::<Hitpoints>(entity) {
@@ -336,11 +334,7 @@ pub const fn swing_ticks(dex: u16, base: u64, era: u8, scale: u64) -> u64 {
         // AoS: half the pre-AoS interval, floored at 1.25s (12 tenths).
         2 => {
             let t = ((scale * 10) / denom) / 2;
-            if t < 12 {
-                12
-            } else {
-                t
-            }
+            if t < 12 { 12 } else { t }
         }
         // SE: `scale/((dex+100)·speed) - 2` in 0.25s ticks, floored at 5, then
         // converted to tenths (`·10/4`). `scale` is 80000.
@@ -360,20 +354,12 @@ pub const fn swing_ticks(dex: u16, base: u64, era: u8, scale: u64) -> u64 {
         // Sphere custom (0): pre-AoS with a 0.5s (5-tenths) floor.
         0 => {
             let t = (scale * 10) / denom;
-            if t < 5 {
-                5
-            } else {
-                t
-            }
+            if t < 5 { 5 } else { t }
         }
         // Pre-AoS (1) and the fallback.
         _ => {
             let t = (scale * 10) / denom;
-            if t == 0 {
-                1
-            } else {
-                t
-            }
+            if t == 0 { 1 } else { t }
         }
     };
     tenths * 2
@@ -386,13 +372,7 @@ pub const fn swing_ticks(dex: u16, base: u64, era: u8, scale: u64) -> u64 {
 /// lethal blow that leaves a blue mobile dead tallies against the attacker, so a
 /// fireball counts the same as a sword. Unattributed damage (a script's raw
 /// `op_damage` with no `by`, an environmental hazard) kills without blame.
-pub fn damage(
-    state: &mut WorldState,
-    serial: u32,
-    amount: u16,
-    kind: DamageType,
-    attacker: Option<Serial>,
-) {
+pub fn damage(state: &mut WorldState, serial: u32, amount: u16, kind: DamageType, attacker: Option<Serial>) {
     let Some(serial) = Serial::new(serial) else {
         return;
     };
@@ -527,12 +507,7 @@ pub fn attack(state: &mut WorldState, connection: ConnectionId, target: Option<S
     // itself, or an invulnerable mobile — clears the aim and un-highlights the
     // client's bar.
     let valid = target
-        .and_then(|serial| {
-            state
-                .registry
-                .entity_of(serial)
-                .map(|entity| (serial, entity))
-        })
+        .and_then(|serial| state.registry.entity_of(serial).map(|entity| (serial, entity)))
         .filter(|&(_, entity)| {
             entity != player
                 && state.registry.has::<Hitpoints>(entity)
@@ -562,9 +537,7 @@ pub fn attack(state: &mut WorldState, connection: ConnectionId, target: Option<S
     }
     state.send_packet(
         connection,
-        &ServerPacket::AttackTarget(AttackTarget {
-            target: Some(serial),
-        }),
+        &ServerPacket::AttackTarget(AttackTarget { target: Some(serial) }),
     );
 }
 
@@ -612,11 +585,7 @@ pub fn volleys(state: &mut WorldState) {
         {
             continue; // melee's beat, or out of reach — the brain closes in
         }
-        if !state
-            .facet_state(facet)
-            .live_terrain()
-            .sight_clear(from, to)
-        {
+        if !state.facet_state(facet).live_terrain().sight_clear(from, to) {
             continue; // no shooting through walls
         }
         let by = state.registry.serial_of(attacker);
@@ -805,10 +774,7 @@ pub fn decay_murders(state: &mut WorldState) {
         }
         // Dropped below the line: no longer a murderer. Only repaint if a grey
         // flag is not currently the colour shown — that one lifts on its own timer.
-        if was_murderer
-            && !is_murderer(state, entity)
-            && state.notoriety_of(entity) == Notoriety::Murderer
-        {
+        if was_murderer && !is_murderer(state, entity) && state.notoriety_of(entity) == Notoriety::Murderer {
             state.registry.insert(entity, Notoriety::Innocent);
             state.broadcast_move(entity);
         }
@@ -902,15 +868,13 @@ fn deliver_weapon_poison(state: &mut WorldState, attacker: EntityId, target: u32
         .registry
         .query::<Equipped>()
         .find(|(_, worn)| {
-            worn.mobile == serial
-                && (worn.layer == LAYER_ONE_HANDED || worn.layer == LAYER_TWO_HANDED)
+            worn.mobile == serial && (worn.layer == LAYER_ONE_HANDED || worn.layer == LAYER_TWO_HANDED)
         })
         .map(|(entity, _)| entity)
     else {
         return;
     };
-    let Some(&PoisonCharges { level, charges }) = state.registry.get::<PoisonCharges>(weapon)
-    else {
+    let Some(&PoisonCharges { level, charges }) = state.registry.get::<PoisonCharges>(weapon) else {
         return;
     };
     apply_poison(state, target, level, now);
@@ -919,13 +883,9 @@ fn deliver_weapon_poison(state: &mut WorldState, attacker: EntityId, target: u32
             state.registry.remove::<PoisonCharges>(weapon);
         }
         left => {
-            state.registry.insert(
-                weapon,
-                PoisonCharges {
-                    level,
-                    charges: left,
-                },
-            );
+            state
+                .registry
+                .insert(weapon, PoisonCharges { level, charges: left });
         }
     }
 }
@@ -1140,12 +1100,7 @@ fn scaled_blow(state: &mut WorldState, attacker: EntityId, defender: EntityId) -
     let scaled = if state.registry.has::<Skills>(attacker) {
         let tactics = f64::from(skill_value(state, attacker, weapons::TACTICS_SKILL)) / 10.0;
         let anatomy = f64::from(skill_value(state, attacker, weapons::ANATOMY_SKILL)) / 10.0;
-        let strength = f64::from(
-            state
-                .registry
-                .get::<Stats>(attacker)
-                .map_or(0, |s| s.strength),
-        );
+        let strength = f64::from(state.registry.get::<Stats>(attacker).map_or(0, |s| s.strength));
         // Lumberjacking lends an axe a bonus, nothing else.
         let is_axe = weapons::equipped_weapon(state, attacker).is_some_and(|weapon| weapon.is_axe);
         let lumber = if is_axe {

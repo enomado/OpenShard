@@ -3,7 +3,7 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
-use crate::serial::{raw_or_none, Serial};
+use crate::serial::{Serial, raw_or_none};
 use crate::version::ClientVersion;
 
 /// `0x72` — enter or leave war mode. 5 bytes, the same shape both ways.
@@ -32,13 +32,8 @@ impl EncodePacket for WarMode {
 impl DecodePacket for WarMode {
     const ID: u8 = 0x72;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
-        Ok(Self {
-            war: reader.bool()?,
-        })
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self { war: reader.bool()? })
     }
 }
 
@@ -57,10 +52,7 @@ pub struct AttackRequest {
 impl DecodePacket for AttackRequest {
     const ID: u8 = 0x05;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             target: Serial::new(reader.u32()?),
         })
@@ -111,11 +103,7 @@ impl HealthBar {
     /// The real numbers, for the mobile's own client.
     #[must_use]
     pub const fn exact(serial: Serial, max: u16, current: u16) -> Self {
-        Self {
-            serial,
-            max,
-            current,
-        }
+        Self { serial, max, current }
     }
 
     /// A 0–100 bar, for everyone else.
@@ -209,8 +197,7 @@ mod tests {
 
     #[test]
     fn an_attack_request_is_a_serial() {
-        let request: AttackRequest =
-            decode_packet(&[0x05, 0x00, 0x00, 0x00, 0x2A], version()).unwrap();
+        let request: AttackRequest = decode_packet(&[0x05, 0x00, 0x00, 0x00, 0x2A], version()).unwrap();
         assert_eq!(request.target, Serial::new(0x2A));
     }
 
@@ -218,8 +205,7 @@ mod tests {
     fn an_attack_request_for_nothing_is_not_malformed() {
         // The client's way of saying "stop": a serial no object can have. It
         // clears the aim, and it must not cost the connection.
-        let request: AttackRequest =
-            decode_packet(&[0x05, 0x00, 0x00, 0x00, 0x00], version()).unwrap();
+        let request: AttackRequest = decode_packet(&[0x05, 0x00, 0x00, 0x00, 0x00], version()).unwrap();
         assert_eq!(request.target, None);
     }
 

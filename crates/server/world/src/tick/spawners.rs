@@ -256,8 +256,7 @@ impl World {
             .registry
             .query::<Body>()
             .filter(|(entity, _)| {
-                !self.state.registry.has::<Client>(*entity)
-                    && !self.state.registry.has::<Ridden>(*entity)
+                !self.state.registry.has::<Client>(*entity) && !self.state.registry.has::<Ridden>(*entity)
             })
             .map(|(entity, _)| entity)
             .collect();

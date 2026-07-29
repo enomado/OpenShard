@@ -145,10 +145,6 @@ pub fn followers_of(state: &WorldState, owner: EntityId) -> u8 {
         .filter(|(_, pet)| pet.owner == serial)
         .map(|(_, pet)| pet.slots)
         .sum();
-    let mount = u8::from(
-        state
-            .registry
-            .has::<openshard_state::components::Riding>(owner),
-    );
+    let mount = u8::from(state.registry.has::<openshard_state::components::Riding>(owner));
     pets.saturating_add(mount)
 }

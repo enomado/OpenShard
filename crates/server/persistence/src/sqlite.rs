@@ -22,12 +22,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use openshard_protocol::identity::{AccountName, CharacterName};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::journal::Snapshot;
 use crate::record::{
-    AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord,
-    RegionRecord, SpawnerRecord, StatLockRecord, SCHEMA_VERSION,
+    AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord, RegionRecord,
+    SCHEMA_VERSION, SpawnerRecord, StatLockRecord,
 };
 use crate::store::{Store, StoreError};
 
@@ -590,9 +590,7 @@ impl Store for SqliteStore {
     async fn characters(&self) -> Result<Vec<CharacterRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare(
                     "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
@@ -643,18 +641,17 @@ impl Store for SqliteStore {
                 .map_err(database)?;
             let mut characters = Vec::new();
             for row in rows {
-                let (mut record, skills, effects, quests, done_quests, stat_locks) =
-                    row.map_err(database)?;
-                record.skills = serde_json::from_str(&skills)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-                record.effects = serde_json::from_str(&effects)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-                record.quests = serde_json::from_str(&quests)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-                record.done_quests = serde_json::from_str(&done_quests)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-                record.stat_locks = serde_json::from_str(&stat_locks)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let (mut record, skills, effects, quests, done_quests, stat_locks) = row.map_err(database)?;
+                record.skills =
+                    serde_json::from_str(&skills).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.effects =
+                    serde_json::from_str(&effects).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.quests =
+                    serde_json::from_str(&quests).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.done_quests =
+                    serde_json::from_str(&done_quests).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.stat_locks =
+                    serde_json::from_str(&stat_locks).map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 characters.push(record);
             }
             Ok(characters)
@@ -665,9 +662,7 @@ impl Store for SqliteStore {
     async fn items(&self) -> Result<Vec<ItemRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare(
                     "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
@@ -705,23 +700,19 @@ impl Store for SqliteStore {
                             corpse: row
                                 .get::<_, Option<String>>(18)?
                                 .and_then(|json| serde_json::from_str(&json).ok()),
-                            poison: row
-                                .get::<_, Option<u8>>(19)?
-                                .zip(row.get::<_, Option<u16>>(20)?),
+                            poison: row.get::<_, Option<u8>>(19)?.zip(row.get::<_, Option<u16>>(20)?),
                             trap: match (
                                 row.get::<_, Option<u8>>(21)?,
                                 row.get::<_, Option<u16>>(22)?,
                                 row.get::<_, Option<u8>>(23)?,
                             ) {
-                                (Some(kind), Some(power), Some(level)) => {
-                                    Some((kind, power, level))
-                                }
+                                (Some(kind), Some(power), Some(level)) => Some((kind, power, level)),
                                 _ => None,
                             },
                             uses: row.get(24)?,
-                            crafted: row.get::<_, Option<bool>>(25)?.map(|fine| {
-                                (fine, row.get::<_, Option<String>>(26).ok().flatten())
-                            }),
+                            crafted: row
+                                .get::<_, Option<bool>>(25)?
+                                .map(|fine| (fine, row.get::<_, Option<String>>(26).ok().flatten())),
                             // All four or none: a rune half-read is a rune that
                             // points somewhere nobody marked.
                             rune: match (
@@ -766,9 +757,7 @@ impl Store for SqliteStore {
     async fn spawners(&self) -> Result<Vec<SpawnerRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare(
                     "SELECT id, facet, x, y, width, height, max_count, \
@@ -798,8 +787,8 @@ impl Store for SqliteStore {
             let mut spawners = Vec::new();
             for row in rows {
                 let (mut record, creatures) = row.map_err(database)?;
-                record.creatures = serde_json::from_str(&creatures)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                record.creatures =
+                    serde_json::from_str(&creatures).map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 spawners.push(record);
             }
             Ok(spawners)
@@ -810,21 +799,15 @@ impl Store for SqliteStore {
     async fn mobiles(&self) -> Result<Vec<MobileRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
-            let mut statement = guard
-                .prepare("SELECT data FROM mobiles")
-                .map_err(database)?;
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
+            let mut statement = guard.prepare("SELECT data FROM mobiles").map_err(database)?;
             let rows = statement
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(database)?;
             let mut mobiles = Vec::new();
             for row in rows {
                 let data = row.map_err(database)?;
-                mobiles.push(
-                    serde_json::from_str(&data).map_err(|e| StoreError::Corrupt(e.to_string()))?,
-                );
+                mobiles.push(serde_json::from_str(&data).map_err(|e| StoreError::Corrupt(e.to_string()))?);
             }
             Ok(mobiles)
         })
@@ -834,21 +817,16 @@ impl Store for SqliteStore {
     async fn decorations(&self) -> Result<Vec<DecorationRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
-            let mut statement = guard
-                .prepare("SELECT data FROM decorations")
-                .map_err(database)?;
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
+            let mut statement = guard.prepare("SELECT data FROM decorations").map_err(database)?;
             let rows = statement
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(database)?;
             let mut decorations = Vec::new();
             for row in rows {
                 let data = row.map_err(database)?;
-                decorations.push(
-                    serde_json::from_str(&data).map_err(|e| StoreError::Corrupt(e.to_string()))?,
-                );
+                decorations
+                    .push(serde_json::from_str(&data).map_err(|e| StoreError::Corrupt(e.to_string()))?);
             }
             Ok(decorations)
         })
@@ -858,9 +836,7 @@ impl Store for SqliteStore {
     async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare("SELECT data FROM regions ORDER BY facet, id")
                 .map_err(database)?;
@@ -870,9 +846,7 @@ impl Store for SqliteStore {
             let mut regions = Vec::new();
             for row in rows {
                 let data = row.map_err(database)?;
-                regions.push(
-                    serde_json::from_str(&data).map_err(|e| StoreError::Corrupt(e.to_string()))?,
-                );
+                regions.push(serde_json::from_str(&data).map_err(|e| StoreError::Corrupt(e.to_string()))?);
             }
             Ok(regions)
         })
@@ -882,9 +856,7 @@ impl Store for SqliteStore {
     async fn clock_minutes(&self) -> Result<u64, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let minutes: Option<i64> = guard
                 .query_row("SELECT clock_minutes FROM world WHERE id = 0", [], |row| {
                     row.get::<_, i64>(0)
@@ -900,9 +872,7 @@ impl Store for SqliteStore {
     async fn accounts(&self) -> Result<Vec<AccountRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             let mut statement = guard
                 .prepare("SELECT name, credential FROM accounts")
                 .map_err(database)?;
@@ -923,9 +893,7 @@ impl Store for SqliteStore {
         let connection = Arc::clone(&self.connection);
         let account = account.clone();
         blocking(move || {
-            let guard = connection
-                .lock()
-                .expect("the sqlite mutex is never poisoned");
+            let guard = connection.lock().expect("the sqlite mutex is never poisoned");
             guard
                 .execute(
                     "INSERT OR REPLACE INTO accounts (name, credential) VALUES (?1, ?2)",
@@ -1040,12 +1008,7 @@ mod tests {
     /// restore path, which no test that only fills a backpack exercises.
     fn ground(serial: u32, x: u16, y: u16) -> ItemRecord {
         ItemRecord {
-            location: ItemLocation::Ground {
-                facet: 0,
-                x,
-                y,
-                z: 0,
-            },
+            location: ItemLocation::Ground { facet: 0, x, y, z: 0 },
             ..contained(serial, 0, 0)
         }
     }
@@ -1107,10 +1070,7 @@ mod tests {
         let store = SqliteStore::open_in_memory().expect("open");
         let mut record = character(1, 100);
         record.z = -40;
-        store
-            .save(&snapshot(vec![record], vec![]))
-            .await
-            .expect("save");
+        store.save(&snapshot(vec![record], vec![])).await.expect("save");
         assert_eq!(store.characters().await.expect("read")[0].z, -40);
     }
 
@@ -1501,10 +1461,7 @@ mod tests {
                 .expect("stamp a future schema");
         }
         let error = SqliteStore::open(&path).expect_err("must refuse");
-        assert!(matches!(
-            error,
-            StoreError::SchemaMismatch { found: 999, .. }
-        ));
+        assert!(matches!(error, StoreError::SchemaMismatch { found: 999, .. }));
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -1,4 +1,4 @@
-use super::tests::{enter, enter_as, walk, START};
+use super::tests::{START, enter, enter_as, walk};
 use super::*;
 use openshard_gateway::ConnectionId;
 use openshard_movement::WALK_INTERVAL;
@@ -194,10 +194,7 @@ fn logging_out_does_not_delete_the_character() {
 
     world.take_snapshot();
     let snapshot = only_snapshot(&mut world).expect("a change");
-    assert!(
-        snapshot.removed.is_empty(),
-        "a logout must not queue a deletion"
-    );
+    assert!(snapshot.removed.is_empty(), "a logout must not queue a deletion");
 }
 
 #[test]
@@ -247,10 +244,7 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
         serial: None,
         position: None,
         facet: 0,
-        appearance: Some(Appearance {
-            body: 0x0190,
-            hue: 0,
-        }),
+        appearance: Some(Appearance { body: 0x0190, hue: 0 }),
         sheet: Some(CharacterSheet {
             strength: 100,
             dexterity: 100,
@@ -283,10 +277,7 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
     );
     // No fresh corpse laid on re-entry — that would duplicate the saved one.
     assert!(
-        world
-            .registry()
-            .query::<Graphic>()
-            .all(|(_, g)| g.id != 0x2006),
+        world.registry().query::<Graphic>().all(|(_, g)| g.id != 0x2006),
         "no corpse is laid on relog"
     );
 }
@@ -304,13 +295,7 @@ fn a_world_with_nowhere_to_save_keeps_no_journal_anyone_waits_on() {
 
     // And a caller that asks explicitly gets it all.
     world.take_snapshot();
-    assert_eq!(
-        only_snapshot(&mut world)
-            .expect("a change")
-            .characters
-            .len(),
-        1
-    );
+    assert_eq!(only_snapshot(&mut world).expect("a change").characters.len(), 1);
     assert_eq!(world.unsaved(), 0);
 }
 

@@ -128,10 +128,7 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
     let mana = state.registry.get::<Mana>(target).copied();
     let stats = state.registry.get::<Stats>(target).copied();
     let armour = openshard_state::armor::worn_armor_rating(state, target);
-    let physical = state
-        .registry
-        .get::<Resistance>(target)
-        .map_or(0, |r| r.physical);
+    let physical = state.registry.get::<Resistance>(target).map_or(0, |r| r.physical);
     let skills = state.registry.get::<Skills>(target).cloned();
     let loyalty = state.registry.get::<Pet>(target).map(|pet| pet.order);
 
@@ -173,32 +170,12 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
             false,
         );
     };
-    row(
-        &mut gump,
-        168,
-        1_049_578,
-        pool(hits.map(|h| (h.current, h.max))),
-    );
-    row(
-        &mut gump,
-        186,
-        1_049_579,
-        pool(stam.map(|s| (s.current, s.max))),
-    );
-    row(
-        &mut gump,
-        204,
-        1_049_580,
-        pool(mana.map(|m| (m.current, m.max))),
-    );
+    row(&mut gump, 168, 1_049_578, pool(hits.map(|h| (h.current, h.max))));
+    row(&mut gump, 186, 1_049_579, pool(stam.map(|s| (s.current, s.max))));
+    row(&mut gump, 204, 1_049_580, pool(mana.map(|m| (m.current, m.max))));
     row(&mut gump, 222, 1_028_335, stat(stats.map(|s| s.strength)));
     row(&mut gump, 240, 3_000_113, stat(stats.map(|s| s.dexterity)));
-    row(
-        &mut gump,
-        258,
-        3_000_112,
-        stat(stats.map(|s| s.intelligence)),
-    );
+    row(&mut gump, 258, 3_000_112, stat(stats.map(|s| s.intelligence)));
     // Pre-AoS the fourth block is "Miscellaneous", and the armour rating is what
     // goes in it — the number this engine actually has.
     gump.image(128, 278, 2086);
@@ -226,8 +203,8 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
     }
     gump.image(128, 260, 2086);
     gump.html_localized_colored(147, 258, 160, 18, 3_001_032, 200, false, false); // Lore & Knowledge
-                                                                                  // A tamed creature says what it was last told, which is the one thing this
-                                                                                  // window can say about loyalty that is true.
+    // A tamed creature says what it was last told, which is the one thing this
+    // window can say about loyalty that is true.
     if let Some(order) = loyalty {
         gump.html(
             153,

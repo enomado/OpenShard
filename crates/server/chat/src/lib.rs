@@ -16,7 +16,7 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{UnicodeMessage, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC};
+use openshard_protocol::speech::{DEFAULT_LANGUAGE_TAG, NO_GRAPHIC, UnicodeMessage};
 use openshard_state::components::{Body, Client, Name, Position};
 use openshard_state::sectors::in_range;
 use openshard_state::{Gameplay, WorldState};
@@ -61,14 +61,7 @@ pub const fn speech_range(mode: u8, gameplay: &Gameplay) -> u32 {
 }
 
 /// A player says something. The connection names the speaker.
-pub fn say(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    mode: u8,
-    hue: u16,
-    font: u16,
-    text: &str,
-) {
+pub fn say(state: &mut WorldState, connection: ConnectionId, mode: u8, hue: u16, font: u16, text: &str) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
@@ -89,10 +82,7 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
     // `OnSaid` calls `RevealingAction`, whose last line is `DisruptiveAction`. A
     // trance you can talk through is not a trance, and nor is a hiding place.
     state.break_cover(entity);
-    let graphic = state
-        .registry
-        .get::<Body>(entity)
-        .map_or(NO_GRAPHIC, |b| b.id);
+    let graphic = state.registry.get::<Body>(entity).map_or(NO_GRAPHIC, |b| b.id);
     // Owned before the packet, so the immutable borrow of the name is done by the
     // time the mutable outbox is touched.
     let name = state

@@ -176,9 +176,7 @@ pub fn hear_pet_order(state: &mut WorldState, speaker: EntityId, text: &str) {
             }
             (openshard_state::components::PetOrder::Attack, None) => {}
             _ => {
-                state
-                    .registry
-                    .remove::<openshard_state::components::Combat>(pet);
+                state.registry.remove::<openshard_state::components::Combat>(pet);
             }
         }
     }

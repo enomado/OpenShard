@@ -172,11 +172,7 @@ impl Facing {
     /// The wire byte.
     pub const fn to_bits(self) -> u8 {
         let bits = self.direction.to_bits();
-        if self.running {
-            bits | RUNNING_BIT
-        } else {
-            bits
-        }
+        if self.running { bits | RUNNING_BIT } else { bits }
     }
 }
 

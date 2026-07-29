@@ -14,7 +14,7 @@
 
 use openshard_entities::EntityId;
 use openshard_state::components::{Bandaging, Ghost, Hitpoints, Lock, Poisoned, Stats};
-use openshard_state::{Skill, TargetPurpose, WorldState, TICKS_PER_SECOND};
+use openshard_state::{Skill, TICKS_PER_SECOND, TargetPurpose, WorldState};
 
 use crate::check::roll_skill_band;
 
@@ -87,10 +87,7 @@ pub(super) fn begin_heal(
     bandage: EntityId,
     patient: EntityId,
 ) -> Option<BandageStarted> {
-    if !state
-        .registry
-        .has::<openshard_state::components::Body>(patient)
-    {
+    if !state.registry.has::<openshard_state::components::Body>(patient) {
         state.localized_message(healer, CANNOT_HEAL, "");
         return None;
     }
@@ -184,10 +181,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
         }
         // Veterinary for a creature, Healing for a person — ServUO's
         // `GetPrimarySkill`, which is the whole difference between the two skills.
-        let id = if state
-            .registry
-            .has::<openshard_state::components::Client>(patient)
-        {
+        let id = if state.registry.has::<openshard_state::components::Client>(patient) {
             Skill::Healing.id()
         } else {
             Skill::Veterinary.id()
@@ -296,13 +290,7 @@ pub(super) fn pick_lock(
         state.localized_message(picker, LOCK_TOO_HARD, "");
         return None;
     }
-    if roll_skill_band(
-        state,
-        picker,
-        id,
-        i32::from(required_skill),
-        i32::from(max_skill),
-    ) {
+    if roll_skill_band(state, picker, id, i32::from(required_skill), i32::from(max_skill)) {
         state.registry.remove::<Lock>(target);
         state.localized_message(picker, LOCK_YIELDS, "");
         return None;

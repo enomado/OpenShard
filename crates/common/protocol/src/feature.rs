@@ -471,19 +471,13 @@ mod tests {
     #[test]
     fn sphere_number_decoding_is_right() {
         // The one Sphere constant whose comment and number provably agree.
-        assert_eq!(
-            from_sphere_number(3_000_702),
-            ClientVersion::new(3, 0, 7, 2)
-        );
+        assert_eq!(from_sphere_number(3_000_702), ClientVersion::new(3, 0, 7, 2));
         assert_eq!(
             from_sphere_number(3_000_702),
             "3.0.7b".parse::<ClientVersion>().unwrap(),
             "Sphere's packed form and the old-style string must agree"
         );
-        assert_eq!(
-            from_sphere_number(7_004_565),
-            ClientVersion::new(7, 0, 45, 65)
-        );
+        assert_eq!(from_sphere_number(7_004_565), ClientVersion::new(7, 0, 45, 65));
     }
 
     #[test]
@@ -579,10 +573,7 @@ mod tests {
         for feature in Feature::ALL {
             assert!(latest.supports(*feature), "{feature:?} missing on {latest}");
         }
-        assert_eq!(
-            FeatureSet::resolve(latest).count() as usize,
-            Feature::ALL.len()
-        );
+        assert_eq!(FeatureSet::resolve(latest).count() as usize, Feature::ALL.len());
     }
 
     #[test]

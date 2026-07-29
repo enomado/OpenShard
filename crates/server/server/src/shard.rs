@@ -167,16 +167,10 @@ async fn restore_characters(
                 if !listed {
                     accounts = accounts.with_character(&record.account, &record.name);
                 }
-                saved.insert(
-                    (record.account.normalized(), record.name.normalized()),
-                    record,
-                );
+                saved.insert((record.account.normalized(), record.name.normalized()), record);
             }
             if !saved.is_empty() {
-                info!(
-                    characters = saved.len(),
-                    "restored the world from the database"
-                );
+                info!(characters = saved.len(), "restored the world from the database");
             }
         }
         Err(error) => error!(%error, "could not read saved characters; starting with none"),
@@ -224,10 +218,7 @@ async fn restore_decorations(store: &dyn Store, world: &mut World) {
     match store.decorations().await {
         Ok(decorations) => {
             if !decorations.is_empty() {
-                info!(
-                    decorations = decorations.len(),
-                    "restored the world's decoration"
-                );
+                info!(decorations = decorations.len(), "restored the world's decoration");
             }
             world.restore_decorations(decorations);
         }
@@ -291,10 +282,7 @@ fn build_login_server(
     let mut login = LoginServer::new(accounts, &config.server.name, advertised);
     // The list is filtered to the facets this shard loaded, so every city
     // offered is one a player can actually be placed in.
-    login.starts = start_cities(
-        &config.world.facets,
-        (config.world.start.x, config.world.start.y),
-    );
+    login.starts = start_cities(&config.world.facets, (config.world.start.x, config.world.start.y));
     login.supported_features = crate::boot::supported_features_of(config);
     login.character_list_flags = crate::boot::character_list_flags_of(config);
     login
@@ -512,9 +500,7 @@ fn handle_login_packet(
     match packet {
         // Character creation crosses the login/world line: it writes the new
         // character onto the account and then enters the world with it.
-        LoginStagePacket::CreateCharacter(create) => {
-            create_character(session, login, world, create, id)
-        }
+        LoginStagePacket::CreateCharacter(create) => create_character(session, login, world, create, id),
         // Character deletion crosses the same line: it drops the character
         // from the account list and forgets its saved row.
         LoginStagePacket::DeleteCharacter(delete) => {

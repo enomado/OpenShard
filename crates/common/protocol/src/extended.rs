@@ -12,7 +12,7 @@
 
 use crate::casting::CastSpellRequest;
 use crate::context::{ContextMenuRequest, ContextMenuSelect};
-use crate::error::{expect_id, DecodeError};
+use crate::error::{DecodeError, expect_id};
 use crate::mobile::StatLockRequest;
 
 /// A decoded `0xBF` client request.
@@ -53,9 +53,7 @@ impl ExtendedRequest {
             ContextMenuSelect::SUBCOMMAND => {
                 Self::ContextMenuSelect(ContextMenuSelect::decode_body(&mut reader)?)
             }
-            StatLockRequest::SUBCOMMAND => {
-                Self::StatLock(StatLockRequest::decode_body(&mut reader)?)
-            }
+            StatLockRequest::SUBCOMMAND => Self::StatLock(StatLockRequest::decode_body(&mut reader)?),
             other => Self::Unknown(other),
         })
     }

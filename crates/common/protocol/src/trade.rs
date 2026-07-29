@@ -25,7 +25,7 @@
 //! exists so nobody "fixes" one reference to match the other later.
 
 use crate::codec::PacketWriter;
-use crate::error::{expect_id, DecodeError};
+use crate::error::{DecodeError, expect_id};
 
 /// The packet id both directions share.
 pub const SECURE_TRADE: u8 = 0x6F;

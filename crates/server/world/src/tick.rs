@@ -30,22 +30,22 @@ use std::time::{Duration, Instant};
 use openshard_entities::{EntityId, Registry};
 use openshard_events::{Cursor, EventBus};
 use openshard_gateway::ConnectionId;
-use openshard_movement::{step_from, Terrain, Walk, Walker};
+use openshard_movement::{Terrain, Walk, Walker, step_from};
 use openshard_persistence::{
-    CharacterRecord, DecorationRecord, DoorState, Inventory, ItemLocation, ItemRecord, Journal,
-    MobileRecord, Snapshot, SCHEMA_VERSION,
+    CharacterRecord, DecorationRecord, DoorState, Inventory, ItemLocation, ItemRecord, Journal, MobileRecord,
+    SCHEMA_VERSION, Snapshot,
 };
 use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
 use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
 use openshard_protocol::identity::{AccountName, CharacterName};
-use openshard_protocol::login::{encode_supported_features, AOS_FEATURE_FLAGS};
-use openshard_protocol::mobile::{MobileStatus, Notoriety, StatLockBits, LABEL_MODE};
+use openshard_protocol::login::{AOS_FEATURE_FLAGS, encode_supported_features};
+use openshard_protocol::mobile::{LABEL_MODE, MobileStatus, Notoriety, StatLockBits};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::SpokenMessage;
 use openshard_protocol::world::{
-    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point,
-    Season, WalkAck, WalkReject, WalkRequest,
+    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point, Season,
+    WalkAck, WalkReject, WalkRequest,
 };
 use openshard_protocol::{
     access::AccessLevel,
@@ -56,17 +56,15 @@ use openshard_protocol::{
 use tracing::{debug, info, warn};
 
 use openshard_state::components::{
-    Access, Account, Amount, Body, Brain, Client, Combat, Contained, Container, DamageType,
-    Decoration, Door, Equipped, Facet, Ghost, Graphic, Heading, Hitpoints, Mana, MeleeDamage,
-    Movement, Name, Position, Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook,
-    Stackable, Stamina, Stats, Vendor,
+    Access, Account, Amount, Body, Brain, Client, Combat, Contained, Container, DamageType, Decoration, Door,
+    Equipped, Facet, Ghost, Graphic, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position,
+    Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
 };
 use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
 use openshard_state::sectors::Sectors;
 use openshard_state::{
-    FacetState, Gameplay, Obstructions, Outbound, Regions, TooltipMode, WorldState,
-    TICKS_PER_SECOND,
+    FacetState, Gameplay, Obstructions, Outbound, Regions, TICKS_PER_SECOND, TooltipMode, WorldState,
 };
 
 use openshard_ai as ai;
@@ -81,8 +79,8 @@ use openshard_skills as skills;
 
 use crate::doorgen;
 use crate::events::{
-    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeft,
-    RefusedReason, RegionChanged, StepRefused,
+    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeft, RefusedReason,
+    RegionChanged, StepRefused,
 };
 use crate::gm;
 use crate::terrain::MapTerrain;
@@ -540,8 +538,7 @@ impl World {
         }
         // And a beggar who talked somebody out of some coin. Same shape: `skills`
         // decides, and the crate that owns backpacks pays.
-        let begged: Vec<openshard_skills::Begged> =
-            self.state.bus.read(&mut self.begged).copied().collect();
+        let begged: Vec<openshard_skills::Begged> = self.state.bus.read(&mut self.begged).copied().collect();
         for beg in begged {
             let Some(serial) = self.state.registry.serial_of(beg.entity) else {
                 continue;
@@ -707,10 +704,7 @@ impl World {
                 sheet,
                 access,
             }),
-            Command::Walk {
-                connection,
-                request,
-            } => self.walk(connection, request, now),
+            Command::Walk { connection, request } => self.walk(connection, request, now),
             Command::RequestStatus { connection } => {
                 if let Some(&entity) = self.state.players.get(&connection) {
                     self.send_status(connection, entity);
@@ -728,14 +722,8 @@ impl World {
                     self.send_skills(connection, entity);
                 }
             }
-            Command::GumpResponse {
-                connection,
-                response,
-            } => self.handle_gump_response(connection, response),
-            Command::TargetResponse {
-                connection,
-                response,
-            } => self.handle_target(connection, response),
+            Command::GumpResponse { connection, response } => self.handle_gump_response(connection, response),
+            Command::TargetResponse { connection, response } => self.handle_target(connection, response),
             Command::RegisterSpawner { spawner } => self.register_spawner(spawner),
             Command::ClearSpawners => self.clear_spawners(),
             Command::RegisterRegions { facet, regions } => self.register_regions(facet, regions),
@@ -763,15 +751,7 @@ impl World {
                 position,
                 facet,
             } => {
-                items::spawn_item(
-                    &mut self.state,
-                    graphic,
-                    hue,
-                    amount,
-                    stackable,
-                    position,
-                    facet,
-                );
+                items::spawn_item(&mut self.state, graphic, hue, amount, stackable, position, facet);
             }
             Command::SpawnContainer {
                 graphic,
@@ -881,11 +861,9 @@ impl World {
                 dexterity,
                 intelligence,
             } => skills::set_stats(&mut self.state, serial, strength, dexterity, intelligence),
-            Command::SetSkill {
-                serial,
-                skill,
-                value,
-            } => skills::set_skill(&mut self.state, serial, skill, value),
+            Command::SetSkill { serial, skill, value } => {
+                skills::set_skill(&mut self.state, serial, skill, value)
+            }
             Command::SetWeapon {
                 serial,
                 speed,
@@ -918,12 +896,8 @@ impl World {
                 stat,
                 lock,
             } => self.set_stat_lock(connection, stat, lock),
-            Command::WarMode { connection, war } => {
-                combat::war_mode(&mut self.state, connection, war)
-            }
-            Command::Attack { connection, target } => {
-                combat::attack(&mut self.state, connection, target)
-            }
+            Command::WarMode { connection, war } => combat::war_mode(&mut self.state, connection, war),
+            Command::Attack { connection, target } => combat::attack(&mut self.state, connection, target),
             Command::Say {
                 connection,
                 mode,
@@ -932,9 +906,7 @@ impl World {
                 text,
             } => self.say(connection, mode, hue, font, text),
             Command::Speak { serial, hue, text } => {
-                if let Some(entity) =
-                    Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-                {
+                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
                     chat::speak(&mut self.state, entity, 0, hue, chat::DEFAULT_FONT, &text);
                 }
             }
@@ -1037,10 +1009,7 @@ impl World {
                 }
             }
             Command::SingleClick { connection, serial } => self.single_click(connection, serial),
-            Command::QueryProperties {
-                connection,
-                serials,
-            } => self.query_properties(connection, &serials),
+            Command::QueryProperties { connection, serials } => self.query_properties(connection, &serials),
             Command::ContextMenuRequest { connection, serial } => {
                 self.context_menu_request(connection, serial);
             }
@@ -1106,10 +1075,7 @@ impl World {
                     quests::bind_giver(&mut self.state, serial, keys);
                 }
             }
-            Command::MakeEscortable {
-                serial,
-                destination,
-            } => {
+            Command::MakeEscortable { serial, destination } => {
                 if let Some(serial) = Serial::new(serial) {
                     quests::make_escortable(&mut self.state, serial, destination);
                 }
@@ -1119,16 +1085,12 @@ impl World {
             }
             Command::CloseGump { serial, gump_id } => self.close_gump(serial, gump_id),
             Command::Message { serial, text } => {
-                if let Some(entity) =
-                    Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-                {
+                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
                     self.state.system_message(entity, &text);
                 }
             }
             Command::PlaySound { serial, sound } => {
-                if let Some(entity) =
-                    Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-                {
+                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
                     self.state.play_sound_to(entity, sound);
                 }
             }
@@ -1306,17 +1268,8 @@ impl World {
     /// Send a pack-built gump to a mobile's client — the pack-facing counterpart
     /// of the admin menu's own `GumpDisplay`. Silent if the serial names
     /// no mobile, or it has no client to draw on.
-    fn show_gump(
-        &mut self,
-        serial: u32,
-        gump_id: u32,
-        x: u16,
-        y: u16,
-        layout: &str,
-        lines: &[String],
-    ) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-        else {
+    fn show_gump(&mut self, serial: u32, gump_id: u32, x: u16, y: u16, layout: &str, lines: &[String]) {
+        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
@@ -1336,8 +1289,7 @@ impl World {
     /// Close an open dialog on a player's client. Silent if the serial names no
     /// mobile, or it has no client to close anything on.
     fn close_gump(&mut self, serial: u32, gump_id: u32) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-        else {
+        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
@@ -1433,8 +1385,7 @@ impl World {
             // it — the same fast-relogin path the departed record cache serves, and
             // without it a relog before the next save loses everything carried.
             let items = self.inventory_of(entity);
-            self.pending_inventories
-                .insert(record.serial, items.clone());
+            self.pending_inventories.insert(record.serial, items.clone());
             self.journal.keep_inventory(Inventory {
                 owner: record.serial,
                 items,

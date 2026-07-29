@@ -138,8 +138,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
                 if watcher == player {
                     continue;
                 }
-                if let Some(&Client { connection: to, .. }) = state.registry.get::<Client>(watcher)
-                {
+                if let Some(&Client { connection: to, .. }) = state.registry.get::<Client>(watcher) {
                     state.send_packet(
                         to,
                         &ServerPacket::Remove(Remove {
@@ -262,10 +261,7 @@ pub fn drop_into_container(
         state.registry.get::<Client>(player),
         contained_record(state, held.entity),
     ) {
-        state.send(
-            connection,
-            encode_add_to_container(record, container, version),
-        );
+        state.send(connection, encode_add_to_container(record, container, version));
     }
     // And everyone else looking into the same container, which is what makes an
     // offer visible across a trade window.
@@ -314,16 +310,9 @@ pub fn drop_onto_item(
 /// the components are `state`'s and consuming an item is this crate's own door.
 /// What a bound destination *means* stays in `magic`, which is where casting to
 /// one lives.
-fn drop_onto_runebook(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    held: HeldItem,
-    book: EntityId,
-) {
-    let (Some(&player), Some(book_serial)) = (
-        state.players.get(&connection),
-        state.registry.serial_of(book),
-    ) else {
+fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: HeldItem, book: EntityId) {
+    let (Some(&player), Some(book_serial)) = (state.players.get(&connection), state.registry.serial_of(book))
+    else {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     };
@@ -409,12 +398,7 @@ const RECALL_SPELL: u8 = 31;
 /// A Magery scroll dropped on a spellbook is learned into it and spent. A
 /// non-scroll, a book out of reach, or a spell the book already holds bounces
 /// back — no scroll is wasted on a spell you have.
-fn drop_scroll_on_book(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    held: HeldItem,
-    book: EntityId,
-) {
+fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: HeldItem, book: EntityId) {
     let spell = state
         .registry
         .get::<Graphic>(held.entity)
@@ -431,11 +415,7 @@ fn drop_scroll_on_book(
         bounce(state, connection, held, DragCancelReason::OutOfRange);
         return;
     }
-    let mut mask = state
-        .registry
-        .get::<Spellbook>(book)
-        .copied()
-        .unwrap_or_default();
+    let mut mask = state.registry.get::<Spellbook>(book).copied().unwrap_or_default();
     if mask.has(spell) {
         // Already in the book — keep the scroll rather than burn it for nothing.
         bounce(state, connection, held, DragCancelReason::Other);
@@ -460,12 +440,7 @@ fn drop_scroll_on_book(
 
 /// Put a held item back where it was lifted and tell the client the drag is
 /// off, so it stops showing the item on the cursor.
-pub fn bounce(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    held: HeldItem,
-    reason: DragCancelReason,
-) {
+pub fn bounce(state: &mut WorldState, connection: ConnectionId, held: HeldItem, reason: DragCancelReason) {
     state.held.remove(&connection);
     restore(state, held);
     reject_drag(state, connection, reason);

@@ -117,11 +117,7 @@ fn walking_back_into_range_draws_it_again() {
     teleport(&mut world, BOB, far);
     let _ = world.drain_outbound().count();
 
-    teleport(
-        &mut world,
-        BOB,
-        Point::new(START.0, START.1, Z_WITHOUT_A_MAP),
-    );
+    teleport(&mut world, BOB, Point::new(START.0, START.1, Z_WITHOUT_A_MAP));
     let to_alice = packets_for(&mut world, ALICE);
     assert!(
         to_alice.iter().any(|p| p[0] == 0x78),
@@ -170,10 +166,7 @@ fn a_player_is_never_sent_itself() {
     });
     world.tick(now);
 
-    let ids: Vec<u8> = packets_for(&mut world, ALICE)
-        .iter()
-        .map(|p| p[0])
-        .collect();
+    let ids: Vec<u8> = packets_for(&mut world, ALICE).iter().map(|p| p[0]).collect();
     assert!(!ids.contains(&0x78), "Alice was drawn to herself");
     assert!(
         !ids.contains(&0x77),
@@ -213,11 +206,7 @@ fn leaving_removes_the_watcher_bookkeeping_too() {
     world.tick(now);
 
     assert_eq!(world.state.seen.len(), 1, "Bob's screen outlived Bob");
-    assert_eq!(
-        world.sectors().len(),
-        1,
-        "and so did his place in the index"
-    );
+    assert_eq!(world.sectors().len(), 1, "and so did his place in the index");
 }
 
 #[test]

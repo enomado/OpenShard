@@ -19,21 +19,21 @@ mod check;
 mod handlers;
 mod stats;
 
-pub use button::{set_skill_delay, use_skill_button, SkillRequested, DEFAULT_SKILL_DELAY_TICKS};
+pub use button::{DEFAULT_SKILL_DELAY_TICKS, SkillRequested, set_skill_delay, use_skill_button};
 pub use check::{gain_chance, roll_skill_band, roll_skill_chance, skill_value};
 pub use handlers::{
-    advance_harvests, begin_harvest, expire_ghost_contact, expire_songs, finish_bandages,
-    followers_of, on_item_target, on_second_target, on_target, play_instrument,
-    resolve_harvest_target, snooping, use_bandage, use_lockpick, use_tool, BandageFinished,
-    BandageStarted, Begged, HarvestTarget, Harvested, InstrumentSpent, LockpickBroke, Outcome,
-    PoisonedSelf, Stolen, Tamed, ToolWorn, BANDAGE_GRAPHIC, LOCKPICK_GRAPHIC, MAX_FOLLOWERS,
+    BANDAGE_GRAPHIC, BandageFinished, BandageStarted, Begged, HarvestTarget, Harvested, InstrumentSpent,
+    LOCKPICK_GRAPHIC, LockpickBroke, MAX_FOLLOWERS, Outcome, PoisonedSelf, Stolen, Tamed, ToolWorn,
+    advance_harvests, begin_harvest, expire_ghost_contact, expire_songs, finish_bandages, followers_of,
+    on_item_target, on_second_target, on_target, play_instrument, resolve_harvest_target, snooping,
+    use_bandage, use_lockpick, use_tool,
 };
 pub use stats::gain_stat;
 
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
-use openshard_state::components::{Hitpoints, Mana, Skills, Stamina, Stats};
 use openshard_state::WorldState;
+use openshard_state::components::{Hitpoints, Mana, Skills, Stamina, Stats};
 
 /// A mobile's skill moved.
 ///
@@ -74,13 +74,7 @@ pub struct SkillUsed {
 }
 
 /// Set a mobile's stats by serial, and re-cap its pools to match.
-pub fn set_stats(
-    state: &mut WorldState,
-    serial: u32,
-    strength: u16,
-    dexterity: u16,
-    intelligence: u16,
-) {
+pub fn set_stats(state: &mut WorldState, serial: u32, strength: u16, dexterity: u16, intelligence: u16) {
     let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
@@ -143,11 +137,7 @@ pub fn set_skill(state: &mut WorldState, serial: u32, skill: u8, value: u16) {
     let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
-    let mut skills = state
-        .registry
-        .get::<Skills>(entity)
-        .cloned()
-        .unwrap_or_default();
+    let mut skills = state.registry.get::<Skills>(entity).cloned().unwrap_or_default();
     let cap = skills.cap(skill).min(state.gameplay.skill_cap);
     skills.set(skill, value.min(cap));
     state.registry.insert(entity, skills);
@@ -159,11 +149,7 @@ pub fn set_skill_cap(state: &mut WorldState, serial: u32, skill: u8, cap: u16) {
     let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
-    let mut skills = state
-        .registry
-        .get::<Skills>(entity)
-        .cloned()
-        .unwrap_or_default();
+    let mut skills = state.registry.get::<Skills>(entity).cloned().unwrap_or_default();
     skills.set_cap(skill, cap);
     let value = skills.get(skill);
     if value > cap {
@@ -184,10 +170,7 @@ pub fn use_skill(state: &mut WorldState, serial: u32, skill: u8, min_skill: i32,
         return;
     };
     let success = roll_skill_band(state, entity, skill, min_skill, max_skill);
-    let value = state
-        .registry
-        .get::<Skills>(entity)
-        .map_or(0, |s| s.get(skill));
+    let value = state.registry.get::<Skills>(entity).map_or(0, |s| s.get(skill));
     state.bus.send(SkillUsed {
         entity,
         serial,

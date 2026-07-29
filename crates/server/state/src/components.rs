@@ -1377,11 +1377,7 @@ pub const DEATH_SHROUD_GRAPHIC: u16 = 0x204E;
 /// draws the player in one.
 #[must_use]
 pub const fn ghost_body(body: u16) -> u16 {
-    if body_is_female(body) {
-        0x0193
-    } else {
-        0x0192
-    }
+    if body_is_female(body) { 0x0193 } else { 0x0192 }
 }
 
 /// The item graphic of the scroll for a Magery spell, `0-based` — the classic

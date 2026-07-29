@@ -24,10 +24,7 @@ impl World {
         // returning the entity so the caller can hang a `Door` or `Container` on
         // it. `None` when the serial pool is empty.
         for &(graphic, hue, position) in statics {
-            if self
-                .place_decoration(facet, graphic, hue, position)
-                .is_none()
-            {
+            if self.place_decoration(facet, graphic, hue, position).is_none() {
                 return;
             }
         }
@@ -70,12 +67,9 @@ impl World {
             else {
                 return;
             };
-            self.state.registry.insert(
-                entity,
-                Container {
-                    gump: container.gump,
-                },
-            );
+            self.state
+                .registry
+                .insert(entity, Container { gump: container.gump });
             if container.key_value != 0 {
                 self.state.registry.insert(
                     entity,
@@ -103,9 +97,7 @@ impl World {
             warn!("out of item serials; stopping decoration");
             return None;
         };
-        self.state
-            .registry
-            .insert(entity, Graphic { id: graphic, hue });
+        self.state.registry.insert(entity, Graphic { id: graphic, hue });
         self.state.registry.insert(entity, Position(position));
         self.state.registry.insert(entity, Facet(facet));
         self.state.registry.insert(entity, Decoration);
@@ -127,10 +119,7 @@ impl World {
                 .obstructions
                 .block(position.x, position.y, entity, false, position.z, height);
         }
-        self.state
-            .facet_state_mut(facet)
-            .sectors
-            .insert(entity, position);
+        self.state.facet_state_mut(facet).sectors.insert(entity, position);
         self.state.reveal(entity);
         Some(entity)
     }
@@ -207,47 +196,28 @@ impl World {
                     for &(id, z) in &here {
                         if doorgen::is_west_frame(id) {
                             // A single door: one gap tile to an east frame two away.
-                            if east(vx).is_some_and(|e| frame_at(e, vy, z, doorgen::is_east_frame))
-                            {
-                                try_place(
-                                    Point::new(vx + 1, vy, z),
-                                    doorgen::GenFacing::WestCw.door(),
-                                );
+                            if east(vx).is_some_and(|e| frame_at(e, vy, z, doorgen::is_east_frame)) {
+                                try_place(Point::new(vx + 1, vy, z), doorgen::GenFacing::WestCw.door());
                             } else if vx
                                 .checked_add(3)
                                 .is_some_and(|e| frame_at(e, vy, z, doorgen::is_east_frame))
                             {
                                 // A double door fills the two-tile gap.
-                                try_place(
-                                    Point::new(vx + 1, vy, z),
-                                    doorgen::GenFacing::WestCw.door(),
-                                );
-                                try_place(
-                                    Point::new(vx + 2, vy, z),
-                                    doorgen::GenFacing::EastCcw.door(),
-                                );
+                                try_place(Point::new(vx + 1, vy, z), doorgen::GenFacing::WestCw.door());
+                                try_place(Point::new(vx + 2, vy, z), doorgen::GenFacing::EastCcw.door());
                             }
                         } else if doorgen::is_north_frame(id) {
                             if vy
                                 .checked_add(2)
                                 .is_some_and(|s| frame_at(vx, s, z, doorgen::is_south_frame))
                             {
-                                try_place(
-                                    Point::new(vx, vy + 1, z),
-                                    doorgen::GenFacing::SouthCw.door(),
-                                );
+                                try_place(Point::new(vx, vy + 1, z), doorgen::GenFacing::SouthCw.door());
                             } else if vy
                                 .checked_add(3)
                                 .is_some_and(|s| frame_at(vx, s, z, doorgen::is_south_frame))
                             {
-                                try_place(
-                                    Point::new(vx, vy + 1, z),
-                                    doorgen::GenFacing::NorthCcw.door(),
-                                );
-                                try_place(
-                                    Point::new(vx, vy + 2, z),
-                                    doorgen::GenFacing::SouthCw.door(),
-                                );
+                                try_place(Point::new(vx, vy + 1, z), doorgen::GenFacing::NorthCcw.door());
+                                try_place(Point::new(vx, vy + 2, z), doorgen::GenFacing::SouthCw.door());
                             }
                         }
                     }

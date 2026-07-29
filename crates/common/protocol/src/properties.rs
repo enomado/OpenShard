@@ -90,8 +90,7 @@ impl PropertyList {
         for unit in arguments.encode_utf16() {
             bytes.extend_from_slice(&unit.to_le_bytes());
         }
-        let byte_count =
-            u16::try_from(bytes.len()).expect("a tooltip argument outgrew its u16 len");
+        let byte_count = u16::try_from(bytes.len()).expect("a tooltip argument outgrew its u16 len");
         self.writer.u16(byte_count);
         self.writer.bytes(&bytes);
     }
@@ -147,10 +146,7 @@ impl DecodePacket for PropertyQueryRequest {
 
     /// Decode a whole inbound `0xD6`. Trailing bytes that do not make a full
     /// serial are ignored rather than an error — the client pads sometimes.
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let mut serials = Vec::new();
         while reader.rest().len() >= 4 {
             serials.push(reader.u32()?);
@@ -223,10 +219,7 @@ mod tests {
         let arg_len = u16::from_be_bytes([bytes[19], bytes[20]]) as usize;
         let args = &bytes[21..21 + arg_len];
         // " \tHi\t " as UTF-16 LE: each char one unit, low byte first.
-        let expected: Vec<u8> = " \tHi\t "
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let expected: Vec<u8> = " \tHi\t ".encode_utf16().flat_map(u16::to_le_bytes).collect();
         assert_eq!(args, expected.as_slice());
         assert_eq!(args[0], b' ', "low byte first: a space is 0x20 0x00");
         assert_eq!(args[1], 0x00);

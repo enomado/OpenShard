@@ -98,18 +98,15 @@ struct ContainerSpec {
 /// Put a container on the ground.
 #[op2]
 fn op_spawn_container(state: &mut OpState, #[serde] spec: ContainerSpec) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::SpawnContainer {
-            graphic: spec.graphic,
-            gump: spec.gump,
-            hue: spec.hue,
-            x: spec.x,
-            y: spec.y,
-            z: spec.z,
-            facet: spec.facet,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::SpawnContainer {
+        graphic: spec.graphic,
+        gump: spec.gump,
+        hue: spec.hue,
+        x: spec.x,
+        y: spec.y,
+        z: spec.z,
+        facet: spec.facet,
+    });
 }
 
 /// What a script passes to spawn a mobile.
@@ -203,38 +200,35 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
         })
         .collect();
     let skills = spec.skills.into_iter().map(|s| (s.id, s.value)).collect();
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::SpawnMobile {
-            body: spec.body,
-            hue: spec.hue,
-            hits: spec.hits,
-            notoriety: spec.notoriety,
-            damage: spec.damage,
-            resistance: spec.resistance,
-            swing: spec.swing,
-            sight: spec.sight,
-            aggression: spec.aggression,
-            beat: spec.beat,
-            ranged: spec.ranged,
-            ranged_kind: spec.ranged_kind,
-            wander: spec.wander,
-            x: spec.x,
-            y: spec.y,
-            z: spec.z,
-            facet: spec.facet,
-            name: spec.name,
-            title: spec.title,
-            shoe: spec.shoe,
-            fame: spec.fame,
-            karma: spec.karma,
-            night_home: spec.night_home,
-            banker: spec.banker,
-            vendor: spec.vendor,
-            equipment,
-            skills,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::SpawnMobile {
+        body: spec.body,
+        hue: spec.hue,
+        hits: spec.hits,
+        notoriety: spec.notoriety,
+        damage: spec.damage,
+        resistance: spec.resistance,
+        swing: spec.swing,
+        sight: spec.sight,
+        aggression: spec.aggression,
+        beat: spec.beat,
+        ranged: spec.ranged,
+        ranged_kind: spec.ranged_kind,
+        wander: spec.wander,
+        x: spec.x,
+        y: spec.y,
+        z: spec.z,
+        facet: spec.facet,
+        name: spec.name,
+        title: spec.title,
+        shoe: spec.shoe,
+        fame: spec.fame,
+        karma: spec.karma,
+        night_home: spec.night_home,
+        banker: spec.banker,
+        vendor: spec.vendor,
+        equipment,
+        skills,
+    });
 }
 
 /// Deal damage to a mobile, of a kind (0 physical, 1 fire, …).
@@ -333,13 +327,7 @@ fn op_set_poison(state: &mut OpState, serial: u32, level: u32, charges: u32) {
 
 /// Set a mobile's stats; strength re-caps hits, intelligence re-caps mana.
 #[op2(fast)]
-fn op_set_stats(
-    state: &mut OpState,
-    serial: u32,
-    strength: u32,
-    dexterity: u32,
-    intelligence: u32,
-) {
+fn op_set_stats(state: &mut OpState, serial: u32, strength: u32, dexterity: u32, intelligence: u32) {
     let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
     state.borrow_mut::<Host>().outbox.push(Command::SetStats {
         serial,
@@ -624,10 +612,7 @@ fn op_make_escortable(state: &mut OpState, serial: u32, #[string] destination: S
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::MakeEscortable {
-            serial,
-            destination,
-        });
+        .push(Command::MakeEscortable { serial, destination });
 }
 
 /// Close an open gump on a player's client: `op_close_gump(serial, gumpId)`.
@@ -777,28 +762,22 @@ fn op_register_spawner(state: &mut OpState, #[serde] spec: SpawnerSpec) {
             skills: c.skills.into_iter().map(|s| (s.id, s.value)).collect(),
         })
         .collect();
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::RegisterSpawner {
-            x: spec.x,
-            y: spec.y,
-            width: spec.width,
-            height: spec.height,
-            facet: spec.facet,
-            max_count: spec.max_count,
-            respawn_delay: spec.respawn_delay,
-            creatures,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::RegisterSpawner {
+        x: spec.x,
+        y: spec.y,
+        width: spec.width,
+        height: spec.height,
+        facet: spec.facet,
+        max_count: spec.max_count,
+        respawn_delay: spec.respawn_delay,
+        creatures,
+    });
 }
 
 /// Remove every spawn region and the creatures they were maintaining.
 #[op2(fast)]
 fn op_clear_spawners(state: &mut OpState) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::ClearSpawners);
+    state.borrow_mut::<Host>().outbox.push(Command::ClearSpawners);
 }
 
 /// One rectangle of a [`RegionSpec`]. `zMin`/`zMax` default to the whole column,
@@ -876,13 +855,10 @@ fn op_register_regions(state: &mut OpState, #[serde] spec: RegionsSpec) {
             light: region.light,
         })
         .collect();
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::RegisterRegions {
-            facet: spec.facet,
-            regions,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::RegisterRegions {
+        facet: spec.facet,
+        regions,
+    });
 }
 
 /// Forget a facet's regions.
@@ -1007,10 +983,7 @@ fn op_decorate(state: &mut OpState, #[serde] spec: DecorSpec) {
 /// Remove every script-placed decoration.
 #[op2(fast)]
 fn op_clear_decorations(state: &mut OpState) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::ClearDecorations);
+    state.borrow_mut::<Host>().outbox.push(Command::ClearDecorations);
 }
 
 /// A region to generate doors in:
@@ -1029,16 +1002,13 @@ struct DoorRegionSpec {
 /// doors a building's static art only implies.
 #[op2]
 fn op_generate_doors(state: &mut OpState, #[serde] region: DoorRegionSpec) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::GenerateDoors {
-            facet: region.facet,
-            x: region.x,
-            y: region.y,
-            width: region.width,
-            height: region.height,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::GenerateDoors {
+        facet: region.facet,
+        x: region.x,
+        y: region.y,
+        width: region.width,
+        height: region.height,
+    });
 }
 
 /// One stock line for `op_stock`, from the script.
@@ -1083,27 +1053,17 @@ fn op_stock(state: &mut OpState, #[serde] spec: StockSpec) {
             name: line.name,
         })
         .collect();
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::StockVendor {
-            serial: spec.serial,
-            stock,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::StockVendor {
+        serial: spec.serial,
+        stock,
+    });
 }
 
 /// Put an item into a container by serial — a pack dropping loot into a corpse
 /// off a `CorpseCreated` event. `stackable` merges gold/reagents onto a like
 /// pile; a discrete piece (a weapon) is placed whole.
 #[op2(fast)]
-fn op_add_loot(
-    state: &mut OpState,
-    container: u32,
-    graphic: u32,
-    hue: u32,
-    amount: u32,
-    stackable: bool,
-) {
+fn op_add_loot(state: &mut OpState, container: u32, graphic: u32, hue: u32, amount: u32, stackable: bool) {
     state.borrow_mut::<Host>().outbox.push(Command::AddLoot {
         container,
         graphic: graphic.min(u32::from(u16::MAX)) as u16,
@@ -1118,13 +1078,10 @@ fn op_add_loot(
 /// the whole item; a smaller amount takes that many off a stackable pile.
 #[op2(fast)]
 fn op_consume_item(state: &mut OpState, serial: u32, amount: u32) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::ConsumeItem {
-            serial,
-            amount: amount.min(u32::from(u16::MAX)) as u16,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::ConsumeItem {
+        serial,
+        amount: amount.min(u32::from(u16::MAX)) as u16,
+    });
 }
 
 extension!(
