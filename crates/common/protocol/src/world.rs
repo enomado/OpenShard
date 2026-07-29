@@ -24,6 +24,7 @@ use std::fmt;
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
 use crate::error::{DecodeError, WrongPacket};
+use crate::identity::RawCharacterName;
 use crate::login::CHARACTER_NAME_LENGTH;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
@@ -162,7 +163,7 @@ pub struct SkillChoice {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateCharacter {
     /// The new character's name.
-    pub name: String,
+    pub name: RawCharacterName,
     /// Client flags reported at creation.
     pub flags: u32,
     /// The chosen profession, or 0 for the "advanced"/custom option.
@@ -223,7 +224,7 @@ impl CreateCharacter {
         // pattern1 (4), pattern2 (4), a "kuoc" byte (1) — constants the client
         // sends and the server has no use for.
         reader.skip(9)?;
-        let name = reader.fixed_string(CHARACTER_NAME_LENGTH)?;
+        let name = RawCharacterName(reader.fixed_string(CHARACTER_NAME_LENGTH)?);
         reader.skip(2)?; // 0x0000
         let flags = reader.u32()?;
         reader.skip(8)?; // unknown
@@ -315,7 +316,7 @@ impl CreateCharacter {
             Self::ID_CLASSIC
         });
         writer.zeros(9); // pattern1, pattern2, kuoc
-        writer.fixed_string(&self.name, CHARACTER_NAME_LENGTH);
+        writer.fixed_string(&self.name.0, CHARACTER_NAME_LENGTH);
         writer.zeros(2);
         writer.u32(self.flags);
         writer.zeros(8);
@@ -786,7 +787,7 @@ mod tests {
             skills.push(SkillChoice { skill: 4, value: 0 });
         }
         CreateCharacter {
-            name: "Lord British".to_owned(),
+            name: RawCharacterName("Lord British".to_owned()),
             flags: 0x0000_001F,
             profession: 1,
             sex_race: 0x3, // human female

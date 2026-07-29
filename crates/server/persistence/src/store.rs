@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use openshard_protocol::identity::AccountName;
 
 use crate::journal::Snapshot;
 use crate::record::{
@@ -131,7 +132,7 @@ pub struct MemoryStore {
     regions: Mutex<HashMap<(u8, u16), RegionRecord>>,
     /// The world clock, in UO minutes.
     clock: Mutex<u64>,
-    accounts: Mutex<HashMap<String, AccountRecord>>,
+    accounts: Mutex<HashMap<AccountName, AccountRecord>>,
     /// How many saves have landed. What a test asserts on.
     saves: Mutex<u64>,
 }

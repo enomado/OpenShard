@@ -7,13 +7,14 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use openshard_protocol::identity::AccountName;
 use openshard_protocol::version::ClientVersion;
 
 /// What an issued key stands for.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PendingLogin {
     /// The account that was verified on the login connection.
-    pub account: String,
+    pub account: AccountName,
     /// What the client said it was, back on the login connection.
     ///
     /// # Why the version rides on the key
@@ -88,7 +89,12 @@ impl AuthKeys {
     /// themselves at the game port as a session that had already been
     /// verified — the account name and password are re-sent in `0x91`, so this
     /// is not the only gate, but it should not be a free one either.
-    pub fn issue(&mut self, account: &str, version: ClientVersion, now: Instant) -> u32 {
+    pub fn issue(
+        &mut self,
+        account: impl Into<AccountName>,
+        version: ClientVersion,
+        now: Instant,
+    ) -> u32 {
         // Never hand out 0: the client sends 0 when it has no key, so a real key
         // of 0 would make "no key" and "this key" indistinguishable.
         let key = loop {
@@ -100,7 +106,7 @@ impl AuthKeys {
         self.issued.insert(
             key,
             PendingLogin {
-                account: account.to_owned(),
+                account: account.into(),
                 version,
                 issued_at: now,
             },

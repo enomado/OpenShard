@@ -39,6 +39,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use openshard_protocol::identity::{AccountName, CharacterName};
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls, Row};
 
@@ -312,8 +313,8 @@ impl Store for PgStore {
                      stat_locks = EXCLUDED.stat_locks",
                     &[
                         &i64::from(record.serial),
-                        &record.account,
-                        &record.name,
+                        &record.account.0,
+                        &record.name.0,
                         &i32::from(record.body),
                         &i32::from(record.hue),
                         &i32::from(record.facet),
@@ -589,7 +590,7 @@ impl Store for PgStore {
         Ok(rows
             .iter()
             .map(|row| AccountRecord {
-                name: row.get(0),
+                name: AccountName(row.get(0)),
                 credential: row.get(1),
             })
             .collect())
@@ -601,7 +602,7 @@ impl Store for PgStore {
             .execute(
                 "INSERT INTO accounts (name, credential) VALUES ($1, $2) \
                  ON CONFLICT (name) DO UPDATE SET credential = EXCLUDED.credential",
-                &[&account.name, &account.credential],
+                &[&account.name.0, &account.credential],
             )
             .await
             .map_err(database)?;
@@ -620,8 +621,8 @@ impl Store for PgStore {
 fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
     Ok(CharacterRecord {
         serial: u32::try_from(row.get::<_, i64>(0)).map_err(|_| corrupt("serial"))?,
-        account: row.get(1),
-        name: row.get(2),
+        account: AccountName(row.get(1)),
+        name: CharacterName(row.get(2)),
         body: u16::try_from(row.get::<_, i32>(3)).map_err(|_| corrupt("body"))?,
         hue: u16::try_from(row.get::<_, i32>(4)).map_err(|_| corrupt("hue"))?,
         facet: u8::try_from(row.get::<_, i32>(5)).map_err(|_| corrupt("facet"))?,

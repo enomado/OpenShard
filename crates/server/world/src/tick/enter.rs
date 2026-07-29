@@ -69,7 +69,7 @@ impl World {
         self.state.registry.insert(entity, Position(position));
         self.state.registry.insert(entity, Heading(facing));
         self.state.registry.insert(entity, body);
-        self.state.registry.insert(entity, Name(name.clone()));
+        self.state.registry.insert(entity, Name(name.0.clone()));
         self.state.registry.insert(entity, Account(account));
         self.state.registry.insert(entity, Facet(facet));
         // The account's authority, re-derived each login and never saved with the
@@ -406,7 +406,7 @@ impl World {
             serial,
             position,
         });
-        info!(%serial, name, position = %position, "in world");
+        info!(%serial, %name, position = %position, "in world");
 
         // Draw whoever is already here, and draw this one for them. Both
         // directions, because arriving is symmetric: the newcomer has an empty

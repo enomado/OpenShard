@@ -4,6 +4,7 @@ use std::fmt;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Instant;
 
+use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
     encode_supported_features, AccountLogin, CharacterList, ClientLoginDecodeError,
     ClientLoginPacket, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied, Relay,
@@ -67,7 +68,7 @@ enum LoginSessionState {
     /// The account checked out and the shard list went back. Expecting 0xA0.
     ShardListSent {
         /// Who is logging in.
-        account: String,
+        account: AccountName,
     },
     /// The character list went back. The login crate's job is done.
     CharacterListSent,
@@ -95,7 +96,7 @@ pub struct LoginSession {
     /// The character-creation packet (`0x00`/`0xF8`) arrives later on this same
     /// connection and says which character to make but not on whose account; the
     /// game login is where that is known, so it is kept here.
-    account: Option<String>,
+    account: Option<AccountName>,
 }
 
 impl Default for LoginSession {
@@ -123,8 +124,8 @@ impl LoginSession {
     ///
     /// Character creation needs it: the packet names the character, not the
     /// account it belongs to.
-    pub fn account(&self) -> Option<&str> {
-        self.account.as_deref()
+    pub fn account(&self) -> Option<&AccountName> {
+        self.account.as_ref()
     }
 
     /// Whether the conversation has run to its end.
@@ -313,27 +314,28 @@ impl<A: Accounts> LoginServer<A> {
         session: &LoginSession,
         login: AccountLogin,
     ) -> (Response, LoginSessionState) {
-        if let Err(reason) = self.accounts.verify(&login.account, &login.password) {
-            // The real reason is logged; the client hears one of five codes.
-            warn!(account = login.account, ?reason, "login refused");
-            return (
-                Response::SendThenClose(
-                    ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
-                ),
-                LoginSessionState::Finished,
-            );
-        }
+        let account = match self.accounts.verify(&login.account, &login.password) {
+            Ok(account) => account,
+            Err(reason) => {
+                // The real reason is logged; the client hears one of five codes.
+                warn!(%login.account, ?reason, "login refused");
+                return (
+                    Response::SendThenClose(
+                        ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
+                    ),
+                    LoginSessionState::Finished,
+                );
+            }
+        };
 
-        debug!(account = login.account, "account verified");
+        debug!(%account, "account verified");
         let list = ServerPacket::ShardList(ShardList {
             shards: self.shards.clone(),
         })
         .encode(session.version);
         (
             Response::Send(list),
-            LoginSessionState::ShardListSent {
-                account: login.account,
-            },
+            LoginSessionState::ShardListSent { account },
         )
     }
 
@@ -342,7 +344,7 @@ impl<A: Accounts> LoginServer<A> {
     fn on_select_shard(
         &mut self,
         session: &LoginSession,
-        account: String,
+        account: AccountName,
         select: SelectShard,
         now: Instant,
     ) -> Result<(Response, LoginSessionState), Reason> {
@@ -357,7 +359,7 @@ impl<A: Accounts> LoginServer<A> {
         // The version goes with the key: the game connection has no other way
         // to learn it. See `PendingLogin::version`.
         let key = self.keys.issue(&account, session.version, now);
-        debug!(account, slot, "relaying to the game server");
+        debug!(%account, slot, "relaying to the game server");
         Ok((
             Response::SendThenClose(
                 ServerPacket::Relay(Relay {
@@ -388,7 +390,7 @@ impl<A: Accounts> LoginServer<A> {
         // off a whole class of "connect straight to 2593" probing. The password
         // is still checked below — the key is a session token, not the gate.
         let Some(pending) = self.keys.redeem(login.auth_key, now) else {
-            warn!(account = login.account, "bad or expired auth key");
+            warn!(%login.account, "bad or expired auth key");
             return (
                 Response::SendThenClose(
                     ServerPacket::LoginDenied(LoginDenied {
@@ -408,10 +410,10 @@ impl<A: Accounts> LoginServer<A> {
 
         // The key says who selected the shard. If the account on this packet is
         // a different one, someone is replaying a key they did not earn.
-        if !pending.account.eq_ignore_ascii_case(&login.account) {
+        if pending.account.normalized() != login.account.0.to_lowercase() {
             warn!(
-                expected = pending.account,
-                got = login.account,
+                expected = %pending.account,
+                got = %login.account,
                 "auth key does not belong to this account"
             );
             return (
@@ -425,23 +427,26 @@ impl<A: Accounts> LoginServer<A> {
             );
         }
 
-        if let Err(reason) = self.accounts.verify(&login.account, &login.password) {
-            warn!(account = login.account, ?reason, "game login refused");
-            return (
-                Response::SendThenClose(
-                    ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
-                ),
-                LoginSessionState::Finished,
-            );
-        }
+        let account = match self.accounts.verify(&login.account, &login.password) {
+            Ok(account) => account,
+            Err(reason) => {
+                warn!(%login.account, ?reason, "game login refused");
+                return (
+                    Response::SendThenClose(
+                        ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
+                    ),
+                    LoginSessionState::Finished,
+                );
+            }
+        };
 
         // The game connection is now authenticated. Remember whose it is: a
         // later 0x00/0xF8 will create a character and needs the account.
-        session.account = Some(login.account.clone());
+        session.account = Some(account.clone());
 
-        let characters = self.accounts.characters(&login.account);
+        let characters = self.accounts.characters(&account);
         debug!(
-            account = login.account,
+            %account,
             count = characters.len(),
             "sending character list"
         );
@@ -485,6 +490,7 @@ mod tests {
     use super::*;
     use crate::accounts::DevAccounts;
     use openshard_protocol::feature::Feature;
+    use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 
     fn server() -> LoginServer<DevAccounts> {
         let accounts = DevAccounts::new()
@@ -510,8 +516,8 @@ mod tests {
 
     fn login(account: &str, password: &str) -> Vec<u8> {
         AccountLogin {
-            account: account.to_owned(),
-            password: password.to_owned(),
+            account: RawAccountName(account.to_owned()),
+            password: RawPlaintextPassword(password.to_owned()),
         }
         .encode()
     }
@@ -519,8 +525,8 @@ mod tests {
     fn game_login(key: u32, account: &str) -> Vec<u8> {
         GameServerLogin {
             auth_key: key,
-            account: account.to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName(account.to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         }
         .encode()
     }
@@ -579,8 +585,8 @@ mod tests {
         let mut session = modern_session();
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let Response::Send(characters) = server.handle(&mut session, &game_login.encode(), now)
         else {
@@ -602,7 +608,7 @@ mod tests {
         let mut session = modern_session();
         assert_eq!(session.account(), None, "nothing is known before the login");
         let _ = server.handle(&mut session, &game_login(key, "admin"), now);
-        assert_eq!(session.account(), Some("admin"));
+        assert_eq!(session.account().map(|a| a.0.as_str()), Some("admin"));
     }
 
     #[test]
@@ -707,8 +713,8 @@ mod tests {
         let mut session = modern_session();
         let forged = GameServerLogin {
             auth_key: 0xDEAD_BEEF,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert_eq!(
             server.handle(&mut session, &forged.encode(), Instant::now()),
@@ -725,8 +731,8 @@ mod tests {
 
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert!(matches!(
             server.handle(&mut modern_session(), &game_login.encode(), now),
@@ -762,8 +768,8 @@ mod tests {
 
         let bob = GameServerLogin {
             auth_key: alices_key,
-            account: "bob".to_owned(),
-            password: "b".to_owned(),
+            account: RawAccountName("bob".to_owned()),
+            password: RawPlaintextPassword("b".to_owned()),
         };
         assert_eq!(
             server.handle(&mut modern_session(), &bob.encode(), now),
@@ -780,8 +786,8 @@ mod tests {
 
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let too_late = issued + crate::auth::DEFAULT_TTL + std::time::Duration::from_secs(1);
         assert_eq!(
@@ -799,8 +805,8 @@ mod tests {
 
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "wrong".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("wrong".to_owned()),
         };
         assert_eq!(
             server.handle(&mut modern_session(), &game_login.encode(), now),

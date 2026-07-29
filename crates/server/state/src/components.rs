@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Walker;
+use openshard_protocol::identity::AccountName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::world::Point;
@@ -245,7 +246,7 @@ pub struct Escortable {
 /// only thing that needs it is persistence, turning an entity into a record that
 /// remembers whose character it is. An NPC has no account and no `Client`.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Account(pub String);
+pub struct Account(pub AccountName);
 
 /// Marks an item as script-placed decoration: a sign, a piece of furniture, an
 /// ankh — the things a shard adds on top of the static art the client's map

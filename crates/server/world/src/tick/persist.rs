@@ -3,6 +3,7 @@ use openshard_persistence::{
     CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord, RunebookData,
     RunebookEntryData,
 };
+use openshard_protocol::identity::CharacterName;
 use openshard_state::components::{
     body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy,
     DoneQuest, Escortable, Field, Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges,
@@ -769,7 +770,7 @@ impl World {
         Some(CharacterRecord {
             serial: serial.raw(),
             account: account.0.clone(),
-            name: name.0.clone(),
+            name: CharacterName(name.0.clone()),
             body: body.id,
             hue: body.hue,
             facet,

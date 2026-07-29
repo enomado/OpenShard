@@ -242,8 +242,8 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
     world.queue(Command::Enter {
         connection,
         version: ClientVersion::TOL,
-        account: "admin".to_owned(),
-        name: "Revenant".to_owned(),
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Revenant".to_owned()),
         serial: None,
         position: None,
         facet: 0,

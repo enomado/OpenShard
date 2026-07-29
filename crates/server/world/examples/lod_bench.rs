@@ -22,6 +22,7 @@
 use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
+use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::world::Point;
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
 use openshard_world::{Brain, Command, Gameplay, World, TICK_INTERVAL};
@@ -64,8 +65,8 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(u64::from(i + 1)),
             version: ClientVersion::TOL,
-            account: "bench".to_owned(),
-            name: format!("Player{i}"),
+            account: AccountName("bench".to_owned()),
+            name: CharacterName(format!("Player{i}")),
             serial: None,
             position: Some(Point::new(START.0 + (i % 4) as u16, START.1, 0)),
             facet: 0,

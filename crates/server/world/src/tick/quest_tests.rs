@@ -783,8 +783,8 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
     shard.queue(Command::Enter {
         connection: connection_two(),
         version: ClientVersion::TOL,
-        account: "admin".to_owned(),
-        name: "Lord British".to_owned(),
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
         serial: Some(record.serial),
         position: None,
         facet: 0,

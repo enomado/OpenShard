@@ -410,7 +410,7 @@ mod tests {
             }),
             ServerPacket::CharacterList(CharacterList {
                 characters: vec![crate::login::CharacterEntry {
-                    name: "Lord British".to_owned(),
+                    name: crate::identity::CharacterName("Lord British".to_owned()),
                 }],
                 starts: Vec::new(),
                 flags: 0,
@@ -420,7 +420,7 @@ mod tests {
             }),
             ServerPacket::CharacterListUpdate(CharacterListUpdate {
                 characters: vec![crate::login::CharacterEntry {
-                    name: "Lord British".to_owned(),
+                    name: crate::identity::CharacterName("Lord British".to_owned()),
                 }],
             }),
             ServerPacket::PlayerStart(PlayerStart {

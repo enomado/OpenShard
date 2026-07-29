@@ -21,6 +21,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use openshard_protocol::identity::{AccountName, CharacterName};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::journal::Snapshot;
@@ -364,8 +365,8 @@ impl Store for SqliteStore {
                                  ?19, ?20, ?21, ?22)",
                         params![
                             record.serial,
-                            record.account,
-                            record.name,
+                            record.account.0,
+                            record.name.0,
                             record.body,
                             record.hue,
                             record.facet,
@@ -610,8 +611,8 @@ impl Store for SqliteStore {
                     Ok((
                         CharacterRecord {
                             serial: row.get(0)?,
-                            account: row.get(1)?,
-                            name: row.get(2)?,
+                            account: AccountName(row.get(1)?),
+                            name: CharacterName(row.get(2)?),
                             body: row.get(3)?,
                             hue: row.get(4)?,
                             facet: row.get(5)?,
@@ -908,7 +909,7 @@ impl Store for SqliteStore {
             let rows = statement
                 .query_map([], |row| {
                     Ok(AccountRecord {
-                        name: row.get(0)?,
+                        name: AccountName(row.get(0)?),
                         credential: row.get(1)?,
                     })
                 })
@@ -928,7 +929,7 @@ impl Store for SqliteStore {
             guard
                 .execute(
                     "INSERT OR REPLACE INTO accounts (name, credential) VALUES (?1, ?2)",
-                    params![account.name, account.credential],
+                    params![account.name.0, account.credential],
                 )
                 .map_err(database)?;
             Ok(())

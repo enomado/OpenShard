@@ -42,6 +42,7 @@ use std::net::Ipv4Addr;
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::feature::Feature;
+use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
 use crate::packet::{decode_packet, DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
 
@@ -60,13 +61,13 @@ pub const SHARD_NAME_LENGTH: usize = 32;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AccountLogin {
     /// The account name, as typed.
-    pub account: String,
+    pub account: RawAccountName,
     /// The password, in plaintext.
     ///
     /// The UO protocol has no password hashing: it is plaintext inside the
     /// login encryption, and the login encryption is trivially broken. Treat
     /// this as public, never log it, and hash it before it reaches storage.
-    pub password: String,
+    pub password: RawPlaintextPassword,
 }
 
 impl DecodePacket for AccountLogin {
@@ -76,8 +77,8 @@ impl DecodePacket for AccountLogin {
         reader: &mut PacketReader<'_>,
         _version: ClientVersion,
     ) -> Result<Self, DecodeError> {
-        let account = reader.fixed_string(ACCOUNT_NAME_LENGTH)?;
-        let password = reader.fixed_string(PASSWORD_LENGTH)?;
+        let account = RawAccountName(reader.fixed_string(ACCOUNT_NAME_LENGTH)?);
+        let password = RawPlaintextPassword(reader.fixed_string(PASSWORD_LENGTH)?);
         // Sphere: "NextLoginKey value from uo.cfg on client machine" — the
         // server has no use for it.
         reader.skip(1)?;
@@ -90,8 +91,8 @@ impl AccountLogin {
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(62);
         writer.u8(Self::ID);
-        writer.fixed_string(&self.account, ACCOUNT_NAME_LENGTH);
-        writer.fixed_string(&self.password, PASSWORD_LENGTH);
+        writer.fixed_string(&self.account.0, ACCOUNT_NAME_LENGTH);
+        writer.fixed_string(&self.password.0, PASSWORD_LENGTH);
         writer.u8(0);
         writer.into_bytes()
     }
@@ -358,9 +359,9 @@ pub struct GameServerLogin {
     /// The key handed out in the 0x8C relay. The server must check it.
     pub auth_key: u32,
     /// The account name, again.
-    pub account: String,
+    pub account: RawAccountName,
     /// The password, again, still plaintext.
-    pub password: String,
+    pub password: RawPlaintextPassword,
 }
 
 impl DecodePacket for GameServerLogin {
@@ -372,8 +373,8 @@ impl DecodePacket for GameServerLogin {
     ) -> Result<Self, DecodeError> {
         Ok(Self {
             auth_key: reader.u32()?,
-            account: reader.fixed_string(ACCOUNT_NAME_LENGTH)?,
-            password: reader.fixed_string(PASSWORD_LENGTH)?,
+            account: RawAccountName(reader.fixed_string(ACCOUNT_NAME_LENGTH)?),
+            password: RawPlaintextPassword(reader.fixed_string(PASSWORD_LENGTH)?),
         })
     }
 }
@@ -384,8 +385,8 @@ impl GameServerLogin {
         let mut writer = PacketWriter::with_capacity(65);
         writer.u8(Self::ID);
         writer.u32(self.auth_key);
-        writer.fixed_string(&self.account, ACCOUNT_NAME_LENGTH);
-        writer.fixed_string(&self.password, PASSWORD_LENGTH);
+        writer.fixed_string(&self.account.0, ACCOUNT_NAME_LENGTH);
+        writer.fixed_string(&self.password.0, PASSWORD_LENGTH);
         writer.into_bytes()
     }
 }
@@ -396,7 +397,7 @@ impl GameServerLogin {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct CharacterEntry {
     /// The character's name. Empty means an unused slot.
-    pub name: String,
+    pub name: CharacterName,
 }
 
 /// One starting city offered at character creation.
@@ -523,7 +524,7 @@ impl EncodePacket for CharacterList {
             let name = self
                 .characters
                 .get(slot)
-                .map_or("", |entry| entry.name.as_str());
+                .map_or("", |entry| entry.name.0.as_str());
             write_character_slot(out, name);
         }
 
@@ -656,7 +657,7 @@ impl EncodePacket for CharacterListUpdate {
             let name = self
                 .characters
                 .get(slot)
-                .map_or("", |entry| entry.name.as_str());
+                .map_or("", |entry| entry.name.0.as_str());
             write_character_slot(out, name);
         }
     }
@@ -859,8 +860,8 @@ mod tests {
     #[test]
     fn account_login_round_trips_at_the_declared_length() {
         let login = AccountLogin {
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let bytes = login.encode();
 
@@ -878,8 +879,8 @@ mod tests {
     #[test]
     fn account_login_rejects_the_wrong_packet() {
         let mut bytes = AccountLogin {
-            account: "a".to_owned(),
-            password: "b".to_owned(),
+            account: RawAccountName("a".to_owned()),
+            password: RawPlaintextPassword("b".to_owned()),
         }
         .encode();
         bytes[0] = 0x91;
@@ -946,7 +947,7 @@ mod tests {
     #[test]
     fn character_list_update_pads_to_five_slots() {
         let characters = vec![CharacterEntry {
-            name: "Dupre".to_owned(),
+            name: CharacterName("Dupre".to_owned()),
         }];
         let bytes = encode_packet(&CharacterListUpdate { characters }, version());
         assert_eq!(bytes[0], 0x86);
@@ -962,14 +963,15 @@ mod tests {
     #[test]
     fn account_login_truncates_an_overlong_name_to_its_field() {
         let login = AccountLogin {
-            account: "x".repeat(50),
-            password: String::new(),
+            account: RawAccountName("x".repeat(50)),
+            password: RawPlaintextPassword(String::new()),
         };
         assert_eq!(login.encode().len(), 62, "a long name must not overrun");
         assert_eq!(
             decode_packet::<AccountLogin>(&login.encode(), version())
                 .unwrap()
                 .account
+                .0
                 .len(),
             30
         );
@@ -1202,8 +1204,8 @@ mod tests {
     fn game_server_login_round_trips_at_the_declared_length() {
         let login = GameServerLogin {
             auth_key: 0x1234_5678,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let bytes = login.encode();
         assert_eq!(
@@ -1221,7 +1223,7 @@ mod tests {
     fn character_list_pads_to_five_slots() {
         // Clients since 3.0.0.10 read five slots whatever the count byte says.
         let characters = vec![CharacterEntry {
-            name: "Lord British".to_owned(),
+            name: CharacterName("Lord British".to_owned()),
         }];
         let bytes = encode_packet(
             &CharacterList {
@@ -1241,7 +1243,7 @@ mod tests {
     #[test]
     fn character_list_does_not_pad_for_clients_that_predate_the_rule() {
         let characters = vec![CharacterEntry {
-            name: "Lord British".to_owned(),
+            name: CharacterName("Lord British".to_owned()),
         }];
         let old = ClientVersion::new(3, 0, 0, 9);
         assert!(!old.supports(Feature::PaddedCharacterList));

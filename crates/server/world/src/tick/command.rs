@@ -100,9 +100,9 @@ pub enum Command {
         version: ClientVersion,
         /// The account the character belongs to. Saved with the character so a
         /// load knows whose it is.
-        account: String,
+        account: AccountName,
         /// The character's name.
-        name: String,
+        name: CharacterName,
         /// The saved wire serial, when a stored character is being played. `None`
         /// creates a fresh one — a character being made for the first time. A
         /// played character must come back with the serial it was saved under,

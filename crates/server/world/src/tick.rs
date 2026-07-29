@@ -37,6 +37,7 @@ use openshard_persistence::{
 };
 use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
 use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
+use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{encode_supported_features, AOS_FEATURE_FLAGS};
 use openshard_protocol::mobile::{MobileStatus, Notoriety, StatLockBits, LABEL_MODE};
 use openshard_protocol::serial::{Serial, SerialKind};
@@ -118,8 +119,8 @@ pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
 struct Entering {
     connection: ConnectionId,
     version: ClientVersion,
-    account: String,
-    name: String,
+    account: AccountName,
+    name: CharacterName,
     serial: Option<u32>,
     position: Option<Point>,
     facet: u8,

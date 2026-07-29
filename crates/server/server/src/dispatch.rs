@@ -31,11 +31,11 @@ pub(crate) fn dispatch(
 
     match packet {
         ClientPacket::CharacterPlay(play) => {
-            let account = session.login.account().unwrap_or_default().to_owned();
+            let account = session.login.account().cloned().unwrap_or_default();
             // A stored character enters on its saved serial, spot and look; one
             // the database has never seen — a config-only character on a fresh
             // shard — enters fresh at the start.
-            let key = (account.to_lowercase(), play.name.to_lowercase());
+            let key = (account.normalized(), play.name.to_lowercase());
             let record = saved.get(&key);
             let facet = record.map_or(0, |record| record.facet);
             let (serial, position, appearance, sheet) = match record {
@@ -78,7 +78,7 @@ pub(crate) fn dispatch(
                 connection: id,
                 version: session.login.version(),
                 account,
-                name: play.name,
+                name: CharacterName(play.name),
                 serial,
                 position,
                 facet,
@@ -485,16 +485,16 @@ pub(crate) fn create_character(
             return false;
         }
     };
-    let Some(account) = session.login.account().map(str::to_owned) else {
+    let Some(account) = session.login.account().cloned() else {
         warn!(%id, "create-character before a game login");
         return false;
     };
 
-    let name = create.name.trim().to_owned();
-    match login.accounts.create_character(&account, &name) {
-        Ok(_slot) => info!(%id, account, name, "character created"),
+    let name = create.name.0.trim().to_owned();
+    match login.accounts.create_character(&account, name.as_str()) {
+        Ok(_slot) => info!(%id, %account, name, "character created"),
         Err(reason) => {
-            warn!(%id, account, name, ?reason, "character creation refused");
+            warn!(%id, %account, name, ?reason, "character creation refused");
             let _ = session.send_packet(
                 ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.login.version()),
             );
@@ -524,7 +524,7 @@ pub(crate) fn create_character(
         connection: id,
         version: session.login.version(),
         account,
-        name,
+        name: CharacterName(name),
         // A brand-new character: a fresh serial, spawned in the chosen city. The
         // tick will journal it, so it is in the database — and in the character
         // list — by the next time the player logs in.
@@ -590,7 +590,7 @@ pub(crate) fn delete_character(
             return false;
         }
     };
-    let Some(account) = session.login.account().map(str::to_owned) else {
+    let Some(account) = session.login.account().cloned() else {
         warn!(%id, "delete-character before a game login");
         return false;
     };
@@ -612,7 +612,7 @@ pub(crate) fn delete_character(
         return true;
     };
     let name = entry.name;
-    let key = (account.to_lowercase(), name.to_lowercase());
+    let key = (account.normalized(), name.normalized());
 
     // A character being played cannot be deleted out from under its session. The
     // serial to check comes from the saved record; a character with no saved row
@@ -631,7 +631,7 @@ pub(crate) fn delete_character(
 
     // Drop it from the authoritative in-memory list. A failure here is a bad slot.
     if let Err(reason) = login.accounts.delete_character(&account, slot) {
-        warn!(%id, account, name, ?reason, "delete refused");
+        warn!(%id, %account, %name, ?reason, "delete refused");
         let _ = session.send_packet(
             ServerPacket::DeleteReject(DeleteReject {
                 result: DeleteResult::CharNotExist,
@@ -649,7 +649,7 @@ pub(crate) fn delete_character(
             serial: record.serial,
         });
     }
-    info!(%id, account, name, "character deleted");
+    info!(%id, %account, %name, "character deleted");
 
     // Resend the updated list so the select screen redraws.
     let _ = session.send_packet(

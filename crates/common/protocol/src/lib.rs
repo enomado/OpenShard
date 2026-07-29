@@ -69,6 +69,7 @@ pub mod feature;
 pub mod feedback;
 pub mod gump;
 pub mod huffman;
+pub mod identity;
 pub mod items;
 pub mod login;
 pub mod mobile;

@@ -812,6 +812,7 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
 mod tests {
     use super::*;
     use openshard_gateway::ConnectionId;
+    use openshard_protocol::identity::{AccountName, CharacterName};
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
     use openshard_world::Position;
     use std::time::Instant;
@@ -877,8 +878,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -924,8 +925,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -967,8 +968,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1179,8 +1180,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1229,8 +1230,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1304,8 +1305,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1360,8 +1361,8 @@ mod tests {
         world.queue(Command::Enter {
             connection,
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1422,8 +1423,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,

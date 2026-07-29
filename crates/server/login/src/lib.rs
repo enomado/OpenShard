@@ -20,6 +20,7 @@
 //! use std::net::Ipv4Addr;
 //! use std::time::Instant;
 //! use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
+//! use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 //! use openshard_protocol::login::AccountLogin;
 //!
 //! let mut server = LoginServer::new(
@@ -30,8 +31,8 @@
 //! let mut session = LoginSession::new();
 //!
 //! let login = AccountLogin {
-//!     account: "admin".to_owned(),
-//!     password: "hunter2".to_owned(),
+//!     account: RawAccountName("admin".to_owned()),
+//!     password: RawPlaintextPassword("hunter2".to_owned()),
 //! };
 //! let response = server.handle(&mut session, &login.encode(), Instant::now());
 //!

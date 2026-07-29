@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent};
 use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
+use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -113,8 +114,8 @@ async fn a_client_reaches_the_character_list() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -152,8 +153,8 @@ async fn a_client_reaches_the_character_list() {
         .write_all(
             &GameServerLogin {
                 auth_key,
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -178,8 +179,8 @@ async fn a_refused_login_reaches_the_client_and_the_socket_closes() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "wrong".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("wrong".to_owned()),
             }
             .encode(),
         )
@@ -215,8 +216,8 @@ async fn the_client_version_from_the_seed_shapes_the_reply() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -243,8 +244,8 @@ async fn a_stolen_auth_key_is_useless_over_a_real_socket() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -261,8 +262,8 @@ async fn a_stolen_auth_key_is_useless_over_a_real_socket() {
 
     let game_login = GameServerLogin {
         auth_key,
-        account: "admin".to_owned(),
-        password: "hunter2".to_owned(),
+        account: RawAccountName("admin".to_owned()),
+        password: RawPlaintextPassword("hunter2".to_owned()),
     };
 
     // The legitimate client spends it.
@@ -291,8 +292,8 @@ async fn a_packet_split_across_tcp_segments_still_arrives() {
     let mut stream = seed(1);
     stream.extend_from_slice(
         &AccountLogin {
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         }
         .encode(),
     );
