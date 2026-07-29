@@ -294,7 +294,7 @@ The line has moved once already, and it is worth naming where: a system whose
 *window the client draws* — the quest log, the vendor gump, the spellbook — has
 to be the core's, because the client reaches it through packets a script cannot
 answer, and because its state has to survive a restart the script's memory does
-not. So `crates/quests` owns the quest model and the gump, and the pack owns the
+not. So `crates/server/quests` owns the quest model and the gump, and the pack owns the
 quests. That is the same "default in core, customise in the pack" split as
 `magic::spells` and `Pack.loot`, and the rule of thumb it produced is: **if a
 binding must outlive a reboot, it is a saved component, not a map in a script.**
@@ -304,7 +304,7 @@ for hot gameplay code. A Node sidecar was considered and rejected — IPC latenc
 lands inside the tick.
 
 This was the largest open technical risk in the project, and the spike has
-retired it. `crates/scripting` embeds one `JsRuntime` in a single V8 isolate
+retired it. `crates/server/scripting` embeds one `JsRuntime` in a single V8 isolate
 behind [`ScriptEngine`], a four-method trait with nothing V8-shaped in its
 signatures — so the runtime stays replaceable. A script is one more consumer of
 the same seam every system uses: domain events arrive through `deliver`, the
@@ -322,7 +322,7 @@ are in `docs/roadmap.md` §5.
 the live isolate — and `DenoEngine::reload_if_changed` polls a watched file's
 mtime so iterating on a hook is save-the-file, not bounce-the-shard.
 
-And it is wired into the running shard. The server (`crates/server/src/scripting.rs`)
+And it is wired into the running shard. The server (`crates/server/server/src/scripting.rs`)
 owns the engine and drives it around the tick: after `world.tick()` it hands the
 tick's domain events to the script and queues the commands the script emits for
 the next tick. That keeps a script on the same side of the boundary as a network

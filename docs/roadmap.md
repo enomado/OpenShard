@@ -49,7 +49,7 @@ mistake this for a security feature when it lands.
 - [x] `Accounts` trait + `DevAccounts` in-memory store
 - [x] Sans-io `LoginServer`: 0x80 → 0xA8 → 0xA0 → 0x8C → 0x91 → 0xA9
 - [x] Auth key issued at relay, one-shot, expiring, bound to its account
-- [x] `crates/server` — a binary that runs and reaches a character list
+- [x] `crates/server/server` — a binary that runs and reaches a character list
 - [x] `config` — TOML, validated at load; accounts and addresses come from it
 - [x] A fresh checkout writes a default `openshard.toml` and runs
 - [x] **Character deletion** (`0x83`). The delete button on the character-select
@@ -65,7 +65,7 @@ mistake this for a security feature when it lands.
   resends the list with `0x86` (the `0xA9` character block reused). Ported from
   ServUO's `DeleteCharacter`/`DeleteResult`/`CharacterListUpdate`.
 - [x] **Store-backed accounts and password hashing.** Credentials are argon2 PHC
-  hashes now, never plaintext (`crates/login/src/password.rs`, over the `argon2`
+  hashes now, never plaintext (`crates/server/login/src/password.rs`, over the `argon2`
   crate; the salt comes from the `getrandom` the auth keys already use). Boot reads
   `store.accounts()` into the in-memory `DevAccounts` as the source of truth for
   `verify`, and config `[[accounts]]` **seeds only what the store has never seen** —
@@ -336,7 +336,7 @@ and on logout, through the same journal the tick already feeds.
 ## 5. Scripting — spike done
 
 The largest open technical risk. Proven before building gameplay on top, and it
-holds. The engine is `crates/scripting`; `engine.rs` explains the seam.
+holds. The engine is `crates/server/scripting`; `engine.rs` explains the seam.
 
 - [x] `deno_core` embedded, one V8 isolate — `DenoEngine`, one `JsRuntime`
 - [x] `ScriptEngine` trait — four methods, nothing V8-shaped in a signature, so
@@ -384,7 +384,7 @@ Roughly in dependency order, each script-first:
   script; empty runs scriptless, the same bargain as an empty map. A script acts
   through `Command::Step` — server-authoritative movement, no client sequence or
   pace, terrain the only judge — which is the first thing a script command lands
-  on. `crates/server/src/scripting.rs` is the whole seam.
+  on. `crates/server/server/src/scripting.rs` is the whole seam.
 - [x] `items` — containers, stacking, equipment layers, decay
   - [x] **On the ground and visible.** A script drops an item
     (`op_spawn_item` → `Command::SpawnItem`) and every client in range is sent
@@ -1434,7 +1434,7 @@ Roughly in dependency order, each script-first:
     tiles of one opens your box (the same `0x24`/`0x3C` a double-click sends,
     reused through `items::open_worn_container`), and "balance" counts the gold in
     it. The words are still spoken, so it reads as a request the banker answers.
-    And it has life, in its own crate — **`crates/npc`**, so the townsfolk rules do
+    And it has life, in its own crate — **`crates/server/npc`**, so the townsfolk rules do
     not pile into `tick.rs` (the banker logic *moved out* of it). An NPC is
     **dressed** (`op_spawn_mobile` grew an `equipment` list — a robe, hair — worn
     like any gear and drawn in its `0x78`), **named** (a generated personal name and
@@ -1779,7 +1779,7 @@ Roughly in dependency order, each script-first:
     dropped `switches` (no radio dialog), and there was no server-side gump close,
     no private message and no per-player sound.
 
-  What landed: `crates/quests` owns the model (`QuestDef`, objectives Slay /
+  What landed: `crates/server/quests` owns the model (`QuestDef`, objectives Slay /
   Obtain / Deliver / Escort, rewards, `all_objectives`, `done_once`, restart
   delays), the progress passes, the turn-in and the window; the pack owns the
   quests, registered as data through `op_register_quests` and bound to an NPC

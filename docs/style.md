@@ -111,6 +111,12 @@ A crate depends downward or sideways at the same level, never upward.
 `entities` and `events` know nothing about gameplay and must stay that way —
 if `entities` ever needs to know what a house is, the layering broke.
 
+The crate tree says the same thing in the directory names: `crates/server` and
+`crates/client` may both depend on `crates/common`, and never on each other.
+A type that both sides of the wire must agree on belongs in
+`crates/common/protocol` — putting it under `server` and reaching for it from a
+client is the layering breaking in a new direction.
+
 ## Randomness and time
 
 The tick must replay: the same commands twice produce the same world. Two rules
