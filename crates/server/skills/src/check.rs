@@ -30,10 +30,10 @@
 use openshard_entities::EntityId;
 use openshard_protocol::skill::SkillLock;
 use openshard_state::components::{Client, Skills, Stats};
-use openshard_state::{skill, WorldState};
+use openshard_state::{WorldState, skill};
 
-use crate::stats::try_stat_gain;
 use crate::SkillChanged;
+use crate::stats::try_stat_gain;
 
 /// The floor ServUO clamps its gain chance to — 1%, so even a grandmaster with no
 /// headroom left has a sliver of a chance rather than a certainty of nothing.
@@ -63,10 +63,7 @@ pub fn skill_value(state: &WorldState, entity: EntityId, id: u8) -> u16 {
     let base = discorded(
         state,
         entity,
-        state
-            .registry
-            .get::<Skills>(entity)
-            .map_or(0, |s| s.get(id)),
+        state.registry.get::<Skills>(entity).map_or(0, |s| s.get(id)),
     );
     // From AoS the stat influence is gone: ServUO calls `AOS.DisableStatInfluences()`
     // at startup, which zeroes the three scale columns in place. An `if` says the
@@ -171,10 +168,7 @@ fn check(state: &mut WorldState, entity: EntityId, id: u8, chance: u32) -> bool 
     // A skill under 10.0 always takes something from the attempt — the first few
     // points come for the asking, which is what stops a new character grinding a
     // hundred failures for their first tenth.
-    let base = state
-        .registry
-        .get::<Skills>(entity)
-        .map_or(0, |s| s.get(id));
+    let base = state.registry.get::<Skills>(entity).map_or(0, |s| s.get(id));
     if base < EASY_GAIN_BELOW || state.rng.below(1000) <= gain {
         gain_skill(state, entity, id);
     }
@@ -190,25 +184,16 @@ fn check(state: &mut WorldState, entity: EntityId, id: u8, chance: u32) -> bool 
 /// at one still teaches a fifth — and the whole is halved once more and scaled by
 /// the skill's `gain_factor`.
 #[must_use]
-pub fn gain_chance(
-    state: &WorldState,
-    entity: EntityId,
-    id: u8,
-    chance: u32,
-    success: bool,
-) -> u32 {
+pub fn gain_chance(state: &WorldState, entity: EntityId, id: u8, chance: u32, success: bool) -> u32 {
     let skills = state.registry.get::<Skills>(entity);
     let total_cap = state.gameplay.total_skill_cap.max(1);
     let total = skills.map_or(0, Skills::total).min(total_cap);
-    let cap = skills
-        .map_or(state.gameplay.skill_cap, |s| s.cap(id))
-        .max(1);
+    let cap = skills.map_or(state.gameplay.skill_cap, |s| s.cap(id)).max(1);
     let base = skills.map_or(0, |s| s.get(id)).min(cap);
 
     // Headroom under the two caps, each as a per-mille fraction, averaged.
-    let mut gain = ((total_cap - total) * 1000 / total_cap
-        + u32::from(cap - base) * 1000 / u32::from(cap))
-        / 2;
+    let mut gain =
+        ((total_cap - total) * 1000 / total_cap + u32::from(cap - base) * 1000 / u32::from(cap)) / 2;
     // What the attempt itself was worth. From AoS a failure teaches nothing;
     // before it, a failure at something hard still does.
     let weight = if success {
@@ -313,9 +298,9 @@ fn reduce_a_down_skill(
     if state.rng.below(1000) >= fullness {
         return None;
     }
-    let victim = skills.ids().find(|&id| {
-        id != gaining && skills.lock(id) == SkillLock::Down && skills.get(id) >= to_gain
-    })?;
+    let victim = skills
+        .ids()
+        .find(|&id| id != gaining && skills.lock(id) == SkillLock::Down && skills.get(id) >= to_gain)?;
     let lowered = skills.get(victim) - to_gain;
     skills.set(victim, lowered);
     Some((victim, lowered))

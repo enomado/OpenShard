@@ -21,8 +21,8 @@
 //! that the reduction applies to a loss as well as a gain — read quickly it looks
 //! like a bug, and "fixing" it would make infamy accelerate.
 
-use crate::components::{Body, Fame, Karma};
 use crate::WorldState;
+use crate::components::{Body, Fame, Karma};
 use openshard_entities::EntityId;
 
 /// One band of the title table: a fame ceiling and the karma bands inside it.
@@ -245,18 +245,12 @@ mod tests {
     #[test]
     fn the_titles_are_servuos() {
         assert_eq!(compute_title("Rowena", 0, 0, false), "Rowena");
-        assert_eq!(
-            compute_title("Rowena", 1000, 5000, false),
-            "The Honest Rowena"
-        );
+        assert_eq!(compute_title("Rowena", 1000, 5000, false), "The Honest Rowena");
         assert_eq!(
             compute_title("Rowena", 1000, -6000, false),
             "The Despicable Rowena"
         );
-        assert_eq!(
-            compute_title("Rowena", 9000, 20000, false),
-            "The Glorious Rowena"
-        );
+        assert_eq!(compute_title("Rowena", 9000, 20000, false), "The Glorious Rowena");
     }
 
     #[test]
@@ -319,13 +313,7 @@ mod tests {
     #[test]
     fn a_message_is_only_sent_when_something_landed() {
         assert_eq!(award_message(0, false), None);
-        assert_eq!(
-            award_message(50, false),
-            Some("You have gained a lot of fame.")
-        );
-        assert_eq!(
-            award_message(-5, true),
-            Some("You have lost a little karma.")
-        );
+        assert_eq!(award_message(50, false), Some("You have gained a lot of fame."));
+        assert_eq!(award_message(-5, true), Some("You have lost a little karma."));
     }
 }

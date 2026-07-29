@@ -348,11 +348,7 @@ impl PacketWriter {
 /// Narrow a character to one Latin-1 byte, substituting `?` when it does not fit.
 fn latin1_byte(character: char) -> u8 {
     let code = character as u32;
-    if code <= 0xFF {
-        code as u8
-    } else {
-        b'?'
-    }
+    if code <= 0xFF { code as u8 } else { b'?' }
 }
 
 #[cfg(test)]

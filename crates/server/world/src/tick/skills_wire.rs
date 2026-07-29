@@ -7,10 +7,10 @@
 //! job, the same seam `send_status` (`0x11`) sits on.
 
 use super::*;
-use openshard_protocol::skill::{skill_count, SkillEntry, SkillLock, SkillUpdate, SkillsFull};
+use openshard_protocol::skill::{SkillEntry, SkillLock, SkillUpdate, SkillsFull, skill_count};
 use openshard_skills::SkillChanged;
-use openshard_state::components::{Skills, StatLocks};
 use openshard_state::StatLock;
+use openshard_state::components::{Skills, StatLocks};
 
 impl World {
     /// A client moved a skill's up/down/lock arrow: store it. ServUO's
@@ -116,10 +116,8 @@ impl World {
             return;
         };
         let entries = self.skill_entries(entity, version);
-        self.state.send_packet(
-            connection,
-            &ServerPacket::SkillsFull(SkillsFull { entries }),
-        );
+        self.state
+            .send_packet(connection, &ServerPacket::SkillsFull(SkillsFull { entries }));
     }
 
     /// Push the single-line `0x3A` update for each skill that moved this tick, so
@@ -129,15 +127,12 @@ impl World {
     pub(super) fn send_skill_updates(&mut self) {
         let moved: Vec<SkillChanged> = self.state.bus.read(&mut self.changed).copied().collect();
         for event in moved {
-            let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(event.entity)
-            else {
+            let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(event.entity) else {
                 continue; // a creature training a skill has no window to update
             };
             let entry = self.skill_entry(event.entity, event.skill);
-            self.state.send_packet(
-                connection,
-                &ServerPacket::SkillUpdate(SkillUpdate { entry }),
-            );
+            self.state
+                .send_packet(connection, &ServerPacket::SkillUpdate(SkillUpdate { entry }));
         }
     }
 }

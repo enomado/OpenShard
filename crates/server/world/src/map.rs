@@ -295,10 +295,8 @@ impl Map {
         let mut out: Vec<Vec<StaticItem>> = vec![Vec::new(); blocks];
         for (block, slot) in out.iter_mut().enumerate() {
             let at = block * STAIDX_ENTRY;
-            let offset =
-                u32::from_le_bytes([index[at], index[at + 1], index[at + 2], index[at + 3]]);
-            let length =
-                u32::from_le_bytes([index[at + 4], index[at + 5], index[at + 6], index[at + 7]]);
+            let offset = u32::from_le_bytes([index[at], index[at + 1], index[at + 2], index[at + 3]]);
+            let length = u32::from_le_bytes([index[at + 4], index[at + 5], index[at + 6], index[at + 7]]);
 
             // 0xFFFFFFFF means "no statics here", and it is the common case —
             // most of Britannia is empty ground. A length that runs past the end
@@ -307,8 +305,7 @@ impl Map {
             if offset == u32::MAX || length == u32::MAX || length == 0 {
                 continue;
             }
-            let (Ok(offset), Ok(length)) = (usize::try_from(offset), usize::try_from(length))
-            else {
+            let (Ok(offset), Ok(length)) = (usize::try_from(offset), usize::try_from(length)) else {
                 continue;
             };
             let Some(chunk) = data.get(offset..offset + length) else {

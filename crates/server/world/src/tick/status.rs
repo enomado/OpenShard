@@ -20,7 +20,7 @@
 //! changed. It reads `state.ticks` and components, never a clock, so it replays.
 
 use super::*;
-use openshard_state::components::{body_is_female, Riding};
+use openshard_state::components::{Riding, body_is_female};
 
 /// How often the derived numbers are recomputed, in ticks: twice a second. Fast
 /// enough that gold falling out of a purchase reads as immediate, slow enough
@@ -59,15 +59,12 @@ impl World {
             .map_or((DEFAULT_HITPOINTS, DEFAULT_DEXTERITY, DEFAULT_MANA), |s| {
                 (s.strength, s.dexterity, s.intelligence)
             });
-        let (hits_now, hits_max) = hits.map_or((DEFAULT_HITPOINTS, DEFAULT_HITPOINTS), |h| {
-            (h.current, h.max)
-        });
-        let (mana_now, mana_max) =
-            mana.map_or((DEFAULT_MANA, DEFAULT_MANA), |m| (m.current, m.max));
+        let (hits_now, hits_max) =
+            hits.map_or((DEFAULT_HITPOINTS, DEFAULT_HITPOINTS), |h| (h.current, h.max));
+        let (mana_now, mana_max) = mana.map_or((DEFAULT_MANA, DEFAULT_MANA), |m| (m.current, m.max));
         // The real pool if the mobile carries one; otherwise dexterity, so an NPC
         // or a bare test mobile still reads as able to run.
-        let (stamina_now, stamina_max) =
-            stamina.map_or((dexterity, dexterity), |s| (s.current, s.max));
+        let (stamina_now, stamina_max) = stamina.map_or((dexterity, dexterity), |s| (s.current, s.max));
         let derived = self.derived_status(entity);
 
         Some(MobileStatus {
@@ -156,11 +153,7 @@ impl World {
     /// staleness costs at most one step's worth of fatigue in the wrong direction,
     /// which is a fair trade for not re-weighing a mule on every tile. Before the
     /// first pass has run there is nothing remembered, and it weighs once.
-    pub(super) fn spend_step_stamina(
-        &mut self,
-        entity: EntityId,
-        running: bool,
-    ) -> Option<&'static str> {
+    pub(super) fn spend_step_stamina(&mut self, entity: EntityId, running: bool) -> Option<&'static str> {
         // Staff walk through everything, fatigue included.
         if self.state.is_staff(entity) {
             return None;

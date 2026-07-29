@@ -275,9 +275,7 @@ impl Walker {
         // and is something clients genuinely do.
         if self.facing.direction != request.facing.direction {
             self.facing = request.facing;
-            return Walk::Turned {
-                facing: self.facing,
-            };
+            return Walk::Turned { facing: self.facing };
         }
 
         if self.pace.allow(now, request.facing.running, mounted) == Pace::TooFast {
@@ -337,11 +335,7 @@ pub fn step_from(position: Point, direction: Direction) -> Option<Point> {
     let (dx, dy) = direction.step();
     let x = u16::try_from(i32::from(position.x) + dx).ok()?;
     let y = u16::try_from(i32::from(position.y) + dy).ok()?;
-    Some(Point {
-        x,
-        y,
-        z: position.z,
-    })
+    Some(Point { x, y, z: position.z })
 }
 
 #[cfg(test)]
@@ -571,10 +565,7 @@ mod tests {
     fn step_from_keeps_the_height() {
         // Height is the terrain's business, not the step's.
         let point = Point::new(100, 100, -20);
-        assert_eq!(
-            step_from(point, Direction::North),
-            Some(Point::new(100, 99, -20))
-        );
+        assert_eq!(step_from(point, Direction::North), Some(Point::new(100, 99, -20)));
     }
 
     #[test]

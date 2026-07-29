@@ -5,9 +5,7 @@
 //! and neither is large enough to be alone.
 
 use openshard_entities::EntityId;
-use openshard_state::components::{
-    body_type, Body, BodyType, Client, Fame, Karma, Lock, Riding, Trap,
-};
+use openshard_state::components::{Body, BodyType, Client, Fame, Karma, Lock, Riding, Trap, body_type};
 use openshard_state::{Skill, WorldState};
 
 use crate::check::roll_skill_band;
@@ -137,10 +135,7 @@ pub(super) fn begging(state: &mut WorldState, actor: EntityId, target: EntityId)
     // A vendor's till is its stock crate, not a purse — ServUO's beggar takes a
     // tenth of what is in the target's pack, and a shopkeeper is the one townsperson
     // here whose goods are visibly *not* coin.
-    if state
-        .registry
-        .has::<openshard_state::components::Vendor>(target)
-    {
+    if state.registry.has::<openshard_state::components::Vendor>(target) {
         state.private_overhead_cliloc(actor, target, NOT_ENOUGH_MONEY, "");
         return;
     }

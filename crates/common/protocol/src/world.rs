@@ -24,6 +24,7 @@ use std::fmt;
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
 use crate::error::{DecodeError, WrongPacket};
+use crate::identity::RawCharacterName;
 use crate::login::CHARACTER_NAME_LENGTH;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
@@ -71,10 +72,7 @@ pub struct CharacterPlay {
 impl DecodePacket for CharacterPlay {
     const ID: u8 = 0x5D;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         // A constant the client always sends. Sphere ignores it and so do we:
         // rejecting on it would be a compatibility risk for no gain.
         reader.skip(4)?;
@@ -162,7 +160,7 @@ pub struct SkillChoice {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateCharacter {
     /// The new character's name.
-    pub name: String,
+    pub name: RawCharacterName,
     /// Client flags reported at creation.
     pub flags: u32,
     /// The chosen profession, or 0 for the "advanced"/custom option.
@@ -216,14 +214,14 @@ impl CreateCharacter {
                 return Err(DecodeError::WrongPacket(WrongPacket {
                     expected: Self::ID_HIGH_SEAS,
                     found,
-                }))
+                }));
             }
         };
 
         // pattern1 (4), pattern2 (4), a "kuoc" byte (1) — constants the client
         // sends and the server has no use for.
         reader.skip(9)?;
-        let name = reader.fixed_string(CHARACTER_NAME_LENGTH)?;
+        let name = RawCharacterName(reader.fixed_string(CHARACTER_NAME_LENGTH)?);
         reader.skip(2)?; // 0x0000
         let flags = reader.u32()?;
         reader.skip(8)?; // unknown
@@ -315,7 +313,7 @@ impl CreateCharacter {
             Self::ID_CLASSIC
         });
         writer.zeros(9); // pattern1, pattern2, kuoc
-        writer.fixed_string(&self.name, CHARACTER_NAME_LENGTH);
+        writer.fixed_string(&self.name.0, CHARACTER_NAME_LENGTH);
         writer.zeros(2);
         writer.u32(self.flags);
         writer.zeros(8);
@@ -485,10 +483,7 @@ pub struct WalkRequest {
 impl DecodePacket for WalkRequest {
     const ID: u8 = 0x02;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             facing: Facing::from_bits(reader.u8()?),
             sequence: reader.u8()?,
@@ -756,10 +751,7 @@ mod tests {
             Some(PacketLength::Fixed(73))
         );
         assert_eq!(bytes.len(), 73, "the table and the encoder must agree");
-        assert_eq!(
-            decode_packet::<CharacterPlay>(&bytes, version()).unwrap(),
-            play
-        );
+        assert_eq!(decode_packet::<CharacterPlay>(&bytes, version()).unwrap(), play);
     }
 
     #[test]
@@ -769,24 +761,15 @@ mod tests {
 
     fn sample_create(high_seas: bool) -> CreateCharacter {
         let mut skills = vec![
-            SkillChoice {
-                skill: 1,
-                value: 50,
-            },
-            SkillChoice {
-                skill: 2,
-                value: 30,
-            },
-            SkillChoice {
-                skill: 3,
-                value: 20,
-            },
+            SkillChoice { skill: 1, value: 50 },
+            SkillChoice { skill: 2, value: 30 },
+            SkillChoice { skill: 3, value: 20 },
         ];
         if high_seas {
             skills.push(SkillChoice { skill: 4, value: 0 });
         }
         CreateCharacter {
-            name: "Lord British".to_owned(),
+            name: RawCharacterName("Lord British".to_owned()),
             flags: 0x0000_001F,
             profession: 1,
             sex_race: 0x3, // human female
@@ -841,13 +824,7 @@ mod tests {
         assert_eq!(decoded.name, "Lord British");
         assert_eq!(decoded.skin_hue, 0x83EA);
         assert_eq!(decoded.skills.len(), 4);
-        assert_eq!(
-            decoded.skills[0],
-            SkillChoice {
-                skill: 1,
-                value: 50
-            }
-        );
+        assert_eq!(decoded.skills[0], SkillChoice { skill: 1, value: 50 });
         assert_eq!(decoded.start_location, 0);
     }
 
@@ -971,10 +948,7 @@ mod tests {
             Some(PacketLength::Fixed(7))
         );
         assert_eq!(bytes.len(), 7);
-        assert_eq!(
-            decode_packet::<WalkRequest>(&bytes, version()).unwrap(),
-            request
-        );
+        assert_eq!(decode_packet::<WalkRequest>(&bytes, version()).unwrap(), request);
     }
 
     #[test]
@@ -1025,10 +999,7 @@ mod tests {
     #[test]
     fn the_small_entry_packets_are_the_right_shape() {
         assert_eq!(encode_packet(&LoginComplete, version()), vec![0x55]);
-        assert_eq!(
-            encode_packet(&LightLevel { level: 0 }, version()),
-            vec![0x4F, 0]
-        );
+        assert_eq!(encode_packet(&LightLevel { level: 0 }, version()), vec![0x4F, 0]);
         // Music and season: three bytes each, the track big-endian. Both
         // references write exactly this.
         assert_eq!(
@@ -1073,11 +1044,7 @@ mod tests {
         let map = encode_packet(&MapChange { map: 1 }, version());
         assert_eq!(map.len(), 6);
         assert_eq!(map[0], 0xBF);
-        assert_eq!(
-            u16::from_be_bytes([map[1], map[2]]),
-            6,
-            "declares its length"
-        );
+        assert_eq!(u16::from_be_bytes([map[1], map[2]]), 6, "declares its length");
         assert_eq!(u16::from_be_bytes([map[3], map[4]]), 0x08, "subcommand");
         assert_eq!(map[5], 1, "Trammel");
     }

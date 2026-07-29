@@ -37,10 +37,7 @@ pub struct DoubleClick {
 impl DecodePacket for DoubleClick {
     const ID: u8 = 0x06;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             serial: reader.u32()?,
         })
@@ -109,11 +106,7 @@ pub fn encode_open_container(serial: u32, gump: u16, version: ClientVersion) -> 
 /// The same version-dependent-fixed-size shape as [`encode_open_container`], this
 /// time gated on [`Feature::ItemGrid`], and not an `EncodePacket` for the same
 /// reason.
-pub fn encode_add_to_container(
-    item: ContainedItem,
-    container: u32,
-    version: ClientVersion,
-) -> Vec<u8> {
+pub fn encode_add_to_container(item: ContainedItem, container: u32, version: ClientVersion) -> Vec<u8> {
     let grid = version.supports(Feature::ItemGrid);
     let mut writer = PacketWriter::with_capacity(21);
     writer.u8(0x25);
@@ -219,10 +212,7 @@ mod tests {
         };
         let packet = encode_add_to_container(item, 0x4000_0001, modern());
         assert_eq!(packet.len(), 21);
-        assert_eq!(
-            packet[14], 7,
-            "the grid index sits before the container serial"
-        );
+        assert_eq!(packet[14], 7, "the grid index sits before the container serial");
         assert_eq!(&packet[15..19], &0x4000_0001u32.to_be_bytes());
     }
 
@@ -256,10 +246,7 @@ mod tests {
             classic(),
         );
         assert_eq!(packet[0], 0x3C);
-        assert_eq!(
-            u16::from_be_bytes([packet[1], packet[2]]),
-            packet.len() as u16
-        );
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]), packet.len() as u16);
         assert_eq!(u16::from_be_bytes([packet[3], packet[4]]), 2, "two items");
         // header 5 + two classic records of 19 each = 43
         assert_eq!(packet.len(), 5 + 2 * 19);

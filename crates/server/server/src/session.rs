@@ -13,8 +13,9 @@ pub(crate) struct Session {
     /// everything from the character list on. This mirrors Sphere's
     /// `CONNECT_GAME`, which it sets during the game socket's crypt handshake —
     /// before the character list is sent — so the list and all world traffic go
-    /// out compressed. Here the seam is the `0x91` game login: see the flag being
-    /// set in `handle`.
+    /// out compressed. Here the seam is the `0x91` game login: see
+    /// `LoginSession::is_game_login` and where `world_handle_network` reads it
+    /// after calling `login.handle`.
     pub(crate) game: bool,
     pub(crate) outbox: OutboxTx,
     /// Tells the gateway framer this connection's client version. A game
@@ -67,7 +68,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use openshard_gateway::{outbox_channel, version_channel, OutboxRx};
+    use openshard_gateway::{OutboxRx, outbox_channel, version_channel};
 
     use super::*;
 

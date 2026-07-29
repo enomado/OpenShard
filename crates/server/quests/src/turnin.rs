@@ -1,9 +1,9 @@
 //! Finishing a quest: is it done, take what it asked for, pay what it promised.
 
 use openshard_entities::EntityId;
+use openshard_state::WorldState;
 use openshard_state::components::QuestLog;
 use openshard_state::quest::{ObjectiveKind, RewardKind};
-use openshard_state::WorldState;
 
 use crate::events::QuestCompleted;
 use crate::gump::{self, sound};
@@ -32,9 +32,7 @@ pub fn is_complete(state: &WorldState, player: EntityId, key: &str) -> bool {
         .objectives
         .iter()
         .enumerate()
-        .map(|(index, objective)| {
-            entry.progress.get(index).copied().unwrap_or(0) >= objective.count
-        });
+        .map(|(index, objective)| entry.progress.get(index).copied().unwrap_or(0) >= objective.count);
     if quest.all_objectives {
         met.all(|done| done)
     } else {
@@ -116,14 +114,7 @@ pub fn complete(state: &mut WorldState, player: EntityId, key: &str) -> bool {
                 amount,
                 stackable,
             } => {
-                openshard_items::give_to_backpack(
-                    state,
-                    player_serial,
-                    graphic,
-                    hue,
-                    amount,
-                    stackable,
-                );
+                openshard_items::give_to_backpack(state, player_serial, graphic, hue, amount, stackable);
             }
         }
     }

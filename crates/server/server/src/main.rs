@@ -27,7 +27,8 @@ use std::time::Instant;
 
 use openshard_config::{Config, DEFAULT_TOML};
 use openshard_gateway::{
-    ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent, ServerEventRx, VersionTx,
+    ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, PacketError, ServerEvent, ServerEventRx,
+    VersionTx,
 };
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_persistence::{
@@ -36,20 +37,19 @@ use openshard_persistence::{
 use openshard_protocol::client_packet::ClientPacket;
 use openshard_protocol::encoded::EncodedCommand;
 use openshard_protocol::extended::ExtendedRequest;
+use openshard_protocol::identity::CharacterName;
 use openshard_protocol::login::{
-    CharacterListUpdate, DeleteCharacter, DeleteReject, DeleteResult, GameServerLogin, LoginDenied,
-    StartLocation,
+    CharacterListUpdate, ClientLoginDecodeError, DeleteCharacter, DeleteReject, DeleteResult, LoginDenied,
+    LoginStagePacket, StartLocation,
 };
 use openshard_protocol::mobile::StatusQueryKind;
-use openshard_protocol::packet::{decode_packet, DecodePacket};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::trade::SecureTradeAction;
 use openshard_protocol::world::{CreateCharacter, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_world::{
-    Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TileData, World,
-    TICK_INTERVAL,
+    Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TICK_INTERVAL, TileData, World,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -65,7 +65,7 @@ mod session;
 mod shard;
 
 use boot::{load_config, load_world, open_store};
-use dispatch::{create_character, delete_character, dispatch, start_cities};
+use dispatch::{create_character, delete_character, dispatch_world_packet, start_cities};
 use session::Session;
 use shard::run_shard;
 
@@ -75,9 +75,7 @@ const CONFIG_PATH: &str = "openshard.toml";
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     match run().await {
@@ -95,14 +93,6 @@ async fn main() -> ExitCode {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(CONFIG_PATH)?;
 
-    // The 0x8C relay carries four bytes of address. There is no IPv6 form of it,
-    // so a v6 `advertise` cannot be honoured — better to say so at startup than
-    // to hand clients an address the packet cannot express.
-    let advertised = config.advertise_v4().ok_or(
-        "server.advertise is IPv6; the UO relay packet has four bytes for an address \
-         and no way to carry one",
-    )?;
-
     let (gateway_server, events) = ClientGatewayServer::bind(config.server.listen).await?;
     info!(
         shard = config.server.name,
@@ -111,7 +101,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         accounts = config.accounts.len(),
         "OpenShard starting"
     );
-    if advertised.ip().is_loopback() {
+    if config.server.advertise.ip().is_loopback() {
         warn!(
             "server.advertise is loopback: only clients on this machine can reach the shard. \
              Set it to the address clients dial."
@@ -123,7 +113,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(gateway_server.run());
 
-    run_shard(events, &config, advertised, world, store).await;
+    // better to push to server more semantic actions an do all decompression in ClientGatewayServer before packet go to shard
+    run_shard(events, &config, world, store).await;
 
     Ok(())
 }

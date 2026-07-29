@@ -215,10 +215,7 @@ impl<T> SparseSet<T> {
 
     /// Every `(entity, &component)` pair, in dense order.
     pub fn iter(&self) -> Iter<'_, T> {
-        self.dense_entities
-            .iter()
-            .copied()
-            .zip(self.dense_data.iter())
+        self.dense_entities.iter().copied().zip(self.dense_data.iter())
     }
 
     /// Every `(entity, &mut component)` pair, in dense order.
@@ -359,11 +356,7 @@ mod tests {
         // is `Registry`'s job, so `old`'s data is legitimately still here.
         assert_eq!(set.get(old), Some(&1));
         // What must never happen is the new occupant seeing it.
-        assert_eq!(
-            set.get(fresh),
-            None,
-            "the new entity inherits no components"
-        );
+        assert_eq!(set.get(fresh), None, "the new entity inherits no components");
     }
 
     #[test]

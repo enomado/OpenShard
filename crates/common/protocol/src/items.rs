@@ -105,10 +105,7 @@ pub struct PickUpItem {
 impl DecodePacket for PickUpItem {
     const ID: u8 = 0x07;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             serial: reader.u32()?,
             amount: reader.u16()?,
@@ -164,10 +161,7 @@ impl DecodePacket for DropItem {
     /// [`Feature::ItemGrid`] before this ran — see [`client_packet_length`](crate::packet::client_packet_length)
     /// — so asking `version` the same question here reads the grid byte when
     /// it is there without re-deriving the choice from the buffer length.
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
         let serial = reader.u32()?;
         let x = reader.u16()?;
         let y = reader.u16()?;
@@ -243,10 +237,7 @@ pub struct EquipItemRequest {
 impl DecodePacket for EquipItemRequest {
     const ID: u8 = 0x13;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             item: reader.u32()?,
             layer: reader.u8()?,
@@ -319,10 +310,7 @@ mod tests {
         );
 
         assert_eq!(packet[0], 0x1A);
-        assert_eq!(
-            u16::from_be_bytes([packet[1], packet[2]]),
-            packet.len() as u16
-        );
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]), packet.len() as u16);
         // serial, unchanged (top bit clear because it is a single item)
         assert_eq!(&packet[3..7], &[0x40, 0x00, 0x00, 0x01]);
         // graphic
@@ -424,10 +412,7 @@ mod tests {
         assert_eq!(drop.serial, 0x4000_002A);
         assert_eq!(drop.position, Point::new(1000, 2000, 5));
         assert_eq!(drop.container, DROP_TO_GROUND);
-        assert!(
-            drop.to_ground(),
-            "the grid byte must not shift the container"
-        );
+        assert!(drop.to_ground(), "the grid byte must not shift the container");
     }
 
     #[test]

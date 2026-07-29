@@ -245,11 +245,7 @@ mod tests {
         // lenient anti-speedhack floor — and this is the relationship that reconciles
         // them, written down so the next person does not "fix" one to match the other.
         assert_eq!(WALK_INTERVAL.as_millis() * 2, 400, "ServUO WalkFoot");
-        assert_eq!(
-            RUN_INTERVAL.as_millis() * 2,
-            200,
-            "ServUO RunFoot/WalkMount"
-        );
+        assert_eq!(RUN_INTERVAL.as_millis() * 2, 200, "ServUO RunFoot/WalkMount");
         assert_eq!(MOUNTED_RUN_INTERVAL.as_millis() * 2, 100, "ServUO RunMount");
     }
 
@@ -293,20 +289,17 @@ mod tests {
         let start = Instant::now();
 
         for step in 0..10u32 {
-            assert!(pace
-                .allow(start + WALK_INTERVAL * step, false, false)
-                .is_allowed());
+            assert!(
+                pace.allow(start + WALK_INTERVAL * step, false, false)
+                    .is_allowed()
+            );
         }
 
         let after_stall = start + Duration::from_secs(5);
         for step in 0..8u32 {
             assert!(
-                pace.allow(
-                    after_stall + Duration::from_millis(step.into()),
-                    false,
-                    false
-                )
-                .is_allowed(),
+                pace.allow(after_stall + Duration::from_millis(step.into()), false, false)
+                    .is_allowed(),
                 "burst step {step} refused; a gate would do this and the client would rubber-band"
             );
         }
@@ -385,8 +378,7 @@ mod tests {
         let after = start + Duration::from_secs(60);
         let mut refused = 0;
         for step in 0..100u32 {
-            if pace.allow(after + Duration::from_millis(step.into()), false, false) == Pace::TooFast
-            {
+            if pace.allow(after + Duration::from_millis(step.into()), false, false) == Pace::TooFast {
                 refused += 1;
             }
         }

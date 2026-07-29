@@ -1279,10 +1279,7 @@ mod tests {
         // hundredths is 1000, not the 100 a "sum of the scaled values" reading
         // would give. If this ever reads 100, someone has "fixed" ServUO.
         let parry = Skill::Parry.info();
-        assert_eq!(
-            (parry.str_scale, parry.dex_scale, parry.int_scale),
-            (750, 250, 0)
-        );
+        assert_eq!((parry.str_scale, parry.dex_scale, parry.int_scale), (750, 250, 0));
         assert_eq!(parry.stat_total, 1000);
     }
 

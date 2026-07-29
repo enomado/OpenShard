@@ -6,7 +6,7 @@
 //! file should be. These read private world state, so they stay inside the
 //! module.
 
-use super::tests::{enter, packets_for, spawn_mobile_at, world, START};
+use super::tests::{START, enter, packets_for, spawn_mobile_at, world};
 use super::*;
 use openshard_quests::{QUEST_GUMP, QUEST_RESIGN_GUMP};
 use openshard_state::components::{Amount, Contained, Graphic, QuestGiver, QuestLog, Stackable};
@@ -92,13 +92,7 @@ fn press(world: &mut World, connection: ConnectionId, gump_id: u32, button: u32)
 }
 
 /// Answer with a button and a set of switches on — the resign dialog's shape.
-fn press_with(
-    world: &mut World,
-    connection: ConnectionId,
-    gump_id: u32,
-    button: u32,
-    switches: Vec<u32>,
-) {
+fn press_with(world: &mut World, connection: ConnectionId, gump_id: u32, button: u32, switches: Vec<u32>) {
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
@@ -577,15 +571,8 @@ fn a_completed_quest_reaches_the_pack() {
 
 /// Put a stack of silk in a container.
 fn put_silk(world: &mut World, container: Serial, amount: u16) -> EntityId {
-    let (item, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(item, Graphic { id: SILK, hue: 0 });
+    let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(item, Graphic { id: SILK, hue: 0 });
     world.state.registry.insert(item, Amount(amount));
     world.state.registry.insert(item, Stackable);
     world.state.registry.insert(
@@ -696,12 +683,8 @@ fn a_restore_announces_the_post_an_npc_belongs_to_not_where_it_wandered() {
     // A townsperson, not a bare mobile: in ServUO a `MondainQuester` *is* a
     // `BaseVendor`, and it is the townsfolk — the ones with an `Npc` beat and a
     // post to keep to — that a routine walks off at dusk.
-    let entity = super::tests::spawn_townsperson(
-        &mut world,
-        "the healer",
-        Point::new(START.0 + 1, START.1, 0),
-        now,
-    );
+    let entity =
+        super::tests::spawn_townsperson(&mut world, "the healer", Point::new(START.0 + 1, START.1, 0), now);
     world.state.registry.insert(
         entity,
         QuestGiver {
@@ -783,8 +766,8 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
     shard.queue(Command::Enter {
         connection: connection_two(),
         version: ClientVersion::TOL,
-        account: "admin".to_owned(),
-        name: "Lord British".to_owned(),
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
         serial: Some(record.serial),
         position: None,
         facet: 0,
@@ -837,10 +820,7 @@ fn double_clicking_an_escortable_offers_rather_than_starts_following() {
     });
     world.tick(now);
 
-    assert!(
-        drew_a_gump(&mut world, connection),
-        "the click offers the quest"
-    );
+    assert!(drew_a_gump(&mut world, connection), "the click offers the quest");
     assert!(
         escorter_of(&world, giver).is_none(),
         "and nobody is being followed yet"
@@ -929,10 +909,7 @@ fn make_escortable(world: &mut World, serial: u32) {
 
 /// Who, if anyone, an escortable is following.
 fn escorter_of(world: &World, serial: u32) -> Option<Serial> {
-    let entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(serial).unwrap())?;
+    let entity = world.state.registry.entity_of(Serial::new(serial).unwrap())?;
     world
         .state
         .registry
@@ -1016,10 +993,7 @@ fn a_traveller_with_nowhere_to_go_offers_nothing() {
         serial: giver,
     });
     world.tick(now);
-    assert!(
-        !drew_a_gump(&mut world, connection),
-        "no destination, no offer"
-    );
+    assert!(!drew_a_gump(&mut world, connection), "no destination, no offer");
 }
 
 #[test]
@@ -1253,11 +1227,7 @@ fn teleport_to(world: &mut World, entity: EntityId, at: Point) {
         .registry
         .insert(entity, openshard_state::components::Position(at));
     let facet = world.state.facet_of(entity);
-    world
-        .state
-        .facet_state_mut(facet)
-        .sectors
-        .insert(entity, at);
+    world.state.facet_state_mut(facet).sectors.insert(entity, at);
 }
 
 #[test]

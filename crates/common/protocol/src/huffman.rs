@@ -311,10 +311,7 @@ mod tests {
     #[test]
     fn a_truncated_stream_is_an_error_not_a_panic() {
         let wire = compress(&[1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(
-            decompress(&wire[..wire.len() - 1]),
-            Err(HuffmanError::Truncated)
-        );
+        assert_eq!(decompress(&wire[..wire.len() - 1]), Err(HuffmanError::Truncated));
         assert_eq!(decompress(&[]), Err(HuffmanError::Truncated));
     }
 

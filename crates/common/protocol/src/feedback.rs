@@ -25,7 +25,7 @@
 
 use crate::codec::PacketWriter;
 use crate::packet::{EncodePacket, PacketLength};
-use crate::serial::{raw_or_none, Serial};
+use crate::serial::{Serial, raw_or_none};
 use crate::version::ClientVersion;
 use crate::wire::{Graphic, Hue, SoundId};
 use crate::world::Point;

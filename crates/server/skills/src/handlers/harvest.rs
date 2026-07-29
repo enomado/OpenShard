@@ -23,10 +23,9 @@ use openshard_protocol::wire::CursorId;
 use openshard_protocol::world::Point;
 use openshard_state::components::{Client, Harvesting, Position, Tool};
 use openshard_state::harvest::{
-    definition_for, tool_data, Bank, HarvestAction, HarvestDef, HarvestKind, HarvestResource,
-    TileSource,
+    Bank, HarvestAction, HarvestDef, HarvestKind, HarvestResource, TileSource, definition_for, tool_data,
 };
-use openshard_state::{in_range, Action, Skill, TargetPurpose, WorldState};
+use openshard_state::{Action, Skill, TargetPurpose, WorldState, in_range};
 
 use crate::check::{roll_skill_band, skill_value};
 
@@ -149,12 +148,7 @@ pub fn use_tool(state: &mut WorldState, harvester: EntityId, tool: EntityId) -> 
 /// The cursor came back with a spot on the ground: start swinging, or say why not.
 ///
 /// ServUO's `StartHarvesting`, gate for gate.
-pub fn begin_harvest(
-    state: &mut WorldState,
-    harvester: EntityId,
-    tool: EntityId,
-    target: HarvestTarget,
-) {
+pub fn begin_harvest(state: &mut WorldState, harvester: EntityId, tool: EntityId, target: HarvestTarget) {
     // The tool may have been dropped, sold or spent while the cursor was up.
     if state.registry.serial_of(tool).is_none() {
         return;
@@ -364,14 +358,7 @@ fn pay_out(
     };
     // Every resource stacks, so this always merges onto the pile already in the
     // pack rather than filling it with singles.
-    if openshard_items::give_to_backpack(
-        state,
-        serial,
-        resource.graphic,
-        resource.hue,
-        amount,
-        true,
-    ) {
+    if openshard_items::give_to_backpack(state, serial, resource.graphic, resource.hue, amount, true) {
         return true;
     }
     if !def.place_at_feet {
@@ -383,16 +370,7 @@ fn pay_out(
     ) else {
         return false;
     };
-    openshard_items::spawn_item(
-        state,
-        resource.graphic,
-        resource.hue,
-        amount,
-        true,
-        at,
-        facet,
-    )
-    .is_some()
+    openshard_items::spawn_item(state, resource.graphic, resource.hue, amount, true, at, facet).is_some()
 }
 
 /// Spend a swing off the tool, and say so if it broke.
@@ -440,22 +418,12 @@ fn with_bank<T>(
 }
 
 /// Which vein the bank under a spot holds.
-fn bank_vein(
-    state: &mut WorldState,
-    harvester: EntityId,
-    def: &'static HarvestDef,
-    at: Point,
-) -> usize {
+fn bank_vein(state: &mut WorldState, harvester: EntityId, def: &'static HarvestDef, at: Point) -> usize {
     with_bank(state, harvester, def, at, |bank, _| bank.vein)
 }
 
 /// What the bank under a spot has left.
-fn bank_stock(
-    state: &mut WorldState,
-    harvester: EntityId,
-    def: &'static HarvestDef,
-    at: Point,
-) -> u16 {
+fn bank_stock(state: &mut WorldState, harvester: EntityId, def: &'static HarvestDef, at: Point) -> u16 {
     with_bank(state, harvester, def, at, |bank, _| bank.current)
 }
 
@@ -474,12 +442,7 @@ fn consume_bank(
 }
 
 /// Whether the bank under a spot can pay one harvest.
-fn has_stock(
-    state: &mut WorldState,
-    harvester: EntityId,
-    def: &'static HarvestDef,
-    at: Point,
-) -> bool {
+fn has_stock(state: &mut WorldState, harvester: EntityId, def: &'static HarvestDef, at: Point) -> bool {
     bank_stock(state, harvester, def, at) >= 1
 }
 
@@ -537,9 +500,7 @@ fn swing_sound(state: &mut WorldState, harvester: EntityId, def: &'static Harves
     if def.sounds.is_empty() {
         return; // fishing is silent until the catch
     }
-    let pick = state
-        .rng
-        .below(u32::try_from(def.sounds.len()).unwrap_or(1));
+    let pick = state.rng.below(u32::try_from(def.sounds.len()).unwrap_or(1));
     let sound = def.sounds[pick as usize % def.sounds.len()];
     state.play_sound(harvester, sound);
 }

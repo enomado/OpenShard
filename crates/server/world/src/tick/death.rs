@@ -1,6 +1,6 @@
 use super::*;
 use openshard_state::components::{
-    creature_name, ghost_body, Corpse, Decays, CORPSE_GRAPHIC, CORPSE_GUMP, DEATH_SHROUD_GRAPHIC,
+    CORPSE_GRAPHIC, CORPSE_GUMP, Corpse, DEATH_SHROUD_GRAPHIC, Decays, creature_name, ghost_body,
 };
 
 /// How long a corpse lies before it rots away with its loot — ServUO's default
@@ -33,9 +33,7 @@ impl World {
             // A body already gone — reaped once, or removed another way this tick —
             // is skipped. A ghost that dies again (it cannot, guarded elsewhere) is
             // likewise a no-op.
-            if self.state.registry.entity_of(serial).is_none()
-                || self.state.registry.has::<Ghost>(entity)
-            {
+            if self.state.registry.entity_of(serial).is_none() || self.state.registry.has::<Ghost>(entity) {
                 continue;
             }
             // Who struck last, by name and now, while the killer is certainly still
@@ -142,23 +140,13 @@ impl World {
     /// and rebuild every screen. Shared by a fresh death (`equip_shroud` true,
     /// which puts a new shroud on) and a relog of an already-dead character
     /// (`equip_shroud` false — its saved shroud came back with its inventory).
-    pub(super) fn enter_ghost_state(
-        &mut self,
-        entity: EntityId,
-        serial: Serial,
-        equip_shroud: bool,
-    ) {
+    pub(super) fn enter_ghost_state(&mut self, entity: EntityId, serial: Serial, equip_shroud: bool) {
         // The living body, remembered so resurrection can restore it exactly —
         // colour and race included.
-        let living = self
-            .state
-            .registry
-            .get::<Body>(entity)
-            .copied()
-            .unwrap_or(Body {
-                id: BODY_HUMAN_MALE,
-                hue: 0,
-            });
+        let living = self.state.registry.get::<Body>(entity).copied().unwrap_or(Body {
+            id: BODY_HUMAN_MALE,
+            hue: 0,
+        });
 
         // War is over, and a ghost holds no target. Clearing `Combat` also stops
         // `swings` from striking on with a dead body.
@@ -319,14 +307,7 @@ impl World {
     /// target being a real container, so a stray or stale serial adds nothing
     /// rather than conjuring a floating item. A stackable merges (gold, reagents);
     /// a discrete piece (a weapon) is placed whole.
-    pub(super) fn add_loot(
-        &mut self,
-        container: u32,
-        graphic: u16,
-        hue: u16,
-        amount: u16,
-        stackable: bool,
-    ) {
+    pub(super) fn add_loot(&mut self, container: u32, graphic: u16, hue: u16, amount: u16, stackable: bool) {
         let Some(container) = Serial::new(container) else {
             return;
         };
@@ -355,11 +336,7 @@ impl World {
         };
         let facet = self.state.facet_of(entity);
         let body = self.state.registry.get::<Body>(entity).copied();
-        let max_hits = self
-            .state
-            .registry
-            .get::<Hitpoints>(entity)
-            .map_or(0, |h| h.max);
+        let max_hits = self.state.registry.get::<Hitpoints>(entity).map_or(0, |h| h.max);
         // A creature's own name if the pack gave it one, else its kind's.
         let owner = self
             .state
@@ -385,13 +362,7 @@ impl World {
         self.move_gear_to_corpse(serial, corpse, &[]);
         let gold = self.corpse_gold(max_hits);
         if gold > 0 {
-            let _ = items::give(
-                &mut self.state,
-                corpse,
-                items::GOLD_GRAPHIC,
-                0,
-                u32::from(gold),
-            );
+            let _ = items::give(&mut self.state, corpse, items::GOLD_GRAPHIC, 0, u32::from(gold));
         }
         // The loot hook: a pack adds the real per-creature table on top of the
         // baseline, by serial, off this event. Emitted before the creature is
@@ -413,11 +384,7 @@ impl World {
         name: String,
         story: Corpse,
     ) -> Option<Serial> {
-        let (entity, serial) = self
-            .state
-            .registry
-            .spawn_with_serial(SerialKind::Item)
-            .ok()?;
+        let (entity, serial) = self.state.registry.spawn_with_serial(SerialKind::Item).ok()?;
         let hue = body.map_or(0, |b| b.hue);
         self.state.registry.insert(
             entity,

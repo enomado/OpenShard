@@ -14,12 +14,10 @@
 //! script speaks — is the price of that decoupling, and it is cheap.
 
 use openshard_events::Cursor;
-use openshard_scripting::{
-    Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine,
-};
+use openshard_scripting::{Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine};
 use openshard_world::events::{
-    AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileSpawned, PlayerEntered,
-    PlayerLeft, SpellRequested, StepRefused,
+    AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileSpawned, PlayerEntered, PlayerLeft,
+    SpellRequested, StepRefused,
 };
 use openshard_world::{
     Command, ItemUsed, ItemsTaken, MobileDied, MobileSpoke, MobileUsed, SkillUsed, SpellCast, World,
@@ -431,15 +429,7 @@ fn into_world(command: ScriptCommand) -> Command {
             dexterity,
             intelligence,
         },
-        ScriptCommand::SetSkill {
-            serial,
-            skill,
-            value,
-        } => Command::SetSkill {
-            serial,
-            skill,
-            value,
-        },
+        ScriptCommand::SetSkill { serial, skill, value } => Command::SetSkill { serial, skill, value },
         ScriptCommand::SetWeapon {
             serial,
             speed,
@@ -665,13 +655,9 @@ fn into_world(command: ScriptCommand) -> Command {
             quests: quests.into_iter().filter_map(quest_def).collect(),
         },
         ScriptCommand::BindQuestGiver { serial, keys } => Command::BindQuestGiver { serial, keys },
-        ScriptCommand::MakeEscortable {
-            serial,
-            destination,
-        } => Command::MakeEscortable {
-            serial,
-            destination,
-        },
+        ScriptCommand::MakeEscortable { serial, destination } => {
+            Command::MakeEscortable { serial, destination }
+        }
         ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump { serial, gump_id },
         ScriptCommand::Message { serial, text } => Command::Message { serial, text },
         ScriptCommand::PlaySound { serial, sound } => Command::PlaySound { serial, sound },
@@ -706,9 +692,7 @@ fn into_world(command: ScriptCommand) -> Command {
 /// the matcher compares against already-lowercased words — a pack that wrote
 /// "Buy" would otherwise register a keyword nothing can ever match, and there is
 /// nothing anywhere to say so.
-fn trade_speech(
-    trade: openshard_scripting::ScriptTradeSpeech,
-) -> (String, openshard_world::SpeechTable) {
+fn trade_speech(trade: openshard_scripting::ScriptTradeSpeech) -> (String, openshard_world::SpeechTable) {
     use openshard_world::{SpeechEntry, SpeechTable};
 
     let table = SpeechTable {
@@ -812,6 +796,7 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
 mod tests {
     use super::*;
     use openshard_gateway::ConnectionId;
+    use openshard_protocol::identity::{AccountName, CharacterName};
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
     use openshard_world::Position;
     use std::time::Instant;
@@ -821,8 +806,7 @@ mod tests {
 
     impl TempScript {
         fn new(name: &str, source: &str) -> Self {
-            let path =
-                std::env::temp_dir().join(format!("openshard-{name}-{}.js", std::process::id()));
+            let path = std::env::temp_dir().join(format!("openshard-{name}-{}.js", std::process::id()));
             std::fs::write(&path, source).unwrap();
             Self(path)
         }
@@ -877,8 +861,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -924,8 +908,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -941,10 +925,7 @@ mod tests {
         let drew_item = world
             .drain_outbound()
             .any(|out| out.packet.first() == Some(&0x1A));
-        assert!(
-            drew_item,
-            "the player was sent the 0x1A for the dropped item"
-        );
+        assert!(drew_item, "the player was sent the 0x1A for the dropped item");
     }
 
     #[test]
@@ -967,8 +948,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1136,7 +1117,7 @@ mod tests {
 
         scripts.pump(&mut world); // onEvent hears the spawn and queues Control
         world.tick(now); // Control applies — the mobile is now scripted
-                         // A few beats of the seam: onTick walks it south each tick.
+        // A few beats of the seam: onTick walks it south each tick.
         for _ in 0..4 {
             scripts.pump(&mut world);
             world.tick(now);
@@ -1179,8 +1160,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1229,8 +1210,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1304,8 +1285,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1360,8 +1341,8 @@ mod tests {
         world.queue(Command::Enter {
             connection,
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1422,8 +1403,8 @@ mod tests {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
-            account: "admin".to_owned(),
-            name: "Lord British".to_owned(),
+            account: AccountName("admin".to_owned()),
+            name: CharacterName("Lord British".to_owned()),
             serial: None,
             position: None,
             facet: 0,
@@ -1443,9 +1424,11 @@ mod tests {
         assert_eq!(britain.music, Some(9));
 
         // The height band came across too: the dungeon is below, not underfoot.
-        assert!(world
-            .region_at(0, openshard_protocol::world::Point::new(1355, 1555, 0))
-            .is_some_and(|r| r.name == "Britain"));
+        assert!(
+            world
+                .region_at(0, openshard_protocol::world::Point::new(1355, 1555, 0))
+                .is_some_and(|r| r.name == "Britain")
+        );
         let deep = world
             .region_at(0, openshard_protocol::world::Point::new(1355, 1555, -40))
             .expect("the dungeon is under it");

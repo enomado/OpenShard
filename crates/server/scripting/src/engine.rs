@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use deno_core::{extension, op2, v8, JsRuntime, OpState, RuntimeOptions};
+use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2, v8};
 
 use crate::{Command, Event, ScriptEngine, ScriptError, Serial};
 
@@ -85,10 +85,7 @@ impl DenoEngine {
     /// split its data into folders by place and facet, the way Sphere's scriptpack
     /// is many files — the engine still evaluates one script, so hot reload and the
     /// single isolate are unchanged.
-    pub fn load_file(
-        &mut self,
-        path: impl AsRef<Path>,
-    ) -> std::io::Result<Result<(), ScriptError>> {
+    pub fn load_file(&mut self, path: impl AsRef<Path>) -> std::io::Result<Result<(), ScriptError>> {
         let path = path.as_ref();
         let (source, mtime) = read_pack(path)?;
         let loaded = self.load(&source);
@@ -247,9 +244,9 @@ impl ScriptEngine for DenoEngine {
         let isolate = self.runtime.v8_isolate();
         v8::scope_with_context!(scope, isolate, context);
         let value = v8::Local::new(scope, result);
-        let obj: v8::Local<'_, v8::Object> = value.try_into().map_err(|_| {
-            ScriptError::Evaluate("script did not evaluate to an object".to_owned())
-        })?;
+        let obj: v8::Local<'_, v8::Object> = value
+            .try_into()
+            .map_err(|_| ScriptError::Evaluate("script did not evaluate to an object".to_owned()))?;
         // Replace, never merge: a reload that dropped a hook should lose it, not
         // keep calling the stale one.
         self.on_tick = capture(scope, obj, "onTick");
@@ -279,8 +276,7 @@ impl ScriptEngine for DenoEngine {
         // Sparse path — events are rare next to ticks — so a serde round-trip
         // into a plain object is fine and keeps the shape readable from JS as
         // `e.type`, `e.serial`, ….
-        let arg =
-            deno_core::serde_v8::to_v8(tc, event).unwrap_or_else(|_| v8::undefined(tc).into());
+        let arg = deno_core::serde_v8::to_v8(tc, event).unwrap_or_else(|_| v8::undefined(tc).into());
         let f = v8::Local::new(tc, &func);
         let recv = v8::undefined(tc).into();
         if f.call(tc, recv, &[arg]).is_none() {
@@ -321,14 +317,7 @@ impl ScriptEngine for DenoEngine {
     }
 
     fn take_commands(&mut self) -> Vec<Command> {
-        std::mem::take(
-            &mut self
-                .runtime
-                .op_state()
-                .borrow_mut()
-                .borrow_mut::<Host>()
-                .outbox,
-        )
+        std::mem::take(&mut self.runtime.op_state().borrow_mut().borrow_mut::<Host>().outbox)
     }
 }
 
@@ -701,10 +690,7 @@ mod tests {
             )
             .unwrap();
         engine
-            .deliver(&Event::StepRefused {
-                serial: 9,
-                reason: 2,
-            })
+            .deliver(&Event::StepRefused { serial: 9, reason: 2 })
             .unwrap();
         assert_eq!(
             engine.take_commands(),
@@ -835,10 +821,7 @@ mod tests {
     #[test]
     fn a_syntax_error_is_reported_by_load() {
         let mut engine = DenoEngine::new();
-        assert!(matches!(
-            engine.load("function ("),
-            Err(ScriptError::Evaluate(_))
-        ));
+        assert!(matches!(engine.load("function ("), Err(ScriptError::Evaluate(_))));
     }
 
     #[test]

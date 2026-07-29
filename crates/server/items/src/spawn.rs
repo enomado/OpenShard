@@ -19,8 +19,7 @@ pub struct ItemSpawned {
 /// standing in for the core weapon table's for that graphic. See
 /// `Command::SetWeapon`. A stray or non-existent serial sets nothing.
 pub fn set_weapon(state: &mut WorldState, serial: u32, speed: u16, min: u16, max: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial))
-    else {
+    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial)) else {
         return;
     };
     state.registry.insert(entity, Weapon { speed, min, max });
@@ -33,17 +32,14 @@ pub fn set_weapon(state: &mut WorldState, serial: u32, speed: u16, min: u16, max
 /// put it there. `charges` of zero clears it, which is also how a spent coating is
 /// wiped — one door in and out, so "is this poisoned" never has two answers.
 pub fn set_poison(state: &mut WorldState, serial: u32, level: u8, charges: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial))
-    else {
+    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial)) else {
         return;
     };
     if charges == 0 {
         state.registry.remove::<PoisonCharges>(entity);
         return;
     }
-    state
-        .registry
-        .insert(entity, PoisonCharges { level, charges });
+    state.registry.insert(entity, PoisonCharges { level, charges });
 }
 
 /// Put an item on the ground. See `Command::SpawnItem`.
@@ -83,10 +79,7 @@ pub fn spawn_item(
         state.registry.insert(entity, Stackable);
     }
     mark_decay(state, entity);
-    state
-        .facet_state_mut(facet)
-        .sectors
-        .insert(entity, position);
+    state.facet_state_mut(facet).sectors.insert(entity, position);
     state.bus.send(ItemSpawned {
         entity,
         serial,
@@ -154,13 +147,7 @@ pub fn equip_new_container(
 /// its own serial, so the client's drag and its eventual drop still name it,
 /// and the copy is what the ground is left with. Straight from Sphere's
 /// `CItem::UnStackSplit`.
-pub fn spawn_leftover(
-    state: &mut WorldState,
-    original: EntityId,
-    amount: u16,
-    position: Point,
-    facet: u8,
-) {
+pub fn spawn_leftover(state: &mut WorldState, original: EntityId, amount: u16, position: Point, facet: u8) {
     let Some(&Graphic { id, hue }) = state.registry.get::<Graphic>(original) else {
         return;
     };
@@ -177,10 +164,7 @@ pub fn spawn_leftover(
     state.registry.insert(leftover, Position(position));
     state.registry.insert(leftover, Facet(facet));
     mark_decay(state, leftover);
-    state
-        .facet_state_mut(facet)
-        .sectors
-        .insert(leftover, position);
+    state.facet_state_mut(facet).sectors.insert(leftover, position);
     state.reveal(leftover);
 }
 

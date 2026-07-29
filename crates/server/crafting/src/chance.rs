@@ -59,12 +59,7 @@ pub struct Roll {
 /// train anything. Splitting the two is how a player refreshing a window cannot
 /// grind a skill by looking at it.
 #[must_use]
-pub fn chance(
-    state: &WorldState,
-    crafter: EntityId,
-    system: &CraftSystemDef,
-    recipe: &Recipe,
-) -> Chance {
+pub fn chance(state: &WorldState, crafter: EntityId, system: &CraftSystemDef, recipe: &Recipe) -> Chance {
     let mut all_skills = true;
     let mut main = None;
     for want in recipe.skills {
@@ -128,12 +123,7 @@ pub(crate) fn roll(
 
 /// Train every required skill once per item made — ServUO's `MultipleSkillCheck`,
 /// the `use_all_res` path's substitute for the passive check.
-pub(crate) fn train_per_item(
-    state: &mut WorldState,
-    crafter: EntityId,
-    recipe: &Recipe,
-    made: u16,
-) {
+pub(crate) fn train_per_item(state: &mut WorldState, crafter: EntityId, recipe: &Recipe, made: u16) {
     for _ in 0..made {
         for want in recipe.skills {
             roll_skill_band(
@@ -250,11 +240,7 @@ mod tests {
         assert_eq!(exceptional_curve(eca, 1000, 950), 400);
         assert_eq!(exceptional_curve(eca, 1000, 1000), 550);
         assert_eq!(exceptional_curve(eca, 1000, 700), 400, "clamped at sixty");
-        assert_eq!(
-            exceptional_curve(eca, 1000, 1200),
-            550,
-            "clamped at forty-five"
-        );
+        assert_eq!(exceptional_curve(eca, 1000, 1200), 550, "clamped at forty-five");
     }
 
     #[test]

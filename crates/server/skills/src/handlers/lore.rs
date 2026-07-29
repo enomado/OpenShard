@@ -99,12 +99,7 @@ pub(super) fn anatomy(state: &mut WorldState, actor: EntityId, target: EntityId)
     let stamina = fuzzed_index(state, stamina, margin);
 
     if roll_skill_band(state, actor, id, 0, 1000) {
-        state.private_overhead_cliloc(
-            actor,
-            target,
-            ANATOMY_RESULT + strength * 11 + dexterity,
-            "",
-        );
+        state.private_overhead_cliloc(actor, target, ANATOMY_RESULT + strength * 11 + dexterity, "");
         // The endurance line is a second sentence, and only a trained eye sees it.
         // ServUO reads the *base* here, not the effective value: a strong smith
         // does not learn to read a stranger's breathing.
@@ -156,17 +151,11 @@ pub(super) fn eval_int(state: &mut WorldState, actor: EntityId, target: EntityId
 /// The stats of `entity` if it is a mobile at all, `None` if it is an item.
 fn mobile_stats(state: &WorldState, entity: EntityId) -> Option<Stats> {
     state.registry.get::<Body>(entity)?;
-    Some(
-        state
-            .registry
-            .get::<Stats>(entity)
-            .copied()
-            .unwrap_or(Stats {
-                strength: STAT_WITHOUT_A_SHEET,
-                dexterity: STAT_WITHOUT_A_SHEET,
-                intelligence: STAT_WITHOUT_A_SHEET,
-            }),
-    )
+    Some(state.registry.get::<Stats>(entity).copied().unwrap_or(Stats {
+        strength: STAT_WITHOUT_A_SHEET,
+        dexterity: STAT_WITHOUT_A_SHEET,
+        intelligence: STAT_WITHOUT_A_SHEET,
+    }))
 }
 
 /// What a mobile has actually *trained*, in tenths — the base, with no help from

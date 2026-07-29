@@ -112,10 +112,7 @@ pub struct LookRequest {
 impl DecodePacket for LookRequest {
     const ID: u8 = 0x09;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             serial: reader.u32()?,
         })
@@ -148,10 +145,7 @@ pub enum StatusQueryKind {
 impl DecodePacket for StatusQuery {
     const ID: u8 = 0x34;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let _magic = reader.u32()?;
         let kind = if reader.u8()? == 0x05 {
             StatusQueryKind::Skills
@@ -570,10 +564,7 @@ mod tests {
             version(),
         );
         assert_eq!(packet[0], 0xBF);
-        assert_eq!(
-            u16::from_be_bytes([packet[1], packet[2]]) as usize,
-            packet.len()
-        );
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]) as usize, packet.len());
         assert_eq!(u16::from_be_bytes([packet[3], packet[4]]), 0x19);
         assert_eq!(packet[5], 2, "the classic client's extended-status type");
         assert_eq!(
@@ -662,12 +653,7 @@ mod tests {
     #[test]
     fn remove_is_five_bytes() {
         assert_eq!(
-            encode_packet(
-                &Remove {
-                    serial: 0xDEAD_BEEF
-                },
-                version()
-            ),
+            encode_packet(&Remove { serial: 0xDEAD_BEEF }, version()),
             vec![0x1D, 0xDE, 0xAD, 0xBE, 0xEF]
         );
     }
@@ -706,11 +692,7 @@ mod tests {
             bytes.len(),
             "the declared length must match reality"
         );
-        assert_eq!(
-            &bytes[19..23],
-            &[0, 0, 0, 0],
-            "the zero serial ends the list"
-        );
+        assert_eq!(&bytes[19..23], &[0, 0, 0, 0], "the zero serial ends the list");
     }
 
     #[test]
@@ -777,11 +759,7 @@ mod tests {
         let modern = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 1));
         let ancient = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 0));
         assert_ne!(modern, ancient);
-        assert_eq!(
-            modern.len(),
-            ancient.len() + 2,
-            "the hue an old client skips"
-        );
+        assert_eq!(modern.len(), ancient.len() + 2, "the hue an old client skips");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use openshard_protocol::gump::GumpResponse;
 use openshard_state::components::QuestLog;
 use openshard_state::{QuestGumpContext, QuestSection, WorldState};
 
-use crate::gump::{self, button, QUEST_GUMP, QUEST_RESIGN_GUMP, RESIGN_OK, RESIGN_SWITCH_YES};
+use crate::gump::{self, QUEST_GUMP, QUEST_RESIGN_GUMP, RESIGN_OK, RESIGN_SWITCH_YES, button};
 use crate::{offer, turnin};
 
 /// Whether a gump id belongs to the quest system.

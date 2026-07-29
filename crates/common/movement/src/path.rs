@@ -25,7 +25,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
-use crate::walk::{step_from, Terrain};
+use crate::walk::{Terrain, step_from};
 
 /// A tile in the search, keyed by its column and row. Height is carried on the
 /// resolved [`Point`], not in the key: two routes reaching one tile at different
@@ -43,12 +43,7 @@ type Tile = (u16, u16);
 /// tiles gives up rather than spend the tick. A few hundred is ample for moving
 /// about a town; open-world roaming would want caching, not a bigger cap.
 #[must_use]
-pub fn find_path(
-    terrain: &dyn Terrain,
-    from: Point,
-    to: Point,
-    budget: usize,
-) -> Option<Vec<Direction>> {
+pub fn find_path(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Option<Vec<Direction>> {
     let goal: Tile = (to.x, to.y);
     let start: Tile = (from.x, from.y);
     if start == goal {
@@ -118,11 +113,7 @@ pub fn find_path(
 
 /// Walk the parent chain from the goal back to the start, collecting the steps in
 /// travel order.
-fn reconstruct(
-    came_from: &HashMap<Tile, (Tile, Direction)>,
-    start: Tile,
-    goal: Tile,
-) -> Vec<Direction> {
+fn reconstruct(came_from: &HashMap<Tile, (Tile, Direction)>, start: Tile, goal: Tile) -> Vec<Direction> {
     let mut steps = Vec::new();
     let mut tile = goal;
     while tile != start {
@@ -184,11 +175,7 @@ mod tests {
                 && to.y >= self.wall_from
                 && to.y <= self.wall_to
                 && to.y != self.opening_y;
-            if blocked {
-                None
-            } else {
-                Some(to)
-            }
+            if blocked { None } else { Some(to) }
         }
     }
 
@@ -197,11 +184,7 @@ mod tests {
         let mut at = from;
         for dir in path {
             let (dx, dy) = dir.step();
-            at = Point::new(
-                (i32::from(at.x) + dx) as u16,
-                (i32::from(at.y) + dy) as u16,
-                at.z,
-            );
+            at = Point::new((i32::from(at.x) + dx) as u16, (i32::from(at.y) + dy) as u16, at.z);
         }
         at
     }
@@ -211,8 +194,8 @@ mod tests {
         // Three tiles east: the route is three steps (any equal-cost mix of due-east
         // and diagonals), never a detour.
         let from = Point::new(10, 10, 0);
-        let path = find_path(&OpenWorld, from, Point::new(13, 10, 0), 100)
-            .expect("open ground is always reachable");
+        let path =
+            find_path(&OpenWorld, from, Point::new(13, 10, 0), 100).expect("open ground is always reachable");
         assert_eq!(path.len(), 3, "no detour on open ground");
         let end = walk_path(from, &path);
         assert_eq!((end.x, end.y), (13, 10), "it arrives");
@@ -235,8 +218,7 @@ mod tests {
             opening_y: 8,
         };
         let from = Point::new(10, 10, 0);
-        let path =
-            find_path(&world, from, Point::new(14, 10, 0), 1000).expect("there is a way around");
+        let path = find_path(&world, from, Point::new(14, 10, 0), 1000).expect("there is a way around");
         // It must never stand on a blocked tile, and reach the far side.
         let mut at = from;
         for dir in &path {

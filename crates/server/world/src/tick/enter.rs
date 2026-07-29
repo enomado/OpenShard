@@ -69,7 +69,7 @@ impl World {
         self.state.registry.insert(entity, Position(position));
         self.state.registry.insert(entity, Heading(facing));
         self.state.registry.insert(entity, body);
-        self.state.registry.insert(entity, Name(name.clone()));
+        self.state.registry.insert(entity, Name(name.0.clone()));
         self.state.registry.insert(entity, Account(account));
         self.state.registry.insert(entity, Facet(facet));
         // The account's authority, re-derived each login and never saved with the
@@ -230,13 +230,7 @@ impl World {
         self.state
             .registry
             .insert(entity, Movement(Walker::new(position, facing)));
-        self.state.registry.insert(
-            entity,
-            Client {
-                connection,
-                version,
-            },
-        );
+        self.state.registry.insert(entity, Client { connection, version });
         self.state.players.insert(connection, entity);
         // The AoS feature gates for this connection, at debug — tooltips and
         // context menus are version-gated, so this is where to look if a modern
@@ -251,10 +245,7 @@ impl World {
             context_menus = self.state.gameplay.context_menus,
             "player feature gates"
         );
-        self.state
-            .facet_state_mut(facet)
-            .sectors
-            .insert(entity, position);
+        self.state.facet_state_mut(facet).sectors.insert(entity, position);
         self.state.seen.insert(entity, HashSet::new());
 
         // Bring back what this character was carrying, if the store had it. A
@@ -328,10 +319,8 @@ impl World {
                 map_height,
             }),
         );
-        self.state.send_packet(
-            connection,
-            &ServerPacket::MapChange(MapChange { map: facet }),
-        );
+        self.state
+            .send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
         // AoS SupportedFeatures, sent *again* at world entry — this is the copy
         // ServUO's `DoLogin` sends right after the login confirm, and the one
         // ClassicUO reads to turn on in-world object tooltips and context menus.
@@ -339,13 +328,10 @@ impl World {
         // character-select screen; without this one a modern client never asks for
         // an OPL or opens a context menu, no matter its version. Off only when the
         // shard serves neither.
-        if self.state.gameplay.tooltip_mode != TooltipMode::Off || self.state.gameplay.context_menus
-        {
+        if self.state.gameplay.tooltip_mode != TooltipMode::Off || self.state.gameplay.context_menus {
             let extended = version.supports(Feature::ExtraFeatureMask);
-            self.state.send(
-                connection,
-                encode_supported_features(AOS_FEATURE_FLAGS, extended),
-            );
+            self.state
+                .send(connection, encode_supported_features(AOS_FEATURE_FLAGS, extended));
         }
         // Which season the client draws its trees in, with the change sound off:
         // this is a login, not a turn of the year. Between the map change and the
@@ -406,7 +392,7 @@ impl World {
             serial,
             position,
         });
-        info!(%serial, name, position = %position, "in world");
+        info!(%serial, %name, position = %position, "in world");
 
         // Draw whoever is already here, and draw this one for them. Both
         // directions, because arriving is symmetric: the newcomer has an empty
@@ -454,8 +440,7 @@ impl World {
     /// re-sends the status but this — a stat buff landing, or wearing off. An NPC,
     /// or a player between sessions, is a no-op.
     pub(super) fn refresh_status_of(&mut self, serial: u32) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-        else {
+        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         if let Some(connection) = self.connection_of(entity) {

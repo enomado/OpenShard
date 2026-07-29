@@ -126,9 +126,7 @@ mod tests {
         let request = ExtendedRequest::decode(&bytes).unwrap();
         assert_eq!(
             request,
-            ExtendedRequest::ContextMenuRequest(ContextMenuRequest {
-                serial: 0x0000_1234
-            })
+            ExtendedRequest::ContextMenuRequest(ContextMenuRequest { serial: 0x0000_1234 })
         );
     }
 
@@ -170,15 +168,8 @@ mod tests {
             ClientVersion::new(7, 0, 45, 65),
         );
         assert_eq!(packet[0], 0xBF);
-        assert_eq!(
-            u16::from_be_bytes([packet[1], packet[2]]),
-            packet.len() as u16
-        );
-        assert_eq!(
-            &packet[3..5],
-            &0x14u16.to_be_bytes(),
-            "display-popup subcommand"
-        );
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]), packet.len() as u16);
+        assert_eq!(&packet[3..5], &0x14u16.to_be_bytes(), "display-popup subcommand");
         assert_eq!(&packet[5..7], &0x02u16.to_be_bytes(), "the new format");
         assert_eq!(&packet[7..11], &0x0000_00ABu32.to_be_bytes());
         assert_eq!(packet[11], 2, "two entries");

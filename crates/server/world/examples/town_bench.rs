@@ -27,9 +27,10 @@
 use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
+use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::world::Point;
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-use openshard_world::{Command, Gameplay, World, TICK_INTERVAL};
+use openshard_world::{Command, Gameplay, TICK_INTERVAL, World};
 
 /// Britain, the same spot the tests use.
 const START: (u16, u16) = (1363, 1600);
@@ -51,14 +52,10 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
         world.queue(Command::Enter {
             connection: ConnectionId::from_raw(u64::from(i + 1)),
             version: ClientVersion::TOL,
-            account: "bench".to_owned(),
-            name: format!("Player{i}"),
+            account: AccountName("bench".to_owned()),
+            name: CharacterName(format!("Player{i}")),
             serial: None,
-            position: Some(Point::new(
-                START.0 + side + (i % 4) as u16,
-                START.1 + side,
-                0,
-            )),
+            position: Some(Point::new(START.0 + side + (i % 4) as u16, START.1 + side, 0)),
             facet: 0,
             appearance: None,
             sheet: None,

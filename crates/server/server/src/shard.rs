@@ -97,27 +97,12 @@ async fn save_loop(store: Arc<dyn Store>, mut snapshots: SnapshotRx, failures: F
     }
 }
 
-/// Drive login and the world until the gateway stops.
-///
-/// One task owns both. That is not a limitation: the world is deliberately
-/// single-threaded — a deterministic tick is the whole point — and login is a
-/// state machine that does no work worth parallelising. Async lives in the
-/// gateway's tasks, on the far side of the channel.
-pub(crate) async fn run_shard(
-    mut events: ServerEventRx,
-    config: &Config,
-    advertised: SocketAddrV4,
-    mut world: World,
-    store: Arc<dyn Store>,
-) {
-    let (saves, snapshots) = snapshot_channel();
-    let (failed, mut failures) = failure_channel();
-
-    // Accounts come from the store first — their credentials are the argon2
-    // hashes saved there — and config seeds the rest. The store is authoritative
-    // for a password once it has one, so a config `[[accounts]]` line only
-    // creates an account the store has never seen; changing a config password
-    // after the first boot does nothing (the shard says as much in the docs).
+/// Accounts come from the store first — their credentials are the argon2
+/// hashes saved there — and config seeds the rest. The store is authoritative
+/// for a password once it has one, so a config `[[accounts]]` line only
+/// creates an account the store has never seen; changing a config password
+/// after the first boot does nothing (the shard says as much in the docs).
+async fn load_accounts(store: &dyn Store, config: &Config) -> DevAccounts {
     let mut accounts = DevAccounts::new();
     match store.accounts().await {
         Ok(stored) => {
@@ -139,7 +124,7 @@ pub(crate) async fn run_shard(
                 credential,
             };
             if let Err(error) = store.put_account(&record).await {
-                warn!(account = account.name, %error, "could not persist a configured account");
+                warn!(%account.name, %error, "could not persist a configured account");
             }
         }
         // Characters and access come from config every boot regardless: access is
@@ -150,21 +135,27 @@ pub(crate) async fn run_shard(
         }
         // An unparseable access level is logged and left a player — authority is
         // never granted by a typo.
-        match account.access.parse::<AccessLevel>() {
+        match account.access.0.parse::<AccessLevel>() {
             Ok(AccessLevel::Player) => {}
             Ok(level) => accounts = accounts.with_access(&account.name, level),
             Err(error) => {
-                warn!(account = account.name, %error, "unknown access level; treating as player")
+                warn!(%account.name, %error, "unknown access level; treating as player")
             }
         }
     }
+    accounts
+}
 
-    // Bring the world back from the database: reserve every stored serial so a new
-    // character cannot take one, list the stored characters so they show up to
-    // play, and keep their records so playing one restores it where it was. This
-    // borrows the store; the save task takes ownership after, so the load has to
-    // come first.
-    let mut saved: HashMap<(String, String), CharacterRecord> = HashMap::new();
+/// Bring the world's characters back from the database: reserve every stored
+/// serial so a new character cannot take one, list the stored characters so
+/// they show up to play, and keep their records so playing one restores it
+/// where it was.
+async fn restore_characters(
+    store: &dyn Store,
+    world: &mut World,
+    mut accounts: DevAccounts,
+) -> (DevAccounts, HashMap<(String, String), CharacterRecord>) {
+    let mut saved = HashMap::new();
     match store.characters().await {
         Ok(characters) => {
             for record in characters {
@@ -172,29 +163,27 @@ pub(crate) async fn run_shard(
                 let listed = accounts
                     .characters(&record.account)
                     .iter()
-                    .any(|entry| entry.name.eq_ignore_ascii_case(&record.name));
+                    .any(|entry| entry.name.0.eq_ignore_ascii_case(&record.name.0));
                 if !listed {
                     accounts = accounts.with_character(&record.account, &record.name);
                 }
-                saved.insert(
-                    (record.account.to_lowercase(), record.name.to_lowercase()),
-                    record,
-                );
+                saved.insert((record.account.normalized(), record.name.normalized()), record);
             }
             if !saved.is_empty() {
-                info!(
-                    characters = saved.len(),
-                    "restored the world from the database"
-                );
+                info!(characters = saved.len(), "restored the world from the database");
             }
         }
         Err(error) => error!(%error, "could not read saved characters; starting with none"),
     }
+    (accounts, saved)
+}
 
-    // Bring back saved items: the world reserves their serials, drops the loose
-    // ground clutter back where it lay, and files each character's carried
-    // inventory to re-equip when it logs in. After the characters, so their
-    // serials are already reserved and an item can point at the container it was in.
+/// Bring back saved items: the world reserves their serials, drops the loose
+/// ground clutter back where it lay, and files each character's carried
+/// inventory to re-equip when it logs in. Called after `restore_characters`,
+/// so their serials are already reserved and an item can point at the
+/// container it was in.
+async fn restore_items(store: &dyn Store, world: &mut World) {
     match store.items().await {
         Ok(items) => {
             if !items.is_empty() {
@@ -204,12 +193,15 @@ pub(crate) async fn run_shard(
         }
         Err(error) => error!(%error, "could not read saved items; starting with none"),
     }
+}
 
-    // Bring back the world's NPC mobiles — townsfolk, vendors, creatures — each
-    // exactly as saved. After the items, so each mobile's gear and stock is
-    // already filed under its serial for `restore_mobiles` to equip. This is the
-    // whole-world model: the pack seeds a fresh world once (a staff Populate),
-    // and from then on the save is the truth — nothing respawns at boot.
+/// Bring back the world's NPC mobiles — townsfolk, vendors, creatures — each
+/// exactly as saved. Called after `restore_items`, so each mobile's gear and
+/// stock is already filed under its serial for `World::restore_mobiles` to
+/// equip. This is the whole-world model: the pack seeds a fresh world once (a
+/// staff Populate), and from then on the save is the truth — nothing respawns
+/// at boot.
+async fn restore_mobiles(store: &dyn Store, world: &mut World) {
     match store.mobiles().await {
         Ok(mobiles) => {
             if !mobiles.is_empty() {
@@ -219,24 +211,25 @@ pub(crate) async fn run_shard(
         }
         Err(error) => error!(%error, "could not read saved mobiles; starting with none"),
     }
+}
 
-    // And the placed decoration, door state and all.
+/// Bring back the placed decoration, door state and all.
+async fn restore_decorations(store: &dyn Store, world: &mut World) {
     match store.decorations().await {
         Ok(decorations) => {
             if !decorations.is_empty() {
-                info!(
-                    decorations = decorations.len(),
-                    "restored the world's decoration"
-                );
+                info!(decorations = decorations.len(), "restored the world's decoration");
             }
             world.restore_decorations(decorations);
         }
         Err(error) => error!(%error, "could not read saved decorations; starting with none"),
     }
+}
 
-    // Bring back the spawn regions with their respawn timers, so a populated area
-    // stays populated across a restart and a rare spawn keeps its remaining wait
-    // rather than popping again the moment the shard comes up.
+/// Bring back the spawn regions with their respawn timers, so a populated area
+/// stays populated across a restart and a rare spawn keeps its remaining wait
+/// rather than popping again the moment the shard comes up.
+async fn restore_spawners(store: &dyn Store, world: &mut World) {
     match store.spawners().await {
         Ok(spawners) => {
             if !spawners.is_empty() {
@@ -246,10 +239,12 @@ pub(crate) async fn run_shard(
         }
         Err(error) => error!(%error, "could not read saved spawners; starting with none"),
     }
+}
 
-    // The named regions — towns, dungeons, guarded zones. Saved like everything
-    // else, so a restart keeps its guards, its music and the dark in its caves
-    // without waiting for a staff `.admin`.
+/// Bring back the named regions — towns, dungeons, guarded zones. Saved like
+/// everything else, so a restart keeps its guards, its music and the dark in
+/// its caves without waiting for a staff `.admin`.
+async fn restore_regions(store: &dyn Store, world: &mut World) {
     match store.regions().await {
         Ok(regions) => {
             if !regions.is_empty() {
@@ -259,31 +254,127 @@ pub(crate) async fn run_shard(
         }
         Err(error) => error!(%error, "could not read saved regions; starting with none"),
     }
+}
 
-    // And the hour of the day. The tick counter restarts at zero by design, so
-    // without this every restart would be a fresh midnight.
+/// Bring back the hour of the day. The tick counter restarts at zero by
+/// design, so without this every restart would be a fresh midnight.
+async fn restore_clock(store: &dyn Store, world: World) -> World {
     match store.clock_minutes().await {
-        Ok(minutes) => world = world.with_clock_minutes(minutes),
-        Err(error) => error!(%error, "could not read the saved clock; starting at midnight"),
+        Ok(minutes) => world.with_clock_minutes(minutes),
+        Err(error) => {
+            error!(%error, "could not read the saved clock; starting at midnight");
+            world
+        }
     }
+}
 
+/// Build the login server: the character-creation screen needs somewhere to
+/// start (without it the client refuses to create at all — "No city found.
+/// Something wrong with the received cities." — because the list it was sent
+/// is empty), and the AoS (0xB9) and character-list (0xA9) flags that tell a
+/// modern client to turn on tooltips and context menus rather than staying on
+/// single-click names.
+fn build_login_server(
+    config: &Config,
+    accounts: DevAccounts,
+    advertised: SocketAddrV4,
+) -> LoginServer<DevAccounts> {
     let mut login = LoginServer::new(accounts, &config.server.name, advertised);
-    // The character-creation screen needs somewhere to start. Without it the
-    // client refuses to create at all — "No city found. Something wrong with the
-    // received cities." — because the list it was sent is empty. The list is
-    // filtered to the facets this shard loaded, so every city offered is one a
-    // player can actually be placed in.
-    login.starts = start_cities(
-        &config.world.facets,
-        (config.world.start.x, config.world.start.y),
-    );
-    // Advertise AoS (0xB9) when the shard serves tooltips or context menus, so a
-    // modern client turns them on rather than staying on single-click names.
+    // The list is filtered to the facets this shard loaded, so every city
+    // offered is one a player can actually be placed in.
+    login.starts = start_cities(&config.world.facets, (config.world.start.x, config.world.start.y));
     login.supported_features = crate::boot::supported_features_of(config);
-    // And the character-list (0xA9) flags — the packet ClassicUO actually reads to
-    // turn on object tooltips (0x20) and context menus (0x08). This is the one
-    // that makes a modern client send tooltip/context requests at all.
     login.character_list_flags = crate::boot::character_list_flags_of(config);
+    login
+}
+
+/// Run one tick: advance the world, flush its outbound packets, hand off
+/// its snapshots and departed characters, pump the gameplay script, and
+/// reclaim expired login keys.
+///
+/// The key reclaim rides along here rather than after every `select!` branch
+/// because `AuthKeys::expire` is memory upkeep for abandoned relay keys —
+/// `AuthKeys::redeem` already checks expiry on its own — and its own doc says
+/// to call it "on a timer". The tick is that timer; a packet or a disconnect
+/// is not.
+fn world_tick(
+    world: &mut World,
+    sessions: &HashMap<ConnectionId, Session>,
+    saves: &SnapshotTx,
+    saved: &mut HashMap<(String, String), CharacterRecord>,
+    scripts: &mut Option<Scripts>,
+    login_server: &mut LoginServer<DevAccounts>,
+) {
+    world.tick(Instant::now());
+    for out in world.drain_outbound() {
+        if let Some(session) = sessions.get(&out.connection) {
+            // A connection reaches the world only after its game
+            // login, so this is always a game connection and every
+            // packet leaves compressed. `send_packet` gates on the
+            // flag anyway, so it stays correct if that ever changes.
+            let _ = session.send_packet(out.packet);
+        }
+    }
+    // Handed off, not awaited. The tick's job here is to stop
+    // holding the only copy.
+    for snapshot in world.drain_saves() {
+        let _ = saves.send(snapshot);
+    }
+    // Keep the in-memory character list current with logouts, so a
+    // re-login this run finds a character where it left, not where it
+    // was at boot. The store gets the same record via the snapshot
+    // above; this is the copy a re-login can read before that lands.
+    for record in world.drain_departed() {
+        let key = (record.account.normalized(), record.name.normalized());
+        saved.insert(key, record);
+    }
+    // Feed the script this tick's events and queue its commands for
+    // the next one. After the drains, so a command a script emits is
+    // applied by a tick and leaves through this same path.
+    if let Some(scripts) = scripts.as_mut() {
+        scripts.pump(world);
+    }
+    // Reclaim keys from clients that selected a shard and never came back.
+    login_server.keys.expire(Instant::now());
+}
+
+/// Drive login and the world until the gateway stops.
+///
+/// One task owns both. That is not a limitation: the world is deliberately
+/// single-threaded — a deterministic tick is the whole point — and login is a
+/// state machine that does no work worth parallelising. Async lives in the
+/// gateway's tasks, on the far side of the channel.
+pub(crate) async fn run_shard(
+    mut events: ServerEventRx,
+    config: &Config,
+    mut world: World,
+    store: Arc<dyn Store>,
+) {
+    // `Config::validate` (run by `Config::load`, which every `Config` reaching
+    // here has been through) refuses an IPv6 `server.advertise`, so this is
+    // always `Some` in practice.
+    let advertised = config
+        .advertise_v4()
+        .expect("Config::validate rejects an IPv6 server.advertise");
+
+    let (saves, snapshots) = snapshot_channel();
+    let (failed, mut failures) = failure_channel();
+
+    // Load and restore in turn: characters after accounts (a stored character
+    // can add to the account's list), items after characters, mobiles after
+    // items, and so on — see each function's doc for why. This all borrows the
+    // store; the save task takes ownership after, so it has to come last.
+    let accounts = load_accounts(store.as_ref(), config).await;
+    let (accounts, mut saved) = restore_characters(store.as_ref(), &mut world, accounts).await;
+    restore_items(store.as_ref(), &mut world).await;
+    restore_mobiles(store.as_ref(), &mut world).await;
+    restore_decorations(store.as_ref(), &mut world).await;
+    restore_spawners(store.as_ref(), &mut world).await;
+    restore_regions(store.as_ref(), &mut world).await;
+    world = restore_clock(store.as_ref(), world).await;
+
+    // this dont need to be here
+    let mut login_server = build_login_server(config, accounts, advertised);
 
     // Kept, not detached: shutdown hands it a final snapshot, closes the channel,
     // and awaits this task so every queued write lands before the process exits.
@@ -307,35 +398,7 @@ pub(crate) async fn run_shard(
             biased;
 
             _ = ticker.tick() => {
-                world.tick(Instant::now());
-                for out in world.drain_outbound() {
-                    if let Some(session) = sessions.get(&out.connection) {
-                        // A connection reaches the world only after its game
-                        // login, so this is always a game connection and every
-                        // packet leaves compressed. `send_packet` gates on the
-                        // flag anyway, so it stays correct if that ever changes.
-                        let _ = session.send_packet(out.packet);
-                    }
-                }
-                // Handed off, not awaited. The tick's job here is to stop
-                // holding the only copy.
-                for snapshot in world.drain_saves() {
-                    let _ = saves.send(snapshot);
-                }
-                // Keep the in-memory character list current with logouts, so a
-                // re-login this run finds a character where it left, not where it
-                // was at boot. The store gets the same record via the snapshot
-                // above; this is the copy a re-login can read before that lands.
-                for record in world.drain_departed() {
-                    let key = (record.account.to_lowercase(), record.name.to_lowercase());
-                    saved.insert(key, record);
-                }
-                // Feed the script this tick's events and queue its commands for
-                // the next one. After the drains, so a command a script emits is
-                // applied by a tick and leaves through this same path.
-                if let Some(scripts) = scripts.as_mut() {
-                    scripts.pump(&mut world);
-                }
+                world_tick(&mut world, &sessions, &saves, &mut saved, &mut scripts, &mut login_server);
             }
 
             // Before `events`: a store that is failing is worth hearing about
@@ -357,12 +420,9 @@ pub(crate) async fn run_shard(
                     error!("the gateway stopped; saving the world");
                     break;
                 };
-                handle(&mut sessions, &mut login, &mut world, advertised, &mut saved, event);
+                world_handle_network(&mut sessions, &mut login_server, &mut world, advertised, &mut saved, event);
             }
         }
-
-        // Reclaim keys from clients that selected a shard and never came back.
-        login.keys.expire(Instant::now());
     }
 
     // Shutdown: one last full snapshot, then flush every queued write before the
@@ -384,6 +444,21 @@ pub(crate) async fn run_shard(
         error!(%error, "the save task did not finish cleanly on shutdown");
     }
     info!("world saved; shutting down");
+}
+
+/// Drop a connection whose handler decided it should close.
+///
+/// One name for the four call sites in `world_handle_network` that all mean
+/// "this handler said stop" — the reason was already logged where that was
+/// decided, so there is nothing left to do here but the removal itself.
+///
+/// Deliberately takes no `bool`: every call site already reads as `if !ok {
+/// sessions_handle(...) }`, and a version that took the bool and decided
+/// internally would have to borrow `sessions` on the `true` path too, which
+/// conflicts with the `&mut Session` borrowed from the same map that the
+/// caller is still using there.
+fn sessions_handle(sessions: &mut HashMap<ConnectionId, Session>, id: ConnectionId) {
+    sessions.remove(&id);
 }
 
 /// Whether the relay is about to send this client somewhere it cannot get back
@@ -409,7 +484,64 @@ pub(crate) fn relay_is_unreachable(client: SocketAddr, advertised: SocketAddrV4)
     advertised.ip().is_loopback() && !client.ip().is_loopback()
 }
 
-pub(crate) fn handle(
+/// Route a decoded login packet to whichever of the three things it can mean:
+/// character creation, character deletion, or an ordinary login-state
+/// transition. All three arrive as `Packet::Login` from `parse_packet`, and
+/// all three need both `login` and `world` in reach, which is why this
+/// crosses the login/world line instead of living in `dispatch_world_packet`.
+fn handle_login_packet(
+    session: &mut Session,
+    login: &mut LoginServer<DevAccounts>,
+    world: &mut World,
+    saved: &mut HashMap<(String, String), CharacterRecord>,
+    packet: LoginStagePacket,
+    id: ConnectionId,
+) -> bool {
+    match packet {
+        // Character creation crosses the login/world line: it writes the new
+        // character onto the account and then enters the world with it.
+        LoginStagePacket::CreateCharacter(create) => create_character(session, login, world, create, id),
+        // Character deletion crosses the same line: it drops the character
+        // from the account list and forgets its saved row.
+        LoginStagePacket::DeleteCharacter(delete) => {
+            delete_character(session, login, world, saved, delete, id)
+        }
+        login_packet => {
+            let response = login.handle(&mut session.login, login_packet, Instant::now());
+            // The game login is the seam Sphere calls CONNECT_GAME: from here
+            // on, this connection's every server->client packet is
+            // Huffman-compressed — starting with the reply `handle` just
+            // built. `login` recognized the `0x91` while decoding the packet
+            // in `parse_packet`; this reads that fact back instead of peeking
+            // the id byte a second time.
+            if session.login.is_game_login() {
+                session.game = true;
+            }
+            session.apply(response, id)
+        }
+    }
+}
+
+/// Route a decoded world packet to the dispatcher, first looking up the
+/// account's authority where the store is in reach — `dispatch_world_packet`
+/// only sees the world, so the GM command gate needs it passed in. A player
+/// by default; only the store grants more.
+fn handle_world_packet(
+    session: &mut Session,
+    login: &LoginServer<DevAccounts>,
+    world: &mut World,
+    saved: &HashMap<(String, String), CharacterRecord>,
+    packet: ClientPacket,
+    id: ConnectionId,
+) -> bool {
+    let access = session
+        .login
+        .account()
+        .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
+    dispatch_world_packet(session, world, packet, id, saved, access)
+}
+
+pub(crate) fn world_handle_network(
     sessions: &mut HashMap<ConnectionId, Session>,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
@@ -455,52 +587,43 @@ pub(crate) fn handle(
             };
             match event {
                 Event::Seeded(seed) => session.login.on_seed(seed),
-                Event::Packet(packet) => {
-                    // The game login is the seam Sphere calls CONNECT_GAME: from
-                    // here on, this connection's every server->client packet is
-                    // Huffman-compressed — starting with the character list this
-                    // very packet triggers. Set the flag before the reply is
-                    // built so that reply goes out compressed.
-                    if packet.first().copied() == Some(GameServerLogin::ID) {
-                        session.game = true;
-                    }
-                    // Character creation crosses the login/world line: it writes
-                    // the new character onto the account and then enters the world
-                    // with it. Handle it here, where both are in reach — dispatch
-                    // sees only the world, and the login state machine is done.
-                    if matches!(
-                        packet.first().copied(),
-                        Some(CreateCharacter::ID_CLASSIC | CreateCharacter::ID_HIGH_SEAS)
-                    ) {
-                        if !create_character(session, login, world, &packet, id) {
-                            sessions.remove(&id);
+                Event::Packet(packet) => match packet.parse_packet(session.login.version()) {
+                    // Ok: hand the decoded packet to whichever side it belongs
+                    // to. Both handlers return the same "keep the connection?"
+                    // bool, so there is one place that acts on it.
+                    Ok(packet) => {
+                        let keep = match packet {
+                            Packet::Login(login_packet) => {
+                                handle_login_packet(session, login, world, saved, login_packet, id)
+                            }
+                            Packet::World(world_packet) => {
+                                handle_world_packet(session, login, world, saved, world_packet, id)
+                            }
+                        };
+                        if !keep {
+                            sessions_handle(sessions, id);
                         }
-                        return;
                     }
-                    // Character deletion crosses the same line: it drops the
-                    // character from the account list and forgets its saved row.
-                    if packet.first().copied() == Some(DeleteCharacter::ID) {
-                        if !delete_character(session, login, world, saved, &packet, id) {
-                            sessions.remove(&id);
+                    // Err: every case here only logs and drops. Nothing decoded,
+                    // so there is nothing to route.
+                    Err(error) => {
+                        match error {
+                            PacketError::Login(ClientLoginDecodeError::CreateCharacter(error)) => {
+                                warn!(%id, %error, "malformed create-character");
+                            }
+                            PacketError::Login(ClientLoginDecodeError::DeleteCharacter(error)) => {
+                                warn!(%id, %error, "malformed delete-character");
+                            }
+                            PacketError::Login(other) => {
+                                warn!(%id, ?other, "malformed login packet");
+                            }
+                            PacketError::World(error) => {
+                                warn!(%id, ?error, "malformed packet");
+                            }
                         }
-                        return;
+                        sessions_handle(sessions, id);
                     }
-                    // The account's authority, looked up where the store is in
-                    // reach and passed to the world so the GM command gate has it.
-                    // A player by default; only the store grants more.
-                    let access = session
-                        .login
-                        .account()
-                        .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
-                    if !dispatch(session, world, &packet, id, saved, access) {
-                        sessions.remove(&id);
-                        return;
-                    }
-                    let response = login.handle(&mut session.login, &packet, Instant::now());
-                    if !session.apply(response, id) {
-                        sessions.remove(&id);
-                    }
-                }
+                },
             }
         }
 

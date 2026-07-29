@@ -201,14 +201,12 @@ impl Header {
                 .checked_sub(1)
                 .ok_or_else(|| malformed("the block chain does not terminate"))?;
 
-            let count =
-                read_u32(bytes, block).ok_or_else(|| malformed("truncated block"))? as usize;
+            let count = read_u32(bytes, block).ok_or_else(|| malformed("truncated block"))? as usize;
             let next = read_u64(bytes, block + 4).ok_or_else(|| malformed("truncated block"))?;
 
             for index in 0..count {
                 let at = block + 12 + index * ENTRY_BYTES;
-                let data_offset =
-                    read_u64(bytes, at).ok_or_else(|| malformed("truncated entry"))?;
+                let data_offset = read_u64(bytes, at).ok_or_else(|| malformed("truncated entry"))?;
                 // A zero offset is a free slot, not a file. Every container has
                 // them: blocks are allocated in fixed-size chunks.
                 if data_offset == 0 {
@@ -217,14 +215,11 @@ impl Header {
                 let entry = Entry {
                     data_offset: usize::try_from(data_offset)
                         .map_err(|_| malformed("entry offset does not fit in memory"))?,
-                    header_length: read_u32(bytes, at + 8)
-                        .ok_or_else(|| malformed("truncated entry"))?
+                    header_length: read_u32(bytes, at + 8).ok_or_else(|| malformed("truncated entry"))?
                         as usize,
-                    compressed_length: read_u32(bytes, at + 12)
-                        .ok_or_else(|| malformed("truncated entry"))?
+                    compressed_length: read_u32(bytes, at + 12).ok_or_else(|| malformed("truncated entry"))?
                         as usize,
-                    compression: read_u16(bytes, at + 32)
-                        .ok_or_else(|| malformed("truncated entry"))?,
+                    compression: read_u16(bytes, at + 32).ok_or_else(|| malformed("truncated entry"))?,
                 };
                 let hash = read_u64(bytes, at + 20).ok_or_else(|| malformed("truncated entry"))?;
                 entries.insert(hash, entry);
@@ -391,7 +386,7 @@ mod tests {
         bytes[..4].copy_from_slice(&MAGIC.to_le_bytes());
         bytes[12..20].copy_from_slice(&64u64.to_le_bytes()); // first block at 64
         bytes[24..28].copy_from_slice(&1u32.to_le_bytes()); // one file
-                                                            // Block at 64: zero entries, next block = itself.
+        // Block at 64: zero entries, next block = itself.
         bytes[64..68].copy_from_slice(&0u32.to_le_bytes());
         bytes[68..76].copy_from_slice(&64u64.to_le_bytes());
 

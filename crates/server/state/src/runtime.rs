@@ -25,15 +25,15 @@ use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriet
 use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{LocalizedMessage, SpokenMessage, NO_GRAPHIC, SYSTEM_SERIAL};
+use openshard_protocol::speech::{LocalizedMessage, NO_GRAPHIC, SYSTEM_SERIAL, SpokenMessage};
 use openshard_protocol::wire::SoundId;
-use openshard_protocol::world::{encode_server_change, MapChange, PlayerUpdate, Point};
+use openshard_protocol::world::{MapChange, PlayerUpdate, Point, encode_server_change};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
-    body_opens_doors, Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost,
-    Graphic, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name,
-    Position, Quality, Staff, Stealthing, TradeWindow,
+    Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost, Graphic, Heading,
+    HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff,
+    Stealthing, TradeWindow, body_opens_doors,
 };
 use crate::dialogue::Dialogue;
 use crate::harvest::Banks;
@@ -277,11 +277,7 @@ impl Gameplay {
     #[must_use]
     pub const fn ticks_from_ms(milliseconds: u64) -> u64 {
         let ticks = milliseconds / (1000 / TICKS_PER_SECOND);
-        if ticks == 0 {
-            1
-        } else {
-            ticks
-        }
+        if ticks == 0 { 1 } else { ticks }
     }
 }
 
@@ -867,11 +863,7 @@ impl WorldState {
         let Some(serial) = self.registry.serial_of(entity) else {
             return;
         };
-        if let Some(&Client {
-            connection,
-            version,
-        }) = self.registry.get::<Client>(entity)
-        {
+        if let Some(&Client { connection, version }) = self.registry.get::<Client>(entity) {
             let exact = ServerPacket::Health(HealthBar::exact(serial, max, current));
             self.outbox.push(Outbound {
                 connection,
@@ -880,11 +872,7 @@ impl WorldState {
         }
         let scaled = ServerPacket::Health(HealthBar::scaled(serial, max, current));
         for watcher in self.watchers_of(entity) {
-            if let Some(&Client {
-                connection,
-                version,
-            }) = self.registry.get::<Client>(watcher)
-            {
+            if let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) {
                 self.outbox.push(Outbound {
                     connection,
                     packet: scaled.encode(version),
@@ -912,10 +900,7 @@ impl WorldState {
             return;
         };
         // Collected before the mutation so the sectors borrow is dropped.
-        let audience: Vec<EntityId> = sectors
-            .nearby(centre, VIEW_RANGE)
-            .map(|(id, _)| id)
-            .collect();
+        let audience: Vec<EntityId> = sectors.nearby(centre, VIEW_RANGE).map(|(id, _)| id).collect();
         for entity in audience {
             if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
                 self.outbox.push(Outbound {
@@ -1343,14 +1328,8 @@ impl WorldState {
                 // Which map to draw, then where on it and how big it is. No
                 // `0x1B`: that is the "entering the world" packet, and neither
                 // reference re-sends it mid-session.
-                self.send_packet(
-                    connection,
-                    &ServerPacket::MapChange(MapChange { map: facet }),
-                );
-                self.send(
-                    connection,
-                    encode_server_change(to, width as u16, height as u16),
-                );
+                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
+                self.send(connection, encode_server_change(to, width as u16, height as u16));
             }
         }
 
@@ -1485,11 +1464,7 @@ impl WorldState {
             return;
         };
         for watcher in self.watchers_of(entity) {
-            let Some(&Client {
-                connection,
-                version,
-            }) = self.registry.get::<Client>(watcher)
-            else {
+            let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) else {
                 continue;
             };
             self.outbox.push(Outbound {
@@ -1503,18 +1478,10 @@ impl WorldState {
     pub fn show(&mut self, watcher: EntityId, other: EntityId) {
         // Only players have screens. An NPC "seeing" someone is an AI question,
         // and it does not belong in the packet path.
-        let Some(&Client {
-            connection,
-            version,
-        }) = self.registry.get::<Client>(watcher)
-        else {
+        let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) else {
             return;
         };
-        if self
-            .seen
-            .get(&watcher)
-            .is_some_and(|seen| seen.contains(&other))
-        {
+        if self.seen.get(&watcher).is_some_and(|seen| seen.contains(&other)) {
             return;
         }
         // The living cannot see the dead: a ghost is drawn only to another ghost
@@ -1565,8 +1532,8 @@ impl WorldState {
             return None;
         }
         let (full, hash) = self.object_properties(entity)?;
-        let send_version = self.gameplay.tooltip_mode == TooltipMode::SendVersion
-            && version.supports(Feature::TooltipHash);
+        let send_version =
+            self.gameplay.tooltip_mode == TooltipMode::SendVersion && version.supports(Feature::TooltipHash);
         if send_version {
             let serial = self.registry.serial_of(entity)?.raw();
             Some(ServerPacket::TooltipRevision(TooltipRevision { serial, hash }).encode(version))
@@ -1673,12 +1640,7 @@ impl WorldState {
             return;
         }
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) {
-            self.send_packet(
-                connection,
-                &ServerPacket::Remove(Remove {
-                    serial: serial.raw(),
-                }),
-            );
+            self.send_packet(connection, &ServerPacket::Remove(Remove { serial: serial.raw() }));
         }
     }
 
@@ -1911,11 +1873,7 @@ impl WorldState {
         if self.worn.version != version {
             self.worn.by_mobile.clear();
             for (item, worn) in self.registry.query::<Equipped>() {
-                self.worn
-                    .by_mobile
-                    .entry(worn.mobile)
-                    .or_default()
-                    .push(item);
+                self.worn.by_mobile.entry(worn.mobile).or_default().push(item);
             }
             self.worn.version = version;
         }
@@ -1976,9 +1934,7 @@ impl WorldState {
     #[must_use]
     pub fn version_of(&self, connection: ConnectionId) -> Option<ClientVersion> {
         let &player = self.players.get(&connection)?;
-        self.registry
-            .get::<Client>(player)
-            .map(|client| client.version)
+        self.registry.get::<Client>(player).map(|client| client.version)
     }
 
     /// Queue `packet` for a connection, framed for the version that connection

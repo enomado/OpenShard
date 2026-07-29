@@ -3,12 +3,13 @@ use openshard_persistence::{
     CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord, RunebookData,
     RunebookEntryData,
 };
+use openshard_protocol::identity::CharacterName;
 use openshard_state::components::{
-    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy,
-    DoneQuest, Escortable, Field, Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges,
-    Poisoned, Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark,
-    Runebook, RunebookEntry, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title,
-    TradeWindow, Trap, TrapKind, Vendor,
+    Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy, DoneQuest, Escortable, Field,
+    Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality, QuestGiver,
+    QuestLog, QuestState, RangedAttack, Restock, RuneMark, Runebook, RunebookEntry, Skills, Spellbook,
+    StatMod, StatMods, StockRecord, SwingSpeed, Title, TradeWindow, Trap, TrapKind, Vendor, body_opens_doors,
+    effect,
 };
 
 impl World {
@@ -33,24 +34,9 @@ impl World {
         // Collected first: `read` borrows the bus, and the journal is a
         // different field but the iterator holds the borrow across the loop.
         let mut changed: Vec<EntityId> = Vec::new();
-        changed.extend(
-            self.state
-                .bus
-                .read(&mut self.entered)
-                .map(|event| event.entity),
-        );
-        changed.extend(
-            self.state
-                .bus
-                .read(&mut self.moved)
-                .map(|event| event.entity),
-        );
-        changed.extend(
-            self.state
-                .bus
-                .read(&mut self.turned)
-                .map(|event| event.entity),
-        );
+        changed.extend(self.state.bus.read(&mut self.entered).map(|event| event.entity));
+        changed.extend(self.state.bus.read(&mut self.moved).map(|event| event.entity));
+        changed.extend(self.state.bus.read(&mut self.turned).map(|event| event.entity));
         for entity in changed {
             self.journal.touch(entity);
         }
@@ -129,9 +115,7 @@ impl World {
         // exactly and a killed creature (absent here) stays dead.
         let mobiles = self.mobile_records();
         for record in &mobiles {
-            if let Some(entity) =
-                Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s))
-            {
+            if let Some(entity) = Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s)) {
                 snapshot.inventories.push(Inventory {
                     owner: record.serial,
                     items: self.inventory_of(entity),
@@ -337,12 +321,7 @@ impl World {
                 .get::<Quality>(item)
                 .map(|quality| quality.exceptional)
                 .or_else(|| registry.has::<CraftedBy>(item).then_some(false))
-                .map(|fine| {
-                    (
-                        fine,
-                        registry.get::<CraftedBy>(item).map(|maker| maker.0.clone()),
-                    )
-                }),
+                .map(|fine| (fine, registry.get::<CraftedBy>(item).map(|maker| maker.0.clone()))),
             // And where a rune points, which is the whole of what a rune is —
             // an unsaved one comes back a blank, and the walk that marked it was
             // for nothing.
@@ -461,16 +440,14 @@ impl World {
                 .unwrap_or(Hitpoints { current: 1, max: 1 });
             // No brain reads back as the values `spawn` builds no brain from.
             let (sight, aggression, beat, wander) =
-                registry
-                    .get::<Brain>(entity)
-                    .map_or((0, 2, 0, false), |brain| {
-                        (
-                            brain.sight,
-                            brain.aggression.to_bits(),
-                            brain.beat_ticks,
-                            brain.wander,
-                        )
-                    });
+                registry.get::<Brain>(entity).map_or((0, 2, 0, false), |brain| {
+                    (
+                        brain.sight,
+                        brain.aggression.to_bits(),
+                        brain.beat_ticks,
+                        brain.wander,
+                    )
+                });
             let (ranged, ranged_kind) = registry
                 .get::<RangedAttack>(entity)
                 .map_or((0, 0), |ranged| (ranged.range, ranged.kind));
@@ -508,9 +485,7 @@ impl World {
                 title: registry.get::<Title>(entity).map(|t| t.0.clone()),
                 npc_home: npc.map(|n| (n.home.x, n.home.y, n.home.z)),
                 npc_wander: npc.map_or(0, |n| n.wander),
-                night_home: registry
-                    .get::<NightHome>(entity)
-                    .map(|h| (h.0.x, h.0.y, h.0.z)),
+                night_home: registry.get::<NightHome>(entity).map(|h| (h.0.x, h.0.y, h.0.z)),
                 // A tamed creature is property: a restart that quietly released
                 // every pet on the shard would be the `Murders` lesson again.
                 pet: registry.get::<Pet>(entity).map(|pet| PetData {
@@ -679,10 +654,7 @@ impl World {
                 });
             } else if matches!(
                 record.kind,
-                effect::NIGHT_SIGHT
-                    | effect::PROTECTION
-                    | effect::REACTIVE_ARMOR
-                    | effect::MAGIC_REFLECT
+                effect::NIGHT_SIGHT | effect::PROTECTION | effect::REACTIVE_ARMOR | effect::MAGIC_REFLECT
             ) {
                 // A behaviour buff nothing is folded into — just restore the
                 // ledger entry with its time remaining out from `now`.
@@ -709,11 +681,7 @@ impl World {
         }
     }
 
-    pub(super) fn record_of(
-        registry: &Registry,
-        entity: EntityId,
-        now: u64,
-    ) -> Option<CharacterRecord> {
+    pub(super) fn record_of(registry: &Registry, entity: EntityId, now: u64) -> Option<CharacterRecord> {
         let serial = registry.serial_of(entity)?;
         let position = registry.get::<Position>(entity)?.0;
         let heading = registry.get::<Heading>(entity)?.0;
@@ -769,7 +737,7 @@ impl World {
         Some(CharacterRecord {
             serial: serial.raw(),
             account: account.0.clone(),
-            name: name.0.clone(),
+            name: CharacterName(name.0.clone()),
             body: body.id,
             hue: body.hue,
             facet,
@@ -823,11 +791,7 @@ impl World {
 
     /// The quests a character has finished, with the wait before each may be
     /// taken again — again a remaining span rather than a deadline.
-    pub(super) fn done_quests_of(
-        registry: &Registry,
-        entity: EntityId,
-        now: u64,
-    ) -> Vec<DoneQuestRecord> {
+    pub(super) fn done_quests_of(registry: &Registry, entity: EntityId, now: u64) -> Vec<DoneQuestRecord> {
         let Some(log) = registry.get::<QuestLog>(entity) else {
             return Vec::new();
         };
@@ -1001,10 +965,7 @@ impl World {
                 },
             );
         }
-        self.state
-            .facet_state_mut(facet)
-            .sectors
-            .insert(entity, position);
+        self.state.facet_state_mut(facet).sectors.insert(entity, position);
     }
 
     /// Equip a logging-in character's saved inventory, if any is waiting.
@@ -1081,17 +1042,14 @@ impl World {
         }
         // Pass two: where each item goes.
         for record in &records {
-            let Some(entity) =
-                Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s))
+            let Some(entity) = Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s))
             else {
                 continue;
             };
             match record.location {
                 ItemLocation::Equipped { mobile, layer } => {
                     if let Some(mobile) = Serial::new(mobile) {
-                        self.state
-                            .registry
-                            .insert(entity, Equipped { mobile, layer });
+                        self.state.registry.insert(entity, Equipped { mobile, layer });
                         // A saved mount: rebuild the ridden creature the saddle
                         // stands for and put the rider back in the saddle.
                         if layer == items::MOUNT_LAYER {
@@ -1170,13 +1128,9 @@ impl World {
             // beat, but a shard is populated once and restored on every boot
             // afterwards, so the jitter ran exactly once in a shard's life and the
             // save undid it. See `npc::first_beat`.
-            let first_think =
-                openshard_npc::first_beat(&mut self.state.rng, boot_ticks, brain_interval);
-            let first_beat = openshard_npc::first_beat(
-                &mut self.state.rng,
-                boot_ticks,
-                openshard_npc::BEAT_TICKS,
-            );
+            let first_think = openshard_npc::first_beat(&mut self.state.rng, boot_ticks, brain_interval);
+            let first_beat =
+                openshard_npc::first_beat(&mut self.state.rng, boot_ticks, openshard_npc::BEAT_TICKS);
             let registry = &mut self.state.registry;
             registry.insert(
                 entity,
@@ -1210,12 +1164,7 @@ impl World {
                 },
             );
             if record.swing != 0 {
-                registry.insert(
-                    entity,
-                    SwingSpeed {
-                        ticks: record.swing,
-                    },
-                );
+                registry.insert(entity, SwingSpeed { ticks: record.swing });
             }
             if record.ranged > 0 {
                 registry.insert(
@@ -1325,10 +1274,7 @@ impl World {
                 }
                 self.state.registry.insert(entity, sheet);
             }
-            self.state
-                .facet_state_mut(facet)
-                .sectors
-                .insert(entity, position);
+            self.state.facet_state_mut(facet).sectors.insert(entity, position);
             // Whether it gives quests, and whether it can be escorted. This is
             // the binding that used to live only in the script's memory and so
             // was lost at every restart.
@@ -1368,9 +1314,7 @@ impl World {
                 // event's own doc. `position` is wherever it had wandered to when
                 // the save was taken, and with a daily routine that is somewhere
                 // else entirely for a third of the day.
-                home: record
-                    .npc_home
-                    .map_or(position, |(x, y, z)| Point::new(x, y, z)),
+                home: record.npc_home.map_or(position, |(x, y, z)| Point::new(x, y, z)),
             });
         }
     }
@@ -1463,10 +1407,7 @@ impl World {
                     }
                 }
             }
-            self.state
-                .facet_state_mut(facet)
-                .sectors
-                .insert(entity, position);
+            self.state.facet_state_mut(facet).sectors.insert(entity, position);
         }
     }
 

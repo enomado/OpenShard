@@ -16,8 +16,8 @@
 //! and the z band below already throws out the forge on the floor above.
 
 use openshard_entities::EntityId;
-use openshard_state::components::{Graphic, Position};
 use openshard_state::WorldState;
+use openshard_state::components::{Graphic, Position};
 
 use crate::system::Needs;
 
@@ -168,8 +168,8 @@ fn is_oven(id: u16) -> bool {
 /// A flour mill — `m_Mills`, which ServUO keeps as loose ids rather than ranges.
 fn is_mill(id: u16) -> bool {
     const MILLS: &[u16] = &[
-        0x1920, 0x1921, 0x1922, 0x1923, 0x1924, 0x1295, 0x1926, 0x1928, 0x192C, 0x192D, 0x192E,
-        0x129F, 0x1930, 0x1931, 0x1932, 0x1934,
+        0x1920, 0x1921, 0x1922, 0x1923, 0x1924, 0x1295, 0x1926, 0x1928, 0x192C, 0x192D, 0x192E, 0x129F,
+        0x1930, 0x1931, 0x1932, 0x1934,
     ];
     MILLS.contains(&id)
 }

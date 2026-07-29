@@ -23,7 +23,7 @@ use openshard_items::Contents;
 use openshard_protocol::serial::Serial;
 use openshard_state::components::{Escortable, QuestLog};
 use openshard_state::quest::ObjectiveKind;
-use openshard_state::{QuestSection, WorldState, TICKS_PER_SECOND};
+use openshard_state::{QuestSection, TICKS_PER_SECOND, WorldState};
 
 use crate::events::{QuestFailed, QuestObjectiveUpdated};
 use crate::gump::{self, sound};
@@ -134,8 +134,7 @@ pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
             abandon(state, npc);
             continue;
         };
-        let (Some(here), Some(there)) = (position_of(state, npc), position_of(state, escorter))
-        else {
+        let (Some(here), Some(there)) = (position_of(state, npc), position_of(state, escorter)) else {
             abandon(state, npc);
             continue;
         };
@@ -253,11 +252,7 @@ pub fn tick_timers(state: &mut WorldState) {
                     key: key.clone(),
                 });
             }
-            gump::show(
-                state,
-                player,
-                gump::log_context(&key, QuestSection::Failed, None),
-            );
+            gump::show(state, player, gump::log_context(&key, QuestSection::Failed, None));
         }
     }
 }
@@ -266,11 +261,7 @@ pub fn tick_timers(state: &mut WorldState) {
 ///
 /// The one place progress moves, so the "an objective went up" message, sound and
 /// event are written once rather than at each call site.
-pub(crate) fn advance(
-    state: &mut WorldState,
-    player: EntityId,
-    matches: impl Fn(&ObjectiveKind) -> bool,
-) {
+pub(crate) fn advance(state: &mut WorldState, player: EntityId, matches: impl Fn(&ObjectiveKind) -> bool) {
     let Some(mut log) = state.registry.get::<QuestLog>(player).cloned() else {
         return;
     };

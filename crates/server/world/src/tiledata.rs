@@ -402,9 +402,7 @@ impl TileData {
 /// files are not, and mixing the two up is a whole afternoon.
 fn read_flags(raw: &[u8], format: TileDataFormat) -> TileFlags {
     match format {
-        TileDataFormat::Legacy => {
-            TileFlags::new(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]).into())
-        }
+        TileDataFormat::Legacy => TileFlags::new(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]).into()),
         TileDataFormat::HighSeas => TileFlags::new(u64::from_le_bytes([
             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
         ])),
@@ -492,10 +490,7 @@ mod tests {
 
     #[test]
     fn land_table_lengths_match_the_arithmetic() {
-        assert_eq!(
-            TileDataFormat::HighSeas.land_table_len(),
-            512 * (4 + 32 * 30)
-        );
+        assert_eq!(TileDataFormat::HighSeas.land_table_len(), 512 * (4 + 32 * 30));
         assert_eq!(TileDataFormat::Legacy.land_table_len(), 512 * (4 + 32 * 26));
     }
 
@@ -513,8 +508,7 @@ mod tests {
         let base = bytes.len();
         bytes.resize(base + group, 0);
         let entry = base + GROUP_HEADER;
-        bytes[entry..entry + 8]
-            .copy_from_slice(&(TileFlags::WALL | TileFlags::BLOCK).to_le_bytes());
+        bytes[entry..entry + 8].copy_from_slice(&(TileFlags::WALL | TileFlags::BLOCK).to_le_bytes());
         bytes[entry + 8] = 255; // weight
         bytes[entry + 9] = 2; // quality, which for equipment is the layer
         bytes[entry + 20] = 20; // height

@@ -13,10 +13,10 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::containers::{
-    encode_add_to_container, encode_open_container, ContainedItem, ContainerContents,
+    ContainedItem, ContainerContents, encode_add_to_container, encode_open_container,
 };
-use openshard_protocol::items::{DragCancel, DragCancelReason, EquipUpdate, DROP_TO_GROUND};
-use openshard_protocol::mobile::{OpenPaperdoll, Remove, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE};
+use openshard_protocol::items::{DROP_TO_GROUND, DragCancel, DragCancelReason, EquipUpdate};
+use openshard_protocol::mobile::{OpenPaperdoll, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE, Remove};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::spellbook::SpellbookContent;
@@ -25,13 +25,13 @@ use openshard_protocol::trade::{encode_trade_close, encode_trade_open, encode_tr
 use openshard_protocol::wire::CursorId;
 use openshard_protocol::world::Point;
 use openshard_state::components::{
-    mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Corpse,
-    Decays, Decoration, Door, Equipped, Facet, Ghost, Graphic, KeyValue, Lock, Name, PoisonCharges,
-    Position, Ridden, Riding, RuneMark, Runebook, RunebookEntry, Spellbook, Stackable, Weapon,
-    RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, SPELLBOOK_GRAPHIC,
+    Amount, Body, Client, Combat, Contained, Container, Corpse, Decays, Decoration, Door, Equipped, Facet,
+    Ghost, Graphic, KeyValue, Lock, Name, PoisonCharges, Position, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC,
+    Ridden, Riding, RuneMark, Runebook, RunebookEntry, SPELLBOOK_GRAPHIC, Spellbook, Stackable, Weapon,
+    mount_item_for, scroll_spell,
 };
 use openshard_state::sectors::in_range;
-use openshard_state::{HeldItem, Origin, Outbound, TradeWindow, WorldState, TICKS_PER_SECOND};
+use openshard_state::{HeldItem, Origin, Outbound, TICKS_PER_SECOND, TradeWindow, WorldState};
 use tracing::{debug, warn};
 
 mod backpack;

@@ -3,8 +3,11 @@
 use std::collections::HashMap;
 
 use openshard_protocol::access::AccessLevel;
+use openshard_protocol::identity::{
+    AccountName, CharacterName, PlaintextPassword, RawAccountName, RawCharacterName, RawPlaintextPassword,
+};
 use openshard_protocol::login::{
-    CharacterEntry, DenyReason, ACCOUNT_NAME_LENGTH, CHARACTER_NAME_LENGTH, MIN_CHARACTER_SLOTS,
+    ACCOUNT_NAME_LENGTH, CHARACTER_NAME_LENGTH, CharacterEntry, DenyReason, MIN_CHARACTER_SLOTS,
     PASSWORD_LENGTH,
 };
 
@@ -24,19 +27,39 @@ use crate::password;
 /// must compare against a slow password hash (argon2, bcrypt, scrypt) and must
 /// never persist the plaintext. [`verify`](Accounts::verify) taking the
 /// plaintext is unavoidable; storing it is not.
+///
+/// # Parameters take `impl Into<...>`
+///
+/// Not `&str`: an account name, a character name and a password are three
+/// different things, and threading bare strings through this trait is exactly
+/// how a caller ends up passing one where another belongs. Taking
+/// `impl Into<AccountName>` etc. keeps that impossible for typed callers while
+/// still letting a test fixture pass a string literal directly — [`AccountName`]
+/// and friends impl `From<&str>` for exactly that.
 pub trait Accounts {
     /// Check a name and password.
     ///
+    /// Takes the *raw*, not-yet-validated wire types — see
+    /// `openshard_protocol::identity`'s module docs — and on success returns
+    /// the [`AccountName`] they turned out to name: the only way to a
+    /// validated account name is through this check (or trusted config
+    /// seeding via [`DevAccounts::with_account`]).
+    ///
     /// Returns the reason on failure so the caller can log it. What the client
     /// is told is a separate decision — see [`DenyReason::wire_code`].
-    fn verify(&self, account: &str, password: &str) -> Result<(), DenyReason>;
+    fn verify(
+        &self,
+        account: impl Into<RawAccountName>,
+        password: impl Into<RawPlaintextPassword>,
+    ) -> Result<AccountName, DenyReason>;
 
     /// The characters on an account, in slot order.
     ///
     /// Empty for an account with none; the 0xA9 encoder pads the list out.
-    fn characters(&self, account: &str) -> Vec<CharacterEntry>;
+    fn characters(&self, account: impl Into<AccountName>) -> Vec<CharacterEntry>;
 
-    /// Create a character in the first free slot and return its slot index.
+    /// Create a character in the first free slot and return its slot index
+    /// together with the [`CharacterName`] the raw name validated to.
     ///
     /// The client sends this as `0x00`/`0xF8` on the game connection, after it
     /// is already authenticated, so the account is expected to exist. Failure
@@ -44,10 +67,25 @@ pub trait Accounts {
     /// [`DenyReason::TooManyCharacters`], and an empty, overlong or duplicate
     /// name is [`DenyReason::BadCharacter`].
     ///
+    /// Returning the validated name (not just the slot) matters: this is the
+    /// only place a [`RawCharacterName`] becomes a real `CharacterName` (see
+    /// `openshard_protocol::identity`'s module docs), so a caller that needs
+    /// the character's name after creation — to enter it into the world —
+    /// takes it from here instead of re-deriving it from the raw input.
+    ///
     /// Takes `&mut self` because it writes: a real store persists here, and the
     /// dev store keeps it in memory for the life of the process, which is enough
     /// for a freshly created character to show up in the list on reconnect.
-    fn create_character(&mut self, account: &str, name: &str) -> Result<u32, DenyReason>;
+    ///
+    /// Unlike the rest of this trait, `account` and `name` are concrete types,
+    /// not `impl Into<...>`: this call is the raw-to-validated seam itself, so
+    /// the caller names `RawCharacterName` explicitly at the call site instead
+    /// of letting a blanket `Into` paper over it.
+    fn create_character(
+        &mut self,
+        account: AccountName,
+        name: RawCharacterName,
+    ) -> Result<(u32, CharacterName), DenyReason>;
 
     /// Delete the character in a slot and return its name.
     ///
@@ -58,7 +96,11 @@ pub trait Accounts {
     /// delete-reject code. Whether the character may be deleted *at all* (it is
     /// not being played, it is old enough) is the caller's to check: this store
     /// does not know who is in the world.
-    fn delete_character(&mut self, account: &str, slot: u32) -> Result<String, DenyReason>;
+    fn delete_character(
+        &mut self,
+        account: impl Into<AccountName>,
+        slot: u32,
+    ) -> Result<CharacterName, DenyReason>;
 
     /// The authority the account's characters play with — what staff commands
     /// they may run. Defaults to [`AccessLevel::Player`] so a store that has no
@@ -66,7 +108,7 @@ pub trait Accounts {
     /// An unknown account is a player, not an error: this is asked after login,
     /// about an account already verified, and the answer only ever *withholds*
     /// authority.
-    fn access_level(&self, _account: &str) -> AccessLevel {
+    fn access_level(&self, _account: impl Into<AccountName>) -> AccessLevel {
         AccessLevel::Player
     }
 }
@@ -110,8 +152,13 @@ impl DevAccounts {
     /// For config seeding and tests, where the password is known in the clear.
     /// An account loaded from the store already carries a hash and comes in
     /// through [`with_credential`](Self::with_credential) instead.
-    pub fn with_account(self, account: &str, password: &str) -> Self {
-        self.with_credential(account, &password::hash(password))
+    pub fn with_account(
+        self,
+        account: impl Into<AccountName>,
+        password: impl Into<PlaintextPassword>,
+    ) -> Self {
+        let credential = password::hash(&password.into());
+        self.with_credential(account, &credential)
     }
 
     /// Add an account with an already-hashed credential and no characters.
@@ -119,9 +166,9 @@ impl DevAccounts {
     /// The path a stored account takes at boot: its PHC hash is loaded as-is,
     /// never re-hashed. A blank credential (which verifies against nothing)
     /// stands for an account row with no password set.
-    pub fn with_credential(mut self, account: &str, credential: &str) -> Self {
+    pub fn with_credential(mut self, account: impl Into<AccountName>, credential: &str) -> Self {
         self.accounts.insert(
-            account.to_lowercase(),
+            account.into().normalized(),
             DevAccount {
                 credential: credential.to_owned(),
                 blocked: false,
@@ -134,31 +181,29 @@ impl DevAccounts {
 
     /// Whether an account already exists — for "seed from config only if absent",
     /// so the store's credential wins over a stale config password.
-    pub fn contains(&self, account: &str) -> bool {
-        self.accounts.contains_key(&account.to_lowercase())
+    pub fn contains(&self, account: impl Into<AccountName>) -> bool {
+        self.accounts.contains_key(&account.into().normalized())
     }
 
     /// Grant an existing account an access level. Ignored if there is no account.
-    pub fn with_access(mut self, account: &str, access: AccessLevel) -> Self {
-        if let Some(entry) = self.accounts.get_mut(&account.to_lowercase()) {
+    pub fn with_access(mut self, account: impl Into<AccountName>, access: AccessLevel) -> Self {
+        if let Some(entry) = self.accounts.get_mut(&account.into().normalized()) {
             entry.access = access;
         }
         self
     }
 
     /// Add a character to an existing account. Ignored if there is no account.
-    pub fn with_character(mut self, account: &str, name: &str) -> Self {
-        if let Some(entry) = self.accounts.get_mut(&account.to_lowercase()) {
-            entry.characters.push(CharacterEntry {
-                name: name.to_owned(),
-            });
+    pub fn with_character(mut self, account: impl Into<AccountName>, name: impl Into<CharacterName>) -> Self {
+        if let Some(entry) = self.accounts.get_mut(&account.into().normalized()) {
+            entry.characters.push(CharacterEntry { name: name.into() });
         }
         self
     }
 
     /// Block an existing account. Ignored if there is no account.
-    pub fn blocked(mut self, account: &str) -> Self {
-        if let Some(entry) = self.accounts.get_mut(&account.to_lowercase()) {
+    pub fn blocked(mut self, account: impl Into<AccountName>) -> Self {
+        if let Some(entry) = self.accounts.get_mut(&account.into().normalized()) {
             entry.blocked = true;
         }
         self
@@ -166,17 +211,23 @@ impl DevAccounts {
 }
 
 impl Accounts for DevAccounts {
-    fn verify(&self, account: &str, password: &str) -> Result<(), DenyReason> {
+    fn verify(
+        &self,
+        account: impl Into<RawAccountName>,
+        password: impl Into<RawPlaintextPassword>,
+    ) -> Result<AccountName, DenyReason> {
+        let account = account.into();
+        let password = password.into();
         // Reject nonsense before touching the store. These are the widths of
         // the wire fields, so anything longer never came from a real client.
-        if account.is_empty() || account.len() > ACCOUNT_NAME_LENGTH {
+        if account.0.is_empty() || account.0.len() > ACCOUNT_NAME_LENGTH {
             return Err(DenyReason::MalformedAccount);
         }
-        if password.len() > PASSWORD_LENGTH {
+        if password.0.len() > PASSWORD_LENGTH {
             return Err(DenyReason::MalformedPassword);
         }
 
-        let Some(entry) = self.accounts.get(&account.to_lowercase()) else {
+        let Some(entry) = self.accounts.get(&account.0.to_lowercase()) else {
             return Err(DenyReason::NoAccount);
         };
         if entry.blocked {
@@ -185,34 +236,41 @@ impl Accounts for DevAccounts {
         // argon2 verify is constant-time over the digest and rejects a credential
         // that is not a valid hash, so an account row with no real password set
         // can never be logged into.
-        if !password::verify(password, &entry.credential) {
+        if !password::verify(&password, &entry.credential) {
             return Err(DenyReason::BadPassword);
         }
-        Ok(())
+        // The raw name checked out: it names a real, unblocked account with the
+        // right password, so it is now a validated `AccountName` — echoed back
+        // exactly as typed, case included, since only the lookup folds case.
+        Ok(AccountName(account.0))
     }
 
-    fn characters(&self, account: &str) -> Vec<CharacterEntry> {
+    fn characters(&self, account: impl Into<AccountName>) -> Vec<CharacterEntry> {
         self.accounts
-            .get(&account.to_lowercase())
+            .get(&account.into().normalized())
             .map(|entry| entry.characters.clone())
             .unwrap_or_default()
     }
 
-    fn access_level(&self, account: &str) -> AccessLevel {
+    fn access_level(&self, account: impl Into<AccountName>) -> AccessLevel {
         self.accounts
-            .get(&account.to_lowercase())
+            .get(&account.into().normalized())
             .map_or(AccessLevel::Player, |entry| entry.access)
     }
 
-    fn create_character(&mut self, account: &str, name: &str) -> Result<u32, DenyReason> {
+    fn create_character(
+        &mut self,
+        account: AccountName,
+        name: RawCharacterName,
+    ) -> Result<(u32, CharacterName), DenyReason> {
         // The name is trimmed because the client pads its 30-byte field, and a
         // name that is only spaces is not a name. Width is the wire field's.
-        let trimmed = name.trim();
-        if trimmed.is_empty() || name.len() > CHARACTER_NAME_LENGTH {
+        let trimmed = name.0.trim();
+        if trimmed.is_empty() || name.0.len() > CHARACTER_NAME_LENGTH {
             return Err(DenyReason::BadCharacter);
         }
 
-        let Some(entry) = self.accounts.get_mut(&account.to_lowercase()) else {
+        let Some(entry) = self.accounts.get_mut(&account.normalized()) else {
             return Err(DenyReason::NoAccount);
         };
         // The 0xA9 list shows exactly five slots, so a sixth character would be
@@ -225,20 +283,25 @@ impl Accounts for DevAccounts {
         if entry
             .characters
             .iter()
-            .any(|character| character.name.eq_ignore_ascii_case(trimmed))
+            .any(|character| character.name.0.eq_ignore_ascii_case(trimmed))
         {
             return Err(DenyReason::BadCharacter);
         }
 
         let slot = entry.characters.len() as u32;
+        let character = CharacterName(trimmed.to_owned());
         entry.characters.push(CharacterEntry {
-            name: trimmed.to_owned(),
+            name: character.clone(),
         });
-        Ok(slot)
+        Ok((slot, character))
     }
 
-    fn delete_character(&mut self, account: &str, slot: u32) -> Result<String, DenyReason> {
-        let Some(entry) = self.accounts.get_mut(&account.to_lowercase()) else {
+    fn delete_character(
+        &mut self,
+        account: impl Into<AccountName>,
+        slot: u32,
+    ) -> Result<CharacterName, DenyReason> {
+        let Some(entry) = self.accounts.get_mut(&account.into().normalized()) else {
             return Err(DenyReason::NoAccount);
         };
         let index = slot as usize;
@@ -263,24 +326,21 @@ mod tests {
 
     #[test]
     fn accepts_the_right_password() {
-        assert_eq!(store().verify("admin", "hunter2"), Ok(()));
+        assert_eq!(
+            store().verify("admin", "hunter2"),
+            Ok(AccountName("admin".to_owned()))
+        );
     }
 
     #[test]
     fn rejects_the_wrong_password() {
-        assert_eq!(
-            store().verify("admin", "hunter3"),
-            Err(DenyReason::BadPassword)
-        );
+        assert_eq!(store().verify("admin", "hunter3"), Err(DenyReason::BadPassword));
         assert_eq!(store().verify("admin", ""), Err(DenyReason::BadPassword));
     }
 
     #[test]
     fn rejects_an_unknown_account() {
-        assert_eq!(
-            store().verify("nobody", "hunter2"),
-            Err(DenyReason::NoAccount)
-        );
+        assert_eq!(store().verify("nobody", "hunter2"), Err(DenyReason::NoAccount));
     }
 
     #[test]
@@ -295,16 +355,19 @@ mod tests {
     fn account_names_are_case_insensitive() {
         // The client does not round-trip case reliably, and no player expects
         // "Admin" and "admin" to be different accounts.
-        assert_eq!(store().verify("ADMIN", "hunter2"), Ok(()));
-        assert_eq!(store().verify("AdMiN", "hunter2"), Ok(()));
+        assert_eq!(
+            store().verify("ADMIN", "hunter2"),
+            Ok(AccountName("ADMIN".to_owned()))
+        );
+        assert_eq!(
+            store().verify("AdMiN", "hunter2"),
+            Ok(AccountName("AdMiN".to_owned()))
+        );
     }
 
     #[test]
     fn passwords_are_case_sensitive() {
-        assert_eq!(
-            store().verify("admin", "HUNTER2"),
-            Err(DenyReason::BadPassword)
-        );
+        assert_eq!(store().verify("admin", "HUNTER2"), Err(DenyReason::BadPassword));
     }
 
     #[test]
@@ -313,14 +376,14 @@ mod tests {
         // a bug upstream. Either way it must not reach the store.
         let long = "x".repeat(ACCOUNT_NAME_LENGTH + 1);
         assert_eq!(
-            store().verify(&long, "x"),
+            store().verify(long.as_str(), "x"),
             Err(DenyReason::MalformedAccount)
         );
         assert_eq!(store().verify("", "x"), Err(DenyReason::MalformedAccount));
 
         let long_password = "x".repeat(PASSWORD_LENGTH + 1);
         assert_eq!(
-            store().verify("admin", &long_password),
+            store().verify("admin", long_password.as_str()),
             Err(DenyReason::MalformedPassword)
         );
     }
@@ -365,8 +428,14 @@ mod tests {
     #[test]
     fn create_character_fills_the_first_free_slot() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        assert_eq!(store.create_character("a", "First"), Ok(0));
-        assert_eq!(store.create_character("a", "Second"), Ok(1));
+        assert_eq!(
+            store.create_character("a".into(), "First".into()),
+            Ok((0, CharacterName("First".to_owned())))
+        );
+        assert_eq!(
+            store.create_character("a".into(), "Second".into()),
+            Ok((1, CharacterName("Second".to_owned())))
+        );
         let characters = store.characters("a");
         assert_eq!(characters.len(), 2);
         assert_eq!(characters[0].name, "First");
@@ -378,7 +447,7 @@ mod tests {
         // The dev store keeps it in memory, which is enough for the new
         // character to be in the list when the client reconnects to play it.
         let mut store = DevAccounts::new().with_account("a", "p");
-        let _ = store.create_character("a", "Newbie");
+        let _ = store.create_character("a".into(), "Newbie".into());
         assert_eq!(store.characters("a")[0].name, "Newbie");
     }
 
@@ -386,10 +455,14 @@ mod tests {
     fn create_character_refuses_a_sixth_character() {
         let mut store = DevAccounts::new().with_account("a", "p");
         for index in 0..MIN_CHARACTER_SLOTS {
-            assert!(store.create_character("a", &format!("C{index}")).is_ok());
+            assert!(
+                store
+                    .create_character("a".into(), format!("C{index}").into())
+                    .is_ok()
+            );
         }
         assert_eq!(
-            store.create_character("a", "TooMany"),
+            store.create_character("a".into(), "TooMany".into()),
             Err(DenyReason::TooManyCharacters)
         );
     }
@@ -398,16 +471,16 @@ mod tests {
     fn create_character_refuses_an_empty_or_overlong_name() {
         let mut store = DevAccounts::new().with_account("a", "p");
         assert_eq!(
-            store.create_character("a", "   "),
+            store.create_character("a".into(), "   ".into()),
             Err(DenyReason::BadCharacter)
         );
         assert_eq!(
-            store.create_character("a", ""),
+            store.create_character("a".into(), "".into()),
             Err(DenyReason::BadCharacter)
         );
         let long = "x".repeat(CHARACTER_NAME_LENGTH + 1);
         assert_eq!(
-            store.create_character("a", &long),
+            store.create_character("a".into(), long.into()),
             Err(DenyReason::BadCharacter)
         );
     }
@@ -415,9 +488,9 @@ mod tests {
     #[test]
     fn create_character_refuses_a_duplicate_name() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        assert!(store.create_character("a", "Twin").is_ok());
+        assert!(store.create_character("a".into(), "Twin".into()).is_ok());
         assert_eq!(
-            store.create_character("a", "twin"),
+            store.create_character("a".into(), "twin".into()),
             Err(DenyReason::BadCharacter),
             "case-insensitively, since the client does not preserve case"
         );
@@ -427,7 +500,7 @@ mod tests {
     fn create_character_refuses_an_unknown_account() {
         let mut store = DevAccounts::new();
         assert_eq!(
-            store.create_character("nobody", "X"),
+            store.create_character("nobody".into(), "X".into()),
             Err(DenyReason::NoAccount)
         );
     }
@@ -435,10 +508,13 @@ mod tests {
     #[test]
     fn delete_character_removes_the_slot_and_shifts_the_rest() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        let _ = store.create_character("a", "First");
-        let _ = store.create_character("a", "Second");
-        let _ = store.create_character("a", "Third");
-        assert_eq!(store.delete_character("a", 1), Ok("Second".to_owned()));
+        let _ = store.create_character("a".into(), "First".into());
+        let _ = store.create_character("a".into(), "Second".into());
+        let _ = store.create_character("a".into(), "Third".into());
+        assert_eq!(
+            store.delete_character("a", 1),
+            Ok(CharacterName("Second".to_owned()))
+        );
         let names: Vec<_> = store.characters("a").into_iter().map(|c| c.name).collect();
         assert_eq!(names, vec!["First", "Third"], "later slots shift down");
     }
@@ -446,15 +522,9 @@ mod tests {
     #[test]
     fn delete_character_refuses_an_empty_or_out_of_range_slot() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        let _ = store.create_character("a", "Only");
-        assert_eq!(
-            store.delete_character("a", 1),
-            Err(DenyReason::BadCharacter)
-        );
-        assert_eq!(
-            store.delete_character("nobody", 0),
-            Err(DenyReason::NoAccount)
-        );
+        let _ = store.create_character("a".into(), "Only".into());
+        assert_eq!(store.delete_character("a", 1), Err(DenyReason::BadCharacter));
+        assert_eq!(store.delete_character("nobody", 0), Err(DenyReason::NoAccount));
     }
 
     #[test]
@@ -462,12 +532,12 @@ mod tests {
         // A shard's account file is a plausible leak; the password must not be
         // recoverable from it.
         let store = DevAccounts::new().with_account("admin", "hunter2");
-        assert_eq!(store.verify("admin", "hunter2"), Ok(()));
-        let credential = &store.accounts["admin"].credential;
-        assert!(
-            !credential.contains("hunter2"),
-            "plaintext must not survive"
+        assert_eq!(
+            store.verify("admin", "hunter2"),
+            Ok(AccountName("admin".to_owned()))
         );
+        let credential = &store.accounts["admin"].credential;
+        assert!(!credential.contains("hunter2"), "plaintext must not survive");
         assert!(credential.starts_with("$argon2"), "an argon2 PHC hash");
     }
 
@@ -476,12 +546,12 @@ mod tests {
         // The boot path: an account already carrying a hash is loaded as-is and
         // still verifies. Re-hashing it (treating it as a plaintext) would lock
         // the account out.
-        let phc = password::hash("secret");
+        let phc = password::hash(&PlaintextPassword("secret".to_owned()));
         let store = DevAccounts::new().with_credential("returning", &phc);
-        assert_eq!(store.verify("returning", "secret"), Ok(()));
         assert_eq!(
-            store.accounts["returning"].credential, phc,
-            "loaded verbatim"
+            store.verify("returning", "secret"),
+            Ok(AccountName("returning".to_owned()))
         );
+        assert_eq!(store.accounts["returning"].credential, phc, "loaded verbatim");
     }
 }

@@ -15,7 +15,7 @@
 
 use openshard_entities::EntityId;
 use openshard_state::components::{Combat, Contained, Hidden, Position, Stealthing};
-use openshard_state::{in_range, Skill, WorldState};
+use openshard_state::{Skill, WorldState, in_range};
 
 use crate::check::{roll_skill_band, roll_skill_chance};
 
@@ -111,9 +111,7 @@ pub(super) fn stealth(state: &mut WorldState, actor: EntityId) {
     let shift = i32::from(armour) * 20;
     if roll_skill_band(state, actor, id, -200 + shift, 800 + shift) {
         let steps = (crate::skill_value(state, actor, id) / SKILL_PER_STEALTH_STEP).max(1);
-        state
-            .registry
-            .insert(actor, Stealthing { steps_left: steps });
+        state.registry.insert(actor, Stealthing { steps_left: steps });
         state.localized_message(actor, MOVING_QUIETLY, "");
     } else {
         state.break_cover(actor);
@@ -324,27 +322,20 @@ pub fn snooping(state: &mut WorldState, actor: EntityId, container: EntityId) ->
         state.localized_message(actor, CANNOT_PEEK, "");
         return false;
     }
-    if state
-        .registry
-        .has::<openshard_state::components::Ghost>(owner)
-    {
+    if state.registry.has::<openshard_state::components::Ghost>(owner) {
         return false;
     }
     let id = Skill::Snooping.id();
     // The *noticing* is a separate roll from the success, and it comes first:
     // ServUO compares the raw skill against a d100, so a clumsy snoop is spotted
     // even when the peek itself then works.
-    if i32::from(crate::skill_value(state, actor, id) / 10)
-        < i32::try_from(state.rng.below(100)).unwrap_or(0)
+    if i32::from(crate::skill_value(state, actor, id) / 10) < i32::try_from(state.rng.below(100)).unwrap_or(0)
     {
         let name = state
             .registry
             .get::<openshard_state::components::Name>(actor)
             .map_or_else(String::new, |n| n.0.clone());
-        state.system_message(
-            owner,
-            &format!("You notice {name} peeking into your belongings!"),
-        );
+        state.system_message(owner, &format!("You notice {name} peeking into your belongings!"));
     }
     openshard_state::title::award_karma(state, actor, SNOOP_KARMA);
     roll_skill_band(state, actor, id, 0, 1000)

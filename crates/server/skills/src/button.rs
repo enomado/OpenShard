@@ -13,7 +13,7 @@
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_state::components::{Casting, Ghost, SkillCooldown};
-use openshard_state::{skill, WorldState};
+use openshard_state::{WorldState, skill};
 
 /// "That skill cannot be used directly." — the client's own line for a skill with
 /// no button behaviour.

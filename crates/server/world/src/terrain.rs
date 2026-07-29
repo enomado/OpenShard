@@ -43,11 +43,7 @@ const fn platform_surface(base: i32, height: i32, climbable: bool) -> (i32, i32)
 /// negative slope the wrong way and disagrees with the client by a unit.
 const fn floor_average(a: i32, b: i32) -> i32 {
     let sum = a + b;
-    if sum < 0 {
-        (sum - 1) / 2
-    } else {
-        sum / 2
-    }
+    if sum < 0 { (sum - 1) / 2 } else { sum / 2 }
 }
 
 /// The real world: ground heights, walls, water.
@@ -328,10 +324,7 @@ impl MapTerrain {
     /// into wooden walls that read as frames but have no doorway.
     fn can_fit(&self, x: u16, y: u16, z: i32, height: i32) -> bool {
         let (low_z, avg_z, _top) = self.land_heights(x, y);
-        let land_flags = self
-            .map
-            .land(x, y)
-            .map(|cell| self.tiles.land(cell.tile).flags);
+        let land_flags = self.map.land(x, y).map(|cell| self.tiles.land(cell.tile).flags);
         let land_impassable = land_flags.is_some_and(|f| f.is_blocking());
         // Impassable land (water, a mountain) in the object's body blocks it.
         if land_impassable && avg_z > z && z + height > low_z {
@@ -348,8 +341,7 @@ impl MapTerrain {
             // `calc_top` is the tile's top for fit purposes — halved for a bridge
             // (stairs), the same `CalcHeight` the client uses; `platform_surface`
             // already encodes that.
-            let (_, calc_top) =
-                platform_surface(base, i32::from(tile.height), tile.flags.is_climbable());
+            let (_, calc_top) = platform_surface(base, i32::from(tile.height), tile.flags.is_climbable());
             if (surface || impassable) && calc_top > z && z + height > base {
                 return false;
             }
@@ -399,11 +391,7 @@ impl Terrain for MapTerrain {
         let (start_z, start_top) = self.start_surface(from.x, from.y, from_z);
         let landing = self.check(to.x, to.y, start_z, start_top)?;
         let z = i8::try_from(landing).ok()?;
-        Some(Point {
-            x: to.x,
-            y: to.y,
-            z,
-        })
+        Some(Point { x: to.x, y: to.y, z })
     }
 
     fn ground_z(&self, x: u16, y: u16) -> Option<i8> {
@@ -478,8 +466,7 @@ impl Terrain for MapTerrain {
         let count = tiles.len() as i32;
         for (i, (x, y)) in tiles.into_iter().enumerate() {
             let t = i as i32 + 1;
-            let ray_z =
-                i32::from(from.z) + (i32::from(to.z) - i32::from(from.z)) * t / (count + 1) + EYE;
+            let ray_z = i32::from(from.z) + (i32::from(to.z) - i32::from(from.z)) * t / (count + 1) + EYE;
             // A hill in the way: ground above the eye line occludes.
             if self
                 .ground_z(x, y)
@@ -774,10 +761,7 @@ mod tests {
         let Some(terrain) = real_terrain() else {
             return;
         };
-        assert_eq!(
-            (terrain.map().width(), terrain.map().height()),
-            (7168, 4096)
-        );
+        assert_eq!((terrain.map().width(), terrain.map().height()), (7168, 4096));
         assert_eq!(terrain.map().facet_name(), "Felucca/Trammel (post-ML)");
     }
 

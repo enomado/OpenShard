@@ -35,6 +35,7 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 
+use openshard_protocol::identity::{AccountName, CharacterName, PlaintextPassword};
 use serde::{Deserialize, Serialize};
 
 /// A whole shard configuration.
@@ -597,6 +598,67 @@ impl Default for ServerConfig {
     }
 }
 
+/// (De)serialize an [`AccountName`] as the bare TOML string, no wrapper
+/// object — this crate does not depend on `serde` inside `openshard-protocol`,
+/// so the impl lives here instead of on the type.
+mod account_name {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::AccountName;
+
+    pub fn serialize<S: Serializer>(value: &AccountName, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&value.0)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<AccountName, D::Error> {
+        String::deserialize(d).map(AccountName)
+    }
+}
+
+/// (De)serialize a [`PlaintextPassword`] as the bare TOML string. See
+/// [`account_name`] for why this lives here rather than on the type.
+mod plaintext_password {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::PlaintextPassword;
+
+    pub fn serialize<S: Serializer>(value: &PlaintextPassword, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&value.0)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PlaintextPassword, D::Error> {
+        String::deserialize(d).map(PlaintextPassword)
+    }
+}
+
+/// (De)serialize a `Vec<CharacterName>` as a TOML array of bare strings. See
+/// [`account_name`] for why this lives here rather than on the type.
+mod character_names {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::CharacterName;
+
+    pub fn serialize<S: Serializer>(value: &[CharacterName], s: S) -> Result<S::Ok, S::Error> {
+        let names: Vec<&str> = value.iter().map(|name| name.0.as_str()).collect();
+        names.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<CharacterName>, D::Error> {
+        Vec::<String>::deserialize(d).map(|names| names.into_iter().map(CharacterName).collect())
+    }
+}
+
+/// The staff authority text an operator wrote in `[[accounts]] access = "..."`,
+/// not yet validated against [`openshard_protocol::access::AccessLevel`].
+///
+/// Distinct from an already-parsed `AccessLevel` on purpose: an unrecognised
+/// value here is a config typo the binary logs and treats as `player`, not a
+/// deserialize-time error, so this type stays a total wrapper around whatever
+/// text was in the file — see [`AccountConfig::access`].
+#[derive(Clone, PartialEq, Eq, Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct RawAccessLevel(pub String);
+
 /// One account.
 ///
 /// # Plaintext here, hashed once inside
@@ -617,19 +679,25 @@ impl Default for ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct AccountConfig {
     /// The account name. Case-insensitive at login.
-    pub name: String,
+    #[serde(with = "account_name")]
+    pub name: AccountName,
     /// The password, in plaintext. Hashed on first boot and then ignored; see
     /// the type docs.
-    pub password: String,
+    #[serde(with = "plaintext_password")]
+    pub password: PlaintextPassword,
     /// Character names on this account.
-    #[serde(default)]
-    pub characters: Vec<String>,
+    #[serde(default, with = "character_names")]
+    pub characters: Vec<CharacterName>,
     /// The staff authority this account plays with: `"player"` (the default),
-    /// `"gamemaster"`/`"gm"`, or `"administrator"`/`"admin"`. Parsed into an
-    /// `AccessLevel` by the binary; an unrecognised value there is logged and
-    /// treated as `player`, never a silent grant.
+    /// `"gamemaster"`/`"gm"`, or `"administrator"`/`"admin"`.
+    ///
+    /// Kept as text, not parsed here: [`RawAccessLevel`] only distinguishes
+    /// "an operator wrote this in the config" from an already-validated
+    /// `AccessLevel`. The binary parses it into an `AccessLevel`; an
+    /// unrecognised value there is logged and treated as `player`, never a
+    /// silent grant.
     #[serde(default)]
-    pub access: String,
+    pub access: RawAccessLevel,
 }
 
 /// The widest a shard name can be. The 0xA8 field is 32 bytes.
@@ -661,6 +729,14 @@ pub enum ConfigError {
     AdvertisedUnspecified,
     /// `advertise` has no port.
     AdvertisedPortZero,
+    /// `advertise` is IPv6.
+    ///
+    /// The `0x8C` relay packet has four bytes for an address and no way to
+    /// carry more, so an IPv6 `advertise` can never reach a client. Caught
+    /// here rather than left to `advertise_v4()` returning `None` at the
+    /// point the packet is built, which is a boot-time mistake and deserves
+    /// a boot-time error.
+    AdvertisedNotIpv4,
     /// The shard name is empty, or will not fit its wire field.
     BadShardName {
         /// How long the name is.
@@ -669,7 +745,7 @@ pub enum ConfigError {
     /// Two accounts share a name.
     DuplicateAccount {
         /// The name that appears twice.
-        name: String,
+        name: AccountName,
     },
     /// An account has no name.
     EmptyAccountName,
@@ -735,6 +811,10 @@ impl fmt::Display for ConfigError {
                  the same as server.listen",
             ),
             Self::AdvertisedPortZero => f.write_str("server.advertise needs a real port"),
+            Self::AdvertisedNotIpv4 => f.write_str(
+                "server.advertise is IPv6; the UO relay packet has four bytes for an address \
+                 and no way to carry one",
+            ),
             Self::BadShardName { length } => write!(
                 f,
                 "server.name is {length} bytes; it must be 1 to {MAX_SHARD_NAME} to fit the \
@@ -742,7 +822,8 @@ impl fmt::Display for ConfigError {
             ),
             Self::DuplicateAccount { name } => write!(
                 f,
-                "two accounts are named {name:?}; names are case-insensitive"
+                "two accounts are named {:?}; names are case-insensitive",
+                name.0
             ),
             Self::EmptyAccountName => f.write_str("an account has an empty name"),
             Self::UnknownCombatEra { era } => write!(
@@ -750,22 +831,17 @@ impl fmt::Display for ConfigError {
                 "gameplay.combat_era is {era}; only Sphere's 0 (custom), 1 (pre-AoS), \
                  2 (AoS), 3 (SE) and 4 (ML) are implemented",
             ),
-            Self::ZeroSpeedScaleFactor => {
-                f.write_str("gameplay.speed_scale_factor must not be zero")
-            }
+            Self::ZeroSpeedScaleFactor => f.write_str("gameplay.speed_scale_factor must not be zero"),
             Self::ZeroLodRadius => {
                 f.write_str("gameplay.lod_radius must not be zero when gameplay.lod is on")
             }
             Self::ZeroLodIdleFactor => {
                 f.write_str("gameplay.lod_idle_factor must be at least 1 when gameplay.lod is on")
             }
-            Self::ZeroUoMinuteSeconds => {
-                f.write_str("gameplay.uo_minute_seconds must be at least 1")
+            Self::ZeroUoMinuteSeconds => f.write_str("gameplay.uo_minute_seconds must be at least 1"),
+            Self::UnknownExpansion { expansion } => {
+                write!(f, "gameplay.expansion \"{expansion}\" is not one of aos, se, ml")
             }
-            Self::UnknownExpansion { expansion } => write!(
-                f,
-                "gameplay.expansion \"{expansion}\" is not one of aos, se, ml"
-            ),
             Self::BadNpcHours { work, home } => write!(
                 f,
                 "gameplay.npc_work_hour {work} and npc_home_hour {home} must both be under 24 \
@@ -775,9 +851,7 @@ impl fmt::Display for ConfigError {
                 "gameplay.skill_cap and total_skill_cap must not be zero; the skill gain \
                  chance is a fraction of the headroom under each",
             ),
-            Self::ZeroStatCap => {
-                f.write_str("gameplay.stat_cap and stat_cap_individual must not be zero")
-            }
+            Self::ZeroStatCap => f.write_str("gameplay.stat_cap and stat_cap_individual must not be zero"),
             Self::StatCapBelowIndividual { total, individual } => write!(
                 f,
                 "gameplay.stat_cap_individual {individual} is above stat_cap {total}; one \
@@ -826,6 +900,9 @@ impl Config {
         if self.server.advertise.port() == 0 {
             return Err(ConfigError::AdvertisedPortZero);
         }
+        if self.server.advertise.is_ipv6() {
+            return Err(ConfigError::AdvertisedNotIpv4);
+        }
 
         let length = self.server.name.len();
         if length == 0 || length > MAX_SHARD_NAME {
@@ -834,12 +911,12 @@ impl Config {
 
         let mut seen: Vec<String> = Vec::new();
         for account in &self.accounts {
-            if account.name.is_empty() {
+            if account.name.0.is_empty() {
                 return Err(ConfigError::EmptyAccountName);
             }
             // Login lowercases names, so two accounts differing only in case
             // would collide at runtime, with one silently shadowing the other.
-            let key = account.name.to_lowercase();
+            let key = account.name.normalized();
             if seen.contains(&key) {
                 return Err(ConfigError::DuplicateAccount {
                     name: account.name.clone(),
@@ -876,9 +953,7 @@ impl Config {
         }
         // A routine whose day wraps midnight would leave every NPC permanently at
         // one end of it, which reads as the setting doing nothing.
-        if self.gameplay.npc_work_hour >= self.gameplay.npc_home_hour
-            || self.gameplay.npc_home_hour > 23
-        {
+        if self.gameplay.npc_work_hour >= self.gameplay.npc_home_hour || self.gameplay.npc_home_hour > 23 {
             return Err(ConfigError::BadNpcHours {
                 work: self.gameplay.npc_work_hour,
                 home: self.gameplay.npc_home_hour,
@@ -917,9 +992,11 @@ impl Config {
 
     /// The IPv4 address to advertise, which is all the `0x8C` packet can carry.
     ///
-    /// `None` for an IPv6 `advertise`. The UO protocol has no way to express
-    /// one — the relay packet has four bytes for an address, and that is the
-    /// whole of it.
+    /// `None` for an IPv6 `advertise` — but `validate()` already refuses one
+    /// (see [`ConfigError::AdvertisedNotIpv4`]), so a `Config` that has been
+    /// validated (as `load()` always does) never turns this `None` in
+    /// practice. The `Option` stays because this reads the raw `server`
+    /// field directly and does not itself know whether validation ran.
     pub fn advertise_v4(&self) -> Option<SocketAddrV4> {
         match self.server.advertise.ip() {
             IpAddr::V4(address) => Some(SocketAddrV4::new(address, self.server.advertise.port())),

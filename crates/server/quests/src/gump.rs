@@ -16,8 +16,7 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::gump::{
-    CloseGump, GumpButton, GumpDisplay, GumpLayout, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED,
-    GUMP_WHITE,
+    CloseGump, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE, GumpButton, GumpDisplay, GumpLayout,
 };
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
@@ -222,27 +221,10 @@ fn frame(layout: &mut GumpLayout, log_page: bool) {
 
 /// The quest log: one row per quest in progress, newest first.
 fn section_main(layout: &mut GumpLayout, state: &WorldState, player: EntityId) {
-    layout.html_localized_colored(
-        130,
-        45,
-        270,
-        16,
-        cliloc::QUEST_LOG,
-        HEADER_WHITE,
-        false,
-        false,
-    );
+    layout.html_localized_colored(130, 45, 270, 16, cliloc::QUEST_LOG, HEADER_WHITE, false, false);
 
     let Some(log) = state.registry.get::<QuestLog>(player) else {
-        layout.button(
-            313,
-            455,
-            0x2EEC,
-            0x2EEE,
-            GumpButton::Reply,
-            0,
-            button::CLOSE,
-        );
+        layout.button(313, 455, 0x2EEC, 0x2EEE, GumpButton::Reply, 0, button::CLOSE);
         return;
     };
     let mut offset = 140;
@@ -268,15 +250,7 @@ fn section_main(layout: &mut GumpLayout, state: &WorldState, player: EntityId) {
         );
         offset += 21;
     }
-    layout.button(
-        313,
-        455,
-        0x2EEC,
-        0x2EEE,
-        GumpButton::Reply,
-        0,
-        button::CLOSE,
-    );
+    layout.button(313, 455, 0x2EEC, 0x2EEE, GumpButton::Reply, 0, button::CLOSE);
 }
 
 /// The quest's prose — the offer's first page, and the log's detail page.
@@ -291,26 +265,8 @@ fn section_description(
     if failed(state, player, &quest.key) {
         layout.html_localized_colored(160, 80, 200, 32, cliloc::FAILED, GUMP_RED, false, false);
     }
-    layout.html_colored(
-        160,
-        70,
-        200,
-        40,
-        &quest.title,
-        GUMP_DARK_GREEN,
-        false,
-        false,
-    );
-    layout.html_localized_colored(
-        98,
-        140,
-        312,
-        16,
-        cliloc::DESCRIPTION,
-        SECTION_GREEN,
-        false,
-        false,
-    );
+    layout.html_colored(160, 70, 200, 40, &quest.title, GUMP_DARK_GREEN, false, false);
+    layout.html_localized_colored(98, 140, 312, 16, cliloc::DESCRIPTION, SECTION_GREEN, false, false);
     layout.html_colored(
         98,
         156,
@@ -322,15 +278,7 @@ fn section_description(
         true,
     );
     accept_or_resign(layout, context.offer);
-    layout.button(
-        275,
-        430,
-        0x2EE9,
-        0x2EEB,
-        GumpButton::Reply,
-        0,
-        button::NEXT_PAGE,
-    );
+    layout.button(275, 430, 0x2EE9, 0x2EEB, GumpButton::Reply, 0, button::NEXT_PAGE);
 }
 
 /// What the quest asks for, with progress on each line.
@@ -343,26 +291,8 @@ fn section_objectives(
 ) {
     accept_or_resign(layout, context.offer);
     header(layout, context.offer);
-    layout.html_colored(
-        160,
-        70,
-        200,
-        40,
-        &quest.title,
-        GUMP_DARK_GREEN,
-        false,
-        false,
-    );
-    layout.html_localized_colored(
-        98,
-        140,
-        312,
-        16,
-        cliloc::OBJECTIVE,
-        SECTION_GREEN,
-        false,
-        false,
-    );
+    layout.html_colored(160, 70, 200, 40, &quest.title, GUMP_DARK_GREEN, false, false);
+    layout.html_localized_colored(98, 140, 312, 16, cliloc::OBJECTIVE, SECTION_GREEN, false, false);
     let rule = if quest.all_objectives {
         cliloc::ALL_OF_THE_FOLLOWING
     } else {
@@ -485,16 +415,7 @@ fn section_objectives(
         // Escort has no count worth showing either way — you are there or you are
         // not — which is ServUO's rendering too.
         if !context.offer && !matches!(objective.kind, ObjectiveKind::Escort { .. }) {
-            layout.html_localized_colored(
-                103,
-                offset,
-                120,
-                16,
-                cliloc::TOTAL,
-                OBJECTIVE_GREEN,
-                false,
-                false,
-            );
+            layout.html_localized_colored(103, offset, 120, 16, cliloc::TOTAL, OBJECTIVE_GREEN, false, false);
             layout.label(223, offset, LABEL_HUE, done.to_string());
             offset += 16;
         }
@@ -522,40 +443,14 @@ fn section_objectives(
         0,
         button::PREVIOUS_PAGE,
     );
-    layout.button(
-        275,
-        430,
-        0x2EE9,
-        0x2EEB,
-        GumpButton::Reply,
-        0,
-        button::NEXT_PAGE,
-    );
+    layout.button(275, 430, 0x2EE9, 0x2EEB, GumpButton::Reply, 0, button::NEXT_PAGE);
 }
 
 /// What the quest pays.
 fn section_rewards(layout: &mut GumpLayout, quest: &QuestDef, context: &QuestGumpContext) {
     header(layout, context.offer);
-    layout.html_colored(
-        160,
-        70,
-        200,
-        40,
-        &quest.title,
-        GUMP_DARK_GREEN,
-        false,
-        false,
-    );
-    layout.html_localized_colored(
-        98,
-        140,
-        312,
-        16,
-        cliloc::REWARD,
-        SECTION_GREEN,
-        false,
-        false,
-    );
+    layout.html_colored(160, 70, 200, 40, &quest.title, GUMP_DARK_GREEN, false, false);
+    layout.html_localized_colored(98, 140, 312, 16, cliloc::REWARD, SECTION_GREEN, false, false);
 
     let mut offset = 163;
     let height = if quest.rewards.len() == 1 { 100 } else { 16 };
@@ -584,15 +479,7 @@ fn section_rewards(layout: &mut GumpLayout, quest: &QuestDef, context: &QuestGum
             0,
             button::ACCEPT_REWARD,
         );
-        layout.button(
-            313,
-            455,
-            0x2EE6,
-            0x2EE8,
-            GumpButton::Reply,
-            0,
-            button::CLOSE,
-        );
+        layout.button(313, 455, 0x2EE6, 0x2EE8, GumpButton::Reply, 0, button::CLOSE);
     } else {
         accept_or_resign(layout, context.offer);
         layout.button(
@@ -623,25 +510,9 @@ fn conversation(layout: &mut GumpLayout, title: &str, text: &str, hand_in: bool)
     layout.image(140, 110, 0x04B9);
     layout.html_colored(160, 70, 200, 40, title, GUMP_DARK_GREEN, false, false);
     layout.html_colored(98, 140, 312, 180, text, GUMP_LIGHT_GREEN, false, true);
-    layout.button(
-        313,
-        455,
-        0x2EE6,
-        0x2EE8,
-        GumpButton::Reply,
-        0,
-        button::CLOSE,
-    );
+    layout.button(313, 455, 0x2EE6, 0x2EE8, GumpButton::Reply, 0, button::CLOSE);
     if hand_in {
-        layout.button(
-            95,
-            455,
-            0x2EE9,
-            0x2EEB,
-            GumpButton::Reply,
-            0,
-            button::COMPLETE,
-        );
+        layout.button(95, 455, 0x2EE9, 0x2EEB, GumpButton::Reply, 0, button::COMPLETE);
     }
 }
 
@@ -782,11 +653,7 @@ pub(crate) fn play(state: &mut WorldState, player: EntityId, sound: u16) {
 }
 
 /// The context for a page of a quest a player already has.
-pub(crate) fn log_context(
-    key: &str,
-    section: QuestSection,
-    giver: Option<Serial>,
-) -> QuestGumpContext {
+pub(crate) fn log_context(key: &str, section: QuestSection, giver: Option<Serial>) -> QuestGumpContext {
     QuestGumpContext {
         quest: key.to_owned(),
         section,

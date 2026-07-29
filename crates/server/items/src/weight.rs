@@ -194,9 +194,7 @@ pub fn banked_with(state: &WorldState, contents: &Contents, mobile: EntityId) ->
         .registry
         .query::<Equipped>()
         .find(|(item, worn)| {
-            worn.mobile == serial
-                && worn.layer == BANK_LAYER
-                && state.registry.has::<Container>(*item)
+            worn.mobile == serial && worn.layer == BANK_LAYER && state.registry.has::<Container>(*item)
         })
         .map(|(item, _)| item)
     else {
@@ -262,12 +260,7 @@ pub fn total_weight(state: &WorldState, mobile: EntityId, body_weight: u16) -> u
 
 /// The same against an index built once for several mobiles.
 #[must_use]
-pub fn total_weight_with(
-    state: &WorldState,
-    contents: &Contents,
-    mobile: EntityId,
-    body_weight: u16,
-) -> u16 {
+pub fn total_weight_with(state: &WorldState, contents: &Contents, mobile: EntityId, body_weight: u16) -> u16 {
     let facet = state.facet_of(mobile);
     let terrain = state
         .facets

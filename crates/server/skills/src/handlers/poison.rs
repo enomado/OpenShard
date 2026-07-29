@@ -12,9 +12,9 @@
 
 use openshard_entities::EntityId;
 use openshard_state::components::{
-    Amount, Graphic, PoisonCharges, EMPTY_BOTTLE_GRAPHIC, POISON_POTION_GRAPHIC,
+    Amount, EMPTY_BOTTLE_GRAPHIC, Graphic, POISON_POTION_GRAPHIC, PoisonCharges,
 };
-use openshard_state::weapon::{weapon_data, WeaponKind};
+use openshard_state::weapon::{WeaponKind, weapon_data};
 use openshard_state::{Skill, TargetPurpose, WorldState};
 
 use crate::check::roll_skill_band;
@@ -74,9 +74,7 @@ pub(super) fn chose_potion(state: &mut WorldState, actor: EntityId, potion: Enti
         return;
     }
     let Some(&openshard_state::components::Client { connection, .. }) =
-        state
-            .registry
-            .get::<openshard_state::components::Client>(actor)
+        state.registry.get::<openshard_state::components::Client>(actor)
     else {
         return;
     };
@@ -95,12 +93,7 @@ pub(super) fn chose_potion(state: &mut WorldState, actor: EntityId, potion: Enti
 }
 
 /// The second cursor's answer: what to smear it on.
-pub(super) fn apply_to(
-    state: &mut WorldState,
-    actor: EntityId,
-    potion: EntityId,
-    target: EntityId,
-) {
+pub(super) fn apply_to(state: &mut WorldState, actor: EntityId, potion: EntityId, target: EntityId) {
     // The potion may have gone while the cursor was up — drunk, dropped, sold.
     let Some(&PoisonCharges { level, .. }) = state.registry.get::<PoisonCharges>(potion) else {
         return;
@@ -170,10 +163,7 @@ pub struct PoisonedSelf {
 /// Taste Identification: whether a thing has poison on it.
 pub(super) fn taste_id(state: &mut WorldState, actor: EntityId, target: EntityId) {
     // Tasting a person is not a thing one does.
-    if state
-        .registry
-        .has::<openshard_state::components::Body>(target)
-    {
+    if state.registry.has::<openshard_state::components::Body>(target) {
         state.localized_message(actor, INAPPROPRIATE, "");
         return;
     }
@@ -183,11 +173,7 @@ pub(super) fn taste_id(state: &mut WorldState, actor: EntityId, target: EntityId
         return;
     }
     let poisoned = state.registry.has::<PoisonCharges>(target);
-    let line = if poisoned {
-        TASTES_POISONED
-    } else {
-        TASTES_CLEAN
-    };
+    let line = if poisoned { TASTES_POISONED } else { TASTES_CLEAN };
     state.private_overhead_cliloc(actor, target, line, "");
 }
 

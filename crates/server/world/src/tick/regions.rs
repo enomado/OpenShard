@@ -17,8 +17,8 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::world::PlayMusic;
-use openshard_state::components::{Client, InRegion, Position};
 use openshard_state::Region;
+use openshard_state::components::{Client, InRegion, Position};
 use tracing::{info, warn};
 
 use super::World;

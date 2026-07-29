@@ -22,8 +22,8 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::world::Point;
-use openshard_state::components::{Position, RuneMark};
 use openshard_state::WorldState;
+use openshard_state::components::{Position, RuneMark};
 
 /// What a mobile is trying to do, and at which end.
 ///
@@ -78,13 +78,7 @@ impl TravelKind {
 ///
 /// Staff pass, through the one exemption door `is_staff`.
 #[must_use]
-pub fn may_travel(
-    state: &WorldState,
-    mobile: EntityId,
-    kind: TravelKind,
-    facet: u8,
-    at: Point,
-) -> bool {
+pub fn may_travel(state: &WorldState, mobile: EntityId, kind: TravelKind, facet: u8, at: Point) -> bool {
     if state.is_staff(mobile) {
         return true;
     }

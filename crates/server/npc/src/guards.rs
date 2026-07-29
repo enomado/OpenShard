@@ -26,19 +26,18 @@ use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
 use openshard_protocol::world::Point;
+use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Client, CriminalUntil, DamageType, Ghost, Guard, Hitpoints, Murders, Position,
-    Staff,
+    Aggression, Client, CriminalUntil, DamageType, Ghost, Guard, Hitpoints, Murders, Position, Staff,
 };
 use openshard_state::sectors::in_range;
-use openshard_state::WorldState;
 
 use openshard_combat as combat;
 
 use crate::dress::ShoeType;
 use crate::names::personal_name;
 use crate::notify;
-use crate::spawn::{spawn, SpawnSpec};
+use crate::spawn::{SpawnSpec, spawn};
 
 /// How far a call for guards reaches for someone to answer it — ServUO's 14.
 const CALL_RANGE: u32 = 14;
@@ -72,12 +71,7 @@ const GUARD_LINE: &str = "Thou wilt regret thine actions, swine!";
 /// Only inside a guarded region: the words are the *call*, and a call carries no
 /// authority in the wilds. ServUO matches the same speech keyword (`0x0007`);
 /// matching the plain word is the shape the banker's "bank" already set.
-pub fn guard_keywords(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    actor: EntityId,
-    text: &str,
-) {
+pub fn guard_keywords(state: &mut WorldState, connection: ConnectionId, actor: EntityId, text: &str) {
     let lower = text.to_lowercase();
     if !lower
         .split(|c: char| !c.is_alphabetic())
@@ -274,14 +268,7 @@ fn flash(state: &mut WorldState, guard: EntityId, at: Point) {
 /// loot, the `MobileDied` and the criminal bookkeeping all happen the usual way,
 /// and there is no second death path to keep in step with the first.
 fn execute(state: &mut WorldState, guard: EntityId, target: EntityId) {
-    openshard_chat::speak(
-        state,
-        guard,
-        0,
-        crate::GREET_HUE,
-        crate::GREET_FONT,
-        GUARD_LINE,
-    );
+    openshard_chat::speak(state, guard, 0, crate::GREET_HUE, crate::GREET_FONT, GUARD_LINE);
     let Some(serial) = state.registry.serial_of(target) else {
         return;
     };

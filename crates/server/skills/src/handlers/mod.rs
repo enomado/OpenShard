@@ -25,18 +25,17 @@ mod stealth;
 mod taming;
 
 pub use bandage::{
-    finish_bandages, use_bandage, use_lockpick, BandageFinished, BandageStarted, LockpickBroke,
-    BANDAGE_GRAPHIC, LOCKPICK_GRAPHIC,
+    BANDAGE_GRAPHIC, BandageFinished, BandageStarted, LOCKPICK_GRAPHIC, LockpickBroke, finish_bandages,
+    use_bandage, use_lockpick,
 };
-pub use bard::{expire_songs, play_instrument, InstrumentSpent};
+pub use bard::{InstrumentSpent, expire_songs, play_instrument};
 pub use harvest::{
-    advance_harvests, begin_harvest, resolve_harvest_target, use_tool, HarvestTarget, Harvested,
-    ToolWorn,
+    HarvestTarget, Harvested, ToolWorn, advance_harvests, begin_harvest, resolve_harvest_target, use_tool,
 };
 pub use poison::PoisonedSelf;
 pub use social::Begged;
-pub use stealth::{snooping, Stolen};
-pub use taming::{followers_of, Tamed, MAX_FOLLOWERS};
+pub use stealth::{Stolen, snooping};
+pub use taming::{MAX_FOLLOWERS, Tamed, followers_of};
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
@@ -45,7 +44,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
 use openshard_state::components::{Client, HearsGhosts, Position};
-use openshard_state::{in_range, Skill, TargetPurpose, WorldState};
+use openshard_state::{Skill, TargetPurpose, WorldState, in_range};
 
 /// A skill that answers a question about something: the line it asks with, and how
 /// far the cursor reaches.
@@ -100,8 +99,7 @@ pub(crate) fn start(state: &mut WorldState, actor: EntityId, id: u8) -> bool {
         // Remove Trap is the one that refuses *before* the cursor: ServUO checks
         // the two skills it leans on in `OnUse` and never raises a target for
         // someone who could not disarm anything anyway.
-        if Skill::from_id(id) == Some(Skill::RemoveTrap) && !social::may_remove_traps(state, actor)
-        {
+        if Skill::from_id(id) == Some(Skill::RemoveTrap) && !social::may_remove_traps(state, actor) {
             return true;
         }
         return raise_cursor(state, actor, id, ask.prompt);
@@ -131,9 +129,7 @@ pub(crate) fn start(state: &mut WorldState, actor: EntityId, id: u8) -> bool {
         // The bard skills raise their own cursors, because the reach is the bard's
         // (`8 + value/15`) rather than a constant, and each wants an instrument in
         // the pack before it asks anything.
-        Some(Skill::Peacemaking | Skill::Provocation | Skill::Discordance) => {
-            bard::start(state, actor, id)
-        }
+        Some(Skill::Peacemaking | Skill::Provocation | Skill::Discordance) => bard::start(state, actor, id),
         _ => false,
     }
 }
@@ -165,9 +161,7 @@ pub fn expire_ghost_contact(state: &mut WorldState) {
 pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -> Outcome {
     // The bard skills judge their own reach, which widens with the skill, so they
     // are not in the fixed table.
-    if let Some(skill @ (Skill::Peacemaking | Skill::Provocation | Skill::Discordance)) =
-        Skill::from_id(id)
-    {
+    if let Some(skill @ (Skill::Peacemaking | Skill::Provocation | Skill::Discordance)) = Skill::from_id(id) {
         let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
             return Outcome::default();
         };
@@ -198,13 +192,13 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -
             return Outcome {
                 stolen: stealth::stealing(state, actor, target),
                 ..Outcome::default()
-            }
+            };
         }
         Some(Skill::AnimalTaming) => {
             return Outcome {
                 tamed: taming::taming(state, actor, target),
                 ..Outcome::default()
-            }
+            };
         }
         _ => {}
     }
@@ -240,13 +234,7 @@ pub struct Outcome {
 ///
 /// The reach is the same as the first ask's, and re-checked here for the same
 /// reason: a `0x6C` range is the client's courtesy, never the judge.
-pub fn on_second_target(
-    state: &mut WorldState,
-    actor: EntityId,
-    id: u8,
-    first: EntityId,
-    target: u32,
-) {
+pub fn on_second_target(state: &mut WorldState, actor: EntityId, id: u8, first: EntityId, target: u32) {
     if Skill::from_id(id) == Some(Skill::Provocation) {
         let range = bard::bard_range(state, actor, id);
         if let Some(victim) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) {

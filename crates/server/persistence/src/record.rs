@@ -17,7 +17,43 @@
 //! Serialising components directly deletes the seam and welds the simulation's
 //! internal shape to the on-disk format forever.
 
+use openshard_protocol::identity::{AccountName, CharacterName};
 use serde::{Deserialize, Serialize};
+
+/// (De)serialize an [`AccountName`] as the bare string, no wrapper object.
+///
+/// `openshard-protocol` carries no dependencies, so `AccountName` stays
+/// serde-free and each crate that needs to (de)serialize one supplies this
+/// small `serialize_with`/`deserialize_with` pair itself — see
+/// `openshard_config`'s identical `account_name` module for the same reasoning.
+mod account_name {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::AccountName;
+
+    pub fn serialize<S: Serializer>(value: &AccountName, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&value.0)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<AccountName, D::Error> {
+        String::deserialize(d).map(AccountName)
+    }
+}
+
+/// (De)serialize a [`CharacterName`] as the bare string. See [`account_name`].
+mod character_name {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::CharacterName;
+
+    pub fn serialize<S: Serializer>(value: &CharacterName, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&value.0)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<CharacterName, D::Error> {
+        String::deserialize(d).map(CharacterName)
+    }
+}
 
 /// The version of the saved shape.
 ///
@@ -120,7 +156,8 @@ pub const SCHEMA_VERSION: u32 = 22;
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct AccountRecord {
     /// The login name. Unique; this is the key.
-    pub name: String,
+    #[serde(with = "account_name")]
+    pub name: AccountName,
     /// The credential — an argon2 PHC hash of the password.
     pub credential: String,
 }
@@ -142,9 +179,11 @@ pub struct CharacterRecord {
     /// The wire serial. Stable across restarts; see the type docs.
     pub serial: u32,
     /// Which account it belongs to.
-    pub account: String,
+    #[serde(with = "account_name")]
+    pub account: AccountName,
     /// The character's name.
-    pub name: String,
+    #[serde(with = "character_name")]
+    pub name: CharacterName,
     /// The body graphic.
     pub body: u16,
     /// The body hue.

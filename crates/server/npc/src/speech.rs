@@ -69,11 +69,7 @@ const DEFAULT_GREETINGS_ANON: &[&str] = &["Greetings.", "Well met.", "Good day t
 /// The trade's registered greetings win; a vendor with none falls back to ServUO's
 /// own 500186; anything else to a bland default. `{name}` is filled with the
 /// visitor's name, and a line that needs one is skipped for a nameless visitor.
-pub(crate) fn greeting_for(
-    state: &mut WorldState,
-    npc: EntityId,
-    visitor: EntityId,
-) -> Option<String> {
+pub(crate) fn greeting_for(state: &mut WorldState, npc: EntityId, visitor: EntityId) -> Option<String> {
     let visitor_name = state.registry.get::<Name>(visitor).map(|n| n.0.clone());
 
     // A traveller waiting for an escort asks for one, ahead of anything its trade
@@ -110,10 +106,7 @@ pub(crate) fn greeting_for(
     } else {
         let pool: Vec<String> = match &visitor_name {
             Some(_) => DEFAULT_GREETINGS.iter().map(|s| (*s).to_owned()).collect(),
-            None => DEFAULT_GREETINGS_ANON
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect(),
+            None => DEFAULT_GREETINGS_ANON.iter().map(|s| (*s).to_owned()).collect(),
         };
         pick(state, &pool)?
     };
@@ -167,12 +160,7 @@ pub fn overhear(state: &mut WorldState, connection: ConnectionId, actor: EntityI
 /// shopkeeper unqualified, and a bare `buy`/`sell` only when that shopkeeper was
 /// named. Checked in that order, and "sell" before "buy" so neither steals the
 /// other.
-fn shop_request(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    actor: EntityId,
-    words: &[&str],
-) -> bool {
+fn shop_request(state: &mut WorldState, connection: ConnectionId, actor: EntityId, words: &[&str]) -> bool {
     let addressed = |verb: &str| {
         // "vendor sell" — no name needed.
         words.windows(2).any(|w| w == ["vendor", verb])

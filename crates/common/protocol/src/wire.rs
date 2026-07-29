@@ -39,3 +39,12 @@ pub struct SoundId(pub u16);
 /// a serial, even where a server happens to use one as the value.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct CursorId(pub u32);
+
+/// The key a `0x8C` relay hands out and a `0x91` game login must echo back.
+///
+/// Opaque the same way [`CursorId`] is: the login server picks it from OS
+/// entropy (see `openshard_login::auth::AuthKeys::issue`), and the only thing
+/// that makes it valid is that it was issued and not yet redeemed — nothing
+/// about the number itself means anything.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct AuthKey(pub u32);

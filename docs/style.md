@@ -2,6 +2,187 @@
 
 Beyond `cargo fmt` and `cargo clippy`, which are not negotiable.
 
+`rustfmt.toml` sets `max_width = 110` and `style_edition = "2024"`. The rest of
+the intended house style — import granularity, one import per line, grouped
+`std`/external/local — needs nightly rustfmt and sits commented out in that file,
+because `rust-toolchain.toml` pins stable and stable warns once per unstable key
+and then ignores it. `cargo fmt --all` is expected to print nothing at all, and a
+config that warns costs that.
+
+## Newtypes, not raw values
+
+`Serial`, `EntityId`, `Graphic`, `Hue`, `SoundId`, `AuthKey`, `AccountName` — an
+id or an index gets its own type, so two domains cannot be mixed up at a call
+site and the compiler is the one that says so. `fn move_to(&mut self, id: u32,
+graphic: u32)` accepts its arguments in either order; the newtyped version does
+not compile wrong.
+
+The type is carried through the whole call tree. `.0` — or the named accessor,
+where the wrapper has an invariant to protect — appears only where a value leaves
+the domain: the packet codec, a SQL bind, a JSON field. A signature in
+the middle that takes `u32` because unwrapping was convenient two frames up has
+moved the boundary rather than removed it, and everything below that point is
+back to integers that all look alike.
+
+Prefer a real index type to `usize` for the same reason: `usize` is what every
+other index in the process is too.
+
+## A newtype is opened with `.0`, never through a trait
+
+`From`, `Into` and `Deref` are banned on the project's newtypes. Not discouraged
+— banned. Each of them hands back exactly the coercion the newtype was created to
+remove, and hands it back invisibly: the type still looks enforced in every
+signature, while at the call sites it behaves like the raw value again.
+
+**`Deref` is the worst of the three**, because it is not a conversion you invoke.
+`impl Deref for Serial { type Target = u32 }` makes every `u32` method, every
+`&u32` parameter position and every autoderefing operator accept a `Serial` with
+*nothing written at the call site at all*. The hole is spelled with the empty
+string, so there is no text to grep for and no line for a reviewer to object to.
+A newtype with a `Deref` is a comment that claims to be a type.
+
+**`From<u32> for Serial` moves the hole to construction.** `let s: Serial =
+n.into()` compiles whether `n` was a serial, a graphic, a container index or a
+length off the wire. Worse, `.into()` is inference-driven: which conversion runs
+is decided by the signature currently in scope, so changing a parameter type
+silently retargets every `.into()` at every call site — no error, different
+behaviour. Wrapping is the one moment at which somebody could have established
+that this number is a serial. A blanket trait impl is how that moment is thrown
+away.
+
+**`From<Serial> for u32` is the same hole with better manners:** an unwrap that
+does not say what it unwrapped. Two of them in sequence cancel, so a value laundered
+`EntityId → u32 → Serial` typechecks the entire way, and the compile error the
+newtypes existed to produce never happens.
+
+So, always something written down at the site:
+
+```rust
+let raw = hue.0;                  // open it — visible, greppable, one meaning
+let hue = Hue(raw);               // build it — names the type at the site
+```
+
+Where a newtype has an invariant, the field is private and both directions get a
+name instead. `Serial` is the worked example: `Serial(u32)` with no public field,
+`Serial::new(raw) -> Option<Self>` because a value outside both pools is not a
+serial, and `serial.raw()` to put it back on the wire. That is the same rule, one
+step stricter — the wrap *is* the check, so it cannot be spelled with a trait at
+all without throwing the check away.
+
+What is fine, because none of it is a coercion:
+
+- `Debug`, `Display`, `Clone`, `Copy`, `PartialEq`/`Eq`/`Hash`/`Ord`.
+- `PartialEq<str> for AccountName` — a comparison cannot produce either the
+  wrapped type or the raw one, so it buys test-fixture ergonomics without opening
+  anything. See `protocol::identity`.
+- Inherent named constructors and accessors — `Serial::new`, `Serial::raw`,
+  `AccountName::normalized`. The name is the whole difference: it says which
+  direction, and which check ran, and it does not silently retarget when a
+  signature moves.
+- `From` between *error* types. That is what `?` is built on, and an error
+  conversion cannot smuggle a domain value past a check — see
+  `protocol::error`.
+
+**Existing debt.** `protocol::identity` still carries `From<&str>` and
+`From<String>` for `AccountName`, `CharacterName`, `PlaintextPassword` and their
+`Raw` counterparts, for `impl Into<_>` parameters in test fixtures. Those are the
+banned shape, and on the validated halves they are the exact hole this rule is
+about: that module's contract is that `Accounts::verify` is the only way to a
+trusted `AccountName`, and `String::into()` is a second way that runs no check.
+They should become named constructors. Do not add more.
+
+## `unwrap` where the invariant already holds
+
+This codebase prefers `unwrap()` to a `?` or a `match` that cannot fail. That is
+contract programming, and it is a readability argument first: an error path that
+can never be taken still has to be read, and every reader has to work out for
+themselves that it is dead.
+
+It is a design argument second, and that one is the reason it is a rule. A
+defensive `?` does not stay local. Making one function return `Result` makes its
+callers return `Result`; a few rounds of that and half the engine is
+`Result<_, Box<dyn Error>>`, with no way left to tell a failure that cannot
+happen from one that happens on Tuesdays.
+
+So when the invariant was established earlier — the entity was spawned three
+lines up, the serial was resolved at the top of the function, the table was
+filled at load — unwrap it:
+
+```rust
+// `spawn` just returned this id, so the row is there.
+let mobile = self.registry.mobile(id).unwrap();
+```
+
+Use `expect` when the line does not already say what the invariant is, and a
+comment when it takes a sentence. What must not happen is *stating* an invariant
+the code does not have: `unwrap()` is a claim, and the claim gets checked at 3am
+by a panic.
+
+`Result` is not optional for anything originating outside the process: I/O, the
+database, the client's own files, and everything off the wire. A packet is not an
+invariant, it is an input, and a hostile one.
+
+## Panics
+
+Panic on programmer error — a broken invariant, a type mismatch that cannot
+happen. Return `Result` for anything the outside world can cause.
+
+Network input is never a panic. Ever. `ClientVersion::from_str` returns an error
+because that string arrives in a packet from an untrusted client.
+
+A panic drops the task it happened in rather than the process: `panic = "abort"`
+is deliberately off, so one connection's failure is not the shard's — the
+workspace manifest says as much next to the profile. That is what makes fail-fast
+affordable here. It is not a licence to panic on player data.
+
+## `Option` means absent, not unknown
+
+`Option` is for absence that is part of the domain: a brain with no target, an
+item in no container, an empty slot in a character list. It is not a way to say
+"not computed yet" or "not loaded" — that files a missing value under a normal
+one, and the bug surfaces somewhere else, later, as a `None` that nobody thought
+was reachable.
+
+A default is worse than `Option` for the same job. `0`, `""` and `Hue(0)` are all
+plausible values, so a field that was never filled reads exactly like a field
+that was filled deliberately. If a value is not yet known, that is a *state* —
+model the state.
+
+## Errors are types
+
+No `String` errors, no `anyhow` in library crates. `anyhow` is fine in binaries.
+
+```rust
+pub enum BindSerialError {
+    NoSuchEntity(EntityId),
+    SerialTaken { serial: Serial, holder: EntityId },
+    AlreadyBound { entity: EntityId, existing: Serial },
+}
+```
+
+Carry what a caller needs to act, and implement `Display` + `std::error::Error`.
+
+## Import from where it is declared
+
+Avoid `pub use`. A re-export gives one type two paths, and then "who depends on
+this?" has two answers — the crate map stops being readable from the imports,
+which is the only place anybody ever reads it.
+`use openshard_protocol::identity::AccountName` says where the type lives;
+`use openshard_protocol::AccountName` says only that somebody was tidying.
+
+Several `lib.rs` files are still a wall of `pub use` from before this was a rule.
+Removing them is one mechanical sweep, planned as D8 in
+[`protocol_rewrite.md`](protocol_rewrite.md) — do not drip-feed it, and do not add
+to it in the meantime.
+
+## Look for it before writing it
+
+Search before adding a function, and extend what is already there. This is a
+correctness argument rather than a tidiness one: the existing code has been run
+and the new copy has not. Two implementations of one rule also means one of them
+gets fixed and the other does not — and nothing tells you which one the bug
+report came from.
+
 ## Comments explain why
 
 The code already says what it does. A comment earns its place by saying something
@@ -26,6 +207,10 @@ The best comments record a decision and its cost:
 ```
 
 Nobody can recover that from the code. That is the test.
+
+Comment generously. Length is not the cost here — an invariant nobody wrote down
+is. A precondition, a non-obvious property, the reason an order matters: above
+the item, in as many lines as it takes.
 
 ## Doc comments say what something is for
 
@@ -69,29 +254,9 @@ Where a test guards something non-obvious, say what:
 ```
 
 Test the boundaries and the failures, not the happy path. A test that only proves
-`insert` then `get` works proves very little.
-
-## Errors are types
-
-No `String` errors, no `anyhow` in library crates. `anyhow` is fine in binaries.
-
-```rust
-pub enum BindSerialError {
-    NoSuchEntity(EntityId),
-    SerialTaken { serial: Serial, holder: EntityId },
-    AlreadyBound { entity: EntityId, existing: Serial },
-}
-```
-
-Carry what a caller needs to act, and implement `Display` + `std::error::Error`.
-
-## Panics
-
-Panic on programmer error — a broken invariant, a type mismatch that cannot
-happen. Return `Result` for anything the outside world can cause.
-
-Network input is never a panic. Ever. `ClientVersion::from_str` returns an error
-because that string arrives in a packet from an untrusted client.
+`insert` then `get` works proves very little. Two traps that have already cost
+this project real time are in [`findings.md`](findings.md) § Traps in tests and
+benchmarks.
 
 ## No unsafe
 
@@ -145,8 +310,9 @@ came from, so the next reader can check the port against the original:
 ```
 
 `Calc_GetSCurve`, `PacketItemWorld`, ServUO's `GetStartZ` — the name is the
-provenance. Take the numbers; audit the arithmetic (see `CLAUDE.md` on Sphere's
-walk check). A port nobody can trace back is a magic constant with extra steps.
+provenance. Take the numbers; audit the arithmetic (see
+[`findings.md`](findings.md) § Reading the reference emulators). A port nobody
+can trace back is a magic constant with extra steps.
 
 ## Names
 

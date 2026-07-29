@@ -234,11 +234,7 @@ fn random_hair(rng: &mut Rng, female: bool) -> u16 {
 /// four short beards then the three long ones.
 fn random_facial_hair(rng: &mut Rng) -> u16 {
     let rand = rng.below(7) as u16;
-    if rand < 4 {
-        0x203E + rand
-    } else {
-        0x2047 + rand
-    }
+    if rand < 4 { 0x203E + rand } else { 0x2047 + rand }
 }
 
 #[cfg(test)]
@@ -307,9 +303,7 @@ mod tests {
             let she = dress_townsperson(&mut rng, ShoeType::Shoes, Some(true));
             assert_eq!(she.body, BODY_FEMALE);
             assert!(
-                !she.equipment
-                    .iter()
-                    .any(|&(_, l, _)| l == LAYER_FACIAL_HAIR),
+                !she.equipment.iter().any(|&(_, l, _)| l == LAYER_FACIAL_HAIR),
                 "seed {seed}: a woman grew a beard"
             );
 

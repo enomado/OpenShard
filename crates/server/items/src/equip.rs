@@ -28,13 +28,7 @@ pub fn equip_worn_item(
 }
 
 /// Wear a client's held item on a mobile. See `Command::EquipItem`.
-pub fn equip_item(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    item: u32,
-    layer: u8,
-    mobile: u32,
-) {
+pub fn equip_item(state: &mut WorldState, connection: ConnectionId, item: u32, layer: u8, mobile: u32) {
     // Equipping is a *drop* of the dragged item, so there has to be one, and
     // it has to be the item named.
     let Some(held) = state.held.get(&connection).copied() else {
@@ -71,9 +65,7 @@ pub fn equip_item(
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     }
-    if state.facet_of(wearer) != state.facet_of(player)
-        || !in_range(wearer_pos, player_pos, ITEM_REACH)
-    {
+    if state.facet_of(wearer) != state.facet_of(player) || !in_range(wearer_pos, player_pos, ITEM_REACH) {
         bounce(state, connection, held, DragCancelReason::OutOfRange);
         return;
     }
@@ -155,10 +147,7 @@ pub fn broadcast_equip(state: &mut WorldState, item: EntityId, mobile: EntityId)
 pub(crate) fn broadcast_unequip(state: &mut WorldState, item: Serial, mobile: EntityId) {
     for watcher in equip_audience(state, mobile) {
         if let Some(&Client { connection, .. }) = state.registry.get::<Client>(watcher) {
-            state.send_packet(
-                connection,
-                &ServerPacket::Remove(Remove { serial: item.raw() }),
-            );
+            state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item.raw() }));
         }
     }
 }

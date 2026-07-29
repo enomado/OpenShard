@@ -9,14 +9,14 @@
 //! a cliloc block chosen by the wrong arithmetic reads as a plausible sentence
 //! about the wrong object, which no client will report.
 
-use super::tests::{enter, enter_as, packets_for, spawn_mobile_at, world, START};
+use super::tests::{START, enter, enter_as, packets_for, spawn_mobile_at, world};
 use super::*;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
-use openshard_state::components::{
-    Amount, Contained, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Hitpoints, Mana, Meditating,
-    Name, PoisonCharges, Poisoned, Stealthing, POISON_POTION_GRAPHIC,
-};
 use openshard_state::Skill;
+use openshard_state::components::{
+    Amount, Contained, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Hitpoints, Mana, Meditating, Name,
+    POISON_POTION_GRAPHIC, PoisonCharges, Poisoned, Stealthing,
+};
 
 /// Give the player a skill outright, so a roll is a sure thing.
 fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) {
@@ -150,10 +150,7 @@ fn arms_lore_reads_armour_by_its_rating() {
     let _ = packets_for(&mut world, looker);
 
     let said = use_skill_on(&mut world, looker, Skill::ArmsLore, plate, now);
-    assert!(
-        said.contains(&(1_038_295 + 7)),
-        "the top armour line: {said:?}"
-    );
+    assert!(said.contains(&(1_038_295 + 7)), "the top armour line: {said:?}");
 }
 
 #[test]
@@ -169,10 +166,7 @@ fn arms_lore_refuses_something_that_is_neither() {
     let _ = packets_for(&mut world, looker);
 
     let said = use_skill_on(&mut world, looker, Skill::ArmsLore, gold, now);
-    assert!(
-        said.contains(&500_352),
-        "neither weapon nor armour: {said:?}"
-    );
+    assert!(said.contains(&500_352), "neither weapon nor armour: {said:?}");
 }
 
 #[test]
@@ -250,10 +244,7 @@ fn forensics_says_who_killed_a_body_and_who_has_been_through_it() {
 
     let said = use_skill_on(&mut world, looker, Skill::Forensics, corpse_serial, now);
     // A human body (the test creature wears 0x0190) reports its killer.
-    assert!(
-        said.contains(&1_042_751),
-        "killed by ~1_KILLER_NAME~: {said:?}"
-    );
+    assert!(said.contains(&1_042_751), "killed by ~1_KILLER_NAME~: {said:?}");
     assert!(said.contains(&501_002), "and not yet desecrated: {said:?}");
     // The first reader signs the body, so a second one is told whose work it is.
     assert_eq!(
@@ -400,13 +391,7 @@ fn meditation_enters_a_trance_and_a_step_breaks_it() {
     train(&mut world, player, Skill::Meditation, 1000);
     world.tick(now);
     // Spend some mana, or the answer is "you are at peace".
-    world.state.registry.insert(
-        entity,
-        Mana {
-            current: 1,
-            max: 50,
-        },
-    );
+    world.state.registry.insert(entity, Mana { current: 1, max: 50 });
 
     world.queue(Command::UseSkillButton {
         connection: player,
@@ -451,24 +436,11 @@ fn meditation_wants_free_hands() {
     let owner = world.state.registry.serial_of(entity).unwrap();
     train(&mut world, player, Skill::Meditation, 1000);
     world.tick(now);
-    world.state.registry.insert(
-        entity,
-        Mana {
-            current: 1,
-            max: 50,
-        },
-    );
+    world.state.registry.insert(entity, Mana { current: 1, max: 50 });
 
     // A katana on the one-handed layer.
-    let (sword, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(sword, Graphic { id: 0x13FF, hue: 0 });
+    let (sword, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(sword, Graphic { id: 0x13FF, hue: 0 });
     world.state.registry.insert(
         sword,
         Equipped {
@@ -510,15 +482,8 @@ fn a_trance_doubles_the_rate_mana_comes_back_at() {
     // armour offset is added in seconds, which is what makes the skill's armour
     // rule bite rather than merely nag.
     let owner = world.state.registry.serial_of(entity).unwrap();
-    let (plate, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world
-        .state
-        .registry
-        .insert(plate, Graphic { id: 0x1415, hue: 0 });
+    let (plate, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(plate, Graphic { id: 0x1415, hue: 0 });
     world.state.registry.insert(
         plate,
         Equipped {
@@ -572,12 +537,7 @@ fn spirit_speak_lets_the_living_hear_the_dead_without_seeing_them() {
     );
 
     // And the contact lapses on the tick counter, with the client told.
-    let until = world
-        .state
-        .registry
-        .get::<HearsGhosts>(listener)
-        .unwrap()
-        .until;
+    let until = world.state.registry.get::<HearsGhosts>(listener).unwrap().until;
     while world.state.ticks <= until {
         world.tick(now);
     }
@@ -589,12 +549,7 @@ fn spirit_speak_lets_the_living_hear_the_dead_without_seeing_them() {
 }
 
 /// Answer a *second* cursor — the one Poisoning raises after the potion.
-fn answer_cursor(
-    world: &mut World,
-    connection: ConnectionId,
-    target: u32,
-    now: Instant,
-) -> Vec<u32> {
+fn answer_cursor(world: &mut World, connection: ConnectionId, target: u32, now: Instant) -> Vec<u32> {
     let cursor_id = {
         let entity = world.state.players[&connection];
         world.state.registry.serial_of(entity).unwrap().raw()
@@ -633,13 +588,10 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
         .registry
         .entity_of(Serial::new(potion).unwrap())
         .unwrap();
-    world.state.registry.insert(
-        potion_entity,
-        PoisonCharges {
-            level: 2,
-            charges: 1,
-        },
-    );
+    world
+        .state
+        .registry
+        .insert(potion_entity, PoisonCharges { level: 2, charges: 1 });
     let katana = item_beside(&mut world, 0x13FF, now);
     let blade = world
         .state
@@ -655,10 +607,7 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
         "to what do you wish to apply the poison: {asked:?}"
     );
     let applied = answer_cursor(&mut world, player, katana, now);
-    assert!(
-        applied.contains(&1_010_517),
-        "you apply the poison: {applied:?}"
-    );
+    assert!(applied.contains(&1_010_517), "you apply the poison: {applied:?}");
     assert_eq!(
         world.state.registry.get::<PoisonCharges>(blade).copied(),
         Some(PoisonCharges {
@@ -670,12 +619,7 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
     // The bottle is spent either way, and what is left is an empty one.
     assert!(!world.state.registry.has::<PoisonCharges>(potion_entity));
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<Graphic>(potion_entity)
-            .unwrap()
-            .id,
+        world.state.registry.get::<Graphic>(potion_entity).unwrap().id,
         openshard_state::components::EMPTY_BOTTLE_GRAPHIC
     );
 
@@ -734,22 +678,16 @@ fn poison_only_goes_on_a_bladed_or_piercing_weapon() {
         .registry
         .entity_of(Serial::new(potion).unwrap())
         .unwrap();
-    world.state.registry.insert(
-        potion_entity,
-        PoisonCharges {
-            level: 0,
-            charges: 1,
-        },
-    );
+    world
+        .state
+        .registry
+        .insert(potion_entity, PoisonCharges { level: 0, charges: 1 });
     let mace = item_beside(&mut world, 0x0F5C, now);
     let _ = packets_for(&mut world, player);
 
     let _ = use_skill_on(&mut world, player, Skill::Poisoning, potion, now);
     let refused = answer_cursor(&mut world, player, mace, now);
-    assert!(
-        refused.contains(&502_145),
-        "you cannot poison that: {refused:?}"
-    );
+    assert!(refused.contains(&502_145), "you cannot poison that: {refused:?}");
 }
 
 #[test]
@@ -886,10 +824,12 @@ fn a_trapped_chest_goes_off_when_it_is_opened_and_remove_trap_takes_it_off() {
     let _ = packets_for(&mut world, player);
     let said = use_skill_on(&mut world, player, Skill::RemoveTrap, chest_serial, now);
     assert!(said.contains(&502_377), "rendered harmless: {said:?}");
-    assert!(!world
-        .state
-        .registry
-        .has::<openshard_state::components::Trap>(chest));
+    assert!(
+        !world
+            .state
+            .registry
+            .has::<openshard_state::components::Trap>(chest)
+    );
 }
 
 #[test]
@@ -927,10 +867,7 @@ fn hiding_takes_you_off_every_screen_and_a_word_puts_you_back() {
     let onlooker = world.state.players[&watcher];
     train(&mut world, hider, Skill::Hiding, 1000);
     world.tick(now);
-    assert!(
-        world.state.can_see_mobile(onlooker, entity),
-        "seen to start"
-    );
+    assert!(world.state.can_see_mobile(onlooker, entity), "seen to start");
     let _ = packets_for(&mut world, watcher);
 
     world.queue(Command::UseSkillButton {
@@ -998,10 +935,7 @@ fn stealth_buys_a_few_quiet_steps_and_no_more() {
 
     // Walk the budget down to its last step, then take two more: the first spends
     // it, the second is past it.
-    world
-        .state
-        .registry
-        .insert(entity, Stealthing { steps_left: 1 });
+    world.state.registry.insert(entity, Stealthing { steps_left: 1 });
     let serial = world.state.registry.serial_of(entity).unwrap().raw();
     for _ in 0..3 {
         world.queue(Command::Step {
@@ -1049,18 +983,8 @@ fn give_instrument(world: &mut World, connection: ConnectionId, graphic: u16) ->
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = openshard_items::backpack_of(&world.state, owner).expect("a backpack");
-    let (item, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world.state.registry.insert(
-        item,
-        Graphic {
-            id: graphic,
-            hue: 0,
-        },
-    );
+    let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
     world.state.registry.insert(
         item,
         Contained {
@@ -1070,10 +994,10 @@ fn give_instrument(world: &mut World, connection: ConnectionId, graphic: u16) ->
             grid: 0,
         },
     );
-    world.state.registry.insert(
-        item,
-        openshard_state::components::Instrument { uses_left: 10 },
-    );
+    world
+        .state
+        .registry
+        .insert(item, openshard_state::components::Instrument { uses_left: 10 });
     item
 }
 
@@ -1180,18 +1104,8 @@ fn give_item(world: &mut World, connection: ConnectionId, graphic: u16) -> u32 {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = openshard_items::backpack_of(&world.state, owner).expect("a backpack");
-    let (item, serial) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
-    world.state.registry.insert(
-        item,
-        Graphic {
-            id: graphic,
-            hue: 0,
-        },
-    );
+    let (item, serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
+    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
     world.state.registry.insert(
         item,
         Contained {
@@ -1494,21 +1408,13 @@ fn a_shop_bottle_holds_the_poison_its_label_names() {
         .unwrap();
     // Spawned bare, it is the middling poison.
     assert_eq!(
-        world
-            .state
-            .registry
-            .get::<PoisonCharges>(bottle)
-            .map(|p| p.level),
+        world.state.registry.get::<PoisonCharges>(bottle).map(|p| p.level),
         Some(1)
     );
     let _ = player;
 
     // Named as a shop names it, it is what the label says.
-    let (labelled, _) = world
-        .state
-        .registry
-        .spawn_with_serial(SerialKind::Item)
-        .unwrap();
+    let (labelled, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
     world.state.registry.insert(
         labelled,
         Graphic {

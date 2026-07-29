@@ -39,13 +39,14 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use openshard_protocol::identity::{AccountName, CharacterName};
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls, Row};
 
 use crate::journal::Snapshot;
 use crate::record::{
-    AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord,
-    RegionRecord, SpawnerRecord, SCHEMA_VERSION,
+    AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord, RegionRecord,
+    SCHEMA_VERSION, SpawnerRecord,
 };
 use crate::store::{Store, StoreError};
 
@@ -204,9 +205,7 @@ impl PgStore {
     /// rather than reading it and silently dropping what it does not understand —
     /// the same refusal the SQLite backend makes.
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
-        let (client, connection) = tokio_postgres::connect(url, NoTls)
-            .await
-            .map_err(database)?;
+        let (client, connection) = tokio_postgres::connect(url, NoTls).await.map_err(database)?;
 
         // The connection future is the half of the driver that owns the socket:
         // until something polls it, the client's calls never leave the process.
@@ -273,16 +272,16 @@ impl Store for PgStore {
         // world is a world that never existed — see `crate::journal`.
         let transaction = client.transaction().await.map_err(database)?;
         for record in &snapshot.characters {
-            let skills = serde_json::to_string(&record.skills)
-                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-            let effects = serde_json::to_string(&record.effects)
-                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-            let quests = serde_json::to_string(&record.quests)
-                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-            let done_quests = serde_json::to_string(&record.done_quests)
-                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-            let stat_locks = serde_json::to_string(&record.stat_locks)
-                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let skills =
+                serde_json::to_string(&record.skills).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let effects =
+                serde_json::to_string(&record.effects).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let quests =
+                serde_json::to_string(&record.quests).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let done_quests =
+                serde_json::to_string(&record.done_quests).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let stat_locks =
+                serde_json::to_string(&record.stat_locks).map_err(|e| StoreError::Corrupt(e.to_string()))?;
             transaction
                 .execute(
                     // The placeholder list has to match the column list exactly. It
@@ -312,8 +311,8 @@ impl Store for PgStore {
                      stat_locks = EXCLUDED.stat_locks",
                     &[
                         &i64::from(record.serial),
-                        &record.account,
-                        &record.name,
+                        &record.account.0,
+                        &record.name.0,
                         &i32::from(record.body),
                         &i32::from(record.hue),
                         &i32::from(record.facet),
@@ -355,8 +354,7 @@ impl Store for PgStore {
                 .await
                 .map_err(database)?;
             for mobile in mobiles {
-                let data = serde_json::to_string(mobile)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let data = serde_json::to_string(mobile).map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 transaction
                     .execute(
                         "INSERT INTO mobiles (serial, data) VALUES ($1, $2)",
@@ -389,10 +387,7 @@ impl Store for PgStore {
         }
         for serial in &snapshot.removed {
             transaction
-                .execute(
-                    "DELETE FROM characters WHERE serial = $1",
-                    &[&i64::from(*serial)],
-                )
+                .execute("DELETE FROM characters WHERE serial = $1", &[&i64::from(*serial)])
                 .await
                 .map_err(database)?;
             // A gone character takes its inventory with it.
@@ -439,8 +434,8 @@ impl Store for PgStore {
                 .await
                 .map_err(database)?;
             for decoration in decorations {
-                let data = serde_json::to_string(decoration)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let data =
+                    serde_json::to_string(decoration).map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 transaction
                     .execute(
                         "INSERT INTO decorations (serial, data) VALUES ($1, $2)",
@@ -457,8 +452,7 @@ impl Store for PgStore {
                 .await
                 .map_err(database)?;
             for region in regions {
-                let data = serde_json::to_string(region)
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let data = serde_json::to_string(region).map_err(|e| StoreError::Corrupt(e.to_string()))?;
                 transaction
                     .execute(
                         "INSERT INTO regions (facet, id, data) VALUES ($1, $2, $3)",
@@ -521,8 +515,7 @@ impl Store for PgStore {
             .map_err(database)?;
         rows.iter()
             .map(|row| {
-                serde_json::from_str(row.get::<_, &str>(0))
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))
+                serde_json::from_str(row.get::<_, &str>(0)).map_err(|e| StoreError::Corrupt(e.to_string()))
             })
             .collect()
     }
@@ -535,8 +528,7 @@ impl Store for PgStore {
             .map_err(database)?;
         rows.iter()
             .map(|row| {
-                serde_json::from_str(row.get::<_, &str>(0))
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))
+                serde_json::from_str(row.get::<_, &str>(0)).map_err(|e| StoreError::Corrupt(e.to_string()))
             })
             .collect()
     }
@@ -549,8 +541,7 @@ impl Store for PgStore {
             .map_err(database)?;
         rows.iter()
             .map(|row| {
-                serde_json::from_str(row.get::<_, &str>(0))
-                    .map_err(|e| StoreError::Corrupt(e.to_string()))
+                serde_json::from_str(row.get::<_, &str>(0)).map_err(|e| StoreError::Corrupt(e.to_string()))
             })
             .collect()
     }
@@ -562,9 +553,7 @@ impl Store for PgStore {
             .await
             .map_err(database)?;
         // A store that has never held a clock starts the world at midnight.
-        Ok(rows
-            .first()
-            .map_or(0, |row| row.get::<_, i64>(0).max(0) as u64))
+        Ok(rows.first().map_or(0, |row| row.get::<_, i64>(0).max(0) as u64))
     }
 
     async fn spawners(&self) -> Result<Vec<SpawnerRecord>, StoreError> {
@@ -589,7 +578,7 @@ impl Store for PgStore {
         Ok(rows
             .iter()
             .map(|row| AccountRecord {
-                name: row.get(0),
+                name: AccountName(row.get(0)),
                 credential: row.get(1),
             })
             .collect())
@@ -601,7 +590,7 @@ impl Store for PgStore {
             .execute(
                 "INSERT INTO accounts (name, credential) VALUES ($1, $2) \
                  ON CONFLICT (name) DO UPDATE SET credential = EXCLUDED.credential",
-                &[&account.name, &account.credential],
+                &[&account.name.0, &account.credential],
             )
             .await
             .map_err(database)?;
@@ -620,8 +609,8 @@ impl Store for PgStore {
 fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
     Ok(CharacterRecord {
         serial: u32::try_from(row.get::<_, i64>(0)).map_err(|_| corrupt("serial"))?,
-        account: row.get(1),
-        name: row.get(2),
+        account: AccountName(row.get(1)),
+        name: CharacterName(row.get(2)),
         body: u16::try_from(row.get::<_, i32>(3)).map_err(|_| corrupt("body"))?,
         hue: u16::try_from(row.get::<_, i32>(4)).map_err(|_| corrupt("hue"))?,
         facet: u8::try_from(row.get::<_, i32>(5)).map_err(|_| corrupt("facet"))?,
@@ -657,37 +646,36 @@ async fn insert_item(
 ) -> Result<(), StoreError> {
     // (kind, facet, x, y, z, parent, grid, layer) — the fields a kind does not use
     // are zero, the same flat form the SQLite backend writes.
-    let (kind, facet, x, y, z, parent, grid, layer): (i32, i32, i32, i32, i32, i64, i32, i32) =
-        match item.location {
-            ItemLocation::Ground { facet, x, y, z } => (
-                0,
-                i32::from(facet),
-                i32::from(x),
-                i32::from(y),
-                i32::from(z),
-                0,
-                0,
-                0,
-            ),
-            ItemLocation::Contained {
-                container,
-                x,
-                y,
-                grid,
-            } => (
-                1,
-                0,
-                i32::from(x),
-                i32::from(y),
-                0,
-                i64::from(container),
-                i32::from(grid),
-                0,
-            ),
-            ItemLocation::Equipped { mobile, layer } => {
-                (2, 0, 0, 0, 0, i64::from(mobile), 0, i32::from(layer))
-            }
-        };
+    let (kind, facet, x, y, z, parent, grid, layer): (i32, i32, i32, i32, i32, i64, i32, i32) = match item
+        .location
+    {
+        ItemLocation::Ground { facet, x, y, z } => (
+            0,
+            i32::from(facet),
+            i32::from(x),
+            i32::from(y),
+            i32::from(z),
+            0,
+            0,
+            0,
+        ),
+        ItemLocation::Contained {
+            container,
+            x,
+            y,
+            grid,
+        } => (
+            1,
+            0,
+            i32::from(x),
+            i32::from(y),
+            0,
+            i64::from(container),
+            i32::from(grid),
+            0,
+        ),
+        ItemLocation::Equipped { mobile, layer } => (2, 0, 0, 0, 0, i64::from(mobile), 0, i32::from(layer)),
+    };
     transaction
         .execute(
             "INSERT INTO items \
@@ -878,10 +866,8 @@ fn spawner_from_row(row: &Row) -> Result<SpawnerRecord, StoreError> {
         height: u16::try_from(row.get::<_, i32>(5)).map_err(|_| corrupt("height"))?,
         max_count: u16::try_from(row.get::<_, i32>(6)).map_err(|_| corrupt("max_count"))?,
         respawn_secs: u64::try_from(row.get::<_, i64>(7)).map_err(|_| corrupt("respawn_secs"))?,
-        remaining_secs: u64::try_from(row.get::<_, i64>(8))
-            .map_err(|_| corrupt("remaining_secs"))?,
-        creatures: serde_json::from_str(&creatures)
-            .map_err(|e| StoreError::Corrupt(e.to_string()))?,
+        remaining_secs: u64::try_from(row.get::<_, i64>(8)).map_err(|_| corrupt("remaining_secs"))?,
+        creatures: serde_json::from_str(&creatures).map_err(|e| StoreError::Corrupt(e.to_string()))?,
     })
 }
 
@@ -1041,10 +1027,7 @@ mod tests {
         };
         let mut record = character(1, 100);
         record.z = -40;
-        store
-            .save(&snapshot(vec![record], vec![]))
-            .await
-            .expect("save");
+        store.save(&snapshot(vec![record], vec![])).await.expect("save");
         assert_eq!(store.characters().await.expect("read")[0].z, -40);
     }
 
@@ -1061,10 +1044,7 @@ mod tests {
             .save(&snapshot(vec![character(0x7FFF_FFFF, 100)], vec![]))
             .await
             .expect("save");
-        assert_eq!(
-            store.characters().await.expect("read")[0].serial,
-            0x7FFF_FFFF
-        );
+        assert_eq!(store.characters().await.expect("read")[0].serial, 0x7FFF_FFFF);
     }
 
     #[tokio::test]
@@ -1182,9 +1162,6 @@ mod tests {
         drop(client);
 
         let error = PgStore::connect(&url).await.expect_err("must refuse");
-        assert!(matches!(
-            error,
-            StoreError::SchemaMismatch { found: 999, .. }
-        ));
+        assert!(matches!(error, StoreError::SchemaMismatch { found: 999, .. }));
     }
 }

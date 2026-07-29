@@ -42,8 +42,11 @@ use std::net::Ipv4Addr;
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::feature::Feature;
-use crate::packet::{decode_packet, DecodePacket, EncodePacket, PacketLength};
+use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
+use crate::packet::{DecodePacket, EncodePacket, PacketLength, decode_packet};
 use crate::version::ClientVersion;
+use crate::wire::AuthKey;
+use crate::world::CreateCharacter;
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
 pub const ACCOUNT_NAME_LENGTH: usize = 30;
@@ -60,24 +63,21 @@ pub const SHARD_NAME_LENGTH: usize = 32;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AccountLogin {
     /// The account name, as typed.
-    pub account: String,
+    pub account: RawAccountName,
     /// The password, in plaintext.
     ///
     /// The UO protocol has no password hashing: it is plaintext inside the
     /// login encryption, and the login encryption is trivially broken. Treat
     /// this as public, never log it, and hash it before it reaches storage.
-    pub password: String,
+    pub password: RawPlaintextPassword,
 }
 
 impl DecodePacket for AccountLogin {
     const ID: u8 = 0x80;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
-        let account = reader.fixed_string(ACCOUNT_NAME_LENGTH)?;
-        let password = reader.fixed_string(PASSWORD_LENGTH)?;
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let account = RawAccountName(reader.fixed_string(ACCOUNT_NAME_LENGTH)?);
+        let password = RawPlaintextPassword(reader.fixed_string(PASSWORD_LENGTH)?);
         // Sphere: "NextLoginKey value from uo.cfg on client machine" — the
         // server has no use for it.
         reader.skip(1)?;
@@ -90,8 +90,8 @@ impl AccountLogin {
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(62);
         writer.u8(Self::ID);
-        writer.fixed_string(&self.account, ACCOUNT_NAME_LENGTH);
-        writer.fixed_string(&self.password, PASSWORD_LENGTH);
+        writer.fixed_string(&self.account.0, ACCOUNT_NAME_LENGTH);
+        writer.fixed_string(&self.password.0, PASSWORD_LENGTH);
         writer.u8(0);
         writer.into_bytes()
     }
@@ -275,13 +275,8 @@ pub struct SelectShard {
 impl DecodePacket for SelectShard {
     const ID: u8 = 0xA0;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
-        Ok(Self {
-            index: reader.u16()?,
-        })
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self { index: reader.u16()? })
     }
 }
 
@@ -336,7 +331,7 @@ pub struct Relay {
     /// Which port.
     pub port: u16,
     /// The key the client must present back on the game connection.
-    pub auth_key: u32,
+    pub auth_key: AuthKey,
 }
 
 impl EncodePacket for Relay {
@@ -346,7 +341,7 @@ impl EncodePacket for Relay {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.bytes(&self.address.octets());
         out.u16(self.port);
-        out.u32(self.auth_key);
+        out.u32(self.auth_key.0);
     }
 }
 
@@ -356,24 +351,21 @@ impl EncodePacket for Relay {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GameServerLogin {
     /// The key handed out in the 0x8C relay. The server must check it.
-    pub auth_key: u32,
+    pub auth_key: AuthKey,
     /// The account name, again.
-    pub account: String,
+    pub account: RawAccountName,
     /// The password, again, still plaintext.
-    pub password: String,
+    pub password: RawPlaintextPassword,
 }
 
 impl DecodePacket for GameServerLogin {
     const ID: u8 = 0x91;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
-            auth_key: reader.u32()?,
-            account: reader.fixed_string(ACCOUNT_NAME_LENGTH)?,
-            password: reader.fixed_string(PASSWORD_LENGTH)?,
+            auth_key: AuthKey(reader.u32()?),
+            account: RawAccountName(reader.fixed_string(ACCOUNT_NAME_LENGTH)?),
+            password: RawPlaintextPassword(reader.fixed_string(PASSWORD_LENGTH)?),
         })
     }
 }
@@ -383,9 +375,9 @@ impl GameServerLogin {
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(65);
         writer.u8(Self::ID);
-        writer.u32(self.auth_key);
-        writer.fixed_string(&self.account, ACCOUNT_NAME_LENGTH);
-        writer.fixed_string(&self.password, PASSWORD_LENGTH);
+        writer.u32(self.auth_key.0);
+        writer.fixed_string(&self.account.0, ACCOUNT_NAME_LENGTH);
+        writer.fixed_string(&self.password.0, PASSWORD_LENGTH);
         writer.into_bytes()
     }
 }
@@ -396,7 +388,7 @@ impl GameServerLogin {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct CharacterEntry {
     /// The character's name. Empty means an unused slot.
-    pub name: String,
+    pub name: CharacterName,
 }
 
 /// One starting city offered at character creation.
@@ -523,7 +515,7 @@ impl EncodePacket for CharacterList {
             let name = self
                 .characters
                 .get(slot)
-                .map_or("", |entry| entry.name.as_str());
+                .map_or("", |entry| entry.name.0.as_str());
             write_character_slot(out, name);
         }
 
@@ -582,10 +574,7 @@ pub struct DeleteCharacter {
 impl DecodePacket for DeleteCharacter {
     const ID: u8 = 0x83;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         reader.skip(PASSWORD_LENGTH)?; // vestigial password field
         let slot = reader.u32()?;
         // The trailing client IP is unused.
@@ -656,7 +645,7 @@ impl EncodePacket for CharacterListUpdate {
             let name = self
                 .characters
                 .get(slot)
-                .map_or("", |entry| entry.name.as_str());
+                .map_or("", |entry| entry.name.0.as_str());
             write_character_slot(out, name);
         }
     }
@@ -686,10 +675,7 @@ impl DecodePacket for ClientVersionReport {
     /// that got us here. No terminator is required: a client that omits the
     /// NUL still gets a version out of whatever is left, which is the same
     /// leniency `raw` documents for junk content.
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let body = reader.rest();
         let end = body
             .iter()
@@ -750,12 +736,12 @@ fn patch_length(mut bytes: Vec<u8>) -> Vec<u8> {
 /// Without this, `LoginServer::handle` matched the raw id byte to pick a
 /// handler, and each handler decoded the same bytes again to get a typed
 /// value — one place that knew the id, another that knew the type, and the
-/// two could in principle disagree. [`ClientLoginPacket::decode`] does both
+/// two could in principle disagree. [`LoginStagePacket::decode`] does both
 /// in one pass, so `handle` matches on the result and nothing else in the
 /// login crate touches a raw packet buffer.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum ClientLoginPacket {
+pub enum LoginStagePacket {
     /// `0xBD`, successfully framed. Whether the version *string* itself
     /// parsed is a separate question — see [`ClientVersionReport::version`].
     VersionReport(ClientVersionReport),
@@ -775,9 +761,19 @@ pub enum ClientLoginPacket {
     /// info), and dropping the connection over them would break every one of
     /// them for no reason.
     Unknown(u8),
+    /// `0x00`/`0xF8` — character creation. Not part of the login state
+    /// machine below: the `server` crate intercepts it before it ever reaches
+    /// [`crate::login`]'s own [`LoginStagePacket::decode`] call, because
+    /// acting on it needs both the account (here) and the world (which this
+    /// crate never sees). Decoded here anyway, next to [`Self::DeleteCharacter`],
+    /// so this is still the one place that knows every id the wire can carry.
+    CreateCharacter(CreateCharacter),
+    /// `0x83` — character deletion. Crosses the same login/world line as
+    /// [`Self::CreateCharacter`], for the same reason.
+    DeleteCharacter(DeleteCharacter),
 }
 
-impl ClientLoginPacket {
+impl LoginStagePacket {
     /// Decode `packet` by its id byte.
     ///
     /// `packet` must be non-empty. That is an invariant, not a checked
@@ -794,8 +790,9 @@ impl ClientLoginPacket {
             .first()
             .expect("packet is empty: caller skipped framing, which never produces one");
         match id {
-            ClientVersionReport::ID => Ok(decode_packet(packet, version)
-                .map_or(Self::MalformedVersionReport, Self::VersionReport)),
+            ClientVersionReport::ID => {
+                Ok(decode_packet(packet, version).map_or(Self::MalformedVersionReport, Self::VersionReport))
+            }
             AccountLogin::ID => decode_packet(packet, version)
                 .map(Self::AccountLogin)
                 .map_err(ClientLoginDecodeError::AccountLogin),
@@ -805,6 +802,12 @@ impl ClientLoginPacket {
             GameServerLogin::ID => decode_packet(packet, version)
                 .map(Self::GameServerLogin)
                 .map_err(ClientLoginDecodeError::GameServerLogin),
+            CreateCharacter::ID_CLASSIC | CreateCharacter::ID_HIGH_SEAS => CreateCharacter::decode(packet)
+                .map(Self::CreateCharacter)
+                .map_err(ClientLoginDecodeError::CreateCharacter),
+            DeleteCharacter::ID => decode_packet(packet, version)
+                .map(Self::DeleteCharacter)
+                .map_err(ClientLoginDecodeError::DeleteCharacter),
             _ => Ok(Self::Unknown(id)),
         }
     }
@@ -816,7 +819,7 @@ impl ClientLoginPacket {
 /// than act on half-read credentials or a forged relay key. Kept as one
 /// variant per packet, rather than collapsing to `(u8, DecodeError)`, so a
 /// caller can match the packet by type the same way it would match
-/// [`ClientLoginPacket`] itself.
+/// [`LoginStagePacket`] itself.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ClientLoginDecodeError {
     /// `0x80` did not decode.
@@ -825,6 +828,10 @@ pub enum ClientLoginDecodeError {
     SelectShard(DecodeError),
     /// `0x91` did not decode.
     GameServerLogin(DecodeError),
+    /// `0x00`/`0xF8` did not decode.
+    CreateCharacter(DecodeError),
+    /// `0x83` did not decode.
+    DeleteCharacter(DecodeError),
 }
 
 #[cfg(test)]
@@ -859,8 +866,8 @@ mod tests {
     #[test]
     fn account_login_round_trips_at_the_declared_length() {
         let login = AccountLogin {
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let bytes = login.encode();
 
@@ -869,17 +876,14 @@ mod tests {
             Some(PacketLength::Fixed(62))
         );
         assert_eq!(bytes.len(), 62, "the table and the encoder must agree");
-        assert_eq!(
-            decode_packet::<AccountLogin>(&bytes, version()).unwrap(),
-            login
-        );
+        assert_eq!(decode_packet::<AccountLogin>(&bytes, version()).unwrap(), login);
     }
 
     #[test]
     fn account_login_rejects_the_wrong_packet() {
         let mut bytes = AccountLogin {
-            account: "a".to_owned(),
-            password: "b".to_owned(),
+            account: RawAccountName("a".to_owned()),
+            password: RawPlaintextPassword("b".to_owned()),
         }
         .encode();
         bytes[0] = 0x91;
@@ -902,6 +906,25 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "packet is empty")]
+    fn client_login_packet_decode_panics_on_an_empty_slice() {
+        // Real packets never arrive empty: `frame_client_packet`'s shortest
+        // frame is the one-byte id. An empty slice here means whoever called
+        // `decode` skipped framing, which is a server bug worth a panic, not
+        // a laundered `Option`.
+        let _ = LoginStagePacket::decode(&[], version());
+    }
+
+    #[test]
+    fn client_login_packet_decode_reports_which_id_failed() {
+        let bytes = [AccountLogin::ID, b'a', b'b'];
+        assert!(matches!(
+            LoginStagePacket::decode(&bytes, version()),
+            Err(ClientLoginDecodeError::AccountLogin(_))
+        ));
+    }
+
+    #[test]
     fn delete_character_reads_the_slot_past_the_vestigial_fields() {
         // 39 bytes: id + 30 pad + u32 slot + 4 client IP.
         let mut bytes = vec![DeleteCharacter::ID];
@@ -914,9 +937,7 @@ mod tests {
         );
         assert_eq!(bytes.len(), 39, "the table and the wire form must agree");
         assert_eq!(
-            decode_packet::<DeleteCharacter>(&bytes, version())
-                .unwrap()
-                .slot,
+            decode_packet::<DeleteCharacter>(&bytes, version()).unwrap().slot,
             3
         );
     }
@@ -946,7 +967,7 @@ mod tests {
     #[test]
     fn character_list_update_pads_to_five_slots() {
         let characters = vec![CharacterEntry {
-            name: "Dupre".to_owned(),
+            name: CharacterName("Dupre".to_owned()),
         }];
         let bytes = encode_packet(&CharacterListUpdate { characters }, version());
         assert_eq!(bytes[0], 0x86);
@@ -962,14 +983,15 @@ mod tests {
     #[test]
     fn account_login_truncates_an_overlong_name_to_its_field() {
         let login = AccountLogin {
-            account: "x".repeat(50),
-            password: String::new(),
+            account: RawAccountName("x".repeat(50)),
+            password: RawPlaintextPassword(String::new()),
         };
         assert_eq!(login.encode().len(), 62, "a long name must not overrun");
         assert_eq!(
             decode_packet::<AccountLogin>(&login.encode(), version())
                 .unwrap()
                 .account
+                .0
                 .len(),
             30
         );
@@ -1002,11 +1024,7 @@ mod tests {
         }
 
         // Spot-check the collapse, which is the part that loses information.
-        assert_eq!(
-            DenyReason::BlockedIp.wire_code(),
-            0x02,
-            "reads as 'blocked'"
-        );
+        assert_eq!(DenyReason::BlockedIp.wire_code(), 0x02, "reads as 'blocked'");
         assert_eq!(DenyReason::ShardFull.wire_code(), 0x04, "reads as 'other'");
     }
 
@@ -1071,9 +1089,7 @@ mod tests {
 
     #[test]
     fn shard_list_drops_entries_past_the_client_crash_point() {
-        let shards: Vec<_> = (0..40)
-            .map(|i| shard(&format!("s{i}"), [1, 2, 3, 4]))
-            .collect();
+        let shards: Vec<_> = (0..40).map(|i| shard(&format!("s{i}"), [1, 2, 3, 4])).collect();
         let bytes = encode_packet(&ShardList { shards }, ClientVersion::TOL);
         assert_eq!(
             shard_count(&bytes),
@@ -1086,12 +1102,7 @@ mod tests {
     fn shard_list_clamps_a_nonsense_fullness() {
         let mut entry = shard("Britannia", [10, 0, 0, 1]);
         entry.percent_full = 250;
-        let bytes = encode_packet(
-            &ShardList {
-                shards: vec![entry],
-            },
-            ClientVersion::TOL,
-        );
+        let bytes = encode_packet(&ShardList { shards: vec![entry] }, ClientVersion::TOL);
         assert_eq!(bytes[40], 100, "the client renders >100 as garbage");
     }
 
@@ -1104,10 +1115,7 @@ mod tests {
             client_packet_length(SelectShard::ID, None),
             Some(PacketLength::Fixed(3))
         );
-        assert_eq!(
-            decode_packet::<SelectShard>(&bytes, version()).unwrap(),
-            select
-        );
+        assert_eq!(decode_packet::<SelectShard>(&bytes, version()).unwrap(), select);
         assert_eq!(select.slot(), Some(0), "the wire is one-based");
     }
 
@@ -1135,17 +1143,13 @@ mod tests {
             &Relay {
                 address: Ipv4Addr::new(192, 168, 11, 6),
                 port: 2593,
-                auth_key: 0xDEAD_BEEF,
+                auth_key: AuthKey(0xDEAD_BEEF),
             },
             version(),
         );
         assert_eq!(bytes.len(), 11);
         assert_eq!(&bytes[1..5], &[192, 168, 11, 6]);
-        assert_eq!(
-            &bytes[5..7],
-            &2593u16.to_be_bytes(),
-            "the port is not touched"
-        );
+        assert_eq!(&bytes[5..7], &2593u16.to_be_bytes(), "the port is not touched");
         assert_eq!(&bytes[7..11], &0xDEAD_BEEFu32.to_be_bytes());
     }
 
@@ -1167,7 +1171,7 @@ mod tests {
             &Relay {
                 address,
                 port: 2593,
-                auth_key: 0,
+                auth_key: AuthKey(0),
             },
             modern,
         );
@@ -1190,7 +1194,7 @@ mod tests {
                 &Relay {
                     address: Ipv4Addr::new(192, 168, 11, 6),
                     port: 2593,
-                    auth_key: 0,
+                    auth_key: AuthKey(0),
                 },
                 version,
             );
@@ -1201,9 +1205,9 @@ mod tests {
     #[test]
     fn game_server_login_round_trips_at_the_declared_length() {
         let login = GameServerLogin {
-            auth_key: 0x1234_5678,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            auth_key: AuthKey(0x1234_5678),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let bytes = login.encode();
         assert_eq!(
@@ -1221,7 +1225,7 @@ mod tests {
     fn character_list_pads_to_five_slots() {
         // Clients since 3.0.0.10 read five slots whatever the count byte says.
         let characters = vec![CharacterEntry {
-            name: "Lord British".to_owned(),
+            name: CharacterName("Lord British".to_owned()),
         }];
         let bytes = encode_packet(
             &CharacterList {
@@ -1241,7 +1245,7 @@ mod tests {
     #[test]
     fn character_list_does_not_pad_for_clients_that_predate_the_rule() {
         let characters = vec![CharacterEntry {
-            name: "Lord British".to_owned(),
+            name: CharacterName("Lord British".to_owned()),
         }];
         let old = ClientVersion::new(3, 0, 0, 9);
         assert!(!old.supports(Feature::PaddedCharacterList));
@@ -1297,10 +1301,7 @@ mod tests {
             4,
             "send.cpp gates the flags dword on version > 1.26.0.0"
         );
-        assert_eq!(
-            &with_flags[with_flags.len() - 4..],
-            &0xAABB_CCDDu32.to_be_bytes()
-        );
+        assert_eq!(&with_flags[with_flags.len() - 4..], &0xAABB_CCDDu32.to_be_bytes());
     }
 
     #[test]
@@ -1355,9 +1356,7 @@ mod tests {
 
     #[test]
     fn client_version_report_clamps_a_long_string() {
-        let report = ClientVersionReport {
-            raw: "9".repeat(80),
-        };
+        let report = ClientVersionReport { raw: "9".repeat(80) };
         let decoded: ClientVersionReport = decode_packet(&report.encode(), version()).unwrap();
         assert_eq!(
             decoded.raw.len(),

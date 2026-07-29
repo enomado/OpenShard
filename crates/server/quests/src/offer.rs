@@ -9,7 +9,7 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_state::components::{DoneQuest, QuestGiver, QuestLog, QuestState};
 use openshard_state::quest::ObjectiveKind;
-use openshard_state::{QuestGumpContext, QuestSection, WorldState, TICKS_PER_SECOND};
+use openshard_state::{QuestGumpContext, QuestSection, TICKS_PER_SECOND, WorldState};
 
 use crate::events::{QuestAccepted, QuestRefused, QuestResigned};
 use crate::gump::{self, sound};
@@ -35,11 +35,7 @@ pub fn talk_to(state: &mut WorldState, player: EntityId, giver: EntityId) -> boo
     // escort objective. Starting it on the double-click instead made an NPC
     // wander off after whoever glanced at it, with no offer, no log entry and no
     // way to say no.
-    let Some(keys) = state
-        .registry
-        .get::<QuestGiver>(giver)
-        .map(|q| q.keys.clone())
-    else {
+    let Some(keys) = state.registry.get::<QuestGiver>(giver).map(|q| q.keys.clone()) else {
         return delivered;
     };
     let giver_serial = state.registry.serial_of(giver);
@@ -68,9 +64,10 @@ pub fn talk_to(state: &mut WorldState, player: EntityId, giver: EntityId) -> boo
     }
 
     // Otherwise the first quest it may still offer.
-    let Some(key) = keys.iter().find(|key| {
-        can_offer(state, player, key) && crate::log::offerable(state, key, giver_serial)
-    }) else {
+    let Some(key) = keys
+        .iter()
+        .find(|key| can_offer(state, player, key) && crate::log::offerable(state, key, giver_serial))
+    else {
         return true; // a giver with nothing left to give is still a giver
     };
     if quest_count(state, player) >= QUEST_LIMIT {
@@ -232,11 +229,7 @@ pub fn resign(state: &mut WorldState, player: EntityId, key: &str) {
 
 /// Record that a quest is finished with (turned in or given up), with the wait
 /// before it may be taken again.
-pub(crate) fn remember_done(
-    state: &WorldState,
-    log: &mut openshard_state::components::QuestLog,
-    key: &str,
-) {
+pub(crate) fn remember_done(state: &WorldState, log: &mut openshard_state::components::QuestLog, key: &str) {
     let Some(quest) = state.quests.get(key) else {
         return;
     };

@@ -6,14 +6,7 @@ impl World {
     /// anyone's screen; from an ordinary player it is just speech, so a player can
     /// still say ".hello" out loud. The authority gate lives here, not in `gm`,
     /// so the command module can assume a call is already cleared.
-    pub(super) fn say(
-        &mut self,
-        connection: ConnectionId,
-        mode: u8,
-        hue: u16,
-        font: u16,
-        text: String,
-    ) {
+    pub(super) fn say(&mut self, connection: ConnectionId, mode: u8, hue: u16, font: u16, text: String) {
         if let Some(rest) = text.strip_prefix(gm::COMMAND_PREFIX) {
             if let Some(&actor) = self.state.players.get(&connection) {
                 // The *authority*, not the staff mode: a game master who has
@@ -100,8 +93,7 @@ impl World {
     /// says nothing rather than a blank label. Mirrors Sphere's `addCharName` /
     /// `addItemName`.
     pub(super) fn single_click(&mut self, connection: ConnectionId, serial: u32) {
-        let Some(target) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-        else {
+        let Some(target) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
 
@@ -173,8 +165,7 @@ impl World {
             return;
         }
         for &serial in serials {
-            if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-            {
+            if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
                 self.state.send_property_list(connection, entity);
             }
         }

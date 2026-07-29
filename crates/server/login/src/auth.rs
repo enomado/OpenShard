@@ -7,13 +7,15 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use openshard_protocol::identity::AccountName;
 use openshard_protocol::version::ClientVersion;
+use openshard_protocol::wire::AuthKey;
 
 /// What an issued key stands for.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PendingLogin {
     /// The account that was verified on the login connection.
-    pub account: String,
+    pub account: AccountName,
     /// What the client said it was, back on the login connection.
     ///
     /// # Why the version rides on the key
@@ -55,7 +57,7 @@ pub struct PendingLogin {
 /// the tests hand it whatever instant they want to talk about.
 #[derive(Debug)]
 pub struct AuthKeys {
-    issued: HashMap<u32, PendingLogin>,
+    issued: HashMap<AuthKey, PendingLogin>,
     ttl: Duration,
 }
 
@@ -88,19 +90,24 @@ impl AuthKeys {
     /// themselves at the game port as a session that had already been
     /// verified — the account name and password are re-sent in `0x91`, so this
     /// is not the only gate, but it should not be a free one either.
-    pub fn issue(&mut self, account: &str, version: ClientVersion, now: Instant) -> u32 {
+    pub fn issue(
+        &mut self,
+        account: impl Into<AccountName>,
+        version: ClientVersion,
+        now: Instant,
+    ) -> AuthKey {
         // Never hand out 0: the client sends 0 when it has no key, so a real key
         // of 0 would make "no key" and "this key" indistinguishable.
         let key = loop {
-            let candidate = random_u32();
-            if candidate != 0 && !self.issued.contains_key(&candidate) {
+            let candidate = AuthKey(random_u32());
+            if candidate.0 != 0 && !self.issued.contains_key(&candidate) {
                 break candidate;
             }
         };
         self.issued.insert(
             key,
             PendingLogin {
-                account: account.to_owned(),
+                account: account.into(),
                 version,
                 issued_at: now,
             },
@@ -116,7 +123,7 @@ impl AuthKeys {
     ///
     /// Returns `None` for a key that was never issued, has already been
     /// redeemed, or has expired.
-    pub fn redeem(&mut self, key: u32, now: Instant) -> Option<PendingLogin> {
+    pub fn redeem(&mut self, key: AuthKey, now: Instant) -> Option<PendingLogin> {
         let pending = self.issued.remove(&key)?;
         if now.duration_since(pending.issued_at) > self.ttl {
             // Already removed, so an expired key cannot be retried either.
@@ -192,8 +199,8 @@ mod tests {
     #[test]
     fn an_unissued_key_is_refused() {
         let mut keys = AuthKeys::new();
-        assert_eq!(keys.redeem(0xDEAD_BEEF, Instant::now()), None);
-        assert_eq!(keys.redeem(0, Instant::now()), None);
+        assert_eq!(keys.redeem(AuthKey(0xDEAD_BEEF), Instant::now()), None);
+        assert_eq!(keys.redeem(AuthKey(0), Instant::now()), None);
     }
 
     #[test]
@@ -249,7 +256,7 @@ mod tests {
         let mut keys = AuthKeys::new();
         let now = Instant::now();
         for _ in 0..1000 {
-            assert_ne!(keys.issue("admin", ClientVersion::TOL, now), 0);
+            assert_ne!(keys.issue("admin", ClientVersion::TOL, now), AuthKey(0));
         }
     }
 
@@ -260,12 +267,12 @@ mod tests {
         // an incrementing id because it was simpler.
         let mut keys = AuthKeys::new();
         let now = Instant::now();
-        let issued: Vec<u32> = (0..64)
+        let issued: Vec<AuthKey> = (0..64)
             .map(|_| keys.issue("admin", ClientVersion::TOL, now))
             .collect();
 
         assert_eq!(keys.len(), 64, "keys must be distinct");
-        let sequential = issued.windows(2).filter(|w| w[1] == w[0] + 1).count();
+        let sequential = issued.windows(2).filter(|w| w[1].0 == w[0].0 + 1).count();
         assert!(sequential < 8, "{sequential} of 63 pairs were consecutive");
     }
 

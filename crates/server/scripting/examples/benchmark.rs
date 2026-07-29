@@ -56,10 +56,7 @@ fn main() {
         TICK_BUDGET.as_secs_f64() * 1000.0
     );
 
-    for (label, hook) in [
-        ("empty hook", EMPTY_HOOK),
-        ("read + maybe move", REALISTIC_HOOK),
-    ] {
+    for (label, hook) in [("empty hook", EMPTY_HOOK), ("read + maybe move", REALISTIC_HOOK)] {
         bench(label, hook);
     }
 

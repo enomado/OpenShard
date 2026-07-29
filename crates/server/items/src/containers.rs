@@ -121,21 +121,14 @@ pub const BANK_LAYER: u8 = 0x1D;
 /// The service path a banker uses: find the worn container and open it onto the
 /// player's own client, the same `0x24`/`0x3C` a double-click sends. Does nothing
 /// if the player wears no container there.
-pub fn open_worn_container(
-    state: &mut WorldState,
-    connection: ConnectionId,
-    player: EntityId,
-    layer: u8,
-) {
+pub fn open_worn_container(state: &mut WorldState, connection: ConnectionId, player: EntityId, layer: u8) {
     let Some(mobile) = state.registry.serial_of(player) else {
         return;
     };
     let worn = state
         .registry
         .query::<Equipped>()
-        .find(|(item, eq)| {
-            eq.mobile == mobile && eq.layer == layer && state.registry.has::<Container>(*item)
-        })
+        .find(|(item, eq)| eq.mobile == mobile && eq.layer == layer && state.registry.has::<Container>(*item))
         .map(|(item, _)| item);
     if let Some(item) = worn {
         if let Some(serial) = state.registry.serial_of(item) {
@@ -224,16 +217,11 @@ pub fn in_reach(state: &WorldState, container: EntityId, player: EntityId) -> bo
         if Some(mobile) == state.registry.serial_of(player) {
             return true; // one's own worn pack is always in reach
         }
-        state.registry.entity_of(mobile).and_then(|wearer| {
-            Some((
-                state.facet_of(wearer),
-                state.registry.get::<Position>(wearer)?.0,
-            ))
-        })
-    } else if let Some(&Contained {
-        container: outer, ..
-    }) = state.registry.get::<Contained>(container)
-    {
+        state
+            .registry
+            .entity_of(mobile)
+            .and_then(|wearer| Some((state.facet_of(wearer), state.registry.get::<Position>(wearer)?.0)))
+    } else if let Some(&Contained { container: outer, .. }) = state.registry.get::<Contained>(container) {
         // Nested — a spellbook in the pack, a bag in a bag: in reach when the
         // container holding it is. Recurse to that one's own reach test.
         return state
@@ -331,12 +319,7 @@ pub fn count_in_container(state: &WorldState, container: Serial, graphic: u16) -
 /// stack it empties is despawned; a stack it dips into loses that much
 /// [`Amount`]. (A container open on a client is not live-redrawn yet — reagents
 /// come from a closed pack; the gump refreshes when reopened.)
-pub fn take_from_container(
-    state: &mut WorldState,
-    container: Serial,
-    graphic: u16,
-    count: u32,
-) -> bool {
+pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: u16, count: u32) -> bool {
     if count == 0 {
         return true;
     }
@@ -350,12 +333,7 @@ pub fn take_from_container(
                 .get::<Graphic>(*entity)
                 .is_some_and(|g| g.id == graphic)
         })
-        .map(|(entity, _)| {
-            (
-                entity,
-                state.registry.get::<Amount>(entity).map_or(1, |a| a.0),
-            )
-        })
+        .map(|(entity, _)| (entity, state.registry.get::<Amount>(entity).map_or(1, |a| a.0)))
         .collect();
     let total: u32 = matches.iter().map(|(_, amount)| u32::from(*amount)).sum();
     if total < count {
@@ -574,12 +552,7 @@ pub fn give(
 /// vendor's crate, goods sold out of a player's pack. Returns how many were
 /// actually taken; a stack that reaches zero is despawned and forgotten by
 /// everyone watching the container.
-pub fn remove_from_stack(
-    state: &mut WorldState,
-    container: Serial,
-    item: EntityId,
-    amount: u16,
-) -> u16 {
+pub fn remove_from_stack(state: &mut WorldState, container: Serial, item: EntityId, amount: u16) -> u16 {
     let have = amount_of(state, item);
     let take = have.min(amount);
     if take == 0 {
@@ -624,10 +597,7 @@ pub(crate) fn tell_watchers_removed_except(
         if Some(connection) == except {
             continue;
         }
-        state.send_packet(
-            connection,
-            &ServerPacket::Remove(Remove { serial: item.raw() }),
-        );
+        state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item.raw() }));
     }
 }
 

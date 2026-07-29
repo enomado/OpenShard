@@ -4,10 +4,10 @@ use std::fmt;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Instant;
 
+use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
-    encode_supported_features, AccountLogin, CharacterList, ClientLoginDecodeError,
-    ClientLoginPacket, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied, Relay,
-    SelectShard, ShardEntry, ShardList, StartLocation,
+    AccountLogin, CharacterList, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied,
+    LoginStagePacket, Relay, SelectShard, ShardEntry, ShardList, StartLocation, encode_supported_features,
 };
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::{feature::Feature, seed::Seed, version::ClientVersion};
@@ -67,7 +67,7 @@ enum LoginSessionState {
     /// The account checked out and the shard list went back. Expecting 0xA0.
     ShardListSent {
         /// Who is logging in.
-        account: String,
+        account: AccountName,
     },
     /// The character list went back. The login crate's job is done.
     CharacterListSent,
@@ -95,7 +95,18 @@ pub struct LoginSession {
     /// The character-creation packet (`0x00`/`0xF8`) arrives later on this same
     /// connection and says which character to make but not on whose account; the
     /// game login is where that is known, so it is kept here.
-    account: Option<String>,
+    account: Option<AccountName>,
+    /// Whether a `0x91` game login has been seen on this connection, valid or
+    /// not.
+    ///
+    /// Sphere flips a game socket to Huffman-compressed the moment it reads
+    /// `CONNECT_GAME`, during the crypt handshake and before the password is
+    /// even checked — so a refused login's reply goes out compressed too. The
+    /// caller (the `server` crate, which owns the actual compression flag on
+    /// its own `Session`) reads this once `handle` returns instead of peeking
+    /// the packet's id byte itself, which would just be [`LoginStagePacket`]'s
+    /// decode redone by hand.
+    game_login: bool,
 }
 
 impl Default for LoginSession {
@@ -111,6 +122,7 @@ impl LoginSession {
             state: LoginSessionState::Fresh,
             version: ClientVersion::OLDEST,
             account: None,
+            game_login: false,
         }
     }
 
@@ -123,8 +135,14 @@ impl LoginSession {
     ///
     /// Character creation needs it: the packet names the character, not the
     /// account it belongs to.
-    pub fn account(&self) -> Option<&str> {
-        self.account.as_deref()
+    pub fn account(&self) -> Option<&AccountName> {
+        self.account.as_ref()
+    }
+
+    /// Whether a `0x91` game login has been seen on this connection, valid or
+    /// not — see [`Self`]'s `game_login` field for why "seen" and not "valid".
+    pub const fn is_game_login(&self) -> bool {
+        self.game_login
     }
 
     /// Whether the conversation has run to its end.
@@ -186,14 +204,18 @@ impl<A: Accounts> LoginServer<A> {
         }
     }
 
-    /// Handle one framed packet.
+    /// Handle one already-decoded packet.
+    ///
+    /// Takes a [`LoginStagePacket`], not raw bytes: decoding is
+    /// [`LoginStagePacket::decode`]'s job, called exactly once by whoever
+    /// routes the connection's packets (the `server` crate's `parse_packet`).
+    /// This crate never touches a packet buffer.
     ///
     /// Unknown packets are ignored rather than fatal: a client may send `0xBE`
     /// (assist version) or `0xA4` (system info) at any point in login, and
     /// dropping the connection over them would break real clients for no
-    /// reason. The gateway has already proved the packet is well-framed, so
-    /// ignoring one is safe — the stream is still aligned.
-    pub fn handle(&mut self, session: &mut LoginSession, packet: &[u8], now: Instant) -> Response {
+    /// reason.
+    pub fn handle(&mut self, session: &mut LoginSession, packet: LoginStagePacket, now: Instant) -> Response {
         match self.try_handle(session, packet, now) {
             Ok(response) => response,
             Err(reason) => Response::Close(reason),
@@ -202,52 +224,35 @@ impl<A: Accounts> LoginServer<A> {
 
     /// [`Self::handle`]'s body. A `Result` so every fatal path carries why it
     /// is fatal, rather than each site warning ad hoc and returning a bare
-    /// [`Response::Close`] — which had already let one decode failure
-    /// (`0xA0`) through without logging anything at all.
+    /// [`Response::Close`].
     ///
-    /// The login conversation is a state machine, so this reads as one:
-    /// decode, peel off the packets that arrive independent of where the
-    /// conversation has got to, then match the *pair* of (current state,
-    /// packet) against the transitions the protocol defines. Each defined
-    /// transition hands back both the response and the state that follows
-    /// it — the state to move to is never a side effect buried in a handler,
-    /// it is the arm's return value. Any pairing the protocol does not
-    /// define — a stray `0xA0` before the shard list, a second `0x80` — has
-    /// no arm, and falls into the catch-all as "out of order".
+    /// The login conversation is a state machine, so this reads as one: peel
+    /// off the packets that arrive independent of where the conversation has
+    /// got to, then match the *pair* of (current state, packet) against the
+    /// transitions the protocol defines. Each defined transition hands back
+    /// both the response and the state that follows it — the state to move
+    /// to is never a side effect buried in a handler, it is the arm's return
+    /// value. Any pairing the protocol does not define — a stray `0xA0`
+    /// before the shard list, a second `0x80` — has no arm, and falls into
+    /// the catch-all as "out of order".
     fn try_handle(
         &mut self,
         session: &mut LoginSession,
-        packet: &[u8],
+        packet: LoginStagePacket,
         now: Instant,
     ) -> Result<Response, Reason> {
-        let packet =
-            ClientLoginPacket::decode(packet, session.version).map_err(|error| match error {
-                ClientLoginDecodeError::AccountLogin(error) => {
-                    warn!(%error, "malformed 0x80");
-                    Reason("malformed 0x80")
-                }
-                ClientLoginDecodeError::SelectShard(error) => {
-                    warn!(%error, "malformed 0xA0");
-                    Reason("malformed 0xA0")
-                }
-                ClientLoginDecodeError::GameServerLogin(error) => {
-                    warn!(%error, "malformed 0x91");
-                    Reason("malformed 0x91")
-                }
-            })?;
-
         // These arrive at any point in the conversation, so they are not
         // part of the state transition table below — handling them does not
         // change what packet the login state machine is waiting for next.
         let packet = match packet {
-            ClientLoginPacket::VersionReport(report) => {
+            LoginStagePacket::VersionReport(report) => {
                 return Ok(self.on_version_report(session, report));
             }
             // Junk here is not fatal: the seed usually carried a version,
             // and 0xBD's string is free-form enough that clients put other
             // things in it.
-            ClientLoginPacket::MalformedVersionReport => return Ok(Response::Idle),
-            ClientLoginPacket::Unknown(id) => {
+            LoginStagePacket::MalformedVersionReport => return Ok(Response::Idle),
+            LoginStagePacket::Unknown(id) => {
                 debug!(id = format!("0x{id:02X}"), "ignoring packet during login");
                 return Ok(Response::Idle);
             }
@@ -256,20 +261,17 @@ impl<A: Accounts> LoginServer<A> {
 
         // The login state machine: what a packet means depends on where the
         // conversation has got to, so the match is on the pair, not on the
-        // packet alone. `#[non_exhaustive]` on `ClientLoginPacket` and any
+        // packet alone. `#[non_exhaustive]` on `LoginStagePacket` and any
         // state the transition table does not cover both land in the same
         // catch-all, since both mean "not a defined transition".
         let (response, next_state) = match (&session.state, packet) {
-            (LoginSessionState::Fresh, ClientLoginPacket::AccountLogin(login)) => {
+            (LoginSessionState::Fresh, LoginStagePacket::AccountLogin(login)) => {
                 self.on_account_login(session, login)
             }
-            (LoginSessionState::Fresh, ClientLoginPacket::GameServerLogin(login)) => {
+            (LoginSessionState::Fresh, LoginStagePacket::GameServerLogin(login)) => {
                 self.on_game_login(session, login, now)
             }
-            (
-                LoginSessionState::ShardListSent { account },
-                ClientLoginPacket::SelectShard(select),
-            ) => {
+            (LoginSessionState::ShardListSent { account }, LoginStagePacket::SelectShard(select)) => {
                 let account = account.clone();
                 self.on_select_shard(session, account, select, now)?
             }
@@ -282,11 +284,7 @@ impl<A: Accounts> LoginServer<A> {
         Ok(response)
     }
 
-    fn on_version_report(
-        &self,
-        session: &mut LoginSession,
-        report: ClientVersionReport,
-    ) -> Response {
+    fn on_version_report(&self, session: &mut LoginSession, report: ClientVersionReport) -> Response {
         match report.version() {
             Some(version) => {
                 // Sphere accepts the version once and ignores every later 0xBD.
@@ -308,33 +306,27 @@ impl<A: Accounts> LoginServer<A> {
     /// Handle `0x80` from [`LoginSessionState::Fresh`]. The caller has
     /// already established that this is where the state machine allows it;
     /// this only decides the response and the state that follows.
-    fn on_account_login(
-        &self,
-        session: &LoginSession,
-        login: AccountLogin,
-    ) -> (Response, LoginSessionState) {
-        if let Err(reason) = self.accounts.verify(&login.account, &login.password) {
-            // The real reason is logged; the client hears one of five codes.
-            warn!(account = login.account, ?reason, "login refused");
-            return (
-                Response::SendThenClose(
-                    ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
-                ),
-                LoginSessionState::Finished,
-            );
-        }
+    fn on_account_login(&self, session: &LoginSession, login: AccountLogin) -> (Response, LoginSessionState) {
+        let account = match self.accounts.verify(&login.account, &login.password) {
+            Ok(account) => account,
+            Err(reason) => {
+                // The real reason is logged; the client hears one of five codes.
+                warn!(%login.account, ?reason, "login refused");
+                return (
+                    Response::SendThenClose(
+                        ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
+                    ),
+                    LoginSessionState::Finished,
+                );
+            }
+        };
 
-        debug!(account = login.account, "account verified");
+        debug!(%account, "account verified");
         let list = ServerPacket::ShardList(ShardList {
             shards: self.shards.clone(),
         })
         .encode(session.version);
-        (
-            Response::Send(list),
-            LoginSessionState::ShardListSent {
-                account: login.account,
-            },
-        )
+        (Response::Send(list), LoginSessionState::ShardListSent { account })
     }
 
     /// Handle `0xA0` from [`LoginSessionState::ShardListSent`]. `account` is
@@ -342,7 +334,7 @@ impl<A: Accounts> LoginServer<A> {
     fn on_select_shard(
         &mut self,
         session: &LoginSession,
-        account: String,
+        account: AccountName,
         select: SelectShard,
         now: Instant,
     ) -> Result<(Response, LoginSessionState), Reason> {
@@ -357,7 +349,7 @@ impl<A: Accounts> LoginServer<A> {
         // The version goes with the key: the game connection has no other way
         // to learn it. See `PendingLogin::version`.
         let key = self.keys.issue(&account, session.version, now);
-        debug!(account, slot, "relaying to the game server");
+        debug!(%account, slot, "relaying to the game server");
         Ok((
             Response::SendThenClose(
                 ServerPacket::Relay(Relay {
@@ -372,23 +364,28 @@ impl<A: Accounts> LoginServer<A> {
     }
 
     /// Handle `0x91` from [`LoginSessionState::Fresh`]. Unlike the other two
-    /// handlers this still mutates `session` directly for `version` and
-    /// `account`: those aren't state-machine state, they're facts the
-    /// session accumulates along the way and character creation needs later
-    /// on this same connection.
+    /// handlers this still mutates `session` directly for `version`,
+    /// `account` and `game_login`: those aren't state-machine state, they're
+    /// facts the session accumulates along the way and character creation (or
+    /// the caller's compression flag) needs later on this same connection.
     fn on_game_login(
         &mut self,
         session: &mut LoginSession,
         login: GameServerLogin,
         now: Instant,
     ) -> (Response, LoginSessionState) {
+        // Set regardless of what follows: a game socket is compressed from the
+        // moment `CONNECT_GAME` arrives, not only once the key and password
+        // check out — see the field's doc comment.
+        session.game_login = true;
+
         // Sphere skips these four bytes entirely and re-verifies the password.
         // We check them: it costs nothing and it means the game port cannot be
         // reached without going through the login server first, which closes
         // off a whole class of "connect straight to 2593" probing. The password
         // is still checked below — the key is a session token, not the gate.
         let Some(pending) = self.keys.redeem(login.auth_key, now) else {
-            warn!(account = login.account, "bad or expired auth key");
+            warn!(%login.account, "bad or expired auth key");
             return (
                 Response::SendThenClose(
                     ServerPacket::LoginDenied(LoginDenied {
@@ -408,10 +405,10 @@ impl<A: Accounts> LoginServer<A> {
 
         // The key says who selected the shard. If the account on this packet is
         // a different one, someone is replaying a key they did not earn.
-        if !pending.account.eq_ignore_ascii_case(&login.account) {
+        if pending.account.normalized() != login.account.0.to_lowercase() {
             warn!(
-                expected = pending.account,
-                got = login.account,
+                expected = %pending.account,
+                got = %login.account,
                 "auth key does not belong to this account"
             );
             return (
@@ -425,23 +422,26 @@ impl<A: Accounts> LoginServer<A> {
             );
         }
 
-        if let Err(reason) = self.accounts.verify(&login.account, &login.password) {
-            warn!(account = login.account, ?reason, "game login refused");
-            return (
-                Response::SendThenClose(
-                    ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
-                ),
-                LoginSessionState::Finished,
-            );
-        }
+        let account = match self.accounts.verify(&login.account, &login.password) {
+            Ok(account) => account,
+            Err(reason) => {
+                warn!(%login.account, ?reason, "game login refused");
+                return (
+                    Response::SendThenClose(
+                        ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
+                    ),
+                    LoginSessionState::Finished,
+                );
+            }
+        };
 
         // The game connection is now authenticated. Remember whose it is: a
         // later 0x00/0xF8 will create a character and needs the account.
-        session.account = Some(login.account.clone());
+        session.account = Some(account.clone());
 
-        let characters = self.accounts.characters(&login.account);
+        let characters = self.accounts.characters(&account);
         debug!(
-            account = login.account,
+            %account,
             count = characters.len(),
             "sending character list"
         );
@@ -485,6 +485,8 @@ mod tests {
     use super::*;
     use crate::accounts::DevAccounts;
     use openshard_protocol::feature::Feature;
+    use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
+    use openshard_protocol::wire::AuthKey;
 
     fn server() -> LoginServer<DevAccounts> {
         let accounts = DevAccounts::new()
@@ -510,19 +512,28 @@ mod tests {
 
     fn login(account: &str, password: &str) -> Vec<u8> {
         AccountLogin {
-            account: account.to_owned(),
-            password: password.to_owned(),
+            account: RawAccountName(account.to_owned()),
+            password: RawPlaintextPassword(password.to_owned()),
         }
         .encode()
     }
 
-    fn game_login(key: u32, account: &str) -> Vec<u8> {
+    fn game_login(key: AuthKey, account: &str) -> Vec<u8> {
         GameServerLogin {
             auth_key: key,
-            account: account.to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName(account.to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         }
         .encode()
+    }
+
+    /// Decode a fixture the way `parse_packet` in `shard.rs` would, so tests
+    /// build packets the same way `handle`'s only real caller does. The
+    /// version is fixed rather than threaded from a `LoginSession` because
+    /// none of this module's `decode_body` impls read it — only encoding
+    /// varies by version here.
+    fn pkt(bytes: &[u8]) -> LoginStagePacket {
+        LoginStagePacket::decode(bytes, ClientVersion::OLDEST).expect("test fixture is a valid encoding")
     }
 
     /// Take an already-authenticated session through shard select to the relay.
@@ -530,28 +541,28 @@ mod tests {
         server: &mut LoginServer<DevAccounts>,
         session: &mut LoginSession,
         now: Instant,
-    ) -> u32 {
+    ) -> AuthKey {
         let Response::SendThenClose(relay) =
-            server.handle(session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
-        u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]])
+        AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]))
     }
 
     /// Run the whole conversation and return the auth key from the relay.
-    fn relay_key(server: &mut LoginServer<DevAccounts>, now: Instant) -> u32 {
+    fn relay_key(server: &mut LoginServer<DevAccounts>, now: Instant) -> AuthKey {
         let mut session = modern_session();
         assert!(matches!(
-            server.handle(&mut session, &login("admin", "hunter2"), now),
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
             Response::Send(_)
         ));
         let Response::SendThenClose(relay) =
-            server.handle(&mut session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
-        u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]])
+        AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]))
     }
 
     #[test]
@@ -561,29 +572,27 @@ mod tests {
 
         // Login connection.
         let mut session = modern_session();
-        let Response::Send(shards) = server.handle(&mut session, &login("admin", "hunter2"), now)
-        else {
+        let Response::Send(shards) = server.handle(&mut session, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         assert_eq!(shards[0], 0xA8);
 
         let Response::SendThenClose(relay) =
-            server.handle(&mut session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
         assert_eq!(relay[0], 0x8C);
-        let key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+        let key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
 
         // Game connection: a new session, as a real client would reconnect.
         let mut session = modern_session();
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
-        let Response::Send(characters) = server.handle(&mut session, &game_login.encode(), now)
-        else {
+        let Response::Send(characters) = server.handle(&mut session, pkt(&game_login.encode()), now) else {
             panic!("expected the character list");
         };
         assert_eq!(characters[0], 0xA9);
@@ -601,15 +610,15 @@ mod tests {
 
         let mut session = modern_session();
         assert_eq!(session.account(), None, "nothing is known before the login");
-        let _ = server.handle(&mut session, &game_login(key, "admin"), now);
-        assert_eq!(session.account(), Some("admin"));
+        let _ = server.handle(&mut session, pkt(&game_login(key, "admin")), now);
+        assert_eq!(session.account().map(|a| a.0.as_str()), Some("admin"));
     }
 
     #[test]
     fn a_bad_password_is_refused_and_closed() {
         let mut server = server();
         let mut session = modern_session();
-        let response = server.handle(&mut session, &login("admin", "wrong"), Instant::now());
+        let response = server.handle(&mut session, pkt(&login("admin", "wrong")), Instant::now());
         assert_eq!(
             response,
             Response::SendThenClose(vec![0x82, DenyReason::BadPassword.wire_code()])
@@ -620,7 +629,7 @@ mod tests {
     fn a_blocked_account_hears_blocked() {
         let mut server = server();
         let mut session = modern_session();
-        let response = server.handle(&mut session, &login("banned", "x"), Instant::now());
+        let response = server.handle(&mut session, pkt(&login("banned", "x")), Instant::now());
         assert_eq!(
             response,
             Response::SendThenClose(vec![0x82, DenyReason::Blocked.wire_code()])
@@ -635,12 +644,12 @@ mod tests {
         let mut server = server();
         let unknown = server.handle(
             &mut LoginSession::new(),
-            &login("nobody", "x"),
+            pkt(&login("nobody", "x")),
             Instant::now(),
         );
         let bad = server.handle(
             &mut LoginSession::new(),
-            &login("admin", "x"),
+            pkt(&login("admin", "x")),
             Instant::now(),
         );
         assert_ne!(unknown, bad);
@@ -652,7 +661,7 @@ mod tests {
         let mut session = modern_session();
         let response = server.handle(
             &mut session,
-            &SelectShard { index: 1 }.encode(),
+            pkt(&SelectShard { index: 1 }.encode()),
             Instant::now(),
         );
         assert!(matches!(response, Response::Close(_)));
@@ -664,12 +673,12 @@ mod tests {
         let mut session = modern_session();
         let now = Instant::now();
         assert!(matches!(
-            server.handle(&mut session, &login("admin", "hunter2"), now),
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
             Response::Send(_)
         ));
         assert!(
             matches!(
-                server.handle(&mut session, &login("admin", "hunter2"), now),
+                server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
                 Response::Close(_)
             ),
             "a second 0x80 means the client lost the plot"
@@ -681,9 +690,9 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let now = Instant::now();
-        let _ = server.handle(&mut session, &login("admin", "hunter2"), now);
+        let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(&mut session, &SelectShard { index: 0 }.encode(), now),
+            server.handle(&mut session, pkt(&SelectShard { index: 0 }.encode()), now),
             Response::Close(_)
         ));
     }
@@ -693,9 +702,9 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let now = Instant::now();
-        let _ = server.handle(&mut session, &login("admin", "hunter2"), now);
+        let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(&mut session, &SelectShard { index: 99 }.encode(), now),
+            server.handle(&mut session, pkt(&SelectShard { index: 99 }.encode()), now),
             Response::Close(_)
         ));
     }
@@ -706,12 +715,12 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let forged = GameServerLogin {
-            auth_key: 0xDEAD_BEEF,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            auth_key: AuthKey(0xDEAD_BEEF),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut session, &forged.encode(), Instant::now()),
+            server.handle(&mut session, pkt(&forged.encode()), Instant::now()),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "a right password with a wrong key is still refused"
         );
@@ -725,15 +734,15 @@ mod tests {
 
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert!(matches!(
-            server.handle(&mut modern_session(), &game_login.encode(), now),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
             Response::Send(_)
         ));
         assert_eq!(
-            server.handle(&mut modern_session(), &game_login.encode(), now),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "someone who read the key off the wire gets nothing"
         );
@@ -752,21 +761,21 @@ mod tests {
         let now = Instant::now();
 
         let mut session = modern_session();
-        let _ = server.handle(&mut session, &login("alice", "a"), now);
+        let _ = server.handle(&mut session, pkt(&login("alice", "a")), now);
         let Response::SendThenClose(relay) =
-            server.handle(&mut session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
-        let alices_key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+        let alices_key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
 
         let bob = GameServerLogin {
             auth_key: alices_key,
-            account: "bob".to_owned(),
-            password: "b".to_owned(),
+            account: RawAccountName("bob".to_owned()),
+            password: RawPlaintextPassword("b".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut modern_session(), &bob.encode(), now),
+            server.handle(&mut modern_session(), pkt(&bob.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "a valid key plus valid credentials for a different account is not a login"
         );
@@ -780,12 +789,12 @@ mod tests {
 
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let too_late = issued + crate::auth::DEFAULT_TTL + std::time::Duration::from_secs(1);
         assert_eq!(
-            server.handle(&mut modern_session(), &game_login.encode(), too_late),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), too_late),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()])
         );
     }
@@ -799,11 +808,11 @@ mod tests {
 
         let game_login = GameServerLogin {
             auth_key: key,
-            account: "admin".to_owned(),
-            password: "wrong".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("wrong".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut modern_session(), &game_login.encode(), now),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadPassword.wire_code()])
         );
     }
@@ -831,7 +840,7 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::TOL),
         });
-        let Response::Send(_) = server.handle(&mut first, &login("admin", "hunter2"), now) else {
+        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
@@ -844,8 +853,7 @@ mod tests {
             "the game socket carries no version of its own"
         );
 
-        let Response::Send(list) = server.handle(&mut second, &game_login(key, "admin"), now)
-        else {
+        let Response::Send(list) = server.handle(&mut second, pkt(&game_login(key, "admin")), now) else {
             panic!("expected the character list");
         };
         assert_eq!(
@@ -877,13 +885,13 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(2, 0, 0, 0)),
         });
-        let Response::Send(_) = server.handle(&mut first, &login("admin", "hunter2"), now) else {
+        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
 
         let mut second = LoginSession::new();
-        let Response::Send(_) = server.handle(&mut second, &game_login(key, "admin"), now) else {
+        let Response::Send(_) = server.handle(&mut second, pkt(&game_login(key, "admin")), now) else {
             panic!("expected the character list");
         };
         assert_eq!(second.version(), ClientVersion::new(2, 0, 0, 0));
@@ -907,8 +915,7 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(4, 0, 0, 0)),
         });
-        let Response::Send(list) = server.handle(&mut modern, &login("admin", "hunter2"), now)
-        else {
+        let Response::Send(list) = server.handle(&mut modern, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         assert_eq!(&list[42..46], &[1, 0, 0, 127], "reversed since 4.0.0");
@@ -918,8 +925,7 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(3, 255, 255, 255)),
         });
-        let Response::Send(list) = server.handle(&mut ancient, &login("admin", "hunter2"), now)
-        else {
+        let Response::Send(list) = server.handle(&mut ancient, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         assert_eq!(&list[42..46], &[127, 0, 0, 1], "in order below it");
@@ -948,7 +954,7 @@ mod tests {
         let report = ClientVersionReport {
             raw: "7.0.45.65".to_owned(),
         };
-        let _ = server.handle(&mut session, &report.encode(), Instant::now());
+        let _ = server.handle(&mut session, pkt(&report.encode()), Instant::now());
         assert_eq!(session.version(), ClientVersion::new(7, 0, 45, 65));
     }
 
@@ -963,7 +969,7 @@ mod tests {
         let report = ClientVersionReport {
             raw: "3.0.7b".to_owned(),
         };
-        let _ = server.handle(&mut session, &report.encode(), Instant::now());
+        let _ = server.handle(&mut session, pkt(&report.encode()), Instant::now());
         assert_eq!(session.version(), ClientVersion::TOL, "unchanged");
     }
 
@@ -975,7 +981,7 @@ mod tests {
             raw: "garbage".to_owned(),
         };
         assert_eq!(
-            server.handle(&mut session, &report.encode(), Instant::now()),
+            server.handle(&mut session, pkt(&report.encode()), Instant::now()),
             Response::Idle
         );
     }
@@ -993,7 +999,7 @@ mod tests {
             vec![0x73, 0x00],             // ping
         ] {
             assert_eq!(
-                server.handle(&mut session, &packet, Instant::now()),
+                server.handle(&mut session, pkt(&packet), Instant::now()),
                 Response::Idle,
                 "0x{:02X} must not drop the connection",
                 packet[0]
@@ -1001,28 +1007,8 @@ mod tests {
         }
         // And login still works afterwards.
         assert!(matches!(
-            server.handle(&mut session, &login("admin", "hunter2"), Instant::now()),
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), Instant::now()),
             Response::Send(_)
-        ));
-    }
-
-    #[test]
-    #[should_panic(expected = "packet is empty")]
-    fn an_empty_packet_is_a_framing_bug_not_a_client_input() {
-        // Real packets never arrive empty: `frame_client_packet`'s shortest
-        // frame is the one-byte id. An empty slice here means whoever called
-        // `handle` skipped framing, which is a server bug worth a panic, not
-        // silent Idle.
-        let mut server = server();
-        let _ = server.handle(&mut LoginSession::new(), &[], Instant::now());
-    }
-
-    #[test]
-    fn a_malformed_login_is_fatal() {
-        let mut server = server();
-        assert!(matches!(
-            server.handle(&mut LoginSession::new(), &[0x80, 0x01], Instant::now()),
-            Response::Close(_)
         ));
     }
 }

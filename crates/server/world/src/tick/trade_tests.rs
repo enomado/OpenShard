@@ -24,10 +24,7 @@ fn two_players(world: &mut World, now: Instant) -> (ConnectionId, ConnectionId) 
     let second = enter_as(world, other(), now);
     // Entering puts both on the same tile; a step apart is still within
     // `TRADE_RANGE`, and standing on one another is not what a trade looks like.
-    let at = world
-        .state
-        .registry
-        .get::<Position>(world.state.players[&first]);
+    let at = world.state.registry.get::<Position>(world.state.players[&first]);
     let Some(&Position(at)) = at else {
         panic!("a player stands somewhere");
     };
@@ -94,9 +91,7 @@ fn drop_onto(world: &mut World, connection: ConnectionId, item: u32, target: u32
 
 /// The escrow container a connection's character is wearing, if any.
 fn escrow_of(world: &World, connection: ConnectionId) -> Option<u32> {
-    let owner = world
-        .registry()
-        .serial_of(world.state.players[&connection])?;
+    let owner = world.registry().serial_of(world.state.players[&connection])?;
     world
         .registry()
         .query::<Equipped>()
@@ -136,10 +131,7 @@ fn dropping_an_item_on_another_player_opens_a_trade_window_on_both_screens() {
     assert_eq!(world.state.trades.len(), 1, "a trade opened");
     let sent = outbound(&mut world);
     // Action 0 is `Display`: the packet that draws the window.
-    assert!(
-        sent_trade_action(&sent, first, 0),
-        "the offerer's window opened"
-    );
+    assert!(sent_trade_action(&sent, first, 0), "the offerer's window opened");
     assert!(
         sent_trade_action(&sent, second, 0),
         "and so did the partner's — a window on one screen is not a trade"
@@ -175,11 +167,7 @@ fn dropping_an_item_on_a_creature_still_bounces() {
     let now = Instant::now();
     let mut world = world();
     let player = enter_as(&mut world, connection(), now);
-    let Some(&Position(at)) = world
-        .state
-        .registry
-        .get::<Position>(world.state.players[&player])
-    else {
+    let Some(&Position(at)) = world.state.registry.get::<Position>(world.state.players[&player]) else {
         panic!("a player stands somewhere");
     };
     let creature = super::tests::spawn_mobile_at(&mut world, at, 50, now);
@@ -222,10 +210,7 @@ fn both_checkboxes_swap_the_goods_and_close_the_window() {
         world.tick(now);
     }
 
-    assert!(
-        world.state.trades.is_empty(),
-        "the trade settled and closed"
-    );
+    assert!(world.state.trades.is_empty(), "the trade settled and closed");
     assert!(
         contained_serials(&world, second_pack).contains(&sword),
         "the sword crossed over"
@@ -340,11 +325,7 @@ fn walking_out_of_range_cancels_the_trade_and_returns_the_goods() {
     offer_to(&mut world, first, sword, second, now);
     assert_eq!(world.state.trades.len(), 1);
 
-    let Some(&Position(at)) = world
-        .state
-        .registry
-        .get::<Position>(world.state.players[&second])
-    else {
+    let Some(&Position(at)) = world.state.registry.get::<Position>(world.state.players[&second]) else {
         panic!("a player stands somewhere");
     };
     teleport(&mut world, second, Point::new(at.x + 20, at.y, at.z));
@@ -402,10 +383,7 @@ fn a_trade_escrow_is_not_swept_into_the_save() {
         .flat_map(|inventory| inventory.items.iter())
         .map(|item| item.serial)
         .collect();
-    assert!(
-        !saved.contains(&escrow),
-        "the escrow container is not saved"
-    );
+    assert!(!saved.contains(&escrow), "the escrow container is not saved");
     assert!(
         !saved.contains(&sword),
         "nor is what is inside it, which the walk would otherwise recurse into"
@@ -433,10 +411,7 @@ fn cancelling_every_trade_first_is_what_makes_a_shutdown_save_whole() {
         .flat_map(|inventory| inventory.items.iter())
         .map(|item| item.serial)
         .collect();
-    assert!(
-        saved.contains(&sword),
-        "the offered sword is saved after all"
-    );
+    assert!(saved.contains(&sword), "the offered sword is saved after all");
 }
 
 #[test]
@@ -458,10 +433,7 @@ fn the_escrow_container_itself_cannot_be_lifted() {
     world.tick(now);
 
     assert!(world.state.held.is_empty(), "nothing went onto the cursor");
-    assert!(
-        escrow_of(&world, first).is_some(),
-        "and the escrow is still worn"
-    );
+    assert!(escrow_of(&world, first).is_some(), "and the escrow is still worn");
 }
 
 #[test]
@@ -493,11 +465,7 @@ fn a_second_trade_is_refused_while_one_is_open() {
     let mut world = world();
     let (first, second) = two_players(&mut world, now);
     let third = enter_as(&mut world, ConnectionId::from_raw(3), now);
-    let Some(&Position(at)) = world
-        .state
-        .registry
-        .get::<Position>(world.state.players[&first])
-    else {
+    let Some(&Position(at)) = world.state.registry.get::<Position>(world.state.players[&first]) else {
         panic!("a player stands somewhere");
     };
     teleport(&mut world, third, Point::new(at.x, at.y + 1, at.z));

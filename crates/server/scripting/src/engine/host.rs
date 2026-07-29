@@ -31,26 +31,10 @@ impl Host {
         // events anyway.
         match event {
             Event::PlayerEntered { serial, x, y, z } | Event::MobileSpawned { serial, x, y, z } => {
-                self.entities.insert(
-                    *serial,
-                    View {
-                        x: *x,
-                        y: *y,
-                        z: *z,
-                    },
-                );
+                self.entities.insert(*serial, View { x: *x, y: *y, z: *z });
             }
-            Event::MobileMoved {
-                serial, x, y, z, ..
-            } => {
-                self.entities.insert(
-                    *serial,
-                    View {
-                        x: *x,
-                        y: *y,
-                        z: *z,
-                    },
-                );
+            Event::MobileMoved { serial, x, y, z, .. } => {
+                self.entities.insert(*serial, View { x: *x, y: *y, z: *z });
             }
             Event::PlayerLeft { serial } => {
                 self.entities.remove(serial);

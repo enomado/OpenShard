@@ -108,8 +108,8 @@ pub fn armor_data(graphic: u16) -> Option<&'static ArmorData> {
     ARMOR.iter().find(|a| a.graphic == graphic)
 }
 
-use crate::components::{Armor, Equipped, Graphic, Quality};
 use crate::WorldState;
+use crate::components::{Armor, Equipped, Graphic, Quality};
 use openshard_entities::EntityId;
 
 /// What an exceptional piece is worth — ServUO's `ar += -8 + 8 * (int)m_Quality`
@@ -322,11 +322,7 @@ mod tests {
     fn no_two_rows_share_a_graphic() {
         for (i, a) in ARMOR.iter().enumerate() {
             for b in &ARMOR[i + 1..] {
-                assert_ne!(
-                    a.graphic, b.graphic,
-                    "duplicate graphic 0x{:04X}",
-                    a.graphic
-                );
+                assert_ne!(a.graphic, b.graphic, "duplicate graphic 0x{:04X}", a.graphic);
             }
         }
     }

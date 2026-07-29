@@ -45,11 +45,7 @@ static INSTRUMENTS: &[InstrumentData] = &[
 
 /// A row, so the table reads as data.
 const fn i(graphic: u16, well: u16, badly: u16) -> InstrumentData {
-    InstrumentData {
-        graphic,
-        well,
-        badly,
-    }
+    InstrumentData { graphic, well, badly }
 }
 
 #[cfg(test)]

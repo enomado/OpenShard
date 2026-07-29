@@ -12,7 +12,7 @@
 use openshard_entities::EntityId;
 use openshard_state::armor::armor_data;
 use openshard_state::components::{Body, Graphic, Name, PoisonCharges, Price};
-use openshard_state::weapon::{by_era, weapon_data, weapon_layer, WeaponKind, LAYER_TWO_HANDED};
+use openshard_state::weapon::{LAYER_TWO_HANDED, WeaponKind, by_era, weapon_data, weapon_layer};
 use openshard_state::{Skill, WorldState};
 
 use crate::check::roll_skill_band;

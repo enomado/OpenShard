@@ -74,10 +74,7 @@ pub struct BuyReply {
 impl DecodePacket for BuyReply {
     const ID: u8 = 0x3B;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let vendor = reader.u32()?;
         let mut purchases = Vec::new();
         if reader.remaining() > 0 {
@@ -165,10 +162,7 @@ pub struct SellReply {
 impl DecodePacket for SellReply {
     const ID: u8 = 0x9F;
 
-    fn decode_body(
-        reader: &mut PacketReader<'_>,
-        _version: ClientVersion,
-    ) -> Result<Self, DecodeError> {
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let vendor = reader.u32()?;
         let count = reader.u16()?;
         let mut sales = Vec::with_capacity(usize::from(count.min(64)));

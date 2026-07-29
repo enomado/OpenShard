@@ -175,10 +175,7 @@ impl Terrain for LiveTerrain<'_> {
         // tile: a shut door yields only to a planner told it will be opened,
         // anything else stops the step. Checked at the z the mobile will stand at,
         // so an upper-floor wall does not block the floor below.
-        match self
-            .obstructions
-            .blocker_at_z(to.x, to.y, i32::from(landed.z))
-        {
+        match self.obstructions.blocker_at_z(to.x, to.y, i32::from(landed.z)) {
             Some(o) if o.door && self.through_doors => {}
             Some(_) => return None,
             None => {}
@@ -253,12 +250,14 @@ mod tests {
         let door = an_entity();
         obstructions.block(10, 10, door, true, 0, DOOR_HEIGHT);
         let live = LiveTerrain::new(None, &obstructions, false);
-        assert!(live
-            .can_step(Point::new(10, 9, 0), Point::new(10, 10, 0))
-            .is_none());
-        assert!(live
-            .can_step(Point::new(10, 9, 0), Point::new(11, 9, 0))
-            .is_some());
+        assert!(
+            live.can_step(Point::new(10, 9, 0), Point::new(10, 10, 0))
+                .is_none()
+        );
+        assert!(
+            live.can_step(Point::new(10, 9, 0), Point::new(11, 9, 0))
+                .is_some()
+        );
     }
 
     #[test]
@@ -267,12 +266,16 @@ mod tests {
         obstructions.block(10, 10, an_entity(), true, 0, DOOR_HEIGHT);
         obstructions.block(12, 10, an_entity(), false, 0, DOOR_HEIGHT);
         let planner = LiveTerrain::new(None, &obstructions, true);
-        assert!(planner
-            .can_step(Point::new(10, 9, 0), Point::new(10, 10, 0))
-            .is_some());
-        assert!(planner
-            .can_step(Point::new(12, 9, 0), Point::new(12, 10, 0))
-            .is_none());
+        assert!(
+            planner
+                .can_step(Point::new(10, 9, 0), Point::new(10, 10, 0))
+                .is_some()
+        );
+        assert!(
+            planner
+                .can_step(Point::new(12, 9, 0), Point::new(12, 10, 0))
+                .is_none()
+        );
     }
 
     #[test]

@@ -35,7 +35,7 @@ fn parses_a_full_config() {
     assert_eq!(config.server.listen.port(), 2593);
     assert_eq!(config.accounts.len(), 2);
     assert_eq!(config.accounts[0].characters, ["Lord British", "Dupre"]);
-    assert_eq!(config.accounts[1].characters, Vec::<String>::new());
+    assert!(config.accounts[1].characters.is_empty());
     config.validate().unwrap();
 }
 
@@ -124,10 +124,7 @@ fn advertise_needs_a_port() {
             advertise = "127.0.0.1:0"
             "#,
     );
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::AdvertisedPortZero)
-    ));
+    assert!(matches!(config.validate(), Err(ConfigError::AdvertisedPortZero)));
 }
 
 #[test]
@@ -143,15 +140,14 @@ fn advertise_may_differ_from_listen() {
             "#,
     );
     config.validate().unwrap();
-    assert_eq!(
-        config.advertise_v4().unwrap().ip().octets(),
-        [203, 0, 113, 10]
-    );
+    assert_eq!(config.advertise_v4().unwrap().ip().octets(), [203, 0, 113, 10]);
 }
 
 #[test]
 fn an_ipv6_advertise_has_nowhere_to_go_on_the_wire() {
-    // The 0x8C relay has four bytes for an address. There is no v6 form.
+    // The 0x8C relay has four bytes for an address. There is no v6 form, so
+    // this is refused at validate() rather than left for advertise_v4() to
+    // turn up None once the shard is already trying to serve a client.
     let config = config(
         r#"
             [server]
@@ -160,8 +156,15 @@ fn an_ipv6_advertise_has_nowhere_to_go_on_the_wire() {
             advertise = "[2001:db8::1]:2593"
             "#,
     );
-    config.validate().unwrap();
+    assert!(matches!(config.validate(), Err(ConfigError::AdvertisedNotIpv4)));
     assert_eq!(config.advertise_v4(), None);
+}
+
+#[test]
+fn the_ipv6_advertise_error_says_what_to_do() {
+    let message = ConfigError::AdvertisedNotIpv4.to_string();
+    assert!(message.contains("server.advertise"), "names the field");
+    assert!(message.contains("IPv6"), "names what is wrong");
 }
 
 #[test]
@@ -253,10 +256,7 @@ fn an_empty_account_name_is_refused() {
             password = "a"
             "#,
     );
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::EmptyAccountName)
-    ));
+    assert!(matches!(config.validate(), Err(ConfigError::EmptyAccountName)));
 }
 
 #[test]
@@ -433,8 +433,5 @@ fn a_zero_lod_idle_factor_is_refused_when_lod_is_on() {
     let mut config = config(MINIMAL);
     config.gameplay.lod = true;
     config.gameplay.lod_idle_factor = 0;
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::ZeroLodIdleFactor)
-    ));
+    assert!(matches!(config.validate(), Err(ConfigError::ZeroLodIdleFactor)));
 }

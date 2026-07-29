@@ -14,21 +14,21 @@ use openshard_entities::EntityId;
 use openshard_items::{count_in_container, take_from_container};
 use openshard_protocol::serial::Serial;
 use openshard_state::components::{
-    stat_shift, BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina,
-    StatMod, StatMods, Stats,
+    BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina, StatMod, StatMods, Stats,
+    stat_shift,
 };
-use openshard_state::{Skill, WorldState, TICKS_PER_SECOND};
+use openshard_state::{Skill, TICKS_PER_SECOND, WorldState};
 
 mod spells;
 pub use spells::{
-    cast_delay_ticks, cast_skills, info, mana, SpellEffect, SpellInfo, SpellTarget, AREA_RADIUS,
-    MAGERY, MAGERY_SKILL,
+    AREA_RADIUS, MAGERY, MAGERY_SKILL, SpellEffect, SpellInfo, SpellTarget, cast_delay_ticks, cast_skills,
+    info, mana,
 };
 
 mod travel;
 pub use travel::{
-    describe, destination_of, may_travel, public_gate_at, standing_at, PublicGate, TravelKind,
-    PUBLIC_MOONGATES,
+    PUBLIC_MOONGATES, PublicGate, TravelKind, describe, destination_of, may_travel, public_gate_at,
+    standing_at,
 };
 
 /// What intelligence a mobile with no stat sheet regenerates as if it had — the
@@ -232,13 +232,7 @@ pub fn heal(state: &mut WorldState, serial: u32, amount: u16) {
     if healed == current {
         return;
     }
-    state.registry.insert(
-        entity,
-        Hitpoints {
-            current: healed,
-            max,
-        },
-    );
+    state.registry.insert(entity, Hitpoints { current: healed, max });
     state.broadcast_health(entity);
 }
 
@@ -320,13 +314,7 @@ fn shift_stats(state: &mut WorldState, entity: EntityId, kind: u8, offset: i16) 
 /// backed out cleanly, then the new one applied, so a Bless recast never stacks a
 /// second bonus. The shift folds into the live [`Stats`] at once; the ledger entry
 /// remembers how to give it back.
-pub fn apply_stat_buff(
-    state: &mut WorldState,
-    serial: u32,
-    kind: u8,
-    offset: i16,
-    expires_at: u64,
-) {
+pub fn apply_stat_buff(state: &mut WorldState, serial: u32, kind: u8, offset: i16, expires_at: u64) {
     let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
@@ -384,13 +372,7 @@ pub fn expire_buffs(state: &mut WorldState, now: u64) -> Vec<EntityId> {
 /// behaviour, not a stat: nothing folds into a number, so a recast of the same
 /// `kind` just replaces its entry (refresh, never stack), and there is nothing to
 /// back out — expiry only stops the buff being read.
-pub fn apply_behaviour_buff(
-    state: &mut WorldState,
-    serial: u32,
-    kind: u8,
-    amount: i16,
-    expires_at: u64,
-) {
+pub fn apply_behaviour_buff(state: &mut WorldState, serial: u32, kind: u8, amount: i16, expires_at: u64) {
     let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
@@ -432,9 +414,7 @@ pub fn expire_behaviour_buffs(state: &mut WorldState, now: u64) -> Vec<(EntityId
         if kept.is_empty() {
             state.registry.remove::<BehaviourBuffs>(entity);
         } else {
-            state
-                .registry
-                .insert(entity, BehaviourBuffs { active: kept });
+            state.registry.insert(entity, BehaviourBuffs { active: kept });
         }
     }
     lifted
@@ -535,11 +515,7 @@ pub fn mana_regen_ticks(state: &WorldState, entity: EntityId) -> u64 {
             .get::<Stats>(entity)
             .map_or(DEFAULT_INTELLIGENCE, |stats| stats.intelligence),
     );
-    let meditation = u32::from(openshard_skills::skill_value(
-        state,
-        entity,
-        MEDITATION_SKILL,
-    )) / 10;
+    let meditation = u32::from(openshard_skills::skill_value(state, entity, MEDITATION_SKILL)) / 10;
     // `(Int + Meditation) * 0.5`, in tenths of a point so the halving is exact.
     let med_points = (intelligence * 10 + meditation * 10) / 2;
     let mut rate = if med_points == 0 {

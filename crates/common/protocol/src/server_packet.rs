@@ -26,11 +26,9 @@ use crate::context::ContextMenu;
 use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, PlaySound};
 use crate::gump::{CloseGump, GumpDisplay};
 use crate::items::{DragCancel, EquipUpdate, WorldItem};
-use crate::login::{
-    CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
-};
+use crate::login::{CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList};
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
-use crate::packet::{frame_body, EncodePacket, PacketLength};
+use crate::packet::{EncodePacket, PacketLength, frame_body};
 use crate::properties::TooltipRevision;
 use crate::skill::{SkillUpdate, SkillsFull};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
@@ -39,8 +37,8 @@ use crate::target::TargetCursor;
 use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
 use crate::world::{
-    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart,
-    PlayerUpdate, Season, WalkAck, WalkReject,
+    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart, PlayerUpdate,
+    Season, WalkAck, WalkReject,
 };
 
 /// A packet the server sends to a client.
@@ -335,7 +333,7 @@ mod tests {
     use crate::packet::encode_packet;
     use crate::serial::Serial;
     use crate::target::TargetKind;
-    use crate::wire::CursorId;
+    use crate::wire::{AuthKey, CursorId};
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -363,9 +361,7 @@ mod tests {
                 kind: TargetKind::Object,
             }),
             ServerPacket::WarMode(WarMode { war: true }),
-            ServerPacket::AttackTarget(AttackTarget {
-                target: Some(serial),
-            }),
+            ServerPacket::AttackTarget(AttackTarget { target: Some(serial) }),
             ServerPacket::Health(HealthBar::exact(serial, 100, 50)),
             ServerPacket::PlaySound(PlaySound {
                 sound: crate::wire::SoundId(0x28),
@@ -406,11 +402,11 @@ mod tests {
             ServerPacket::Relay(Relay {
                 address: std::net::Ipv4Addr::new(127, 0, 0, 1),
                 port: 2593,
-                auth_key: 0xDEAD_BEEF,
+                auth_key: AuthKey(0xDEAD_BEEF),
             }),
             ServerPacket::CharacterList(CharacterList {
                 characters: vec![crate::login::CharacterEntry {
-                    name: "Lord British".to_owned(),
+                    name: crate::identity::CharacterName("Lord British".to_owned()),
                 }],
                 starts: Vec::new(),
                 flags: 0,
@@ -420,7 +416,7 @@ mod tests {
             }),
             ServerPacket::CharacterListUpdate(CharacterListUpdate {
                 characters: vec![crate::login::CharacterEntry {
-                    name: "Lord British".to_owned(),
+                    name: crate::identity::CharacterName("Lord British".to_owned()),
                 }],
             }),
             ServerPacket::PlayerStart(PlayerStart {
@@ -458,9 +454,7 @@ mod tests {
             }),
             ServerPacket::LogoutAck(LogoutAck),
             ServerPacket::MapChange(MapChange { map: 0 }),
-            ServerPacket::Remove(Remove {
-                serial: 0x0000_002A,
-            }),
+            ServerPacket::Remove(Remove { serial: 0x0000_002A }),
             ServerPacket::OpenPaperdoll(OpenPaperdoll {
                 serial: 0x0000_002A,
                 text: "Lord British".to_owned(),

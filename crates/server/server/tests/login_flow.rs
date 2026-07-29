@@ -14,9 +14,11 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
-use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent};
-use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
+use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, ServerEvent};
+use openshard_login::{DevAccounts, LoginServer, LoginSession, Response, single_shard};
+use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
+use openshard_protocol::wire::AuthKey;
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -51,7 +53,10 @@ async fn shard() -> SocketAddr {
                     match event {
                         Event::Seeded(seed) => session.on_seed(seed),
                         Event::Packet(packet) => {
-                            let response = login.handle(session, &packet, Instant::now());
+                            let Ok(Packet::Login(packet)) = packet.parse_packet(session.version()) else {
+                                continue;
+                            };
+                            let response = login.handle(session, packet, Instant::now());
                             let outbox = &outboxes[&id];
                             match response {
                                 Response::Idle => {}
@@ -113,8 +118,8 @@ async fn a_client_reaches_the_character_list() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -141,9 +146,9 @@ async fn a_client_reaches_the_character_list() {
     // sees nothing but a tidy disconnect.
     assert_eq!(&relay[1..5], &[127, 0, 0, 1]);
     let port = u16::from_be_bytes([relay[5], relay[6]]);
-    let auth_key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+    let auth_key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
     assert_eq!(port, address.port());
-    assert_ne!(auth_key, 0);
+    assert_ne!(auth_key, AuthKey(0));
 
     // --- the client reconnects to the game server ------------------------
     let mut client = TcpStream::connect(address).await.unwrap();
@@ -152,8 +157,8 @@ async fn a_client_reaches_the_character_list() {
         .write_all(
             &GameServerLogin {
                 auth_key,
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -178,8 +183,8 @@ async fn a_refused_login_reaches_the_client_and_the_socket_closes() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "wrong".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("wrong".to_owned()),
             }
             .encode(),
         )
@@ -215,8 +220,8 @@ async fn the_client_version_from_the_seed_shapes_the_reply() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -243,8 +248,8 @@ async fn a_stolen_auth_key_is_useless_over_a_real_socket() {
     client
         .write_all(
             &AccountLogin {
-                account: "admin".to_owned(),
-                password: "hunter2".to_owned(),
+                account: RawAccountName("admin".to_owned()),
+                password: RawPlaintextPassword("hunter2".to_owned()),
             }
             .encode(),
         )
@@ -257,12 +262,12 @@ async fn a_stolen_auth_key_is_useless_over_a_real_socket() {
         .unwrap();
     let mut relay = [0u8; 11];
     client.read_exact(&mut relay).await.unwrap();
-    let auth_key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+    let auth_key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
 
     let game_login = GameServerLogin {
         auth_key,
-        account: "admin".to_owned(),
-        password: "hunter2".to_owned(),
+        account: RawAccountName("admin".to_owned()),
+        password: RawPlaintextPassword("hunter2".to_owned()),
     };
 
     // The legitimate client spends it.
@@ -291,8 +296,8 @@ async fn a_packet_split_across_tcp_segments_still_arrives() {
     let mut stream = seed(1);
     stream.extend_from_slice(
         &AccountLogin {
-            account: "admin".to_owned(),
-            password: "hunter2".to_owned(),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
         }
         .encode(),
     );

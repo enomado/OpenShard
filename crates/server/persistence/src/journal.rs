@@ -67,8 +67,8 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 
 use crate::record::{
-    CharacterRecord, DecorationRecord, Inventory, ItemRecord, MobileRecord, RegionRecord,
-    SpawnerRecord, SCHEMA_VERSION,
+    CharacterRecord, DecorationRecord, Inventory, ItemRecord, MobileRecord, RegionRecord, SCHEMA_VERSION,
+    SpawnerRecord,
 };
 
 /// A consistent picture of everything that changed, taken at one tick.
@@ -129,11 +129,7 @@ impl Snapshot {
     pub fn len(&self) -> usize {
         self.characters.len()
             + self.removed.len()
-            + self
-                .inventories
-                .iter()
-                .map(|inv| inv.items.len())
-                .sum::<usize>()
+            + self.inventories.iter().map(|inv| inv.items.len()).sum::<usize>()
             + self.ground.as_ref().map_or(0, Vec::len)
             + self.spawners.as_ref().map_or(0, Vec::len)
             + self.mobiles.as_ref().map_or(0, Vec::len)
@@ -376,9 +372,7 @@ mod tests {
         // The gravestone bug. A character that moved and was then deleted in the
         // same save window must not be resurrected by its own pending write.
         let mut registry = Registry::new();
-        let (entity, serial) = registry
-            .spawn_with_serial(SerialKind::Mobile)
-            .expect("a serial");
+        let (entity, serial) = registry.spawn_with_serial(SerialKind::Mobile).expect("a serial");
 
         let mut journal = Journal::new();
         journal.touch(entity);
@@ -396,9 +390,7 @@ mod tests {
         // The opposite mistake: treating "no dirty entities" as "nothing to do"
         // leaves the deleted character on disk forever.
         let mut registry = Registry::new();
-        let (entity, serial) = registry
-            .spawn_with_serial(SerialKind::Mobile)
-            .expect("a serial");
+        let (entity, serial) = registry.spawn_with_serial(SerialKind::Mobile).expect("a serial");
 
         let mut journal = Journal::new();
         journal.forget(entity, serial);

@@ -20,11 +20,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use openshard_protocol::identity::AccountName;
 
 use crate::journal::Snapshot;
 use crate::record::{
-    AccountRecord, CharacterRecord, DecorationRecord, ItemRecord, MobileRecord, RegionRecord,
-    SpawnerRecord, SCHEMA_VERSION,
+    AccountRecord, CharacterRecord, DecorationRecord, ItemRecord, MobileRecord, RegionRecord, SCHEMA_VERSION,
+    SpawnerRecord,
 };
 
 /// What a store could not do.
@@ -131,7 +132,7 @@ pub struct MemoryStore {
     regions: Mutex<HashMap<(u8, u16), RegionRecord>>,
     /// The world clock, in UO minutes.
     clock: Mutex<u64>,
-    accounts: Mutex<HashMap<String, AccountRecord>>,
+    accounts: Mutex<HashMap<AccountName, AccountRecord>>,
     /// How many saves have landed. What a test asserts on.
     saves: Mutex<u64>,
 }
@@ -149,10 +150,7 @@ impl MemoryStore {
 
     /// How many characters it holds.
     pub fn character_count(&self) -> usize {
-        self.characters
-            .lock()
-            .expect("the mutex is never poisoned")
-            .len()
+        self.characters.lock().expect("the mutex is never poisoned").len()
     }
 }
 
@@ -221,10 +219,7 @@ impl Store for MemoryStore {
         }
         // A decoration sweep likewise.
         if let Some(records) = &snapshot.decorations {
-            let mut decorations = self
-                .decorations
-                .lock()
-                .expect("the mutex is never poisoned");
+            let mut decorations = self.decorations.lock().expect("the mutex is never poisoned");
             decorations.clear();
             for record in records {
                 decorations.insert(record.serial, record.clone());
@@ -435,10 +430,7 @@ mod tests {
         assert!(matches!(error, StoreError::SchemaMismatch { .. }));
 
         let characters = store.characters().await.expect("load");
-        assert_eq!(
-            characters[0].x, 100,
-            "the refused save must not have landed"
-        );
+        assert_eq!(characters[0].x, 100, "the refused save must not have landed");
     }
 
     fn contained(serial: u32, owner: u32, container: u32) -> ItemRecord {

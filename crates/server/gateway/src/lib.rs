@@ -22,7 +22,7 @@
 //! connection.receive(&[0x73, 0x00]);     // ping
 //!
 //! assert!(matches!(connection.poll().unwrap(), Some(Event::Seeded(_))));
-//! assert_eq!(connection.poll().unwrap(), Some(Event::Packet(vec![0x73, 0x00])));
+//! assert!(matches!(connection.poll().unwrap(), Some(Event::Packet(_))));
 //! ```
 //!
 //! # The boundary
@@ -42,8 +42,8 @@
 mod connection;
 mod server;
 
-pub use connection::{Connection, ConnectionError, Event};
+pub use connection::{Connection, ConnectionError, Event, Packet, PacketError, RawPacket};
 pub use server::{
-    outbox_channel, version_channel, ClientGatewayServer, ConnectionId, OutboxRx, OutboxTx,
-    ServerEvent, ServerEventRx, VersionRx, VersionTx,
+    ClientGatewayServer, ConnectionId, OutboxRx, OutboxTx, ServerEvent, ServerEventRx, VersionRx, VersionTx,
+    outbox_channel, version_channel,
 };

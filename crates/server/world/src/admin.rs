@@ -13,8 +13,8 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::gump::{GumpDisplay, GumpResponse};
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_state::components::Client;
 use openshard_state::WorldState;
+use openshard_state::components::Client;
 
 /// The id the admin gump answers under. High byte `0xAD` for "admin", so a stray
 /// `0xB1` for some other dialog never lands in the admin handler by accident.

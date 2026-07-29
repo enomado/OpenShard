@@ -47,8 +47,7 @@ impl World {
         if !version.supports(Feature::NewContextMenu) {
             return;
         }
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-        else {
+        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         let entries = self.context_entries(entity);
@@ -73,20 +72,14 @@ impl World {
     /// and run the one at `index`. Rebuilding rather than remembering keeps this
     /// stateless — the entries are a pure function of the object, so a replay picks
     /// the same one.
-    pub(super) fn context_menu_select(
-        &mut self,
-        connection: ConnectionId,
-        serial: u32,
-        index: u16,
-    ) {
+    pub(super) fn context_menu_select(&mut self, connection: ConnectionId, serial: u32, index: u16) {
         if !self.state.gameplay.context_menus {
             return;
         }
         let Some(actor) = self.state.players.get(&connection).copied() else {
             return;
         };
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s))
-        else {
+        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         let entries = self.context_entries(entity);
