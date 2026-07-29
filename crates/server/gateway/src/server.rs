@@ -183,6 +183,28 @@ fn server_event_channel() -> (ServerEventTx, ServerEventRx) {
     (ServerEventTx(tx), ServerEventRx(rx))
 }
 
+/// Hands out monotonically increasing [`ConnectionId`]s.
+///
+/// Wraps the `Arc<AtomicU64>` counter so the only way to touch it is
+/// [`SessionIdFabric::next`] — nothing can bump the counter without minting an
+/// id, or read the counter without going through a `ConnectionId`. Cloning
+/// shares the same underlying counter, which is what lets [`Server::run`]
+/// hand one to every connection task.
+#[derive(Clone, Debug)]
+struct SessionIdFabric(Arc<AtomicU64>);
+
+impl SessionIdFabric {
+    /// Start a fresh sequence at `1`.
+    fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(1)))
+    }
+
+    /// Mint the next id in the sequence.
+    fn next(&self) -> ConnectionId {
+        ConnectionId(self.0.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// Accepts connections and drives a [`Connection`] for each.
 ///
 /// Events go onto a channel rather than through a callback: the world server
@@ -193,7 +215,7 @@ fn server_event_channel() -> (ServerEventTx, ServerEventRx) {
 pub struct Server {
     listener: TcpListener,
     events: ServerEventTx,
-    next_id: Arc<AtomicU64>,
+    session_ids: SessionIdFabric,
 }
 
 impl Server {
@@ -207,7 +229,7 @@ impl Server {
             Self {
                 listener,
                 events,
-                next_id: Arc::new(AtomicU64::new(1)),
+                session_ids: SessionIdFabric::new(),
             },
             receiver,
         ))
@@ -225,7 +247,7 @@ impl Server {
         info!(address = ?self.local_address()?, "gateway listening");
         loop {
             let (stream, address) = self.listener.accept().await?;
-            let id = ConnectionId(self.next_id.fetch_add(1, Ordering::Relaxed));
+            let id = self.session_ids.next();
             let events = self.events.clone();
             tokio::spawn(async move {
                 // A panic in here takes this connection down and nothing else.
