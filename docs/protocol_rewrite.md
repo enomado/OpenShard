@@ -115,6 +115,10 @@ are gone from packet definitions; `.0` is unwrapped only inside the codec.
 `common/protocol`** — it is a wire concept first; `entities` depends on
 `protocol` for it, never the reverse.
 
+Each newtype is introduced in the stage that first needs it, in `wire.rs`, not
+all of them up front: a type nothing uses yet is a guess about a packet nobody
+has read closely, and it hardens before it is right.
+
 **D7. `LoginDecodeError` is renamed `DecodeError`.** It was never login-specific
 (56 references across the workspace); the name lies about scope.
 
@@ -139,14 +143,17 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
 `cargo fmt --all`. Each stage is one or more commits on `main`.
 
-- **Stage 0 — foundation.** `DecodeError` rename (D7); `Serial` move (D6);
-  new wire newtypes; the two traits (D4); the framing layer that writes id and
-  patches length (D3); empty `ClientPacket`/`ServerPacket` skeletons.
-  No packet migrated yet.
+- **Stage 0 — the rename.** `DecodeError`, `WrongPacket` and `expect_id` out of
+  `login.rs` into `error.rs` (D7). Nothing else: the traits and the newtypes
+  land with the first packets that use them, per D6, rather than as a layer
+  written against packets nobody has re-read yet.
 - **Stage 1 — pilot: `target`, `combat`, `feedback`.** Smallest groups, fewest
-  call sites. Proves the shape end to end, including a variable-length packet
-  and a list-carrying one. If D2/D3 are wrong, this is where it shows and this
-  document changes.
+  call sites. Brings in with them: the `Serial` move (D6), the first wire
+  newtypes (`SoundId`, `CursorId`, `Graphic`, `Hue`, `BodyId`), the two traits
+  (D4) and the framing layer (D3), plus the `ServerPacket` root enum with its
+  first variants. Proves the shape end to end, including a variable-length
+  packet and a list-carrying one. If D2/D3 are wrong, this is where it shows
+  and this document changes before anything else is migrated.
 - **Stage 2 — `login`.** The most version-conditional group (shard list,
   character list, feature flags) and its own dispatch path in `server/login`.
 - **Stage 3 — `world`, `mobile`.** The largest and hottest: movement, status,
@@ -166,7 +173,7 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 
 | Stage | State | Commit |
 | --- | --- | --- |
-| 0 | not started | |
+| 0 | done | `153e1f8` |
 | 1 | not started | |
 | 2 | not started | |
 | 3 | not started | |
