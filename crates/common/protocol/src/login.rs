@@ -45,6 +45,7 @@ use crate::feature::Feature;
 use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
 use crate::packet::{decode_packet, DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
+use crate::world::CreateCharacter;
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
 pub const ACCOUNT_NAME_LENGTH: usize = 30;
@@ -776,6 +777,16 @@ pub enum ClientLoginPacket {
     /// info), and dropping the connection over them would break every one of
     /// them for no reason.
     Unknown(u8),
+    /// `0x00`/`0xF8` — character creation. Not part of the login state
+    /// machine below: the `server` crate intercepts it before it ever reaches
+    /// [`crate::login`]'s own [`ClientLoginPacket::decode`] call, because
+    /// acting on it needs both the account (here) and the world (which this
+    /// crate never sees). Decoded here anyway, next to [`Self::DeleteCharacter`],
+    /// so this is still the one place that knows every id the wire can carry.
+    CreateCharacter(CreateCharacter),
+    /// `0x83` — character deletion. Crosses the same login/world line as
+    /// [`Self::CreateCharacter`], for the same reason.
+    DeleteCharacter(DeleteCharacter),
 }
 
 impl ClientLoginPacket {
@@ -806,6 +817,14 @@ impl ClientLoginPacket {
             GameServerLogin::ID => decode_packet(packet, version)
                 .map(Self::GameServerLogin)
                 .map_err(ClientLoginDecodeError::GameServerLogin),
+            CreateCharacter::ID_CLASSIC | CreateCharacter::ID_HIGH_SEAS => {
+                CreateCharacter::decode(packet)
+                    .map(Self::CreateCharacter)
+                    .map_err(ClientLoginDecodeError::CreateCharacter)
+            }
+            DeleteCharacter::ID => decode_packet(packet, version)
+                .map(Self::DeleteCharacter)
+                .map_err(ClientLoginDecodeError::DeleteCharacter),
             _ => Ok(Self::Unknown(id)),
         }
     }
@@ -826,6 +845,10 @@ pub enum ClientLoginDecodeError {
     SelectShard(DecodeError),
     /// `0x91` did not decode.
     GameServerLogin(DecodeError),
+    /// `0x00`/`0xF8` did not decode.
+    CreateCharacter(DecodeError),
+    /// `0x83` did not decode.
+    DeleteCharacter(DecodeError),
 }
 
 #[cfg(test)]
@@ -899,6 +922,25 @@ mod tests {
         assert!(matches!(
             decode_packet::<AccountLogin>(&bytes, version()),
             Err(DecodeError::Codec(_))
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "packet is empty")]
+    fn client_login_packet_decode_panics_on_an_empty_slice() {
+        // Real packets never arrive empty: `frame_client_packet`'s shortest
+        // frame is the one-byte id. An empty slice here means whoever called
+        // `decode` skipped framing, which is a server bug worth a panic, not
+        // a laundered `Option`.
+        let _ = ClientLoginPacket::decode(&[], version());
+    }
+
+    #[test]
+    fn client_login_packet_decode_reports_which_id_failed() {
+        let bytes = [AccountLogin::ID, b'a', b'b'];
+        assert!(matches!(
+            ClientLoginPacket::decode(&bytes, version()),
+            Err(ClientLoginDecodeError::AccountLogin(_))
         ));
     }
 

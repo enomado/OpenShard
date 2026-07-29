@@ -309,7 +309,7 @@ fn build_login_server(
 /// `AuthKeys::redeem` already checks expiry on its own — and its own doc says
 /// to call it "on a timer". The tick is that timer; a packet or a disconnect
 /// is not.
-fn tick(
+fn world_tick(
     world: &mut World,
     sessions: &HashMap<ConnectionId, Session>,
     saves: &SnapshotTx,
@@ -410,7 +410,7 @@ pub(crate) async fn run_shard(
             biased;
 
             _ = ticker.tick() => {
-                tick(&mut world, &sessions, &saves, &mut saved, &mut scripts, &mut login_server);
+                world_tick(&mut world, &sessions, &saves, &mut saved, &mut scripts, &mut login_server);
             }
 
             // Before `events`: a store that is failing is worth hearing about
@@ -432,7 +432,7 @@ pub(crate) async fn run_shard(
                     error!("the gateway stopped; saving the world");
                     break;
                 };
-                handle(&mut sessions, &mut login_server, &mut world, advertised, &mut saved, event);
+                world_handle_network(&mut sessions, &mut login_server, &mut world, advertised, &mut saved, event);
             }
         }
     }
@@ -458,6 +458,71 @@ pub(crate) async fn run_shard(
     info!("world saved; shutting down");
 }
 
+/// Which half of the shard owns a packet, decoded exactly once.
+///
+/// `packet.first()` alone cannot tell: [`ClientLoginPacket`] and
+/// [`ClientPacket`] each cover a disjoint slice of the id space, so the only
+/// way to know which one a byte belongs to is to ask the login side first —
+/// see [`parse_packet`].
+enum Packet {
+    /// Decoded by [`ClientLoginPacket::decode`]. Routed to `login.handle`,
+    /// except for `CreateCharacter`/`DeleteCharacter`, which
+    /// `world_handle_network` intercepts first — see its match.
+    Login(ClientLoginPacket),
+    /// Decoded by [`ClientPacket::decode`]. Routed to `dispatch`.
+    World(ClientPacket),
+}
+
+/// [`parse_packet`] recognized which half owns the id but the body behind it
+/// did not parse.
+#[derive(Debug)]
+enum PacketError {
+    /// A known login id (`0x80`/`0xA0`/`0x91`/`0xBD`/`0x00`/`0xF8`/`0x83`)
+    /// whose body did not decode.
+    Login(ClientLoginDecodeError),
+    /// A known world id whose body did not decode.
+    World(ClientDecodeError),
+}
+
+/// `packet` is never empty here: it only reaches `Event::Packet` by way of
+/// `frame_client_packet` returning `Frame::Complete`, which never happens on
+/// zero bytes and never happens at all for an id byte the framer does not
+/// recognize (that closes the connection before this point). What `packet`
+/// carries beyond the id is still untrusted client input — `Err` is the
+/// ordinary outcome for a known id with a malformed body, not a bug.
+///
+/// The only place `packet`'s raw bytes are read at all: every consumer below
+/// — `dispatch`, `login.handle`, `create_character`, `delete_character` —
+/// takes its own already-decoded, semantic packet type from here on, never a
+/// buffer. [`ClientLoginPacket::decode`] is tried first because it is the
+/// smaller, closed id set; anything it does not recognize (`Unknown`) is not
+/// a login packet at all, so [`ClientPacket::decode`] gets the only other
+/// chance to claim it.
+fn parse_packet(packet: &[u8], version: ClientVersion) -> Result<Packet, PacketError> {
+    match ClientLoginPacket::decode(packet, version) {
+        Ok(ClientLoginPacket::Unknown(_)) => ClientPacket::decode(packet, version)
+            .map(Packet::World)
+            .map_err(PacketError::World),
+        Ok(login_packet) => Ok(Packet::Login(login_packet)),
+        Err(error) => Err(PacketError::Login(error)),
+    }
+}
+
+/// Drop a connection whose handler decided it should close.
+///
+/// One name for the four call sites in `world_handle_network` that all mean
+/// "this handler said stop" — the reason was already logged where that was
+/// decided, so there is nothing left to do here but the removal itself.
+///
+/// Deliberately takes no `bool`: every call site already reads as `if !ok {
+/// sessions_handle(...) }`, and a version that took the bool and decided
+/// internally would have to borrow `sessions` on the `true` path too, which
+/// conflicts with the `&mut Session` borrowed from the same map that the
+/// caller is still using there.
+fn sessions_handle(sessions: &mut HashMap<ConnectionId, Session>, id: ConnectionId) {
+    sessions.remove(&id);
+}
+
 /// Whether the relay is about to send this client somewhere it cannot get back
 /// from.
 ///
@@ -481,7 +546,66 @@ pub(crate) fn relay_is_unreachable(client: SocketAddr, advertised: SocketAddrV4)
     advertised.ip().is_loopback() && !client.ip().is_loopback()
 }
 
-pub(crate) fn handle(
+/// Route a decoded login packet to whichever of the three things it can mean:
+/// character creation, character deletion, or an ordinary login-state
+/// transition. All three arrive as `Packet::Login` from `parse_packet`, and
+/// all three need both `login` and `world` in reach, which is why this
+/// crosses the login/world line instead of living in `dispatch_world_packet`.
+fn handle_login_packet(
+    session: &mut Session,
+    login: &mut LoginServer<DevAccounts>,
+    world: &mut World,
+    saved: &mut HashMap<(String, String), CharacterRecord>,
+    packet: ClientLoginPacket,
+    id: ConnectionId,
+) -> bool {
+    match packet {
+        // Character creation crosses the login/world line: it writes the new
+        // character onto the account and then enters the world with it.
+        ClientLoginPacket::CreateCharacter(create) => {
+            create_character(session, login, world, create, id)
+        }
+        // Character deletion crosses the same line: it drops the character
+        // from the account list and forgets its saved row.
+        ClientLoginPacket::DeleteCharacter(delete) => {
+            delete_character(session, login, world, saved, delete, id)
+        }
+        login_packet => {
+            let response = login.handle(&mut session.login, login_packet, Instant::now());
+            // The game login is the seam Sphere calls CONNECT_GAME: from here
+            // on, this connection's every server->client packet is
+            // Huffman-compressed — starting with the reply `handle` just
+            // built. `login` recognized the `0x91` while decoding the packet
+            // in `parse_packet`; this reads that fact back instead of peeking
+            // the id byte a second time.
+            if session.login.is_game_login() {
+                session.game = true;
+            }
+            session.apply(response, id)
+        }
+    }
+}
+
+/// Route a decoded world packet to the dispatcher, first looking up the
+/// account's authority where the store is in reach — `dispatch_world_packet`
+/// only sees the world, so the GM command gate needs it passed in. A player
+/// by default; only the store grants more.
+fn handle_world_packet(
+    session: &mut Session,
+    login: &LoginServer<DevAccounts>,
+    world: &mut World,
+    saved: &HashMap<(String, String), CharacterRecord>,
+    packet: ClientPacket,
+    id: ConnectionId,
+) -> bool {
+    let access = session
+        .login
+        .account()
+        .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
+    dispatch_world_packet(session, world, packet, id, saved, access)
+}
+
+pub(crate) fn world_handle_network(
     sessions: &mut HashMap<ConnectionId, Session>,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
@@ -527,52 +651,43 @@ pub(crate) fn handle(
             };
             match event {
                 Event::Seeded(seed) => session.login.on_seed(seed),
-                Event::Packet(packet) => {
-                    // The game login is the seam Sphere calls CONNECT_GAME: from
-                    // here on, this connection's every server->client packet is
-                    // Huffman-compressed — starting with the character list this
-                    // very packet triggers. Set the flag before the reply is
-                    // built so that reply goes out compressed.
-                    if packet.first().copied() == Some(GameServerLogin::ID) {
-                        session.game = true;
-                    }
-                    // Character creation crosses the login/world line: it writes
-                    // the new character onto the account and then enters the world
-                    // with it. Handle it here, where both are in reach — dispatch
-                    // sees only the world, and the login state machine is done.
-                    if matches!(
-                        packet.first().copied(),
-                        Some(CreateCharacter::ID_CLASSIC | CreateCharacter::ID_HIGH_SEAS)
-                    ) {
-                        if !create_character(session, login, world, &packet, id) {
-                            sessions.remove(&id);
+                Event::Packet(packet) => match parse_packet(&packet, session.login.version()) {
+                    // Ok: hand the decoded packet to whichever side it belongs
+                    // to. Both handlers return the same "keep the connection?"
+                    // bool, so there is one place that acts on it.
+                    Ok(packet) => {
+                        let keep = match packet {
+                            Packet::Login(login_packet) => {
+                                handle_login_packet(session, login, world, saved, login_packet, id)
+                            }
+                            Packet::World(world_packet) => {
+                                handle_world_packet(session, login, world, saved, world_packet, id)
+                            }
+                        };
+                        if !keep {
+                            sessions_handle(sessions, id);
                         }
-                        return;
                     }
-                    // Character deletion crosses the same line: it drops the
-                    // character from the account list and forgets its saved row.
-                    if packet.first().copied() == Some(DeleteCharacter::ID) {
-                        if !delete_character(session, login, world, saved, &packet, id) {
-                            sessions.remove(&id);
+                    // Err: every case here only logs and drops. Nothing decoded,
+                    // so there is nothing to route.
+                    Err(error) => {
+                        match error {
+                            PacketError::Login(ClientLoginDecodeError::CreateCharacter(error)) => {
+                                warn!(%id, %error, "malformed create-character");
+                            }
+                            PacketError::Login(ClientLoginDecodeError::DeleteCharacter(error)) => {
+                                warn!(%id, %error, "malformed delete-character");
+                            }
+                            PacketError::Login(other) => {
+                                warn!(%id, ?other, "malformed login packet");
+                            }
+                            PacketError::World(error) => {
+                                warn!(%id, ?error, "malformed packet");
+                            }
                         }
-                        return;
+                        sessions_handle(sessions, id);
                     }
-                    // The account's authority, looked up where the store is in
-                    // reach and passed to the world so the GM command gate has it.
-                    // A player by default; only the store grants more.
-                    let access = session
-                        .login
-                        .account()
-                        .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
-                    if !dispatch(session, world, &packet, id, saved, access) {
-                        sessions.remove(&id);
-                        return;
-                    }
-                    let response = login.handle(&mut session.login, &packet, Instant::now());
-                    if !session.apply(response, id) {
-                        sessions.remove(&id);
-                    }
-                }
+                },
             }
         }
 

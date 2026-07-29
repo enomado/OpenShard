@@ -12,16 +12,18 @@
 //!
 //! # Sans-io, like the gateway
 //!
-//! [`LoginServer::handle`] takes a framed packet and returns a [`Response`]. No
-//! sockets, and no clock of its own — `now` is a parameter, so key expiry is
-//! tested with arithmetic rather than `sleep`.
+//! [`LoginServer::handle`] takes an already-decoded [`ClientLoginPacket`] and
+//! returns a [`Response`]. No sockets, no packet buffers, and no clock of its
+//! own — `now` is a parameter, so key expiry is tested with arithmetic rather
+//! than `sleep`. Decoding is the caller's job: the `server` crate's
+//! `parse_packet` does it once, ahead of routing to this crate or the world.
 //!
 //! ```
 //! use std::net::Ipv4Addr;
 //! use std::time::Instant;
 //! use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
 //! use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
-//! use openshard_protocol::login::AccountLogin;
+//! use openshard_protocol::login::{AccountLogin, ClientLoginPacket};
 //!
 //! let mut server = LoginServer::new(
 //!     DevAccounts::new().with_account("admin", "hunter2"),
@@ -34,7 +36,8 @@
 //!     account: RawAccountName("admin".to_owned()),
 //!     password: RawPlaintextPassword("hunter2".to_owned()),
 //! };
-//! let response = server.handle(&mut session, &login.encode(), Instant::now());
+//! let packet = ClientLoginPacket::decode(&login.encode(), session.version()).unwrap();
+//! let response = server.handle(&mut session, packet, Instant::now());
 //!
 //! // The shard list goes back.
 //! assert!(matches!(response, Response::Send(bytes) if bytes[0] == 0xA8));

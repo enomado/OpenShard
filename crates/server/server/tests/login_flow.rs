@@ -17,7 +17,7 @@ use std::time::Instant;
 use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent};
 use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
-use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
+use openshard_protocol::login::{AccountLogin, ClientLoginPacket, GameServerLogin, SelectShard};
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -52,7 +52,11 @@ async fn shard() -> SocketAddr {
                     match event {
                         Event::Seeded(seed) => session.on_seed(seed),
                         Event::Packet(packet) => {
-                            let response = login.handle(session, &packet, Instant::now());
+                            let Ok(packet) = ClientLoginPacket::decode(&packet, session.version())
+                            else {
+                                continue;
+                            };
+                            let response = login.handle(session, packet, Instant::now());
                             let outbox = &outboxes[&id];
                             match response {
                                 Response::Idle => {}

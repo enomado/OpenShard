@@ -33,19 +33,19 @@ use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response
 use openshard_persistence::{
     AccountRecord, CharacterRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store,
 };
-use openshard_protocol::client_packet::ClientPacket;
+use openshard_protocol::client_packet::{ClientDecodeError, ClientPacket};
 use openshard_protocol::encoded::EncodedCommand;
 use openshard_protocol::extended::ExtendedRequest;
 use openshard_protocol::identity::CharacterName;
 use openshard_protocol::login::{
-    CharacterListUpdate, DeleteCharacter, DeleteReject, DeleteResult, GameServerLogin, LoginDenied,
-    StartLocation,
+    CharacterListUpdate, ClientLoginDecodeError, ClientLoginPacket, DeleteCharacter, DeleteReject,
+    DeleteResult, LoginDenied, StartLocation,
 };
 use openshard_protocol::mobile::StatusQueryKind;
-use openshard_protocol::packet::{decode_packet, DecodePacket};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::trade::SecureTradeAction;
+use openshard_protocol::version::ClientVersion;
 use openshard_protocol::world::{CreateCharacter, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_world::{
@@ -66,7 +66,7 @@ mod session;
 mod shard;
 
 use boot::{load_config, load_world, open_store};
-use dispatch::{create_character, delete_character, dispatch, start_cities};
+use dispatch::{create_character, delete_character, dispatch_world_packet, start_cities};
 use session::Session;
 use shard::run_shard;
 

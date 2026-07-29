@@ -5,30 +5,17 @@ use super::*;
 /// Nothing here answers the client. Every reply comes out of a tick, which is
 /// what keeps the two ends in one order.
 ///
-/// The packet is decoded exactly once, by [`ClientPacket::decode`] — see
-/// `docs/protocol_rewrite.md` Stage 6. That decode is unconditional, ahead of
-/// every `session.in_world` gate below: a packet that fails to decode drops
-/// the connection regardless of world state, which is stricter than the id-
-/// peeking match this replaced (a malformed packet arriving before world entry
-/// used to go unread and be silently accepted). A client that sends
-/// unparseable bytes on a known id, at any point in the conversation, is not
-/// one this shard has a reason to keep trusting.
-pub(crate) fn dispatch(
+/// `packet` is already decoded — `parse_packet` in `shard.rs` does that once,
+/// before routing here, so a malformed packet never reaches this function at
+/// all; it closes the connection at the routing step instead.
+pub(crate) fn dispatch_world_packet(
     session: &mut Session,
     world: &mut World,
-    packet: &[u8],
+    packet: ClientPacket,
     id: ConnectionId,
     saved: &HashMap<(String, String), CharacterRecord>,
     access: AccessLevel,
 ) -> bool {
-    let packet = match ClientPacket::decode(packet, session.login.version()) {
-        Ok(packet) => packet,
-        Err(error) => {
-            warn!(%id, ?error, "malformed packet");
-            return false;
-        }
-    };
-
     match packet {
         ClientPacket::CharacterPlay(play) => {
             let account = session.login.account().cloned().unwrap_or_default();
@@ -466,25 +453,22 @@ pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocatio
 /// Create a character on the authenticated account, then enter the world with
 /// it — the two halves of what a `0x00`/`0xF8` packet asks for.
 ///
-/// Returns `false` only to drop the connection: a malformed packet, or one with
-/// no game login behind it to say whose character this is. A *refused* creation
-/// — a full account, an empty or duplicate name — keeps the connection. Sphere
-/// answers that with the same `0x82` a login error uses, and the client stays on
-/// the creation screen to try again.
+/// `create` is already decoded — `parse_packet` in `shard.rs` does that once,
+/// before routing here, so a malformed `0x00`/`0xF8` never reaches this
+/// function at all.
+///
+/// Returns `false` only to drop the connection: no game login behind this
+/// connection to say whose character this is. A *refused* creation — a full
+/// account, an empty or duplicate name — keeps the connection. Sphere answers
+/// that with the same `0x82` a login error uses, and the client stays on the
+/// creation screen to try again.
 pub(crate) fn create_character(
     session: &mut Session,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
-    packet: &[u8],
+    create: CreateCharacter,
     id: ConnectionId,
 ) -> bool {
-    let create = match CreateCharacter::decode(packet) {
-        Ok(create) => create,
-        Err(error) => {
-            warn!(%id, %error, "malformed create-character");
-            return false;
-        }
-    };
     let Some(account) = session.login.account().cloned() else {
         warn!(%id, "create-character before a game login");
         return false;
@@ -569,9 +553,11 @@ pub(crate) fn create_character(
 
 /// Delete a character from the character-select screen (`0x83`).
 ///
+/// `delete` is already decoded — see [`create_character`]'s doc for why.
+///
 /// Like create, this crosses the login/world line: it drops the character from
 /// the account's list *and* tells the world to forget its saved row. Returns
-/// `false` only to drop the connection (a malformed packet or no game login);
+/// `false` only to drop the connection (no game login behind this connection);
 /// a refused delete — bad slot, or a character being played — keeps the
 /// connection and answers with `0x85`, and a good one resends the list with
 /// `0x86`.
@@ -580,16 +566,10 @@ pub(crate) fn delete_character(
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
     saved: &mut HashMap<(String, String), CharacterRecord>,
-    packet: &[u8],
+    delete: DeleteCharacter,
     id: ConnectionId,
 ) -> bool {
-    let slot = match decode_packet::<DeleteCharacter>(packet, session.login.version()) {
-        Ok(delete) => delete.slot,
-        Err(error) => {
-            warn!(%id, %error, "malformed delete-character");
-            return false;
-        }
-    };
+    let slot = delete.slot;
     let Some(account) = session.login.account().cloned() else {
         warn!(%id, "delete-character before a game login");
         return false;

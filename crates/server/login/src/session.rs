@@ -6,9 +6,9 @@ use std::time::Instant;
 
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
-    encode_supported_features, AccountLogin, CharacterList, ClientLoginDecodeError,
-    ClientLoginPacket, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied, Relay,
-    SelectShard, ShardEntry, ShardList, StartLocation,
+    encode_supported_features, AccountLogin, CharacterList, ClientLoginPacket, ClientVersionReport,
+    DenyReason, GameServerLogin, LoginDenied, Relay, SelectShard, ShardEntry, ShardList,
+    StartLocation,
 };
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::{feature::Feature, seed::Seed, version::ClientVersion};
@@ -97,6 +97,17 @@ pub struct LoginSession {
     /// connection and says which character to make but not on whose account; the
     /// game login is where that is known, so it is kept here.
     account: Option<AccountName>,
+    /// Whether a `0x91` game login has been seen on this connection, valid or
+    /// not.
+    ///
+    /// Sphere flips a game socket to Huffman-compressed the moment it reads
+    /// `CONNECT_GAME`, during the crypt handshake and before the password is
+    /// even checked — so a refused login's reply goes out compressed too. The
+    /// caller (the `server` crate, which owns the actual compression flag on
+    /// its own `Session`) reads this once `handle` returns instead of peeking
+    /// the packet's id byte itself, which would just be [`ClientLoginPacket`]'s
+    /// decode redone by hand.
+    game_login: bool,
 }
 
 impl Default for LoginSession {
@@ -112,6 +123,7 @@ impl LoginSession {
             state: LoginSessionState::Fresh,
             version: ClientVersion::OLDEST,
             account: None,
+            game_login: false,
         }
     }
 
@@ -126,6 +138,12 @@ impl LoginSession {
     /// account it belongs to.
     pub fn account(&self) -> Option<&AccountName> {
         self.account.as_ref()
+    }
+
+    /// Whether a `0x91` game login has been seen on this connection, valid or
+    /// not — see [`Self`]'s `game_login` field for why "seen" and not "valid".
+    pub const fn is_game_login(&self) -> bool {
+        self.game_login
     }
 
     /// Whether the conversation has run to its end.
@@ -187,14 +205,23 @@ impl<A: Accounts> LoginServer<A> {
         }
     }
 
-    /// Handle one framed packet.
+    /// Handle one already-decoded packet.
+    ///
+    /// Takes a [`ClientLoginPacket`], not raw bytes: decoding is
+    /// [`ClientLoginPacket::decode`]'s job, called exactly once by whoever
+    /// routes the connection's packets (the `server` crate's `parse_packet`).
+    /// This crate never touches a packet buffer.
     ///
     /// Unknown packets are ignored rather than fatal: a client may send `0xBE`
     /// (assist version) or `0xA4` (system info) at any point in login, and
     /// dropping the connection over them would break real clients for no
-    /// reason. The gateway has already proved the packet is well-framed, so
-    /// ignoring one is safe — the stream is still aligned.
-    pub fn handle(&mut self, session: &mut LoginSession, packet: &[u8], now: Instant) -> Response {
+    /// reason.
+    pub fn handle(
+        &mut self,
+        session: &mut LoginSession,
+        packet: ClientLoginPacket,
+        now: Instant,
+    ) -> Response {
         match self.try_handle(session, packet, now) {
             Ok(response) => response,
             Err(reason) => Response::Close(reason),
@@ -203,40 +230,23 @@ impl<A: Accounts> LoginServer<A> {
 
     /// [`Self::handle`]'s body. A `Result` so every fatal path carries why it
     /// is fatal, rather than each site warning ad hoc and returning a bare
-    /// [`Response::Close`] — which had already let one decode failure
-    /// (`0xA0`) through without logging anything at all.
+    /// [`Response::Close`].
     ///
-    /// The login conversation is a state machine, so this reads as one:
-    /// decode, peel off the packets that arrive independent of where the
-    /// conversation has got to, then match the *pair* of (current state,
-    /// packet) against the transitions the protocol defines. Each defined
-    /// transition hands back both the response and the state that follows
-    /// it — the state to move to is never a side effect buried in a handler,
-    /// it is the arm's return value. Any pairing the protocol does not
-    /// define — a stray `0xA0` before the shard list, a second `0x80` — has
-    /// no arm, and falls into the catch-all as "out of order".
+    /// The login conversation is a state machine, so this reads as one: peel
+    /// off the packets that arrive independent of where the conversation has
+    /// got to, then match the *pair* of (current state, packet) against the
+    /// transitions the protocol defines. Each defined transition hands back
+    /// both the response and the state that follows it — the state to move
+    /// to is never a side effect buried in a handler, it is the arm's return
+    /// value. Any pairing the protocol does not define — a stray `0xA0`
+    /// before the shard list, a second `0x80` — has no arm, and falls into
+    /// the catch-all as "out of order".
     fn try_handle(
         &mut self,
         session: &mut LoginSession,
-        packet: &[u8],
+        packet: ClientLoginPacket,
         now: Instant,
     ) -> Result<Response, Reason> {
-        let packet =
-            ClientLoginPacket::decode(packet, session.version).map_err(|error| match error {
-                ClientLoginDecodeError::AccountLogin(error) => {
-                    warn!(%error, "malformed 0x80");
-                    Reason("malformed 0x80")
-                }
-                ClientLoginDecodeError::SelectShard(error) => {
-                    warn!(%error, "malformed 0xA0");
-                    Reason("malformed 0xA0")
-                }
-                ClientLoginDecodeError::GameServerLogin(error) => {
-                    warn!(%error, "malformed 0x91");
-                    Reason("malformed 0x91")
-                }
-            })?;
-
         // These arrive at any point in the conversation, so they are not
         // part of the state transition table below — handling them does not
         // change what packet the login state machine is waiting for next.
@@ -374,16 +384,21 @@ impl<A: Accounts> LoginServer<A> {
     }
 
     /// Handle `0x91` from [`LoginSessionState::Fresh`]. Unlike the other two
-    /// handlers this still mutates `session` directly for `version` and
-    /// `account`: those aren't state-machine state, they're facts the
-    /// session accumulates along the way and character creation needs later
-    /// on this same connection.
+    /// handlers this still mutates `session` directly for `version`,
+    /// `account` and `game_login`: those aren't state-machine state, they're
+    /// facts the session accumulates along the way and character creation (or
+    /// the caller's compression flag) needs later on this same connection.
     fn on_game_login(
         &mut self,
         session: &mut LoginSession,
         login: GameServerLogin,
         now: Instant,
     ) -> (Response, LoginSessionState) {
+        // Set regardless of what follows: a game socket is compressed from the
+        // moment `CONNECT_GAME` arrives, not only once the key and password
+        // check out — see the field's doc comment.
+        session.game_login = true;
+
         // Sphere skips these four bytes entirely and re-verifies the password.
         // We check them: it costs nothing and it means the game port cannot be
         // reached without going through the login server first, which closes
@@ -531,6 +546,16 @@ mod tests {
         .encode()
     }
 
+    /// Decode a fixture the way `parse_packet` in `shard.rs` would, so tests
+    /// build packets the same way `handle`'s only real caller does. The
+    /// version is fixed rather than threaded from a `LoginSession` because
+    /// none of this module's `decode_body` impls read it — only encoding
+    /// varies by version here.
+    fn pkt(bytes: &[u8]) -> ClientLoginPacket {
+        ClientLoginPacket::decode(bytes, ClientVersion::OLDEST)
+            .expect("test fixture is a valid encoding")
+    }
+
     /// Take an already-authenticated session through shard select to the relay.
     fn relay_key_from(
         server: &mut LoginServer<DevAccounts>,
@@ -538,7 +563,7 @@ mod tests {
         now: Instant,
     ) -> u32 {
         let Response::SendThenClose(relay) =
-            server.handle(session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
@@ -549,11 +574,11 @@ mod tests {
     fn relay_key(server: &mut LoginServer<DevAccounts>, now: Instant) -> u32 {
         let mut session = modern_session();
         assert!(matches!(
-            server.handle(&mut session, &login("admin", "hunter2"), now),
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
             Response::Send(_)
         ));
         let Response::SendThenClose(relay) =
-            server.handle(&mut session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
@@ -567,14 +592,15 @@ mod tests {
 
         // Login connection.
         let mut session = modern_session();
-        let Response::Send(shards) = server.handle(&mut session, &login("admin", "hunter2"), now)
+        let Response::Send(shards) =
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), now)
         else {
             panic!("expected the shard list");
         };
         assert_eq!(shards[0], 0xA8);
 
         let Response::SendThenClose(relay) =
-            server.handle(&mut session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
@@ -588,7 +614,8 @@ mod tests {
             account: RawAccountName("admin".to_owned()),
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
-        let Response::Send(characters) = server.handle(&mut session, &game_login.encode(), now)
+        let Response::Send(characters) =
+            server.handle(&mut session, pkt(&game_login.encode()), now)
         else {
             panic!("expected the character list");
         };
@@ -607,7 +634,7 @@ mod tests {
 
         let mut session = modern_session();
         assert_eq!(session.account(), None, "nothing is known before the login");
-        let _ = server.handle(&mut session, &game_login(key, "admin"), now);
+        let _ = server.handle(&mut session, pkt(&game_login(key, "admin")), now);
         assert_eq!(session.account().map(|a| a.0.as_str()), Some("admin"));
     }
 
@@ -615,7 +642,7 @@ mod tests {
     fn a_bad_password_is_refused_and_closed() {
         let mut server = server();
         let mut session = modern_session();
-        let response = server.handle(&mut session, &login("admin", "wrong"), Instant::now());
+        let response = server.handle(&mut session, pkt(&login("admin", "wrong")), Instant::now());
         assert_eq!(
             response,
             Response::SendThenClose(vec![0x82, DenyReason::BadPassword.wire_code()])
@@ -626,7 +653,7 @@ mod tests {
     fn a_blocked_account_hears_blocked() {
         let mut server = server();
         let mut session = modern_session();
-        let response = server.handle(&mut session, &login("banned", "x"), Instant::now());
+        let response = server.handle(&mut session, pkt(&login("banned", "x")), Instant::now());
         assert_eq!(
             response,
             Response::SendThenClose(vec![0x82, DenyReason::Blocked.wire_code()])
@@ -641,12 +668,12 @@ mod tests {
         let mut server = server();
         let unknown = server.handle(
             &mut LoginSession::new(),
-            &login("nobody", "x"),
+            pkt(&login("nobody", "x")),
             Instant::now(),
         );
         let bad = server.handle(
             &mut LoginSession::new(),
-            &login("admin", "x"),
+            pkt(&login("admin", "x")),
             Instant::now(),
         );
         assert_ne!(unknown, bad);
@@ -658,7 +685,7 @@ mod tests {
         let mut session = modern_session();
         let response = server.handle(
             &mut session,
-            &SelectShard { index: 1 }.encode(),
+            pkt(&SelectShard { index: 1 }.encode()),
             Instant::now(),
         );
         assert!(matches!(response, Response::Close(_)));
@@ -670,12 +697,12 @@ mod tests {
         let mut session = modern_session();
         let now = Instant::now();
         assert!(matches!(
-            server.handle(&mut session, &login("admin", "hunter2"), now),
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
             Response::Send(_)
         ));
         assert!(
             matches!(
-                server.handle(&mut session, &login("admin", "hunter2"), now),
+                server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
                 Response::Close(_)
             ),
             "a second 0x80 means the client lost the plot"
@@ -687,9 +714,9 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let now = Instant::now();
-        let _ = server.handle(&mut session, &login("admin", "hunter2"), now);
+        let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(&mut session, &SelectShard { index: 0 }.encode(), now),
+            server.handle(&mut session, pkt(&SelectShard { index: 0 }.encode()), now),
             Response::Close(_)
         ));
     }
@@ -699,9 +726,9 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let now = Instant::now();
-        let _ = server.handle(&mut session, &login("admin", "hunter2"), now);
+        let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(&mut session, &SelectShard { index: 99 }.encode(), now),
+            server.handle(&mut session, pkt(&SelectShard { index: 99 }.encode()), now),
             Response::Close(_)
         ));
     }
@@ -717,7 +744,7 @@ mod tests {
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut session, &forged.encode(), Instant::now()),
+            server.handle(&mut session, pkt(&forged.encode()), Instant::now()),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "a right password with a wrong key is still refused"
         );
@@ -735,11 +762,11 @@ mod tests {
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert!(matches!(
-            server.handle(&mut modern_session(), &game_login.encode(), now),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
             Response::Send(_)
         ));
         assert_eq!(
-            server.handle(&mut modern_session(), &game_login.encode(), now),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "someone who read the key off the wire gets nothing"
         );
@@ -758,9 +785,9 @@ mod tests {
         let now = Instant::now();
 
         let mut session = modern_session();
-        let _ = server.handle(&mut session, &login("alice", "a"), now);
+        let _ = server.handle(&mut session, pkt(&login("alice", "a")), now);
         let Response::SendThenClose(relay) =
-            server.handle(&mut session, &SelectShard { index: 1 }.encode(), now)
+            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
@@ -772,7 +799,7 @@ mod tests {
             password: RawPlaintextPassword("b".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut modern_session(), &bob.encode(), now),
+            server.handle(&mut modern_session(), pkt(&bob.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "a valid key plus valid credentials for a different account is not a login"
         );
@@ -791,7 +818,7 @@ mod tests {
         };
         let too_late = issued + crate::auth::DEFAULT_TTL + std::time::Duration::from_secs(1);
         assert_eq!(
-            server.handle(&mut modern_session(), &game_login.encode(), too_late),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), too_late),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()])
         );
     }
@@ -809,7 +836,7 @@ mod tests {
             password: RawPlaintextPassword("wrong".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut modern_session(), &game_login.encode(), now),
+            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadPassword.wire_code()])
         );
     }
@@ -837,7 +864,8 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::TOL),
         });
-        let Response::Send(_) = server.handle(&mut first, &login("admin", "hunter2"), now) else {
+        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now)
+        else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
@@ -850,7 +878,7 @@ mod tests {
             "the game socket carries no version of its own"
         );
 
-        let Response::Send(list) = server.handle(&mut second, &game_login(key, "admin"), now)
+        let Response::Send(list) = server.handle(&mut second, pkt(&game_login(key, "admin")), now)
         else {
             panic!("expected the character list");
         };
@@ -883,13 +911,15 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(2, 0, 0, 0)),
         });
-        let Response::Send(_) = server.handle(&mut first, &login("admin", "hunter2"), now) else {
+        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now)
+        else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
 
         let mut second = LoginSession::new();
-        let Response::Send(_) = server.handle(&mut second, &game_login(key, "admin"), now) else {
+        let Response::Send(_) = server.handle(&mut second, pkt(&game_login(key, "admin")), now)
+        else {
             panic!("expected the character list");
         };
         assert_eq!(second.version(), ClientVersion::new(2, 0, 0, 0));
@@ -913,7 +943,7 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(4, 0, 0, 0)),
         });
-        let Response::Send(list) = server.handle(&mut modern, &login("admin", "hunter2"), now)
+        let Response::Send(list) = server.handle(&mut modern, pkt(&login("admin", "hunter2")), now)
         else {
             panic!("expected the shard list");
         };
@@ -924,7 +954,8 @@ mod tests {
             value: 1,
             version: Some(ClientVersion::new(3, 255, 255, 255)),
         });
-        let Response::Send(list) = server.handle(&mut ancient, &login("admin", "hunter2"), now)
+        let Response::Send(list) =
+            server.handle(&mut ancient, pkt(&login("admin", "hunter2")), now)
         else {
             panic!("expected the shard list");
         };
@@ -954,7 +985,7 @@ mod tests {
         let report = ClientVersionReport {
             raw: "7.0.45.65".to_owned(),
         };
-        let _ = server.handle(&mut session, &report.encode(), Instant::now());
+        let _ = server.handle(&mut session, pkt(&report.encode()), Instant::now());
         assert_eq!(session.version(), ClientVersion::new(7, 0, 45, 65));
     }
 
@@ -969,7 +1000,7 @@ mod tests {
         let report = ClientVersionReport {
             raw: "3.0.7b".to_owned(),
         };
-        let _ = server.handle(&mut session, &report.encode(), Instant::now());
+        let _ = server.handle(&mut session, pkt(&report.encode()), Instant::now());
         assert_eq!(session.version(), ClientVersion::TOL, "unchanged");
     }
 
@@ -981,7 +1012,7 @@ mod tests {
             raw: "garbage".to_owned(),
         };
         assert_eq!(
-            server.handle(&mut session, &report.encode(), Instant::now()),
+            server.handle(&mut session, pkt(&report.encode()), Instant::now()),
             Response::Idle
         );
     }
@@ -999,7 +1030,7 @@ mod tests {
             vec![0x73, 0x00],             // ping
         ] {
             assert_eq!(
-                server.handle(&mut session, &packet, Instant::now()),
+                server.handle(&mut session, pkt(&packet), Instant::now()),
                 Response::Idle,
                 "0x{:02X} must not drop the connection",
                 packet[0]
@@ -1007,28 +1038,12 @@ mod tests {
         }
         // And login still works afterwards.
         assert!(matches!(
-            server.handle(&mut session, &login("admin", "hunter2"), Instant::now()),
+            server.handle(
+                &mut session,
+                pkt(&login("admin", "hunter2")),
+                Instant::now()
+            ),
             Response::Send(_)
-        ));
-    }
-
-    #[test]
-    #[should_panic(expected = "packet is empty")]
-    fn an_empty_packet_is_a_framing_bug_not_a_client_input() {
-        // Real packets never arrive empty: `frame_client_packet`'s shortest
-        // frame is the one-byte id. An empty slice here means whoever called
-        // `handle` skipped framing, which is a server bug worth a panic, not
-        // silent Idle.
-        let mut server = server();
-        let _ = server.handle(&mut LoginSession::new(), &[], Instant::now());
-    }
-
-    #[test]
-    fn a_malformed_login_is_fatal() {
-        let mut server = server();
-        assert!(matches!(
-            server.handle(&mut LoginSession::new(), &[0x80, 0x01], Instant::now()),
-            Response::Close(_)
         ));
     }
 }
