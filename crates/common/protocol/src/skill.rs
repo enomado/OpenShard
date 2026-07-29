@@ -10,8 +10,8 @@
 //! and its `ChangeSkillLock`/`TextCommand` handlers.
 
 use crate::codec::PacketWriter;
+use crate::error::{expect_id, DecodeError};
 use crate::feature::Feature;
-use crate::login::{expect_id, LoginDecodeError};
 use crate::version::ClientVersion;
 
 /// How the skill window is set to train a skill — ServUO's `SkillLock`. The wire
@@ -150,7 +150,7 @@ impl SkillLockRequest {
     pub const ID: u8 = 0x3A;
 
     /// Decode the incoming skill-lock request.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         // The wire carries the id as a word; every skill id fits a byte.
@@ -178,7 +178,7 @@ impl UseSkillRequest {
     /// Decode a `0x12`, returning the skill request if that is what it is. Any
     /// other command type reads as `None` rather than an error, so the dispatcher
     /// can pass on the ones it does not handle (an emote, a `go`, an open-book).
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         let kind = reader.u8()?;

@@ -60,6 +60,7 @@ mod containers;
 mod context;
 mod direction;
 mod encoded;
+mod error;
 mod feature;
 mod feedback;
 mod gump;
@@ -89,6 +90,7 @@ pub use containers::{
 pub use context::{encode_context_menu, ContextMenuRequest, ContextMenuSelect};
 pub use direction::{Direction, Facing, RUNNING_BIT};
 pub use encoded::EncodedCommand;
+pub use error::{DecodeError, WrongPacket};
 pub use feature::{Feature, FeatureSet};
 pub use feedback::{
     encode_action, encode_graphical_effect, encode_hued_effect, encode_new_action,
@@ -105,10 +107,10 @@ pub use items::{
 pub use login::{
     encode_character_list, encode_character_list_update, encode_delete_reject, encode_login_denied,
     encode_relay, encode_shard_list, encode_supported_features, AccountLogin, CharacterEntry,
-    ClientVersionReport, DeleteCharacter, DeleteResult, DenyReason, GameServerLogin,
-    LoginDecodeError, SelectShard, ShardEntry, StartLocation, WrongPacket, ACCOUNT_NAME_LENGTH,
-    AOS_FEATURE_FLAGS, CHARACTER_NAME_LENGTH, CLF_CONTEXT_MENU, CLF_TOOLTIPS, MAX_SHARDS,
-    MIN_CHARACTER_SLOTS, ML_FEATURE_FLAGS, PASSWORD_LENGTH, SE_FEATURE_FLAGS, SHARD_NAME_LENGTH,
+    ClientVersionReport, DeleteCharacter, DeleteResult, DenyReason, GameServerLogin, SelectShard,
+    ShardEntry, StartLocation, ACCOUNT_NAME_LENGTH, AOS_FEATURE_FLAGS, CHARACTER_NAME_LENGTH,
+    CLF_CONTEXT_MENU, CLF_TOOLTIPS, MAX_SHARDS, MIN_CHARACTER_SLOTS, ML_FEATURE_FLAGS,
+    PASSWORD_LENGTH, SE_FEATURE_FLAGS, SHARD_NAME_LENGTH,
 };
 pub use mobile::{
     encode_open_paperdoll, encode_remove, encode_stat_locks, Equipment, LookRequest,

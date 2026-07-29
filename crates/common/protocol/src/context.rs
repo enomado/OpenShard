@@ -15,7 +15,7 @@
 //! position in the list, so the world can map it to an action by index.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// `0xBF` subcommand `0x13` — the client asking for an object's context menu.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -33,7 +33,7 @@ impl ContextMenuRequest {
     /// Decode a `0xBF`, returning the request if that is its subcommand. Any other
     /// `0xBF` reads as `None`, so the dispatcher can pass on the ones it does not
     /// handle — the same shape as [`CastSpellRequest`](crate::CastSpellRequest).
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         if reader.u16()? != Self::SUBCOMMAND {
@@ -61,7 +61,7 @@ impl ContextMenuSelect {
     pub const SUBCOMMAND: u16 = 0x15;
 
     /// Decode a `0xBF`, returning the selection if that is its subcommand.
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         if reader.u16()? != Self::SUBCOMMAND {

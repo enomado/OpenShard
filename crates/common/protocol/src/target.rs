@@ -7,7 +7,7 @@
 //! nineteen bytes each way.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 use crate::world::Point;
 
 /// The `type` byte: what kind of thing the cursor may pick. `0` restricts it to
@@ -75,7 +75,7 @@ impl TargetResponse {
     ///
     /// Layout: type, cursor id, cursor type, clicked serial, x, y, a pad byte, z,
     /// tile graphic. A cursor type of 3 — or an `x` of `0xFFFF` — is a cancel.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _type = reader.u8()?;
         let cursor_id = reader.u32()?;

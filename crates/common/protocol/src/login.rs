@@ -28,10 +28,10 @@
 //! wrong desynchronises everything after it in the packet — usually presenting
 //! as a client that silently shows an empty character list.
 
-use std::fmt;
 use std::net::Ipv4Addr;
 
-use crate::codec::{CodecError, PacketReader, PacketWriter};
+use crate::codec::{CodecError, PacketWriter};
+use crate::error::{expect_id, DecodeError};
 use crate::feature::Feature;
 use crate::version::ClientVersion;
 
@@ -43,68 +43,6 @@ pub const PASSWORD_LENGTH: usize = 30;
 pub const CHARACTER_NAME_LENGTH: usize = 30;
 /// Width of a shard name field in the 0xA8 list.
 pub const SHARD_NAME_LENGTH: usize = 32;
-
-/// A packet did not have the id it was decoded as.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct WrongPacket {
-    /// The id the decoder wanted.
-    pub expected: u8,
-    /// The id the packet actually had.
-    pub found: u8,
-}
-
-impl fmt::Display for WrongPacket {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "expected packet 0x{:02X}, found 0x{:02X}",
-            self.expected, self.found
-        )
-    }
-}
-
-impl std::error::Error for WrongPacket {}
-
-/// Decoding a login packet failed.
-#[derive(Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
-pub enum LoginDecodeError {
-    /// The packet was not the one expected.
-    WrongPacket(WrongPacket),
-    /// The body was malformed.
-    Codec(CodecError),
-}
-
-impl From<CodecError> for LoginDecodeError {
-    fn from(error: CodecError) -> Self {
-        Self::Codec(error)
-    }
-}
-
-impl fmt::Display for LoginDecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::WrongPacket(error) => error.fmt(f),
-            Self::Codec(error) => error.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for LoginDecodeError {}
-
-/// Check and strip the id byte.
-pub(crate) fn expect_id(bytes: &[u8], expected: u8) -> Result<PacketReader<'_>, LoginDecodeError> {
-    let mut reader = PacketReader::new(bytes);
-    let found = reader.u8()?;
-    if found == expected {
-        Ok(reader)
-    } else {
-        Err(LoginDecodeError::WrongPacket(WrongPacket {
-            expected,
-            found,
-        }))
-    }
-}
 
 // -- 0x80 account login ---------------------------------------------------
 
@@ -126,7 +64,7 @@ impl AccountLogin {
     pub const ID: u8 = 0x80;
 
     /// Decode a whole 0x80 packet, id included.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let account = reader.fixed_string(ACCOUNT_NAME_LENGTH)?;
         let password = reader.fixed_string(PASSWORD_LENGTH)?;
@@ -317,7 +255,7 @@ impl SelectShard {
     pub const ID: u8 = 0xA0;
 
     /// Decode a whole 0xA0 packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             index: reader.u16()?,
@@ -394,7 +332,7 @@ impl GameServerLogin {
     pub const ID: u8 = 0x91;
 
     /// Decode a whole 0x91 packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             auth_key: reader.u32()?,
@@ -586,7 +524,7 @@ impl DeleteCharacter {
     pub const ID: u8 = 0x83;
 
     /// Decode a whole 0x83 packet, id included.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         reader.skip(PASSWORD_LENGTH)?; // vestigial password field
         let slot = reader.u32()?;
@@ -668,7 +606,7 @@ impl ClientVersionReport {
     pub const MAX_LENGTH: usize = 20;
 
     /// Decode a whole 0xBD packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let declared = reader.u16()? as usize;
         // The declared length covers the id and the length field. Trusting it
@@ -720,6 +658,7 @@ impl ClientVersionReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::WrongPacket;
     use crate::packet::{client_packet_length, PacketLength};
 
     /// The `u16` a variable-length packet declares at offset 1.
@@ -771,7 +710,7 @@ mod tests {
         bytes[0] = 0x91;
         assert_eq!(
             AccountLogin::decode(&bytes),
-            Err(LoginDecodeError::WrongPacket(WrongPacket {
+            Err(DecodeError::WrongPacket(WrongPacket {
                 expected: 0x80,
                 found: 0x91,
             }))
@@ -783,7 +722,7 @@ mod tests {
         let bytes = [0x80u8, b'a', b'b'];
         assert!(matches!(
             AccountLogin::decode(&bytes),
-            Err(LoginDecodeError::Codec(_))
+            Err(DecodeError::Codec(_))
         ));
     }
 
@@ -807,7 +746,7 @@ mod tests {
         let bytes = [0x91u8; 39];
         assert!(matches!(
             DeleteCharacter::decode(&bytes),
-            Err(LoginDecodeError::WrongPacket(_))
+            Err(DecodeError::WrongPacket(_))
         ));
     }
 
@@ -1150,7 +1089,7 @@ mod tests {
         let bytes = [0xBD, 0xFF, 0xFF, b'7', 0x00];
         assert!(matches!(
             ClientVersionReport::decode(&bytes),
-            Err(LoginDecodeError::Codec(_))
+            Err(DecodeError::Codec(_))
         ));
 
         let too_short = [0xBD, 0x00, 0x00];

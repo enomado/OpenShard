@@ -12,7 +12,7 @@
 //! compression is a later optimisation, not a requirement.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// The client's white, in the 15-bit colour a gump element takes.
 pub const GUMP_WHITE: u32 = 0x7FFF;
@@ -557,7 +557,7 @@ impl GumpResponse {
     pub const ID: u8 = 0xB1;
 
     /// Decode a whole `0xB1` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         // The 0xB1 carries its own u16 length at offset 1; skip it — the framer
         // already sized the slice.

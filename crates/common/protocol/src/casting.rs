@@ -10,7 +10,7 @@
 //! `PacketHandlers.CastSpell`. There is an older text-command form (`0x12`) too;
 //! this handles the one a modern client actually sends.
 
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// `0xBF` subcommand `0x1C` — a spellbook (or macro) asking to cast a spell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -32,7 +32,7 @@ impl CastSpellRequest {
     /// gump — keyed by a subcommand word. Anything that is not `0x1C` is not a
     /// cast, and reads as `None` rather than an error, so the dispatcher can pass
     /// on the ones it does not handle.
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         let subcommand = reader.u16()?;

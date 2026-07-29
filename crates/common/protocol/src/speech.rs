@@ -10,7 +10,7 @@
 //! trip intact.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// The name field in a `0x1C` is a fixed thirty bytes.
 const NAME_LENGTH: usize = 30;
@@ -37,7 +37,7 @@ impl TalkRequest {
     pub const ID: u8 = 0x03;
 
     /// Decode a whole `0x03` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         let mode = reader.u8()?;
@@ -86,7 +86,7 @@ impl UnicodeTalkRequest {
     pub const ID: u8 = 0xAD;
 
     /// Decode a whole `0xAD` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         let mode = reader.u8()?;

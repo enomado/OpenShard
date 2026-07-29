@@ -1,7 +1,7 @@
 //! Combat packets: war mode, attacking, and a mobile's health.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// `0x72` — enter or leave war mode. 5 bytes, the same shape both ways.
 ///
@@ -19,7 +19,7 @@ impl WarModeRequest {
     pub const ID: u8 = 0x72;
 
     /// Decode a whole `0x72` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             war: reader.u8()? != 0,
@@ -44,7 +44,7 @@ impl AttackRequest {
     pub const ID: u8 = 0x05;
 
     /// Decode a whole `0x05` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             target: reader.u32()?,

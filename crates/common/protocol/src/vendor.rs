@@ -9,7 +9,7 @@
 //! prices), `0x9F` names what the player let go.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// One line of a vendor's buy list: the price and label for one stock item, in
 /// the same order as the `0x3C` contents it rides beside.
@@ -66,7 +66,7 @@ pub struct BuyReply {
 
 impl BuyReply {
     /// Decode a framed `0x3B`, header included.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, 0x3B)?;
         let _length = reader.u16()?;
         let vendor = reader.u32()?;
@@ -150,7 +150,7 @@ pub struct SellReply {
 
 impl SellReply {
     /// Decode a framed `0x9F`, header included.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, 0x9F)?;
         let _length = reader.u16()?;
         let vendor = reader.u32()?;

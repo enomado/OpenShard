@@ -15,8 +15,8 @@
 //!   client reads it and desynchronises if it is missing.
 
 use crate::codec::PacketWriter;
+use crate::error::{expect_id, DecodeError};
 use crate::feature::Feature;
-use crate::login::{expect_id, LoginDecodeError};
 use crate::version::ClientVersion;
 
 /// The container-type byte a High Seas client expects in `0x24` for a normal
@@ -38,7 +38,7 @@ impl DoubleClick {
     pub const ID: u8 = 0x06;
 
     /// Decode a whole `0x06` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             serial: reader.u32()?,

@@ -9,7 +9,7 @@
 //! `PacketHandlers.EncodedCommand` and Sphere's `Event_ExtCmd` equivalent — the
 //! two agree.
 
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// `0xD7` — a client request named by its subcommand.
 ///
@@ -44,7 +44,7 @@ impl EncodedCommand {
     /// Every field is read through the bounds-checked reader, so a truncated
     /// packet is an error rather than a panic — the length on the wire is the
     /// client's word, not this end's.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         // The packet carries its own u16 length at offset 1; the framer already
         // sized the slice, so it is read past rather than trusted.

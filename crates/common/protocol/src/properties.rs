@@ -21,7 +21,7 @@
 //! revision it was told about.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 
 /// Builder for a `0xD6` Object Property List (the "MegaCliloc" packet).
 ///
@@ -136,7 +136,7 @@ impl PropertyQueryRequest {
 
     /// Decode a whole inbound `0xD6`. Trailing bytes that do not make a full
     /// serial are ignored rather than an error — the client pads sometimes.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         let mut serials = Vec::new();

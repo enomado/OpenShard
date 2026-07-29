@@ -6,8 +6,8 @@
 
 use crate::codec::PacketWriter;
 use crate::direction::Facing;
+use crate::error::{expect_id, DecodeError};
 use crate::feature::Feature;
-use crate::login::{expect_id, LoginDecodeError};
 use crate::version::ClientVersion;
 use crate::world::Point;
 
@@ -113,7 +113,7 @@ impl LookRequest {
     pub const ID: u8 = 0x09;
 
     /// Decode a whole `0x09` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             serial: reader.u32()?,
@@ -477,7 +477,7 @@ impl StatLockRequest {
     /// Decode a `0xBF`, returning the request if that is its subcommand. Any other
     /// `0xBF` reads as `None`, so the dispatcher can pass on the ones it does not
     /// handle — the same shape as [`ContextMenuRequest`](crate::ContextMenuRequest).
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let _length = reader.u16()?;
         if reader.u16()? != Self::SUBCOMMAND {

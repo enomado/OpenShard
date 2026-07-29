@@ -8,7 +8,7 @@
 //! put it down.
 
 use crate::codec::PacketWriter;
-use crate::login::{expect_id, LoginDecodeError};
+use crate::error::{expect_id, DecodeError};
 use crate::world::Point;
 
 /// The serial a `0x08` drop carries when the item is going onto the ground
@@ -114,7 +114,7 @@ impl PickUpItem {
     pub const ID: u8 = 0x07;
 
     /// Decode a whole `0x07` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             serial: reader.u32()?,
@@ -159,7 +159,7 @@ impl DropItem {
     const GRID_FORM_LEN: usize = 15;
 
     /// Decode a whole `0x08` packet, whichever form the framer delivered.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         let serial = reader.u32()?;
         let x = reader.u16()?;
@@ -233,7 +233,7 @@ impl EquipItemRequest {
     pub const ID: u8 = 0x13;
 
     /// Decode a whole `0x13` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             item: reader.u32()?,

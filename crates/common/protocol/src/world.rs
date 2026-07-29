@@ -23,7 +23,8 @@ use std::fmt;
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
-use crate::login::{expect_id, LoginDecodeError, WrongPacket, CHARACTER_NAME_LENGTH};
+use crate::error::{expect_id, DecodeError, WrongPacket};
+use crate::login::CHARACTER_NAME_LENGTH;
 
 /// Where something is.
 ///
@@ -70,7 +71,7 @@ impl CharacterPlay {
     pub const ID: u8 = 0x5D;
 
     /// Decode a whole 0x5D packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         // A constant the client always sends. Sphere ignores it and so do we:
         // rejecting on it would be a compatibility risk for no gain.
@@ -191,14 +192,14 @@ impl CreateCharacter {
     pub const ID_HIGH_SEAS: u8 = 0xF8;
 
     /// Decode either the `0x00` or the `0xF8` create-character packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = PacketReader::new(bytes);
         let id = reader.u8()?;
         let skill_count = match id {
             Self::ID_CLASSIC => 3,
             Self::ID_HIGH_SEAS => 4,
             found => {
-                return Err(LoginDecodeError::WrongPacket(WrongPacket {
+                return Err(DecodeError::WrongPacket(WrongPacket {
                     expected: Self::ID_HIGH_SEAS,
                     found,
                 }))
@@ -473,7 +474,7 @@ impl WalkRequest {
     pub const ID: u8 = 0x02;
 
     /// Decode a whole 0x02 packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, LoginDecodeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = expect_id(bytes, Self::ID)?;
         Ok(Self {
             facing: Facing::from_bits(reader.u8()?),
@@ -736,7 +737,7 @@ mod tests {
         bytes[0] = 0x5D;
         assert!(matches!(
             CreateCharacter::decode(&bytes),
-            Err(LoginDecodeError::WrongPacket(_))
+            Err(DecodeError::WrongPacket(_))
         ));
     }
 
