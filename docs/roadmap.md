@@ -1854,9 +1854,59 @@ Roughly in dependency order, each script-first:
     is a parameter of `Walker::request` rather than a field on the walker, the
     read-site-derivation rule `equipped_weapon` follows — a mount goes on and comes off,
     and a copy here is one more thing to keep in step.
-  - [ ] **Secure trade between players** (`0x6F`) — the drag-onto-a-player trade
-    window. The `NewSecureTrade` feature gate exists in `protocol`; the handler
-    and the escrow container do not.
+  - [x] **Secure trade between players** (`0x6F`). Handing goods over by dropping
+    them on the ground and trusting the other party is the oldest scam in the
+    genre; this is the window UO answered it with, and it was the last thing
+    missing from *players interacting with each other*. Drag an item onto another
+    player within two tiles (ServUO's `InRange(Location, 2)`, tighter than
+    `ITEM_REACH`) and a window opens on both screens; either side adds and removes
+    with the ordinary drag machinery; when both boxes are ticked the goods swap
+    packs. Ported from ServUO's `SecureTrade.cs`/`SecureTradeContainer.cs`.
+
+    **The escrow is a worn container, and that is the load-bearing choice.** Each
+    party's half is an item on ServUO's own `Layer.SecureTrade` (`0x1E`, graphic
+    `0x1E5E`) carrying a `Container` — so `items::in_reach` works with nothing
+    written, since it already answers "your own worn container is always in reach"
+    and "somebody else's is at their tile", which are exactly the right rules for
+    your half of the window and theirs. Adding and taking back are
+    `drop_into_container` and `pick_up` unchanged. The price is that a worn thing
+    is drawn and saved by default, which one `TradeWindow` marker undoes in the
+    two places it must: `equipment_of` (or every onlooker's `0x78` hangs a mystery
+    box off both traders) and `inventory_of` (or the escrow *and everything in it*
+    is restored into a trade that no longer exists and can never be closed — the
+    argument `ground_items` already makes for a spell field and a moongate). It
+    also cannot be lifted, ServUO's `CheckLift`.
+
+    **A cancel is found, not announced.** ServUO revalidates every trade from
+    `Mobile.Location`'s setter — a call beside every mover, and this engine has
+    five of them. `items::validate_trades` runs once a tick over a list that is
+    almost always empty instead, the `tick/regions.rs` shape, and ends a trade
+    whose parties are no longer both online, alive, on one facet and in range.
+    The same pass is ServUO's `ClearChecks`: if the goods change after somebody
+    agreed to them, *both* boxes untick — but the contents are only fingerprinted
+    while at least one box is ticked, because an unticked pair has nothing to
+    clear and the walk is over the whole `Contained` column.
+
+    **Every ending returns the goods**, through one `cancel`: the client's own
+    close, a step out of range, a death, a logout — placed in `disconnect`
+    *before* the record and inventory are read, or the item would be in neither
+    the save nor the world — and the shutdown flush, which cancels every trade
+    before its final snapshot for the same reason. A crash without a clean stop
+    is the only remaining window, and it is the same one every unsaved second has.
+
+    Two fixes came with it, both of which the window needed and a chest also
+    wanted: `drop_into_container` and `pick_up` now tell **every** client watching
+    a container, not only the one acting (the "a second viewer must re-open to
+    refresh" limitation noted under **Containers** above), which is what makes an
+    offer visible across the window at all. **Where the references disagree this
+    follows ServUO**: Sphere pads Close/Update with a trailing `false` byte (17
+    bytes against 8 and 16) and its own `Trade_UpdateGold` reader contradicts its
+    writer about gold-versus-platinum order; ServUO is self-consistent and is what
+    a current ClassicUO is tested against. Deferred: the `NewSecureTrade`
+    gold/platinum half (actions `UpdateGold`/`UpdateLedger`), which is ServUO's
+    *account-level* virtual currency — gold is an item here, and it trades by
+    being dragged into the window like anything else; the inbound action is
+    decoded and ignored.
   - [x] **A* pathfinding**, so pursuit and homing route *around* walls instead of
     shuffling into them — the thing Sphere does badly. `movement::find_path` is a
     bounded A* over the `Terrain` (the same `can_step` the client's walk uses), with

@@ -15,16 +15,17 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::{
     encode_add_to_container, encode_container_contents, encode_drag_cancel, encode_equip,
     encode_open_container, encode_open_paperdoll, encode_remove, encode_spellbook_content,
-    ContainedItem, DragCancelReason, Point, DROP_TO_GROUND, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE,
+    encode_trade_close, encode_trade_open, encode_trade_update, ContainedItem, DragCancelReason,
+    Point, DROP_TO_GROUND, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE,
 };
 use openshard_state::components::{
     mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Corpse,
-    Decays, Decoration, Door, Equipped, Facet, Graphic, KeyValue, Lock, Name, PoisonCharges,
+    Decays, Decoration, Door, Equipped, Facet, Ghost, Graphic, KeyValue, Lock, Name, PoisonCharges,
     Position, Ridden, Riding, RuneMark, Runebook, RunebookEntry, Spellbook, Stackable, Weapon,
     RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, SPELLBOOK_GRAPHIC,
 };
 use openshard_state::sectors::in_range;
-use openshard_state::{HeldItem, Origin, Outbound, WorldState, TICKS_PER_SECOND};
+use openshard_state::{HeldItem, Origin, Outbound, TradeWindow, WorldState, TICKS_PER_SECOND};
 use tracing::{debug, warn};
 
 mod backpack;
@@ -38,6 +39,7 @@ mod equip;
 mod mounts;
 mod spawn;
 mod stack;
+mod trade;
 mod trigger;
 mod weight;
 
@@ -52,5 +54,6 @@ pub use equip::*;
 pub use mounts::*;
 pub use spawn::*;
 pub use stack::*;
+pub use trade::*;
 pub use trigger::*;
 pub use weight::*;

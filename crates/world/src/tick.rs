@@ -253,6 +253,7 @@ impl World {
                 worn: Default::default(),
                 outbox: Vec::new(),
                 open_containers: HashMap::new(),
+                trades: Vec::new(),
                 pending_targets: HashMap::new(),
                 quests: openshard_state::QuestDefs::default(),
                 dialogue: openshard_state::Dialogue::default(),
@@ -617,6 +618,11 @@ impl World {
         self.reap();
         items::decay(&mut self.state);
         items::close_doors(&mut self.state);
+        // End any trade whose two parties have walked apart, died or logged out,
+        // and untick both boxes if the goods moved after somebody agreed to them.
+        // Found rather than announced: ServUO does this from the `Location`
+        // setter, which is a call beside every one of this engine's five movers.
+        items::validate_trades(&mut self.state);
         self.maintain_spawners();
         // Notice who walked into a town or out of a dungeon: the crossing emits
         // its event and starts the region's music. Before the guards read it, and
@@ -1048,6 +1054,15 @@ impl World {
                 position,
                 container,
             } => items::drop_item(&mut self.state, connection, serial, position, container),
+            Command::TradeAction {
+                connection,
+                container,
+                accepted,
+            } => items::set_accepted(&mut self.state, connection, container, accepted),
+            Command::TradeCancel {
+                connection,
+                container,
+            } => items::cancel_by_container(&mut self.state, connection, container),
             Command::Disconnect { connection } => self.disconnect(connection),
             Command::DeleteCharacter { serial } => self.delete_character(serial),
             Command::Control { serial } => self.control(serial),
@@ -1375,6 +1390,11 @@ impl World {
         // captured the saddle that stands for it (below).
         // Forget any targeting cursor it had up: a gone mobile clicks nothing.
         self.state.pending_targets.remove(&entity);
+        // End any trade it was in, *before* the record and inventory are read
+        // below: cancelling puts both sides' offerings back in their own packs,
+        // and a trade escrow is deliberately not saved, so an item still sitting
+        // in one when the sweep runs is an item nobody gets back.
+        items::cancel_for(&mut self.state, entity);
         let serial = self.state.registry.serial_of(entity);
         let facet = self.state.facet_of(entity);
 
@@ -1453,5 +1473,7 @@ mod skills_tests;
 mod status_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod trade_tests;
 #[cfg(test)]
 mod travel_tests;

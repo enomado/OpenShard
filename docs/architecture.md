@@ -81,7 +81,7 @@ crate, owning its domain events:
 | `skills` | the skill table's rules: the band check, the gain curve, stat gain, the usable skills | `SkillUsed`, `SkillChanged`, `SkillRequested` |
 | `magic` | the 64-spell Magery table, `pay_and_roll`/`heal`/`regen_mana`, the timed stat buffs (`apply_stat_buff`/`expire_buffs`) | `SpellCast` |
 | `combat` | `damage`/`die`/`swings`/`volleys`/`attack`, poison pulses, criminal flagging, the swing formula | `MobileDamaged`, `MobileDied` |
-| `items` | spawn/drag/stack/decay/containers/equip/doors/mounts, one module each | `ItemSpawned` |
+| `items` | spawn/drag/stack/decay/containers/equip/doors/mounts/trade, one module each | `ItemSpawned` |
 | `ai` | the creature brain: LOS aggro, cached-path chase, give-up, kiting, fleeing, retaliation | — |
 | `npc` | townsfolk: generated appearance and names, the greet/face/wander beat, the keyword answers, banker and vendor services, the town guards, and the creature `spawn` rule | `MobileSpawned` |
 | `crafting` | the five craft systems and their recipes, the chance curve, the workshop scan, ore smelting, and the craft window | `ItemCrafted` |

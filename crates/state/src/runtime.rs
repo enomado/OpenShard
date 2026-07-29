@@ -28,7 +28,7 @@ use openshard_protocol::{
 use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost,
     Graphic, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name,
-    Position, Quality, Staff, Stealthing,
+    Position, Quality, Staff, Stealthing, TradeWindow,
 };
 use crate::dialogue::Dialogue;
 use crate::harvest::Banks;
@@ -440,6 +440,63 @@ pub enum Origin {
     Worn(Equipped),
 }
 
+/// One party to a secure trade: who they are and what they have agreed to.
+#[derive(Clone, Debug)]
+pub struct TradeSide {
+    /// The trading player.
+    pub player: EntityId,
+    /// Their connection, which is what a trade packet is addressed to.
+    pub connection: ConnectionId,
+    /// Their escrow container.
+    pub container: EntityId,
+    /// Its serial — the id the client names the window by, and the only handle a
+    /// `0x6F` from the client carries.
+    pub container_serial: Serial,
+    /// Whether their checkbox is ticked.
+    pub accepted: bool,
+}
+
+/// Two players exchanging goods, and the two escrow containers between them.
+///
+/// Nothing moves until both sides have ticked; every other ending puts each
+/// side's offering back in its own pack. Live only — a trade is transient, like
+/// a cast in flight or a spell field, and is never saved.
+#[derive(Clone, Debug)]
+pub struct Trade {
+    /// The player who started it, by dropping something on the other.
+    pub from: TradeSide,
+    /// The player it was offered to.
+    pub to: TradeSide,
+    /// What was in the two escrows when a checkbox was last ticked.
+    ///
+    /// ServUO clears both boxes from the container's own `OnItemAdded`/
+    /// `OnItemRemoved` — a call beside every mutation, the pattern this engine
+    /// avoids. The contents are diffed against this instead, and only while
+    /// somebody has actually ticked: an unticked box has nothing to clear, which
+    /// is what keeps the check off the common path.
+    pub witnessed: Vec<Serial>,
+}
+
+impl Trade {
+    /// The side `player` is on, and the other one.
+    #[must_use]
+    pub fn sides_for(&self, player: EntityId) -> Option<(&TradeSide, &TradeSide)> {
+        if self.from.player == player {
+            Some((&self.from, &self.to))
+        } else if self.to.player == player {
+            Some((&self.to, &self.from))
+        } else {
+            None
+        }
+    }
+
+    /// Whether `player` is one of the two parties.
+    #[must_use]
+    pub fn involves(&self, player: EntityId) -> bool {
+        self.from.player == player || self.to.player == player
+    }
+}
+
 /// The world's runtime state — the data every gameplay system operates on.
 ///
 /// A plain value with public fields: it is a data carrier, not an encapsulation
@@ -508,6 +565,12 @@ pub struct WorldState {
     /// an item consumed as a reagent, one decaying inside — can be pushed to the
     /// clients looking at it. A connection's opens are cleared on logout.
     pub open_containers: HashMap<Serial, HashSet<ConnectionId>>,
+    /// Every secure trade in progress.
+    ///
+    /// A `Vec` and not a map because there is almost never one: it is scanned
+    /// whole once a tick to find a trade whose parties have walked apart, which
+    /// is cheaper than the region diff it copies, and a player is in at most one.
+    pub trades: Vec<Trade>,
     /// Mobiles that have a targeting cursor up, and what the click is for. A `.tele`
     /// raises one; the `0x6C` answer looks here to know what to do with the spot.
     pub pending_targets: HashMap<EntityId, TargetPurpose>,
@@ -1827,6 +1890,12 @@ impl WorldState {
         items
             .iter()
             .filter_map(|&item| {
+                // A trade escrow is worn so that reach and dropping-in work with
+                // no new machinery, but it is not clothing: drawing it hangs a
+                // mystery box off both traders on every onlooker's screen.
+                if self.registry.has::<TradeWindow>(item) {
+                    return None;
+                }
                 let serial = self.registry.serial_of(item)?;
                 let worn = self.registry.get::<Equipped>(item)?;
                 let Graphic { id, hue } = *self.registry.get::<Graphic>(item)?;

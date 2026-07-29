@@ -42,6 +42,13 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     }
+    // Nor is the trade window itself, which is a worn container and would
+    // otherwise lift like any other — ServUO's `CheckLift` refusing outright.
+    // What is *inside* it lifts normally; that is how an offer is taken back.
+    if state.registry.has::<TradeWindow>(item) {
+        reject_drag(state, connection, DragCancelReason::CannotLift);
+        return;
+    }
     // Nor is somebody's hair. See `FIXED_LAYERS`.
     if state
         .registry
@@ -107,9 +114,12 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
             spawn_contained_leftover(state, item, total - amount, contained);
             set_stack_amount(state, item, amount);
         }
-        // Out of a container. The client with the gump open removes the lifted
-        // item from the gump itself; the server just drops the containment.
+        // Out of a container. The lifter's own client takes it out of the gump
+        // itself, but anybody *else* looking in has to be told — a second viewer
+        // of a chest, and both parties to a trade, where watching the other side
+        // take something back is the whole point.
         note_looter(state, contained.container, player);
+        tell_watchers_removed_except(state, contained.container, item_serial, Some(connection));
         state.registry.remove::<Contained>(item);
         state.held.insert(
             connection,
@@ -255,11 +265,15 @@ pub fn drop_into_container(
             encode_add_to_container(record, container, version),
         );
     }
+    // And everyone else looking into the same container, which is what makes an
+    // offer visible across a trade window.
+    tell_watchers_updated_except(state, container_serial, held.entity, Some(connection));
     debug!(container, "dropped into a container");
 }
 
-/// A drop onto another item: into it if it is a container, merged with it if
-/// it is an identical stack, refused otherwise.
+/// A drop onto another item *or another player*: into it if it is a container,
+/// merged with it if it is an identical stack, offered as a trade if it is
+/// somebody, refused otherwise.
 pub fn drop_onto_item(
     state: &mut WorldState,
     connection: ConnectionId,
@@ -280,6 +294,12 @@ pub fn drop_onto_item(
         }
         Some(target) if can_stack(state, held.entity, target) => {
             merge_onto(state, connection, held, target);
+        }
+        // Dropping something on a *person* opens the secure trade window. Only
+        // a player: a creature or a shopkeeper is a body too, and dropping on
+        // one still bounces exactly as it always did.
+        Some(target) if is_player(state, target) => {
+            offer(state, connection, held, target);
         }
         _ => bounce(state, connection, held, DragCancelReason::Other),
     }

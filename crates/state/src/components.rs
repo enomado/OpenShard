@@ -112,6 +112,22 @@ pub struct Equipped {
     pub layer: u8,
 }
 
+/// Marks a container as one half of a secure trade window.
+///
+/// A trade escrow is an ordinary [`Container`] worn on a layer no player can
+/// reach, which is what makes reach, dropping in and lifting out work with no
+/// new machinery. This marker is the one fact three places have to know, rather
+/// than a magic layer number written down three times:
+///
+/// - it is **not drawn** — `WorldState::equipment_of` skips it, or every onlooker
+///   sees a mystery box hanging off both traders' paperdolls;
+/// - it is **not saved** — the inventory sweep skips it and everything in it,
+///   for the reason a spell field is skipped: a trade is transient, and a
+///   restored one would be an escrow nobody can ever close;
+/// - it **cannot be lifted**, which is ServUO's `CheckLift` refusing outright.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TradeWindow;
+
 /// Marks an item as one that stacks: two of them of the same graphic and hue
 /// are one pile, not two objects.
 ///

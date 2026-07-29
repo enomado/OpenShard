@@ -74,6 +74,7 @@ mod skill;
 mod speech;
 mod spellbook;
 mod target;
+mod trade;
 mod vendor;
 mod version;
 mod world;
@@ -131,6 +132,9 @@ pub use speech::{
 };
 pub use spellbook::encode_spellbook_content;
 pub use target::{encode_target_cursor, encode_target_cursor_object, TargetResponse};
+pub use trade::{
+    encode_trade_close, encode_trade_open, encode_trade_update, SecureTradeAction, SECURE_TRADE,
+};
 pub use vendor::{
     encode_buy_list, encode_sell_list, BuyLine, BuyReply, Purchase, Sale, SellLine, SellReply,
 };

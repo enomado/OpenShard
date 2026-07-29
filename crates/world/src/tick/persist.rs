@@ -8,7 +8,7 @@ use openshard_state::components::{
     DoneQuest, Escortable, Field, Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges,
     Poisoned, Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark,
     Runebook, RunebookEntry, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title,
-    Trap, TrapKind, Vendor,
+    TradeWindow, Trap, TrapKind, Vendor,
 };
 
 impl World {
@@ -62,6 +62,15 @@ impl World {
             return;
         }
         self.take_snapshot();
+    }
+
+    /// End every secure trade in progress, returning both sides' offerings.
+    ///
+    /// The shutdown path calls this before its final snapshot: an escrow is not
+    /// saved, so goods left in one when the sweep runs would be lost. Outside
+    /// shutdown a trade ends by itself — see `items::validate_trades`.
+    pub fn cancel_all_trades(&mut self) {
+        items::cancel_all_trades(&mut self.state);
     }
 
     /// Take a snapshot now, whatever the cadence says.
@@ -177,6 +186,17 @@ impl World {
 
         for (item, worn) in registry.query::<Equipped>() {
             if worn.mobile != owner {
+                continue;
+            }
+            // A secure trade escrow is worn, but it is not the character's — it
+            // is the transient half of a conversation, and saving it (with the
+            // goods inside, since the walk below recurses into every container)
+            // would restore an escrow to a trade that no longer exists and can
+            // never be closed. The argument `ground_items` makes for a spell
+            // field and a moongate. The items are safe because every path that
+            // ends a trade puts them back in the two packs first, including the
+            // logout that reaches this function.
+            if registry.has::<TradeWindow>(item) {
                 continue;
             }
             // The saddle *is* saved, on the mount layer like any worn item: it

@@ -61,8 +61,9 @@ pub use components::{
     Murders, Name, NightHome, Npc, Pacified, PoisonCharges, Poisoned, Position, Resistance,
     RuneMark, Runebook, RunebookEntry, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable,
     Stamina, StatLock, StatLocks, StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool,
-    Trap, TrapKind, DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, MOONGATE_GRAPHIC,
-    MOONGATE_REACH, POISON_POTION_GRAPHIC, RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC,
+    TradeWindow, Trap, TrapKind, DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT,
+    MOONGATE_GRAPHIC, MOONGATE_REACH, POISON_POTION_GRAPHIC, RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES,
+    RUNEBOOK_GRAPHIC,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
@@ -71,8 +72,8 @@ pub use region::{Region, RegionFlags, RegionRect, Regions};
 pub use rng::Rng;
 pub use runtime::{
     Action, CastStyle, CraftGumpContext, CraftGumpPage, FacetState, Gameplay, HeldItem, Origin,
-    Outbound, QuestGumpContext, QuestSection, TargetPurpose, TooltipMode, WorldState,
-    TICKS_PER_SECOND,
+    Outbound, QuestGumpContext, QuestSection, TargetPurpose, TooltipMode, Trade, TradeSide,
+    WorldState, TICKS_PER_SECOND,
 };
 pub use sectors::{distance, in_range, Sectors, SECTOR_SIZE, VIEW_RANGE};
 pub use skill::{Skill, SkillInfo, StatCode, SKILLS, SKILL_COUNT};

@@ -313,6 +313,12 @@ pub(crate) async fn run_shard(
     // process exits. This is the one moment a lost write costs a player real value,
     // so unlike the per-tick handoff it is *awaited*. Dropping the sender ends the
     // save task's receive loop once it has drained what is left.
+    //
+    // End every trade first. A trade escrow is deliberately not saved — a
+    // restored one would be a window nobody can close — so the goods inside one
+    // have to be back in the two packs *before* the sweep reads them, or a clean
+    // stop taken mid-trade costs both parties whatever they had offered.
+    world.cancel_all_trades();
     world.take_snapshot();
     for snapshot in world.drain_saves() {
         let _ = saves.send(snapshot);

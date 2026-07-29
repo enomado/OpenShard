@@ -589,12 +589,29 @@ pub fn remove_from_stack(
 /// the same "forget that" the interest system draws with, so a reagent consumed
 /// out of an open pack disappears from the gump live.
 pub(crate) fn tell_watchers_removed(state: &mut WorldState, container: Serial, item: Serial) {
+    tell_watchers_removed_except(state, container, item, None);
+}
+
+/// [`tell_watchers_removed`], skipping one connection.
+///
+/// The connection to skip is the one that *lifted* the item: its client already
+/// has the thing on its cursor, and a `0x1D` for an item it is dragging reads as
+/// the object going away underneath it.
+pub(crate) fn tell_watchers_removed_except(
+    state: &mut WorldState,
+    container: Serial,
+    item: Serial,
+    except: Option<ConnectionId>,
+) {
     let watchers: Vec<ConnectionId> = state
         .open_containers
         .get(&container)
         .map(|w| w.iter().copied().collect())
         .unwrap_or_default();
     for connection in watchers {
+        if Some(connection) == except {
+            continue;
+        }
         state.send(connection, encode_remove(item.raw()));
     }
 }
@@ -602,6 +619,22 @@ pub(crate) fn tell_watchers_removed(state: &mut WorldState, container: Serial, i
 /// Tell every client with `container` open that an item in it changed — a dipped
 /// stack's new amount — by re-sending its `0x25` record.
 pub(crate) fn tell_watchers_updated(state: &mut WorldState, container: Serial, entity: EntityId) {
+    tell_watchers_updated_except(state, container, entity, None);
+}
+
+/// [`tell_watchers_updated`], skipping one connection — the one already told.
+///
+/// `0x25` both adds and updates, so this is also how an item that has just
+/// *arrived* in a container appears in everyone else's open gump. Without it a
+/// second viewer sees nothing until they reopen, which is a tolerable limitation
+/// for a chest and a fatal one for a trade window: the whole point is watching
+/// what the other party puts down.
+pub(crate) fn tell_watchers_updated_except(
+    state: &mut WorldState,
+    container: Serial,
+    entity: EntityId,
+    except: Option<ConnectionId>,
+) {
     let Some(record) = contained_record(state, entity) else {
         return;
     };
@@ -611,6 +644,9 @@ pub(crate) fn tell_watchers_updated(state: &mut WorldState, container: Serial, e
         .map(|w| w.iter().copied().collect())
         .unwrap_or_default();
     for connection in watchers {
+        if Some(connection) == except {
+            continue;
+        }
         let version = state
             .players
             .get(&connection)

@@ -36,8 +36,9 @@ use openshard_protocol::{
     AttackRequest, CastSpellRequest, CharacterPlay, ClientVersion, ContextMenuRequest,
     ContextMenuSelect, CreateCharacter, DeleteCharacter, DeleteResult, DoubleClick, DropItem,
     EncodedCommand, EquipItemRequest, GameServerLogin, GumpResponse, LookRequest, PickUpItem,
-    Point, PropertyQueryRequest, SkillLock, SkillLockRequest, StartLocation, StatLockRequest,
-    TalkRequest, TargetResponse, UnicodeTalkRequest, UseSkillRequest, WalkRequest, WarModeRequest,
+    Point, PropertyQueryRequest, SecureTradeAction, SkillLock, SkillLockRequest, StartLocation,
+    StatLockRequest, TalkRequest, TargetResponse, UnicodeTalkRequest, UseSkillRequest, WalkRequest,
+    WarModeRequest,
 };
 use openshard_world::{
     Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TileData, World,
