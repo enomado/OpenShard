@@ -812,7 +812,7 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
 mod tests {
     use super::*;
     use openshard_gateway::ConnectionId;
-    use openshard_protocol::{AccessLevel, ClientVersion};
+    use openshard_protocol::{access::AccessLevel, version::ClientVersion};
     use openshard_world::Position;
     use std::time::Instant;
 

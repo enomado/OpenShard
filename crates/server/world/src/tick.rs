@@ -46,7 +46,12 @@ use openshard_protocol::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point,
     Season, WalkAck, WalkReject, WalkRequest, DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH,
 };
-use openshard_protocol::{AccessLevel, ClientVersion, Direction, Facing, Feature};
+use openshard_protocol::{
+    access::AccessLevel,
+    direction::{Direction, Facing},
+    feature::Feature,
+    version::ClientVersion,
+};
 use tracing::{debug, info, warn};
 
 use openshard_state::components::{
@@ -1227,7 +1232,7 @@ impl World {
     }
 
     /// Send a pack-built gump to a mobile's client — the pack-facing counterpart
-    /// of the admin menu's own `encode_gump_display`. Silent if the serial names
+    /// of the admin menu's own `GumpDisplay`. Silent if the serial names
     /// no mobile, or it has no client to draw on.
     fn show_gump(
         &mut self,

@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use openshard_protocol::ClientVersion;
+use openshard_protocol::version::ClientVersion;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -372,7 +372,7 @@ impl From<ConnectionError> for io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openshard_protocol::SEED_COMMAND;
+    use openshard_protocol::seed::SEED_COMMAND;
 
     fn modern_seed() -> Vec<u8> {
         let mut bytes = vec![SEED_COMMAND];

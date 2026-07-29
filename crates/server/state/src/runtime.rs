@@ -28,7 +28,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{LocalizedMessage, SpokenMessage, NO_GRAPHIC, SYSTEM_SERIAL};
 use openshard_protocol::wire::SoundId;
 use openshard_protocol::world::{PlayerUpdate, Point};
-use openshard_protocol::{AccessLevel, ClientVersion, Feature};
+use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
@@ -918,7 +918,7 @@ impl WorldState {
         let Some(direction) = openshard_movement::direction_toward(from, to) else {
             return; // standing on the same tile: no way to face
         };
-        let facing = openshard_protocol::Facing::walking(direction);
+        let facing = openshard_protocol::direction::Facing::walking(direction);
         if self.registry.get::<Heading>(mobile).map(|h| h.0) == Some(facing) {
             return;
         }

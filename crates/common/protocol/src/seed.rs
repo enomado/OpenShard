@@ -14,7 +14,7 @@
 //!   carries an `m_newseed` flag to the next read. TCP is a stream; a client is
 //!   free to flush after one byte and some do.
 //!
-//! So `0xEF` is deliberately absent from [`crate::client_packet_length`], and a
+//! So `0xEF` is deliberately absent from [`crate::packet::client_packet_length`], and a
 //! connection runs [`SeedReader`] until it produces a [`Seed`] before it starts
 //! framing anything.
 //!
@@ -56,7 +56,7 @@ pub struct Seed {
 /// Feed it bytes; it tells you how many it consumed and whether it is done.
 ///
 /// ```
-/// use openshard_protocol::{SeedReader, ClientVersion};
+/// use openshard_protocol::{seed::SeedReader, version::ClientVersion};
 ///
 /// let mut reader = SeedReader::new();
 ///

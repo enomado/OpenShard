@@ -71,7 +71,7 @@ impl GumpButton {
 /// of which the client reads positionally.
 ///
 /// Call [`finish`](Self::finish) and hand the two halves to
-/// [`encode_gump_display`].
+/// [`GumpDisplay`].
 #[derive(Clone, Default, Debug)]
 pub struct GumpLayout {
     layout: String,

@@ -1032,8 +1032,8 @@ mod tests {
         // length the client's own table gives the id it comes back on.
         assert_eq!(encode_packet(&LogoutAck, version()), vec![0xD1, 0x01]);
         assert_eq!(
-            crate::client_packet_length(0xD1, None),
-            Some(crate::PacketLength::Fixed(2))
+            crate::packet::client_packet_length(0xD1, None),
+            Some(crate::packet::PacketLength::Fixed(2))
         );
 
         // 0xBF is variable-length on the client's own table, but this

@@ -527,7 +527,7 @@ impl Terrain for MapTerrain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openshard_protocol::Direction;
+    use openshard_protocol::direction::Direction;
 
     #[test]
     fn a_stair_is_stepped_onto_at_its_base_not_its_top() {

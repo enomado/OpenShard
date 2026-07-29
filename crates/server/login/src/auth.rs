@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use openshard_protocol::ClientVersion;
+use openshard_protocol::version::ClientVersion;
 
 /// What an issued key stands for.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -166,7 +166,7 @@ fn random_u32() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openshard_protocol::ClientVersion;
+    use openshard_protocol::version::ClientVersion;
 
     #[test]
     fn a_key_round_trips() {

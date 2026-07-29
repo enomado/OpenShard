@@ -426,6 +426,44 @@ no longer sits behind the `session.in_world` gate that used to run first.
    alongside `client_packet`,** the same one-stage-early move every prior
    stage made for the modules it touched.
 
+## Amendments forced by the Stage 7 cleanup
+
+Stage 7 is the only stage with no packets left to convert — it closes the two
+mechanical bullets the plan named for it, and both turned out smaller than
+expected.
+
+1. **"Delete the last `encode_*`" was already done.** Every stage from 2
+   onward left behind exactly the free functions its own amendments named as
+   settled exceptions (`0xB9`'s `encode_supported_features`, `0x24`/`0x25`'s
+   `encode_open_container`/`encode_add_to_container`). Stage 7 found no
+   forgotten leftovers — those three are the only free `encode_*`/`decode_*`
+   functions in the crate, and all three stay for the reasons already on
+   record.
+2. **The `pub use` wall (D8) was real, not vestigial.** Seven modules —
+   `access`, `codec`, `direction`, `error`, `feature`, `seed`, `version` —
+   were still private, with `pub use` in `lib.rs` as the only path out; twelve
+   files across `crates/server` and `crates/common/movement` reached them
+   through the crate root. All seven became `pub mod`, the wall came out, and
+   every one of those call sites (plus the crate's own doc-tests and a couple
+   of intra-crate `crate::Feature`/`crate::client_packet_length` shortcuts
+   that had been leaning on the same wall from the inside) now imports from
+   the module the type is defined in. `packet`'s own entry in the wall
+   (`client_packet_length`, `frame_client_packet`, `Frame`, `FrameError`,
+   `PacketLength`, `MAX_PACKET_SIZE`, `SEED_LENGTH_*`) was already redundant
+   before this stage — `packet` has been `pub mod` since Stage 1 — so removing
+   it is a pure simplification, not a behaviour change.
+3. **`docs/architecture.md` needed no edits.** It never described the old
+   47-function/hand-written-`match` shape in the first place; it stayed at a
+   level of abstraction ("packet dispatch", "the login and world packets")
+   that the rewrite didn't invalidate. The "update the crate docs" bullet
+   turned out to mean `crates/common/protocol/src/lib.rs`'s own `# Status`
+   section, which still said "individual packet types are not [written]" —
+   stale since before Stage 1 — plus five doc comments elsewhere
+   (`gump.rs`, `feature.rs`, `tick.rs`, `dispatch.rs`, `session.rs`) still
+   naming `encode_gump_display`, `encode_shard_list`, `encode_relay` and
+   `encode_logout_ack` — functions Stages 1-6 replaced with `EncodePacket`
+   types but whose doc comments elsewhere were never updated to match.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -470,4 +508,4 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | 4 | done | `d483bb3` |
 | 5 | done | `0d39525` |
 | 6 | done | `ca20428` |
-| 7 | not started | |
+| 7 | done | |

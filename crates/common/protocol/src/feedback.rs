@@ -67,7 +67,7 @@ impl EncodePacket for PlaySound {
 /// different frames on a human and on a dragon. A swing, a bow, a cast gesture,
 /// a death throe are all one of these.
 ///
-/// [`Feature::NewMobileAnimation`]: crate::Feature::NewMobileAnimation
+/// [`Feature::NewMobileAnimation`]: crate::feature::Feature::NewMobileAnimation
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Animation {
     /// Who moves.
@@ -111,7 +111,7 @@ impl EncodePacket for Animation {
 /// [`Animation::action`] it needs no body table on the server — and the two
 /// numberings are not interchangeable.
 ///
-/// [`Feature::NewMobileAnimation`]: crate::Feature::NewMobileAnimation
+/// [`Feature::NewMobileAnimation`]: crate::feature::Feature::NewMobileAnimation
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NewAnimation {
     /// Who moves.

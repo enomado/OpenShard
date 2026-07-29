@@ -1,8 +1,8 @@
 //! One client connection, as a state machine that has never heard of a socket.
 
-use openshard_protocol::{
-    frame_client_packet, ClientVersion, Frame, FrameError, Seed, SeedReader, MAX_PACKET_SIZE,
-};
+use openshard_protocol::packet::{frame_client_packet, Frame, FrameError, MAX_PACKET_SIZE};
+use openshard_protocol::seed::{Seed, SeedReader};
+use openshard_protocol::version::ClientVersion;
 
 /// Something a connection produced.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -218,7 +218,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openshard_protocol::{ClientVersion, SEED_COMMAND};
+    use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
 
     /// A well-formed new-style seed for 7.0.45.65.
     fn modern_seed() -> Vec<u8> {

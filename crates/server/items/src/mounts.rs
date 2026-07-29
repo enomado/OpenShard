@@ -135,7 +135,7 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
     let facet = state.facet_of(player);
     let mut landing = rider_at;
     for dir in 0..8u8 {
-        let dir = openshard_protocol::Direction::from_bits(dir);
+        let dir = openshard_protocol::direction::Direction::from_bits(dir);
         if let Some(tile) = step_from(rider_at, dir) {
             if let Some(landed) = state
                 .facet_state(facet)
@@ -157,8 +157,8 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
         .registry
         .get::<Heading>(player)
         .copied()
-        .unwrap_or(Heading(openshard_protocol::Facing::walking(
-            openshard_protocol::Direction::South,
+        .unwrap_or(Heading(openshard_protocol::direction::Facing::walking(
+            openshard_protocol::direction::Direction::South,
         )));
     state.registry.insert(mount, heading);
     // The walker restarts at the landing, always: the ride never moved it, so a

@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
+use openshard_protocol::access::AccessLevel;
 use openshard_protocol::login::{
     CharacterEntry, DenyReason, ACCOUNT_NAME_LENGTH, CHARACTER_NAME_LENGTH, MIN_CHARACTER_SLOTS,
     PASSWORD_LENGTH,
 };
-use openshard_protocol::AccessLevel;
 
 use crate::password;
 

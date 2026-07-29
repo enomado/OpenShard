@@ -101,7 +101,7 @@ pub(crate) fn dispatch(
         }
         ClientPacket::LogoutRequest => {
             // "Log Out" on the paperdoll. The client tells the server it is
-            // leaving and then waits to be told it may — see `encode_logout_ack`.
+            // leaving and then waits to be told it may — see `world::LogoutAck`.
             // Queued like everything else, so the answer comes out of a tick.
             if session.in_world {
                 world.queue(Command::LogoutRequest { connection: id });

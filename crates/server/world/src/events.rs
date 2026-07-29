@@ -11,9 +11,9 @@
 //! belong to combat; `HouseCreated` to housing.
 
 use openshard_entities::EntityId;
+use openshard_protocol::direction::Facing;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
-use openshard_protocol::Facing;
 
 /// A character entered the world.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

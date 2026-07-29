@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!   client                                server
-//!     │  seed (see crate::SeedReader)       │
+//!     │  seed (see crate::seed::SeedReader) │
 //!     │────────────────────────────────────>│
 //!     │  0x80 account login                 │
 //!     │────────────────────────────────────>│

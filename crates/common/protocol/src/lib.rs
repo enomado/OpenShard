@@ -14,7 +14,7 @@
 //! crate models.
 //!
 //! ```
-//! use openshard_protocol::{ClientVersion, Era, Feature};
+//! use openshard_protocol::{version::{ClientVersion, Era}, feature::Feature};
 //!
 //! // The client sends its version in the 0xBD seed packet.
 //! let client: ClientVersion = "4.0.3.0".parse().unwrap();
@@ -48,22 +48,24 @@
 //!
 //! # Status
 //!
-//! Versioning, feature gates, the client packet length table, framing and the
-//! byte codec are written. Individual packet types are not; see
-//! `docs/roadmap.md`.
+//! Every packet is a variant of [`client_packet::ClientPacket`] (client → server)
+//! or [`server_packet::ServerPacket`] (server → client), each implementing
+//! [`packet::DecodePacket`] or [`packet::EncodePacket`] on a named payload type.
+//! See `docs/protocol_rewrite.md` for the design decisions and the handful of
+//! packets that deliberately stay outside that shape.
 
-mod access;
+pub mod access;
 pub mod casting;
 pub mod client_packet;
-mod codec;
+pub mod codec;
 pub mod combat;
 pub mod containers;
 pub mod context;
-mod direction;
+pub mod direction;
 pub mod encoded;
-mod error;
+pub mod error;
 pub mod extended;
-mod feature;
+pub mod feature;
 pub mod feedback;
 pub mod gump;
 pub mod huffman;
@@ -72,7 +74,7 @@ pub mod login;
 pub mod mobile;
 pub mod packet;
 pub mod properties;
-mod seed;
+pub mod seed;
 pub mod serial;
 pub mod server_packet;
 pub mod skill;
@@ -80,25 +82,6 @@ pub mod speech;
 pub mod spellbook;
 pub mod target;
 pub mod vendor;
-mod version;
+pub mod version;
 pub mod wire;
 pub mod world;
-
-pub use access::{AccessLevel, UnknownAccessLevel};
-pub use codec::{CodecError, CodecResult, PacketReader, PacketWriter};
-// `casting`, `client_packet`, `combat`, `containers`, `context`, `encoded`,
-// `extended`, `feedback`, `gump`, `items`, `login`, `mobile`, `properties`,
-// `serial`, `server_packet`, `skill`, `speech`, `spellbook`, `target`,
-// `vendor`, `wire` and `world` are deliberately absent from this wall: they
-// are the rewritten groups, and their call sites import from the module the
-// type lives in. The wall itself goes in Stage 7 (`docs/protocol_rewrite.md`,
-// D8).
-pub use direction::{Direction, Facing, RUNNING_BIT};
-pub use error::{DecodeError, WrongPacket};
-pub use feature::{Feature, FeatureSet};
-pub use packet::{
-    client_packet_length, frame_client_packet, Frame, FrameError, PacketLength, MAX_PACKET_SIZE,
-    SEED_LENGTH_NEW, SEED_LENGTH_OLD,
-};
-pub use seed::{Seed, SeedReader, SEED_COMMAND};
-pub use version::{ClientVersion, Era, ParseVersionError};

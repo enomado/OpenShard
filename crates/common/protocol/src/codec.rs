@@ -51,7 +51,7 @@ pub type CodecResult<T> = Result<T, CodecError>;
 /// error, never a panic and never a partial value.
 ///
 /// ```
-/// use openshard_protocol::PacketReader;
+/// use openshard_protocol::codec::PacketReader;
 ///
 /// // 0x02 movement request: direction, sequence, fastwalk key.
 /// let mut reader = PacketReader::new(&[0x01, 0x2A, 0xDE, 0xAD, 0xBE, 0xEF]);
@@ -195,7 +195,7 @@ impl<'a> PacketReader<'a> {
 /// variable-length packets, the length field) is not this type's job.
 ///
 /// ```
-/// use openshard_protocol::PacketWriter;
+/// use openshard_protocol::codec::PacketWriter;
 ///
 /// let mut writer = PacketWriter::new();
 /// writer.u8(0x11);

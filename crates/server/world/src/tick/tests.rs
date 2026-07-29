@@ -9488,7 +9488,10 @@ fn a_shopkeeper_stands_still_while_a_customer_is_at_the_counter() {
 
     // And it turned to face them rather than staring past.
     let facing = world.registry().get::<Heading>(keeper).unwrap().0;
-    assert_eq!(facing.direction, openshard_protocol::Direction::West);
+    assert_eq!(
+        facing.direction,
+        openshard_protocol::direction::Direction::West
+    );
 }
 
 #[test]

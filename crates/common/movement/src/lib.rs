@@ -9,7 +9,7 @@
 //! use std::time::Instant;
 //! use openshard_movement::{OpenWorld, Walk, Walker};
 //! use openshard_protocol::world::{Point, WalkRequest};
-//! use openshard_protocol::{Direction, Facing};
+//! use openshard_protocol::direction::{Direction, Facing};
 //!
 //! let mut walker = Walker::new(Point::new(100, 100, 0), Facing::walking(Direction::North));
 //!

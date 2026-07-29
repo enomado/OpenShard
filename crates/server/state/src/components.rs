@@ -20,7 +20,7 @@ use openshard_movement::Walker;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::world::Point;
-use openshard_protocol::{AccessLevel, ClientVersion, Facing};
+use openshard_protocol::{access::AccessLevel, direction::Facing, version::ClientVersion};
 
 /// Where a mobile or item is.
 ///
@@ -2422,8 +2422,8 @@ mod tests {
     }
 
     use openshard_entities::Registry;
+    use openshard_protocol::direction::Direction;
     use openshard_protocol::serial::SerialKind;
-    use openshard_protocol::Direction;
 
     #[test]
     fn a_player_and_an_npc_differ_only_by_a_component() {

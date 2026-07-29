@@ -245,7 +245,7 @@ pub fn client_packet_length(id: u8, version: Option<ClientVersion>) -> Option<Pa
 /// [`client_packet_length`].
 ///
 /// ```
-/// use openshard_protocol::{frame_client_packet, Frame};
+/// use openshard_protocol::packet::{frame_client_packet, Frame};
 ///
 /// // 0x73 ping is 2 bytes.
 /// assert_eq!(frame_client_packet(&[0x73, 0x00], None), Ok(Frame::Complete(2)));

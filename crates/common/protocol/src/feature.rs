@@ -23,7 +23,7 @@ use crate::version::ClientVersion;
 /// Ask via [`ClientVersion::supports`]:
 ///
 /// ```
-/// use openshard_protocol::{ClientVersion, Feature};
+/// use openshard_protocol::{version::ClientVersion, feature::Feature};
 ///
 /// let aos = ClientVersion::new(4, 0, 3, 0);
 /// assert!(aos.supports(Feature::Tooltips));      // since 4.0.0
@@ -107,7 +107,8 @@ pub enum Feature {
     /// Shard IPs in the 0xA8 list are sent reversed. Since 4.0.0.
     ///
     /// Reversed, for the *newer* clients. That is not a typo and it is not what
-    /// the 0x8C relay does — see `encode_shard_list` and `encode_relay`.
+    /// the 0x8C relay does — see [`login::ShardList`](crate::login::ShardList) and
+    /// [`login::Relay`](crate::login::Relay).
     ReversedShardIp,
     /// The 0xA9 character list carries a trailing u32 flags field.
     /// Since 1.26.0.1.

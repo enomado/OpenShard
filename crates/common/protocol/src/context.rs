@@ -76,7 +76,7 @@ pub struct ContextMenuEntry {
 /// `0xBF` subcommand `0x14` — draw a context menu on an object. Variable length.
 ///
 /// The new (`0x02`) format, which every client since 6.0.0.0
-/// ([`Feature::NewContextMenu`](crate::Feature::NewContextMenu)) reads: each entry
+/// ([`Feature::NewContextMenu`](crate::feature::Feature::NewContextMenu)) reads: each entry
 /// is a four-byte cliloc, a two-byte tag (its position, sent back on select), and
 /// two-byte flags. Ported from ServUO's `DisplayContextMenu`.
 ///

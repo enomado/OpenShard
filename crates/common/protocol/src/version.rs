@@ -7,7 +7,7 @@ use std::str::FromStr;
 ///
 /// Ordering is lexicographic across the four fields, which matches how the
 /// client itself versions: 4.0.7.0 is newer than 4.0.5.0 is newer than 3.0.8.4.
-/// Every feature gate in [`crate::Feature`] is a comparison against one of
+/// Every feature gate in [`crate::feature::Feature`] is a comparison against one of
 /// these.
 ///
 /// # Old-style versions
@@ -70,7 +70,7 @@ impl ClientVersion {
     /// code. Ask what a client *can do*, never what version it is — that keeps
     /// the era table in one place instead of smeared across every packet
     /// handler.
-    pub fn supports(self, feature: crate::Feature) -> bool {
+    pub fn supports(self, feature: crate::feature::Feature) -> bool {
         self >= feature.since()
     }
 

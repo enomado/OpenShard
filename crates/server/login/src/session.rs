@@ -10,7 +10,7 @@ use openshard_protocol::login::{
     SelectShard, ShardEntry, ShardList, StartLocation,
 };
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::{ClientVersion, Feature, Seed};
+use openshard_protocol::{feature::Feature, seed::Seed, version::ClientVersion};
 use tracing::{debug, warn};
 
 use crate::accounts::Accounts;
@@ -484,7 +484,7 @@ pub fn single_shard(address: Ipv4Addr, port: u16) -> SocketAddrV4 {
 mod tests {
     use super::*;
     use crate::accounts::DevAccounts;
-    use openshard_protocol::Feature;
+    use openshard_protocol::feature::Feature;
 
     fn server() -> LoginServer<DevAccounts> {
         let accounts = DevAccounts::new()
@@ -893,12 +893,12 @@ mod tests {
     fn the_seed_version_shapes_the_shard_list() {
         // What this actually protects is the wiring: the version arrives in the
         // seed, and the encoder cannot ask for it. If the seed stops reaching
-        // `encode_shard_list` every client gets whatever the default is, and
-        // half of them get an address backwards.
+        // `ShardList::encode_body` every client gets whatever the default is,
+        // and half of them get an address backwards.
         //
-        // Which order belongs to which client is `encode_shard_list`'s business
-        // and is pinned there. This asserts only that the two differ and that
-        // the boundary is where the seed says.
+        // Which order belongs to which client is `ShardList::encode_body`'s
+        // business and is pinned there. This asserts only that the two differ
+        // and that the boundary is where the seed says.
         let mut server = server();
         let now = Instant::now();
 

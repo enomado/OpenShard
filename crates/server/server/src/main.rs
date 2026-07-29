@@ -45,7 +45,7 @@ use openshard_protocol::packet::{decode_packet, DecodePacket};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::world::{CreateCharacter, Point};
-use openshard_protocol::{huffman, AccessLevel};
+use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_world::{
     Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TileData, World,
     TICK_INTERVAL,
