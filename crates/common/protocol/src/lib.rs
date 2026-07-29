@@ -66,7 +66,7 @@ pub mod feedback;
 mod gump;
 pub mod huffman;
 mod items;
-mod login;
+pub mod login;
 mod mobile;
 pub mod packet;
 mod properties;
@@ -105,14 +105,6 @@ pub use gump::{
 pub use items::{
     encode_drag_cancel, encode_equip, DragCancelReason, DropItem, EquipItemRequest, PickUpItem,
     WorldItem, DROP_TO_GROUND,
-};
-pub use login::{
-    encode_character_list, encode_character_list_update, encode_delete_reject, encode_login_denied,
-    encode_relay, encode_shard_list, encode_supported_features, AccountLogin, CharacterEntry,
-    ClientVersionReport, DeleteCharacter, DeleteResult, DenyReason, GameServerLogin, SelectShard,
-    ShardEntry, StartLocation, ACCOUNT_NAME_LENGTH, AOS_FEATURE_FLAGS, CHARACTER_NAME_LENGTH,
-    CLF_CONTEXT_MENU, CLF_TOOLTIPS, MAX_SHARDS, MIN_CHARACTER_SLOTS, ML_FEATURE_FLAGS,
-    PASSWORD_LENGTH, SE_FEATURE_FLAGS, SHARD_NAME_LENGTH,
 };
 pub use mobile::{
     encode_open_paperdoll, encode_remove, encode_stat_locks, Equipment, LookRequest,

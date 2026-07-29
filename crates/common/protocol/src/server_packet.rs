@@ -22,12 +22,18 @@
 use crate::codec::PacketWriter;
 use crate::combat::{AttackTarget, HealthBar, WarMode};
 use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, PlaySound};
+use crate::login::{
+    CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
+};
 use crate::packet::{frame_body, EncodePacket, PacketLength};
 use crate::target::TargetCursor;
 use crate::version::ClientVersion;
 
 /// A packet the server sends to a client.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Not `Copy`: the login group carries `Vec` payloads (the shard and character
+/// lists), unlike Stage 1's fixed-size ones.
+#[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ServerPacket {
     /// `0x6C` — raise a targeting cursor.
@@ -48,6 +54,18 @@ pub enum ServerPacket {
     Effect(GraphicalEffect),
     /// `0xC0` — a graphical effect with a hue and a render mode.
     HuedEffect(HuedEffect),
+    /// `0x82` — refuse a login.
+    LoginDenied(LoginDenied),
+    /// `0xA8` — the shard list.
+    ShardList(ShardList),
+    /// `0x8C` — go connect to the game server.
+    Relay(Relay),
+    /// `0xA9` — the character list and starting cities.
+    CharacterList(CharacterList),
+    /// `0x85` — a character deletion was refused.
+    DeleteReject(DeleteReject),
+    /// `0x86` — resend the character list after a deletion.
+    CharacterListUpdate(CharacterListUpdate),
 }
 
 impl ServerPacket {
@@ -68,6 +86,12 @@ impl ServerPacket {
             Self::NewAnimation(_) => NewAnimation::ID,
             Self::Effect(_) => GraphicalEffect::ID,
             Self::HuedEffect(_) => HuedEffect::ID,
+            Self::LoginDenied(_) => LoginDenied::ID,
+            Self::ShardList(_) => ShardList::ID,
+            Self::Relay(_) => Relay::ID,
+            Self::CharacterList(_) => CharacterList::ID,
+            Self::DeleteReject(_) => DeleteReject::ID,
+            Self::CharacterListUpdate(_) => CharacterListUpdate::ID,
         }
     }
 
@@ -84,6 +108,12 @@ impl ServerPacket {
             Self::NewAnimation(_) => NewAnimation::LENGTH,
             Self::Effect(_) => GraphicalEffect::LENGTH,
             Self::HuedEffect(_) => HuedEffect::LENGTH,
+            Self::LoginDenied(_) => LoginDenied::LENGTH,
+            Self::ShardList(_) => ShardList::LENGTH,
+            Self::Relay(_) => Relay::LENGTH,
+            Self::CharacterList(_) => CharacterList::LENGTH,
+            Self::DeleteReject(_) => DeleteReject::LENGTH,
+            Self::CharacterListUpdate(_) => CharacterListUpdate::LENGTH,
         }
     }
 
@@ -110,6 +140,12 @@ impl ServerPacket {
             Self::NewAnimation(packet) => packet.encode_body(out, version),
             Self::Effect(packet) => packet.encode_body(out, version),
             Self::HuedEffect(packet) => packet.encode_body(out, version),
+            Self::LoginDenied(packet) => packet.encode_body(out, version),
+            Self::ShardList(packet) => packet.encode_body(out, version),
+            Self::Relay(packet) => packet.encode_body(out, version),
+            Self::CharacterList(packet) => packet.encode_body(out, version),
+            Self::DeleteReject(packet) => packet.encode_body(out, version),
+            Self::CharacterListUpdate(packet) => packet.encode_body(out, version),
         }
     }
 }
@@ -176,6 +212,37 @@ mod tests {
                 effect,
                 hue: crate::wire::Hue(0x26),
                 render_mode: 0,
+            }),
+            ServerPacket::LoginDenied(LoginDenied {
+                reason: crate::login::DenyReason::BadPassword,
+            }),
+            ServerPacket::ShardList(ShardList {
+                shards: vec![crate::login::ShardEntry {
+                    name: "Britannia".to_owned(),
+                    percent_full: 10,
+                    timezone: 5,
+                    address: std::net::Ipv4Addr::new(127, 0, 0, 1),
+                }],
+            }),
+            ServerPacket::Relay(Relay {
+                address: std::net::Ipv4Addr::new(127, 0, 0, 1),
+                port: 2593,
+                auth_key: 0xDEAD_BEEF,
+            }),
+            ServerPacket::CharacterList(CharacterList {
+                characters: vec![crate::login::CharacterEntry {
+                    name: "Lord British".to_owned(),
+                }],
+                starts: Vec::new(),
+                flags: 0,
+            }),
+            ServerPacket::DeleteReject(DeleteReject {
+                result: crate::login::DeleteResult::CharNotExist,
+            }),
+            ServerPacket::CharacterListUpdate(CharacterListUpdate {
+                characters: vec![crate::login::CharacterEntry {
+                    name: "Lord British".to_owned(),
+                }],
             }),
         ]
     }

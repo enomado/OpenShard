@@ -526,7 +526,9 @@ pub(crate) fn create_character(
         Ok(_slot) => info!(%id, account, name, "character created"),
         Err(reason) => {
             warn!(%id, account, name, ?reason, "character creation refused");
-            let _ = session.send_packet(encode_login_denied(reason));
+            let _ = session.send_packet(
+                ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.login.version()),
+            );
             return true;
         }
     }
@@ -612,7 +614,7 @@ pub(crate) fn delete_character(
     packet: &[u8],
     id: ConnectionId,
 ) -> bool {
-    let slot = match DeleteCharacter::decode(packet) {
+    let slot = match decode_packet::<DeleteCharacter>(packet, session.login.version()) {
         Ok(delete) => delete.slot,
         Err(error) => {
             warn!(%id, %error, "malformed delete-character");
@@ -632,7 +634,12 @@ pub(crate) fn delete_character(
         .into_iter()
         .nth(slot as usize)
     else {
-        let _ = session.send_packet(encode_delete_reject(DeleteResult::CharNotExist));
+        let _ = session.send_packet(
+            ServerPacket::DeleteReject(DeleteReject {
+                result: DeleteResult::CharNotExist,
+            })
+            .encode(session.login.version()),
+        );
         return true;
     };
     let name = entry.name;
@@ -643,7 +650,12 @@ pub(crate) fn delete_character(
     // has never entered the world and so cannot be online.
     if let Some(record) = saved.get(&key) {
         if world.is_online(record.serial) {
-            let _ = session.send_packet(encode_delete_reject(DeleteResult::CharBeingPlayed));
+            let _ = session.send_packet(
+                ServerPacket::DeleteReject(DeleteReject {
+                    result: DeleteResult::CharBeingPlayed,
+                })
+                .encode(session.login.version()),
+            );
             return true;
         }
     }
@@ -651,7 +663,12 @@ pub(crate) fn delete_character(
     // Drop it from the authoritative in-memory list. A failure here is a bad slot.
     if let Err(reason) = login.accounts.delete_character(&account, slot) {
         warn!(%id, account, name, ?reason, "delete refused");
-        let _ = session.send_packet(encode_delete_reject(DeleteResult::CharNotExist));
+        let _ = session.send_packet(
+            ServerPacket::DeleteReject(DeleteReject {
+                result: DeleteResult::CharNotExist,
+            })
+            .encode(session.login.version()),
+        );
         return true;
     }
 
@@ -666,9 +683,12 @@ pub(crate) fn delete_character(
     info!(%id, account, name, "character deleted");
 
     // Resend the updated list so the select screen redraws.
-    let _ = session.send_packet(encode_character_list_update(
-        &login.accounts.characters(&account),
-    ));
+    let _ = session.send_packet(
+        ServerPacket::CharacterListUpdate(CharacterListUpdate {
+            characters: login.accounts.characters(&account),
+        })
+        .encode(session.login.version()),
+    );
     true
 }
 

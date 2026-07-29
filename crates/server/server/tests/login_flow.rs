@@ -16,7 +16,8 @@ use std::time::Instant;
 
 use openshard_gateway::{ConnectionId, Event, Server, ServerEvent};
 use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
-use openshard_protocol::{AccountLogin, ClientVersion, GameServerLogin, SelectShard, SEED_COMMAND};
+use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
+use openshard_protocol::{ClientVersion, SEED_COMMAND};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;

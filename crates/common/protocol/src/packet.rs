@@ -398,15 +398,27 @@ pub fn encode_packet<P: EncodePacket>(packet: &P, version: ClientVersion) -> Vec
     frame_body(P::ID, P::LENGTH, |out| packet.encode_body(out, version))
 }
 
-/// Check the id byte and decode the body behind it.
+/// Check the id byte, skip the length field if this id is variable-length, and
+/// decode the body behind it.
 ///
 /// A mismatched id is a dispatch bug — the packet was routed to the wrong
 /// decoder — and is reported as one rather than being read as if it fitted.
+///
+/// The length field itself is never handed to [`DecodePacket::decode_body`]:
+/// `bytes` has already passed through [`frame_client_packet`], which is what
+/// checks a variable packet's claimed length against the buffer and against
+/// [`MAX_PACKET_SIZE`]. By the time a body decoder runs, `bytes` already *is*
+/// exactly one packet, so there is nothing left for the length field to tell
+/// the body — re-checking it here would be the same validation twice, in two
+/// places that could disagree.
 pub fn decode_packet<P: DecodePacket>(
     bytes: &[u8],
     version: ClientVersion,
 ) -> Result<P, DecodeError> {
     let mut reader = expect_id(bytes, P::ID)?;
+    if client_packet_length(P::ID, Some(version)) == Some(PacketLength::Variable) {
+        reader.skip(2)?;
+    }
     P::decode_body(&mut reader, version)
 }
 

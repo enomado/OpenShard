@@ -122,10 +122,10 @@ pub(crate) fn supported_features_of(config: &Config) -> u32 {
     // paperdoll from: under AoS there is no Quest button to press, so the whole
     // `0xD7`/`0x32` path is unreachable however correctly it is implemented.
     let expansion = match g.expansion.trim().to_ascii_lowercase().as_str() {
-        "aos" => openshard_protocol::AOS_FEATURE_FLAGS,
-        "se" => openshard_protocol::SE_FEATURE_FLAGS,
+        "aos" => openshard_protocol::login::AOS_FEATURE_FLAGS,
+        "se" => openshard_protocol::login::SE_FEATURE_FLAGS,
         // `config` has already refused anything else; ML is the default.
-        _ => openshard_protocol::ML_FEATURE_FLAGS,
+        _ => openshard_protocol::login::ML_FEATURE_FLAGS,
     };
     // With tooltips and context menus both off the shard advertises nothing at
     // all and a modern client falls back to the classic single-click name — the
@@ -151,10 +151,10 @@ pub(crate) fn character_list_flags_of(config: &Config) -> u32 {
     let g = &config.gameplay;
     let mut flags = 0;
     if openshard_world::TooltipMode::parse(&g.tooltips) != openshard_world::TooltipMode::Off {
-        flags |= openshard_protocol::CLF_TOOLTIPS;
+        flags |= openshard_protocol::login::CLF_TOOLTIPS;
     }
     if g.context_menus {
-        flags |= openshard_protocol::CLF_CONTEXT_MENU;
+        flags |= openshard_protocol::login::CLF_CONTEXT_MENU;
     }
     flags
 }

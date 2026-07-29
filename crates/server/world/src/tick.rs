@@ -35,13 +35,14 @@ use openshard_persistence::{
     CharacterRecord, DecorationRecord, DoorState, Inventory, ItemLocation, ItemRecord, Journal,
     MobileRecord, Snapshot, SCHEMA_VERSION,
 };
+use openshard_protocol::login::{encode_supported_features, AOS_FEATURE_FLAGS};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::{
     encode_context_menu, encode_gump_display, encode_light_level, encode_login_complete,
-    encode_logout_ack, encode_map_change, encode_message, encode_season, encode_supported_features,
-    encode_walk_ack, encode_walk_reject, AccessLevel, ClientVersion, Direction, Facing, Feature,
-    MobileStatus, Notoriety, PlayerStart, PlayerUpdate, Point, WalkRequest, AOS_FEATURE_FLAGS,
-    DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH, LABEL_MODE,
+    encode_logout_ack, encode_map_change, encode_message, encode_season, encode_walk_ack,
+    encode_walk_reject, AccessLevel, ClientVersion, Direction, Facing, Feature, MobileStatus,
+    Notoriety, PlayerStart, PlayerUpdate, Point, WalkRequest, DEFAULT_MAP_HEIGHT,
+    DEFAULT_MAP_WIDTH, LABEL_MODE,
 };
 use tracing::{debug, info, warn};
 

@@ -3,11 +3,13 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Instant;
 
-use openshard_protocol::{
-    encode_character_list, encode_login_denied, encode_relay, encode_shard_list,
-    encode_supported_features, AccountLogin, ClientVersion, ClientVersionReport, DenyReason,
-    Feature, GameServerLogin, Seed, SelectShard, ShardEntry, StartLocation,
+use openshard_protocol::login::{
+    encode_supported_features, AccountLogin, CharacterList, ClientVersionReport, DenyReason,
+    GameServerLogin, LoginDenied, Relay, SelectShard, ShardEntry, ShardList, StartLocation,
 };
+use openshard_protocol::packet::{decode_packet, DecodePacket};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::{ClientVersion, Feature, Seed};
 use tracing::{debug, warn};
 
 use crate::accounts::Accounts;
@@ -180,7 +182,7 @@ impl<A: Accounts> LoginServer<A> {
     }
 
     fn on_version_report(&self, session: &mut LoginSession, packet: &[u8]) -> Response {
-        let Ok(report) = ClientVersionReport::decode(packet) else {
+        let Ok(report) = decode_packet::<ClientVersionReport>(packet, session.version) else {
             return Response::Idle;
         };
         match report.version() {
@@ -207,7 +209,7 @@ impl<A: Accounts> LoginServer<A> {
             return Response::Close;
         }
 
-        let login = match AccountLogin::decode(packet) {
+        let login = match decode_packet::<AccountLogin>(packet, session.version) {
             Ok(login) => login,
             Err(error) => {
                 warn!(%error, "malformed 0x80");
@@ -219,11 +221,16 @@ impl<A: Accounts> LoginServer<A> {
             // The real reason is logged; the client hears one of five codes.
             warn!(account = login.account, ?reason, "login refused");
             session.state = State::Finished;
-            return Response::SendThenClose(encode_login_denied(reason));
+            return Response::SendThenClose(
+                ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
+            );
         }
 
         debug!(account = login.account, "account verified");
-        let list = encode_shard_list(&self.shards, session.version);
+        let list = ServerPacket::ShardList(ShardList {
+            shards: self.shards.clone(),
+        })
+        .encode(session.version);
         session.state = State::ShardListSent {
             account: login.account,
         };
@@ -242,7 +249,7 @@ impl<A: Accounts> LoginServer<A> {
         };
         let account = account.clone();
 
-        let Ok(select) = SelectShard::decode(packet) else {
+        let Ok(select) = decode_packet::<SelectShard>(packet, session.version) else {
             return Response::Close;
         };
         // The wire index is one-based and untrusted; `slot` refuses zero rather
@@ -261,11 +268,14 @@ impl<A: Accounts> LoginServer<A> {
         let key = self.keys.issue(&account, session.version, now);
         debug!(account, slot, "relaying to the game server");
         session.state = State::Finished;
-        Response::SendThenClose(encode_relay(
-            *self.game_address.ip(),
-            self.game_address.port(),
-            key,
-        ))
+        Response::SendThenClose(
+            ServerPacket::Relay(Relay {
+                address: *self.game_address.ip(),
+                port: self.game_address.port(),
+                auth_key: key,
+            })
+            .encode(session.version),
+        )
     }
 
     fn on_game_login(
@@ -279,7 +289,7 @@ impl<A: Accounts> LoginServer<A> {
             return Response::Close;
         }
 
-        let login = match GameServerLogin::decode(packet) {
+        let login = match decode_packet::<GameServerLogin>(packet, session.version) {
             Ok(login) => login,
             Err(error) => {
                 warn!(%error, "malformed 0x91");
@@ -295,7 +305,12 @@ impl<A: Accounts> LoginServer<A> {
         let Some(pending) = self.keys.redeem(login.auth_key, now) else {
             warn!(account = login.account, "bad or expired auth key");
             session.state = State::Finished;
-            return Response::SendThenClose(encode_login_denied(DenyReason::BadAuthId));
+            return Response::SendThenClose(
+                ServerPacket::LoginDenied(LoginDenied {
+                    reason: DenyReason::BadAuthId,
+                })
+                .encode(session.version),
+            );
         };
 
         // Adopt the dialect the client declared on the login connection. This
@@ -313,13 +328,20 @@ impl<A: Accounts> LoginServer<A> {
                 "auth key does not belong to this account"
             );
             session.state = State::Finished;
-            return Response::SendThenClose(encode_login_denied(DenyReason::BadAuthId));
+            return Response::SendThenClose(
+                ServerPacket::LoginDenied(LoginDenied {
+                    reason: DenyReason::BadAuthId,
+                })
+                .encode(session.version),
+            );
         }
 
         if let Err(reason) = self.accounts.verify(&login.account, &login.password) {
             warn!(account = login.account, ?reason, "game login refused");
             session.state = State::Finished;
-            return Response::SendThenClose(encode_login_denied(reason));
+            return Response::SendThenClose(
+                ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
+            );
         }
 
         // The game connection is now authenticated. Remember whose it is: a
@@ -333,12 +355,12 @@ impl<A: Accounts> LoginServer<A> {
             "sending character list"
         );
         session.state = State::CharacterListSent;
-        let character_list = encode_character_list(
-            &characters,
-            &self.starts,
-            self.character_list_flags,
-            session.version,
-        );
+        let character_list = ServerPacket::CharacterList(CharacterList {
+            characters,
+            starts: self.starts.clone(),
+            flags: self.character_list_flags,
+        })
+        .encode(session.version);
         // AoS SupportedFeatures (0xB9) rides just ahead of the character list when
         // the shard advertises any — the client reads self-framing packets in
         // order, so one buffer carries both. Zero means "classic": no 0xB9, and a
@@ -741,12 +763,12 @@ mod tests {
 
         // And the list is in the modern shape, which is the thing the client
         // actually chokes on: five padded slots and a trailing flags dword.
-        let modern = encode_character_list(
-            &server.accounts.characters("admin"),
-            &server.starts,
-            server.character_list_flags,
-            ClientVersion::TOL,
-        );
+        let modern = ServerPacket::CharacterList(CharacterList {
+            characters: server.accounts.characters("admin"),
+            starts: server.starts.clone(),
+            flags: server.character_list_flags,
+        })
+        .encode(ClientVersion::TOL);
         assert_eq!(list, modern, "the client must get its own dialect");
     }
 

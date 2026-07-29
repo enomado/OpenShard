@@ -177,6 +177,35 @@ say so in the commit, do not adjust the expectation quietly.
 6. **`EffectPoint` is gone** — it was `world::Point` field for field, and the
    effect packets now use `Point`.
 
+## Amendments forced by the Stage 2 pilot (`login`)
+
+Stage 2 is where the variable-length path first carries a real payload — the
+shard list and the character list are both `Vec<T>` bodies, not the unit test
+Stage 1 covered it with — and where a packet finally does not fit [`D3`](#decisions)'s
+Fixed/Variable split at all.
+
+1. **`decode_packet` now skips a variable packet's length field itself,**
+   rather than leaving it to each `decode_body`. `ClientVersionReport` (`0xBD`)
+   is the first variable client-to-server packet migrated, and without this
+   its body would start two bytes early. The check belongs in exactly one
+   place: `frame_client_packet` has already validated the claimed length
+   against the buffer and `MAX_PACKET_SIZE` by the time a decoder runs, so
+   `decode_body` gets bytes that are already known-good and never re-checks
+   the length itself. One consequence worth being explicit about: a
+   `decode_packet` call fed raw bytes that skip framing (as a unit test can)
+   no longer rejects a length field that lies — that check now lives once, at
+   the framing layer, not duplicated in every variable decoder.
+2. **`0xB9` (`encode_supported_features`) stays a free function, not an
+   `EncodePacket`.** It has no length field at all — unlike every other
+   variable packet — and its size (3 or 5 bytes) depends on the client
+   version, which `EncodePacket::LENGTH` cannot ask about because it is a
+   `const`. Neither `Fixed` nor `Variable` describes it. This is the
+   server-to-client mirror of `0x08`'s problem on the decode side
+   (`client_packet_length` takes a version for exactly this reason); until the
+   framing layer can express "fixed, but which fixed size depends on the
+   version" for both directions at once, `0xB9` is written by hand rather than
+   forced into a model it does not fit.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -216,7 +245,7 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | --- | --- | --- |
 | 0 | done | `153e1f8` |
 | 1 | done | |
-| 2 | not started | |
+| 2 | done | |
 | 3 | not started | |
 | 4 | not started | |
 | 5 | not started | |

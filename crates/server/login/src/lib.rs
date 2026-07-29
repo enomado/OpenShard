@@ -20,7 +20,7 @@
 //! use std::net::Ipv4Addr;
 //! use std::time::Instant;
 //! use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
-//! use openshard_protocol::AccountLogin;
+//! use openshard_protocol::login::AccountLogin;
 //!
 //! let mut server = LoginServer::new(
 //!     DevAccounts::new().with_account("admin", "hunter2"),
