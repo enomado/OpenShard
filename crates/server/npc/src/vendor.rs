@@ -11,11 +11,10 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_items as items;
 use openshard_movement::Terrain;
+use openshard_protocol::containers::{encode_open_container, ContainerContents};
 use openshard_protocol::serial::{Serial, SerialKind};
-use openshard_protocol::{
-    encode_buy_list, encode_container_contents, encode_open_container, encode_sell_list, BuyLine,
-    Purchase, Sale, SellLine,
-};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
 use openshard_state::components::{
     Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord,
     Vendor,
@@ -308,7 +307,7 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
             .and_then(|s| state.registry.entity_of(s))
             .and_then(|entity| items::equip_packet(state, entity));
         if let Some(pack) = pack {
-            state.send(connection, pack);
+            state.send_packet(connection, &ServerPacket::EquipUpdate(pack));
         }
     }
 
@@ -319,11 +318,20 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     // crate) just opens a plain container gump, which is why the window never
     // appeared. The crate is worn on the vendor's shop layer, so the client links
     // the crate-keyed contents to the vendor-keyed window itself.
-    state.send(
+    state.send_packet(
         connection,
-        encode_container_contents(stock_serial.raw(), &contents, version),
+        &ServerPacket::ContainerContents(ContainerContents {
+            container: stock_serial.raw(),
+            items: contents.clone(),
+        }),
     );
-    state.send(connection, encode_buy_list(stock_serial.raw(), &lines));
+    state.send_packet(
+        connection,
+        &ServerPacket::BuyList(BuyList {
+            container: stock_serial.raw(),
+            lines: lines.clone(),
+        }),
+    );
     state.send(
         connection,
         encode_open_container(serial, SHOP_GUMP, version),
@@ -487,7 +495,13 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
         vendor_says(state, vendor, "Thou hast nothing I wouldst buy.");
         return true;
     }
-    state.send(connection, encode_sell_list(vendor_serial.raw(), &lines));
+    state.send_packet(
+        connection,
+        &ServerPacket::SellList(SellList {
+            vendor: vendor_serial.raw(),
+            lines,
+        }),
+    );
     true
 }
 

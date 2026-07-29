@@ -136,15 +136,12 @@ pub fn layer_taken(state: &WorldState, mobile: Serial, layer: u8) -> bool {
 /// Tell everyone who can see `mobile`, and the mobile itself if it is a
 /// player, that it is now wearing `item` — a `0x2E` each.
 pub fn broadcast_equip(state: &mut WorldState, item: EntityId, mobile: EntityId) {
-    let Some(packet) = equip_packet(state, item) else {
+    let Some(update) = equip_packet(state, item) else {
         return;
     };
     for watcher in equip_audience(state, mobile) {
         if let Some(&Client { connection, .. }) = state.registry.get::<Client>(watcher) {
-            state.outbox.push(Outbound {
-                connection,
-                packet: packet.clone(),
-            });
+            state.send_packet(connection, &ServerPacket::EquipUpdate(update));
         }
     }
 }
@@ -175,9 +172,15 @@ pub fn equip_audience(state: &WorldState, mobile: EntityId) -> Vec<EntityId> {
 }
 
 /// Build the `0x2E` for a worn item.
-pub fn equip_packet(state: &WorldState, item: EntityId) -> Option<Vec<u8>> {
+pub fn equip_packet(state: &WorldState, item: EntityId) -> Option<EquipUpdate> {
     let serial = state.registry.serial_of(item)?;
     let Equipped { mobile, layer } = *state.registry.get::<Equipped>(item)?;
     let Graphic { id, hue } = *state.registry.get::<Graphic>(item)?;
-    Some(encode_equip(serial.raw(), id, layer, mobile.raw(), hue))
+    Some(EquipUpdate {
+        item: serial.raw(),
+        graphic: id,
+        layer,
+        mobile: mobile.raw(),
+        hue,
+    })
 }

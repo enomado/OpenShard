@@ -20,14 +20,14 @@ use openshard_gateway::ConnectionId;
 use openshard_movement::Terrain;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
+use openshard_protocol::items::WorldItem;
 use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriety, Remove};
+use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::SoundId;
 use openshard_protocol::world::{PlayerUpdate, Point};
-use openshard_protocol::{
-    encode_message, encode_opl_info, AccessLevel, ClientVersion, Feature, PropertyList, WorldItem,
-};
+use openshard_protocol::{encode_message, AccessLevel, ClientVersion, Feature};
 
 use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
@@ -1261,7 +1261,7 @@ impl WorldState {
             && version.supports(Feature::TooltipHash);
         if send_version {
             let serial = self.registry.serial_of(entity)?.raw();
-            Some(encode_opl_info(serial, hash))
+            Some(ServerPacket::TooltipRevision(TooltipRevision { serial, hash }).encode(version))
         } else {
             Some(full)
         }
@@ -1318,7 +1318,7 @@ impl WorldState {
             let incoming = self.mobile_incoming(entity)?;
             Some(ServerPacket::MobileIncoming(incoming).encode(version))
         } else if self.registry.has::<Graphic>(entity) {
-            Some(self.world_item(entity)?.encode())
+            Some(ServerPacket::WorldItem(self.world_item(entity)?).encode(version))
         } else {
             None
         }

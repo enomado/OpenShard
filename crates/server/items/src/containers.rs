@@ -173,9 +173,12 @@ pub(crate) fn open_container(
         connection,
         encode_open_container(container_serial.raw(), gump, version),
     );
-    state.send(
+    state.send_packet(
         connection,
-        encode_container_contents(container_serial.raw(), &contents, version),
+        &ServerPacket::ContainerContents(ContainerContents {
+            container: container_serial.raw(),
+            items: contents.clone(),
+        }),
     );
     // Remember it is open, so a later change to its contents can be pushed here.
     state

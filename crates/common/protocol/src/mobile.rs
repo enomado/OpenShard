@@ -426,7 +426,7 @@ impl EncodePacket for MobileIncoming {
 /// The three stat arrows on the status bar, as the wire carries them.
 ///
 /// Two bits each inside one byte of the `0xBF 0x19` extended-status packet, and
-/// the mirror of [`SkillLock`](crate::SkillLock) for strength, dexterity and
+/// the mirror of [`SkillLock`](crate::skill::SkillLock) for strength, dexterity and
 /// intelligence. Ported from ServUO's `StatLockInfo` (out) and its `0x1A`
 /// handler (in).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]

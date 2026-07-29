@@ -28,7 +28,7 @@ pub struct CharacterSheet {
     /// Trained skills as `(id, value in tenths, lock, cap in tenths)`. A cap of
     /// zero means "the shard's own", and `enter` fills it from `[gameplay]
     /// skill_cap` — so a newly created character does not have to know the knob.
-    pub skills: Vec<(u8, u16, openshard_protocol::SkillLock, u16)>,
+    pub skills: Vec<(u8, u16, openshard_protocol::skill::SkillLock, u16)>,
     /// Which way the three stats train, and how long ago each last rose (in
     /// ticks, counted back from the moment the character enters). Both halves are
     /// inputs the stat gain reads, and both used to reset at every login.
@@ -479,7 +479,7 @@ pub enum Command {
         /// Which skill, by id.
         skill: u8,
         /// The new lock state.
-        lock: openshard_protocol::SkillLock,
+        lock: openshard_protocol::skill::SkillLock,
     },
     /// A client toggled war mode (`0x72`).
     WarMode {
@@ -754,7 +754,7 @@ pub enum Command {
         /// The vendor mobile's wire serial.
         vendor: u32,
         /// What it took, by stock serial and amount.
-        purchases: Vec<openshard_protocol::Purchase>,
+        purchases: Vec<openshard_protocol::vendor::Purchase>,
     },
     /// A client sold to a vendor (`0x9F`).
     Sell {
@@ -763,6 +763,6 @@ pub enum Command {
         /// The vendor mobile's wire serial.
         vendor: u32,
         /// What it let go, by item serial and amount.
-        sales: Vec<openshard_protocol::Sale>,
+        sales: Vec<openshard_protocol::vendor::Sale>,
     },
 }

@@ -167,11 +167,11 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(PickUpItem::ID) => {
+        Some(<PickUpItem as DecodePacket>::ID) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(pickup) = PickUpItem::decode(packet) else {
+            let Ok(pickup) = decode_packet::<PickUpItem>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x07");
                 return false;
             };
@@ -186,7 +186,7 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(drop) = DropItem::decode(packet) else {
+            let Ok(drop) = decode_packet::<DropItem>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x08");
                 return false;
             };
@@ -198,11 +198,11 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(DoubleClick::ID) => {
+        Some(<DoubleClick as DecodePacket>::ID) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(click) = DoubleClick::decode(packet) else {
+            let Ok(click) = decode_packet::<DoubleClick>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x06");
                 return false;
             };
@@ -217,7 +217,10 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(reply) = openshard_protocol::BuyReply::decode(packet) else {
+            let Ok(reply) = decode_packet::<openshard_protocol::vendor::BuyReply>(
+                packet,
+                session.login.version(),
+            ) else {
                 warn!(%id, "malformed 0x3B");
                 return false;
             };
@@ -232,7 +235,10 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(reply) = openshard_protocol::SellReply::decode(packet) else {
+            let Ok(reply) = decode_packet::<openshard_protocol::vendor::SellReply>(
+                packet,
+                session.login.version(),
+            ) else {
                 warn!(%id, "malformed 0x9F");
                 return false;
             };
@@ -263,7 +269,8 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(query) = PropertyQueryRequest::decode(packet) else {
+            let Ok(query) = decode_packet::<PropertyQueryRequest>(packet, session.login.version())
+            else {
                 warn!(%id, "malformed 0xD6");
                 return false;
             };
@@ -274,11 +281,12 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(EquipItemRequest::ID) => {
+        Some(<EquipItemRequest as DecodePacket>::ID) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(equip) = EquipItemRequest::decode(packet) else {
+            let Ok(equip) = decode_packet::<EquipItemRequest>(packet, session.login.version())
+            else {
                 warn!(%id, "malformed 0x13");
                 return false;
             };
@@ -416,11 +424,11 @@ pub(crate) fn dispatch(
             }
             true
         }
-        Some(SkillLockRequest::ID) => {
+        Some(<SkillLockRequest as DecodePacket>::ID) => {
             if !session.in_world {
                 return true;
             }
-            match SkillLockRequest::decode(packet) {
+            match decode_packet::<SkillLockRequest>(packet, session.login.version()) {
                 Ok(request) => world.queue(Command::SetSkillLock {
                     connection: id,
                     skill: request.skill,

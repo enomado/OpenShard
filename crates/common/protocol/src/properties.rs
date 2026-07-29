@@ -20,15 +20,17 @@
 //! carries, per Sphere, so a client that requested a list can match it to the
 //! revision it was told about.
 
-use crate::codec::PacketWriter;
-use crate::error::{expect_id, DecodeError};
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::DecodeError;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::version::ClientVersion;
 
 /// Builder for a `0xD6` Object Property List (the "MegaCliloc" packet).
 ///
 /// Entries are added in order; [`finish`](Self::finish) writes the terminator,
 /// patches the length and the accumulated hash, and hands back the bytes together
 /// with that hash — which the caller sends in the matching `0xDC`
-/// ([`encode_opl_info`]).
+/// ([`TooltipRevision`]).
 #[derive(Clone, Debug)]
 pub struct PropertyList {
     writer: PacketWriter,
@@ -112,13 +114,22 @@ impl PropertyList {
 /// hash. Sent when the object is drawn (in send-version mode) so the client knows
 /// whether the tooltip it holds is current; a changed hash makes it ask for the
 /// full list. Fixed nine bytes.
-#[must_use]
-pub fn encode_opl_info(serial: u32, hash: u32) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(9);
-    writer.u8(0xDC);
-    writer.u32(serial);
-    writer.u32(hash);
-    writer.into_bytes()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TooltipRevision {
+    /// The object this revision is for.
+    pub serial: u32,
+    /// The same hash [`PropertyList::finish`] returned for it.
+    pub hash: u32,
+}
+
+impl EncodePacket for TooltipRevision {
+    const ID: u8 = 0xDC;
+    const LENGTH: PacketLength = PacketLength::Fixed(9);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.u32(self.hash);
+    }
 }
 
 /// `0xD6` inbound — the client asking for the full property list of one or more
@@ -130,15 +141,16 @@ pub struct PropertyQueryRequest {
     pub serials: Vec<u32>,
 }
 
-impl PropertyQueryRequest {
+impl DecodePacket for PropertyQueryRequest {
     /// The packet id, shared with the outbound list.
-    pub const ID: u8 = 0xD6;
+    const ID: u8 = 0xD6;
 
     /// Decode a whole inbound `0xD6`. Trailing bytes that do not make a full
     /// serial are ignored rather than an error — the client pads sometimes.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         let mut serials = Vec::new();
         while reader.rest().len() >= 4 {
             serials.push(reader.u32()?);
@@ -164,6 +176,11 @@ fn string_hash(value: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::{decode_packet, encode_packet};
+
+    fn version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
 
     #[test]
     fn a_property_list_lays_out_its_header_and_terminator() {
@@ -220,7 +237,13 @@ mod tests {
         let mut list = PropertyList::new(0x0000_00AB);
         list.add_args(1_050_045, " \tLord British\t ");
         let (_, hash) = list.finish();
-        let info = encode_opl_info(0x0000_00AB, hash);
+        let info = encode_packet(
+            &TooltipRevision {
+                serial: 0x0000_00AB,
+                hash,
+            },
+            version(),
+        );
         assert_eq!(info.len(), 9);
         assert_eq!(info[0], 0xDC);
         assert_eq!(&info[1..5], &0x0000_00ABu32.to_be_bytes());
@@ -236,7 +259,7 @@ mod tests {
         for serial in [0x1111_1111u32, 0x2222_2222, 0x3333_3333] {
             bytes.extend_from_slice(&serial.to_be_bytes());
         }
-        let request = PropertyQueryRequest::decode(&bytes).unwrap();
+        let request: PropertyQueryRequest = decode_packet(&bytes, version()).unwrap();
         assert_eq!(request.serials, vec![0x1111_1111, 0x2222_2222, 0x3333_3333]);
     }
 

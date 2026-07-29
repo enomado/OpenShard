@@ -7,9 +7,7 @@
 //! job, the same seam `send_status` (`0x11`) sits on.
 
 use super::*;
-use openshard_protocol::{
-    encode_skill_update, encode_skills_full, skill_count, Feature, SkillEntry, SkillLock,
-};
+use openshard_protocol::skill::{skill_count, SkillEntry, SkillLock, SkillUpdate, SkillsFull};
 use openshard_skills::SkillChanged;
 use openshard_state::components::{Skills, StatLocks};
 use openshard_state::StatLock;
@@ -118,8 +116,10 @@ impl World {
             return;
         };
         let entries = self.skill_entries(entity, version);
-        let packet = encode_skills_full(&entries, version.supports(Feature::SkillCaps));
-        self.state.send(connection, packet);
+        self.state.send_packet(
+            connection,
+            &ServerPacket::SkillsFull(SkillsFull { entries }),
+        );
     }
 
     /// Push the single-line `0x3A` update for each skill that moved this tick, so
@@ -129,16 +129,15 @@ impl World {
     pub(super) fn send_skill_updates(&mut self) {
         let moved: Vec<SkillChanged> = self.state.bus.read(&mut self.changed).copied().collect();
         for event in moved {
-            let Some(&Client {
-                connection,
-                version,
-            }) = self.state.registry.get::<Client>(event.entity)
+            let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(event.entity)
             else {
                 continue; // a creature training a skill has no window to update
             };
             let entry = self.skill_entry(event.entity, event.skill);
-            let packet = encode_skill_update(&entry, version.supports(Feature::SkillCaps));
-            self.state.send(connection, packet);
+            self.state.send_packet(
+                connection,
+                &ServerPacket::SkillUpdate(SkillUpdate { entry }),
+            );
         }
     }
 }

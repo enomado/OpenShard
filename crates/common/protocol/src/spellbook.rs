@@ -2,7 +2,8 @@
 //!
 //! A spellbook is opened like a container (`0x24` with the gump id `0xFFFF`,
 //! which is what tells the client it is a *book*, not a bag — reuse
-//! [`encode_open_container`](crate::encode_open_container) with that gump). Its
+//! [`encode_open_container`](crate::containers::encode_open_container) with that
+//! gump). Its
 //! contents are then a `0xBF` subcommand `0x1B`: the book's serial and graphic,
 //! the spell the first bit stands for (`offset`, 1 for Magery), and an eight-byte
 //! little-endian mask, bit `n` set when the book holds the `offset + n`-th spell.

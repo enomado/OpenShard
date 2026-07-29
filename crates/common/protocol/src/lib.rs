@@ -56,7 +56,7 @@ mod access;
 mod casting;
 mod codec;
 pub mod combat;
-mod containers;
+pub mod containers;
 mod context;
 mod direction;
 mod encoded;
@@ -65,19 +65,19 @@ mod feature;
 pub mod feedback;
 mod gump;
 pub mod huffman;
-mod items;
+pub mod items;
 pub mod login;
 pub mod mobile;
 pub mod packet;
-mod properties;
+pub mod properties;
 mod seed;
 pub mod serial;
 pub mod server_packet;
-mod skill;
+pub mod skill;
 mod speech;
 mod spellbook;
 pub mod target;
-mod vendor;
+pub mod vendor;
 mod version;
 pub mod wire;
 pub mod world;
@@ -85,14 +85,11 @@ pub mod world;
 pub use access::{AccessLevel, UnknownAccessLevel};
 pub use casting::CastSpellRequest;
 pub use codec::{CodecError, CodecResult, PacketReader, PacketWriter};
-// `combat`, `feedback`, `login`, `mobile`, `serial`, `server_packet`, `target`,
-// `wire` and `world` are deliberately absent from this wall: they are the
-// rewritten groups, and their call sites import from the module the type lives
-// in. The wall itself goes in Stage 7 (`docs/protocol_rewrite.md`, D8).
-pub use containers::{
-    encode_add_to_container, encode_container_contents, encode_open_container, ContainedItem,
-    DoubleClick,
-};
+// `combat`, `containers`, `feedback`, `items`, `login`, `mobile`, `properties`,
+// `serial`, `server_packet`, `skill`, `target`, `vendor`, `wire` and `world`
+// are deliberately absent from this wall: they are the rewritten groups, and
+// their call sites import from the module the type lives in. The wall itself
+// goes in Stage 7 (`docs/protocol_rewrite.md`, D8).
 pub use context::{encode_context_menu, ContextMenuRequest, ContextMenuSelect};
 pub use direction::{Direction, Facing, RUNNING_BIT};
 pub use encoded::EncodedCommand;
@@ -102,26 +99,14 @@ pub use gump::{
     encode_close_gump, encode_gump_display, gump_color_rgb, GumpButton, GumpLayout, GumpResponse,
     GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE,
 };
-pub use items::{
-    encode_drag_cancel, encode_equip, DragCancelReason, DropItem, EquipItemRequest, PickUpItem,
-    WorldItem, DROP_TO_GROUND,
-};
 pub use packet::{
     client_packet_length, frame_client_packet, Frame, FrameError, PacketLength, MAX_PACKET_SIZE,
     SEED_LENGTH_NEW, SEED_LENGTH_OLD,
 };
-pub use properties::{encode_opl_info, PropertyList, PropertyQueryRequest};
 pub use seed::{Seed, SeedReader, SEED_COMMAND};
-pub use skill::{
-    encode_skill_update, encode_skills_full, skill_count, SkillEntry, SkillLock, SkillLockRequest,
-    UseSkillRequest,
-};
 pub use speech::{
     encode_localized_message, encode_message, encode_unicode_message, TalkRequest,
     UnicodeTalkRequest, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC, SYSTEM_SERIAL,
 };
 pub use spellbook::encode_spellbook_content;
-pub use vendor::{
-    encode_buy_list, encode_sell_list, BuyLine, BuyReply, Purchase, Sale, SellLine, SellReply,
-};
 pub use version::{ClientVersion, Era, ParseVersionError};

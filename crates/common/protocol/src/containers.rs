@@ -14,9 +14,10 @@
 //!   classic 2D client positions items by their `x`/`y` and ignores it; a grid
 //!   client reads it and desynchronises if it is missing.
 
-use crate::codec::PacketWriter;
-use crate::error::{expect_id, DecodeError};
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::DecodeError;
 use crate::feature::Feature;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
 
 /// The container-type byte a High Seas client expects in `0x24` for a normal
@@ -33,13 +34,13 @@ pub struct DoubleClick {
     pub serial: u32,
 }
 
-impl DoubleClick {
-    /// The packet id.
-    pub const ID: u8 = 0x06;
+impl DecodePacket for DoubleClick {
+    const ID: u8 = 0x06;
 
-    /// Decode a whole `0x06` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         Ok(Self {
             serial: reader.u32()?,
         })
@@ -83,6 +84,15 @@ impl ContainedItem {
 }
 
 /// `0x24` — open a container gump on the client. 7 bytes, 9 on High Seas.
+///
+/// # Not an `EncodePacket`
+///
+/// This is `0xB9`'s problem from Stage 2 (`docs/protocol_rewrite.md`) again: the
+/// packet is fixed-length, but *which* fixed length depends on
+/// [`Feature::HsPackets`], and [`EncodePacket::LENGTH`] is a `const` that cannot
+/// ask a payload's own `version`. Neither `Fixed` nor `Variable` describes it, so
+/// it stays a hand-written free function rather than forced into a model it does
+/// not fit.
 pub fn encode_open_container(serial: u32, gump: u16, version: ClientVersion) -> Vec<u8> {
     let mut writer = PacketWriter::with_capacity(9);
     writer.u8(0x24);
@@ -95,6 +105,10 @@ pub fn encode_open_container(serial: u32, gump: u16, version: ClientVersion) -> 
 }
 
 /// `0x25` — add one item to a container gump the client already has open.
+///
+/// The same version-dependent-fixed-size shape as [`encode_open_container`], this
+/// time gated on [`Feature::ItemGrid`], and not an `EncodePacket` for the same
+/// reason.
 pub fn encode_add_to_container(
     item: ContainedItem,
     container: u32,
@@ -108,29 +122,31 @@ pub fn encode_add_to_container(
 }
 
 /// `0x3C` — the full contents of a container, all at once. Variable length.
-pub fn encode_container_contents(
-    container: u32,
-    items: &[ContainedItem],
-    version: ClientVersion,
-) -> Vec<u8> {
-    let grid = version.supports(Feature::ItemGrid);
-    let mut writer = PacketWriter::with_capacity(5 + items.len() * 20);
-    writer.u8(0x3C);
-    writer.u16(0); // length, patched below
-    writer.u16(items.len() as u16);
-    for item in items {
-        item.write(&mut writer, container, grid);
-    }
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ContainerContents {
+    /// The container being filled.
+    pub container: u32,
+    /// Everything inside it.
+    pub items: Vec<ContainedItem>,
+}
 
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a container outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
+impl EncodePacket for ContainerContents {
+    const ID: u8 = 0x3C;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        let grid = version.supports(Feature::ItemGrid);
+        out.u16(self.items.len() as u16);
+        for item in &self.items {
+            item.write(out, self.container, grid);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::{decode_packet, encode_packet};
 
     /// A version with the grid index and the High Seas container type.
     fn modern() -> ClientVersion {
@@ -145,7 +161,8 @@ mod tests {
     #[test]
     fn a_double_click_is_a_serial() {
         let bytes = [0x06, 0x40, 0x00, 0x00, 0x2A];
-        assert_eq!(DoubleClick::decode(&bytes).unwrap().serial, 0x4000_002A);
+        let click: DoubleClick = decode_packet(&bytes, classic()).unwrap();
+        assert_eq!(click.serial, 0x4000_002A);
     }
 
     #[test]
@@ -231,7 +248,13 @@ mod tests {
                 hue: 0x21,
             },
         ];
-        let packet = encode_container_contents(0x4000_0001, &items, classic());
+        let packet = encode_packet(
+            &ContainerContents {
+                container: 0x4000_0001,
+                items: items.to_vec(),
+            },
+            classic(),
+        );
         assert_eq!(packet[0], 0x3C);
         assert_eq!(
             u16::from_be_bytes([packet[1], packet[2]]),
@@ -244,7 +267,13 @@ mod tests {
 
     #[test]
     fn an_empty_container_is_just_a_header() {
-        let packet = encode_container_contents(0x4000_0001, &[], classic());
+        let packet = encode_packet(
+            &ContainerContents {
+                container: 0x4000_0001,
+                items: Vec::new(),
+            },
+            classic(),
+        );
         assert_eq!(u16::from_be_bytes([packet[3], packet[4]]), 0);
         assert_eq!(packet.len(), 5);
     }

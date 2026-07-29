@@ -28,7 +28,7 @@
 //! could differ, the comment says which way and why.
 
 use openshard_entities::EntityId;
-use openshard_protocol::SkillLock;
+use openshard_protocol::skill::SkillLock;
 use openshard_state::components::{Client, Skills, Stats};
 use openshard_state::{skill, WorldState};
 

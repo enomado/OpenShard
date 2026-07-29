@@ -21,13 +21,18 @@
 
 use crate::codec::PacketWriter;
 use crate::combat::{AttackTarget, HealthBar, WarMode};
+use crate::containers::ContainerContents;
 use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, PlaySound};
+use crate::items::{DragCancel, EquipUpdate, WorldItem};
 use crate::login::{
     CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
 };
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
 use crate::packet::{frame_body, EncodePacket, PacketLength};
+use crate::properties::TooltipRevision;
+use crate::skill::{SkillUpdate, SkillsFull};
 use crate::target::TargetCursor;
+use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
 use crate::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart,
@@ -105,6 +110,24 @@ pub enum ServerPacket {
     MobileIncoming(MobileIncoming),
     /// `0xBF` subcommand `0x19` type `2` — the three stat-training arrows.
     StatLocks(StatLocks),
+    /// `0x1A` — draw an item on the ground the client has not seen.
+    WorldItem(WorldItem),
+    /// `0x27` — cancel a drag and bounce the item back.
+    DragCancel(DragCancel),
+    /// `0x2E` — a mobile is now wearing an item.
+    EquipUpdate(EquipUpdate),
+    /// `0x3C` — the full contents of a container, all at once.
+    ContainerContents(ContainerContents),
+    /// `0x74` — the prices and labels for a vendor's buy container.
+    BuyList(BuyList),
+    /// `0x9E` — what a vendor offers to buy from the player.
+    SellList(SellList),
+    /// `0xDC` — the tooltip revision for one object.
+    TooltipRevision(TooltipRevision),
+    /// `0x3A` — the whole skill list, to fill the window.
+    SkillsFull(SkillsFull),
+    /// `0x3A` — one skill's line, following a change.
+    SkillUpdate(SkillUpdate),
 }
 
 impl ServerPacket {
@@ -148,6 +171,15 @@ impl ServerPacket {
             Self::MobileMove(_) => MobileMove::ID,
             Self::MobileIncoming(_) => MobileIncoming::ID,
             Self::StatLocks(_) => StatLocks::ID,
+            Self::WorldItem(_) => WorldItem::ID,
+            Self::DragCancel(_) => DragCancel::ID,
+            Self::EquipUpdate(_) => EquipUpdate::ID,
+            Self::ContainerContents(_) => ContainerContents::ID,
+            Self::BuyList(_) => BuyList::ID,
+            Self::SellList(_) => SellList::ID,
+            Self::TooltipRevision(_) => TooltipRevision::ID,
+            Self::SkillsFull(_) => SkillsFull::ID,
+            Self::SkillUpdate(_) => SkillUpdate::ID,
         }
     }
 
@@ -187,6 +219,15 @@ impl ServerPacket {
             Self::MobileMove(_) => MobileMove::LENGTH,
             Self::MobileIncoming(_) => MobileIncoming::LENGTH,
             Self::StatLocks(_) => StatLocks::LENGTH,
+            Self::WorldItem(_) => WorldItem::LENGTH,
+            Self::DragCancel(_) => DragCancel::LENGTH,
+            Self::EquipUpdate(_) => EquipUpdate::LENGTH,
+            Self::ContainerContents(_) => ContainerContents::LENGTH,
+            Self::BuyList(_) => BuyList::LENGTH,
+            Self::SellList(_) => SellList::LENGTH,
+            Self::TooltipRevision(_) => TooltipRevision::LENGTH,
+            Self::SkillsFull(_) => SkillsFull::LENGTH,
+            Self::SkillUpdate(_) => SkillUpdate::LENGTH,
         }
     }
 
@@ -236,6 +277,15 @@ impl ServerPacket {
             Self::MobileMove(packet) => packet.encode_body(out, version),
             Self::MobileIncoming(packet) => packet.encode_body(out, version),
             Self::StatLocks(packet) => packet.encode_body(out, version),
+            Self::WorldItem(packet) => packet.encode_body(out, version),
+            Self::DragCancel(packet) => packet.encode_body(out, version),
+            Self::EquipUpdate(packet) => packet.encode_body(out, version),
+            Self::ContainerContents(packet) => packet.encode_body(out, version),
+            Self::BuyList(packet) => packet.encode_body(out, version),
+            Self::SellList(packet) => packet.encode_body(out, version),
+            Self::TooltipRevision(packet) => packet.encode_body(out, version),
+            Self::SkillsFull(packet) => packet.encode_body(out, version),
+            Self::SkillUpdate(packet) => packet.encode_body(out, version),
         }
     }
 }
@@ -420,6 +470,67 @@ mod tests {
             ServerPacket::StatLocks(StatLocks {
                 serial: 0x0000_002A,
                 locks: crate::mobile::StatLockBits::default(),
+            }),
+            ServerPacket::WorldItem(crate::items::WorldItem {
+                serial: 0x4000_0001,
+                graphic: 0x0EED,
+                amount: 1,
+                position: crate::world::Point::new(1000, 2000, 5),
+                hue: 0,
+            }),
+            ServerPacket::DragCancel(crate::items::DragCancel {
+                reason: crate::items::DragCancelReason::OutOfRange,
+            }),
+            ServerPacket::EquipUpdate(crate::items::EquipUpdate {
+                item: 0x4000_0002,
+                graphic: 0x13B9,
+                layer: 1,
+                mobile: 0x0000_0001,
+                hue: 0x0021,
+            }),
+            ServerPacket::ContainerContents(crate::containers::ContainerContents {
+                container: 0x4000_0001,
+                items: Vec::new(),
+            }),
+            ServerPacket::BuyList(crate::vendor::BuyList {
+                container: 0x4000_0010,
+                lines: vec![crate::vendor::BuyLine {
+                    price: 3,
+                    name: "black pearl".to_owned(),
+                }],
+            }),
+            ServerPacket::SellList(crate::vendor::SellList {
+                vendor: 0x0000_0BBB,
+                lines: vec![crate::vendor::SellLine {
+                    serial: 0x4000_0033,
+                    graphic: 0x0F7A,
+                    hue: 0,
+                    amount: 20,
+                    price: 2,
+                    name: "black pearl".to_owned(),
+                }],
+            }),
+            ServerPacket::TooltipRevision(crate::properties::TooltipRevision {
+                serial: 0x0000_00AB,
+                hash: 0x1234_5678,
+            }),
+            ServerPacket::SkillsFull(crate::skill::SkillsFull {
+                entries: vec![crate::skill::SkillEntry {
+                    id: 0,
+                    value: 755,
+                    base: 700,
+                    lock: crate::skill::SkillLock::Locked,
+                    cap: 1000,
+                }],
+            }),
+            ServerPacket::SkillUpdate(crate::skill::SkillUpdate {
+                entry: crate::skill::SkillEntry {
+                    id: 25,
+                    value: 501,
+                    base: 501,
+                    lock: crate::skill::SkillLock::Up,
+                    cap: 1000,
+                },
             }),
         ]
     }

@@ -391,5 +391,5 @@ fn note_looter(state: &mut WorldState, container: Serial, taker: EntityId) {
 
 /// Send a `0x27`, cancelling whatever drag the client thinks it has.
 pub fn reject_drag(state: &mut WorldState, connection: ConnectionId, reason: DragCancelReason) {
-    state.send(connection, encode_drag_cancel(reason));
+    state.send_packet(connection, &ServerPacket::DragCancel(DragCancel { reason }));
 }

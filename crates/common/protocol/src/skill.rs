@@ -3,15 +3,16 @@
 //!
 //! What a skill *does* — mine the ore, pick the lock, hide — is not here and not
 //! the engine's, the same decoupling casting has: this is only the wire. The
-//! server sends the client its skills so the window fills (`encode_skills_full`),
-//! updates one line when a skill changes (`encode_skill_update`), reads the arrow
-//! the player clicks (`SkillLockRequest`), and reads "use skill N"
-//! (`UseSkillRequest`). The byte layout is ServUO's `SkillUpdate`/`SkillChange`
+//! server sends the client its skills so the window fills ([`SkillsFull`]),
+//! updates one line when a skill changes ([`SkillUpdate`]), reads the arrow
+//! the player clicks ([`SkillLockRequest`]), and reads "use skill N"
+//! ([`UseSkillRequest`]). The byte layout is ServUO's `SkillUpdate`/`SkillChange`
 //! and its `ChangeSkillLock`/`TextCommand` handlers.
 
-use crate::codec::PacketWriter;
+use crate::codec::{PacketReader, PacketWriter};
 use crate::error::{expect_id, DecodeError};
 use crate::feature::Feature;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
 
 /// How the skill window is set to train a skill — ServUO's `SkillLock`. The wire
@@ -83,56 +84,61 @@ pub fn skill_count(version: ClientVersion) -> usize {
     }
 }
 
-/// Patch the two-byte length placeholder a variable packet leaves at `[1..3]`.
-fn framed(writer: PacketWriter) -> Vec<u8> {
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a skill packet outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
-}
-
 /// The full skill list (`0x3A`) — every skill, to fill the window on login.
 ///
-/// `caps` (`Feature::SkillCaps`, since 4.0.0a) adds the per-skill cap field and
+/// [`Feature::SkillCaps`] (since 4.0.0a) adds the per-skill cap field and
 /// switches the type byte to `0x02`; an older client gets the shorter `0x00`
 /// form. The ids ride one-based here, terminated by a zero id — the classic
 /// quirk that lets skill 0 (Alchemy) coexist with the terminator.
-#[must_use]
-pub fn encode_skills_full(entries: &[SkillEntry], caps: bool) -> Vec<u8> {
-    let per = if caps { 9 } else { 7 };
-    let mut writer = PacketWriter::with_capacity(5 + entries.len() * per + 2);
-    writer.u8(0x3A);
-    writer.u16(0); // length, patched by `framed`
-    writer.u8(if caps { 0x02 } else { 0x00 }); // absolute, capped or not
-    for entry in entries {
-        writer.u16(u16::from(entry.id) + 1); // one-based; a zero id terminates
-        writer.u16(entry.value);
-        writer.u16(entry.base);
-        writer.u8(entry.lock.to_bits());
-        if caps {
-            writer.u16(entry.cap);
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SkillsFull {
+    /// Every skill the client's window shows.
+    pub entries: Vec<SkillEntry>,
+}
+
+impl EncodePacket for SkillsFull {
+    const ID: u8 = 0x3A;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        let caps = version.supports(Feature::SkillCaps);
+        out.u8(if caps { 0x02 } else { 0x00 }); // absolute, capped or not
+        for entry in &self.entries {
+            out.u16(u16::from(entry.id) + 1); // one-based; a zero id terminates
+            out.u16(entry.value);
+            out.u16(entry.base);
+            out.u8(entry.lock.to_bits());
+            if caps {
+                out.u16(entry.cap);
+            }
         }
+        out.u16(0); // terminator
     }
-    writer.u16(0); // terminator
-    framed(writer)
 }
 
 /// A single skill's update (`0x3A`), sent when one changes so an open window
 /// follows a gain. The id rides zero-based here, and there is no terminator.
-#[must_use]
-pub fn encode_skill_update(entry: &SkillEntry, caps: bool) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(13);
-    writer.u8(0x3A);
-    writer.u16(0);
-    writer.u8(if caps { 0xDF } else { 0xFF }); // delta, capped or not
-    writer.u16(u16::from(entry.id));
-    writer.u16(entry.value);
-    writer.u16(entry.base);
-    writer.u8(entry.lock.to_bits());
-    if caps {
-        writer.u16(entry.cap);
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SkillUpdate {
+    /// The skill that changed.
+    pub entry: SkillEntry,
+}
+
+impl EncodePacket for SkillUpdate {
+    const ID: u8 = 0x3A;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        let caps = version.supports(Feature::SkillCaps);
+        out.u8(if caps { 0xDF } else { 0xFF }); // delta, capped or not
+        out.u16(u16::from(self.entry.id));
+        out.u16(self.entry.value);
+        out.u16(self.entry.base);
+        out.u8(self.entry.lock.to_bits());
+        if caps {
+            out.u16(self.entry.cap);
+        }
     }
-    framed(writer)
 }
 
 /// `0x3A` from the client — the player clicked a skill's up/down/lock arrow.
@@ -145,14 +151,14 @@ pub struct SkillLockRequest {
     pub lock: SkillLock,
 }
 
-impl SkillLockRequest {
-    /// The packet id.
-    pub const ID: u8 = 0x3A;
+impl DecodePacket for SkillLockRequest {
+    const ID: u8 = 0x3A;
 
     /// Decode the incoming skill-lock request.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         // The wire carries the id as a word; every skill id fits a byte.
         let skill = reader.u16()? as u8;
         let lock = SkillLock::from_bits(reader.u8()?);
@@ -198,6 +204,7 @@ impl UseSkillRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::{decode_packet, encode_packet};
 
     fn aos() -> ClientVersion {
         ClientVersion::new(4, 0, 0, 0)
@@ -244,7 +251,12 @@ mod tests {
                 cap: 1000,
             },
         ];
-        let packet = encode_skills_full(&entries, true);
+        let packet = encode_packet(
+            &SkillsFull {
+                entries: entries.to_vec(),
+            },
+            aos(),
+        );
         assert_eq!(packet[0], 0x3A);
         assert_eq!(
             u16::from_be_bytes([packet[1], packet[2]]) as usize,
@@ -279,7 +291,12 @@ mod tests {
             lock: SkillLock::Up,
             cap: 1000,
         }];
-        let packet = encode_skills_full(&entries, false);
+        let packet = encode_packet(
+            &SkillsFull {
+                entries: entries.to_vec(),
+            },
+            pre_aos(),
+        );
         assert_eq!(packet[3], 0x00, "the uncapped absolute type");
         assert_eq!(
             packet.len(),
@@ -297,7 +314,7 @@ mod tests {
             lock: SkillLock::Up,
             cap: 1000,
         };
-        let packet = encode_skill_update(&entry, true);
+        let packet = encode_packet(&SkillUpdate { entry }, aos());
         assert_eq!(packet[0], 0x3A);
         assert_eq!(packet[3], 0xDF, "the capped delta type");
         assert_eq!(
@@ -312,7 +329,7 @@ mod tests {
     fn a_lock_request_reads_its_skill_and_lock() {
         // 0x3A, length, skill(u16)=45, lock=1 (down).
         let packet = [0x3A, 0x00, 0x06, 0x00, 0x2D, 0x01];
-        let request = SkillLockRequest::decode(&packet).unwrap();
+        let request: SkillLockRequest = decode_packet(&packet, aos()).unwrap();
         assert_eq!(request.skill, 45);
         assert_eq!(request.lock, SkillLock::Down);
     }

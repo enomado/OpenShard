@@ -4,10 +4,10 @@ use openshard_combat::{swing_ticks, MobileDamaged, MobileDied, WRESTLING_SPEED};
 use openshard_events::Cursor;
 use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
+use openshard_protocol::items::DROP_TO_GROUND;
 use openshard_protocol::mobile::Remove;
 use openshard_protocol::packet::encode_packet;
-use openshard_protocol::SkillLock;
-use openshard_protocol::DROP_TO_GROUND;
+use openshard_protocol::skill::SkillLock;
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
 use openshard_state::components::{
@@ -3900,7 +3900,7 @@ fn entering_the_world_sends_the_skill_window() {
 
 #[test]
 fn a_skill_lock_arrow_is_stored() {
-    use openshard_protocol::SkillLock;
+    use openshard_protocol::skill::SkillLock;
     let now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
@@ -3963,7 +3963,7 @@ fn a_skill_gain_updates_the_open_window() {
 
 #[test]
 fn a_characters_stats_and_skills_survive_a_relogin() {
-    use openshard_protocol::SkillLock;
+    use openshard_protocol::skill::SkillLock;
     use openshard_state::components::Stats;
     let now = Instant::now();
     let mut world = world();
@@ -4369,7 +4369,7 @@ fn poison_survives_a_relogin() {
     // is a free cure. ServUO keeps the logged-out mobile in-world with the timer
     // still running; this shard saves the effect to the character row instead, so
     // it comes back on the sheet. The same path carries buffs and debuffs later.
-    use openshard_protocol::SkillLock;
+    use openshard_protocol::skill::SkillLock;
     use openshard_state::components::Poisoned;
     let now = Instant::now();
     let mut world = world();
@@ -4590,7 +4590,7 @@ fn a_stat_buff_survives_a_relogin() {
     // character (its shift folded into the saved stats, its timer on the effects
     // list) and comes back on relog — still buffed, and still counting down to the
     // same base it would have returned to.
-    use openshard_protocol::SkillLock;
+    use openshard_protocol::skill::SkillLock;
     use openshard_state::components::{StatMods, Stats};
     use openshard_state::effect;
     let now = Instant::now();
@@ -4968,7 +4968,7 @@ fn a_behaviour_buff_expires_on_its_tick_and_a_recast_refreshes() {
 fn a_behaviour_buff_survives_a_relogin() {
     // The non-stat buffs ride the same effects list a poison or a Bless does: saved
     // with the character, restored on relog, still counting down.
-    use openshard_protocol::SkillLock;
+    use openshard_protocol::skill::SkillLock;
     use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
@@ -5414,7 +5414,7 @@ fn paralysis_lifts_on_its_tick() {
 
 #[test]
 fn paralysis_survives_a_relogin() {
-    use openshard_protocol::SkillLock;
+    use openshard_protocol::skill::SkillLock;
     use openshard_state::components::Frozen;
     use openshard_state::effect;
     let now = Instant::now();
@@ -12036,7 +12036,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
     world.queue(Command::Buy {
         connection: gm,
         vendor: vendor_serial,
-        purchases: vec![openshard_protocol::Purchase {
+        purchases: vec![openshard_protocol::vendor::Purchase {
             serial: stock_serial,
             amount: 3,
         }],
@@ -12070,7 +12070,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
     world.queue(Command::Sell {
         connection: gm,
         vendor: vendor_serial,
-        sales: vec![openshard_protocol::Sale {
+        sales: vec![openshard_protocol::vendor::Sale {
             serial: pearls,
             amount: 2,
         }],
@@ -12091,7 +12091,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
     world.queue(Command::Buy {
         connection: gm,
         vendor: vendor_serial,
-        purchases: vec![openshard_protocol::Purchase {
+        purchases: vec![openshard_protocol::vendor::Purchase {
             serial: stock_serial,
             amount: 47,
         }],

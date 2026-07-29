@@ -708,7 +708,7 @@ fn a_vendor_takes_the_bank_when_the_pack_is_short() {
     world.queue(Command::Buy {
         connection,
         vendor,
-        purchases: vec![openshard_protocol::Purchase {
+        purchases: vec![openshard_protocol::vendor::Purchase {
             serial: stock,
             amount: 10, // 10 × 4 gold
         }],
@@ -747,7 +747,7 @@ fn with_bank_payment_off_a_banked_fortune_buys_nothing() {
     world.queue(Command::Buy {
         connection,
         vendor,
-        purchases: vec![openshard_protocol::Purchase {
+        purchases: vec![openshard_protocol::vendor::Purchase {
             serial: stock,
             amount: 10,
         }],

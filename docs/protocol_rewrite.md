@@ -247,6 +247,66 @@ that are fixed-size despite the id's own table entry saying `Variable`.
    into `DecodePacket` would be Stage 6's unification arriving four stages
    early.
 
+## Amendments forced by the Stage 4 pilot (`items`, `containers`, `vendor`, `properties`, `skill`)
+
+Stage 4 is the first group where a fixed-size packet's *size itself* is
+version-conditional in two more places, and the first where a payload is a
+streaming builder rather than a value `EncodePacket` can wrap.
+
+1. **`0x24` (`encode_open_container`) and `0x25` (`encode_add_to_container`)
+   stay free functions, for the same reason `0xB9` did in Stage 2:** each is
+   fixed-length, but which fixed length depends on `version`
+   (`Feature::HsPackets`, `Feature::ItemGrid`), and `EncodePacket::LENGTH` is a
+   `const` that cannot ask a payload's own `version`. `0x3C`
+   (`ContainerContents`) does not have this problem — it is genuinely
+   `Variable`, version only changes the per-item record's shape inside the
+   body — so it became an `EncodePacket` as planned.
+2. **`0x08`'s decode moved from inspecting `bytes.len()` to asking
+   `version.supports(Feature::ItemGrid)` directly.** The framer already made
+   this choice before `DropItem::decode_body` runs (`client_packet_length`
+   picks `Fixed(14)` or `Fixed(15)` on the same feature), so re-deriving it
+   from the buffer length a second time was one check the trait's `version`
+   parameter makes unnecessary, not a behaviour change.
+3. **`PropertyList` (`0xD6` outbound) stays a hand-written builder, not an
+   `EncodePacket`.** It accumulates a hash across an unknown number of
+   `add`/`add_args` calls and returns that hash alongside the bytes on
+   `finish` — `EncodePacket::encode_body` assumes a value that already knows
+   its whole body, with nothing to hand back but the bytes. Forcing the
+   builder into that shape would mean either a payload struct holding a
+   pre-built entry list (losing the streaming hash-as-you-go property that
+   keeps the arithmetic auditable) or a second, parallel encoding path.
+   `encode_opl_info` (the *other*, stateless half of the pair, `0xDC`) had no
+   such obstacle and became `TooltipRevision`.
+4. **`UseSkillRequest` (`0x12`) was left exactly as surveyed,** for the same
+   reason `StatLockRequest` was in Stage 3: `0x12` is a text-command envelope
+   several unrelated commands share, and `decode(bytes) -> Result<Option<Self>,
+   DecodeError>` already says "not mine" without an error for the ones this
+   crate does not act on.
+5. **The skill list split into two payload types sharing one id,
+   `SkillsFull` and `SkillUpdate` (`0x3A` both directions out).** They are not
+   the same packet at different sizes — one is the absolute, one-based,
+   zero-terminated full window; the other a zero-based delta with no
+   terminator — so one struct with an `is_update: bool` field would have
+   meant an `encode_body` with two unrelated bodies gated on a flag. Two
+   structs, same `ID`, is unremarkable: nothing about `EncodePacket` requires
+   ids to be unique across variants, only that each variant's own `ID` is
+   right.
+6. **`caps` stopped being a parameter and became something `encode_body`
+   derives from `version` itself,** for `SkillsFull`, `SkillUpdate` and
+   (already, since D4) every other payload: `version.supports(Feature::SkillCaps)`
+   is exactly the kind of derived, redundant flag the call site used to have
+   to compute and pass correctly by hand. Letting the trait's own `version`
+   parameter answer it removes a place the caller's flag and the packet's
+   actual shape could disagree.
+7. **`items`, `containers`, `vendor`, `properties` and `skill` all left the
+   `lib.rs` re-export wall (D8), same as `world`/`mobile`/`login` did in
+   Stage 3.** Their call sites now import from the defining module
+   (`openshard_protocol::items::WorldItem`, not `openshard_protocol::WorldItem`)
+   — this happened one stage earlier per module than D8 originally scheduled
+   it (Stage 7), because leaving a *rewritten* module in the wall while its
+   neighbours were already out was the inconsistency D8 exists to prevent,
+   not a reason to defer it.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -288,7 +348,7 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | 1 | done | `daad3e0` |
 | 2 | done | `77ba897` |
 | 3 | done | `1c94006` |
-| 4 | not started | |
+| 4 | done | |
 | 5 | not started | |
 | 6 | not started | |
 | 7 | not started | |

@@ -8,8 +8,10 @@
 //! `0x9E` lists what the vendor will take from the player's pack (with offered
 //! prices), `0x9F` names what the player let go.
 
-use crate::codec::PacketWriter;
-use crate::error::{expect_id, DecodeError};
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::DecodeError;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::version::ClientVersion;
 
 /// One line of a vendor's buy list: the price and label for one stock item, in
 /// the same order as the `0x3C` contents it rides beside.
@@ -22,28 +24,33 @@ pub struct BuyLine {
 }
 
 /// `0x74` — the prices and labels for a vendor's buy container.
-#[must_use]
-pub fn encode_buy_list(container: u32, lines: &[BuyLine]) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(8 + lines.len() * 24);
-    writer.u8(0x74);
-    writer.u16(0); // length, patched below
-    writer.u32(container);
-    writer.u8(lines.len() as u8);
-    for line in lines {
-        writer.u32(line.price);
-        // ServUO's `VendorBuyList`: the length counts a trailing NUL, and the
-        // description is written NUL-terminated. Cap at 254 so length + the NUL
-        // still fits a byte.
-        let name = line.name.as_bytes();
-        let take = name.len().min(u8::MAX as usize - 1);
-        writer.u8((take + 1) as u8);
-        writer.bytes(&name[..take]);
-        writer.u8(0);
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BuyList {
+    /// The stock container the lines pair with, by order.
+    pub container: u32,
+    /// One line per stocked item.
+    pub lines: Vec<BuyLine>,
+}
+
+impl EncodePacket for BuyList {
+    const ID: u8 = 0x74;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.container);
+        out.u8(self.lines.len() as u8);
+        for line in &self.lines {
+            out.u32(line.price);
+            // ServUO's `VendorBuyList`: the length counts a trailing NUL, and
+            // the description is written NUL-terminated. Cap at 254 so length
+            // + the NUL still fits a byte.
+            let name = line.name.as_bytes();
+            let take = name.len().min(u8::MAX as usize - 1);
+            out.u8((take + 1) as u8);
+            out.bytes(&name[..take]);
+            out.u8(0);
+        }
     }
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a buy list outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
 }
 
 /// A purchase the client asked for: which stock item, how many.
@@ -64,11 +71,13 @@ pub struct BuyReply {
     pub purchases: Vec<Purchase>,
 }
 
-impl BuyReply {
-    /// Decode a framed `0x3B`, header included.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, 0x3B)?;
-        let _length = reader.u16()?;
+impl DecodePacket for BuyReply {
+    const ID: u8 = 0x3B;
+
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         let vendor = reader.u32()?;
         let mut purchases = Vec::new();
         if reader.remaining() > 0 {
@@ -106,28 +115,33 @@ pub struct SellLine {
 }
 
 /// `0x9E` — what the vendor offers to buy from the player.
-#[must_use]
-pub fn encode_sell_list(vendor: u32, lines: &[SellLine]) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(9 + lines.len() * 32);
-    writer.u8(0x9E);
-    writer.u16(0); // length, patched below
-    writer.u32(vendor);
-    writer.u16(lines.len() as u16);
-    for line in lines {
-        writer.u32(line.serial);
-        writer.u16(line.graphic);
-        writer.u16(line.hue);
-        writer.u16(line.amount);
-        writer.u16(line.price);
-        let name = line.name.as_bytes();
-        let take = name.len().min(u16::MAX as usize);
-        writer.u16(take as u16);
-        writer.bytes(&name[..take]);
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SellList {
+    /// The vendor mobile.
+    pub vendor: u32,
+    /// One line per item the vendor will take.
+    pub lines: Vec<SellLine>,
+}
+
+impl EncodePacket for SellList {
+    const ID: u8 = 0x9E;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.vendor);
+        out.u16(self.lines.len() as u16);
+        for line in &self.lines {
+            out.u32(line.serial);
+            out.u16(line.graphic);
+            out.u16(line.hue);
+            out.u16(line.amount);
+            out.u16(line.price);
+            let name = line.name.as_bytes();
+            let take = name.len().min(u16::MAX as usize);
+            out.u16(take as u16);
+            out.bytes(&name[..take]);
+        }
     }
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a sell list outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
 }
 
 /// A sale the client confirmed: which of the player's items, how many.
@@ -148,11 +162,13 @@ pub struct SellReply {
     pub sales: Vec<Sale>,
 }
 
-impl SellReply {
-    /// Decode a framed `0x9F`, header included.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, 0x9F)?;
-        let _length = reader.u16()?;
+impl DecodePacket for SellReply {
+    const ID: u8 = 0x9F;
+
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         let vendor = reader.u32()?;
         let count = reader.u16()?;
         let mut sales = Vec::with_capacity(usize::from(count.min(64)));
@@ -168,21 +184,29 @@ impl SellReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::{decode_packet, encode_packet};
+
+    fn version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
 
     #[test]
     fn a_buy_list_carries_prices_and_labels_in_order() {
-        let bytes = encode_buy_list(
-            0x4000_0010,
-            &[
-                BuyLine {
-                    price: 3,
-                    name: "black pearl".to_owned(),
-                },
-                BuyLine {
-                    price: 12,
-                    name: "longsword".to_owned(),
-                },
-            ],
+        let bytes = encode_packet(
+            &BuyList {
+                container: 0x4000_0010,
+                lines: vec![
+                    BuyLine {
+                        price: 3,
+                        name: "black pearl".to_owned(),
+                    },
+                    BuyLine {
+                        price: 12,
+                        name: "longsword".to_owned(),
+                    },
+                ],
+            },
+            version(),
         );
         assert_eq!(bytes[0], 0x74);
         let length = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
@@ -207,7 +231,7 @@ mod tests {
         let len = bytes.len() as u16;
         bytes[1..3].copy_from_slice(&len.to_be_bytes());
 
-        let reply = BuyReply::decode(&bytes).unwrap();
+        let reply: BuyReply = decode_packet(&bytes, version()).unwrap();
         assert_eq!(reply.vendor, 0x0000_0AAA);
         assert_eq!(
             reply.purchases,
@@ -224,21 +248,25 @@ mod tests {
         bytes.extend_from_slice(&0x0000_0AAAu32.to_be_bytes());
         let len = bytes.len() as u16;
         bytes[1..3].copy_from_slice(&len.to_be_bytes());
-        assert!(BuyReply::decode(&bytes).unwrap().purchases.is_empty());
+        let reply: BuyReply = decode_packet(&bytes, version()).unwrap();
+        assert!(reply.purchases.is_empty());
     }
 
     #[test]
     fn a_sell_list_round_trips_through_the_reply() {
-        let list = encode_sell_list(
-            0x0000_0BBB,
-            &[SellLine {
-                serial: 0x4000_0033,
-                graphic: 0x0F7A,
-                hue: 0,
-                amount: 20,
-                price: 2,
-                name: "black pearl".to_owned(),
-            }],
+        let list = encode_packet(
+            &SellList {
+                vendor: 0x0000_0BBB,
+                lines: vec![SellLine {
+                    serial: 0x4000_0033,
+                    graphic: 0x0F7A,
+                    hue: 0,
+                    amount: 20,
+                    price: 2,
+                    name: "black pearl".to_owned(),
+                }],
+            },
+            version(),
         );
         assert_eq!(list[0], 0x9E);
         let length = u16::from_be_bytes([list[1], list[2]]) as usize;
@@ -251,7 +279,7 @@ mod tests {
         bytes.extend_from_slice(&10u16.to_be_bytes());
         let len = bytes.len() as u16;
         bytes[1..3].copy_from_slice(&len.to_be_bytes());
-        let reply = SellReply::decode(&bytes).unwrap();
+        let reply: SellReply = decode_packet(&bytes, version()).unwrap();
         assert_eq!(
             reply.sales,
             vec![Sale {
