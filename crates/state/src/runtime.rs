@@ -533,6 +533,12 @@ pub struct WorldState {
     /// here and never in the packet, so a reply cannot name a material the
     /// player did not pick. Cleared on logout.
     pub open_craft_gumps: HashMap<EntityId, CraftGumpContext>,
+    /// Which gate each player has a destination list open for.
+    ///
+    /// The `open_craft_gumps` shape, and for the same reason: the reply carries a
+    /// button and a switch, never *which* gate asked, so a `0xB1` for a window
+    /// this side never drew must do nothing.
+    pub open_gate_gumps: HashMap<EntityId, EntityId>,
     /// The tunable rules — swing era, speech ranges, timers — the systems read.
     pub gameplay: Gameplay,
     /// Set by a staff `.save` to ask the tick for an immediate snapshot. The world

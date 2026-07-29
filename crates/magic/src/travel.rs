@@ -129,3 +129,56 @@ pub fn describe(state: &WorldState, facet: u8, at: Point) -> String {
         |region| region.name.clone(),
     )
 }
+
+/// One of the city moongates that always stand — ServUO's `PMEntry`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PublicGate {
+    /// What the destination list calls it.
+    pub name: &'static str,
+    /// Which facet it stands on.
+    pub facet: u8,
+    /// The tile it stands on, which is also the tile it takes you to.
+    pub at: Point,
+}
+
+/// Felucca's nine public moongates — ServUO's `PMList.Felucca`, verbatim.
+///
+/// Core data, like [`crate::MAGERY`] and the craft recipes: a bare shard has to
+/// be able to travel. The pack's own `Moongates` region covers only eight of
+/// these — Buccaneer's Den has no rectangle — which costs those tiles the
+/// `guarded` flag and nothing else, so the ninth gate ships rather than being
+/// silently dropped to match.
+pub static PUBLIC_MOONGATES: &[PublicGate] = &[
+    gate("Moonglow", 0, 4467, 1283, 5),
+    gate("Britain", 0, 1336, 1997, 5),
+    gate("Jhelom", 0, 1499, 3771, 5),
+    gate("Yew", 0, 771, 752, 5),
+    gate("Minoc", 0, 2701, 692, 5),
+    gate("Trinsic", 0, 1828, 2948, -20),
+    gate("Skara Brae", 0, 643, 2067, 5),
+    gate("Magincia", 0, 3563, 2139, 5),
+    gate("Buccaneer's Den", 0, 2711, 2234, 0),
+];
+
+/// One row, kept terse so the nine read at a glance.
+const fn gate(name: &'static str, facet: u8, x: u16, y: u16, z: i8) -> PublicGate {
+    PublicGate {
+        name,
+        facet,
+        at: Point { x, y, z },
+    }
+}
+
+/// Whether a tile is one of the city moongates.
+///
+/// A **read-site derivation**, the shape `equipped_weapon` set: a public gate
+/// carries no component at all, so it is saved and restored as ordinary
+/// decoration and its meaning is re-derived every boot for nothing. That is what
+/// keeps it out of the schema, and what makes a restored one correct with no
+/// restore hook to forget.
+#[must_use]
+pub fn public_gate_at(facet: u8, at: Point) -> Option<&'static PublicGate> {
+    PUBLIC_MOONGATES
+        .iter()
+        .find(|gate| gate.facet == facet && gate.at.x == at.x && gate.at.y == at.y)
+}

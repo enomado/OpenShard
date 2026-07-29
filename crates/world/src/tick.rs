@@ -258,6 +258,7 @@ impl World {
                 dialogue: openshard_state::Dialogue::default(),
                 open_quest_gumps: HashMap::new(),
                 open_craft_gumps: HashMap::new(),
+                open_gate_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
             },

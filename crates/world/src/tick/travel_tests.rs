@@ -814,3 +814,97 @@ fn two_gates_never_stand_on_one_tile() {
         "the second cast opened nothing new"
     );
 }
+
+// -- the city moongates ------------------------------------------------------
+
+#[test]
+fn placing_the_city_moongates_twice_places_them_once() {
+    // A staff command that doubles its work each time it is run is one nobody
+    // can use twice, and the second nine would sit exactly on the first.
+    let mut world = world();
+    let first = world.place_public_moongates();
+    assert_eq!(
+        first,
+        openshard_magic::PUBLIC_MOONGATES.len(),
+        "all nine went down"
+    );
+    assert_eq!(
+        world.place_public_moongates(),
+        0,
+        "and none did the second time"
+    );
+}
+
+#[test]
+fn a_city_moongate_does_not_seal_the_tile_it_stands_on() {
+    // The whole point is to walk into it. `place_decoration` blocks a tile whose
+    // tiledata calls the graphic impassable, which would make the walk-in trigger
+    // dead code that reads as a movement bug rather than a missing rule.
+    let mut world = world();
+    world.place_public_moongates();
+    let britain = openshard_magic::PUBLIC_MOONGATES
+        .iter()
+        .find(|gate| gate.name == "Britain")
+        .unwrap();
+    let gate = world
+        .public_gate_entity(britain.facet, britain.at)
+        .expect("a gate at Britain");
+
+    assert!(
+        !world
+            .state
+            .facet_state(britain.facet)
+            .obstructions
+            .is_blocked(britain.at.x, britain.at.y),
+        "nothing bars the tile"
+    );
+    assert!(
+        world.registry().get::<Moongate>(gate).is_none(),
+        "and it carries no component: its destination is derived from where it \
+         stands, which is what keeps it out of the schema"
+    );
+}
+
+#[test]
+fn a_city_moongate_survives_a_restart_with_its_meaning_intact() {
+    // Saved as ordinary decoration and re-derived at boot. The test that matters
+    // is not that the item comes back — decoration always did — but that it is
+    // still *a gate* afterwards, with no restore hook to forget.
+    let mut world = world();
+    world.place_public_moongates();
+    let britain = openshard_magic::PUBLIC_MOONGATES
+        .iter()
+        .find(|gate| gate.name == "Britain")
+        .unwrap();
+
+    world.take_snapshot();
+    let saved: Vec<_> = world.drain_saves().collect();
+    let decorations: Vec<_> = saved
+        .iter()
+        .filter_map(|snapshot| snapshot.decorations.as_ref())
+        .flatten()
+        .filter(|record| record.graphic == openshard_state::components::MOONGATE_GRAPHIC)
+        .collect();
+    assert_eq!(
+        decorations.len(),
+        openshard_magic::PUBLIC_MOONGATES.len(),
+        "every gate was swept as decoration"
+    );
+
+    let mut restored = super::tests::world();
+    restored.restore_decorations(
+        saved
+            .iter()
+            .filter_map(|snapshot| snapshot.decorations.as_ref())
+            .flatten()
+            .cloned()
+            .collect(),
+    );
+    let gate = restored
+        .public_gate_entity(britain.facet, britain.at)
+        .expect("the gate came back");
+    assert!(
+        restored.is_gate(gate),
+        "and is still a gate, with nothing restored onto it to make it one"
+    );
+}

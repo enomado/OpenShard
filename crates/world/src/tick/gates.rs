@@ -15,7 +15,21 @@
 //! batch of commands, which is an ordinary thing for the inbox to hold.
 
 use super::*;
+use openshard_protocol::{encode_close_gump, GumpButton, GumpLayout, GumpResponse, GUMP_WHITE};
 use openshard_state::components::{Moongate, Position, MOONGATE_GRAPHIC, MOONGATE_REACH};
+
+/// The gump id the destination list is drawn under.
+///
+/// Its own number, distinct from the quest log's `0x0051_*` and the craft
+/// window's `0x0052_0001`, so a `0xB1` cannot be confused for another window's.
+/// The id is an opaque token the client echoes back and nothing on its side
+/// depends on the value — unlike the *button* encoding, which has to be
+/// ServUO's exactly.
+pub(super) const MOONGATE_GUMP: u32 = 0x0053_0002;
+
+/// The one button that means "go" — ServUO's `MoongateGump` OKAY. Zero is the
+/// close box and means cancel, as it does everywhere.
+const MOONGATE_OK: u32 = 1;
 
 /// How long a Gate Travel pair stands — ServUO's thirty seconds.
 const GATE_LIFETIME_SECONDS: u64 = 30;
@@ -138,7 +152,55 @@ impl World {
         Some(entity)
     }
 
-    /// The gate standing on a tile, if any.
+    /// Place the city moongates that are missing, and say how many went down.
+    ///
+    /// Idempotent: a tile that already holds one is skipped, so running it twice
+    /// places nine gates and not eighteen. Not run at boot — "nothing
+    /// re-populates at boot" holds, and the decoration sweep saves and restores
+    /// these like any other placed art.
+    pub(super) fn place_public_moongates(&mut self) -> usize {
+        let mut placed = 0;
+        for gate in magic::PUBLIC_MOONGATES {
+            if !self.state.facets.contains_key(&gate.facet) {
+                continue;
+            }
+            if self.public_gate_entity(gate.facet, gate.at).is_some() {
+                continue;
+            }
+            // The decoration path *without* the obstruction: `place_decoration`
+            // seals a tile whose tiledata calls the graphic impassable, and a
+            // gate has to be walked into. A blocked one is not a slightly worse
+            // gate — it is a gate whose walk-in trigger is dead code, which reads
+            // as a movement bug rather than a missing rule.
+            let Ok((entity, _serial)) = self.state.registry.spawn_with_serial(SerialKind::Item)
+            else {
+                warn!("out of item serials; stopping moongate placement");
+                break;
+            };
+            self.state.registry.insert(
+                entity,
+                Graphic {
+                    id: MOONGATE_GRAPHIC,
+                    hue: 0,
+                },
+            );
+            self.state.registry.insert(entity, Position(gate.at));
+            self.state.registry.insert(entity, Facet(gate.facet));
+            self.state.registry.insert(entity, Decoration);
+            self.state
+                .registry
+                .insert(entity, Name(format!("a moongate to {}", gate.name)));
+            self.state
+                .facet_state_mut(gate.facet)
+                .sectors
+                .insert(entity, gate.at);
+            self.state.reveal(entity);
+            placed += 1;
+        }
+        placed
+    }
+
+    /// The spell-laid gate standing on a tile, if any.
     pub(super) fn gate_at(&self, facet: u8, at: Point) -> Option<EntityId> {
         self.state
             .registry
@@ -152,6 +214,43 @@ impl World {
                         .is_some_and(|pos| pos.0.x == at.x && pos.0.y == at.y)
             })
             .map(|(entity, _)| entity)
+    }
+
+    /// The city moongate standing on a tile, as an entity — the drawn item, so a
+    /// reach check has something to measure against.
+    pub(super) fn public_gate_entity(&self, facet: u8, at: Point) -> Option<EntityId> {
+        magic::public_gate_at(facet, at)?;
+        self.state
+            .registry
+            .query::<Graphic>()
+            .find(|(entity, graphic)| {
+                graphic.id == MOONGATE_GRAPHIC
+                    && self.state.facet_of(*entity) == facet
+                    && self
+                        .state
+                        .registry
+                        .get::<Position>(*entity)
+                        .is_some_and(|pos| pos.0.x == at.x && pos.0.y == at.y)
+            })
+            .map(|(entity, _)| entity)
+    }
+
+    /// Whether an entity is a gate of either kind — a spell's, which carries a
+    /// [`Moongate`], or a city one, which carries nothing and is recognised by
+    /// where it stands.
+    ///
+    /// The city gates hold no component on purpose: they are saved and restored
+    /// as ordinary decoration and their meaning is re-derived every boot, which
+    /// is what keeps them out of the schema entirely and what makes a restored
+    /// one correct with no restore hook to forget.
+    pub(super) fn is_gate(&self, entity: EntityId) -> bool {
+        if self.state.registry.has::<Moongate>(entity) {
+            return true;
+        }
+        self.state
+            .registry
+            .get::<Position>(entity)
+            .is_some_and(|at| magic::public_gate_at(self.state.facet_of(entity), at.0).is_some())
     }
 
     /// Close the gates whose time is up — the tick counter, like a field and a
@@ -197,6 +296,10 @@ impl World {
             let facet = self.state.facet_of(entity);
             if let Some(gate) = self.gate_at(facet, to) {
                 self.use_gate(entity, gate);
+            } else if let Some(gate) = self.public_gate_entity(facet, to) {
+                // A city gate offers a list rather than taking you somewhere:
+                // it is one gate with nine destinations, not a pair.
+                self.open_gate_gump(entity, gate);
             }
         }
     }
@@ -206,7 +309,7 @@ impl World {
     /// Returns whether the click was a gate's, so the tick can stop before the
     /// ordinary item dispatch sees it.
     pub(super) fn click_gate(&mut self, player: EntityId, target: EntityId) -> bool {
-        if !self.state.registry.has::<Moongate>(target) {
+        if !self.is_gate(target) {
             return false;
         }
         let near = match (
@@ -220,8 +323,126 @@ impl World {
             _ => false,
         };
         if near {
-            self.use_gate(player, target);
+            self.enter_gate(player, target);
         }
+        true
+    }
+
+    /// Step into a gate of either kind: a spell's pair takes you to its other
+    /// end, a city one offers the list.
+    fn enter_gate(&mut self, traveller: EntityId, gate: EntityId) {
+        if self.state.registry.has::<Moongate>(gate) {
+            self.use_gate(traveller, gate);
+            return;
+        }
+        self.open_gate_gump(traveller, gate);
+    }
+
+    /// Draw a city moongate's destination list — ServUO's `MoongateGump`.
+    ///
+    /// The first engine window to use a gump's *switches*: a radio per city, and
+    /// one button that acts on whichever is set. Only a player with a client gets
+    /// one; walking a creature onto a public gate does nothing, as it does in
+    /// ServUO.
+    fn open_gate_gump(&mut self, traveller: EntityId, gate: EntityId) {
+        let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(traveller) else {
+            return;
+        };
+        let mut layout = GumpLayout::default();
+        layout.no_close();
+        let rows = magic::PUBLIC_MOONGATES.len() as i32;
+        layout.background(0, 0, 380, 60 + 30 * rows, 5054);
+        layout.label(45, 15, GUMP_WHITE, "Choose your destination:");
+        for (index, destination) in magic::PUBLIC_MOONGATES.iter().enumerate() {
+            let y = 45 + 30 * index as i32;
+            // The gate you are standing on is offered and simply refused on
+            // selection (ServUO's 1019003), rather than left out — a list whose
+            // rows move depending on where you are is a list nobody learns.
+            layout.radio(25, y, 0x00D2, 0x00D3, false, index as u32);
+            layout.label(60, y, GUMP_WHITE, destination.name);
+        }
+        let ok_y = 50 + 30 * rows;
+        layout.button(25, ok_y, 0x00FA, 0x00FB, GumpButton::Reply, 0, MOONGATE_OK);
+        layout.label(60, ok_y, GUMP_WHITE, "Travel");
+
+        let (text, lines) = layout.finish();
+        // Close then draw, the `CraftGump` order: a client told to draw twice
+        // draws two windows.
+        self.state
+            .send(connection, encode_close_gump(MOONGATE_GUMP, 0));
+        self.state.send(
+            connection,
+            encode_gump_display(
+                self.state
+                    .registry
+                    .serial_of(traveller)
+                    .map_or(0, |s| s.raw()),
+                MOONGATE_GUMP,
+                50,
+                50,
+                text,
+                lines,
+            ),
+        );
+        // Remembered so the reply can re-check the player is still beside the
+        // gate it answered for, and so a `0xB1` this side never drew does nothing.
+        self.state.open_gate_gumps.insert(traveller, gate);
+    }
+
+    /// Answer a destination list. Returns whether the reply was one of ours.
+    pub(super) fn handle_gate_gump(
+        &mut self,
+        connection: ConnectionId,
+        response: &GumpResponse,
+    ) -> bool {
+        if response.gump_id != MOONGATE_GUMP {
+            return false;
+        }
+        let Some(&player) = self.state.players.get(&connection) else {
+            return true;
+        };
+        // Taken, not borrowed: a reply to a window this side never drew finds
+        // nothing and does nothing.
+        let Some(gate) = self.state.open_gate_gumps.remove(&player) else {
+            return true;
+        };
+        if response.button != MOONGATE_OK {
+            return true; // the close box
+        }
+        let Some(&choice) = response.switches.first() else {
+            return true; // nothing selected
+        };
+        let Some(destination) = magic::PUBLIC_MOONGATES.get(choice as usize) else {
+            return true; // an index no list ever offered — refused, not clamped
+        };
+
+        // Still beside the gate it was opened for: the window can sit on screen
+        // while its owner walks away, and a reach checked only when it opened is
+        // a reach not checked at all.
+        let near = match (
+            self.state.registry.get::<Position>(player),
+            self.state.registry.get::<Position>(gate),
+        ) {
+            (Some(&Position(here)), Some(&Position(there))) => {
+                self.state.facet_of(player) == self.state.facet_of(gate)
+                    && openshard_state::sectors::in_range(here, there, MOONGATE_REACH)
+            }
+            _ => false,
+        };
+        if !near {
+            self.notify_self(player, "You must be near the gate to use it.");
+            return true;
+        }
+        if self
+            .state
+            .registry
+            .get::<Position>(gate)
+            .is_some_and(|at| at.0.x == destination.at.x && at.0.y == destination.at.y)
+        {
+            self.notify_self(player, "You are already there.");
+            return true;
+        }
+        self.travel_through(player, destination.facet, destination.at);
         true
     }
 
@@ -249,10 +470,15 @@ impl World {
             self.notify_self(traveller, "You cannot teleport while dragging an object.");
             return;
         }
-        if !self.state.facets.contains_key(&gate.facet) {
+        self.travel_through(traveller, gate.facet, gate.destination);
+    }
+
+    /// The arrival both kinds of gate share.
+    fn travel_through(&mut self, traveller: EntityId, facet: u8, destination: Point) {
+        if !self.state.facets.contains_key(&facet) {
             return;
         }
-        self.state.move_to(traveller, gate.facet, gate.destination);
+        self.state.move_to(traveller, facet, destination);
         self.state.play_sound(traveller, GATE_USE_SOUND);
     }
 }

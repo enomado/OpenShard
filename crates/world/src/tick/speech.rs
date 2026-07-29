@@ -37,6 +37,21 @@ impl World {
                         }
                         return;
                     }
+                    // `.moongates` lays the city gates. Handled here for the same
+                    // reason `.res` is: it draws items across every screen, which
+                    // is a World operation, and `gm::run` works on `WorldState`.
+                    if rest
+                        .split_whitespace()
+                        .next()
+                        .is_some_and(|c| c.eq_ignore_ascii_case("moongates"))
+                    {
+                        let placed = self.place_public_moongates();
+                        self.notify_self(
+                            actor,
+                            &format!("Placed {placed} moongate(s); the rest already stood."),
+                        );
+                        return;
+                    }
                     gm::run(&mut self.state, actor, rest);
                     return;
                 }
