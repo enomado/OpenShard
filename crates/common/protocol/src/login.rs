@@ -42,7 +42,7 @@ use std::net::Ipv4Addr;
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::feature::Feature;
-use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::packet::{decode_packet, DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
@@ -743,11 +743,95 @@ fn patch_length(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
+// -- the decoded client packet ---------------------------------------------
+
+/// One packet the login conversation understood, already decoded.
+///
+/// Without this, `LoginServer::handle` matched the raw id byte to pick a
+/// handler, and each handler decoded the same bytes again to get a typed
+/// value — one place that knew the id, another that knew the type, and the
+/// two could in principle disagree. [`ClientLoginPacket::decode`] does both
+/// in one pass, so `handle` matches on the result and nothing else in the
+/// login crate touches a raw packet buffer.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum ClientLoginPacket {
+    /// `0xBD`, successfully framed. Whether the version *string* itself
+    /// parsed is a separate question — see [`ClientVersionReport::version`].
+    VersionReport(ClientVersionReport),
+    /// `0xBD` arrived too mangled to reach a body decoder at all. Not fatal:
+    /// the seed usually already carried a version, and a client sending junk
+    /// here is the normal case [`ClientVersionReport`] tolerates, just one
+    /// layer further in.
+    MalformedVersionReport,
+    /// `0x80` — account name and password.
+    AccountLogin(AccountLogin),
+    /// `0xA0` — the shard the client picked.
+    SelectShard(SelectShard),
+    /// `0x91` — login to the game server after a relay.
+    GameServerLogin(GameServerLogin),
+    /// Any id the login conversation does not act on. Real clients send
+    /// several of these during login (`0xBE` assist version, `0xA4` system
+    /// info), and dropping the connection over them would break every one of
+    /// them for no reason.
+    Unknown(u8),
+}
+
+impl ClientLoginPacket {
+    /// Decode `packet` by its id byte.
+    ///
+    /// `packet` must be non-empty. That is an invariant, not a checked
+    /// precondition: every packet reaching this point has already survived
+    /// [`crate::packet::frame_client_packet`], whose shortest possible frame is
+    /// one byte (the id), so an empty slice here means a caller skipped
+    /// framing — a bug worth panicking on rather than laundering through an
+    /// `Option` every caller would immediately unwrap.
+    ///
+    /// `Err(_)` only for a known id whose body failed to decode; an unknown id
+    /// is `Ok(Self::Unknown)`, not an error, per [`Self::Unknown`].
+    pub fn decode(packet: &[u8], version: ClientVersion) -> Result<Self, ClientLoginDecodeError> {
+        let id = *packet
+            .first()
+            .expect("packet is empty: caller skipped framing, which never produces one");
+        match id {
+            ClientVersionReport::ID => Ok(decode_packet(packet, version)
+                .map_or(Self::MalformedVersionReport, Self::VersionReport)),
+            AccountLogin::ID => decode_packet(packet, version)
+                .map(Self::AccountLogin)
+                .map_err(ClientLoginDecodeError::AccountLogin),
+            SelectShard::ID => decode_packet(packet, version)
+                .map(Self::SelectShard)
+                .map_err(ClientLoginDecodeError::SelectShard),
+            GameServerLogin::ID => decode_packet(packet, version)
+                .map(Self::GameServerLogin)
+                .map_err(ClientLoginDecodeError::GameServerLogin),
+            _ => Ok(Self::Unknown(id)),
+        }
+    }
+}
+
+/// A known client-login packet id arrived but its body did not decode.
+///
+/// Fatal in every case: the login conversation closes the connection rather
+/// than act on half-read credentials or a forged relay key. Kept as one
+/// variant per packet, rather than collapsing to `(u8, DecodeError)`, so a
+/// caller can match the packet by type the same way it would match
+/// [`ClientLoginPacket`] itself.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ClientLoginDecodeError {
+    /// `0x80` did not decode.
+    AccountLogin(DecodeError),
+    /// `0xA0` did not decode.
+    SelectShard(DecodeError),
+    /// `0x91` did not decode.
+    GameServerLogin(DecodeError),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::WrongPacket;
-    use crate::packet::{client_packet_length, decode_packet, encode_packet};
+    use crate::packet::{client_packet_length, encode_packet};
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)

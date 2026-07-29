@@ -1,13 +1,14 @@
 //! The login conversation as a state machine.
 
+use std::fmt;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Instant;
 
 use openshard_protocol::login::{
-    encode_supported_features, AccountLogin, CharacterList, ClientVersionReport, DenyReason,
-    GameServerLogin, LoginDenied, Relay, SelectShard, ShardEntry, ShardList, StartLocation,
+    encode_supported_features, AccountLogin, CharacterList, ClientLoginDecodeError,
+    ClientLoginPacket, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied, Relay,
+    SelectShard, ShardEntry, ShardList, StartLocation,
 };
-use openshard_protocol::packet::{decode_packet, DecodePacket};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::{ClientVersion, Feature, Seed};
 use tracing::{debug, warn};
@@ -35,7 +36,7 @@ pub enum Response {
 
 /// Where a login has got to.
 #[derive(Clone, PartialEq, Eq, Debug)]
-enum State {
+enum LoginSessionState {
     /// Nothing yet. Expecting 0x80 (login server) or 0x91 (game server).
     Fresh,
     /// The account checked out and the shard list went back. Expecting 0xA0.
@@ -57,7 +58,7 @@ enum State {
 /// parameter. The whole conversation is testable as a sequence of byte slices.
 #[derive(Debug)]
 pub struct LoginSession {
-    state: State,
+    state: LoginSessionState,
     /// What the client claims to be, from the seed or `0xBD`.
     ///
     /// Defaults to the oldest possible client, which is the conservative
@@ -82,7 +83,7 @@ impl LoginSession {
     /// A session expecting its first packet.
     pub const fn new() -> Self {
         Self {
-            state: State::Fresh,
+            state: LoginSessionState::Fresh,
             version: ClientVersion::OLDEST,
             account: None,
         }
@@ -103,7 +104,10 @@ impl LoginSession {
 
     /// Whether the conversation has run to its end.
     pub fn is_finished(&self) -> bool {
-        matches!(self.state, State::Finished | State::CharacterListSent)
+        matches!(
+            self.state,
+            LoginSessionState::Finished | LoginSessionState::CharacterListSent
+        )
     }
 
     /// Record the version the seed carried, if any.
@@ -165,26 +169,48 @@ impl<A: Accounts> LoginServer<A> {
     /// reason. The gateway has already proved the packet is well-framed, so
     /// ignoring one is safe — the stream is still aligned.
     pub fn handle(&mut self, session: &mut LoginSession, packet: &[u8], now: Instant) -> Response {
-        let Some(&id) = packet.first() else {
-            return Response::Idle;
-        };
-
-        match id {
-            ClientVersionReport::ID => self.on_version_report(session, packet),
-            AccountLogin::ID => self.on_account_login(session, packet),
-            SelectShard::ID => self.on_select_shard(session, packet, now),
-            GameServerLogin::ID => self.on_game_login(session, packet, now),
-            _ => {
-                debug!(id = format!("0x{id:02X}"), "ignoring packet during login");
-                Response::Idle
-            }
+        match ClientLoginPacket::decode(packet, session.version) {
+            Ok(packet) => match packet {
+                ClientLoginPacket::VersionReport(report) => self.on_version_report(session, report),
+                // Junk here is not fatal: the seed usually carried a version,
+                // and 0xBD's string is free-form enough that clients put
+                // other things in it.
+                ClientLoginPacket::MalformedVersionReport => Response::Idle,
+                ClientLoginPacket::AccountLogin(login) => self.on_account_login(session, login),
+                ClientLoginPacket::SelectShard(select) => {
+                    self.on_select_shard(session, select, now)
+                }
+                ClientLoginPacket::GameServerLogin(login) => {
+                    self.on_game_login(session, login, now)
+                }
+                ClientLoginPacket::Unknown(id) => {
+                    debug!(id = format!("0x{id:02X}"), "ignoring packet during login");
+                    Response::Idle
+                }
+                // `ClientLoginPacket` is `#[non_exhaustive]` for callers outside
+                // this workspace; every variant that exists today is matched
+                // above.
+                _ => unreachable!("every ClientLoginPacket variant is matched above"),
+            },
+            Err(error) => match error {
+                ClientLoginDecodeError::AccountLogin(error) => {
+                    warn!(%error, "malformed 0x80");
+                    Response::Close
+                }
+                ClientLoginDecodeError::SelectShard(_) => Response::Close,
+                ClientLoginDecodeError::GameServerLogin(error) => {
+                    warn!(%error, "malformed 0x91");
+                    Response::Close
+                }
+            },
         }
     }
 
-    fn on_version_report(&self, session: &mut LoginSession, packet: &[u8]) -> Response {
-        let Ok(report) = decode_packet::<ClientVersionReport>(packet, session.version) else {
-            return Response::Idle;
-        };
+    fn on_version_report(
+        &self,
+        session: &mut LoginSession,
+        report: ClientVersionReport,
+    ) -> Response {
         match report.version() {
             Some(version) => {
                 // Sphere accepts the version once and ignores every later 0xBD.
@@ -203,24 +229,16 @@ impl<A: Accounts> LoginServer<A> {
         Response::Idle
     }
 
-    fn on_account_login(&mut self, session: &mut LoginSession, packet: &[u8]) -> Response {
-        if session.state != State::Fresh {
+    fn on_account_login(&mut self, session: &mut LoginSession, login: AccountLogin) -> Response {
+        if session.state != LoginSessionState::Fresh {
             warn!("0x80 arrived out of order");
             return Response::Close;
         }
 
-        let login = match decode_packet::<AccountLogin>(packet, session.version) {
-            Ok(login) => login,
-            Err(error) => {
-                warn!(%error, "malformed 0x80");
-                return Response::Close;
-            }
-        };
-
         if let Err(reason) = self.accounts.verify(&login.account, &login.password) {
             // The real reason is logged; the client hears one of five codes.
             warn!(account = login.account, ?reason, "login refused");
-            session.state = State::Finished;
+            session.state = LoginSessionState::Finished;
             return Response::SendThenClose(
                 ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
             );
@@ -231,7 +249,7 @@ impl<A: Accounts> LoginServer<A> {
             shards: self.shards.clone(),
         })
         .encode(session.version);
-        session.state = State::ShardListSent {
+        session.state = LoginSessionState::ShardListSent {
             account: login.account,
         };
         Response::Send(list)
@@ -240,18 +258,15 @@ impl<A: Accounts> LoginServer<A> {
     fn on_select_shard(
         &mut self,
         session: &mut LoginSession,
-        packet: &[u8],
+        select: SelectShard,
         now: Instant,
     ) -> Response {
-        let State::ShardListSent { account } = &session.state else {
+        let LoginSessionState::ShardListSent { account } = &session.state else {
             warn!("0xA0 arrived before the shard list");
             return Response::Close;
         };
         let account = account.clone();
 
-        let Ok(select) = decode_packet::<SelectShard>(packet, session.version) else {
-            return Response::Close;
-        };
         // The wire index is one-based and untrusted; `slot` refuses zero rather
         // than underflowing.
         let Some(slot) = select.slot() else {
@@ -267,7 +282,7 @@ impl<A: Accounts> LoginServer<A> {
         // to learn it. See `PendingLogin::version`.
         let key = self.keys.issue(&account, session.version, now);
         debug!(account, slot, "relaying to the game server");
-        session.state = State::Finished;
+        session.state = LoginSessionState::Finished;
         Response::SendThenClose(
             ServerPacket::Relay(Relay {
                 address: *self.game_address.ip(),
@@ -281,21 +296,13 @@ impl<A: Accounts> LoginServer<A> {
     fn on_game_login(
         &mut self,
         session: &mut LoginSession,
-        packet: &[u8],
+        login: GameServerLogin,
         now: Instant,
     ) -> Response {
-        if session.state != State::Fresh {
+        if session.state != LoginSessionState::Fresh {
             warn!("0x91 arrived out of order");
             return Response::Close;
         }
-
-        let login = match decode_packet::<GameServerLogin>(packet, session.version) {
-            Ok(login) => login,
-            Err(error) => {
-                warn!(%error, "malformed 0x91");
-                return Response::Close;
-            }
-        };
 
         // Sphere skips these four bytes entirely and re-verifies the password.
         // We check them: it costs nothing and it means the game port cannot be
@@ -304,7 +311,7 @@ impl<A: Accounts> LoginServer<A> {
         // is still checked below — the key is a session token, not the gate.
         let Some(pending) = self.keys.redeem(login.auth_key, now) else {
             warn!(account = login.account, "bad or expired auth key");
-            session.state = State::Finished;
+            session.state = LoginSessionState::Finished;
             return Response::SendThenClose(
                 ServerPacket::LoginDenied(LoginDenied {
                     reason: DenyReason::BadAuthId,
@@ -327,7 +334,7 @@ impl<A: Accounts> LoginServer<A> {
                 got = login.account,
                 "auth key does not belong to this account"
             );
-            session.state = State::Finished;
+            session.state = LoginSessionState::Finished;
             return Response::SendThenClose(
                 ServerPacket::LoginDenied(LoginDenied {
                     reason: DenyReason::BadAuthId,
@@ -338,7 +345,7 @@ impl<A: Accounts> LoginServer<A> {
 
         if let Err(reason) = self.accounts.verify(&login.account, &login.password) {
             warn!(account = login.account, ?reason, "game login refused");
-            session.state = State::Finished;
+            session.state = LoginSessionState::Finished;
             return Response::SendThenClose(
                 ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
             );
@@ -354,7 +361,7 @@ impl<A: Accounts> LoginServer<A> {
             count = characters.len(),
             "sending character list"
         );
-        session.state = State::CharacterListSent;
+        session.state = LoginSessionState::CharacterListSent;
         let character_list = ServerPacket::CharacterList(CharacterList {
             characters,
             starts: self.starts.clone(),
@@ -914,12 +921,14 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_packet_is_ignored() {
+    #[should_panic(expected = "packet is empty")]
+    fn an_empty_packet_is_a_framing_bug_not_a_client_input() {
+        // Real packets never arrive empty: `frame_client_packet`'s shortest
+        // frame is the one-byte id. An empty slice here means whoever called
+        // `handle` skipped framing, which is a server bug worth a panic, not
+        // silent Idle.
         let mut server = server();
-        assert_eq!(
-            server.handle(&mut LoginSession::new(), &[], Instant::now()),
-            Response::Idle
-        );
+        let _ = server.handle(&mut LoginSession::new(), &[], Instant::now());
     }
 
     #[test]
