@@ -300,6 +300,56 @@ fn build_login_server(
     login
 }
 
+/// Run one tick: advance the world, flush its outbound packets, hand off
+/// its snapshots and departed characters, pump the gameplay script, and
+/// reclaim expired login keys.
+///
+/// The key reclaim rides along here rather than after every `select!` branch
+/// because `AuthKeys::expire` is memory upkeep for abandoned relay keys —
+/// `AuthKeys::redeem` already checks expiry on its own — and its own doc says
+/// to call it "on a timer". The tick is that timer; a packet or a disconnect
+/// is not.
+fn tick(
+    world: &mut World,
+    sessions: &HashMap<ConnectionId, Session>,
+    saves: &SnapshotTx,
+    saved: &mut HashMap<(String, String), CharacterRecord>,
+    scripts: &mut Option<Scripts>,
+    login_server: &mut LoginServer<DevAccounts>,
+) {
+    world.tick(Instant::now());
+    for out in world.drain_outbound() {
+        if let Some(session) = sessions.get(&out.connection) {
+            // A connection reaches the world only after its game
+            // login, so this is always a game connection and every
+            // packet leaves compressed. `send_packet` gates on the
+            // flag anyway, so it stays correct if that ever changes.
+            let _ = session.send_packet(out.packet);
+        }
+    }
+    // Handed off, not awaited. The tick's job here is to stop
+    // holding the only copy.
+    for snapshot in world.drain_saves() {
+        let _ = saves.send(snapshot);
+    }
+    // Keep the in-memory character list current with logouts, so a
+    // re-login this run finds a character where it left, not where it
+    // was at boot. The store gets the same record via the snapshot
+    // above; this is the copy a re-login can read before that lands.
+    for record in world.drain_departed() {
+        let key = (record.account.normalized(), record.name.normalized());
+        saved.insert(key, record);
+    }
+    // Feed the script this tick's events and queue its commands for
+    // the next one. After the drains, so a command a script emits is
+    // applied by a tick and leaves through this same path.
+    if let Some(scripts) = scripts.as_mut() {
+        scripts.pump(world);
+    }
+    // Reclaim keys from clients that selected a shard and never came back.
+    login_server.keys.expire(Instant::now());
+}
+
 /// Drive login and the world until the gateway stops.
 ///
 /// One task owns both. That is not a limitation: the world is deliberately
@@ -360,35 +410,7 @@ pub(crate) async fn run_shard(
             biased;
 
             _ = ticker.tick() => {
-                world.tick(Instant::now());
-                for out in world.drain_outbound() {
-                    if let Some(session) = sessions.get(&out.connection) {
-                        // A connection reaches the world only after its game
-                        // login, so this is always a game connection and every
-                        // packet leaves compressed. `send_packet` gates on the
-                        // flag anyway, so it stays correct if that ever changes.
-                        let _ = session.send_packet(out.packet);
-                    }
-                }
-                // Handed off, not awaited. The tick's job here is to stop
-                // holding the only copy.
-                for snapshot in world.drain_saves() {
-                    let _ = saves.send(snapshot);
-                }
-                // Keep the in-memory character list current with logouts, so a
-                // re-login this run finds a character where it left, not where it
-                // was at boot. The store gets the same record via the snapshot
-                // above; this is the copy a re-login can read before that lands.
-                for record in world.drain_departed() {
-                    let key = (record.account.normalized(), record.name.normalized());
-                    saved.insert(key, record);
-                }
-                // Feed the script this tick's events and queue its commands for
-                // the next one. After the drains, so a command a script emits is
-                // applied by a tick and leaves through this same path.
-                if let Some(scripts) = scripts.as_mut() {
-                    scripts.pump(&mut world);
-                }
+                tick(&mut world, &sessions, &saves, &mut saved, &mut scripts, &mut login_server);
             }
 
             // Before `events`: a store that is failing is worth hearing about
@@ -413,9 +435,6 @@ pub(crate) async fn run_shard(
                 handle(&mut sessions, &mut login_server, &mut world, advertised, &mut saved, event);
             }
         }
-
-        // Reclaim keys from clients that selected a shard and never came back.
-        login_server.keys.expire(Instant::now());
     }
 
     // Shutdown: one last full snapshot, then flush every queued write before the
