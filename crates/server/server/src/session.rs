@@ -38,8 +38,8 @@ impl Session {
                 let _ = self.send_packet(bytes);
                 false
             }
-            Response::Close => {
-                warn!(%id, "closing on a protocol error");
+            Response::Close(reason) => {
+                warn!(%id, %reason, "closing on a protocol error");
                 false
             }
         }

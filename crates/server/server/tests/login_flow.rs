@@ -62,7 +62,7 @@ async fn shard() -> SocketAddr {
                                     outboxes.remove(&id);
                                     sessions.remove(&id);
                                 }
-                                Response::Close => {
+                                Response::Close(_) => {
                                     outboxes.remove(&id);
                                     sessions.remove(&id);
                                 }
