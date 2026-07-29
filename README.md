@@ -173,8 +173,9 @@ request.
 
 Work lands through a pull request against a protected `main`. See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the flow, and
-[`CLAUDE.md`](CLAUDE.md) for the reasoning behind the engine — the rules that
-are easy to trip over are in there, along with the traps already paid for.
+[`CLAUDE.md`](CLAUDE.md) for the rules that are easy to trip over — it is an
+index, with [`docs/style.md`](docs/style.md) for how the code reads and
+[`docs/findings.md`](docs/findings.md) for the traps already paid for.
 
 **No Ultima Online client files are in this repository and none ever will be.**
 They are copyrighted. Point the engine at whatever install you already have.

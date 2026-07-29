@@ -1,9 +1,11 @@
 # Contributing to OpenShard
 
 Thanks for looking. This is short on purpose; the reasoning behind the engine
-lives in [`CLAUDE.md`](CLAUDE.md), [`docs/architecture.md`](docs/architecture.md)
-and [`docs/roadmap.md`](docs/roadmap.md), and reading the first of those before a
-non-trivial change will save you an argument in review.
+lives in [`CLAUDE.md`](CLAUDE.md) — an index — and the docs it points at:
+[`docs/style.md`](docs/style.md) for how the code reads,
+[`docs/architecture.md`](docs/architecture.md) for its shape,
+[`docs/findings.md`](docs/findings.md) for what the client actually does. Reading
+the first two before a non-trivial change will save you an argument in review.
 
 Two things sit beside this file: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 covers how we talk to each other, and [`SECURITY.md`](SECURITY.md) covers what
