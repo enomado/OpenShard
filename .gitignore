@@ -28,9 +28,11 @@ dist/
 .vscode/*
 !.vscode/extensions.json
 
-# Local agent tooling: notes for the assistant and an MCP server config that
-# points at one machine's absolute binary path. Neither is anyone else's.
-CLAUDE.md
+# Local agent tooling: one operator's machine notes (where their reference
+# checkouts and client install live) and an MCP server config pointing at an
+# absolute binary path. Neither is anyone else's. `CLAUDE.md` itself is shared
+# project knowledge and is versioned.
+CLAUDE.local.md
 .mcp.json
 # Embedding models the code-index server downloads into the working directory.
 .fastembed_cache/
