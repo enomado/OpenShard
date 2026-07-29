@@ -5,6 +5,11 @@ lives in [`CLAUDE.md`](CLAUDE.md), [`docs/architecture.md`](docs/architecture.md
 and [`docs/roadmap.md`](docs/roadmap.md), and reading the first of those before a
 non-trivial change will save you an argument in review.
 
+Two things sit beside this file: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+covers how we talk to each other, and [`SECURITY.md`](SECURITY.md) covers what
+to do with something exploitable — report it privately rather than opening an
+issue, because a shard is a server with a port open.
+
 ## The flow
 
 `main` is protected — no direct pushes, no force-push. Everything lands through
