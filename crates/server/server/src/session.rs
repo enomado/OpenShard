@@ -16,13 +16,13 @@ pub(crate) struct Session {
     /// out compressed. Here the seam is the `0x91` game login: see the flag being
     /// set in `handle`.
     pub(crate) game: bool,
-    pub(crate) outbox: mpsc::UnboundedSender<Vec<u8>>,
+    pub(crate) outbox: OutboxTx,
     /// Tells the gateway framer this connection's client version. A game
     /// connection sends no version of its own, so the framer defaults to the older
     /// dialect until this carries the real one across — needed for the packets
     /// whose length changed across eras (the drop packet). Sent at character
     /// select, well before any in-world packet that depends on it.
-    pub(crate) control: mpsc::UnboundedSender<ClientVersion>,
+    pub(crate) control: VersionTx,
 }
 
 impl Session {
@@ -67,11 +67,13 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    use openshard_gateway::{outbox_channel, version_channel, OutboxRx};
+
     use super::*;
 
-    fn session(game: bool) -> (Session, mpsc::UnboundedReceiver<Vec<u8>>) {
-        let (outbox, wire) = mpsc::unbounded_channel();
-        let (control, _control_rx) = mpsc::unbounded_channel();
+    fn session(game: bool) -> (Session, OutboxRx) {
+        let (outbox, wire) = outbox_channel();
+        let (control, _control_rx) = version_channel();
         (
             Session {
                 login: LoginSession::new(),

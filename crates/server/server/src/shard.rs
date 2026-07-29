@@ -1,5 +1,65 @@
 use super::*;
 
+/// Sender half of the tick's outbound-snapshot channel. Only the tick loop in
+/// `run_shard` ever has a snapshot to hand off, so this stays private to the
+/// module rather than a bare `UnboundedSender` some unrelated `Snapshot`
+/// producer could be handed by mistake.
+#[derive(Debug, Clone)]
+pub(crate) struct SnapshotTx(mpsc::UnboundedSender<Snapshot>);
+
+impl SnapshotTx {
+    // Boxed: a bare `SendError<Snapshot>` carries a whole `Snapshot` by value,
+    // which is the failure case's problem alone — the caller here only ever
+    // checks `is_err()` and never wants that weight on the stack.
+    fn send(&self, snapshot: Snapshot) -> Result<(), Box<mpsc::error::SendError<Snapshot>>> {
+        self.0.send(snapshot).map_err(Box::new)
+    }
+}
+
+/// Receiver half of [`SnapshotTx`], drained by [`save_loop`].
+#[derive(Debug)]
+pub(crate) struct SnapshotRx(mpsc::UnboundedReceiver<Snapshot>);
+
+impl SnapshotRx {
+    async fn recv(&mut self) -> Option<Snapshot> {
+        self.0.recv().await
+    }
+}
+
+fn snapshot_channel() -> (SnapshotTx, SnapshotRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (SnapshotTx(tx), SnapshotRx(rx))
+}
+
+/// Sender half of the save task's failure-signal channel — a save failed and
+/// the tick loop should mark the world for a full resweep. The unit payload
+/// makes it easy to reach for a bare `mpsc::unbounded_channel::<()>()` at a
+/// call site that also happens to touch snapshots; the newtype keeps the two
+/// from being confused for each other by the compiler as well as the reader.
+#[derive(Debug, Clone)]
+pub(crate) struct FailureTx(mpsc::UnboundedSender<()>);
+
+impl FailureTx {
+    fn send(&self) -> Result<(), mpsc::error::SendError<()>> {
+        self.0.send(())
+    }
+}
+
+/// Receiver half of [`FailureTx`], read by the tick loop in `run_shard`.
+#[derive(Debug)]
+struct FailureRx(mpsc::UnboundedReceiver<()>);
+
+impl FailureRx {
+    async fn recv(&mut self) -> Option<()> {
+        self.0.recv().await
+    }
+}
+
+fn failure_channel() -> (FailureTx, FailureRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (FailureTx(tx), FailureRx(rx))
+}
+
 /// Write snapshots, forever, on a task nothing waits for.
 ///
 /// # This is the only place that touches a disk
@@ -16,11 +76,7 @@ use super::*;
 /// moved on. The failure goes back to the shard loop, which asks the world for a
 /// full sweep — see `World::resweep`. The cost of a failure is a fat save, and
 /// the recovery reads the world as it is now rather than as it was.
-pub(crate) async fn save_loop(
-    store: Arc<dyn Store>,
-    mut snapshots: mpsc::UnboundedReceiver<Snapshot>,
-    failures: mpsc::UnboundedSender<()>,
-) {
+async fn save_loop(store: Arc<dyn Store>, mut snapshots: SnapshotRx, failures: FailureTx) {
     while let Some(snapshot) = snapshots.recv().await {
         let rows = snapshot.len();
         let started = Instant::now();
@@ -35,7 +91,7 @@ pub(crate) async fn save_loop(
                 error!(tick = snapshot.tick, rows, %error, "save failed; the next one will be a full sweep");
                 // If the shard loop is gone there is nobody to sweep and nothing
                 // to do about it. The `let _` is that, not carelessness.
-                let _ = failures.send(());
+                let _ = failures.send();
             }
         }
     }
@@ -48,14 +104,14 @@ pub(crate) async fn save_loop(
 /// state machine that does no work worth parallelising. Async lives in the
 /// gateway's tasks, on the far side of the channel.
 pub(crate) async fn run_shard(
-    mut events: mpsc::UnboundedReceiver<ServerEvent>,
+    mut events: ServerEventRx,
     config: &Config,
     advertised: SocketAddrV4,
     mut world: World,
     store: Arc<dyn Store>,
 ) {
-    let (saves, snapshots) = mpsc::unbounded_channel();
-    let (failed, mut failures) = mpsc::unbounded_channel();
+    let (saves, snapshots) = snapshot_channel();
+    let (failed, mut failures) = failure_channel();
 
     // Accounts come from the store first — their credentials are the argon2
     // hashes saved there — and config seeds the rest. The store is authoritative

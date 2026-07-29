@@ -52,6 +52,77 @@ impl std::fmt::Display for ConnectionId {
     }
 }
 
+/// Sender half of a connection's outbound-byte channel.
+///
+/// A newtype rather than the bare `UnboundedSender<Vec<u8>>` so that a
+/// connection's send side cannot be passed where some other `Vec<u8>` channel
+/// was meant — the two crates on either side of it (this one and the world
+/// server that holds it in a `Session`) share only this name for it.
+#[derive(Debug, Clone)]
+pub struct OutboxTx(mpsc::UnboundedSender<Vec<u8>>);
+
+impl OutboxTx {
+    /// Queue bytes for the writer task. An error means the writer half is
+    /// gone, which for a caller across the boundary means the socket already
+    /// closed.
+    pub fn send(&self, bytes: Vec<u8>) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
+        self.0.send(bytes)
+    }
+}
+
+/// Receiver half of [`OutboxTx`], held by the writer task alone.
+#[derive(Debug)]
+pub struct OutboxRx(mpsc::UnboundedReceiver<Vec<u8>>);
+
+impl OutboxRx {
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        self.0.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> Result<Vec<u8>, mpsc::error::TryRecvError> {
+        self.0.try_recv()
+    }
+}
+
+/// A fresh outbox channel, for a new connection or a test double for one.
+pub fn outbox_channel() -> (OutboxTx, OutboxRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (OutboxTx(tx), OutboxRx(rx))
+}
+
+/// Sender half of the channel that carries a connection's resolved
+/// [`ClientVersion`] to the framer, once the server has it (a game connection
+/// carries none of its own). Needed for the handful of client packets whose
+/// length changed across eras — the drop packet, today. See
+/// [`Connection::set_version`].
+#[derive(Debug, Clone)]
+pub struct VersionTx(mpsc::UnboundedSender<ClientVersion>);
+
+impl VersionTx {
+    pub fn send(
+        &self,
+        version: ClientVersion,
+    ) -> Result<(), mpsc::error::SendError<ClientVersion>> {
+        self.0.send(version)
+    }
+}
+
+/// Receiver half of [`VersionTx`], read by the gateway's read loop.
+#[derive(Debug)]
+pub struct VersionRx(mpsc::UnboundedReceiver<ClientVersion>);
+
+impl VersionRx {
+    pub async fn recv(&mut self) -> Option<ClientVersion> {
+        self.0.recv().await
+    }
+}
+
+/// A fresh version channel, for a new connection or a test double for one.
+pub fn version_channel() -> (VersionTx, VersionRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (VersionTx(tx), VersionRx(rx))
+}
+
 /// Something that happened on a connection, addressed.
 #[derive(Debug)]
 pub enum ServerEvent {
@@ -62,12 +133,9 @@ pub enum ServerEvent {
         /// From where.
         address: SocketAddr,
         /// Send bytes back through this.
-        outbox: mpsc::UnboundedSender<Vec<u8>>,
-        /// Tell the framer the client's version through this, once the server has
-        /// resolved it (a game connection carries none of its own). Needed for the
-        /// handful of client packets whose length changed across eras — the drop
-        /// packet, today. See [`Connection::set_version`].
-        control: mpsc::UnboundedSender<ClientVersion>,
+        outbox: OutboxTx,
+        /// Tell the framer the client's version through this. See [`VersionTx`].
+        control: VersionTx,
     },
     /// The connection produced something.
     Received {
@@ -85,6 +153,36 @@ pub enum ServerEvent {
     },
 }
 
+/// Sender half of the gateway's event channel — one clone per connection
+/// task, all feeding the single [`ServerEventRx`] the world server drains.
+///
+/// Never leaves this crate: only [`ServerEventRx`] crosses to the world
+/// server, so this stays private rather than adding API surface nothing uses.
+#[derive(Debug, Clone)]
+struct ServerEventTx(mpsc::UnboundedSender<ServerEvent>);
+
+impl ServerEventTx {
+    fn send(&self, event: ServerEvent) -> Result<(), mpsc::error::SendError<ServerEvent>> {
+        self.0.send(event)
+    }
+}
+
+/// Receiver half of [`ServerEventTx`], handed to the world server by
+/// [`Server::bind`].
+#[derive(Debug)]
+pub struct ServerEventRx(mpsc::UnboundedReceiver<ServerEvent>);
+
+impl ServerEventRx {
+    pub async fn recv(&mut self) -> Option<ServerEvent> {
+        self.0.recv().await
+    }
+}
+
+fn server_event_channel() -> (ServerEventTx, ServerEventRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (ServerEventTx(tx), ServerEventRx(rx))
+}
+
 /// Accepts connections and drives a [`Connection`] for each.
 ///
 /// Events go onto a channel rather than through a callback: the world server
@@ -94,7 +192,7 @@ pub enum ServerEvent {
 #[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
-    events: mpsc::UnboundedSender<ServerEvent>,
+    events: ServerEventTx,
     next_id: Arc<AtomicU64>,
 }
 
@@ -102,11 +200,9 @@ impl Server {
     /// Bind to `address`.
     ///
     /// Returns the server and the channel its events arrive on.
-    pub async fn bind(
-        address: SocketAddr,
-    ) -> io::Result<(Self, mpsc::UnboundedReceiver<ServerEvent>)> {
+    pub async fn bind(address: SocketAddr) -> io::Result<(Self, ServerEventRx)> {
         let listener = TcpListener::bind(address).await?;
-        let (events, receiver) = mpsc::unbounded_channel();
+        let (events, receiver) = server_event_channel();
         Ok((
             Self {
                 listener,
@@ -147,15 +243,15 @@ async fn serve(
     id: ConnectionId,
     address: SocketAddr,
     stream: TcpStream,
-    events: mpsc::UnboundedSender<ServerEvent>,
+    events: ServerEventTx,
 ) -> io::Result<()> {
     // Nagle batches small writes, and nearly everything a UO server sends is a
     // small write that the client is waiting on. Latency beats packet count.
     stream.set_nodelay(true)?;
 
     let (mut reader, mut writer) = stream.into_split();
-    let (outbox, mut outgoing) = mpsc::unbounded_channel::<Vec<u8>>();
-    let (control, control_rx) = mpsc::unbounded_channel::<ClientVersion>();
+    let (outbox, mut outgoing) = outbox_channel();
+    let (control, control_rx) = version_channel();
 
     if events
         .send(ServerEvent::Connected {
@@ -194,8 +290,8 @@ async fn serve(
 async fn read_loop(
     id: ConnectionId,
     reader: &mut tokio::net::tcp::OwnedReadHalf,
-    events: &mpsc::UnboundedSender<ServerEvent>,
-    mut control: mpsc::UnboundedReceiver<ClientVersion>,
+    events: &ServerEventTx,
+    mut control: VersionRx,
 ) -> Option<String> {
     let mut connection = Connection::new();
     let mut buffer = [0u8; 4096];
@@ -266,7 +362,7 @@ mod tests {
     }
 
     /// Bind to an ephemeral port and start accepting.
-    async fn start() -> (SocketAddr, mpsc::UnboundedReceiver<ServerEvent>) {
+    async fn start() -> (SocketAddr, ServerEventRx) {
         let (server, events) = Server::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let address = server.local_address().unwrap();
         tokio::spawn(server.run());

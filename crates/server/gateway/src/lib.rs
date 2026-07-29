@@ -43,4 +43,7 @@ mod connection;
 mod server;
 
 pub use connection::{Connection, ConnectionError, Event};
-pub use server::{ConnectionId, Server, ServerEvent};
+pub use server::{
+    outbox_channel, version_channel, ConnectionId, OutboxRx, OutboxTx, Server, ServerEvent,
+    ServerEventRx, VersionRx, VersionTx,
+};

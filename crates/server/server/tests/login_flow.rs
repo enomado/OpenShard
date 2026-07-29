@@ -14,13 +14,12 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
-use openshard_gateway::{ConnectionId, Event, Server, ServerEvent};
+use openshard_gateway::{ConnectionId, Event, OutboxTx, Server, ServerEvent};
 use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
 use openshard_protocol::{ClientVersion, SEED_COMMAND};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 
 /// Stand up a shard on an ephemeral port. Mirrors `main.rs`.
 async fn shard() -> SocketAddr {
@@ -34,7 +33,7 @@ async fn shard() -> SocketAddr {
             .with_account("admin", "hunter2")
             .with_character("admin", "Lord British");
         let mut login = LoginServer::new(accounts, "OpenShard", advertised);
-        let mut outboxes: HashMap<ConnectionId, mpsc::UnboundedSender<Vec<u8>>> = HashMap::new();
+        let mut outboxes: HashMap<ConnectionId, OutboxTx> = HashMap::new();
         let mut sessions: HashMap<ConnectionId, LoginSession> = HashMap::new();
 
         while let Some(event) = events.recv().await {

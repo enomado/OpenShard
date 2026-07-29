@@ -26,7 +26,9 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use openshard_config::{Config, DEFAULT_TOML};
-use openshard_gateway::{ConnectionId, Event, Server, ServerEvent};
+use openshard_gateway::{
+    ConnectionId, Event, OutboxTx, Server, ServerEvent, ServerEventRx, VersionTx,
+};
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_persistence::{
     AccountRecord, CharacterRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store,
@@ -49,7 +51,7 @@ use openshard_protocol::skill::{SkillLock, SkillLockRequest, UseSkillRequest};
 use openshard_protocol::speech::{TalkRequest, UnicodeTalkRequest};
 use openshard_protocol::target::TargetResponse;
 use openshard_protocol::world::{CharacterPlay, CreateCharacter, Point, WalkRequest};
-use openshard_protocol::{huffman, AccessLevel, ClientVersion, EncodedCommand};
+use openshard_protocol::{huffman, AccessLevel, EncodedCommand};
 use openshard_world::{
     Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TileData, World,
     TICK_INTERVAL,
