@@ -508,4 +508,4 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | 4 | done | `d483bb3` |
 | 5 | done | `0d39525` |
 | 6 | done | `ca20428` |
-| 7 | done | |
+| 7 | done | `5b74452` |
