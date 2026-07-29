@@ -335,7 +335,7 @@ mod tests {
     use crate::packet::encode_packet;
     use crate::serial::Serial;
     use crate::target::TargetKind;
-    use crate::wire::CursorId;
+    use crate::wire::{AuthKey, CursorId};
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -406,7 +406,7 @@ mod tests {
             ServerPacket::Relay(Relay {
                 address: std::net::Ipv4Addr::new(127, 0, 0, 1),
                 port: 2593,
-                auth_key: 0xDEAD_BEEF,
+                auth_key: AuthKey(0xDEAD_BEEF),
             }),
             ServerPacket::CharacterList(CharacterList {
                 characters: vec![crate::login::CharacterEntry {

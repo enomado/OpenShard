@@ -59,7 +59,8 @@ pub trait Accounts {
     /// Empty for an account with none; the 0xA9 encoder pads the list out.
     fn characters(&self, account: impl Into<AccountName>) -> Vec<CharacterEntry>;
 
-    /// Create a character in the first free slot and return its slot index.
+    /// Create a character in the first free slot and return its slot index
+    /// together with the [`CharacterName`] the raw name validated to.
     ///
     /// The client sends this as `0x00`/`0xF8` on the game connection, after it
     /// is already authenticated, so the account is expected to exist. Failure
@@ -67,14 +68,25 @@ pub trait Accounts {
     /// [`DenyReason::TooManyCharacters`], and an empty, overlong or duplicate
     /// name is [`DenyReason::BadCharacter`].
     ///
+    /// Returning the validated name (not just the slot) matters: this is the
+    /// only place a [`RawCharacterName`] becomes a real `CharacterName` (see
+    /// `openshard_protocol::identity`'s module docs), so a caller that needs
+    /// the character's name after creation — to enter it into the world —
+    /// takes it from here instead of re-deriving it from the raw input.
+    ///
     /// Takes `&mut self` because it writes: a real store persists here, and the
     /// dev store keeps it in memory for the life of the process, which is enough
     /// for a freshly created character to show up in the list on reconnect.
+    ///
+    /// Unlike the rest of this trait, `account` and `name` are concrete types,
+    /// not `impl Into<...>`: this call is the raw-to-validated seam itself, so
+    /// the caller names `RawCharacterName` explicitly at the call site instead
+    /// of letting a blanket `Into` paper over it.
     fn create_character(
         &mut self,
-        account: impl Into<AccountName>,
-        name: impl Into<RawCharacterName>,
-    ) -> Result<u32, DenyReason>;
+        account: AccountName,
+        name: RawCharacterName,
+    ) -> Result<(u32, CharacterName), DenyReason>;
 
     /// Delete the character in a slot and return its name.
     ///
@@ -253,10 +265,9 @@ impl Accounts for DevAccounts {
 
     fn create_character(
         &mut self,
-        account: impl Into<AccountName>,
-        name: impl Into<RawCharacterName>,
-    ) -> Result<u32, DenyReason> {
-        let name = name.into();
+        account: AccountName,
+        name: RawCharacterName,
+    ) -> Result<(u32, CharacterName), DenyReason> {
         // The name is trimmed because the client pads its 30-byte field, and a
         // name that is only spaces is not a name. Width is the wire field's.
         let trimmed = name.0.trim();
@@ -264,7 +275,7 @@ impl Accounts for DevAccounts {
             return Err(DenyReason::BadCharacter);
         }
 
-        let Some(entry) = self.accounts.get_mut(&account.into().normalized()) else {
+        let Some(entry) = self.accounts.get_mut(&account.normalized()) else {
             return Err(DenyReason::NoAccount);
         };
         // The 0xA9 list shows exactly five slots, so a sixth character would be
@@ -283,10 +294,11 @@ impl Accounts for DevAccounts {
         }
 
         let slot = entry.characters.len() as u32;
+        let character = CharacterName(trimmed.to_owned());
         entry.characters.push(CharacterEntry {
-            name: CharacterName(trimmed.to_owned()),
+            name: character.clone(),
         });
-        Ok(slot)
+        Ok((slot, character))
     }
 
     fn delete_character(
@@ -430,8 +442,14 @@ mod tests {
     #[test]
     fn create_character_fills_the_first_free_slot() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        assert_eq!(store.create_character("a", "First"), Ok(0));
-        assert_eq!(store.create_character("a", "Second"), Ok(1));
+        assert_eq!(
+            store.create_character("a".into(), "First".into()),
+            Ok((0, CharacterName("First".to_owned())))
+        );
+        assert_eq!(
+            store.create_character("a".into(), "Second".into()),
+            Ok((1, CharacterName("Second".to_owned())))
+        );
         let characters = store.characters("a");
         assert_eq!(characters.len(), 2);
         assert_eq!(characters[0].name, "First");
@@ -443,7 +461,7 @@ mod tests {
         // The dev store keeps it in memory, which is enough for the new
         // character to be in the list when the client reconnects to play it.
         let mut store = DevAccounts::new().with_account("a", "p");
-        let _ = store.create_character("a", "Newbie");
+        let _ = store.create_character("a".into(), "Newbie".into());
         assert_eq!(store.characters("a")[0].name, "Newbie");
     }
 
@@ -452,11 +470,11 @@ mod tests {
         let mut store = DevAccounts::new().with_account("a", "p");
         for index in 0..MIN_CHARACTER_SLOTS {
             assert!(store
-                .create_character("a", format!("C{index}").as_str())
+                .create_character("a".into(), format!("C{index}").into())
                 .is_ok());
         }
         assert_eq!(
-            store.create_character("a", "TooMany"),
+            store.create_character("a".into(), "TooMany".into()),
             Err(DenyReason::TooManyCharacters)
         );
     }
@@ -465,16 +483,16 @@ mod tests {
     fn create_character_refuses_an_empty_or_overlong_name() {
         let mut store = DevAccounts::new().with_account("a", "p");
         assert_eq!(
-            store.create_character("a", "   "),
+            store.create_character("a".into(), "   ".into()),
             Err(DenyReason::BadCharacter)
         );
         assert_eq!(
-            store.create_character("a", ""),
+            store.create_character("a".into(), "".into()),
             Err(DenyReason::BadCharacter)
         );
         let long = "x".repeat(CHARACTER_NAME_LENGTH + 1);
         assert_eq!(
-            store.create_character("a", long.as_str()),
+            store.create_character("a".into(), long.into()),
             Err(DenyReason::BadCharacter)
         );
     }
@@ -482,9 +500,9 @@ mod tests {
     #[test]
     fn create_character_refuses_a_duplicate_name() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        assert!(store.create_character("a", "Twin").is_ok());
+        assert!(store.create_character("a".into(), "Twin".into()).is_ok());
         assert_eq!(
-            store.create_character("a", "twin"),
+            store.create_character("a".into(), "twin".into()),
             Err(DenyReason::BadCharacter),
             "case-insensitively, since the client does not preserve case"
         );
@@ -494,7 +512,7 @@ mod tests {
     fn create_character_refuses_an_unknown_account() {
         let mut store = DevAccounts::new();
         assert_eq!(
-            store.create_character("nobody", "X"),
+            store.create_character("nobody".into(), "X".into()),
             Err(DenyReason::NoAccount)
         );
     }
@@ -502,9 +520,9 @@ mod tests {
     #[test]
     fn delete_character_removes_the_slot_and_shifts_the_rest() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        let _ = store.create_character("a", "First");
-        let _ = store.create_character("a", "Second");
-        let _ = store.create_character("a", "Third");
+        let _ = store.create_character("a".into(), "First".into());
+        let _ = store.create_character("a".into(), "Second".into());
+        let _ = store.create_character("a".into(), "Third".into());
         assert_eq!(
             store.delete_character("a", 1),
             Ok(CharacterName("Second".to_owned()))
@@ -516,7 +534,7 @@ mod tests {
     #[test]
     fn delete_character_refuses_an_empty_or_out_of_range_slot() {
         let mut store = DevAccounts::new().with_account("a", "p");
-        let _ = store.create_character("a", "Only");
+        let _ = store.create_character("a".into(), "Only".into());
         assert_eq!(
             store.delete_character("a", 1),
             Err(DenyReason::BadCharacter)

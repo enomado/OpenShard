@@ -474,17 +474,28 @@ pub(crate) fn create_character(
         return false;
     };
 
-    let name = create.name.0.trim().to_owned();
-    match login.accounts.create_character(&account, name.as_str()) {
-        Ok(_slot) => info!(%id, %account, name, "character created"),
+    // `create.name` stays a `RawCharacterName` until `create_character` — the
+    // only place that turns one into a real `CharacterName` — validates it;
+    // no premature `.0` unwrap here, and no `impl Into<...>` sugar at the call
+    // site either: the trait takes the concrete raw type, so the clones below
+    // are the explicit, visible cost of needing both the raw and validated
+    // forms afterwards.
+    let name = match login
+        .accounts
+        .create_character(account.clone(), create.name.clone())
+    {
+        Ok((_slot, name)) => {
+            info!(%id, %account, %name, "character created");
+            name
+        }
         Err(reason) => {
-            warn!(%id, %account, name, ?reason, "character creation refused");
+            warn!(%id, %account, %create.name, ?reason, "character creation refused");
             let _ = session.send_packet(
                 ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.login.version()),
             );
             return true;
         }
-    }
+    };
 
     // Place the character in the city they picked. `start_location` indexes the
     // very list `start_cities` built and the character-list packet offered, so a
@@ -508,7 +519,7 @@ pub(crate) fn create_character(
         connection: id,
         version: session.login.version(),
         account,
-        name: CharacterName(name),
+        name,
         // A brand-new character: a fresh serial, spawned in the chosen city. The
         // tick will journal it, so it is in the database — and in the character
         // list — by the next time the player logs in.

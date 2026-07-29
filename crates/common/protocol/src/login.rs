@@ -45,6 +45,7 @@ use crate::feature::Feature;
 use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
 use crate::packet::{decode_packet, DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
+use crate::wire::AuthKey;
 use crate::world::CreateCharacter;
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
@@ -338,7 +339,7 @@ pub struct Relay {
     /// Which port.
     pub port: u16,
     /// The key the client must present back on the game connection.
-    pub auth_key: u32,
+    pub auth_key: AuthKey,
 }
 
 impl EncodePacket for Relay {
@@ -348,7 +349,7 @@ impl EncodePacket for Relay {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.bytes(&self.address.octets());
         out.u16(self.port);
-        out.u32(self.auth_key);
+        out.u32(self.auth_key.0);
     }
 }
 
@@ -358,7 +359,7 @@ impl EncodePacket for Relay {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GameServerLogin {
     /// The key handed out in the 0x8C relay. The server must check it.
-    pub auth_key: u32,
+    pub auth_key: AuthKey,
     /// The account name, again.
     pub account: RawAccountName,
     /// The password, again, still plaintext.
@@ -373,7 +374,7 @@ impl DecodePacket for GameServerLogin {
         _version: ClientVersion,
     ) -> Result<Self, DecodeError> {
         Ok(Self {
-            auth_key: reader.u32()?,
+            auth_key: AuthKey(reader.u32()?),
             account: RawAccountName(reader.fixed_string(ACCOUNT_NAME_LENGTH)?),
             password: RawPlaintextPassword(reader.fixed_string(PASSWORD_LENGTH)?),
         })
@@ -385,7 +386,7 @@ impl GameServerLogin {
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(65);
         writer.u8(Self::ID);
-        writer.u32(self.auth_key);
+        writer.u32(self.auth_key.0);
         writer.fixed_string(&self.account.0, ACCOUNT_NAME_LENGTH);
         writer.fixed_string(&self.password.0, PASSWORD_LENGTH);
         writer.into_bytes()
@@ -1179,7 +1180,7 @@ mod tests {
             &Relay {
                 address: Ipv4Addr::new(192, 168, 11, 6),
                 port: 2593,
-                auth_key: 0xDEAD_BEEF,
+                auth_key: AuthKey(0xDEAD_BEEF),
             },
             version(),
         );
@@ -1211,7 +1212,7 @@ mod tests {
             &Relay {
                 address,
                 port: 2593,
-                auth_key: 0,
+                auth_key: AuthKey(0),
             },
             modern,
         );
@@ -1234,7 +1235,7 @@ mod tests {
                 &Relay {
                     address: Ipv4Addr::new(192, 168, 11, 6),
                     port: 2593,
-                    auth_key: 0,
+                    auth_key: AuthKey(0),
                 },
                 version,
             );
@@ -1245,7 +1246,7 @@ mod tests {
     #[test]
     fn game_server_login_round_trips_at_the_declared_length() {
         let login = GameServerLogin {
-            auth_key: 0x1234_5678,
+            auth_key: AuthKey(0x1234_5678),
             account: RawAccountName("admin".to_owned()),
             password: RawPlaintextPassword("hunter2".to_owned()),
         };

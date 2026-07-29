@@ -18,6 +18,7 @@ use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Pack
 use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
+use openshard_protocol::wire::AuthKey;
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -146,9 +147,11 @@ async fn a_client_reaches_the_character_list() {
     // sees nothing but a tidy disconnect.
     assert_eq!(&relay[1..5], &[127, 0, 0, 1]);
     let port = u16::from_be_bytes([relay[5], relay[6]]);
-    let auth_key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+    let auth_key = AuthKey(u32::from_be_bytes([
+        relay[7], relay[8], relay[9], relay[10],
+    ]));
     assert_eq!(port, address.port());
-    assert_ne!(auth_key, 0);
+    assert_ne!(auth_key, AuthKey(0));
 
     // --- the client reconnects to the game server ------------------------
     let mut client = TcpStream::connect(address).await.unwrap();
@@ -262,7 +265,9 @@ async fn a_stolen_auth_key_is_useless_over_a_real_socket() {
         .unwrap();
     let mut relay = [0u8; 11];
     client.read_exact(&mut relay).await.unwrap();
-    let auth_key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+    let auth_key = AuthKey(u32::from_be_bytes([
+        relay[7], relay[8], relay[9], relay[10],
+    ]));
 
     let game_login = GameServerLogin {
         auth_key,

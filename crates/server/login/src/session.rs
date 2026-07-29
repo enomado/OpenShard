@@ -506,6 +506,7 @@ mod tests {
     use crate::accounts::DevAccounts;
     use openshard_protocol::feature::Feature;
     use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
+    use openshard_protocol::wire::AuthKey;
 
     fn server() -> LoginServer<DevAccounts> {
         let accounts = DevAccounts::new()
@@ -537,7 +538,7 @@ mod tests {
         .encode()
     }
 
-    fn game_login(key: u32, account: &str) -> Vec<u8> {
+    fn game_login(key: AuthKey, account: &str) -> Vec<u8> {
         GameServerLogin {
             auth_key: key,
             account: RawAccountName(account.to_owned()),
@@ -561,17 +562,19 @@ mod tests {
         server: &mut LoginServer<DevAccounts>,
         session: &mut LoginSession,
         now: Instant,
-    ) -> u32 {
+    ) -> AuthKey {
         let Response::SendThenClose(relay) =
             server.handle(session, pkt(&SelectShard { index: 1 }.encode()), now)
         else {
             panic!("expected a relay");
         };
-        u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]])
+        AuthKey(u32::from_be_bytes([
+            relay[7], relay[8], relay[9], relay[10],
+        ]))
     }
 
     /// Run the whole conversation and return the auth key from the relay.
-    fn relay_key(server: &mut LoginServer<DevAccounts>, now: Instant) -> u32 {
+    fn relay_key(server: &mut LoginServer<DevAccounts>, now: Instant) -> AuthKey {
         let mut session = modern_session();
         assert!(matches!(
             server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
@@ -582,7 +585,9 @@ mod tests {
         else {
             panic!("expected a relay");
         };
-        u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]])
+        AuthKey(u32::from_be_bytes([
+            relay[7], relay[8], relay[9], relay[10],
+        ]))
     }
 
     #[test]
@@ -605,7 +610,9 @@ mod tests {
             panic!("expected a relay");
         };
         assert_eq!(relay[0], 0x8C);
-        let key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+        let key = AuthKey(u32::from_be_bytes([
+            relay[7], relay[8], relay[9], relay[10],
+        ]));
 
         // Game connection: a new session, as a real client would reconnect.
         let mut session = modern_session();
@@ -739,7 +746,7 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let forged = GameServerLogin {
-            auth_key: 0xDEAD_BEEF,
+            auth_key: AuthKey(0xDEAD_BEEF),
             account: RawAccountName("admin".to_owned()),
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
@@ -791,7 +798,9 @@ mod tests {
         else {
             panic!("expected a relay");
         };
-        let alices_key = u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]);
+        let alices_key = AuthKey(u32::from_be_bytes([
+            relay[7], relay[8], relay[9], relay[10],
+        ]));
 
         let bob = GameServerLogin {
             auth_key: alices_key,
