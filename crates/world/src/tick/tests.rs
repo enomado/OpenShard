@@ -4050,6 +4050,9 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
 
 /// A reagent graphic used by the cast tests.
 const BLACK_PEARL: u16 = 0x0F7A;
+/// The other two the travel family wants.
+const BLOOD_MOSS: u16 = 0x0F7B;
+const MANDRAKE_ROOT: u16 = 0x0F86;
 
 /// A player ready to cast: grandmaster Magery and a pack full of a reagent.
 /// Returns its connection and entity.
@@ -4190,6 +4193,42 @@ fn a_servuo_cast_waits_out_its_delay_then_targets() {
             .any(|p| p[0] == 0x6C),
         "then the target cursor came up"
     );
+}
+
+#[test]
+fn a_travel_spell_asks_for_an_object_and_not_a_patch_of_ground() {
+    let now = Instant::now();
+    let mut world = sphere_world(); // resolve at once, so the cursor comes up this tick
+    let (connection, _) = ready_caster(&mut world, BLACK_PEARL, now);
+    let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
+    for reagent in [BLOOD_MOSS, MANDRAKE_ROOT] {
+        openshard_items::give(&mut world.state, backpack, reagent, 0, 20);
+    }
+
+    // Recall aims at a rune, so the client itself must refuse bare ground.
+    world.queue(Command::RequestCast {
+        connection,
+        spell: 31,
+    });
+    world.tick(now);
+    let cursor = packets_for(&mut world, connection)
+        .into_iter()
+        .find(|p| p[0] == 0x6C)
+        .expect("the cursor came up");
+    assert_eq!(cursor[1], 0, "an object cursor, not a location one");
+
+    // A mobile-targeted spell still raises the permissive cursor, so the change
+    // is to the travel family and not to targeting at large.
+    world.queue(Command::RequestCast {
+        connection,
+        spell: 17, // Magic Arrow
+    });
+    world.tick(now);
+    let cursor = packets_for(&mut world, connection)
+        .into_iter()
+        .find(|p| p[0] == 0x6C)
+        .expect("the cursor came up");
+    assert_eq!(cursor[1], 1, "still a location cursor");
 }
 
 #[test]
@@ -5512,7 +5551,6 @@ fn paralyze_field_freezes_who_stands_in_it() {
 fn the_bless_spell_raises_the_targets_stats() {
     use openshard_state::components::Stats;
     const GARLIC: u16 = 0x0F84;
-    const MANDRAKE_ROOT: u16 = 0x0F86;
     let now = Instant::now();
     let mut world = sphere_world();
     let (connection, entity) = ready_caster(&mut world, GARLIC, now);

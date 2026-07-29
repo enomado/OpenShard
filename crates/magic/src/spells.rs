@@ -37,6 +37,13 @@ pub enum SpellTarget {
     Mobile,
     /// A spot on the ground.
     Location,
+    /// An object you can hold — the travel family, which aims at a recall rune
+    /// or a runebook rather than at a place.
+    ///
+    /// The distinction is not cosmetic: this raises the *object* cursor
+    /// (`0x6C` type 0), so the client itself refuses bare ground, and the
+    /// server re-checks that what came back is in reach before believing it.
+    Item,
 }
 
 /// The default effect the core runs when a spell lands.
@@ -105,7 +112,7 @@ use SpellEffect::{
     AreaCure, AreaDamage, BehaviourBuff, Cure, Damage, Field, Heal, Paralyze, Poison, Scripted,
     StatMod, Teleport,
 };
-use SpellTarget::{Location, Mobile, SelfCast};
+use SpellTarget::{Item, Location, Mobile, SelfCast};
 
 /// One table entry, kept terse so all 64 read at a glance.
 const fn spell(
@@ -329,7 +336,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         "Recall",
         4,
         &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT],
-        SelfCast,
+        Item,
         Scripted,
     ),
     // -- Fifth circle --------------------------------------------------------
@@ -422,7 +429,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         "Mark",
         6,
         &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT],
-        SelfCast,
+        Item,
         Scripted,
     ),
     spell(
@@ -471,8 +478,11 @@ pub static MAGERY: [SpellInfo; 64] = [
     spell(
         "Gate Travel",
         7,
-        &[BLOOD_MOSS, MANDRAKE_ROOT, SULFUROUS_ASH],
-        SelfCast,
+        // Black pearl, not blood moss: ServUO's `GateTravel.cs` and the classic
+        // reagent list agree, and the row had blood moss — which made the one
+        // spell in the family that opens a gate cost the wrong reagent.
+        &[BLACK_PEARL, MANDRAKE_ROOT, SULFUROUS_ASH],
+        Item,
         Scripted,
     ),
     spell(

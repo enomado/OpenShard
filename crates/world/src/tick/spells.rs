@@ -19,7 +19,8 @@
 use super::*;
 use openshard_magic::{SpellEffect, SpellTarget, MAGERY_SKILL};
 use openshard_protocol::{
-    encode_graphical_effect, encode_play_sound, encode_target_cursor, EffectKind, EffectPoint,
+    encode_graphical_effect, encode_play_sound, encode_target_cursor, encode_target_cursor_object,
+    EffectKind, EffectPoint,
 };
 use openshard_state::components::{Casting, Skills};
 use openshard_state::{CastStyle, DamageType, FieldKind, TargetPurpose};
@@ -177,17 +178,25 @@ impl World {
                     self.apply_spell_effect(caster, spell, 0, at);
                 }
             }
-            SpellTarget::Mobile | SpellTarget::Location => {
+            SpellTarget::Mobile | SpellTarget::Location | SpellTarget::Item => {
                 // Raise the cursor; the effect and the `SpellCast` wait for the
                 // aim (see `handle_target`). A creature with no client cannot aim,
                 // so its targeted cast simply lapses.
+                //
+                // An item-targeted spell raises the *object* cursor, so the client
+                // itself refuses bare ground — "Select Marked item." wants a thing,
+                // not a place. What comes back is still re-checked server-side.
                 if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(caster)
                 {
+                    let cursor = if info.target == SpellTarget::Item {
+                        encode_target_cursor_object(serial.raw())
+                    } else {
+                        encode_target_cursor(serial.raw())
+                    };
                     self.state
                         .pending_targets
                         .insert(caster, TargetPurpose::Spell { spell, success });
-                    self.state
-                        .send(connection, encode_target_cursor(serial.raw()));
+                    self.state.send(connection, cursor);
                 }
             }
         }
