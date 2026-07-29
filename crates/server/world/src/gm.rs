@@ -13,10 +13,11 @@
 //! themselves, the same "emit, don't reimplement" the rest of the world follows.
 
 use openshard_entities::EntityId;
+use openshard_protocol::encode_message;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
-use openshard_protocol::{encode_message, Point};
+use openshard_protocol::world::Point;
 use openshard_state::components::{
     Client, Equipped, Position, Spellbook, Staff, Stats, SPELLBOOK_GRAPHIC,
 };

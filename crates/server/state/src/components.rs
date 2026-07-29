@@ -18,7 +18,8 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Walker;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::{AccessLevel, ClientVersion, Facing, Point, SkillLock};
+use openshard_protocol::world::Point;
+use openshard_protocol::{AccessLevel, ClientVersion, Facing, SkillLock};
 
 /// Where a mobile or item is.
 ///

@@ -8,6 +8,7 @@
 
 use super::tests::{enter, enter_gm, packets_for, world, START};
 use super::*;
+use openshard_protocol::packet::EncodePacket;
 use openshard_state::components::{Amount, Contained, Equipped, Graphic, Stackable};
 
 /// The gold graphic, and the backpack layer a character wears one on.

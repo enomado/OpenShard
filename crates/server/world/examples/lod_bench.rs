@@ -22,7 +22,8 @@
 use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
-use openshard_protocol::{AccessLevel, ClientVersion, Point};
+use openshard_protocol::world::Point;
+use openshard_protocol::{AccessLevel, ClientVersion};
 use openshard_world::{Brain, Command, Gameplay, World, TICK_INTERVAL};
 
 /// Britain, the same spot the tests use — a real, walkable patch of the map is

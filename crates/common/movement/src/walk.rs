@@ -2,7 +2,8 @@
 
 use std::time::Instant;
 
-use openshard_protocol::{Direction, Facing, Point, WalkRequest};
+use openshard_protocol::world::{Point, WalkRequest};
+use openshard_protocol::{Direction, Facing};
 
 use crate::pace::{Pace, WalkPace};
 use crate::sequence::WalkSequence;

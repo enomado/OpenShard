@@ -1,5 +1,4 @@
 use super::*;
-use openshard_protocol::encode_death_status;
 use openshard_state::components::{
     creature_name, ghost_body, Corpse, Decays, CORPSE_GRAPHIC, CORPSE_GUMP, DEATH_SHROUD_GRAPHIC,
 };
@@ -193,33 +192,30 @@ impl World {
     ///
     /// [`reveal`]: openshard_state::WorldState::reveal
     fn tell_own_client_body(&mut self, entity: EntityId, serial: Serial, dead: bool, body: Body) {
-        let Some(&Client {
-            connection,
-            version,
-        }) = self.state.registry.get::<Client>(entity)
-        else {
+        let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
-        self.state.send(connection, encode_death_status(dead));
+        self.state
+            .send_packet(connection, &ServerPacket::DeathStatus(DeathStatus { dead }));
         if let (Some(&Position(at)), Some(&Heading(facing))) = (
             self.state.registry.get::<Position>(entity),
             self.state.registry.get::<Heading>(entity),
         ) {
-            self.state.send(
+            self.state.send_packet(
                 connection,
-                PlayerUpdate {
+                &ServerPacket::PlayerUpdate(PlayerUpdate {
                     serial: serial.raw(),
                     body: body.id,
                     hue: body.hue,
                     flags: 0,
                     position: at,
                     facing,
-                }
-                .encode(),
+                }),
             );
         }
         if let Some(mine) = self.state.mobile_incoming(entity) {
-            self.state.send(connection, mine.encode(version));
+            self.state
+                .send_packet(connection, &ServerPacket::MobileIncoming(mine));
         }
     }
 

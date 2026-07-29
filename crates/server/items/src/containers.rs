@@ -265,9 +265,13 @@ pub(crate) fn open_paperdoll(
     if mobile == player {
         flags |= PAPERDOLL_CAN_LIFT;
     }
-    state.send(
+    state.send_packet(
         connection,
-        encode_open_paperdoll(mobile_serial.raw(), &name, flags),
+        &ServerPacket::OpenPaperdoll(OpenPaperdoll {
+            serial: mobile_serial.raw(),
+            text: name,
+            flags,
+        }),
     );
     debug!(%mobile_serial, "paperdoll opened");
 }
@@ -589,7 +593,10 @@ pub(crate) fn tell_watchers_removed(state: &mut WorldState, container: Serial, i
         .map(|w| w.iter().copied().collect())
         .unwrap_or_default();
     for connection in watchers {
-        state.send(connection, encode_remove(item.raw()));
+        state.send_packet(
+            connection,
+            &ServerPacket::Remove(Remove { serial: item.raw() }),
+        );
     }
 }
 

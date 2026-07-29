@@ -23,7 +23,7 @@
 //! sector size the interest index uses. The fine test is always
 //! rectangle-containment: a wrong bucket can only cost time, never an answer.
 
-use openshard_protocol::Point;
+use openshard_protocol::world::Point;
 
 use crate::sectors::SECTOR_SIZE;
 

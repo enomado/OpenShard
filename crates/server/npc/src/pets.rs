@@ -48,7 +48,7 @@ pub fn tame(state: &mut WorldState, creature: EntityId, tamer: EntityId, slots: 
         .remove::<openshard_state::components::Combat>(creature);
     state
         .registry
-        .insert(creature, openshard_protocol::Notoriety::Friend);
+        .insert(creature, openshard_protocol::mobile::Notoriety::Friend);
     // It keeps its brain — a pet is a creature with an owner, not a second kind of
     // mobile — but stops hunting on its own account. A creature spawned with no
     // brain at all (a prop horse, sight zero) is *given* one here: without it

@@ -28,7 +28,8 @@
 //! not only silent, they were walking away.
 
 use openshard_entities::EntityId;
-use openshard_protocol::{Direction, Facing, Point};
+use openshard_protocol::world::Point;
+use openshard_protocol::{Direction, Facing};
 use openshard_state::components::{Heading, Npc, Position};
 use openshard_state::sectors::in_range;
 use openshard_state::{Rng, WorldState};

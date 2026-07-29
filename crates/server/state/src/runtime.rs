@@ -20,12 +20,13 @@ use openshard_gateway::ConnectionId;
 use openshard_movement::Terrain;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
+use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriety, Remove};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::SoundId;
+use openshard_protocol::world::{PlayerUpdate, Point};
 use openshard_protocol::{
-    encode_message, encode_opl_info, encode_remove, AccessLevel, ClientVersion, Equipment, Feature,
-    MobileIncoming, MobileMove, Notoriety, PlayerUpdate, Point, PropertyList, WorldItem,
+    encode_message, encode_opl_info, AccessLevel, ClientVersion, Feature, PropertyList, WorldItem,
 };
 
 use crate::components::{
@@ -1050,17 +1051,16 @@ impl WorldState {
             let body = self.registry.get::<Body>(entity);
             let facing = self.registry.get::<Heading>(entity).map(|h| h.0);
             if let (Some(body), Some(facing)) = (body, facing) {
-                self.send(
+                self.send_packet(
                     connection,
-                    PlayerUpdate {
+                    &ServerPacket::PlayerUpdate(PlayerUpdate {
                         serial,
                         body: body.id,
                         hue: body.hue,
                         flags: 0,
                         position: to,
                         facing,
-                    }
-                    .encode(),
+                    }),
                 );
             }
         }
@@ -1186,7 +1186,7 @@ impl WorldState {
             };
             self.outbox.push(Outbound {
                 connection,
-                packet: packet.encode(version),
+                packet: ServerPacket::MobileMove(packet).encode(version),
             });
         }
     }
@@ -1315,7 +1315,8 @@ impl WorldState {
     #[must_use]
     pub fn draw_packet(&mut self, entity: EntityId, version: ClientVersion) -> Option<Vec<u8>> {
         if self.registry.has::<Body>(entity) {
-            Some(self.mobile_incoming(entity)?.encode(version))
+            let incoming = self.mobile_incoming(entity)?;
+            Some(ServerPacket::MobileIncoming(incoming).encode(version))
         } else if self.registry.has::<Graphic>(entity) {
             Some(self.world_item(entity)?.encode())
         } else {
@@ -1350,10 +1351,12 @@ impl WorldState {
             return;
         }
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) {
-            self.outbox.push(Outbound {
+            self.send_packet(
                 connection,
-                packet: encode_remove(serial.raw()),
-            });
+                &ServerPacket::Remove(Remove {
+                    serial: serial.raw(),
+                }),
+            );
         }
     }
 

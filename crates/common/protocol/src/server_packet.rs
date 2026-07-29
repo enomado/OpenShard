@@ -25,9 +25,14 @@ use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, Play
 use crate::login::{
     CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
 };
+use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
 use crate::packet::{frame_body, EncodePacket, PacketLength};
 use crate::target::TargetCursor;
 use crate::version::ClientVersion;
+use crate::world::{
+    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart,
+    PlayerUpdate, Season, WalkAck, WalkReject,
+};
 
 /// A packet the server sends to a client.
 ///
@@ -66,6 +71,40 @@ pub enum ServerPacket {
     DeleteReject(DeleteReject),
     /// `0x86` — resend the character list after a deletion.
     CharacterListUpdate(CharacterListUpdate),
+    /// `0x1B` — put a body in the world.
+    PlayerStart(PlayerStart),
+    /// `0x20` — move or redraw the player's own body.
+    PlayerUpdate(PlayerUpdate),
+    /// `0x2C` — the player's own character died, or came back.
+    DeathStatus(DeathStatus),
+    /// `0x22` — a walk request is allowed.
+    WalkAck(WalkAck),
+    /// `0x21` — a walk request is refused.
+    WalkReject(WalkReject),
+    /// `0x55` — the client may start drawing.
+    LoginComplete(LoginComplete),
+    /// `0x4F` — overall light level.
+    LightLevel(LightLevel),
+    /// `0x6D` — play a music track.
+    PlayMusic(PlayMusic),
+    /// `0xBC` — which season the client draws.
+    Season(Season),
+    /// `0xD1` — a logout is granted.
+    LogoutAck(LogoutAck),
+    /// `0xBF` subcommand `0x08` — which map the client should draw.
+    MapChange(MapChange),
+    /// `0x1D` — take an object off the client's screen.
+    Remove(Remove),
+    /// `0x88` — open a mobile's paperdoll.
+    OpenPaperdoll(OpenPaperdoll),
+    /// `0x11` — a mobile's full status.
+    MobileStatus(MobileStatus),
+    /// `0x77` — move a mobile the client already knows about.
+    MobileMove(MobileMove),
+    /// `0x78` — draw a mobile the client has not seen.
+    MobileIncoming(MobileIncoming),
+    /// `0xBF` subcommand `0x19` type `2` — the three stat-training arrows.
+    StatLocks(StatLocks),
 }
 
 impl ServerPacket {
@@ -92,6 +131,23 @@ impl ServerPacket {
             Self::CharacterList(_) => CharacterList::ID,
             Self::DeleteReject(_) => DeleteReject::ID,
             Self::CharacterListUpdate(_) => CharacterListUpdate::ID,
+            Self::PlayerStart(_) => PlayerStart::ID,
+            Self::PlayerUpdate(_) => PlayerUpdate::ID,
+            Self::DeathStatus(_) => DeathStatus::ID,
+            Self::WalkAck(_) => WalkAck::ID,
+            Self::WalkReject(_) => WalkReject::ID,
+            Self::LoginComplete(_) => LoginComplete::ID,
+            Self::LightLevel(_) => LightLevel::ID,
+            Self::PlayMusic(_) => PlayMusic::ID,
+            Self::Season(_) => Season::ID,
+            Self::LogoutAck(_) => LogoutAck::ID,
+            Self::MapChange(_) => MapChange::ID,
+            Self::Remove(_) => Remove::ID,
+            Self::OpenPaperdoll(_) => OpenPaperdoll::ID,
+            Self::MobileStatus(_) => MobileStatus::ID,
+            Self::MobileMove(_) => MobileMove::ID,
+            Self::MobileIncoming(_) => MobileIncoming::ID,
+            Self::StatLocks(_) => StatLocks::ID,
         }
     }
 
@@ -114,6 +170,23 @@ impl ServerPacket {
             Self::CharacterList(_) => CharacterList::LENGTH,
             Self::DeleteReject(_) => DeleteReject::LENGTH,
             Self::CharacterListUpdate(_) => CharacterListUpdate::LENGTH,
+            Self::PlayerStart(_) => PlayerStart::LENGTH,
+            Self::PlayerUpdate(_) => PlayerUpdate::LENGTH,
+            Self::DeathStatus(_) => DeathStatus::LENGTH,
+            Self::WalkAck(_) => WalkAck::LENGTH,
+            Self::WalkReject(_) => WalkReject::LENGTH,
+            Self::LoginComplete(_) => LoginComplete::LENGTH,
+            Self::LightLevel(_) => LightLevel::LENGTH,
+            Self::PlayMusic(_) => PlayMusic::LENGTH,
+            Self::Season(_) => Season::LENGTH,
+            Self::LogoutAck(_) => LogoutAck::LENGTH,
+            Self::MapChange(_) => MapChange::LENGTH,
+            Self::Remove(_) => Remove::LENGTH,
+            Self::OpenPaperdoll(_) => OpenPaperdoll::LENGTH,
+            Self::MobileStatus(_) => MobileStatus::LENGTH,
+            Self::MobileMove(_) => MobileMove::LENGTH,
+            Self::MobileIncoming(_) => MobileIncoming::LENGTH,
+            Self::StatLocks(_) => StatLocks::LENGTH,
         }
     }
 
@@ -146,6 +219,23 @@ impl ServerPacket {
             Self::CharacterList(packet) => packet.encode_body(out, version),
             Self::DeleteReject(packet) => packet.encode_body(out, version),
             Self::CharacterListUpdate(packet) => packet.encode_body(out, version),
+            Self::PlayerStart(packet) => packet.encode_body(out, version),
+            Self::PlayerUpdate(packet) => packet.encode_body(out, version),
+            Self::DeathStatus(packet) => packet.encode_body(out, version),
+            Self::WalkAck(packet) => packet.encode_body(out, version),
+            Self::WalkReject(packet) => packet.encode_body(out, version),
+            Self::LoginComplete(packet) => packet.encode_body(out, version),
+            Self::LightLevel(packet) => packet.encode_body(out, version),
+            Self::PlayMusic(packet) => packet.encode_body(out, version),
+            Self::Season(packet) => packet.encode_body(out, version),
+            Self::LogoutAck(packet) => packet.encode_body(out, version),
+            Self::MapChange(packet) => packet.encode_body(out, version),
+            Self::Remove(packet) => packet.encode_body(out, version),
+            Self::OpenPaperdoll(packet) => packet.encode_body(out, version),
+            Self::MobileStatus(packet) => packet.encode_body(out, version),
+            Self::MobileMove(packet) => packet.encode_body(out, version),
+            Self::MobileIncoming(packet) => packet.encode_body(out, version),
+            Self::StatLocks(packet) => packet.encode_body(out, version),
         }
     }
 }
@@ -243,6 +333,93 @@ mod tests {
                 characters: vec![crate::login::CharacterEntry {
                     name: "Lord British".to_owned(),
                 }],
+            }),
+            ServerPacket::PlayerStart(PlayerStart {
+                serial: 0x0000_002A,
+                body: 0x0190,
+                position: crate::world::Point::new(1475, 1774, 0),
+                facing: crate::direction::Facing::walking(crate::direction::Direction::South),
+                map_width: crate::world::DEFAULT_MAP_WIDTH,
+                map_height: crate::world::DEFAULT_MAP_HEIGHT,
+            }),
+            ServerPacket::PlayerUpdate(PlayerUpdate {
+                serial: 0x0000_002A,
+                body: 0x0190,
+                hue: 0x83EA,
+                flags: 0,
+                position: crate::world::Point::new(1475, 1774, 0),
+                facing: crate::direction::Facing::walking(crate::direction::Direction::South),
+            }),
+            ServerPacket::DeathStatus(DeathStatus { dead: true }),
+            ServerPacket::WalkAck(WalkAck {
+                sequence: 1,
+                notoriety: 0x01,
+            }),
+            ServerPacket::WalkReject(WalkReject {
+                sequence: 1,
+                position: crate::world::Point::new(1475, 1774, 0),
+                facing: crate::direction::Facing::walking(crate::direction::Direction::South),
+            }),
+            ServerPacket::LoginComplete(LoginComplete),
+            ServerPacket::LightLevel(LightLevel { level: 0 }),
+            ServerPacket::PlayMusic(PlayMusic { track: 11 }),
+            ServerPacket::Season(Season {
+                season: 0,
+                play_sound: false,
+            }),
+            ServerPacket::LogoutAck(LogoutAck),
+            ServerPacket::MapChange(MapChange { map: 0 }),
+            ServerPacket::Remove(Remove {
+                serial: 0x0000_002A,
+            }),
+            ServerPacket::OpenPaperdoll(OpenPaperdoll {
+                serial: 0x0000_002A,
+                text: "Lord British".to_owned(),
+                flags: 0,
+            }),
+            ServerPacket::MobileStatus(MobileStatus {
+                serial: 0x0000_002A,
+                name: "Lord British".to_owned(),
+                hits: 100,
+                hits_max: 100,
+                female: false,
+                strength: 100,
+                dexterity: 90,
+                intelligence: 80,
+                stamina: 90,
+                stamina_max: 90,
+                mana: 80,
+                mana_max: 80,
+                gold: 1234,
+                armor: 0,
+                weight: 14,
+                max_weight: 390,
+                stat_cap: 225,
+                followers: 0,
+                followers_max: 5,
+            }),
+            ServerPacket::MobileMove(MobileMove {
+                serial: 0x0000_002A,
+                body: 0x0190,
+                position: crate::world::Point::new(1475, 1774, 0),
+                facing: crate::direction::Facing::walking(crate::direction::Direction::South),
+                hue: 0x83EA,
+                flags: 0,
+                notoriety: crate::mobile::Notoriety::Innocent,
+            }),
+            ServerPacket::MobileIncoming(MobileIncoming {
+                serial: 0x0000_002A,
+                body: 0x0190,
+                position: crate::world::Point::new(1475, 1774, 0),
+                facing: crate::direction::Facing::walking(crate::direction::Direction::South),
+                hue: 0x83EA,
+                flags: 0,
+                notoriety: crate::mobile::Notoriety::Innocent,
+                equipment: Vec::new(),
+            }),
+            ServerPacket::StatLocks(StatLocks {
+                serial: 0x0000_002A,
+                locks: crate::mobile::StatLockBits::default(),
             }),
         ]
     }

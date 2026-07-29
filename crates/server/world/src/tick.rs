@@ -36,13 +36,16 @@ use openshard_persistence::{
     MobileRecord, Snapshot, SCHEMA_VERSION,
 };
 use openshard_protocol::login::{encode_supported_features, AOS_FEATURE_FLAGS};
+use openshard_protocol::mobile::{MobileStatus, Notoriety, StatLockBits, LABEL_MODE};
 use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::world::{
+    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point,
+    Season, WalkAck, WalkReject, WalkRequest, DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH,
+};
 use openshard_protocol::{
-    encode_context_menu, encode_gump_display, encode_light_level, encode_login_complete,
-    encode_logout_ack, encode_map_change, encode_message, encode_season, encode_walk_ack,
-    encode_walk_reject, AccessLevel, ClientVersion, Direction, Facing, Feature, MobileStatus,
-    Notoriety, PlayerStart, PlayerUpdate, Point, WalkRequest, DEFAULT_MAP_HEIGHT,
-    DEFAULT_MAP_WIDTH, LABEL_MODE,
+    encode_context_menu, encode_gump_display, encode_message, AccessLevel, ClientVersion,
+    Direction, Facing, Feature,
 };
 use tracing::{debug, info, warn};
 
@@ -670,7 +673,8 @@ impl World {
                 // Say yes and stop. The client closes the connection itself, and
                 // the disconnect path saves and despawns as it does for any other
                 // way of leaving — there is no second logout rule here.
-                self.state.send(connection, encode_logout_ack());
+                self.state
+                    .send_packet(connection, &ServerPacket::LogoutAck(LogoutAck));
             }
             Command::RequestSkills { connection } => {
                 if let Some(&entity) = self.state.players.get(&connection) {

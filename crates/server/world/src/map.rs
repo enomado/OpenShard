@@ -18,7 +18,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use openshard_protocol::Point;
+use openshard_protocol::world::Point;
 
 /// Tiles along each side of a map block.
 pub const BLOCK_SIZE: u32 = 8;

@@ -1,6 +1,6 @@
 use super::*;
 use openshard_movement::{step_from, Terrain, Walker};
-use openshard_protocol::Notoriety;
+use openshard_protocol::mobile::Notoriety;
 use openshard_state::components::{Aggression, Brain, Heading, Hitpoints, Movement};
 
 /// The layer a mount item rides on — the client draws whoever wears one as
@@ -116,10 +116,12 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
     if let Some(item_serial) = state.registry.serial_of(item) {
         for watcher in equip_audience(state, player) {
             if let Some(&Client { connection, .. }) = state.registry.get::<Client>(watcher) {
-                state.outbox.push(Outbound {
+                state.send_packet(
                     connection,
-                    packet: encode_remove(item_serial.raw()),
-                });
+                    &ServerPacket::Remove(Remove {
+                        serial: item_serial.raw(),
+                    }),
+                );
             }
         }
     }

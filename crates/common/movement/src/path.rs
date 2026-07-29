@@ -22,7 +22,8 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use openshard_protocol::{Direction, Point};
+use openshard_protocol::world::Point;
+use openshard_protocol::Direction;
 
 use crate::walk::{step_from, Terrain};
 

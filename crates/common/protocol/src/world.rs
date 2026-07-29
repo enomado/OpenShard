@@ -23,8 +23,10 @@ use std::fmt;
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
-use crate::error::{expect_id, DecodeError, WrongPacket};
+use crate::error::{DecodeError, WrongPacket};
 use crate::login::CHARACTER_NAME_LENGTH;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::version::ClientVersion;
 
 /// Where something is.
 ///
@@ -66,13 +68,13 @@ pub struct CharacterPlay {
     pub client_ip: u32,
 }
 
-impl CharacterPlay {
-    /// The packet id.
-    pub const ID: u8 = 0x5D;
+impl DecodePacket for CharacterPlay {
+    const ID: u8 = 0x5D;
 
-    /// Decode a whole 0x5D packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         // A constant the client always sends. Sphere ignores it and so do we:
         // rejecting on it would be a compatibility risk for no gain.
         reader.skip(4)?;
@@ -88,8 +90,11 @@ impl CharacterPlay {
             client_ip,
         })
     }
+}
 
-    /// Encode a whole 0x5D packet.
+impl CharacterPlay {
+    /// Encode a whole 0x5D packet. Test fixtures only — see `login`'s module
+    /// docs: this server never sends one, only ever decodes it.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(73);
         writer.u8(Self::ID);
@@ -145,6 +150,15 @@ pub struct SkillChoice {
 /// genuinely pre-SA client using the old `0x0`–`0x3` encoding would have its race
 /// read one off; that is a deliberate simplification while the world models no
 /// races, noted here so it is a choice and not a surprise.
+///
+/// # Why this is not a [`DecodePacket`]
+///
+/// [`DecodePacket`] assumes one packet has one `const ID`. This one logically
+/// decodes across *two* ids (`0x00`, `0x1F8`) with two different fixed lengths —
+/// the same shape of problem the Stage 2 pilot hit with `0xB9`
+/// (`docs/protocol_rewrite.md`, "Amendments forced by the Stage 2 pilot"), and
+/// the Stage 3 pilot's counterpart to it. So [`Self::decode`] stays a plain
+/// inherent method rather than bending the trait to fit two ids.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreateCharacter {
     /// The new character's name.
@@ -361,33 +375,29 @@ pub const DEFAULT_MAP_WIDTH: u16 = 0x1800;
 /// The map size Sphere sends when it has nothing better: Britannia's.
 pub const DEFAULT_MAP_HEIGHT: u16 = 0x1000;
 
-impl PlayerStart {
-    /// The packet id.
-    pub const ID: u8 = 0x1B;
+impl EncodePacket for PlayerStart {
+    const ID: u8 = 0x1B;
+    const LENGTH: PacketLength = PacketLength::Fixed(37);
 
-    /// Encode a whole 0x1B packet.
-    pub fn encode(&self) -> Vec<u8> {
-        let mut writer = PacketWriter::with_capacity(37);
-        writer.u8(Self::ID);
-        writer.u32(self.serial);
-        writer.zeros(4);
-        writer.u16(self.body);
-        writer.u16(self.position.x);
-        writer.u16(self.position.y);
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.zeros(4);
+        out.u16(self.body);
+        out.u16(self.position.x);
+        out.u16(self.position.y);
         // The z field is two bytes wide but only the low one is read, as a
         // signed byte. Sphere writes a zero and then the byte; writing z as a
         // big-endian i16 would put -10 on the wire as 0xFFF6 and the client
         // would read 0xFF.
-        writer.u8(0);
-        writer.u8(self.position.z as u8);
-        writer.u8(self.facing.to_bits());
-        writer.zeros(1);
-        writer.u32(0xFFFF_FFFF);
-        writer.zeros(4);
-        writer.u16(self.map_width);
-        writer.u16(self.map_height);
-        writer.zeros(6);
-        writer.into_bytes()
+        out.u8(0);
+        out.u8(self.position.z as u8);
+        out.u8(self.facing.to_bits());
+        out.zeros(1);
+        out.u32(0xFFFF_FFFF);
+        out.zeros(4);
+        out.u16(self.map_width);
+        out.u16(self.map_height);
+        out.zeros(6);
     }
 }
 
@@ -413,25 +423,21 @@ pub struct PlayerUpdate {
     pub facing: Facing,
 }
 
-impl PlayerUpdate {
-    /// The packet id.
-    pub const ID: u8 = 0x20;
+impl EncodePacket for PlayerUpdate {
+    const ID: u8 = 0x20;
+    const LENGTH: PacketLength = PacketLength::Fixed(19);
 
-    /// Encode a whole 0x20 packet.
-    pub fn encode(&self) -> Vec<u8> {
-        let mut writer = PacketWriter::with_capacity(19);
-        writer.u8(Self::ID);
-        writer.u32(self.serial);
-        writer.u16(self.body);
-        writer.zeros(1);
-        writer.u16(self.hue);
-        writer.u8(self.flags);
-        writer.u16(self.position.x);
-        writer.u16(self.position.y);
-        writer.zeros(2);
-        writer.u8(self.facing.to_bits());
-        writer.u8(self.position.z as u8);
-        writer.into_bytes()
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.u16(self.body);
+        out.zeros(1);
+        out.u16(self.hue);
+        out.u8(self.flags);
+        out.u16(self.position.x);
+        out.u16(self.position.y);
+        out.zeros(2);
+        out.u8(self.facing.to_bits());
+        out.u8(self.position.z as u8);
     }
 }
 
@@ -444,12 +450,19 @@ impl PlayerUpdate {
 /// resurrection sends to lift it. ServUO's `DeathStatus` — the one packet that
 /// makes the whole screen read as death, so a ghost body drawn without it looks
 /// merely like a recoloured player.
-#[must_use]
-pub fn encode_death_status(dead: bool) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(2);
-    writer.u8(0x2C);
-    writer.u8(if dead { 0 } else { 2 });
-    writer.into_bytes()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DeathStatus {
+    /// Whether the character is dead.
+    pub dead: bool,
+}
+
+impl EncodePacket for DeathStatus {
+    const ID: u8 = 0x2C;
+    const LENGTH: PacketLength = PacketLength::Fixed(2);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(if self.dead { 0 } else { 2 });
+    }
 }
 
 // -- 0x02 walk request ----------------------------------------------------
@@ -469,21 +482,24 @@ pub struct WalkRequest {
     pub fastwalk_key: u32,
 }
 
-impl WalkRequest {
-    /// The packet id.
-    pub const ID: u8 = 0x02;
+impl DecodePacket for WalkRequest {
+    const ID: u8 = 0x02;
 
-    /// Decode a whole 0x02 packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         Ok(Self {
             facing: Facing::from_bits(reader.u8()?),
             sequence: reader.u8()?,
             fastwalk_key: reader.u32()?,
         })
     }
+}
 
-    /// Encode a whole 0x02 packet.
+impl WalkRequest {
+    /// Encode a whole 0x02 packet. Test fixtures only — this server never sends
+    /// one, only ever decodes it.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(7);
         writer.u8(Self::ID);
@@ -497,37 +513,80 @@ impl WalkRequest {
 /// `0x22` — the step is allowed. 3 bytes.
 ///
 /// `notoriety` colours the player's own health bar.
-pub fn encode_walk_ack(sequence: u8, notoriety: u8) -> Vec<u8> {
-    vec![0x22, sequence, notoriety]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WalkAck {
+    /// The sequence number being acknowledged.
+    pub sequence: u8,
+    /// Colours the player's own health bar.
+    pub notoriety: u8,
+}
+
+impl EncodePacket for WalkAck {
+    const ID: u8 = 0x22;
+    const LENGTH: PacketLength = PacketLength::Fixed(3);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(self.sequence);
+        out.u8(self.notoriety);
+    }
 }
 
 /// `0x21` — the step is refused; here is where you really are. 8 bytes.
 ///
 /// The client snaps back to this position and resets its sequence to zero.
-pub fn encode_walk_reject(sequence: u8, position: Point, facing: Facing) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(8);
-    writer.u8(0x21);
-    writer.u8(sequence);
-    writer.u16(position.x);
-    writer.u16(position.y);
-    writer.u8(facing.to_bits());
-    writer.u8(position.z as u8);
-    writer.into_bytes()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WalkReject {
+    /// The sequence number being refused.
+    pub sequence: u8,
+    /// Where the client really is.
+    pub position: Point,
+    /// Which way it is really facing.
+    pub facing: Facing,
+}
+
+impl EncodePacket for WalkReject {
+    const ID: u8 = 0x21;
+    const LENGTH: PacketLength = PacketLength::Fixed(8);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(self.sequence);
+        out.u16(self.position.x);
+        out.u16(self.position.y);
+        out.u8(self.facing.to_bits());
+        out.u8(self.position.z as u8);
+    }
 }
 
 // -- the rest of the entry sequence ---------------------------------------
 
 /// `0x55` — the client may start drawing. 1 byte.
-pub fn encode_login_complete() -> Vec<u8> {
-    vec![0x55]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct LoginComplete;
+
+impl EncodePacket for LoginComplete {
+    const ID: u8 = 0x55;
+    const LENGTH: PacketLength = PacketLength::Fixed(1);
+
+    fn encode_body(&self, _out: &mut PacketWriter, _version: ClientVersion) {}
 }
 
 /// `0x4F` — overall light level. 2 bytes.
 ///
 /// 0 is blinding daylight and 0x1F is pitch dark. Backwards from what the name
 /// suggests, and the client clamps rather than complaining.
-pub fn encode_light_level(level: u8) -> Vec<u8> {
-    vec![0x4F, level]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LightLevel {
+    /// 0 (blinding daylight) to 0x1F (pitch dark).
+    pub level: u8,
+}
+
+impl EncodePacket for LightLevel {
+    const ID: u8 = 0x4F;
+    const LENGTH: PacketLength = PacketLength::Fixed(2);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(self.level);
+    }
 }
 
 /// `0x6D` — play a music track. 3 bytes.
@@ -538,11 +597,19 @@ pub fn encode_light_level(level: u8) -> Vec<u8> {
 /// `PlayMusic`. Sent when a mobile crosses into a region whose track differs from
 /// the one it was hearing; re-sending the same id restarts the track, which is
 /// why the crossing pass compares before it sends.
-pub fn encode_play_music(track: u16) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(3);
-    writer.u8(0x6D);
-    writer.u16(track);
-    writer.into_bytes()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PlayMusic {
+    /// Indexes the client's own music list.
+    pub track: u16,
+}
+
+impl EncodePacket for PlayMusic {
+    const ID: u8 = 0x6D;
+    const LENGTH: PacketLength = PacketLength::Fixed(3);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u16(self.track);
+    }
 }
 
 /// `0xBC` — which season the client draws. 3 bytes.
@@ -551,8 +618,22 @@ pub fn encode_play_music(track: u16) -> Vec<u8> {
 /// asks the client to play the season's own sound as it changes; sending it on
 /// world entry with the sound off avoids announcing a change that is really just
 /// a login. Ported from ServUO's `SeasonChange`.
-pub fn encode_season(season: u8, play_sound: bool) -> Vec<u8> {
-    vec![0xBC, season, u8::from(play_sound)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Season {
+    /// `0` spring, `1` summer, `2` fall, `3` winter, `4` desolation.
+    pub season: u8,
+    /// Whether to play the season's own change sound.
+    pub play_sound: bool,
+}
+
+impl EncodePacket for Season {
+    const ID: u8 = 0xBC;
+    const LENGTH: PacketLength = PacketLength::Fixed(3);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(self.season);
+        out.bool(self.play_sound);
+    }
 }
 
 /// `0xD1` — the logout the client asked for is granted. 2 bytes.
@@ -568,27 +649,64 @@ pub fn encode_season(season: u8, play_sound: bool) -> Vec<u8> {
 /// The `0x01` is the accept. Refusing (a `0x00`, "you are in combat") is a rule
 /// this shard does not have: the disconnect path already saves whatever state the
 /// character is in, so there is nothing to protect by holding a player hostage.
-pub fn encode_logout_ack() -> Vec<u8> {
-    vec![0xD1, 0x01]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct LogoutAck;
+
+impl EncodePacket for LogoutAck {
+    const ID: u8 = 0xD1;
+    const LENGTH: PacketLength = PacketLength::Fixed(2);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(0x01);
+    }
 }
 
 /// `0xBF` subcommand 0x08 — which map the client should draw. 6 bytes.
 ///
 /// Without this the client draws Felucca whatever the server thinks.
-pub fn encode_map_change(map: u8) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(6);
-    writer.u8(0xBF);
-    writer.u16(6);
-    writer.u16(0x08);
-    writer.u8(map);
-    writer.into_bytes()
+///
+/// # Fixed despite living under `0xBF`, and the length field is still hand-written
+///
+/// Every other `0xBF` packet this crate has seen so far is either genuinely
+/// variable, or — like the `0xBF 0x19` stat-lock packet — fixed at a size the
+/// `0xBF` envelope itself does not describe. This subcommand never carries a
+/// list or a version-conditional tail, so its total size never moves: id,
+/// length, subcommand, one map byte, six bytes always. `Fixed(6)` says that
+/// directly, and is simpler than `Variable` for a body that never varies.
+///
+/// One consequence of choosing `Fixed`: [`crate::packet::frame_body`] only
+/// back-patches a length field for [`PacketLength::Variable`], so this body
+/// still writes its own `u16(6)` literal, exactly where `0xBF`'s general
+/// envelope always puts one. It is a fixed constant here, not a length
+/// [`frame_body`] computes — the two must simply agree, and a debug assert on
+/// the body's total size (built into every `Fixed` payload) is what would
+/// catch them drifting apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MapChange {
+    /// Which map (facet) to draw.
+    pub map: u8,
+}
+
+impl EncodePacket for MapChange {
+    const ID: u8 = 0xBF;
+    const LENGTH: PacketLength = PacketLength::Fixed(6);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u16(6); // this subcommand's own, constant length
+        out.u16(0x08);
+        out.u8(self.map);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::direction::Direction;
-    use crate::packet::{client_packet_length, PacketLength};
+    use crate::packet::{client_packet_length, decode_packet, encode_packet};
+
+    fn version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
 
     fn facing() -> Facing {
         Facing::running(Direction::SouthEast)
@@ -607,12 +725,15 @@ mod tests {
             Some(PacketLength::Fixed(73))
         );
         assert_eq!(bytes.len(), 73, "the table and the encoder must agree");
-        assert_eq!(CharacterPlay::decode(&bytes).unwrap(), play);
+        assert_eq!(
+            decode_packet::<CharacterPlay>(&bytes, version()).unwrap(),
+            play
+        );
     }
 
     #[test]
     fn character_play_rejects_a_truncated_packet() {
-        assert!(CharacterPlay::decode(&[0x5D, 0x00]).is_err());
+        assert!(decode_packet::<CharacterPlay>(&[0x5D, 0x00], version()).is_err());
     }
 
     fn sample_create(high_seas: bool) -> CreateCharacter {
@@ -751,7 +872,7 @@ mod tests {
             map_width: DEFAULT_MAP_WIDTH,
             map_height: DEFAULT_MAP_HEIGHT,
         };
-        let bytes = start.encode();
+        let bytes = encode_packet(&start, version());
         assert_eq!(bytes.len(), 37, "Sphere's PacketPlayerStart length");
         assert_eq!(bytes[0], 0x1B);
         assert_eq!(&bytes[1..5], &1u32.to_be_bytes());
@@ -775,7 +896,7 @@ mod tests {
             map_width: DEFAULT_MAP_WIDTH,
             map_height: DEFAULT_MAP_HEIGHT,
         };
-        let bytes = start.encode();
+        let bytes = encode_packet(&start, version());
         assert_eq!(bytes[15], 0x00, "the high byte is padding, not sign");
         assert_eq!(bytes[16] as i8, -10, "the low byte carries the height");
     }
@@ -790,7 +911,7 @@ mod tests {
             position: Point::new(1475, 1774, -5),
             facing: facing(),
         };
-        let bytes = update.encode();
+        let bytes = encode_packet(&update, version());
         assert_eq!(bytes.len(), 19, "Sphere's PacketPlayerUpdate length");
         assert_eq!(bytes[0], 0x20);
         assert_eq!(&bytes[8..10], &0x83EAu16.to_be_bytes(), "hue");
@@ -800,9 +921,9 @@ mod tests {
 
     #[test]
     fn death_status_is_two_bytes_dead_is_zero() {
-        let dead = encode_death_status(true);
+        let dead = encode_packet(&DeathStatus { dead: true }, version());
         assert_eq!(dead, vec![0x2C, 0x00], "0 puts the client in ghost mode");
-        let alive = encode_death_status(false);
+        let alive = encode_packet(&DeathStatus { dead: false }, version());
         assert_eq!(alive, vec![0x2C, 0x02], "2 is the alive-again answer");
     }
 
@@ -819,7 +940,10 @@ mod tests {
             Some(PacketLength::Fixed(7))
         );
         assert_eq!(bytes.len(), 7);
-        assert_eq!(WalkRequest::decode(&bytes).unwrap(), request);
+        assert_eq!(
+            decode_packet::<WalkRequest>(&bytes, version()).unwrap(),
+            request
+        );
     }
 
     #[test]
@@ -832,16 +956,32 @@ mod tests {
         .encode();
         assert_eq!(bytes[1], 0x80, "north, running");
 
-        let decoded = WalkRequest::decode(&bytes).unwrap();
+        let decoded = decode_packet::<WalkRequest>(&bytes, version()).unwrap();
         assert_eq!(decoded.facing.direction, Direction::North);
         assert!(decoded.facing.running);
     }
 
     #[test]
     fn walk_ack_and_reject_match_their_declared_lengths() {
-        assert_eq!(encode_walk_ack(7, 0x01), vec![0x22, 7, 0x01]);
+        assert_eq!(
+            encode_packet(
+                &WalkAck {
+                    sequence: 7,
+                    notoriety: 0x01
+                },
+                version()
+            ),
+            vec![0x22, 7, 0x01]
+        );
 
-        let reject = encode_walk_reject(7, Point::new(1475, 1774, -5), facing());
+        let reject = encode_packet(
+            &WalkReject {
+                sequence: 7,
+                position: Point::new(1475, 1774, -5),
+                facing: facing(),
+            },
+            version(),
+        );
         assert_eq!(reject.len(), 8, "Sphere's PacketMovementRej length");
         assert_eq!(reject[0], 0x21);
         assert_eq!(reject[1], 7, "the sequence being rejected");
@@ -853,24 +993,53 @@ mod tests {
 
     #[test]
     fn the_small_entry_packets_are_the_right_shape() {
-        assert_eq!(encode_login_complete(), vec![0x55]);
-        assert_eq!(encode_light_level(0), vec![0x4F, 0]);
+        assert_eq!(encode_packet(&LoginComplete, version()), vec![0x55]);
+        assert_eq!(
+            encode_packet(&LightLevel { level: 0 }, version()),
+            vec![0x4F, 0]
+        );
         // Music and season: three bytes each, the track big-endian. Both
         // references write exactly this.
-        assert_eq!(encode_play_music(11), vec![0x6D, 0x00, 11]);
-        assert_eq!(encode_play_music(0x0102), vec![0x6D, 0x01, 0x02]);
-        assert_eq!(encode_season(3, true), vec![0xBC, 3, 1]);
-        assert_eq!(encode_season(0, false), vec![0xBC, 0, 0]);
+        assert_eq!(
+            encode_packet(&PlayMusic { track: 11 }, version()),
+            vec![0x6D, 0x00, 11]
+        );
+        assert_eq!(
+            encode_packet(&PlayMusic { track: 0x0102 }, version()),
+            vec![0x6D, 0x01, 0x02]
+        );
+        assert_eq!(
+            encode_packet(
+                &Season {
+                    season: 3,
+                    play_sound: true
+                },
+                version()
+            ),
+            vec![0xBC, 3, 1]
+        );
+        assert_eq!(
+            encode_packet(
+                &Season {
+                    season: 0,
+                    play_sound: false
+                },
+                version()
+            ),
+            vec![0xBC, 0, 0]
+        );
         // The logout ack is the same two bytes in both references, and the same
         // length the client's own table gives the id it comes back on.
-        assert_eq!(encode_logout_ack(), vec![0xD1, 0x01]);
+        assert_eq!(encode_packet(&LogoutAck, version()), vec![0xD1, 0x01]);
         assert_eq!(
             crate::client_packet_length(0xD1, None),
             Some(crate::PacketLength::Fixed(2))
         );
 
-        // 0xBF is variable-length, so it declares its own length at offset 1.
-        let map = encode_map_change(1);
+        // 0xBF is variable-length on the client's own table, but this
+        // subcommand's own body never varies, so it declares its own length at
+        // offset 1 the same way every other fixed packet does.
+        let map = encode_packet(&MapChange { map: 1 }, version());
         assert_eq!(map.len(), 6);
         assert_eq!(map[0], 0xBF);
         assert_eq!(
@@ -894,7 +1063,7 @@ mod tests {
             map_width: u16::MAX,
             map_height: u16::MAX,
         };
-        assert_eq!(start.encode().len(), 37);
+        assert_eq!(encode_packet(&start, version()).len(), 37);
 
         let update = PlayerUpdate {
             serial: u32::MAX,
@@ -904,6 +1073,6 @@ mod tests {
             position: Point::new(u16::MAX, u16::MAX, i8::MAX),
             facing: Facing::walking(Direction::NorthWest),
         };
-        assert_eq!(update.encode().len(), 19);
+        assert_eq!(encode_packet(&update, version()).len(), 19);
     }
 }

@@ -17,10 +17,11 @@ use openshard_gateway::ConnectionId;
 use openshard_movement::Terrain;
 use openshard_protocol::combat::{AttackTarget, WarMode};
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect};
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::Graphic as WireGraphic;
-use openshard_protocol::{Notoriety, Point};
+use openshard_protocol::world::Point;
 use openshard_state::components::{
     body_is_female, body_opens_doors, creature_base_sound, effect, BehaviourBuffs, Body, Client,
     Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard, Hitpoints, MeleeDamage,

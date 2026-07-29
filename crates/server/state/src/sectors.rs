@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use openshard_entities::EntityId;
-use openshard_protocol::Point;
+use openshard_protocol::world::Point;
 
 /// Tiles per sector, each way.
 ///

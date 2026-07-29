@@ -67,7 +67,7 @@ mod gump;
 pub mod huffman;
 mod items;
 pub mod login;
-mod mobile;
+pub mod mobile;
 pub mod packet;
 mod properties;
 mod seed;
@@ -80,15 +80,15 @@ pub mod target;
 mod vendor;
 mod version;
 pub mod wire;
-mod world;
+pub mod world;
 
 pub use access::{AccessLevel, UnknownAccessLevel};
 pub use casting::CastSpellRequest;
 pub use codec::{CodecError, CodecResult, PacketReader, PacketWriter};
-// `combat`, `feedback`, `serial`, `target`, `wire` and `server_packet` are
-// deliberately absent from this wall: they are the rewritten groups, and their
-// call sites import from the module the type lives in. The wall itself goes in
-// Stage 7 (`docs/protocol_rewrite.md`, D8).
+// `combat`, `feedback`, `login`, `mobile`, `serial`, `server_packet`, `target`,
+// `wire` and `world` are deliberately absent from this wall: they are the
+// rewritten groups, and their call sites import from the module the type lives
+// in. The wall itself goes in Stage 7 (`docs/protocol_rewrite.md`, D8).
 pub use containers::{
     encode_add_to_container, encode_container_contents, encode_open_container, ContainedItem,
     DoubleClick,
@@ -105,11 +105,6 @@ pub use gump::{
 pub use items::{
     encode_drag_cancel, encode_equip, DragCancelReason, DropItem, EquipItemRequest, PickUpItem,
     WorldItem, DROP_TO_GROUND,
-};
-pub use mobile::{
-    encode_open_paperdoll, encode_remove, encode_stat_locks, Equipment, LookRequest,
-    MobileIncoming, MobileMove, MobileStatus, Notoriety, StatLockBits, StatLockRequest,
-    StatusFlags, LABEL_MODE, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE,
 };
 pub use packet::{
     client_packet_length, frame_client_packet, Frame, FrameError, PacketLength, MAX_PACKET_SIZE,
@@ -130,9 +125,3 @@ pub use vendor::{
     encode_buy_list, encode_sell_list, BuyLine, BuyReply, Purchase, Sale, SellLine, SellReply,
 };
 pub use version::{ClientVersion, Era, ParseVersionError};
-pub use world::{
-    encode_death_status, encode_light_level, encode_login_complete, encode_logout_ack,
-    encode_map_change, encode_play_music, encode_season, encode_walk_ack, encode_walk_reject,
-    CharacterPlay, CreateCharacter, PlayerStart, PlayerUpdate, Point, Race, SkillChoice,
-    WalkRequest, DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH,
-};

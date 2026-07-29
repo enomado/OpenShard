@@ -389,7 +389,7 @@ fn abandon(state: &mut WorldState, npc: EntityId) {
 }
 
 /// Where a mobile stands, if it is anywhere.
-fn position_of(state: &WorldState, entity: EntityId) -> Option<openshard_protocol::Point> {
+fn position_of(state: &WorldState, entity: EntityId) -> Option<openshard_protocol::world::Point> {
     state
         .registry
         .get::<openshard_state::components::Position>(entity)

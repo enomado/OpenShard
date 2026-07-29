@@ -14,7 +14,7 @@ pub(crate) fn dispatch(
 ) -> bool {
     match packet.first().copied() {
         Some(CharacterPlay::ID) => {
-            let Ok(play) = CharacterPlay::decode(packet) else {
+            let Ok(play) = decode_packet::<CharacterPlay>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x5D");
                 return false;
             };
@@ -80,7 +80,7 @@ pub(crate) fn dispatch(
                 debug!(%id, "0x02 before entering the world");
                 return true;
             }
-            let Ok(request) = WalkRequest::decode(packet) else {
+            let Ok(request) = decode_packet::<WalkRequest>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x02");
                 return false;
             };
@@ -247,7 +247,7 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(look) = LookRequest::decode(packet) else {
+            let Ok(look) = decode_packet::<LookRequest>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x09");
                 return false;
             };

@@ -308,7 +308,7 @@ fn into_world(command: ScriptCommand) -> Command {
             hue,
             amount,
             stackable,
-            position: openshard_protocol::Point::new(x, y, z),
+            position: openshard_protocol::world::Point::new(x, y, z),
             facet,
         },
         ScriptCommand::SpawnContainer {
@@ -323,7 +323,7 @@ fn into_world(command: ScriptCommand) -> Command {
             graphic,
             gump,
             hue,
-            position: openshard_protocol::Point::new(x, y, z),
+            position: openshard_protocol::world::Point::new(x, y, z),
             facet,
         },
         ScriptCommand::SpawnMobile {
@@ -368,7 +368,7 @@ fn into_world(command: ScriptCommand) -> Command {
             ranged,
             ranged_kind,
             wander,
-            position: openshard_protocol::Point::new(x, y, z),
+            position: openshard_protocol::world::Point::new(x, y, z),
             facet,
             // An empty name from the script means nameless.
             name: (!name.is_empty()).then_some(name),
@@ -378,7 +378,7 @@ fn into_world(command: ScriptCommand) -> Command {
             shoe,
             fame,
             karma,
-            night_home: night_home.map(|(x, y, z)| openshard_protocol::Point::new(x, y, z)),
+            night_home: night_home.map(|(x, y, z)| openshard_protocol::world::Point::new(x, y, z)),
             banker,
             vendor,
             equipment: equipment
@@ -597,7 +597,7 @@ fn into_world(command: ScriptCommand) -> Command {
                     (
                         s.graphic,
                         s.hue,
-                        openshard_protocol::Point::new(s.x, s.y, s.z),
+                        openshard_protocol::world::Point::new(s.x, s.y, s.z),
                     )
                 })
                 .collect(),
@@ -609,7 +609,7 @@ fn into_world(command: ScriptCommand) -> Command {
                     open: d.open,
                     offset_x: d.offset_x,
                     offset_y: d.offset_y,
-                    position: openshard_protocol::Point::new(d.x, d.y, d.z),
+                    position: openshard_protocol::world::Point::new(d.x, d.y, d.z),
                 })
                 .collect(),
             containers: containers
@@ -619,7 +619,7 @@ fn into_world(command: ScriptCommand) -> Command {
                     graphic: c.graphic,
                     gump: c.gump,
                     hue: c.hue,
-                    position: openshard_protocol::Point::new(c.x, c.y, c.z),
+                    position: openshard_protocol::world::Point::new(c.x, c.y, c.z),
                 })
                 .collect(),
         },
@@ -1032,7 +1032,7 @@ mod tests {
             ranged: 0,
             ranged_kind: 0,
             wander: false,
-            position: openshard_protocol::Point::new(1363, 1600, 0),
+            position: openshard_protocol::world::Point::new(1363, 1600, 0),
             facet: 0,
             name: None,
             title: None,
@@ -1106,7 +1106,7 @@ mod tests {
             ranged: 0,
             ranged_kind: 0,
             wander: false,
-            position: openshard_protocol::Point::new(1363, 1600, 0),
+            position: openshard_protocol::world::Point::new(1363, 1600, 0),
             facet: 0,
             name: None,
             title: None,
@@ -1436,7 +1436,7 @@ mod tests {
         world.tick(now); // the world takes them
 
         let britain = world
-            .region_at(0, openshard_protocol::Point::new(1363, 1600, 0))
+            .region_at(0, openshard_protocol::world::Point::new(1363, 1600, 0))
             .expect("the player is standing in Britain");
         assert_eq!(britain.name, "Britain");
         assert!(britain.flags.guarded);
@@ -1444,10 +1444,10 @@ mod tests {
 
         // The height band came across too: the dungeon is below, not underfoot.
         assert!(world
-            .region_at(0, openshard_protocol::Point::new(1355, 1555, 0))
+            .region_at(0, openshard_protocol::world::Point::new(1355, 1555, 0))
             .is_some_and(|r| r.name == "Britain"));
         let deep = world
-            .region_at(0, openshard_protocol::Point::new(1355, 1555, -40))
+            .region_at(0, openshard_protocol::world::Point::new(1355, 1555, -40))
             .expect("the dungeon is under it");
         assert_eq!(deep.name, "Covetous");
         assert!(deep.flags.no_teleport);

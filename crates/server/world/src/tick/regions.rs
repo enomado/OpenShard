@@ -14,8 +14,9 @@
 //! dark of a dungeon — read the region where they are decided, not here.
 
 use openshard_entities::EntityId;
-use openshard_protocol::encode_play_music;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::world::PlayMusic;
 use openshard_state::components::{Client, InRegion, Position};
 use openshard_state::Region;
 use tracing::{info, warn};
@@ -65,7 +66,7 @@ impl World {
     /// The region at a point on a facet, if any — the outside world's way in,
     /// beside [`sectors`](World::sectors).
     #[must_use]
-    pub fn region_at(&self, facet: u8, point: openshard_protocol::Point) -> Option<&Region> {
+    pub fn region_at(&self, facet: u8, point: openshard_protocol::world::Point) -> Option<&Region> {
         self.state.region_at(facet, point)
     }
 
@@ -256,7 +257,8 @@ impl World {
             return;
         }
         self.last_music.insert(connection, track);
-        self.state.send(connection, encode_play_music(track));
+        self.state
+            .send_packet(connection, &ServerPacket::PlayMusic(PlayMusic { track }));
     }
 
     /// Forget a departed connection's music, so a reconnect hears its region

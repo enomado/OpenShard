@@ -21,9 +21,13 @@ impl World {
             if self.state.ticks < until {
                 if let Some(Movement(walker)) = self.state.registry.get::<Movement>(entity).copied()
                 {
-                    self.state.send(
+                    self.state.send_packet(
                         connection,
-                        encode_walk_reject(request.sequence, walker.position, walker.facing),
+                        &ServerPacket::WalkReject(WalkReject {
+                            sequence: request.sequence,
+                            position: walker.position,
+                            facing: walker.facing,
+                        }),
                     );
                 }
                 self.notify_self(entity, "You are frozen and cannot move.");
@@ -35,9 +39,13 @@ impl World {
         // event, so a refusal costs the sequence nothing.
         if let Some(refusal) = self.spend_step_stamina(entity, request.facing.running) {
             if let Some(Movement(walker)) = self.state.registry.get::<Movement>(entity).copied() {
-                self.state.send(
+                self.state.send_packet(
                     connection,
-                    encode_walk_reject(request.sequence, walker.position, walker.facing),
+                    &ServerPacket::WalkReject(WalkReject {
+                        sequence: request.sequence,
+                        position: walker.position,
+                        facing: walker.facing,
+                    }),
                 );
             }
             self.notify_self(entity, refusal);
@@ -97,9 +105,12 @@ impl World {
                     .facet_state_mut(facet)
                     .sectors
                     .insert(entity, position);
-                self.state.send(
+                self.state.send_packet(
                     connection,
-                    encode_walk_ack(request.sequence, NOTORIETY_INNOCENT),
+                    &ServerPacket::WalkAck(WalkAck {
+                        sequence: request.sequence,
+                        notoriety: NOTORIETY_INNOCENT,
+                    }),
                 );
                 self.state.bus.send(MobileMoved {
                     entity,
@@ -112,9 +123,12 @@ impl World {
             }
             Walk::Turned { facing } => {
                 self.state.registry.insert(entity, Heading(facing));
-                self.state.send(
+                self.state.send_packet(
                     connection,
-                    encode_walk_ack(request.sequence, NOTORIETY_INNOCENT),
+                    &ServerPacket::WalkAck(WalkAck {
+                        sequence: request.sequence,
+                        notoriety: NOTORIETY_INNOCENT,
+                    }),
                 );
                 self.state.bus.send(MobileTurned {
                     entity,
@@ -137,9 +151,13 @@ impl World {
                 } else {
                     RefusedReason::Blocked
                 };
-                self.state.send(
+                self.state.send_packet(
                     connection,
-                    encode_walk_reject(request.sequence, walker.position, walker.facing),
+                    &ServerPacket::WalkReject(WalkReject {
+                        sequence: request.sequence,
+                        position: walker.position,
+                        facing: walker.facing,
+                    }),
                 );
                 self.state.bus.send(StepRefused {
                     entity,

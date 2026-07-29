@@ -1,7 +1,7 @@
 //! Whether a mobile can actually stand somewhere.
 
 use openshard_movement::Terrain;
-use openshard_protocol::Point;
+use openshard_protocol::world::Point;
 
 use crate::map::Map;
 use crate::tiledata::{TileData, TileFlags};

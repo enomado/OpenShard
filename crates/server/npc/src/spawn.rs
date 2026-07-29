@@ -3,8 +3,10 @@
 
 use openshard_entities::EntityId;
 use openshard_movement::Walker;
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
-use openshard_protocol::{Direction, Facing, Notoriety, Point};
+use openshard_protocol::world::Point;
+use openshard_protocol::{Direction, Facing};
 use openshard_state::components::{
     body_opens_doors, creature_name, Aggression, Banker, Body, Brain, Facet, Fame, Heading,
     Hitpoints, Karma, MeleeDamage, Movement, Name, NightHome, Npc, Position, RangedAttack,

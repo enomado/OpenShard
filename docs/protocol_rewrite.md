@@ -206,6 +206,47 @@ Fixed/Variable split at all.
    version" for both directions at once, `0xB9` is written by hand rather than
    forced into a model it does not fit.
 
+## Amendments forced by the Stage 3 pilot (`world`, `mobile`)
+
+Stage 3 is the first to hit a packet whose *id* is shared by two logically
+different bodies (`CreateCharacter`), and the first to find `0xBF` packets
+that are fixed-size despite the id's own table entry saying `Variable`.
+
+1. **`CreateCharacter` (`0x00` / `0xF8`) is not a `DecodePacket`, for the same
+   reason `0xB9` is not an `EncodePacket` (Stage 2).** `DecodePacket` assumes
+   one `const ID`; this packet is one logical decode across *two* ids with two
+   different fixed lengths (104 bytes/three skills vs. 106 bytes/four). Bending
+   the trait to accept an id list, or picking one id arbitrarily, would either
+   complicate every other decoder for one packet's sake or silently stop
+   accepting the id it didn't pick. `CreateCharacter::decode` stays a plain
+   inherent method, exactly as surveyed.
+2. **Two more `0xBF` packets turned out fixed, not variable, and both still
+   hand-write their own length field.** `world::MapChange` (subcommand `0x08`,
+   always 6 bytes) and `mobile::StatLocks` (subcommand `0x19` type `2`, always
+   12 bytes) never carry a list or a version branch, so `EncodePacket::LENGTH`
+   is `Fixed`, not `Variable` — simpler, and it gets the `frame_body` debug
+   assert on total size for free. The one wrinkle: `frame_body` only
+   back-patches a length field for `Variable`, so these two bodies still write
+   their own constant `u16` length literal by hand, in exactly the spot the
+   `0xBF` envelope always puts one. That hand-written literal and
+   `EncodePacket::LENGTH` now have to agree by construction rather than by a
+   shared mechanism — the same kind of two-places-that-could-disagree gap D3
+   exists to close, just not one the trait as designed can close for an id
+   whose *table* entry is `Variable` but whose *body* never is. Noted here
+   rather than silently declaring `Variable` (which would insert a length field
+   the client already gets from the subcommand's fixed shape, doubling it).
+3. **`MobileStatus` and `MobileIncoming` matched the plan exactly:** both were
+   already self-patching their length by hand at the same offset `frame_body`
+   patches for `Variable`; converting them to `EncodePacket` with
+   `LENGTH = PacketLength::Variable` let the manual `writer.u16(0)` placeholder
+   and the closing `bytes[1..3].copy_from_slice(...)` come out unchanged in
+   behaviour, byte for byte.
+4. **`StatLockRequest` was left exactly as surveyed:** it already had the
+   `0xBF`-envelope shape (`decode(bytes) -> Result<Option<Self>, DecodeError>`)
+   that several unrelated logical packets share one id under, and forcing it
+   into `DecodePacket` would be Stage 6's unification arriving four stages
+   early.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -244,9 +285,9 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | Stage | State | Commit |
 | --- | --- | --- |
 | 0 | done | `153e1f8` |
-| 1 | done | |
-| 2 | done | |
-| 3 | not started | |
+| 1 | done | `daad3e0` |
+| 2 | done | `77ba897` |
+| 3 | done | |
 | 4 | not started | |
 | 5 | not started | |
 | 6 | not started | |

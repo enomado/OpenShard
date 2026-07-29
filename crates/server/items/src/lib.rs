@@ -12,14 +12,16 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
+use openshard_protocol::mobile::{OpenPaperdoll, Remove, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
+use openshard_protocol::world::Point;
 use openshard_protocol::{
     encode_add_to_container, encode_container_contents, encode_drag_cancel, encode_equip,
-    encode_open_container, encode_open_paperdoll, encode_remove, encode_spellbook_content,
-    ContainedItem, DragCancelReason, Point, DROP_TO_GROUND, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE,
+    encode_open_container, encode_spellbook_content, ContainedItem, DragCancelReason,
+    DROP_TO_GROUND,
 };
 use openshard_state::components::{
     mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Corpse,

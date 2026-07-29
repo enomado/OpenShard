@@ -70,15 +70,17 @@ impl World {
             .get::<StatLocks>(entity)
             .copied()
             .unwrap_or_default();
-        let packet = openshard_protocol::encode_stat_locks(
-            serial.raw(),
-            openshard_protocol::StatLockBits {
-                strength: locks.strength.to_bits(),
-                dexterity: locks.dexterity.to_bits(),
-                intelligence: locks.intelligence.to_bits(),
-            },
+        self.state.send_packet(
+            connection,
+            &ServerPacket::StatLocks(openshard_protocol::mobile::StatLocks {
+                serial: serial.raw(),
+                locks: StatLockBits {
+                    strength: locks.strength.to_bits(),
+                    dexterity: locks.dexterity.to_bits(),
+                    intelligence: locks.intelligence.to_bits(),
+                },
+            }),
         );
-        self.state.send(connection, packet);
     }
 
     /// One skill's line for the window.

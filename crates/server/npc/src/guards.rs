@@ -22,9 +22,10 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
-use openshard_protocol::{Notoriety, Point};
+use openshard_protocol::world::Point;
 use openshard_state::components::{
     Aggression, Client, CriminalUntil, DamageType, Ghost, Guard, Hitpoints, Murders, Position,
     Staff,

@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use openshard_entities::EntityId;
 use openshard_movement::{OpenWorld, Terrain};
-use openshard_protocol::Point;
+use openshard_protocol::world::Point;
 
 /// A mobile's body height in z-units, for deciding what overlaps it. Matches the
 /// step check's `PLAYER_HEIGHT` in `world::terrain`.

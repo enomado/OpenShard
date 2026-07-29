@@ -593,7 +593,8 @@ impl World {
             return;
         };
         if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) {
-            self.state.send(connection, encode_light_level(level));
+            self.state
+                .send_packet(connection, &ServerPacket::LightLevel(LightLevel { level }));
         }
     }
 

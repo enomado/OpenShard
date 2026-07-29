@@ -16,7 +16,8 @@ use openshard_entities::EntityId;
 use openshard_items as items;
 use openshard_movement::{direction_toward, find_path, step_from, Terrain};
 use openshard_protocol::serial::Serial;
-use openshard_protocol::{Direction, Point};
+use openshard_protocol::world::Point;
+use openshard_protocol::Direction;
 use openshard_state::components::{
     Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position,
     RangedAttack, Scripted,

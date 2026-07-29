@@ -4,10 +4,11 @@
 //! The client draws its own character from `0x1B`/`0x20`; everyone *else* comes
 //! from here.
 
-use crate::codec::PacketWriter;
+use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
 use crate::error::{expect_id, DecodeError};
 use crate::feature::Feature;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
 use crate::world::Point;
 
@@ -108,13 +109,13 @@ pub struct LookRequest {
     pub serial: u32,
 }
 
-impl LookRequest {
-    /// The packet id.
-    pub const ID: u8 = 0x09;
+impl DecodePacket for LookRequest {
+    const ID: u8 = 0x09;
 
-    /// Decode a whole `0x09` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         Ok(Self {
             serial: reader.u32()?,
         })
@@ -142,11 +143,19 @@ pub struct Equipment {
 ///
 /// Used for mobiles walking out of range and for items being picked up. The
 /// client does not distinguish; it just forgets the serial.
-pub fn encode_remove(serial: u32) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(5);
-    writer.u8(0x1D);
-    writer.u32(serial);
-    writer.into_bytes()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Remove {
+    /// The object to forget.
+    pub serial: u32,
+}
+
+impl EncodePacket for Remove {
+    const ID: u8 = 0x1D;
+    const LENGTH: PacketLength = PacketLength::Fixed(5);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+    }
 }
 
 /// The flag bit on a `0x88` paperdoll meaning the mobile is in war mode.
@@ -161,13 +170,26 @@ pub const PAPERDOLL_CAN_LIFT: u8 = 0x02;
 /// top (the name, plus any honorific), clamped to 60 bytes. `flags` is
 /// [`PAPERDOLL_WARMODE`] and/or [`PAPERDOLL_CAN_LIFT`]. Ported from Sphere's
 /// `PacketPaperdoll`/ServUO's `DisplayPaperdoll`.
-pub fn encode_open_paperdoll(serial: u32, text: &str, flags: u8) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(66);
-    writer.u8(0x88);
-    writer.u32(serial);
-    writer.fixed_string(text, 60);
-    writer.u8(flags);
-    writer.into_bytes()
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OpenPaperdoll {
+    /// Whose paperdoll.
+    pub serial: u32,
+    /// The title across the top: the name, plus any honorific. Clamped to 60
+    /// bytes.
+    pub text: String,
+    /// [`PAPERDOLL_WARMODE`] and/or [`PAPERDOLL_CAN_LIFT`].
+    pub flags: u8,
+}
+
+impl EncodePacket for OpenPaperdoll {
+    const ID: u8 = 0x88;
+    const LENGTH: PacketLength = PacketLength::Fixed(66);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.fixed_string(&self.text, 60);
+        out.u8(self.flags);
+    }
 }
 
 /// `0x11` — a mobile's full status: the paperdoll numbers. Variable length.
@@ -228,70 +250,61 @@ pub struct MobileStatus {
     pub followers_max: u8,
 }
 
-impl MobileStatus {
-    /// The packet id.
-    pub const ID: u8 = 0x11;
+impl EncodePacket for MobileStatus {
+    const ID: u8 = 0x11;
+    const LENGTH: PacketLength = PacketLength::Variable;
 
-    /// Encode a whole 0x11 packet for the given client.
-    pub fn encode(&self, version: ClientVersion) -> Vec<u8> {
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
         // The version function returns 1..=6; only 3..=6 have distinct wire
         // shapes here. Anything older is served the oldest one a modern file set
         // still understands. `type` is ServUO's, and it drives the tail length.
         let kind = version.status_packet_version().clamp(3, 6);
 
-        let mut writer = PacketWriter::with_capacity(121);
-        writer.u8(Self::ID);
-        writer.u16(0); // length, patched below
-        writer.u32(self.serial);
-        writer.fixed_string(&self.name, 30);
-        writer.u16(self.hits);
-        writer.u16(self.hits_max);
-        writer.bool(false); // the beholder may not rename us
-        writer.u8(kind);
+        out.u32(self.serial);
+        out.fixed_string(&self.name, 30);
+        out.u16(self.hits);
+        out.u16(self.hits_max);
+        out.bool(false); // the beholder may not rename us
+        out.u8(kind);
 
-        writer.bool(self.female);
-        writer.u16(self.strength);
-        writer.u16(self.dexterity);
-        writer.u16(self.intelligence);
-        writer.u16(self.stamina);
-        writer.u16(self.stamina_max);
-        writer.u16(self.mana);
-        writer.u16(self.mana_max);
-        writer.u32(self.gold);
-        writer.u16(self.armor);
-        writer.u16(self.weight);
+        out.bool(self.female);
+        out.u16(self.strength);
+        out.u16(self.dexterity);
+        out.u16(self.intelligence);
+        out.u16(self.stamina);
+        out.u16(self.stamina_max);
+        out.u16(self.mana);
+        out.u16(self.mana_max);
+        out.u32(self.gold);
+        out.u16(self.armor);
+        out.u16(self.weight);
 
         if kind >= 5 {
-            writer.u16(self.max_weight);
-            writer.u8(1); // race id + 1; human is 0, so 1
+            out.u16(self.max_weight);
+            out.u8(1); // race id + 1; human is 0, so 1
         }
 
-        writer.u16(self.stat_cap);
-        writer.u8(self.followers);
-        writer.u8(self.followers_max);
+        out.u16(self.stat_cap);
+        out.u8(self.followers);
+        out.u8(self.followers_max);
 
         if kind >= 4 {
             // Resistances, luck, weapon damage, tithing — all zero until the
             // systems that set them exist. The client only needs the shape.
             for _ in 0..5 {
-                writer.u16(0); // fire, cold, poison, energy, luck
+                out.u16(0); // fire, cold, poison, energy, luck
             }
-            writer.u16(0); // damage min
-            writer.u16(0); // damage max
-            writer.u32(0); // tithing points
+            out.u16(0); // damage min
+            out.u16(0); // damage max
+            out.u32(0); // tithing points
         }
 
         if kind >= 6 {
             // The AoS extended-status block: 15 shorts (0..=14). Zeroed.
             for _ in 0..=14 {
-                writer.u16(0);
+                out.u16(0);
             }
         }
-
-        let mut bytes = writer.into_bytes();
-        let length = u16::try_from(bytes.len()).expect("a status packet fits its u16 length");
-        bytes[1..3].copy_from_slice(&length.to_be_bytes());
-        bytes
     }
 }
 
@@ -318,24 +331,20 @@ pub struct MobileMove {
     pub notoriety: Notoriety,
 }
 
-impl MobileMove {
-    /// The packet id.
-    pub const ID: u8 = 0x77;
+impl EncodePacket for MobileMove {
+    const ID: u8 = 0x77;
+    const LENGTH: PacketLength = PacketLength::Fixed(17);
 
-    /// Encode a whole 0x77 packet.
-    pub fn encode(&self, version: ClientVersion) -> Vec<u8> {
-        let mut writer = PacketWriter::with_capacity(17);
-        writer.u8(Self::ID);
-        writer.u32(self.serial);
-        writer.u16(self.body);
-        writer.u16(self.position.x);
-        writer.u16(self.position.y);
-        writer.u8(self.position.z as u8);
-        writer.u8(self.facing.to_bits());
-        writer.u16(self.hue);
-        writer.u8(self.flags);
-        writer.u8(self.notoriety.for_client(version));
-        writer.into_bytes()
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        out.u32(self.serial);
+        out.u16(self.body);
+        out.u16(self.position.x);
+        out.u16(self.position.y);
+        out.u8(self.position.z as u8);
+        out.u8(self.facing.to_bits());
+        out.u16(self.hue);
+        out.u8(self.flags);
+        out.u8(self.notoriety.for_client(version));
     }
 }
 
@@ -373,53 +382,44 @@ pub struct MobileIncoming {
     pub equipment: Vec<Equipment>,
 }
 
-impl MobileIncoming {
-    /// The packet id.
-    pub const ID: u8 = 0x78;
+impl EncodePacket for MobileIncoming {
+    const ID: u8 = 0x78;
+    const LENGTH: PacketLength = PacketLength::Variable;
 
-    /// Encode a whole 0x78 packet for `version`.
-    pub fn encode(&self, version: ClientVersion) -> Vec<u8> {
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
         let new_layout = version.supports(Feature::NewMobileIncoming);
 
-        let mut writer = PacketWriter::with_capacity(23 + self.equipment.len() * 9);
-        writer.u8(Self::ID);
-        writer.u16(0); // length, patched below
-        writer.u32(self.serial);
-        writer.u16(self.body);
-        writer.u16(self.position.x);
-        writer.u16(self.position.y);
-        writer.u8(self.position.z as u8);
-        writer.u8(self.facing.to_bits());
-        writer.u16(self.hue);
-        writer.u8(self.flags);
-        writer.u8(self.notoriety.for_client(version));
+        out.u32(self.serial);
+        out.u16(self.body);
+        out.u16(self.position.x);
+        out.u16(self.position.y);
+        out.u8(self.position.z as u8);
+        out.u8(self.facing.to_bits());
+        out.u16(self.hue);
+        out.u8(self.flags);
+        out.u8(self.notoriety.for_client(version));
 
         for item in &self.equipment {
-            writer.u32(item.serial);
+            out.u32(item.serial);
             if new_layout {
-                writer.u16(item.graphic);
-                writer.u8(item.layer);
-                writer.u16(item.hue);
+                out.u16(item.graphic);
+                out.u8(item.layer);
+                out.u16(item.hue);
             } else if item.hue != 0 {
                 // The top bit is not part of the graphic. It is the flag that
                 // says the next two bytes are a hue.
-                writer.u16(item.graphic | 0x8000);
-                writer.u8(item.layer);
-                writer.u16(item.hue);
+                out.u16(item.graphic | 0x8000);
+                out.u8(item.layer);
+                out.u16(item.hue);
             } else {
-                writer.u16(item.graphic);
-                writer.u8(item.layer);
+                out.u16(item.graphic);
+                out.u8(item.layer);
             }
         }
 
         // A zero serial ends the list. Not a length — the client reads items
         // until it sees this.
-        writer.u32(0);
-
-        let mut bytes = writer.into_bytes();
-        let length = u16::try_from(bytes.len()).expect("a mobile outgrew its u16 length field");
-        bytes[1..3].copy_from_slice(&length.to_be_bytes());
-        bytes
+        out.u32(0);
     }
 }
 
@@ -445,17 +445,34 @@ pub struct StatLockBits {
 /// ServUO's `StatLockInfo`: the subcommand, the type byte, the mobile's serial, a
 /// zero, and one byte holding all three arrows two bits apiece —
 /// `str << 4 | dex << 2 | int`.
-#[must_use]
-pub fn encode_stat_locks(serial: u32, locks: StatLockBits) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(12);
-    writer.u8(0xBF);
-    writer.u16(12); // fixed length: this subcommand is always twelve bytes
-    writer.u16(0x19);
-    writer.u8(2); // the classic client's type; the enhanced one wants 5
-    writer.u32(serial);
-    writer.u8(0);
-    writer.u8((locks.strength << 4) | (locks.dexterity << 2) | locks.intelligence);
-    writer.into_bytes()
+///
+/// # Fixed despite living under `0xBF`, and the length field is still hand-written
+///
+/// Like `world::MapChange`, this subcommand's body never varies — there is no
+/// list and no version branch — so it declares `Fixed(12)`. [`crate::packet::frame_body`]
+/// only back-patches a length for [`PacketLength::Variable`], so the constant
+/// `u16(12)` is still written here by hand, exactly where the `0xBF` envelope
+/// always puts one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StatLocks {
+    /// Whose stats.
+    pub serial: u32,
+    /// The three arrows.
+    pub locks: StatLockBits,
+}
+
+impl EncodePacket for StatLocks {
+    const ID: u8 = 0xBF;
+    const LENGTH: PacketLength = PacketLength::Fixed(12);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u16(12); // this subcommand's own, constant length
+        out.u16(0x19);
+        out.u8(2); // the classic client's type; the enhanced one wants 5
+        out.u32(self.serial);
+        out.u8(0);
+        out.u8((self.locks.strength << 4) | (self.locks.dexterity << 2) | self.locks.intelligence);
+    }
 }
 
 /// `0xBF` subcommand `0x1A` — the player clicked one of the status bar's stat
@@ -498,17 +515,25 @@ impl StatLockRequest {
 mod tests {
     use super::*;
     use crate::direction::Direction;
+    use crate::packet::encode_packet;
+
+    fn version() -> ClientVersion {
+        ClientVersion::TOL
+    }
 
     #[test]
     fn the_stat_locks_pack_three_arrows_into_one_byte() {
         // ServUO's `StatLockInfo`: str in bits 4-5, dex in 2-3, int in 0-1.
-        let packet = encode_stat_locks(
-            0x0000_0007,
-            StatLockBits {
-                strength: 2,     // locked
-                dexterity: 1,    // down
-                intelligence: 0, // up
+        let packet = encode_packet(
+            &StatLocks {
+                serial: 0x0000_0007,
+                locks: StatLockBits {
+                    strength: 2,     // locked
+                    dexterity: 1,    // down
+                    intelligence: 0, // up
+                },
             },
+            version(),
         );
         assert_eq!(packet[0], 0xBF);
         assert_eq!(
@@ -552,7 +577,7 @@ mod tests {
     #[test]
     fn a_single_click_decodes_the_clicked_serial() {
         let bytes = [0x09, 0x40, 0x00, 0x00, 0x2A];
-        let look = LookRequest::decode(&bytes).expect("a 0x09 decodes");
+        let look: LookRequest = crate::packet::decode_packet(&bytes, version()).unwrap();
         assert_eq!(look.serial, 0x4000_002A);
     }
 
@@ -594,23 +619,30 @@ mod tests {
     #[test]
     fn remove_is_five_bytes() {
         assert_eq!(
-            encode_remove(0xDEAD_BEEF),
+            encode_packet(
+                &Remove {
+                    serial: 0xDEAD_BEEF
+                },
+                version()
+            ),
             vec![0x1D, 0xDE, 0xAD, 0xBE, 0xEF]
         );
     }
 
     #[test]
     fn a_move_matches_its_declared_length() {
-        let bytes = MobileMove {
-            serial: 2,
-            body: 0x0190,
-            position: Point::new(1475, 1774, -5),
-            facing: facing(),
-            hue: 0x83EA,
-            flags: 0,
-            notoriety: Notoriety::Innocent,
-        }
-        .encode(ClientVersion::TOL);
+        let bytes = encode_packet(
+            &MobileMove {
+                serial: 2,
+                body: 0x0190,
+                position: Point::new(1475, 1774, -5),
+                facing: facing(),
+                hue: 0x83EA,
+                flags: 0,
+                notoriety: Notoriety::Innocent,
+            },
+            ClientVersion::TOL,
+        );
 
         assert_eq!(bytes.len(), 17, "Sphere's PacketCharacterMove length");
         assert_eq!(bytes[0], 0x77);
@@ -623,7 +655,7 @@ mod tests {
 
     #[test]
     fn a_naked_mobile_is_the_base_length() {
-        let bytes = mobile().encode(ClientVersion::TOL);
+        let bytes = encode_packet(&mobile(), ClientVersion::TOL);
         assert_eq!(bytes.len(), 23, "Sphere's PacketCharacter base length");
         assert_eq!(bytes[0], 0x78);
         assert_eq!(
@@ -643,7 +675,7 @@ mod tests {
         // Since 7.0.33.1 the hue is always there, needed or not.
         let mut incoming = mobile();
         incoming.equipment = vec![shirt()];
-        let bytes = incoming.encode(ClientVersion::new(7, 0, 33, 1));
+        let bytes = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 1));
 
         assert_eq!(bytes.len(), 23 + 9);
         assert_eq!(&bytes[19..23], &0x4000_0001u32.to_be_bytes(), "item serial");
@@ -663,7 +695,7 @@ mod tests {
         // is nine bytes here and seven below.
         let mut incoming = mobile();
         incoming.equipment = vec![shirt()];
-        let bytes = incoming.encode(ClientVersion::new(7, 0, 33, 0));
+        let bytes = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 0));
 
         assert_eq!(bytes.len(), 23 + 9);
         assert_eq!(
@@ -681,7 +713,7 @@ mod tests {
         // is noise.
         let mut incoming = mobile();
         incoming.equipment = vec![Equipment { hue: 0, ..shirt() }];
-        let bytes = incoming.encode(ClientVersion::new(7, 0, 33, 0));
+        let bytes = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 0));
 
         assert_eq!(bytes.len(), 23 + 7, "no hue, no two bytes for one");
         assert_eq!(
@@ -699,8 +731,8 @@ mod tests {
         let mut incoming = mobile();
         incoming.equipment = vec![Equipment { hue: 0, ..shirt() }];
 
-        let modern = incoming.encode(ClientVersion::new(7, 0, 33, 1));
-        let ancient = incoming.encode(ClientVersion::new(7, 0, 33, 0));
+        let modern = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 1));
+        let ancient = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 0));
         assert_ne!(modern, ancient);
         assert_eq!(
             modern.len(),
@@ -721,7 +753,7 @@ mod tests {
             .collect();
 
         for version in [ClientVersion::new(7, 0, 33, 0), ClientVersion::TOL] {
-            let bytes = incoming.encode(version);
+            let bytes = encode_packet(&incoming, version);
             assert_eq!(
                 u16::from_be_bytes([bytes[1], bytes[2]]) as usize,
                 bytes.len(),
@@ -800,7 +832,14 @@ mod tests {
 
     #[test]
     fn a_paperdoll_is_sixty_six_bytes_with_its_title() {
-        let bytes = encode_open_paperdoll(0x0001_2345, "Lord British", PAPERDOLL_CAN_LIFT);
+        let bytes = encode_packet(
+            &OpenPaperdoll {
+                serial: 0x0001_2345,
+                text: "Lord British".to_owned(),
+                flags: PAPERDOLL_CAN_LIFT,
+            },
+            version(),
+        );
         assert_eq!(bytes.len(), 66, "id + serial + 60-byte title + flags");
         assert_eq!(bytes[0], 0x88);
         assert_eq!(
@@ -822,7 +861,7 @@ mod tests {
             ClientVersion::new(5, 0, 0, 0),  // type 5
             ClientVersion::TOL,              // type 6
         ] {
-            let bytes = a_status().encode(version);
+            let bytes = encode_packet(&a_status(), version);
             assert_eq!(bytes[0], 0x11);
             let declared = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
             assert_eq!(declared, bytes.len(), "length mismatch for {version}");
@@ -833,14 +872,14 @@ mod tests {
     fn the_modern_status_is_the_hundred_and_twenty_one_byte_shape() {
         // ServUO's `EnsureCapacity(121)` for a type-6 self status. Off by a byte
         // and a High Seas client desyncs on the next packet.
-        assert_eq!(a_status().encode(ClientVersion::TOL).len(), 121);
+        assert_eq!(encode_packet(&a_status(), ClientVersion::TOL).len(), 121);
     }
 
     #[test]
     fn stamina_rides_in_the_status_and_is_not_zero() {
         // The whole reason this packet is sent: a zero here is a mobile the client
         // will not let run. The bytes are at a fixed offset for a self status.
-        let bytes = a_status().encode(ClientVersion::TOL);
+        let bytes = encode_packet(&a_status(), ClientVersion::TOL);
         // id(1) len(2) serial(4) name(30) hits(2) hitsmax(2) rename(1) type(1)
         // female(1) str(2) dex(2) int(2) => stamina starts at byte 50.
         let stamina = u16::from_be_bytes([bytes[50], bytes[51]]);

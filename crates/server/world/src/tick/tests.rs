@@ -4,8 +4,10 @@ use openshard_combat::{swing_ticks, MobileDamaged, MobileDied, WRESTLING_SPEED};
 use openshard_events::Cursor;
 use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
+use openshard_protocol::mobile::Remove;
+use openshard_protocol::packet::encode_packet;
 use openshard_protocol::SkillLock;
-use openshard_protocol::{encode_remove, DROP_TO_GROUND};
+use openshard_protocol::DROP_TO_GROUND;
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
 use openshard_state::components::{
@@ -1177,9 +1179,13 @@ fn unequipping_lifts_the_item_off_and_forgets_it_for_others() {
         "and onto the cursor"
     );
     assert!(
-        packets_for(&mut world, watcher)
-            .iter()
-            .any(|p| p == &encode_remove(item_serial)),
+        packets_for(&mut world, watcher).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: item_serial
+                },
+                ClientVersion::TOL
+            )),
         "the other player is told to forget it"
     );
 }
@@ -1206,7 +1212,7 @@ fn consuming_a_ground_item_removes_it_and_clears_every_screen() {
     assert!(
         packets_for(&mut world, watcher)
             .iter()
-            .any(|p| p == &encode_remove(serial)),
+            .any(|p| p == &encode_packet(&Remove { serial }, ClientVersion::TOL)),
         "and off the watcher's screen"
     );
 }
@@ -1256,9 +1262,13 @@ fn consuming_a_contained_item_removes_it_from_the_open_gump() {
         "the contained item is gone"
     );
     assert!(
-        packets_for(&mut world, player)
-            .iter()
-            .any(|p| p == &encode_remove(item_serial)),
+        packets_for(&mut world, player).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: item_serial
+                },
+                ClientVersion::TOL
+            )),
         "and the open gump is told to forget it"
     );
 }
@@ -1296,7 +1306,12 @@ fn consuming_a_worn_item_takes_it_off_for_everyone_including_the_wearer() {
     );
     // One drain: `packets_for` empties the whole outbox, so checking two
     // connections means partitioning a single sweep, not calling it twice.
-    let forget = encode_remove(item_serial);
+    let forget = encode_packet(
+        &Remove {
+            serial: item_serial,
+        },
+        ClientVersion::TOL,
+    );
     let mut watcher_forgot = false;
     let mut wearer_forgot = false;
     for out in world.drain_outbound() {
@@ -1652,7 +1667,7 @@ fn a_ground_item_decays_after_its_time() {
     assert!(
         packets_for(&mut world, watcher)
             .iter()
-            .any(|p| p == &encode_remove(serial)),
+            .any(|p| p == &encode_packet(&Remove { serial }, ClientVersion::TOL)),
         "and left every screen"
     );
 }
@@ -2157,7 +2172,7 @@ fn a_creature_dies_at_zero_hits() {
     assert!(
         packets_for(&mut world, player)
             .iter()
-            .any(|p| p == &encode_remove(mob)),
+            .any(|p| p == &encode_packet(&Remove { serial: mob }, ClientVersion::TOL)),
         "and taken off the player's screen"
     );
 }
@@ -6642,9 +6657,13 @@ fn consuming_a_reagent_redraws_an_open_pack() {
     world.tick(now);
 
     assert!(
-        packets_for(&mut world, player)
-            .iter()
-            .any(|p| p == &encode_remove(item_serial.raw())),
+        packets_for(&mut world, player).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: item_serial.raw()
+                },
+                ClientVersion::TOL
+            )),
         "the watcher is told the reagent left the pack"
     );
 }
@@ -9621,7 +9640,7 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
     world
         .state
         .registry
-        .insert(player, openshard_protocol::Notoriety::Criminal);
+        .insert(player, openshard_protocol::mobile::Notoriety::Criminal);
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection,

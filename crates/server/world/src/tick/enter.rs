@@ -309,19 +309,21 @@ impl World {
         // lands there is no body to attach anything to — and 0x55 must come
         // last, because it is what tells the client to start drawing. What is
         // between can be reordered; the two ends cannot.
-        self.state.send(
+        self.state.send_packet(
             connection,
-            PlayerStart {
+            &ServerPacket::PlayerStart(PlayerStart {
                 serial: serial.raw(),
                 body: body.id,
                 position,
                 facing,
                 map_width: DEFAULT_MAP_WIDTH,
                 map_height: DEFAULT_MAP_HEIGHT,
-            }
-            .encode(),
+            }),
         );
-        self.state.send(connection, encode_map_change(facet));
+        self.state.send_packet(
+            connection,
+            &ServerPacket::MapChange(MapChange { map: facet }),
+        );
         // AoS SupportedFeatures, sent *again* at world entry — this is the copy
         // ServUO's `DoLogin` sends right after the login confirm, and the one
         // ClassicUO reads to turn on in-world object tooltips and context menus.
@@ -342,26 +344,31 @@ impl World {
         // player update, where ServUO's `Mobile.SendEverything` puts it — the
         // client redraws the world for the season, so it wants to know before it
         // is told where the player stands.
-        self.state
-            .send(connection, encode_season(self.state.gameplay.season, false));
-        self.state.send(
+        self.state.send_packet(
             connection,
-            PlayerUpdate {
+            &ServerPacket::Season(Season {
+                season: self.state.gameplay.season,
+                play_sound: false,
+            }),
+        );
+        self.state.send_packet(
+            connection,
+            &ServerPacket::PlayerUpdate(PlayerUpdate {
                 serial: serial.raw(),
                 body: body.id,
                 hue: body.hue,
                 flags: 0,
                 position,
                 facing,
-            }
-            .encode(),
+            }),
         );
         // The light where this character actually is and at the hour it actually
         // is — the region's dark, a relogged Night Sight, or the time of day. One
         // rule computes it, here and on every tick after; remembering it here is
         // what stops the refresh pass sending it a second time immediately.
         let level = self.initial_light(connection);
-        self.state.send(connection, encode_light_level(level));
+        self.state
+            .send_packet(connection, &ServerPacket::LightLevel(LightLevel { level }));
         // The status bar, stamina and all. Without it the client believes it has
         // zero stamina and refuses to run — see `MobileStatus`. Sent before the
         // login-complete that starts the client drawing, so the numbers are there
@@ -380,9 +387,11 @@ impl World {
         // sends this mobile to *others*, never to itself, so this is the one place
         // it hears about its own paperdoll.
         if let Some(mine) = self.state.mobile_incoming(entity) {
-            self.state.send(connection, mine.encode(version));
+            self.state
+                .send_packet(connection, &ServerPacket::MobileIncoming(mine));
         }
-        self.state.send(connection, encode_login_complete());
+        self.state
+            .send_packet(connection, &ServerPacket::LoginComplete(LoginComplete));
 
         self.state.bus.send(PlayerEntered {
             entity,
@@ -415,14 +424,11 @@ impl World {
     /// components, gold, weight, armour and followers derived from what the
     /// character carries, wears and rides.
     pub(super) fn send_status(&mut self, connection: ConnectionId, entity: EntityId) {
-        let Some(Client { version, .. }) = self.state.registry.get::<Client>(entity).copied()
-        else {
-            return;
-        };
         let Some(status) = self.status_of(entity) else {
             return;
         };
-        self.state.send(connection, status.encode(version));
+        self.state
+            .send_packet(connection, &ServerPacket::MobileStatus(status));
     }
 
     /// The connection a mobile is played over, if it is a connected player.
