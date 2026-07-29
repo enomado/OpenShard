@@ -287,7 +287,7 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | 0 | done | `153e1f8` |
 | 1 | done | `daad3e0` |
 | 2 | done | `77ba897` |
-| 3 | done | |
+| 3 | done | `1c94006` |
 | 4 | not started | |
 | 5 | not started | |
 | 6 | not started | |
