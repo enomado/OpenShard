@@ -1,8 +1,77 @@
 //! One client connection, as a state machine that has never heard of a socket.
 
+use openshard_protocol::client_packet::{ClientDecodeError, ClientPacket};
+use openshard_protocol::login::{ClientLoginDecodeError, ClientLoginPacket};
 use openshard_protocol::packet::{frame_client_packet, Frame, FrameError, MAX_PACKET_SIZE};
 use openshard_protocol::seed::{Seed, SeedReader};
 use openshard_protocol::version::ClientVersion;
+
+/// A packet the framer completed but nobody has read yet.
+///
+/// # This is the only door in
+///
+/// The field is `pub(crate)` rather than public, and there is no `Deref`, no
+/// `as_bytes`, no way out of this crate but [`RawPacket::parse_packet`]. That
+/// is deliberate: a raw client packet is untrusted bytes with an id byte
+/// nobody has checked, and the moment some other module can peek at them
+/// directly is the moment it can grow its own ad hoc decoder that disagrees
+/// with this one about what a byte means. One door means one place that ever
+/// reads the wire format.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RawPacket(pub(crate) Vec<u8>);
+
+/// Which half of the shard owns a packet, decoded exactly once.
+///
+/// `packet.first()` alone cannot tell: [`ClientLoginPacket`] and
+/// [`ClientPacket`] each cover a disjoint slice of the id space, so the only
+/// way to know which one a byte belongs to is to ask the login side first —
+/// see [`RawPacket::parse_packet`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Packet {
+    /// Decoded by [`ClientLoginPacket::decode`]. Routed to `login.handle`,
+    /// except for `CreateCharacter`/`DeleteCharacter`, which the server
+    /// intercepts first.
+    Login(ClientLoginPacket),
+    /// Decoded by [`ClientPacket::decode`]. Routed to `dispatch`.
+    World(ClientPacket),
+}
+
+/// [`RawPacket::parse_packet`] recognized which half owns the id but the body
+/// behind it did not parse.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PacketError {
+    /// A known login id (`0x80`/`0xA0`/`0x91`/`0xBD`/`0x00`/`0xF8`/`0x83`)
+    /// whose body did not decode.
+    Login(ClientLoginDecodeError),
+    /// A known world id whose body did not decode.
+    World(ClientDecodeError),
+}
+
+impl RawPacket {
+    /// Decode the packet, once, into whichever half of the protocol claims its
+    /// id byte.
+    ///
+    /// `self` is never empty: it only exists by way of [`frame_client_packet`]
+    /// returning `Frame::Complete`, which never happens on zero bytes and
+    /// never happens at all for an id byte the framer does not recognize
+    /// (that closes the connection before a [`RawPacket`] is ever built). What
+    /// it carries beyond the id is still untrusted client input — `Err` is the
+    /// ordinary outcome for a known id with a malformed body, not a bug.
+    ///
+    /// [`ClientLoginPacket::decode`] is tried first because it is the
+    /// smaller, closed id set; anything it does not recognize (`Unknown`) is
+    /// not a login packet at all, so [`ClientPacket::decode`] gets the only
+    /// other chance to claim it.
+    pub fn parse_packet(&self, version: ClientVersion) -> Result<Packet, PacketError> {
+        match ClientLoginPacket::decode(&self.0, version) {
+            Ok(ClientLoginPacket::Unknown(_)) => ClientPacket::decode(&self.0, version)
+                .map(Packet::World)
+                .map_err(PacketError::World),
+            Ok(login_packet) => Ok(Packet::Login(login_packet)),
+            Err(error) => Err(PacketError::Login(error)),
+        }
+    }
+}
 
 /// Something a connection produced.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -16,7 +85,7 @@ pub enum Event {
     /// connection for as long as the caller held it, which makes the obvious
     /// `while let Some(event) = connection.poll()?` loop impossible. One
     /// allocation per packet is worth an API nobody has to fight.
-    Packet(Vec<u8>),
+    Packet(RawPacket),
 }
 
 /// A connection cannot continue.
@@ -111,7 +180,7 @@ enum State {
 /// connection.receive(&[192, 168, 0, 1, 0x73, 0x00]);
 ///
 /// assert!(matches!(connection.poll().unwrap(), Some(Event::Seeded(_))));
-/// assert_eq!(connection.poll().unwrap(), Some(Event::Packet(vec![0x73, 0x00])));
+/// assert!(matches!(connection.poll().unwrap(), Some(Event::Packet(_))));
 /// assert_eq!(connection.poll().unwrap(), None);
 /// ```
 #[derive(Debug)]
@@ -209,7 +278,7 @@ impl Connection {
                 // packet is a few hundred bytes and this keeps the type a plain
                 // `Vec` that anything can hand bytes to.
                 let packet: Vec<u8> = self.inbox.drain(..length).collect();
-                Ok(Some(Event::Packet(packet)))
+                Ok(Some(Event::Packet(RawPacket(packet))))
             }
         }
     }
@@ -273,8 +342,8 @@ mod tests {
 
         let events = drain(&mut connection).unwrap();
         assert_eq!(events.len(), 3);
-        assert_eq!(events[1], Event::Packet(vec![0x73, 0x00]));
-        assert_eq!(events[2], Event::Packet(vec![0x73, 0x01]));
+        assert_eq!(events[1], Event::Packet(RawPacket(vec![0x73, 0x00])));
+        assert_eq!(events[2], Event::Packet(RawPacket(vec![0x73, 0x01])));
         assert_eq!(connection.buffered(), 0);
     }
 
@@ -302,7 +371,7 @@ mod tests {
         connection.receive(&[0xBB]);
         assert_eq!(
             drain(&mut connection).unwrap(),
-            vec![Event::Packet(vec![0xAD, 0x00, 0x05, 0xAA, 0xBB])]
+            vec![Event::Packet(RawPacket(vec![0xAD, 0x00, 0x05, 0xAA, 0xBB]))]
         );
     }
 
@@ -323,8 +392,11 @@ mod tests {
 
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], Event::Seeded(_)));
-        assert_eq!(events[1], Event::Packet(vec![0xAD, 0x00, 0x05, 0xAA, 0xBB]));
-        assert_eq!(events[2], Event::Packet(vec![0x73, 0x00]));
+        assert_eq!(
+            events[1],
+            Event::Packet(RawPacket(vec![0xAD, 0x00, 0x05, 0xAA, 0xBB]))
+        );
+        assert_eq!(events[2], Event::Packet(RawPacket(vec![0x73, 0x00])));
         assert_eq!(connection.buffered(), 0);
     }
 
@@ -355,7 +427,7 @@ mod tests {
         legacy.receive(&drop15);
         assert_eq!(
             legacy.poll().unwrap(),
-            Some(Event::Packet(drop15[..14].to_vec())),
+            Some(Event::Packet(RawPacket(drop15[..14].to_vec()))),
             "the framer takes only fourteen"
         );
         assert_eq!(
@@ -372,7 +444,7 @@ mod tests {
         modern.receive(&drop15);
         assert_eq!(
             drain(&mut modern).unwrap(),
-            vec![Event::Packet(drop15.clone())]
+            vec![Event::Packet(RawPacket(drop15.clone()))]
         );
         assert_eq!(modern.buffered(), 0, "nothing left over");
     }
@@ -442,7 +514,7 @@ mod tests {
         connection.receive(&packet);
 
         let events = drain(&mut connection).unwrap();
-        assert_eq!(events, vec![Event::Packet(packet)]);
+        assert_eq!(events, vec![Event::Packet(RawPacket(packet))]);
         assert_eq!(connection.buffered(), 0);
     }
 

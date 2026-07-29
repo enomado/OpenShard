@@ -27,13 +27,14 @@ use std::time::Instant;
 
 use openshard_config::{Config, DEFAULT_TOML};
 use openshard_gateway::{
-    ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent, ServerEventRx, VersionTx,
+    ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, PacketError, ServerEvent,
+    ServerEventRx, VersionTx,
 };
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_persistence::{
     AccountRecord, CharacterRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store,
 };
-use openshard_protocol::client_packet::{ClientDecodeError, ClientPacket};
+use openshard_protocol::client_packet::ClientPacket;
 use openshard_protocol::encoded::EncodedCommand;
 use openshard_protocol::extended::ExtendedRequest;
 use openshard_protocol::identity::CharacterName;
@@ -45,7 +46,6 @@ use openshard_protocol::mobile::StatusQueryKind;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::trade::SecureTradeAction;
-use openshard_protocol::version::ClientVersion;
 use openshard_protocol::world::{CreateCharacter, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_world::{

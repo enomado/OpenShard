@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
-use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent};
+use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, ServerEvent};
 use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
-use openshard_protocol::login::{AccountLogin, ClientLoginPacket, GameServerLogin, SelectShard};
+use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -52,7 +52,7 @@ async fn shard() -> SocketAddr {
                     match event {
                         Event::Seeded(seed) => session.on_seed(seed),
                         Event::Packet(packet) => {
-                            let Ok(packet) = ClientLoginPacket::decode(&packet, session.version())
+                            let Ok(Packet::Login(packet)) = packet.parse_packet(session.version())
                             else {
                                 continue;
                             };

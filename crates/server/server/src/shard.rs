@@ -458,56 +458,6 @@ pub(crate) async fn run_shard(
     info!("world saved; shutting down");
 }
 
-/// Which half of the shard owns a packet, decoded exactly once.
-///
-/// `packet.first()` alone cannot tell: [`ClientLoginPacket`] and
-/// [`ClientPacket`] each cover a disjoint slice of the id space, so the only
-/// way to know which one a byte belongs to is to ask the login side first —
-/// see [`parse_packet`].
-enum Packet {
-    /// Decoded by [`ClientLoginPacket::decode`]. Routed to `login.handle`,
-    /// except for `CreateCharacter`/`DeleteCharacter`, which
-    /// `world_handle_network` intercepts first — see its match.
-    Login(ClientLoginPacket),
-    /// Decoded by [`ClientPacket::decode`]. Routed to `dispatch`.
-    World(ClientPacket),
-}
-
-/// [`parse_packet`] recognized which half owns the id but the body behind it
-/// did not parse.
-#[derive(Debug)]
-enum PacketError {
-    /// A known login id (`0x80`/`0xA0`/`0x91`/`0xBD`/`0x00`/`0xF8`/`0x83`)
-    /// whose body did not decode.
-    Login(ClientLoginDecodeError),
-    /// A known world id whose body did not decode.
-    World(ClientDecodeError),
-}
-
-/// `packet` is never empty here: it only reaches `Event::Packet` by way of
-/// `frame_client_packet` returning `Frame::Complete`, which never happens on
-/// zero bytes and never happens at all for an id byte the framer does not
-/// recognize (that closes the connection before this point). What `packet`
-/// carries beyond the id is still untrusted client input — `Err` is the
-/// ordinary outcome for a known id with a malformed body, not a bug.
-///
-/// The only place `packet`'s raw bytes are read at all: every consumer below
-/// — `dispatch`, `login.handle`, `create_character`, `delete_character` —
-/// takes its own already-decoded, semantic packet type from here on, never a
-/// buffer. [`ClientLoginPacket::decode`] is tried first because it is the
-/// smaller, closed id set; anything it does not recognize (`Unknown`) is not
-/// a login packet at all, so [`ClientPacket::decode`] gets the only other
-/// chance to claim it.
-fn parse_packet(packet: &[u8], version: ClientVersion) -> Result<Packet, PacketError> {
-    match ClientLoginPacket::decode(packet, version) {
-        Ok(ClientLoginPacket::Unknown(_)) => ClientPacket::decode(packet, version)
-            .map(Packet::World)
-            .map_err(PacketError::World),
-        Ok(login_packet) => Ok(Packet::Login(login_packet)),
-        Err(error) => Err(PacketError::Login(error)),
-    }
-}
-
 /// Drop a connection whose handler decided it should close.
 ///
 /// One name for the four call sites in `world_handle_network` that all mean
@@ -651,7 +601,7 @@ pub(crate) fn world_handle_network(
             };
             match event {
                 Event::Seeded(seed) => session.login.on_seed(seed),
-                Event::Packet(packet) => match parse_packet(&packet, session.login.version()) {
+                Event::Packet(packet) => match packet.parse_packet(session.login.version()) {
                     // Ok: hand the decoded packet to whichever side it belongs
                     // to. Both handlers return the same "keep the connection?"
                     // bool, so there is one place that acts on it.
