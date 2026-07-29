@@ -272,6 +272,9 @@ pub fn drop_onto_item(
         Some(target) if state.registry.has::<Spellbook>(target) => {
             drop_scroll_on_book(state, connection, held, target);
         }
+        Some(target) if state.registry.has::<Runebook>(target) => {
+            drop_onto_runebook(state, connection, held, target);
+        }
         Some(target) if state.registry.has::<Container>(target) => {
             drop_into_container(state, connection, held, position, target_serial);
         }
@@ -281,6 +284,105 @@ pub fn drop_onto_item(
         _ => bounce(state, connection, held, DragCancelReason::Other),
     }
 }
+
+/// What a runebook accepts: a marked rune, which becomes an entry and is
+/// consumed, or a Recall scroll, which recharges it.
+///
+/// In `items` rather than in `magic` for the reason `drop_scroll_on_book` is:
+/// the components are `state`'s and consuming an item is this crate's own door.
+/// What a bound destination *means* stays in `magic`, which is where casting to
+/// one lives.
+fn drop_onto_runebook(
+    state: &mut WorldState,
+    connection: ConnectionId,
+    held: HeldItem,
+    book: EntityId,
+) {
+    let (Some(&player), Some(book_serial)) = (
+        state.players.get(&connection),
+        state.registry.serial_of(book),
+    ) else {
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    };
+    if !crate::in_reach(state, book, player) {
+        bounce(state, connection, held, DragCancelReason::OutOfRange);
+        return;
+    }
+    let graphic = state.registry.get::<Graphic>(held.entity).map(|g| g.id);
+
+    // A Recall scroll recharges it — ServUO's `Runebook.OnDragDrop`.
+    if graphic.and_then(scroll_spell) == Some(RECALL_SPELL) {
+        let Some(mut owned) = state.registry.get::<Runebook>(book).cloned() else {
+            bounce(state, connection, held, DragCancelReason::Other);
+            return;
+        };
+        if owned.charges >= owned.max_charges {
+            state.system_message(player, "That book is fully charged.");
+            bounce(state, connection, held, DragCancelReason::Other);
+            return;
+        }
+        // How many of the pile the book can take. The surplus stays on the
+        // cursor rather than vanishing: clamping here would eat the difference,
+        // which is the shape of every quiet item-loss bug.
+        let room = u32::from(owned.max_charges - owned.charges);
+        let held_amount = u32::from(state.registry.get::<Amount>(held.entity).map_or(1, |a| a.0));
+        let taken = room.min(held_amount);
+        owned.charges += taken as u8;
+        state.registry.insert(book, owned);
+        if taken >= held_amount {
+            state.held.remove(&connection);
+            state.registry.despawn(held.entity);
+        } else {
+            // Put the remainder back where it came from, still a pile.
+            let left = u16::try_from(held_amount - taken).unwrap_or(u16::MAX);
+            state.registry.insert(held.entity, Amount(left));
+            bounce(state, connection, held, DragCancelReason::Other);
+            return;
+        }
+        state.system_message(player, "You recharge the book.");
+        tell_watchers_updated(state, book_serial, book);
+        return;
+    }
+
+    // A marked rune becomes an entry, and the rune itself is consumed — ServUO
+    // deletes it, which is why the entry carries its own description rather than
+    // pointing back at a rune that will not be there.
+    let Some(&mark) = state.registry.get::<RuneMark>(held.entity) else {
+        state.system_message(player, "You can only place marked runes in a runebook.");
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    };
+    let Some(mut owned) = state.registry.get::<Runebook>(book).cloned() else {
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    };
+    if owned.entries.len() >= RUNEBOOK_ENTRIES {
+        state.system_message(player, "That book is full.");
+        bounce(state, connection, held, DragCancelReason::Other);
+        return;
+    }
+    let description = state
+        .registry
+        .get::<Name>(held.entity)
+        .map_or_else(|| "an unknown place".to_owned(), |name| name.0.clone());
+    owned.entries.push(RunebookEntry {
+        facet: mark.facet,
+        destination: mark.destination,
+        description,
+    });
+    if owned.default_entry.is_none() {
+        owned.default_entry = Some(0);
+    }
+    state.registry.insert(book, owned);
+    state.held.remove(&connection);
+    state.registry.despawn(held.entity);
+    state.system_message(player, "You bind the rune into the book.");
+    tell_watchers_updated(state, book_serial, book);
+}
+
+/// Recall's spell id — what a scroll has to be to recharge a runebook.
+const RECALL_SPELL: u8 = 31;
 
 /// A Magery scroll dropped on a spellbook is learned into it and spent. A
 /// non-scroll, a book out of reach, or a spell the book already holds bounces

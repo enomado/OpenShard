@@ -259,6 +259,7 @@ impl World {
                 open_quest_gumps: HashMap::new(),
                 open_craft_gumps: HashMap::new(),
                 open_gate_gumps: HashMap::new(),
+                open_runebook_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
             },
@@ -977,21 +978,28 @@ impl World {
                         }
                         _ => false,
                     };
-                    // A gate is stepped through, not opened, so it is caught here
-                    // rather than in `items::double_click` — a moongate is not a
-                    // door, a container or a mobile, and left to fall through it
-                    // would reach the pack as a bare `ItemUsed`.
-                    let gate_clicked = match (
+                    // Two things the engine owns a window for, caught before the
+                    // ordinary item dispatch: a gate is stepped through rather
+                    // than opened, and a runebook draws a list. Neither is a
+                    // door, a container or a mobile, so left to fall through
+                    // both would reach the pack as a bare `ItemUsed`.
+                    let engine_window = match (
                         self.state.players.get(&connection).copied(),
                         Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
                     ) {
-                        (Some(player), Some(target)) => self.click_gate(player, target),
+                        (Some(player), Some(target)) => {
+                            // A runebook is checked beside the gate for the same
+                            // reason: its window is the engine's, and left to
+                            // fall through it would reach the pack as a bare
+                            // `ItemUsed` on a book nobody could open.
+                            self.click_gate(player, target) || self.click_runebook(player, target)
+                        }
                         _ => false,
                     };
                     // Then the interaction: a vendor's shop first, if the click
                     // was a shopkeeper in range; anything else is the ordinary
                     // use rule.
-                    if !gate_clicked
+                    if !engine_window
                         && !snoop_refused
                         && !npc::open_shop(&mut self.state, connection, serial)
                     {

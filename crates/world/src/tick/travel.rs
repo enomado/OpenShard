@@ -11,8 +11,10 @@
 //! handful of things ServUO checks at the moment of arrival.
 
 use super::*;
+use openshard_protocol::{encode_close_gump, GumpButton, GumpLayout, GUMP_WHITE};
 use openshard_state::components::{
-    Combat, Contained, CriminalUntil, Equipped, Position, RuneMark, RECALL_RUNE_GRAPHIC,
+    Combat, Contained, CriminalUntil, Equipped, Position, RuneMark, Runebook, RunebookEntry,
+    RECALL_RUNE_GRAPHIC,
 };
 
 /// The layer a backpack rides on. Mark wants the rune *in* it, which is stricter
@@ -276,3 +278,344 @@ const MAX_CONTAINER_DEPTH: usize = 16;
 
 /// ServUO's `Recall.cs` sound, played on departure and again on arrival.
 const RECALL_SOUND: u16 = 0x01FC;
+
+/// The gump id the runebook is drawn under — its own, distinct from the quest
+/// log's `0x0051_*`, the craft window's `0x0052_0001` and the moongate list's
+/// `0x0053_0002`.
+pub(super) const RUNEBOOK_GUMP: u32 = 0x0053_0001;
+
+/// ServUO's `RunebookGump` button ids, kept verbatim.
+///
+/// The *encoding* has to be ServUO's exactly where a client echoes it back
+/// against a layout built the same way; a scheme of one's own is a second thing
+/// to get wrong for no gain. `75 + i` is Sacred Journey, which this engine does
+/// not have — it is decoded and ignored rather than left to fall into another
+/// range, so an unhandled press is a no-op and never a mis-read of a row.
+const BOOK_USE_CHARGE: u32 = 10;
+const BOOK_SACRED_JOURNEY: u32 = 75;
+const BOOK_RECALL: u32 = 50;
+const BOOK_GATE: u32 = 100;
+const BOOK_DROP: u32 = 200;
+const BOOK_DEFAULT: u32 = 300;
+
+/// Recall's spell id, for the mana and reagents a book's paid buttons spend.
+const RECALL_SPELL: u16 = 31;
+/// Gate Travel's.
+const GATE_SPELL: u16 = 51;
+
+/// How long a book rests between openings — ServUO's `NextUse`, in ticks.
+const BOOK_COOLDOWN: u64 = 2 * TICKS_PER_SECOND;
+
+impl World {
+    /// Open a runebook onto its owner's screen, if it is theirs to open and has
+    /// had its moment to recharge.
+    ///
+    /// Returns whether the click was a runebook's, so the tick can stop before
+    /// the ordinary item dispatch sees it.
+    pub(super) fn click_runebook(&mut self, player: EntityId, book: EntityId) -> bool {
+        if !self.state.registry.has::<Runebook>(book) {
+            return false;
+        }
+        if !openshard_items::in_reach(&self.state, book, player) {
+            return true;
+        }
+        let now = self.state.ticks;
+        if self
+            .state
+            .registry
+            .get::<Runebook>(book)
+            .is_some_and(|owned| now < owned.next_use)
+        {
+            self.notify_self(player, "This book needs time to recharge.");
+            return true;
+        }
+        if let Some(mut owned) = self.state.registry.get::<Runebook>(book).cloned() {
+            owned.next_use = now + BOOK_COOLDOWN;
+            self.state.registry.insert(book, owned);
+        }
+        self.draw_runebook(player, book);
+        true
+    }
+
+    /// Draw the sixteen rows and what each may be asked to do.
+    fn draw_runebook(&mut self, player: EntityId, book: EntityId) {
+        let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(player) else {
+            return;
+        };
+        let Some(owned) = self.state.registry.get::<Runebook>(book).cloned() else {
+            return;
+        };
+
+        let mut layout = GumpLayout::default();
+        layout.no_close();
+        let rows = i32::try_from(owned.entries.len().max(1)).unwrap_or(1);
+        layout.background(0, 0, 470, 90 + 26 * rows, 5054);
+        layout.label(
+            30,
+            14,
+            GUMP_WHITE,
+            format!(
+                "Runebook — {} of {} charges",
+                owned.charges, owned.max_charges
+            ),
+        );
+        if owned.entries.is_empty() {
+            layout.label(30, 46, GUMP_WHITE, "This book is empty.");
+        }
+        for (index, entry) in owned.entries.iter().enumerate() {
+            let row = i32::try_from(index).unwrap_or(0);
+            let y = 46 + 26 * row;
+            let slot = u32::try_from(index).unwrap_or(0);
+            let marker = if owned.default_entry == Some(slot as u8) {
+                "*"
+            } else {
+                " "
+            };
+            layout.label(26, y, GUMP_WHITE, format!("{marker} {}", entry.description));
+            // A free charge, then the two paid casts, then the two housekeeping
+            // buttons — the order ServUO draws them in.
+            layout.button(
+                250,
+                y,
+                0x00FA,
+                0x00FB,
+                GumpButton::Reply,
+                0,
+                BOOK_USE_CHARGE + slot,
+            );
+            layout.button(
+                280,
+                y,
+                0x00FA,
+                0x00FB,
+                GumpButton::Reply,
+                0,
+                BOOK_RECALL + slot,
+            );
+            layout.button(
+                310,
+                y,
+                0x00FA,
+                0x00FB,
+                GumpButton::Reply,
+                0,
+                BOOK_GATE + slot,
+            );
+            layout.button(
+                340,
+                y,
+                0x00FA,
+                0x00FB,
+                GumpButton::Reply,
+                0,
+                BOOK_DEFAULT + slot,
+            );
+            layout.button(
+                370,
+                y,
+                0x00FA,
+                0x00FB,
+                GumpButton::Reply,
+                0,
+                BOOK_DROP + slot,
+            );
+        }
+        layout.label(250, 30, GUMP_WHITE, "use  rec  gate  def  drop");
+
+        let (text, lines) = layout.finish();
+        // Close then draw: a client told to draw twice draws two windows.
+        self.state
+            .send(connection, encode_close_gump(RUNEBOOK_GUMP, 0));
+        self.state.send(
+            connection,
+            encode_gump_display(
+                self.state.registry.serial_of(player).map_or(0, |s| s.raw()),
+                RUNEBOOK_GUMP,
+                60,
+                60,
+                text,
+                lines,
+            ),
+        );
+        self.state.open_runebook_gumps.insert(player, book);
+    }
+
+    /// Answer a runebook. Returns whether the reply was one of ours.
+    pub(super) fn handle_runebook_gump(
+        &mut self,
+        connection: ConnectionId,
+        response: &openshard_protocol::GumpResponse,
+    ) -> bool {
+        if response.gump_id != RUNEBOOK_GUMP {
+            return false;
+        }
+        let Some(&player) = self.state.players.get(&connection) else {
+            return true;
+        };
+        // Taken, not borrowed: a reply for a window this side never drew finds
+        // nothing and does nothing.
+        let Some(book) = self.state.open_runebook_gumps.remove(&player) else {
+            return true;
+        };
+        if response.button == 0 {
+            return true; // the close box
+        }
+        // Reach is re-checked here and not only at the open: a window sits on
+        // screen while its owner walks away.
+        if !openshard_items::in_reach(&self.state, book, player) {
+            self.notify_self(player, "That is too far away.");
+            return true;
+        }
+
+        let button = response.button;
+        // Highest range first, or `BOOK_USE_CHARGE + 40` would read as a Recall.
+        let (base, slot) = if button >= BOOK_DEFAULT {
+            (BOOK_DEFAULT, button - BOOK_DEFAULT)
+        } else if button >= BOOK_DROP {
+            (BOOK_DROP, button - BOOK_DROP)
+        } else if button >= BOOK_GATE {
+            (BOOK_GATE, button - BOOK_GATE)
+        } else if button >= BOOK_SACRED_JOURNEY {
+            (BOOK_SACRED_JOURNEY, button - BOOK_SACRED_JOURNEY)
+        } else if button >= BOOK_RECALL {
+            (BOOK_RECALL, button - BOOK_RECALL)
+        } else if button >= BOOK_USE_CHARGE {
+            (BOOK_USE_CHARGE, button - BOOK_USE_CHARGE)
+        } else {
+            return true; // rename and the rest, unhandled
+        };
+
+        // An index the book does not hold is refused, not clamped — the
+        // `CraftGump` rule, and the difference between doing nothing and taking
+        // somebody to whatever happens to be in slot zero.
+        let Some(entry) = self
+            .state
+            .registry
+            .get::<Runebook>(book)
+            .and_then(|owned| owned.entries.get(slot as usize).cloned())
+        else {
+            return true;
+        };
+
+        match base {
+            BOOK_USE_CHARGE => self.spend_book_charge(player, book, &entry),
+            BOOK_RECALL => self.cast_from_book(player, RECALL_SPELL, &entry),
+            BOOK_GATE => self.cast_from_book(player, GATE_SPELL, &entry),
+            BOOK_DEFAULT => {
+                if let Some(mut owned) = self.state.registry.get::<Runebook>(book).cloned() {
+                    owned.default_entry = u8::try_from(slot).ok();
+                    self.state.registry.insert(book, owned);
+                }
+                self.notify_self(player, &format!("Default set to {}.", entry.description));
+                self.draw_runebook(player, book);
+            }
+            BOOK_DROP => {
+                if let Some(mut owned) = self.state.registry.get::<Runebook>(book).cloned() {
+                    owned.entries.remove(slot as usize);
+                    // The default is an index into a list that just shifted, so
+                    // it is dropped rather than left pointing at a neighbour.
+                    owned.default_entry = None;
+                    self.state.registry.insert(book, owned);
+                }
+                self.notify_self(player, "You remove the entry.");
+                self.draw_runebook(player, book);
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// The free travel a charge buys: no mana, no reagents, no skill roll — the
+    /// charge *is* the cost, which is what makes a runebook worth carrying.
+    fn spend_book_charge(&mut self, player: EntityId, book: EntityId, entry: &RunebookEntry) {
+        let Some(mut owned) = self.state.registry.get::<Runebook>(book).cloned() else {
+            return;
+        };
+        if owned.charges == 0 {
+            self.notify_self(player, "This book has no charges left.");
+            return;
+        }
+        if let Some(refusal) = self.travel_check_cast(player, magic::SpellEffect::Recall) {
+            self.notify_self(player, refusal);
+            return;
+        }
+        owned.charges -= 1;
+        self.state.registry.insert(book, owned);
+        self.travel_to(
+            player,
+            entry.facet,
+            entry.destination,
+            magic::TravelKind::RecallFrom,
+        );
+    }
+
+    /// The paid buttons: mana, reagents and a Magery roll, exactly as the spell
+    /// costs when cast at a rune — the book saves you the cursor, not the price.
+    ///
+    /// This does not go through `begin_cast`, and deliberately: that path exists
+    /// to raise a cursor and wait for an answer, and the answer is already known
+    /// here. What it *does* reuse is the one place cost is decided
+    /// (`magic::pay_and_roll`), so a shard that turns reagents off or makes a
+    /// fizzle free gets the same behaviour through a book as through a rune.
+    fn cast_from_book(&mut self, player: EntityId, spell: u16, entry: &RunebookEntry) {
+        let Some(info) = magic::info(spell) else {
+            return;
+        };
+        if let Some(refusal) = self.travel_check_cast(player, info.effect) {
+            self.notify_self(player, refusal);
+            return;
+        }
+        if !self.caster_has_spell(player, spell) {
+            self.notify_self(player, "That spell is not in your spellbook.");
+            return;
+        }
+        let Some(serial) = self.state.registry.serial_of(player) else {
+            return;
+        };
+        let reagents: Vec<(u16, u16)> = if self.state.gameplay.reagents {
+            info.reagents.iter().map(|&graphic| (graphic, 1)).collect()
+        } else {
+            Vec::new()
+        };
+        let pack = self.caster_pack(serial);
+        let (min_skill, max_skill) = magic::cast_skills(info);
+        let mana_loss = self.state.gameplay.mana_loss_on_fail;
+        let reagent_loss = self.state.gameplay.reagent_loss_on_fail;
+        let Some(success) = magic::pay_and_roll(
+            &mut self.state,
+            player,
+            magic::mana(info),
+            min_skill,
+            max_skill,
+            openshard_magic::MAGERY_SKILL,
+            pack,
+            &reagents,
+            mana_loss,
+            reagent_loss,
+        ) else {
+            self.notify_self(player, "You lack the mana or reagents to cast that.");
+            return;
+        };
+        self.state.bus.send(magic::SpellCast {
+            caster: player,
+            serial,
+            spell,
+            target: 0,
+            success,
+        });
+        if !success {
+            return;
+        }
+        match info.effect {
+            magic::SpellEffect::GateTravel => {
+                self.open_gate_to(player, entry.facet, entry.destination);
+            }
+            _ => self.travel_to(
+                player,
+                entry.facet,
+                entry.destination,
+                magic::TravelKind::RecallFrom,
+            ),
+        }
+    }
+}

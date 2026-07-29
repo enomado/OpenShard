@@ -56,6 +56,16 @@ impl World {
             self.notify_self(caster, "That rune is not yet marked.");
             return;
         };
+        self.open_gate_to(caster, there_facet, there);
+    }
+
+    /// The half of a gate cast that needs no rune: open a pair to a destination
+    /// already known.
+    ///
+    /// Split out so a runebook's Gate button reaches exactly the same rules — a
+    /// second copy of the both-ends check is how a book quietly becomes a way
+    /// past a region that bars gating.
+    pub(super) fn open_gate_to(&mut self, caster: EntityId, there_facet: u8, there: Point) {
         let Some((here_facet, here)) = magic::standing_at(&self.state, caster) else {
             return;
         };

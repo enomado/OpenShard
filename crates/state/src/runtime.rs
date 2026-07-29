@@ -533,6 +533,8 @@ pub struct WorldState {
     /// here and never in the packet, so a reply cannot name a material the
     /// player did not pick. Cleared on logout.
     pub open_craft_gumps: HashMap<EntityId, CraftGumpContext>,
+    /// Which runebook each player has open. The `open_craft_gumps` shape.
+    pub open_runebook_gumps: HashMap<EntityId, EntityId>,
     /// Which gate each player has a destination list open for.
     ///
     /// The `open_craft_gumps` shape, and for the same reason: the reply carries a

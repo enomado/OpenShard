@@ -618,7 +618,7 @@ impl World {
 
     /// Whether the caster carries a spellbook that holds `spell` — a book in its
     /// backpack with the spell's bit set. The gate `begin_cast` reads.
-    fn caster_has_spell(&self, caster: EntityId, spell: u16) -> bool {
+    pub(super) fn caster_has_spell(&self, caster: EntityId, spell: u16) -> bool {
         let Some(serial) = self.state.registry.serial_of(caster) else {
             return false;
         };
@@ -640,7 +640,7 @@ impl World {
     }
 
     /// The backpack serial reagents come out of, or `0` if the caster wears none.
-    fn caster_pack(&self, caster: Serial) -> u32 {
+    pub(super) fn caster_pack(&self, caster: Serial) -> u32 {
         self.state
             .registry
             .query::<Equipped>()

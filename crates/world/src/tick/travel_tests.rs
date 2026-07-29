@@ -908,3 +908,219 @@ fn a_city_moongate_survives_a_restart_with_its_meaning_intact() {
         "and is still a gate, with nothing restored onto it to make it one"
     );
 }
+
+// -- the runebook ------------------------------------------------------------
+
+/// A Recall scroll's graphic — `0x1F2D + spell`.
+const RECALL_SCROLL: u16 = 0x1F2D + 31;
+
+/// Give the caster an empty runebook in its pack, and return it.
+fn give_runebook(world: &mut World, connection: ConnectionId) -> EntityId {
+    let backpack = Serial::new(backpack_serial(world, connection)).unwrap();
+    openshard_items::give(
+        &mut world.state,
+        backpack,
+        openshard_state::components::RUNEBOOK_GRAPHIC,
+        0,
+        1,
+    )
+    .expect("a runebook")
+}
+
+#[test]
+fn a_bought_runebook_is_a_book_and_not_a_pile() {
+    // Two books merged into one stack of two would share the destinations of
+    // neither — the same reason a spellbook bypasses the stack path.
+    let now = Instant::now();
+    let (mut world, connection, _, _) = caster_with_rune(now);
+    let first = give_runebook(&mut world, connection);
+    let second = give_runebook(&mut world, connection);
+
+    assert_ne!(first, second, "two books, not one pile of two");
+    for book in [first, second] {
+        let owned = world
+            .registry()
+            .get::<openshard_state::components::Runebook>(book)
+            .expect("a runebook off the shelf is a runebook");
+        assert!(owned.charges > 0, "and comes with charges");
+        assert!(owned.entries.is_empty(), "but no destinations");
+    }
+}
+
+#[test]
+fn a_marked_rune_dropped_on_a_book_becomes_an_entry_and_is_consumed() {
+    // ServUO deletes the rune, which is why the entry carries its own
+    // description rather than pointing back at something that will not be there.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let book = give_runebook(&mut world, connection);
+    let book_serial = world.state.registry.serial_of(book).unwrap().raw();
+    cast_at(&mut world, connection, MARK, rune_serial, now);
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    let marked_at = world.registry().get::<RuneMark>(rune).unwrap().destination;
+
+    openshard_items::pick_up(&mut world.state, connection, rune_serial, 1);
+    openshard_items::drop_item(
+        &mut world.state,
+        connection,
+        rune_serial,
+        Point::new(0, 0, 0),
+        book_serial,
+    );
+
+    let owned = world
+        .registry()
+        .get::<openshard_state::components::Runebook>(book)
+        .unwrap();
+    assert_eq!(owned.entries.len(), 1, "the destination was bound");
+    assert_eq!(owned.entries[0].destination, marked_at);
+    assert!(
+        world
+            .state
+            .registry
+            .entity_of(Serial::new(rune_serial).unwrap())
+            .is_none(),
+        "and the rune itself was spent"
+    );
+    let _ = caster;
+}
+
+#[test]
+fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
+    // Clamping the overflow away is the shape of every quiet item-loss bug: the
+    // book takes what it has room for and the rest is still the player's.
+    let now = Instant::now();
+    let (mut world, connection, _, _) = caster_with_rune(now);
+    let book = give_runebook(&mut world, connection);
+    let book_serial = world.state.registry.serial_of(book).unwrap().raw();
+    // Spend it down so there is room for exactly one.
+    let mut owned = world
+        .registry()
+        .get::<openshard_state::components::Runebook>(book)
+        .cloned()
+        .unwrap();
+    let max = owned.max_charges;
+    owned.charges = max - 1;
+    world.state.registry.insert(book, owned);
+
+    let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
+    let scrolls =
+        openshard_items::give(&mut world.state, backpack, RECALL_SCROLL, 0, 3).expect("scrolls");
+    let scroll_serial = world.state.registry.serial_of(scrolls).unwrap().raw();
+
+    openshard_items::pick_up(&mut world.state, connection, scroll_serial, 3);
+    openshard_items::drop_item(
+        &mut world.state,
+        connection,
+        scroll_serial,
+        Point::new(0, 0, 0),
+        book_serial,
+    );
+
+    let owned = world
+        .registry()
+        .get::<openshard_state::components::Runebook>(book)
+        .unwrap();
+    assert_eq!(owned.charges, max, "the book filled");
+    let left = world
+        .registry()
+        .get::<openshard_state::components::Amount>(scrolls)
+        .map(|a| a.0);
+    assert_eq!(
+        left,
+        Some(2),
+        "and the two it had no room for were not eaten"
+    );
+}
+
+#[test]
+fn a_charge_takes_you_there_for_free_and_is_spent() {
+    // The charge *is* the cost — no mana, no reagents — which is what makes a
+    // runebook worth carrying over a handful of runes.
+    let now = Instant::now();
+    let (mut world, connection, caster, _) = caster_with_rune(now);
+    let book = give_runebook(&mut world, connection);
+    let there = Point::new(START.0 + 12, START.1, 0);
+    let mut owned = world
+        .registry()
+        .get::<openshard_state::components::Runebook>(book)
+        .cloned()
+        .unwrap();
+    owned
+        .entries
+        .push(openshard_state::components::RunebookEntry {
+            facet: 0,
+            destination: there,
+            description: "Britain".into(),
+        });
+    let charges_before = owned.charges;
+    world.state.registry.insert(book, owned);
+    let mana_before = world.registry().get::<Mana>(caster).unwrap().current;
+
+    // Open it, then press the first row's charge button.
+    assert!(world.click_runebook(caster, book), "the book opened");
+    world.queue(Command::GumpResponse {
+        connection,
+        response: openshard_protocol::GumpResponse {
+            serial: serial_of(&world, connection),
+            gump_id: 0x0053_0001,
+            button: 10, // BOOK_USE_CHARGE + slot 0
+            switches: Vec::new(),
+            text_entries: Vec::new(),
+        },
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        there,
+        "it took the caster there"
+    );
+    assert_eq!(
+        world.registry().get::<Mana>(caster).unwrap().current,
+        mana_before,
+        "and cost no mana"
+    );
+    assert_eq!(
+        world
+            .registry()
+            .get::<openshard_state::components::Runebook>(book)
+            .unwrap()
+            .charges,
+        charges_before - 1,
+        "but one charge"
+    );
+}
+
+#[test]
+fn a_reply_for_a_row_the_book_does_not_hold_does_nothing() {
+    // Refused, not clamped — the `CraftGump` rule. Clamping to slot zero takes
+    // somebody to whatever happens to be first, which is worse than nothing.
+    let now = Instant::now();
+    let (mut world, connection, caster, _) = caster_with_rune(now);
+    let book = give_runebook(&mut world, connection);
+    let at = world.registry().get::<Position>(caster).unwrap().0;
+    assert!(world.click_runebook(caster, book));
+
+    world.queue(Command::GumpResponse {
+        connection,
+        response: openshard_protocol::GumpResponse {
+            serial: serial_of(&world, connection),
+            gump_id: 0x0053_0001,
+            button: 10 + 9, // a row an empty book has never had
+            switches: Vec::new(),
+            text_entries: Vec::new(),
+        },
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        at,
+        "nobody went anywhere"
+    );
+}
