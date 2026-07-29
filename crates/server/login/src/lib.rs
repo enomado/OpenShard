@@ -22,11 +22,11 @@
 //! use std::net::Ipv4Addr;
 //! use std::time::Instant;
 //! use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
-//! use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
+//! use openshard_protocol::identity::{AccountName, PlaintextPassword, RawAccountName, RawPlaintextPassword};
 //! use openshard_protocol::login::{AccountLogin, LoginStagePacket};
 //!
 //! let mut server = LoginServer::new(
-//!     DevAccounts::new().with_account("admin", "hunter2"),
+//!     DevAccounts::new().with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2")),
 //!     "OpenShard",
 //!     single_shard(Ipv4Addr::new(127, 0, 0, 1), 2593),
 //! );

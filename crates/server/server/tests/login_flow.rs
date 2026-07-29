@@ -16,7 +16,9 @@ use std::time::Instant;
 
 use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, ServerEvent};
 use openshard_login::{DevAccounts, LoginServer, LoginSession, Response, single_shard};
-use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
+use openshard_protocol::identity::{
+    AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
+};
 use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
 use openshard_protocol::wire::AuthKey;
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
@@ -34,8 +36,8 @@ async fn shard() -> SocketAddr {
 
     tokio::spawn(async move {
         let accounts = DevAccounts::new()
-            .with_account("admin", "hunter2")
-            .with_character("admin", "Lord British");
+            .with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"))
+            .with_character(&AccountName::new("admin"), &CharacterName::new("Lord British"));
         let mut login = LoginServer::new(accounts, "OpenShard", advertised);
         let mut outboxes: HashMap<ConnectionId, OutboxTx> = HashMap::new();
         let mut sessions: HashMap<ConnectionId, LoginSession> = HashMap::new();

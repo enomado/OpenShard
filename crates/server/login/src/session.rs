@@ -485,15 +485,17 @@ mod tests {
     use super::*;
     use crate::accounts::DevAccounts;
     use openshard_protocol::feature::Feature;
-    use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
+    use openshard_protocol::identity::{
+        AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
+    };
     use openshard_protocol::wire::AuthKey;
 
     fn server() -> LoginServer<DevAccounts> {
         let accounts = DevAccounts::new()
-            .with_account("admin", "hunter2")
-            .with_character("admin", "Lord British")
-            .with_account("banned", "x")
-            .blocked("banned");
+            .with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"))
+            .with_character(&AccountName::new("admin"), &CharacterName::new("Lord British"))
+            .with_account(&AccountName::new("banned"), &PlaintextPassword::new("x"))
+            .blocked(&AccountName::new("banned"));
         LoginServer::new(
             accounts,
             "OpenShard",
@@ -753,8 +755,8 @@ mod tests {
         // Alice selects a shard; Bob presents her key with his own credentials.
         let mut server = LoginServer::new(
             DevAccounts::new()
-                .with_account("alice", "a")
-                .with_account("bob", "b"),
+                .with_account(&AccountName::new("alice"), &PlaintextPassword::new("a"))
+                .with_account(&AccountName::new("bob"), &PlaintextPassword::new("b")),
             "OpenShard",
             single_shard(Ipv4Addr::new(127, 0, 0, 1), 2593),
         );
@@ -865,7 +867,7 @@ mod tests {
         // And the list is in the modern shape, which is the thing the client
         // actually chokes on: five padded slots and a trailing flags dword.
         let modern = ServerPacket::CharacterList(CharacterList {
-            characters: server.accounts.characters("admin"),
+            characters: server.accounts.characters(&AccountName::new("admin")),
             starts: server.starts.clone(),
             flags: server.character_list_flags,
         })

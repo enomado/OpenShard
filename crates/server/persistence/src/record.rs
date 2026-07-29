@@ -957,8 +957,8 @@ mod tests {
         // that loads with a default position is standing in the ocean.
         let record = CharacterRecord {
             serial: 0x0000_0001,
-            account: "admin".into(),
-            name: "Alpha".into(),
+            account: AccountName::new("admin"),
+            name: CharacterName::new("Alpha"),
             body: 0x0190,
             hue: 0,
             facet: 0,
@@ -1024,8 +1024,8 @@ mod tests {
         // loads at z=216 is somewhere else entirely.
         let record = CharacterRecord {
             serial: 1,
-            account: "admin".into(),
-            name: "Alpha".into(),
+            account: AccountName::new("admin"),
+            name: CharacterName::new("Alpha"),
             body: 0x0190,
             hue: 0,
             facet: 0,

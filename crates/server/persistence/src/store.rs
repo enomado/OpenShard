@@ -327,12 +327,13 @@ impl Store for MemoryStore {
 mod tests {
     use super::*;
     use crate::record::StatLockRecord;
+    use openshard_protocol::identity::CharacterName;
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
             serial,
-            account: "admin".into(),
-            name: "Alpha".into(),
+            account: AccountName::new("admin"),
+            name: CharacterName::new("Alpha"),
             body: 0x0190,
             hue: 0,
             facet: 0,
