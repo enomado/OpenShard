@@ -83,6 +83,14 @@ pub enum SpellEffect {
     /// Paralyze — freezes the target mobile in place for a Magery-scaled span; a
     /// blow lifts it. See [`Frozen`](openshard_state::Frozen).
     Paralyze,
+    /// Write the caster's own position onto the aimed recall rune.
+    ///
+    /// The rune must be in the caster's *backpack*, not merely within reach:
+    /// ServUO says so with cliloc 1062422, and a rune lying on the floor of a
+    /// shop is somebody else's.
+    Mark,
+    /// Take the caster to where the aimed rune (or runebook) points.
+    Recall,
     /// The core does not run this one yet — the pack owns it (fields, summons,
     /// travel, and the rest).
     Scripted,
@@ -337,7 +345,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         4,
         &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT],
         Item,
-        Scripted,
+        SpellEffect::Recall,
     ),
     // -- Fifth circle --------------------------------------------------------
     spell(
@@ -430,7 +438,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         6,
         &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT],
         Item,
-        Scripted,
+        SpellEffect::Mark,
     ),
     spell(
         "Mass Curse",

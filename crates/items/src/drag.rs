@@ -226,9 +226,9 @@ pub fn drop_into_container(
     };
     // The container must be in reach — on the ground near the player, or worn on
     // them (their backpack) or on a mobile beside them. A worn pack has no
-    // `Position` of its own; `container_in_reach` handles that. Dropping into a
+    // `Position` of its own; `in_reach` handles that. Dropping into a
     // container nested in another is a later refinement.
-    if !container_in_reach(state, container_entity, player) {
+    if !in_reach(state, container_entity, player) {
         bounce(state, connection, held, DragCancelReason::OutOfRange);
         return;
     }
@@ -303,7 +303,7 @@ fn drop_scroll_on_book(
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     };
-    if !crate::container_in_reach(state, book, player) {
+    if !crate::in_reach(state, book, player) {
         bounce(state, connection, held, DragCancelReason::OutOfRange);
         return;
     }

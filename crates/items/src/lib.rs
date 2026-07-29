@@ -20,7 +20,7 @@ use openshard_protocol::{
 use openshard_state::components::{
     mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Corpse,
     Decays, Decoration, Door, Equipped, Facet, Graphic, KeyValue, Lock, Name, PoisonCharges,
-    Position, Ridden, Riding, Spellbook, Stackable, Weapon, SPELLBOOK_GRAPHIC,
+    Position, Ridden, Riding, Spellbook, Stackable, Weapon, RUNEBOOK_GRAPHIC, SPELLBOOK_GRAPHIC,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{HeldItem, Origin, Outbound, WorldState, TICKS_PER_SECOND};

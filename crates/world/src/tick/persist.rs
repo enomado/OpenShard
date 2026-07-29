@@ -1,12 +1,14 @@
 use super::*;
 use openshard_persistence::{
-    CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord,
+    CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord, RunebookData,
+    RunebookEntryData,
 };
 use openshard_state::components::{
     body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy,
     DoneQuest, Escortable, Field, Frozen, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned,
-    Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook,
-    StatMod, StatMods, StockRecord, SwingSpeed, Title, Trap, TrapKind, Vendor,
+    Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark, Runebook,
+    RunebookEntry, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title, Trap,
+    TrapKind, Vendor,
 };
 
 impl World {
@@ -314,6 +316,35 @@ impl World {
                         registry.get::<CraftedBy>(item).map(|maker| maker.0.clone()),
                     )
                 }),
+            // And where a rune points, which is the whole of what a rune is —
+            // an unsaved one comes back a blank, and the walk that marked it was
+            // for nothing.
+            rune: registry.get::<RuneMark>(item).map(|mark| {
+                (
+                    mark.facet,
+                    mark.destination.x,
+                    mark.destination.y,
+                    mark.destination.z,
+                )
+            }),
+            // And a runebook's whole contents, for the same reason over sixteen
+            // times the work.
+            runebook: registry.get::<Runebook>(item).map(|book| RunebookData {
+                entries: book
+                    .entries
+                    .iter()
+                    .map(|entry| RunebookEntryData {
+                        facet: entry.facet,
+                        x: entry.destination.x,
+                        y: entry.destination.y,
+                        z: entry.destination.z,
+                        description: entry.description.clone(),
+                    })
+                    .collect(),
+                charges: book.charges,
+                max_charges: book.max_charges,
+                default_entry: book.default_entry,
+            }),
             location,
         })
     }
@@ -334,6 +365,49 @@ impl World {
         }
         if let Some(maker) = maker {
             self.state.registry.insert(entity, CraftedBy(maker.clone()));
+        }
+    }
+
+    /// Put a saved item's travel state back: where a rune points, and what a
+    /// runebook holds.
+    ///
+    /// One helper for the same reason [`restore_craftsmanship`] is one: both
+    /// restore paths want it, and a second copy is how a rune in a bank box
+    /// comes back marked while one on the floor comes back blank — a difference
+    /// nothing shows until somebody casts.
+    ///
+    /// [`restore_craftsmanship`]: Self::restore_craftsmanship
+    fn restore_travel_state(&mut self, entity: EntityId, record: &ItemRecord) {
+        if let Some((facet, x, y, z)) = record.rune {
+            self.state.registry.insert(
+                entity,
+                RuneMark {
+                    facet,
+                    destination: Point::new(x, y, z),
+                },
+            );
+        }
+        if let Some(book) = record.runebook.as_ref() {
+            self.state.registry.insert(
+                entity,
+                Runebook {
+                    entries: book
+                        .entries
+                        .iter()
+                        .map(|entry| RunebookEntry {
+                            facet: entry.facet,
+                            destination: Point::new(entry.x, entry.y, entry.z),
+                            description: entry.description.clone(),
+                        })
+                        .collect(),
+                    charges: book.charges,
+                    max_charges: book.max_charges,
+                    default_entry: book.default_entry,
+                    // Not saved: a couple of seconds' cooldown that a restart
+                    // re-arms at zero, which errs the player's way.
+                    next_use: 0,
+                },
+            );
         }
     }
 
@@ -886,6 +960,7 @@ impl World {
             items::restore_uses(&mut self.state, entity, record.graphic, uses);
         }
         self.restore_craftsmanship(entity, record);
+        self.restore_travel_state(entity, record);
         // Loose clutter resumes rotting; a container does not (mark_decay skips
         // it) — except a corpse, which is a container that *must* rot, so it gets
         // a fresh timer here (the decay tick is not itself saved, so a restored
@@ -975,6 +1050,7 @@ impl World {
                 items::restore_uses(&mut self.state, entity, record.graphic, uses);
             }
             self.restore_craftsmanship(entity, record);
+            self.restore_travel_state(entity, record);
         }
         // Pass two: where each item goes.
         for record in &records {

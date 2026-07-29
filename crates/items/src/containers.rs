@@ -84,7 +84,7 @@ pub(crate) fn open_spellbook(
     book: EntityId,
     book_serial: Serial,
 ) {
-    if !container_in_reach(state, book, player) {
+    if !in_reach(state, book, player) {
         return;
     }
     let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
@@ -154,7 +154,7 @@ pub(crate) fn open_container(
     let Some(&Container { gump }) = state.registry.get::<Container>(container) else {
         return;
     };
-    if !container_in_reach(state, container, player) {
+    if !in_reach(state, container, player) {
         return;
     }
     // A locked chest does not open — ServUO's `LockableContainer.OnDoubleClick`, which
@@ -191,20 +191,21 @@ pub(crate) fn open_container(
     );
 }
 
-/// Whether `player` may reach `container` to open it or drop into it.
+/// Whether `player` may reach `container` — to open it, drop into it, use it or
+/// aim a spell at it.
 ///
-/// A container sits in one of two places, and the reach check has to handle both:
-/// on the ground it stands on its own tile, and worn it has no `Position` of its
-/// own — its wearer's tile stands in. Your own backpack (worn on you) is always in
-/// reach; another mobile's worn container is reachable only within [`ITEM_REACH`]
-/// of that mobile, on the same facet. The whole reason a worn backpack could not be
-/// opened or filled before this: its reach was measured against a `Position` it
-/// does not have.
-pub(crate) fn container_in_reach(
-    state: &WorldState,
-    container: EntityId,
-    player: EntityId,
-) -> bool {
+/// An item sits in one of three places, and the reach check has to handle all of
+/// them: on the ground it stands on its own tile; worn, it has no `Position` of
+/// its own and its wearer's tile stands in; contained, the question recurses to
+/// the container holding it, so a rune in a pouch in a pack is reached through
+/// the pack. Your own worn backpack is always in reach; another mobile's is
+/// reachable only within [`ITEM_REACH`] of that mobile, on the same facet. The
+/// whole reason a worn backpack could not be opened or filled before this: its
+/// reach was measured against a `Position` it does not have.
+///
+/// Not named for containers any more, because it stopped being about them some
+/// time ago — a spellbook, a door's key target and an item trigger all ask it.
+pub fn in_reach(state: &WorldState, container: EntityId, player: EntityId) -> bool {
     let Some(&Position(player_pos)) = state.registry.get::<Position>(player) else {
         return false;
     };
@@ -230,7 +231,7 @@ pub(crate) fn container_in_reach(
         return state
             .registry
             .entity_of(outer)
-            .is_some_and(|outer| container_in_reach(state, outer, player));
+            .is_some_and(|outer| in_reach(state, outer, player));
     } else {
         None
     };
@@ -467,11 +468,12 @@ pub fn give(
     if amount == 0 {
         return None;
     }
-    // A spellbook is a single item, not a stack, and carries its (empty) contents
-    // — the behaviour a bought or spawned spellbook needs to be a real book. A
-    // full book is dealt out elsewhere (a staff command); one off the shelf is
-    // blank until scrolls fill it.
-    if graphic == SPELLBOOK_GRAPHIC {
+    // Two books are single items, never a stack: each carries contents of its
+    // own, and two of them merged into one pile of two would share the learned
+    // spells or the bound destinations of neither. A full spellbook is dealt out
+    // elsewhere (a staff command); one off the shelf is blank until scrolls fill
+    // it, and a runebook until runes do.
+    if graphic == SPELLBOOK_GRAPHIC || graphic == RUNEBOOK_GRAPHIC {
         let Ok((entity, _serial)) = state.registry.spawn_with_serial(SerialKind::Item) else {
             warn!("out of item serials; nothing given");
             return None;
@@ -486,7 +488,11 @@ pub fn give(
                 grid: 0,
             },
         );
-        state.registry.insert(entity, Spellbook::default());
+        if graphic == SPELLBOOK_GRAPHIC {
+            state.registry.insert(entity, Spellbook::default());
+        } else {
+            crate::apply_core_defaults(state, entity, graphic);
+        }
         tell_watchers_updated(state, container, entity);
         return Some(entity);
     }

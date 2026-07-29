@@ -100,7 +100,13 @@ use serde::{Deserialize, Serialize};
 ///   (`IUsesRemaining`) and so one column here. The instrument half is a bug this
 ///   fixes rather than a feature it adds: a lute bought and half played came back
 ///   full at every reboot, because nothing saved the count.
-pub const SCHEMA_VERSION: u32 = 21;
+/// - v22: **where a rune points and what a runebook holds**. Both columns land
+///   together even though the book fills a slice later than the rune: there are
+///   no migrations here — [`SqliteStore::init`](crate::SqliteStore) and its
+///   Postgres twin stamp a fresh database and refuse any other version — so two
+///   bumps inside one piece of work means an operator throwing their test shard
+///   away twice for one feature.
+pub const SCHEMA_VERSION: u32 = 22;
 
 /// An account, as saved.
 ///
@@ -427,8 +433,54 @@ pub struct ItemRecord {
     /// killer is one: the smith logs out and the sword outlives the session.
     #[serde(default)]
     pub crafted: Option<(bool, Option<String>)>,
+    /// Where a recall rune points — `(facet, x, y, z)`. `None` for a blank rune
+    /// and for everything that is not one, and defaulted so a pre-v22 save
+    /// loads.
+    ///
+    /// The absence *is* "unmarked": the world has no `marked` flag either, so
+    /// there is no pair of halves to keep in step.
+    #[serde(default)]
+    pub rune: Option<(u8, u16, u16, i8)>,
+    /// What a runebook holds. `None` for everything that is not one. One column
+    /// for the whole book — the [`CorpseData`] shape — because its entries are a
+    /// list and a list does not become sixteen columns.
+    #[serde(default)]
+    pub runebook: Option<RunebookData>,
     /// Where it is.
     pub location: ItemLocation,
+}
+
+/// A runebook's contents, as saved.
+///
+/// `next_use` is deliberately absent: it is the couple of seconds ServUO makes a
+/// book rest between openings, and a restart that re-arms it at zero errs in the
+/// player's favour over a column that would be stale by the time it was read.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct RunebookData {
+    /// The destinations bound, in order.
+    pub entries: Vec<RunebookEntryData>,
+    /// Charges left.
+    pub charges: u8,
+    /// The ceiling recharging fills to.
+    pub max_charges: u8,
+    /// Which entry is the default, if any.
+    #[serde(default)]
+    pub default_entry: Option<u8>,
+}
+
+/// One bound destination, as saved.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RunebookEntryData {
+    /// Which facet it is on.
+    pub facet: u8,
+    /// East-west tile.
+    pub x: u16,
+    /// North-south tile.
+    pub y: u16,
+    /// Height.
+    pub z: i8,
+    /// What to call it in the window.
+    pub description: String,
 }
 
 /// A pet's ownership and standing order, as saved — a plain mirror of the world's
@@ -837,6 +889,19 @@ mod tests {
                 trap: Some((3, 40, 2)),
                 uses: Some(37),
                 crafted: Some((true, Some("Rowena".into()))),
+                rune: Some((0, 1495, 1629, -20)),
+                runebook: Some(RunebookData {
+                    entries: vec![RunebookEntryData {
+                        facet: 0,
+                        x: 1336,
+                        y: 1997,
+                        z: 5,
+                        description: "Britain".into(),
+                    }],
+                    charges: 4,
+                    max_charges: 10,
+                    default_entry: Some(0),
+                }),
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");

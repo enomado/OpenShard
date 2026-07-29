@@ -103,7 +103,7 @@ pub(crate) fn emit_mobile_used(
 /// [`double_click`](crate::double_click), after every built-in interaction has
 /// declined.
 ///
-/// Reach is server-authoritative: the same [`container_in_reach`] a lift uses,
+/// Reach is server-authoritative: the same [`in_reach`] a lift uses,
 /// which resolves a ground item by its tile, a carried one by its holder, and a
 /// worn one by its wearer — so a double-click across the map fires nothing. An
 /// item that somehow has no `Graphic` is not a drawable item and is ignored.
@@ -113,7 +113,7 @@ pub(crate) fn item_used(
     target: EntityId,
     target_serial: Serial,
 ) {
-    if !container_in_reach(state, target, player) {
+    if !in_reach(state, target, player) {
         return;
     }
     let Some(&Graphic { id, .. }) = state.registry.get::<Graphic>(target) else {

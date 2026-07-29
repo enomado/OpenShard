@@ -11,11 +11,14 @@
 //! coordinates that now mean somewhere else.
 
 use super::tests::{
-    add_empty_facet, add_empty_facet_sized, enter, enter_as, enter_on_facet, packets_for,
-    serial_of, walk, world, START,
+    add_empty_facet, add_empty_facet_sized, backpack_serial, enter, enter_as, enter_on_facet,
+    packets_for, serial_of, walk, world, START,
 };
 use super::*;
-use openshard_state::components::{InRegion, Movement, Position};
+use openshard_state::components::{
+    Contained, CriminalUntil, Facet, InRegion, Mana, Movement, Position, RuneMark, Spellbook,
+    RECALL_RUNE_GRAPHIC, SPELLBOOK_GRAPHIC,
+};
 use openshard_state::{Region, RegionFlags, RegionRect};
 
 /// Ilshenar's shape, which is nothing like Britannia's — the whole reason the
@@ -306,5 +309,320 @@ fn a_facet_the_shard_never_loaded_is_refused() {
         world.state.facet_state(0).sectors.position_of(traveller),
         Some(arrival()),
         "and is still on the grid it started on"
+    );
+}
+
+// -- marking and recalling ---------------------------------------------------
+
+/// Recall's and Mark's spell ids, their position in the classic book.
+const RECALL: u16 = 31;
+const MARK: u16 = 44;
+
+/// The three reagents both spells want.
+const BLACK_PEARL: u16 = 0x0F7A;
+const BLOOD_MOSS: u16 = 0x0F7B;
+const MANDRAKE_ROOT: u16 = 0x0F86;
+
+/// A caster who can afford either spell, with a rune in its pack.
+///
+/// Sphere-style casting, so a cast resolves the tick it is asked for and the
+/// cursor comes straight up — these tests are about the travel rules, not about
+/// waiting out a cast delay.
+fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, u32) {
+    let mut world = World::new(START).with_gameplay(Gameplay {
+        cast_style: openshard_state::CastStyle::Walk,
+        ..Default::default()
+    });
+    add_empty_facet(&mut world, 1);
+    let connection = enter(&mut world, now);
+    let caster = world.state.players[&connection];
+    let serial = serial_of(&world, connection);
+    world.queue(Command::SetSkill {
+        serial,
+        skill: 25, // Magery
+        value: 1000,
+    });
+    world.tick(now);
+
+    let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
+    for reagent in [BLACK_PEARL, BLOOD_MOSS, MANDRAKE_ROOT] {
+        openshard_items::give(&mut world.state, backpack, reagent, 0, 50);
+    }
+    if let Some(book) = openshard_items::give(&mut world.state, backpack, SPELLBOOK_GRAPHIC, 0, 1) {
+        world.state.registry.insert(book, Spellbook::full());
+    }
+    let rune = openshard_items::place_one(&mut world.state, backpack, RECALL_RUNE_GRAPHIC, 0, 1)
+        .expect("a rune in the pack");
+    let rune_serial = world.state.registry.serial_of(rune).unwrap().raw();
+    let _ = packets_for(&mut world, connection);
+    (world, connection, caster, rune_serial)
+}
+
+/// Cast `spell` and answer its cursor with `target`.
+fn cast_at(world: &mut World, connection: ConnectionId, spell: u16, target: u32, now: Instant) {
+    world.queue(Command::RequestCast { connection, spell });
+    world.tick(now);
+    let cursor_id = serial_of(world, connection);
+    world.queue(Command::TargetResponse {
+        connection,
+        response: openshard_protocol::TargetResponse {
+            cursor_id,
+            serial: target,
+            location: Point::new(0, 0, 0),
+            graphic: 0,
+            cancelled: false,
+        },
+    });
+    world.tick(now);
+}
+
+#[test]
+fn marking_a_rune_writes_where_you_stand_and_recalling_takes_you_back() {
+    // The two halves of one fact: what Mark writes is exactly what Recall reads,
+    // and a disagreement between them is a rune that says Britain and lands you
+    // in a swamp.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let marked_at = world.registry().get::<Position>(caster).unwrap().0;
+
+    cast_at(&mut world, connection, MARK, rune_serial, now);
+
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    assert_eq!(
+        world
+            .registry()
+            .get::<RuneMark>(rune)
+            .map(|m| m.destination),
+        Some(marked_at),
+        "the rune remembers the tile it was marked on"
+    );
+
+    // Walk away, then come back by rune.
+    world
+        .state
+        .teleport(caster, Point::new(START.0 + 40, START.1 + 40, 0));
+    world.tick(now);
+    assert_ne!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        marked_at
+    );
+
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+
+    assert_eq!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        marked_at,
+        "and recall put the caster back on it"
+    );
+}
+
+#[test]
+fn a_blank_rune_recalls_nowhere() {
+    // The absence of a `RuneMark` *is* "unmarked" — there is no flag to disagree
+    // with a destination that would mean nothing when it is false.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let before = world.registry().get::<Position>(caster).unwrap().0;
+
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+
+    assert_eq!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        before,
+        "an unmarked rune takes you nowhere"
+    );
+}
+
+#[test]
+fn a_rune_on_the_floor_cannot_be_marked_but_can_be_recalled_from() {
+    // ServUO's asymmetry, and it is deliberate on both sides: Mark wants the rune
+    // in your own pack (cliloc 1062422), while Recall accepts any rune you can
+    // reach — a rune held out by a friend is a classic way to be fetched.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    let at = world.registry().get::<Position>(caster).unwrap().0;
+
+    // Mark it while it is still in the pack, then drop it at the caster's feet.
+    cast_at(&mut world, connection, MARK, rune_serial, now);
+    world.state.registry.remove::<Contained>(rune);
+    world.state.registry.insert(rune, Position(at));
+    world.state.registry.insert(rune, Facet(0));
+
+    // Marking it again is refused now it is not carried.
+    world.state.registry.remove::<RuneMark>(rune);
+    cast_at(&mut world, connection, MARK, rune_serial, now);
+    assert!(
+        world.registry().get::<RuneMark>(rune).is_none(),
+        "a rune on the floor is somebody else's to mark"
+    );
+
+    // But recalling from a reachable one still works.
+    world.state.registry.insert(
+        rune,
+        RuneMark {
+            facet: 0,
+            destination: Point::new(START.0 + 5, START.1 + 5, 0),
+        },
+    );
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+    assert_eq!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        Point::new(START.0 + 5, START.1 + 5, 0),
+        "recall does not ask whose pack the rune is in"
+    );
+}
+
+#[test]
+fn a_no_recall_region_bars_arriving_and_marking_but_not_leaving() {
+    // ServUO's matrix collapsed: `RecallFrom` is the one permissive row, so a
+    // jail you can recall out of is still one nobody can recall into or mark in.
+    // Getting this backwards makes every dungeon a one-way trap.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let inside = Point::new(START.0 + 3, START.1 + 3, 0);
+    world.queue(Command::RegisterRegions {
+        facet: 0,
+        regions: vec![Region {
+            id: 0,
+            name: "Wrong".to_owned(),
+            priority: 50,
+            rects: vec![RegionRect::new(inside.x - 1, inside.y - 1, 3, 3)],
+            flags: RegionFlags {
+                no_recall: true,
+                ..RegionFlags::default()
+            },
+            music: None,
+            light: None,
+        }],
+    });
+    world.tick(now);
+
+    // Standing inside it, a rune cannot be marked.
+    world.state.teleport(caster, inside);
+    cast_at(&mut world, connection, MARK, rune_serial, now);
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    assert!(
+        world.registry().get::<RuneMark>(rune).is_none(),
+        "no marking inside a no-recall region"
+    );
+
+    // Nor can anyone recall *into* it.
+    world.state.registry.insert(
+        rune,
+        RuneMark {
+            facet: 0,
+            destination: inside,
+        },
+    );
+    world
+        .state
+        .teleport(caster, Point::new(START.0, START.1, 0));
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+    assert_ne!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        inside,
+        "no arriving in one either"
+    );
+
+    // But standing in it, you may still leave: `RecallFrom` is permissive.
+    let out = Point::new(START.0 + 20, START.1, 0);
+    world.state.teleport(caster, inside);
+    world.state.registry.insert(
+        rune,
+        RuneMark {
+            facet: 0,
+            destination: out,
+        },
+    );
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+    assert_eq!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        out,
+        "leaving is the direction ServUO allows"
+    );
+}
+
+#[test]
+fn a_rune_marked_on_another_facet_is_a_walk_unless_the_shard_says_otherwise() {
+    // The classic pre-AoS rule. The machinery to cross facets works either way —
+    // this is a rule, not a missing feature, which is why it is a setting and not
+    // a limitation.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    let far = Point::new(START.0, START.1, 0);
+    world.state.registry.insert(
+        rune,
+        RuneMark {
+            facet: 1,
+            destination: far,
+        },
+    );
+
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+    assert_eq!(world.state.facet_of(caster), 0, "refused, by default");
+
+    world.state.gameplay.cross_facet_travel = true;
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+    assert_eq!(
+        world.state.facet_of(caster),
+        1,
+        "and allowed when the shard says so"
+    );
+}
+
+#[test]
+fn a_criminal_cannot_recall_away_and_it_costs_them_nothing_to_find_out() {
+    // ServUO's `CheckCast`, which runs before the cast — a thief who cannot
+    // escape should learn that for free, not for eleven mana and three reagents.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        rune,
+        RuneMark {
+            facet: 0,
+            destination: Point::new(START.0 + 9, START.1, 0),
+        },
+    );
+    world
+        .state
+        .registry
+        .insert(caster, CriminalUntil { tick: 9_999 });
+    let mana_before = world.registry().get::<Mana>(caster).unwrap().current;
+    let at = world.registry().get::<Position>(caster).unwrap().0;
+
+    cast_at(&mut world, connection, RECALL, rune_serial, now);
+
+    assert_eq!(
+        world.registry().get::<Position>(caster).unwrap().0,
+        at,
+        "the criminal stays where they are"
+    );
+    assert_eq!(
+        world.registry().get::<Mana>(caster).unwrap().current,
+        mana_before,
+        "and paid nothing to be refused"
     );
 }

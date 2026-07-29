@@ -129,7 +129,16 @@ CREATE TABLE IF NOT EXISTS items (
     -- it. NULL for everything nobody crafted. The maker is a name and not a
     -- serial, because the smith logs out and the sword does not.
     exceptional BOOLEAN,
-    crafter TEXT
+    crafter TEXT,
+    -- where a recall rune points. NULL is a blank rune, which is the world's own
+    -- representation too — there is no marked flag to keep in step.
+    rune_facet INTEGER,
+    rune_x INTEGER,
+    rune_y INTEGER,
+    rune_z INTEGER,
+    -- a runebook's whole contents, JSON: its entries are a list, and a list of
+    -- sixteen destinations does not become sixteen columns.
+    runebook TEXT
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 CREATE TABLE IF NOT EXISTS mobiles (
@@ -495,7 +504,8 @@ impl Store for PgStore {
                 "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                  loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                  corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, \
-                 uses, exceptional, crafter FROM items",
+                 uses, exceptional, crafter, \
+                 rune_facet, rune_x, rune_y, rune_z, runebook FROM items",
                 &[],
             )
             .await
@@ -684,9 +694,9 @@ async fn insert_item(
              (serial, owner, graphic, hue, amount, stackable, gump, \
               loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
               corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, uses, \
-              exceptional, crafter) \
+              exceptional, crafter, rune_facet, rune_x, rune_y, rune_z, runebook) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, \
-                     $22,$23,$24,$25,$26,$27) \
+                     $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32) \
              ON CONFLICT (serial) DO UPDATE SET \
              owner = EXCLUDED.owner, graphic = EXCLUDED.graphic, hue = EXCLUDED.hue, \
              amount = EXCLUDED.amount, stackable = EXCLUDED.stackable, gump = EXCLUDED.gump, \
@@ -698,7 +708,9 @@ async fn insert_item(
              poison_charges = EXCLUDED.poison_charges, trap_kind = EXCLUDED.trap_kind, \
              trap_power = EXCLUDED.trap_power, trap_level = EXCLUDED.trap_level, \
              uses = EXCLUDED.uses, exceptional = EXCLUDED.exceptional, \
-             crafter = EXCLUDED.crafter",
+             crafter = EXCLUDED.crafter, rune_facet = EXCLUDED.rune_facet, \
+             rune_x = EXCLUDED.rune_x, rune_y = EXCLUDED.rune_y, rune_z = EXCLUDED.rune_z, \
+             runebook = EXCLUDED.runebook",
             &[
                 &i64::from(item.serial),
                 &i64::from(item.owner),
@@ -736,6 +748,16 @@ async fn insert_item(
                 &item.uses.map(i32::from),
                 &item.crafted.as_ref().map(|(fine, _)| *fine),
                 &item.crafted.as_ref().and_then(|(_, maker)| maker.clone()),
+                &item.rune.map(|(facet, _, _, _)| i32::from(facet)),
+                &item.rune.map(|(_, x, _, _)| i32::from(x)),
+                &item.rune.map(|(_, _, y, _)| i32::from(y)),
+                &item.rune.map(|(_, _, _, z)| i32::from(z)),
+                &item
+                    .runebook
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?,
             ],
         )
         .await
@@ -818,6 +840,25 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
             crafted: row
                 .get::<_, Option<bool>>(25)
                 .map(|fine| (fine, row.get::<_, Option<String>>(26))),
+            // All four or none: a rune half-read is a rune pointing somewhere
+            // nobody marked.
+            rune: match (
+                row.get::<_, Option<i32>>(27),
+                row.get::<_, Option<i32>>(28),
+                row.get::<_, Option<i32>>(29),
+                row.get::<_, Option<i32>>(30),
+            ) {
+                (Some(facet), Some(x), Some(y), Some(z)) => Some((
+                    u8::try_from(facet).map_err(|_| corrupt("rune_facet"))?,
+                    u16::try_from(x).map_err(|_| corrupt("rune_x"))?,
+                    u16::try_from(y).map_err(|_| corrupt("rune_y"))?,
+                    i8::try_from(z).map_err(|_| corrupt("rune_z"))?,
+                )),
+                _ => None,
+            },
+            runebook: row
+                .get::<_, Option<String>>(31)
+                .and_then(|json| serde_json::from_str(&json).ok()),
             location,
         }))
     }

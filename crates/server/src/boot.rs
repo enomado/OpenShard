@@ -96,6 +96,7 @@ pub(crate) fn gameplay_of(config: &Config) -> Gameplay {
         reagent_loss_on_fail: g.reagent_loss_on_fail,
         bank_gold_in_status: g.bank_gold_in_status,
         vendor_bank_payment: g.vendor_bank_payment,
+        cross_facet_travel: g.cross_facet_travel,
         lod: g.lod,
         lod_radius: g.lod_radius,
         lod_idle_factor: g.lod_idle_factor,

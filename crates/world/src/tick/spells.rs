@@ -54,6 +54,13 @@ impl World {
             self.notify_self(caster, "That spell is not in your spellbook.");
             return;
         }
+        // The travel family's own refusals — ServUO's `CheckCast`, which runs
+        // *before* the cast and so costs nothing. Escaping is the whole point of
+        // Recall, and these are the four times you are not allowed to.
+        if let Some(refusal) = self.travel_check_cast(caster, info.effect) {
+            self.notify_self(caster, refusal);
+            return;
+        }
         match self.state.gameplay.cast_style {
             CastStyle::Walk => self.resolve_cast(caster, spell),
             CastStyle::Stop => {
@@ -354,6 +361,8 @@ impl World {
                     self.resurrect(entity);
                 }
             }
+            SpellEffect::Mark => self.mark_rune(caster, target_serial),
+            SpellEffect::Recall => self.recall(caster, target_serial),
             SpellEffect::BehaviourBuff(kind) => {
                 // Night Sight can land on another mobile; the self-cast trio
                 // (Protection, Reactive Armor, Magic Reflection) answers its own
@@ -449,8 +458,14 @@ impl World {
                     _ => (0x01E9, Visual::OnTarget(0x375A)), // Magic Reflection
                 }
             }
+            // Mark: ServUO's chime and a sparkle on the rune being written.
+            SpellEffect::Mark => (0x01FA, Visual::OnTarget(0x3779)),
             // Handled above, before this match — a field voices itself and returns.
             SpellEffect::Field(_) => return,
+            // Recall voices itself where it lands: the departure and arrival
+            // sounds bracket the move, so an onlooker at *each* end hears one.
+            // A single packet here would play both at the tile left behind.
+            SpellEffect::Recall => return,
             SpellEffect::Scripted => return, // the pack's to voice
         };
 

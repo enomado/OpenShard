@@ -127,6 +127,17 @@ pub struct Gameplay {
     /// Whether an NPC purchase falls back to the bank when the pack is short —
     /// ServUO's `BaseVendor`, which tries the pack, then the bank.
     pub vendor_bank_payment: bool,
+    /// Whether Recall and Gate Travel may cross to another facet.
+    ///
+    /// Off is the classic rule: pre-AoS, ServUO refuses both outright ("You can
+    /// not recall to another facet"), and a rune marked in Ilshenar is a rune
+    /// you have to walk to. On is the behaviour from AoS onward.
+    ///
+    /// A setting of its own rather than a reading of `expansion`, which cannot
+    /// express pre-AoS — its floor *is* AoS — or of `combat_era`, which would be
+    /// a combat knob quietly deciding a travel rule. The machinery underneath
+    /// works either way; this is only whether the spells are allowed to use it.
+    pub cross_facet_travel: bool,
     /// Level-of-detail: when on, a creature with no player within
     /// [`lod_radius`](Self::lod_radius) dozes at a stretched beat instead of
     /// paying for the full AI decision each beat. Off simulates every creature at
@@ -306,6 +317,8 @@ impl Default for Gameplay {
             bank_gold_in_status: false,
             // But a vendor does fall back to it, as ServUO's does.
             vendor_bank_payment: true,
+            // The classic rule: a rune marked on another facet is a walk.
+            cross_facet_travel: false,
             lod: false, // opt-in
             lod_radius: 32,
             lod_idle_factor: 8,

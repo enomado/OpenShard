@@ -68,7 +68,7 @@ pub fn in_key_reach(state: &WorldState, player: EntityId, target: EntityId) -> b
         state.registry.get::<Position>(player),
     ) else {
         // Not on the ground: a chest in a pack is reached through its container.
-        return crate::container_in_reach(state, target, player);
+        return crate::in_reach(state, target, player);
     };
     state.facet_of(target) == state.facet_of(player) && in_range(at, player_at, ITEM_REACH)
 }

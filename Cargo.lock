@@ -1336,6 +1336,7 @@ dependencies = [
  "openshard-combat",
  "openshard-entities",
  "openshard-items",
+ "openshard-protocol",
  "openshard-skills",
  "openshard-state",
 ]

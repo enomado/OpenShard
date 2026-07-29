@@ -52,10 +52,9 @@ pub(super) const DEFAULT_HITPOINTS: u16 = 100;
 pub(super) const DEFAULT_MANA: u16 = 100;
 /// The dexterity a character starts with.
 pub(super) const DEFAULT_DEXTERITY: u16 = 100;
-/// A body's own weight in stones, before anything it carries — Sphere's and
-/// ServUO's `BodyWeight`. Sent on the status bar; kept well under the carry cap so
-/// the client never thinks it is overloaded and refuses to run.
-pub(super) const BODY_WEIGHT: u16 = 14;
+/// A body's own weight in stones. Lives in `items` beside the walk that sums
+/// what is on top of it, and beside the cap it is compared against.
+pub(super) use openshard_items::BODY_WEIGHT;
 /// The sum of the three stats a character may train to — the classic 225.
 pub(super) const STAT_CAP: u16 = 225;
 /// How many pets may follow a character. Only the shape matters until pets do.
@@ -63,13 +62,10 @@ pub(super) const STAT_CAP: u16 = 225;
 /// gate reads, so the bar and the refusal can never disagree.
 pub(super) const MAX_FOLLOWERS: u8 = openshard_skills::MAX_FOLLOWERS;
 
-/// The weight a character can carry before it is overloaded, from its strength.
-///
-/// UO's `40 + floor(3.5 * str)`. Only the *ceiling* is sent on the status bar,
-/// and only so the client can see it is not over it; nothing enforces it yet.
-pub(super) const fn max_weight(strength: u16) -> u16 {
-    40 + strength * 7 / 2
-}
+/// The weight a character can carry before it is overloaded. In `items` for the
+/// reason [`BODY_WEIGHT`] is: three rules read it now, and two copies of
+/// `40 + 3.5 * str` is a shard where a mule can walk but cannot recall.
+pub(super) use openshard_items::max_weight;
 /// The seed the world's roll generator starts from.
 ///
 /// Fixed, so a fresh world's rolls are reproducible in a test and a replay. A

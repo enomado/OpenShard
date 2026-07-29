@@ -195,7 +195,17 @@ CREATE TABLE IF NOT EXISTS items (
     -- shard. The maker is a name and not a serial, because the smith logs out and
     -- the sword does not.
     exceptional INTEGER,
-    crafter TEXT
+    crafter TEXT,
+    -- where a recall rune points. NULL is a blank rune, which is the world's own
+    -- representation too — there is no marked flag to keep in step with a
+    -- destination that would mean nothing when it is false.
+    rune_facet INTEGER,
+    rune_x INTEGER,
+    rune_y INTEGER,
+    rune_z INTEGER,
+    -- a runebook's whole contents. JSON because its entries are a list, and a
+    -- list of sixteen destinations does not become sixteen columns.
+    runebook TEXT
 );
 CREATE INDEX IF NOT EXISTS items_owner ON items (owner);
 -- NPC mobiles and placed decoration, each a JSON record keyed by serial: a
@@ -415,9 +425,10 @@ impl Store for SqliteStore {
                      (serial, owner, graphic, hue, amount, stackable, gump, \
                       loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                       corpse, poison_level, poison_charges, trap_kind, trap_power, \
-                      trap_level, uses, exceptional, crafter) \
+                      trap_level, uses, exceptional, crafter, \
+                      rune_facet, rune_x, rune_y, rune_z, runebook) \
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,\
-                             ?20,?21,?22,?23,?24,?25,?26,?27)",
+                             ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
                         params![
                             item.serial,
                             item.owner,
@@ -457,6 +468,15 @@ impl Store for SqliteStore {
                             item.crafted
                                 .as_ref()
                                 .and_then(|(_, maker)| maker.as_deref()),
+                            item.rune.map(|(facet, _, _, _)| facet),
+                            item.rune.map(|(_, x, _, _)| x),
+                            item.rune.map(|(_, _, y, _)| y),
+                            item.rune.map(|(_, _, _, z)| z),
+                            item.runebook
+                                .as_ref()
+                                .map(serde_json::to_string)
+                                .transpose()
+                                .unwrap_or_default(),
                         ],
                     )?;
                     Ok(())
@@ -652,7 +672,8 @@ impl Store for SqliteStore {
                     "SELECT serial, owner, graphic, hue, amount, stackable, gump, \
                      loc_kind, facet, x, y, z, parent, grid, layer, price, name, spellbook, \
                      corpse, poison_level, poison_charges, trap_kind, trap_power, trap_level, \
-                     uses, exceptional, crafter FROM items",
+                     uses, exceptional, crafter, \
+                     rune_facet, rune_x, rune_y, rune_z, runebook FROM items",
                 )
                 .map_err(database)?;
             let rows = statement
@@ -700,6 +721,20 @@ impl Store for SqliteStore {
                             crafted: row.get::<_, Option<bool>>(25)?.map(|fine| {
                                 (fine, row.get::<_, Option<String>>(26).ok().flatten())
                             }),
+                            // All four or none: a rune half-read is a rune that
+                            // points somewhere nobody marked.
+                            rune: match (
+                                row.get::<_, Option<u8>>(27)?,
+                                row.get::<_, Option<u16>>(28)?,
+                                row.get::<_, Option<u16>>(29)?,
+                                row.get::<_, Option<i8>>(30)?,
+                            ) {
+                                (Some(facet), Some(x), Some(y), Some(z)) => Some((facet, x, y, z)),
+                                _ => None,
+                            },
+                            runebook: row
+                                .get::<_, Option<String>>(31)?
+                                .and_then(|json| serde_json::from_str(&json).ok()),
                             // A placeholder overwritten below; the location cannot be
                             // built inside `query_map`'s closure return type cleanly.
                             location: ItemLocation::Ground {
@@ -989,12 +1024,28 @@ mod tests {
             trap: None,
             uses: None,
             crafted: None,
+            rune: None,
+            runebook: None,
             location: ItemLocation::Contained {
                 container,
                 x: 0,
                 y: 0,
                 grid: 0,
             },
+        }
+    }
+
+    /// The same item lying on the ground rather than in a pack — the *other*
+    /// restore path, which no test that only fills a backpack exercises.
+    fn ground(serial: u32, x: u16, y: u16) -> ItemRecord {
+        ItemRecord {
+            location: ItemLocation::Ground {
+                facet: 0,
+                x,
+                y,
+                z: 0,
+            },
+            ..contained(serial, 0, 0)
         }
     }
 
@@ -1253,6 +1304,94 @@ mod tests {
             let items = store.items().await.expect("read");
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].spellbook, Some(full));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn a_marked_rune_and_a_filled_runebook_survive_a_reopen() {
+        // A rune is nothing *but* where it points, so an unsaved one comes back a
+        // blank and the walk that marked it was for nothing. Both are checked on
+        // the ground and in a container, because those are two different restore
+        // paths in the world and only one of them being right is the failure that
+        // shows up a week later as "my bank runes work and my pack runes don't".
+        let path = temp_db("rune-and-book");
+        let book = crate::record::RunebookData {
+            entries: vec![
+                crate::record::RunebookEntryData {
+                    facet: 0,
+                    x: 1336,
+                    y: 1997,
+                    z: 5,
+                    description: "Britain".into(),
+                },
+                crate::record::RunebookEntryData {
+                    facet: 1,
+                    x: 2701,
+                    y: 692,
+                    z: 5,
+                    description: "Minoc".into(),
+                },
+            ],
+            charges: 3,
+            max_charges: 10,
+            default_entry: Some(1),
+        };
+        {
+            let store = SqliteStore::open(&path).expect("open");
+            let mut carried = contained(0x4000_0001, 1, 1);
+            carried.rune = Some((0, 1495, 1629, -20));
+            let mut dropped = ground(0x4000_0002, 100, 100);
+            dropped.runebook = Some(book.clone());
+            let mut snap = snapshot(vec![character(1, 100)], vec![]);
+            snap.inventories = vec![crate::record::Inventory {
+                owner: 1,
+                items: vec![carried],
+            }];
+            snap.ground = Some(vec![dropped]);
+            store.save(&snap).await.expect("save");
+        }
+        {
+            let store = SqliteStore::open(&path).expect("reopen");
+            let items = store.items().await.expect("read");
+            let carried = items
+                .iter()
+                .find(|item| item.serial == 0x4000_0001)
+                .expect("the carried rune");
+            assert_eq!(
+                carried.rune,
+                Some((0, 1495, 1629, -20)),
+                "a negative z is a dungeon floor, and has to survive signed"
+            );
+            let dropped = items
+                .iter()
+                .find(|item| item.serial == 0x4000_0002)
+                .expect("the dropped book");
+            assert_eq!(dropped.runebook, Some(book));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn an_unmarked_rune_stays_unmarked() {
+        // The absence is the answer: no destination means a blank rune, and a
+        // column read as a zeroed tuple would silently point every blank rune in
+        // the world at the top-left corner of Felucca.
+        let path = temp_db("blank-rune");
+        {
+            let store = SqliteStore::open(&path).expect("open");
+            let mut snap = snapshot(vec![character(1, 100)], vec![]);
+            snap.inventories = vec![crate::record::Inventory {
+                owner: 1,
+                items: vec![contained(0x4000_0001, 1, 1)],
+            }];
+            store.save(&snap).await.expect("save");
+        }
+        {
+            let store = SqliteStore::open(&path).expect("reopen");
+            let items = store.items().await.expect("read");
+            assert_eq!(items[0].rune, None);
+            assert_eq!(items[0].runebook, None);
         }
         let _ = std::fs::remove_file(&path);
     }

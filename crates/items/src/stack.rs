@@ -56,7 +56,7 @@ pub fn merge_onto(
         let reachable = state
             .registry
             .entity_of(container)
-            .is_some_and(|c| container_in_reach(state, c, player));
+            .is_some_and(|c| in_reach(state, c, player));
         if !reachable {
             bounce(state, connection, held, DragCancelReason::OutOfRange);
             return;

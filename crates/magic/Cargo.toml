@@ -15,5 +15,8 @@ workspace = true
 openshard-combat.workspace = true
 openshard-entities.workspace = true
 openshard-items.workspace = true
+# For `Point` alone: a travel rule is about a place, and the place a region is
+# asked about is spelled the same way on the wire as it is in the world.
+openshard-protocol.workspace = true
 openshard-skills.workspace = true
 openshard-state.workspace = true

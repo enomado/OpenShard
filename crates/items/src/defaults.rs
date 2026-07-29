@@ -11,7 +11,9 @@
 //! reads ServUO's own `SB*.cs`), and the skills that use them would refuse every
 //! one.
 
-use openshard_state::components::{Instrument, Name, PoisonCharges, Tool, POISON_POTION_GRAPHIC};
+use openshard_state::components::{
+    Instrument, Name, PoisonCharges, Runebook, Tool, POISON_POTION_GRAPHIC, RUNEBOOK_GRAPHIC,
+};
 use openshard_state::craft::craft_tool;
 use openshard_state::harvest::tool_data;
 use openshard_state::instrument::{instrument_data, INSTRUMENT_MAX_USES, INSTRUMENT_MIN_USES};
@@ -57,8 +59,28 @@ pub fn apply_core_defaults(state: &mut WorldState, item: EntityId, graphic: u16)
         state
             .registry
             .insert(item, PoisonCharges { level, charges: 1 });
+        return;
+    }
+    if graphic == RUNEBOOK_GRAPHIC {
+        // An empty book with its charges. A bought one is blank — the
+        // destinations are the owner's to bind — but it has to *be* a runebook
+        // from the moment it exists, or a book off a shelf is a graphic that
+        // refuses to open, which is the bug the spellbook mask once had.
+        state.registry.insert(
+            item,
+            Runebook {
+                charges: SHELF_RUNEBOOK_CHARGES,
+                max_charges: SHELF_RUNEBOOK_CHARGES,
+                ..Runebook::default()
+            },
+        );
     }
 }
+
+/// The charges a runebook that nobody crafted comes with — ServUO's own
+/// constructor default, which its vendors and its loot both use. A crafted one
+/// gets `5 + quality + Inscribe/30` instead, so the scribe's work shows.
+const SHELF_RUNEBOOK_CHARGES: u8 = 6;
 
 /// Put a saved use count back on an item, as whichever of the two kinds its
 /// graphic says it is.

@@ -1220,6 +1220,72 @@ pub const SPELL_COUNT: u8 = 64;
 /// A Magery spellbook's item graphic.
 pub const SPELLBOOK_GRAPHIC: u16 = 0x0EFA;
 
+/// A recall rune's item graphic — ServUO's `RecallRune`.
+pub const RECALL_RUNE_GRAPHIC: u16 = 0x1F14;
+
+/// A runebook's item graphic — ServUO's `Runebook`, whose constructor defaults
+/// to this id.
+pub const RUNEBOOK_GRAPHIC: u16 = 0x22C5;
+
+/// Where a recall rune points, once the Mark spell has written it.
+///
+/// A rune with no `RuneMark` is a blank one, which is what makes the component's
+/// absence the answer to "is this marked" — there is no `marked: bool` to keep
+/// honest beside a destination that means nothing when it is false.
+///
+/// The facet is part of the destination and not a detail: a rune is an object,
+/// it can be carried anywhere, and a rune marked in Britain and read in Ilshenar
+/// has to still mean Britain.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RuneMark {
+    /// Which facet the destination is on.
+    pub facet: u8,
+    /// The tile the rune was marked on.
+    pub destination: Point,
+}
+
+/// One destination bound into a [`Runebook`].
+///
+/// Carries its own description rather than pointing at the rune it came from,
+/// because the rune is consumed when it is bound — ServUO deletes it — so there
+/// would be nothing left to ask.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct RunebookEntry {
+    /// Which facet the destination is on.
+    pub facet: u8,
+    /// The tile bound.
+    pub destination: Point,
+    /// What to call it in the window — the region's name where there is one.
+    pub description: String,
+}
+
+/// A book of up to [`RUNEBOOK_ENTRIES`] destinations, and the charges that let it
+/// cast to them on its own — ServUO's `Runebook`.
+///
+/// Not `Copy`, unlike nearly every other component here: it owns its entries and
+/// their names. The bus has never required `Copy` — only the enums assumed it —
+/// and a component is under no such rule at all.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Runebook {
+    /// The destinations bound, in the order they were added.
+    pub entries: Vec<RunebookEntry>,
+    /// Charges left, each good for one free Recall from the book itself.
+    pub charges: u8,
+    /// The ceiling recharging fills to — set when the book is made.
+    pub max_charges: u8,
+    /// Which entry the Recall spell takes when aimed at the book rather than at
+    /// a row, if any.
+    pub default_entry: Option<u8>,
+    /// The tick the book may be opened again — ServUO's `NextUse`.
+    ///
+    /// Not saved: it is a couple of seconds long, and a restart re-arming it at
+    /// zero errs in the generous direction.
+    pub next_use: u64,
+}
+
+/// How many destinations one runebook holds — ServUO's `Runebook.MaxEntries`.
+pub const RUNEBOOK_ENTRIES: usize = 16;
+
 /// The corpse item graphic. A protocol special case: for item `0x2006` the
 /// client reads the `Amount` field as the dead body id, so a corpse draws as the
 /// creature it was. A corpse is a container (the loot window) that decays.

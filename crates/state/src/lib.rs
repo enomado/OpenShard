@@ -58,10 +58,11 @@ pub use components::{
     Decoration, Discorded, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic,
     Guard, Harvesting, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Instrument, Karma,
     KeyValue, LastStatGain, Lock, Mana, Meditating, MeleeDamage, Movement, MurderDecay, Murders,
-    Name, NightHome, Npc, Pacified, PoisonCharges, Poisoned, Position, Resistance, Scripted,
-    SkillCooldown, Skills, SpawnedBy, Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods,
-    Stats, Stealthing, SwingSpeed, Title, Tool, Trap, TrapKind, DEFAULT_SKILL_CAP,
-    EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, POISON_POTION_GRAPHIC,
+    Name, NightHome, Npc, Pacified, PoisonCharges, Poisoned, Position, Resistance, RuneMark,
+    Runebook, RunebookEntry, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina,
+    StatLock, StatLocks, StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool, Trap,
+    TrapKind, DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT, POISON_POTION_GRAPHIC,
+    RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};

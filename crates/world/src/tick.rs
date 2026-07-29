@@ -94,6 +94,7 @@ mod spells;
 mod staff;
 mod status;
 mod traps;
+mod travel;
 mod wake;
 
 pub use command::{Appearance, CharacterSheet, Command, DecorContainer, DecorDoor};

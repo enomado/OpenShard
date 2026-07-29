@@ -692,7 +692,7 @@ fn the_use_trigger_respects_reach() {
 }
 
 /// The serial of the backpack a connection's character is wearing.
-fn backpack_serial(world: &World, connection: ConnectionId) -> u32 {
+pub(super) fn backpack_serial(world: &World, connection: ConnectionId) -> u32 {
     let owner = world
         .registry()
         .serial_of(world.state.players[&connection])
