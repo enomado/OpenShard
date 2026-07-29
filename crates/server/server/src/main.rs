@@ -39,8 +39,8 @@ use openshard_protocol::encoded::EncodedCommand;
 use openshard_protocol::extended::ExtendedRequest;
 use openshard_protocol::identity::CharacterName;
 use openshard_protocol::login::{
-    CharacterListUpdate, ClientLoginDecodeError, ClientLoginPacket, DeleteCharacter, DeleteReject,
-    DeleteResult, LoginDenied, StartLocation,
+    CharacterListUpdate, ClientLoginDecodeError, DeleteCharacter, DeleteReject, DeleteResult,
+    LoginDenied, LoginStagePacket, StartLocation,
 };
 use openshard_protocol::mobile::StatusQueryKind;
 use openshard_protocol::server_packet::ServerPacket;

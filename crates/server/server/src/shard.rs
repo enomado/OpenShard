@@ -506,18 +506,18 @@ fn handle_login_packet(
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
     saved: &mut HashMap<(String, String), CharacterRecord>,
-    packet: ClientLoginPacket,
+    packet: LoginStagePacket,
     id: ConnectionId,
 ) -> bool {
     match packet {
         // Character creation crosses the login/world line: it writes the new
         // character onto the account and then enters the world with it.
-        ClientLoginPacket::CreateCharacter(create) => {
+        LoginStagePacket::CreateCharacter(create) => {
             create_character(session, login, world, create, id)
         }
         // Character deletion crosses the same line: it drops the character
         // from the account list and forgets its saved row.
-        ClientLoginPacket::DeleteCharacter(delete) => {
+        LoginStagePacket::DeleteCharacter(delete) => {
             delete_character(session, login, world, saved, delete, id)
         }
         login_packet => {

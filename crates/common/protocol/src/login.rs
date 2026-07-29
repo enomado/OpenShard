@@ -757,7 +757,7 @@ fn patch_length(mut bytes: Vec<u8>) -> Vec<u8> {
 /// login crate touches a raw packet buffer.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum ClientLoginPacket {
+pub enum LoginStagePacket {
     /// `0xBD`, successfully framed. Whether the version *string* itself
     /// parsed is a separate question — see [`ClientVersionReport::version`].
     VersionReport(ClientVersionReport),
@@ -789,7 +789,7 @@ pub enum ClientLoginPacket {
     DeleteCharacter(DeleteCharacter),
 }
 
-impl ClientLoginPacket {
+impl LoginStagePacket {
     /// Decode `packet` by its id byte.
     ///
     /// `packet` must be non-empty. That is an invariant, not a checked
@@ -932,14 +932,14 @@ mod tests {
         // frame is the one-byte id. An empty slice here means whoever called
         // `decode` skipped framing, which is a server bug worth a panic, not
         // a laundered `Option`.
-        let _ = ClientLoginPacket::decode(&[], version());
+        let _ = LoginStagePacket::decode(&[], version());
     }
 
     #[test]
     fn client_login_packet_decode_reports_which_id_failed() {
         let bytes = [AccountLogin::ID, b'a', b'b'];
         assert!(matches!(
-            ClientLoginPacket::decode(&bytes, version()),
+            LoginStagePacket::decode(&bytes, version()),
             Err(ClientLoginDecodeError::AccountLogin(_))
         ));
     }

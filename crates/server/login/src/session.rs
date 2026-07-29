@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
-    encode_supported_features, AccountLogin, CharacterList, ClientLoginPacket, ClientVersionReport,
-    DenyReason, GameServerLogin, LoginDenied, Relay, SelectShard, ShardEntry, ShardList,
+    encode_supported_features, AccountLogin, CharacterList, ClientVersionReport, DenyReason,
+    GameServerLogin, LoginDenied, LoginStagePacket, Relay, SelectShard, ShardEntry, ShardList,
     StartLocation,
 };
 use openshard_protocol::server_packet::ServerPacket;
@@ -219,7 +219,7 @@ impl<A: Accounts> LoginServer<A> {
     pub fn handle(
         &mut self,
         session: &mut LoginSession,
-        packet: ClientLoginPacket,
+        packet: LoginStagePacket,
         now: Instant,
     ) -> Response {
         match self.try_handle(session, packet, now) {
@@ -244,21 +244,21 @@ impl<A: Accounts> LoginServer<A> {
     fn try_handle(
         &mut self,
         session: &mut LoginSession,
-        packet: ClientLoginPacket,
+        packet: LoginStagePacket,
         now: Instant,
     ) -> Result<Response, Reason> {
         // These arrive at any point in the conversation, so they are not
         // part of the state transition table below — handling them does not
         // change what packet the login state machine is waiting for next.
         let packet = match packet {
-            ClientLoginPacket::VersionReport(report) => {
+            LoginStagePacket::VersionReport(report) => {
                 return Ok(self.on_version_report(session, report));
             }
             // Junk here is not fatal: the seed usually carried a version,
             // and 0xBD's string is free-form enough that clients put other
             // things in it.
-            ClientLoginPacket::MalformedVersionReport => return Ok(Response::Idle),
-            ClientLoginPacket::Unknown(id) => {
+            LoginStagePacket::MalformedVersionReport => return Ok(Response::Idle),
+            LoginStagePacket::Unknown(id) => {
                 debug!(id = format!("0x{id:02X}"), "ignoring packet during login");
                 return Ok(Response::Idle);
             }
@@ -271,15 +271,15 @@ impl<A: Accounts> LoginServer<A> {
         // state the transition table does not cover both land in the same
         // catch-all, since both mean "not a defined transition".
         let (response, next_state) = match (&session.state, packet) {
-            (LoginSessionState::Fresh, ClientLoginPacket::AccountLogin(login)) => {
+            (LoginSessionState::Fresh, LoginStagePacket::AccountLogin(login)) => {
                 self.on_account_login(session, login)
             }
-            (LoginSessionState::Fresh, ClientLoginPacket::GameServerLogin(login)) => {
+            (LoginSessionState::Fresh, LoginStagePacket::GameServerLogin(login)) => {
                 self.on_game_login(session, login, now)
             }
             (
                 LoginSessionState::ShardListSent { account },
-                ClientLoginPacket::SelectShard(select),
+                LoginStagePacket::SelectShard(select),
             ) => {
                 let account = account.clone();
                 self.on_select_shard(session, account, select, now)?
@@ -551,8 +551,8 @@ mod tests {
     /// version is fixed rather than threaded from a `LoginSession` because
     /// none of this module's `decode_body` impls read it — only encoding
     /// varies by version here.
-    fn pkt(bytes: &[u8]) -> ClientLoginPacket {
-        ClientLoginPacket::decode(bytes, ClientVersion::OLDEST)
+    fn pkt(bytes: &[u8]) -> LoginStagePacket {
+        LoginStagePacket::decode(bytes, ClientVersion::OLDEST)
             .expect("test fixture is a valid encoding")
     }
 

@@ -1,7 +1,7 @@
 //! One client connection, as a state machine that has never heard of a socket.
 
 use openshard_protocol::client_packet::{ClientDecodeError, ClientPacket};
-use openshard_protocol::login::{ClientLoginDecodeError, ClientLoginPacket};
+use openshard_protocol::login::{ClientLoginDecodeError, LoginStagePacket};
 use openshard_protocol::packet::{frame_client_packet, Frame, FrameError, MAX_PACKET_SIZE};
 use openshard_protocol::seed::{Seed, SeedReader};
 use openshard_protocol::version::ClientVersion;
@@ -31,7 +31,7 @@ pub enum Packet {
     /// Decoded by [`ClientLoginPacket::decode`]. Routed to `login.handle`,
     /// except for `CreateCharacter`/`DeleteCharacter`, which the server
     /// intercepts first.
-    Login(ClientLoginPacket),
+    Login(LoginStagePacket),
     /// Decoded by [`ClientPacket::decode`]. Routed to `dispatch`.
     World(ClientPacket),
 }
@@ -63,8 +63,8 @@ impl RawPacket {
     /// not a login packet at all, so [`ClientPacket::decode`] gets the only
     /// other chance to claim it.
     pub fn parse_packet(&self, version: ClientVersion) -> Result<Packet, PacketError> {
-        match ClientLoginPacket::decode(&self.0, version) {
-            Ok(ClientLoginPacket::Unknown(_)) => ClientPacket::decode(&self.0, version)
+        match LoginStagePacket::decode(&self.0, version) {
+            Ok(LoginStagePacket::Unknown(_)) => ClientPacket::decode(&self.0, version)
                 .map(Packet::World)
                 .map_err(PacketError::World),
             Ok(login_packet) => Ok(Packet::Login(login_packet)),
