@@ -21,6 +21,45 @@ use std::collections::HashMap;
 /// sale is made of, and what the status bar counts.
 pub const GOLD_GRAPHIC: u16 = 0x0EED;
 
+/// A body's own weight in stones, before anything it carries — Sphere's and
+/// ServUO's `BodyWeight`. Sent on the status bar; kept well under the carry cap
+/// so the client never thinks it is overloaded and refuses to run.
+pub const BODY_WEIGHT: u16 = 14;
+
+/// The weight a character can carry before it is overloaded, from its strength.
+///
+/// UO's `40 + floor(3.5 * str)`. Here rather than beside its readers because
+/// there are now three of them — the status bar's ceiling, the step that charges
+/// stamina for being over it, and the spells that refuse to work when you are —
+/// and a shard where a mule can walk but cannot recall is what a second copy of
+/// this line buys.
+#[must_use]
+pub const fn max_weight(strength: u16) -> u16 {
+    40 + strength * 7 / 2
+}
+
+/// Whether a mobile is carrying more than its strength allows.
+///
+/// The plain question, with no fatigue allowance in it: ServUO's Recall and its
+/// kin compare `TotalWeight` against `MaxWeight` and nothing else. The step's
+/// own check adds `combat::OVERLOAD_ALLOWANCE` on top, because being a little
+/// over should cost stamina rather than stop you.
+///
+/// Walks the pack, so it belongs at a cast and not in a step: a cast is a
+/// deliberate act a few times a minute, and a step is ten a second.
+#[must_use]
+pub fn is_overloaded(state: &WorldState, mobile: EntityId) -> bool {
+    let strength = state
+        .registry
+        .get::<openshard_state::Stats>(mobile)
+        .map_or(DEFAULT_STRENGTH, |stats| stats.strength);
+    total_weight(state, mobile, BODY_WEIGHT) > max_weight(strength)
+}
+
+/// The strength a mobile with no stat sheet is weighed against — the same
+/// convention the status bar uses for a missing stat.
+const DEFAULT_STRENGTH: u16 = 100;
+
 /// What a single coin weighs, in hundredths of a stone.
 ///
 /// Gold is the one item whose tiledata weight is a lie worth correcting: at the

@@ -168,7 +168,7 @@ impl ServerEventTx {
 }
 
 /// Receiver half of [`ServerEventTx`], handed to the world server by
-/// [`Server::bind`].
+/// [`ClientGatewayServer::bind`].
 #[derive(Debug)]
 pub struct ServerEventRx(mpsc::UnboundedReceiver<ServerEvent>);
 
@@ -188,7 +188,7 @@ fn server_event_channel() -> (ServerEventTx, ServerEventRx) {
 /// Wraps the `Arc<AtomicU64>` counter so the only way to touch it is
 /// [`SessionIdFabric::next`] — nothing can bump the counter without minting an
 /// id, or read the counter without going through a `ConnectionId`. Cloning
-/// shares the same underlying counter, which is what lets [`Server::run`]
+/// shares the same underlying counter, which is what lets [`ClientGatewayServer::run`]
 /// hand one to every connection task.
 #[derive(Clone, Debug)]
 struct SessionIdFabric(Arc<AtomicU64>);
@@ -212,13 +212,13 @@ impl SessionIdFabric {
 /// network task on an arbitrary thread. The channel is the boundary between
 /// "async everywhere" and "the deterministic simulation".
 #[derive(Debug)]
-pub struct Server {
+pub struct ClientGatewayServer {
     listener: TcpListener,
     events: ServerEventTx,
     session_ids: SessionIdFabric,
 }
 
-impl Server {
+impl ClientGatewayServer {
     /// Bind to `address`.
     ///
     /// Returns the server and the channel its events arrive on.
@@ -252,7 +252,7 @@ impl Server {
             tokio::spawn(async move {
                 // A panic in here takes this connection down and nothing else.
                 // That is why the release profile does not set panic = "abort".
-                if let Err(error) = serve(id, address, stream, events).await {
+                if let Err(error) = client_session_serve(id, address, stream, events).await {
                     debug!(%id, %error, "connection ended");
                 }
             });
@@ -261,7 +261,7 @@ impl Server {
 }
 
 /// Drive one connection until it closes.
-async fn serve(
+async fn client_session_serve(
     id: ConnectionId,
     address: SocketAddr,
     stream: TcpStream,
@@ -271,32 +271,33 @@ async fn serve(
     // small write that the client is waiting on. Latency beats packet count.
     stream.set_nodelay(true)?;
 
-    let (mut reader, mut writer) = stream.into_split();
-    let (outbox, mut outgoing) = outbox_channel();
-    let (control, control_rx) = version_channel();
+    let (mut client_tcp_reader, mut client_tcp_writer) = stream.into_split();
+    let (to_client_tx, mut to_client_rx) = outbox_channel();
+    let (control_tx, control_rx) = version_channel();
 
     if events
         .send(ServerEvent::Connected {
             id,
             address,
-            outbox,
-            control,
+            outbox: to_client_tx,
+            control: control_tx,
         })
         .is_err()
     {
         return Ok(()); // The world server is gone; nothing to serve.
     }
 
-    // Writes get their own task so that a slow client cannot block reading.
+    // server -> client loop
     let writes = tokio::spawn(async move {
-        while let Some(bytes) = outgoing.recv().await {
-            if writer.write_all(&bytes).await.is_err() {
+        while let Some(bytes) = to_client_rx.recv().await {
+            if client_tcp_writer.write_all(&bytes).await.is_err() {
                 break;
             }
         }
     });
 
-    let reason = read_loop(id, &mut reader, &events, control_rx).await;
+    // client -> server loop
+    let reason = read_loop(id, &mut client_tcp_reader, &events, control_rx).await;
 
     writes.abort();
     let _ = events.send(ServerEvent::Disconnected { id, reason });
@@ -385,7 +386,9 @@ mod tests {
 
     /// Bind to an ephemeral port and start accepting.
     async fn start() -> (SocketAddr, ServerEventRx) {
-        let (server, events) = Server::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let (server, events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
         let address = server.local_address().unwrap();
         tokio::spawn(server.run());
         (address, events)

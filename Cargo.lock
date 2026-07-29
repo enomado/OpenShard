@@ -1271,6 +1271,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshard-crafting"
+version = "0.0.1"
+dependencies = [
+ "openshard-entities",
+ "openshard-gateway",
+ "openshard-items",
+ "openshard-protocol",
+ "openshard-skills",
+ "openshard-state",
+]
+
+[[package]]
 name = "openshard-entities"
 version = "0.0.1"
 dependencies = [
@@ -1432,6 +1444,7 @@ dependencies = [
  "openshard-entities",
  "openshard-gateway",
  "openshard-items",
+ "openshard-movement",
  "openshard-protocol",
  "openshard-state",
 ]
@@ -1454,6 +1467,7 @@ dependencies = [
  "openshard-ai",
  "openshard-chat",
  "openshard-combat",
+ "openshard-crafting",
  "openshard-entities",
  "openshard-events",
  "openshard-gateway",

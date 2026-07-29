@@ -584,9 +584,32 @@ pub enum Command {
         serial: u32,
         /// Where, for a ground drop.
         position: Point,
-        /// Where it is going: a container serial, a mobile to equip on, or
-        /// [`DROP_TO_GROUND`](openshard_protocol::DROP_TO_GROUND). Only ground
-        /// drops are handled yet; anything else is bounced.
+        /// Where it is going: a container serial, another player (which opens a
+        /// secure trade), or
+        /// [`DROP_TO_GROUND`](openshard_protocol::DROP_TO_GROUND). A target that
+        /// is none of those bounces the item home.
+        container: u32,
+    },
+    /// A client acted on its secure trade window (`0x6F`).
+    ///
+    /// Cancelling and ticking the checkbox are the two the engine acts on; the
+    /// virtual gold/platinum action is decoded and ignored, because gold is an
+    /// item here and there is no account balance to move.
+    TradeAction {
+        /// Which connection.
+        connection: ConnectionId,
+        /// The escrow container the window is drawn on, as the client names it.
+        /// Checked against the trades this side remembers opening.
+        container: u32,
+        /// Whether the checkbox is now ticked. Cancelling is
+        /// [`TradeCancel`](Self::TradeCancel).
+        accepted: bool,
+    },
+    /// A client closed its secure trade window (`0x6F` action 1).
+    TradeCancel {
+        /// Which connection.
+        connection: ConnectionId,
+        /// The escrow container the window is drawn on.
         container: u32,
     },
     /// A connection went away.

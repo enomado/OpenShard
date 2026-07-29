@@ -3,7 +3,7 @@
 //! # Sans-io
 //!
 //! The connection logic is a pure state machine — [`Connection`] — that has
-//! never heard of a socket. Bytes go in, events come out. [`Server`] is a thin
+//! never heard of a socket. Bytes go in, events come out. [`ClientGatewayServer`] is a thin
 //! Tokio adapter over it.
 //!
 //! The split is deliberate. Everything that is actually hard about a UO gateway
@@ -12,7 +12,7 @@
 //! A real socket will not reproduce any of those on demand, so testing through
 //! one means testing the easy path and hoping. As a pure state machine each is
 //! a deterministic unit test with no ports, no sleeps and no flakes — and what
-//! is left in [`Server`] is small enough to read in one sitting.
+//! is left in [`ClientGatewayServer`] is small enough to read in one sitting.
 //!
 //! ```
 //! use openshard_gateway::{Connection, Event};
@@ -27,7 +27,7 @@
 //!
 //! # The boundary
 //!
-//! [`Server`] hands events to a channel, not a callback. A callback would run
+//! [`ClientGatewayServer`] hands events to a channel, not a callback. A callback would run
 //! world code inside a network task, on whatever thread Tokio picked, at
 //! whatever moment bytes happened to arrive — which is the end of a
 //! deterministic simulation. The channel is where "async everywhere" stops and
@@ -44,6 +44,6 @@ mod server;
 
 pub use connection::{Connection, ConnectionError, Event};
 pub use server::{
-    outbox_channel, version_channel, ConnectionId, OutboxRx, OutboxTx, Server, ServerEvent,
-    ServerEventRx, VersionRx, VersionTx,
+    outbox_channel, version_channel, ClientGatewayServer, ConnectionId, OutboxRx, OutboxTx,
+    ServerEvent, ServerEventRx, VersionRx, VersionTx,
 };

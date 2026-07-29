@@ -16,6 +16,7 @@ mod appraise;
 mod bandage;
 mod bard;
 mod forensics;
+mod harvest;
 mod lore;
 mod mind;
 mod poison;
@@ -28,6 +29,10 @@ pub use bandage::{
     BANDAGE_GRAPHIC, LOCKPICK_GRAPHIC,
 };
 pub use bard::{expire_songs, play_instrument, InstrumentSpent};
+pub use harvest::{
+    advance_harvests, begin_harvest, resolve_harvest_target, use_tool, HarvestTarget, Harvested,
+    ToolWorn,
+};
 pub use poison::PoisonedSelf;
 pub use social::Begged;
 pub use stealth::{snooping, Stolen};

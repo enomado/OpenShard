@@ -1,0 +1,122 @@
+//! One recipe, its ingredients, and the material a shard of them can be made of.
+//!
+//! ServUO's `CraftItem` (the data half — the execution half is [`crate::craft`]),
+//! `CraftRes` and `CraftSubRes`.
+//!
+//! **The material axis is a hue swap here, and in ServUO it is a type swap.** That
+//! is not a shortcut: an ingot is an ingot is `0x1BF2`, and valorite differs from
+//! iron only by `0x08AB`, which is exactly what [`openshard_state::harvest`]
+//! already relies on to tell one ore from another. ServUO needs nine classes
+//! because a C# item *is* its class; this engine's items are a graphic and a hue,
+//! so the nine rows of `AddSubRes` collapse to nine hues against one graphic and
+//! the substitution in [`crate::consume`] is a single field. Boards and leather
+//! grades work the same way.
+
+use openshard_state::Skill;
+
+use crate::system::{Needs, Text};
+
+/// One ingredient line — ServUO's `CraftRes`.
+#[derive(Clone, Copy, Debug)]
+pub struct CraftRes {
+    /// The item art consumed.
+    pub graphic: u16,
+    /// And its hue. Zero is the plain grade (iron, regular wood); a line marked
+    /// [`from_axis`](Self::from_axis) has this overridden by whatever material the
+    /// player picked in the gump.
+    pub hue: u16,
+    /// How many, per craft.
+    pub amount: u16,
+    /// What it is called, for the detail page.
+    pub name: Text,
+    /// What is said when there are not enough — "You do not have sufficient metal
+    /// to make that."
+    pub message: Text,
+    /// Whether this is the line the system's material axis substitutes into. Only
+    /// one line of a recipe ever is.
+    pub from_axis: bool,
+}
+
+/// One skill a recipe demands, and the band it is rolled over — ServUO's
+/// `CraftSkill`. Tenths, as [`openshard_state::skill`] keeps them.
+#[derive(Clone, Copy, Debug)]
+pub struct CraftSkillReq {
+    /// Which skill.
+    pub skill: Skill,
+    /// The bottom of the band: below this, minus the recipe's offset, the craft is
+    /// refused outright rather than rolled.
+    pub min: i32,
+    /// The top, at which it always succeeds.
+    pub max: i32,
+}
+
+/// One thing a system can make.
+#[derive(Clone, Copy, Debug)]
+pub struct Recipe {
+    /// The item art it produces.
+    pub graphic: u16,
+    /// Its name, for the gump.
+    pub name: Text,
+    /// Which of the system's [`groups`](crate::system::CraftSystemDef::groups) it
+    /// files under.
+    pub group: u16,
+    /// The skills wanted. The first is the system's main skill and is the one the
+    /// success chance is interpolated over; the rest are gates that also train.
+    pub skills: &'static [CraftSkillReq],
+    /// What it eats.
+    pub resources: &'static [CraftRes],
+    /// How many come out. More than one only for the things that stack — arrows,
+    /// bolts, boards.
+    pub amount: u16,
+    /// A fixed hue for the result — ServUO's `SetItemHue`. Zero means the result
+    /// takes the hue of the material it was made from, which is what makes a
+    /// valorite blade valorite-coloured.
+    pub hue: u16,
+    /// Whether the craft consumes every material in the pack and makes as many as
+    /// it can — ServUO's `SetUseAllRes`, which is how a hundred logs become a
+    /// hundred boards in one click.
+    pub use_all_res: bool,
+    /// Tenths knocked off every skill's `min` for the "can you attempt this at
+    /// all" gate — ServUO's `SetMinSkillOffset`.
+    pub min_skill_offset: i32,
+    /// Whether an exceptional one carries its maker's name — ServUO's
+    /// `CraftItem.IsMarkable`, which is a list of base classes (armour, weapons,
+    /// clothing, jewellery, tools, instruments) and so is data here rather than a
+    /// rule. A potion has no room for a signature.
+    pub markable: bool,
+    /// Never exceptional, whatever the roll — ServUO's `ForceNonExceptional`.
+    pub never_exceptional: bool,
+    /// Always exceptional — `ForceExceptional`.
+    pub always_exceptional: bool,
+    /// What has to be standing nearby, on top of the system's own.
+    pub needs: Needs,
+}
+
+/// One material a system's axis offers — ServUO's `CraftSubRes`.
+#[derive(Clone, Copy, Debug)]
+pub struct SubRes {
+    /// The hue that *is* this material.
+    pub hue: u16,
+    /// Its name, for the material row of the gump.
+    pub name: Text,
+    /// The main skill needed to work it, in tenths, checked against the crafter's
+    /// **base** — not the stat-lent value. Valorite wants 99.0 Blacksmithy and no
+    /// amount of Strength substitutes for it.
+    pub req_skill: i32,
+    /// What is said when the crafter is not good enough — "You have no idea how to
+    /// work this metal."
+    pub message: Text,
+}
+
+/// A system's material axis — ServUO's `CraftSubResCol` plus its `SetSubRes`.
+#[derive(Clone, Copy, Debug)]
+pub struct SubResAxis {
+    /// The resource graphic the axis substitutes a hue into. The recipe line
+    /// carrying [`CraftRes::from_axis`] must name this same graphic.
+    pub graphic: u16,
+    /// The heading over the material row — "Metal", "Wood".
+    pub name: Text,
+    /// The grades, in the order the gump lists them; index 0 is the plain one and
+    /// is what a fresh crafter is defaulted to.
+    pub entries: &'static [SubRes],
+}

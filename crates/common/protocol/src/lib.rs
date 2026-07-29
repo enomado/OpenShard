@@ -81,6 +81,7 @@ pub mod skill;
 pub mod speech;
 pub mod spellbook;
 pub mod target;
+pub mod trade;
 pub mod vendor;
 pub mod version;
 pub mod wire;

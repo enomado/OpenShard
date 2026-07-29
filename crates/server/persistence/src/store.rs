@@ -456,6 +456,10 @@ mod tests {
             corpse: None,
             poison: None,
             trap: None,
+            uses: None,
+            crafted: None,
+            rune: None,
+            runebook: None,
             location: crate::record::ItemLocation::Contained {
                 container,
                 x: 0,
@@ -480,6 +484,10 @@ mod tests {
             corpse: None,
             poison: None,
             trap: None,
+            uses: None,
+            crafted: None,
+            rune: None,
+            runebook: None,
             location: crate::record::ItemLocation::Ground {
                 facet: 0,
                 x: 1400,

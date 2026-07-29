@@ -115,6 +115,22 @@ pub struct Equipped {
     pub layer: u8,
 }
 
+/// Marks a container as one half of a secure trade window.
+///
+/// A trade escrow is an ordinary [`Container`] worn on a layer no player can
+/// reach, which is what makes reach, dropping in and lifting out work with no
+/// new machinery. This marker is the one fact three places have to know, rather
+/// than a magic layer number written down three times:
+///
+/// - it is **not drawn** — `WorldState::equipment_of` skips it, or every onlooker
+///   sees a mystery box hanging off both traders' paperdolls;
+/// - it is **not saved** — the inventory sweep skips it and everything in it,
+///   for the reason a spell field is skipped: a trade is transient, and a
+///   restored one would be an escrow nobody can ever close;
+/// - it **cannot be lifted**, which is ServUO's `CheckLift` refusing outright.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TradeWindow;
+
 /// Marks an item as one that stacks: two of them of the same graphic and hue
 /// are one pile, not two objects.
 ///
@@ -465,6 +481,101 @@ pub struct Instrument {
     /// Tunes left. At zero the instrument plays its last and is gone.
     pub uses_left: u16,
 }
+
+/// A harvesting tool, and how many swings are left in it — ServUO's
+/// `BaseHarvestTool.UsesRemaining`.
+///
+/// The sibling of [`Instrument`], and the same interface in ServUO
+/// (`IUsesRemaining`): which *system* a tool drives is a property of its class and
+/// lives in the core table ([`crate::harvest::tool_data`]), how worn this
+/// particular pickaxe is lives here. At zero the tool breaks and is gone.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Tool {
+    /// Swings left.
+    pub uses_left: u16,
+}
+
+/// A harvest in progress — ServUO's `HarvestTimer`.
+///
+/// The one gathering fact that is genuinely stateful, and the reason it is a
+/// component rather than a local: a swing takes several beats, and between them
+/// the harvester can walk away, the vein can be emptied by somebody else, or the
+/// shard can tick a hundred times. Every field but the target is answered by the
+/// tick counter, like [`Decays`] and a swing timer, so a harvest replays.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Harvesting {
+    /// The tool being swung. Re-checked each beat: a pickaxe dropped mid-swing
+    /// mines nothing.
+    pub tool: EntityId,
+    /// The tile being worked.
+    pub at: Point,
+    /// Which system this is, so the beat needs no second lookup.
+    pub kind: crate::harvest::HarvestKind,
+    /// The tile id, as [`crate::harvest::tile_key`] matched it — kept so the beat
+    /// can confirm the ground has not changed under the swing.
+    pub tile: u16,
+    /// Beats still to come. The last one delivers.
+    pub beats_left: u16,
+    /// The tick the next beat falls on.
+    pub next_beat: u64,
+    /// The tick this beat's *sound* falls on, or [`u64::MAX`] once it has played.
+    ///
+    /// A second clock rather than one, because ServUO gives the swing and the
+    /// noise it makes different delays (`EffectDelay` against `EffectSoundDelay`):
+    /// a pick is raised, and the chink comes most of a second later. Collapsing
+    /// them makes a miner sound like a metronome.
+    pub next_sound: u64,
+}
+
+/// A craft in progress — ServUO's `CraftItem.InternalTimer`.
+///
+/// The sibling of [`Harvesting`], and stateful for the same reason: a craft takes
+/// a beat or several, and in between the crafter can walk away from the forge,
+/// hand the ingots to a friend, or wear the tongs out on something else. Every
+/// gate is re-checked on the last beat rather than trusted from the first, which
+/// is why the recipe is held as a pair of indices and not as a resolved plan.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Crafting {
+    /// Which craft system, by its index in the core table.
+    pub system: u8,
+    /// Which of that system's recipes, by index.
+    pub recipe: u16,
+    /// The tool in hand. Re-checked each beat: tongs dropped mid-craft make
+    /// nothing.
+    pub tool: EntityId,
+    /// Which material off the system's axis — the ore or wood the player chose in
+    /// the gump.
+    pub sub_res: u8,
+    /// Beats still to come. The last one resolves.
+    pub beats_left: u8,
+    /// The tick the next beat falls on.
+    pub next_beat: u64,
+}
+
+/// How well a crafted item came out — ServUO's `IQuality.Quality`.
+///
+/// Only ever present on an *exceptional* piece: an ordinary item carries no
+/// component at all, which is what keeps the column the size of the handful of
+/// masterpieces on a shard rather than the size of every item in it.
+///
+/// Read where it matters and folded into nothing — the armour rating derives it
+/// at the read site the way a weapon's speed derives from what is on the hand, so
+/// a fine breastplate coming off leaves no bookkeeping behind.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Quality {
+    /// Whether it is exceptional. A field rather than a bare marker because
+    /// ServUO's scale has a low grade too, and a shard that wants it should widen
+    /// this rather than add a second component.
+    pub exceptional: bool,
+}
+
+/// Who made it — ServUO's `ICraftable.Crafter`, the maker's mark.
+///
+/// A **name and not a serial**, for the reason [`Corpse`]'s killer is one: the
+/// smith logs out, retires, or is deleted, and the sword outlives all three. A
+/// serial would leave "crafted by (nobody)" on every good blade on the shard.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CraftedBy(pub String);
 
 /// A mobile a bard has calmed — ServUO's `BaseCreature.BardPacified`.
 ///
@@ -1127,6 +1238,99 @@ pub const SPELL_COUNT: u8 = 64;
 
 /// A Magery spellbook's item graphic.
 pub const SPELLBOOK_GRAPHIC: u16 = 0x0EFA;
+
+/// A recall rune's item graphic — ServUO's `RecallRune`.
+pub const RECALL_RUNE_GRAPHIC: u16 = 0x1F14;
+
+/// A runebook's item graphic — ServUO's `Runebook`, whose constructor defaults
+/// to this id.
+pub const RUNEBOOK_GRAPHIC: u16 = 0x22C5;
+
+/// Where a recall rune points, once the Mark spell has written it.
+///
+/// A rune with no `RuneMark` is a blank one, which is what makes the component's
+/// absence the answer to "is this marked" — there is no `marked: bool` to keep
+/// honest beside a destination that means nothing when it is false.
+///
+/// The facet is part of the destination and not a detail: a rune is an object,
+/// it can be carried anywhere, and a rune marked in Britain and read in Ilshenar
+/// has to still mean Britain.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RuneMark {
+    /// Which facet the destination is on.
+    pub facet: u8,
+    /// The tile the rune was marked on.
+    pub destination: Point,
+}
+
+/// One destination bound into a [`Runebook`].
+///
+/// Carries its own description rather than pointing at the rune it came from,
+/// because the rune is consumed when it is bound — ServUO deletes it — so there
+/// would be nothing left to ask.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct RunebookEntry {
+    /// Which facet the destination is on.
+    pub facet: u8,
+    /// The tile bound.
+    pub destination: Point,
+    /// What to call it in the window — the region's name where there is one.
+    pub description: String,
+}
+
+/// A book of up to [`RUNEBOOK_ENTRIES`] destinations, and the charges that let it
+/// cast to them on its own — ServUO's `Runebook`.
+///
+/// Not `Copy`, unlike nearly every other component here: it owns its entries and
+/// their names. The bus has never required `Copy` — only the enums assumed it —
+/// and a component is under no such rule at all.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Runebook {
+    /// The destinations bound, in the order they were added.
+    pub entries: Vec<RunebookEntry>,
+    /// Charges left, each good for one free Recall from the book itself.
+    pub charges: u8,
+    /// The ceiling recharging fills to — set when the book is made.
+    pub max_charges: u8,
+    /// Which entry the Recall spell takes when aimed at the book rather than at
+    /// a row, if any.
+    pub default_entry: Option<u8>,
+    /// The tick the book may be opened again — ServUO's `NextUse`.
+    ///
+    /// Not saved: it is a couple of seconds long, and a restart re-arming it at
+    /// zero errs in the generous direction.
+    pub next_use: u64,
+}
+
+/// How many destinations one runebook holds — ServUO's `Runebook.MaxEntries`.
+pub const RUNEBOOK_ENTRIES: usize = 16;
+
+/// A moongate's item graphic — ServUO's `Moongate` and `PublicMoongate` alike.
+pub const MOONGATE_GRAPHIC: u16 = 0x0F6C;
+
+/// A gate on the ground, and where stepping into it leads.
+///
+/// Covers both kinds, which differ only in `expires_at`: a Gate Travel spell
+/// lays a pair that close after half a minute, and a city moongate stands
+/// forever. The pair needs no link field — each gate points at the other's tile,
+/// so the link *is* the destination and there are not two halves to keep honest.
+///
+/// A timed gate is transient, like a cast in flight, and is deliberately left
+/// out of the save sweep: restored, it would be a permanent portal whose caster
+/// no longer exists. ServUO deletes its own on deserialise for the same reason.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Moongate {
+    /// Which facet the far end is on.
+    pub facet: u8,
+    /// The tile it leads to.
+    pub destination: Point,
+    /// The tick it closes, or `None` for one that never does.
+    pub expires_at: Option<u64>,
+}
+
+/// How tall a gate stands, for the reach test on a double-click. ServUO's
+/// `Moongate.OnDoubleClick` wants range 1.
+pub const MOONGATE_REACH: u32 = 1;
 
 /// The corpse item graphic. A protocol special case: for item `0x2006` the
 /// client reads the `Amount` field as the dead body id, so a corpse draws as the
@@ -2330,7 +2534,14 @@ pub struct Movement(pub Walker);
 /// moment a new mover forgets to write it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct InRegion {
-    /// The region's id on its facet, or `None` out in the wilds.
+    /// Which facet's list [`region`](Self::region) indexes.
+    ///
+    /// An id alone is not an answer. Each facet numbers its own regions from
+    /// zero, so region 3 in Felucca and region 3 in Ilshenar compare equal —
+    /// and a traveller crossing between them would look to the diff like
+    /// somebody who had not moved: no `RegionChanged`, no music, no guards.
+    pub facet: u8,
+    /// The region's id on that facet, or `None` out in the wilds.
     pub region: Option<u16>,
 }
 

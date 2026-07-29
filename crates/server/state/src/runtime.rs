@@ -27,15 +27,16 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{LocalizedMessage, SpokenMessage, NO_GRAPHIC, SYSTEM_SERIAL};
 use openshard_protocol::wire::SoundId;
-use openshard_protocol::world::{PlayerUpdate, Point};
+use openshard_protocol::world::{encode_server_change, MapChange, PlayerUpdate, Point};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
-    body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
-    Heading, HearsGhosts, Hidden, Hitpoints, Meditating, Movement, Name, Position, Staff,
-    Stealthing,
+    body_opens_doors, Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost,
+    Graphic, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name,
+    Position, Quality, Staff, Stealthing, TradeWindow,
 };
 use crate::dialogue::Dialogue;
+use crate::harvest::Banks;
 use crate::obstruct::{LiveTerrain, Obstructions};
 use crate::quest::QuestDefs;
 use crate::region::{Region, Regions};
@@ -131,6 +132,17 @@ pub struct Gameplay {
     /// Whether an NPC purchase falls back to the bank when the pack is short —
     /// ServUO's `BaseVendor`, which tries the pack, then the bank.
     pub vendor_bank_payment: bool,
+    /// Whether Recall and Gate Travel may cross to another facet.
+    ///
+    /// Off is the classic rule: pre-AoS, ServUO refuses both outright ("You can
+    /// not recall to another facet"), and a rune marked in Ilshenar is a rune
+    /// you have to walk to. On is the behaviour from AoS onward.
+    ///
+    /// A setting of its own rather than a reading of `expansion`, which cannot
+    /// express pre-AoS — its floor *is* AoS — or of `combat_era`, which would be
+    /// a combat knob quietly deciding a travel rule. The machinery underneath
+    /// works either way; this is only whether the spells are allowed to use it.
+    pub cross_facet_travel: bool,
     /// Level-of-detail: when on, a creature with no player within
     /// [`lod_radius`](Self::lod_radius) dozes at a stretched beat instead of
     /// paying for the full AI decision each beat. Off simulates every creature at
@@ -168,6 +180,15 @@ pub struct Gameplay {
     /// [`npc_work_hour`](Self::npc_work_hour) — `config` rejects a working day that
     /// wraps midnight, so nothing downstream has to reason about one.
     pub npc_home_hour: u8,
+    /// Which expansion the shard runs, as an index into `config::EXPANSIONS`:
+    /// `0` AoS, `1` SE, `2` ML.
+    ///
+    /// An ordinal rather than the config's string, because this crate is below
+    /// `config` and a rule wants a comparison, not a name. It is the same setting
+    /// the `0xB9` mask is built from, so the paperdoll a client draws and the
+    /// content the shard runs cannot disagree — see
+    /// [`is_ml`](Self::is_ml), which the seven-wood lumber table reads.
+    pub expansion: u8,
 }
 
 /// How AoS object tooltips (the "cliloc" hover names) are served — Sphere's
@@ -225,6 +246,22 @@ impl CastStyle {
 }
 
 impl Gameplay {
+    /// [`expansion`](Self::expansion) for Age of Shadows.
+    pub const AOS: u8 = 0;
+    /// For Samurai Empire.
+    pub const SE: u8 = 1;
+    /// For Mondain's Legacy — the default, and where the quest system comes from.
+    pub const ML: u8 = 2;
+
+    /// Whether the shard runs Mondain's Legacy or later.
+    ///
+    /// ServUO's `Core.ML`, which several content tables key off: the seven woods a
+    /// lumberjack can find are ML's, and before it there is one kind of log.
+    #[must_use]
+    pub const fn is_ml(&self) -> bool {
+        self.expansion >= Self::ML
+    }
+
     /// Seconds, as a count of ticks.
     ///
     /// The operator writes seconds; every system counts ticks, because a tick
@@ -285,6 +322,8 @@ impl Default for Gameplay {
             bank_gold_in_status: false,
             // But a vendor does fall back to it, as ServUO's does.
             vendor_bank_payment: true,
+            // The classic rule: a rune marked on another facet is a walk.
+            cross_facet_travel: false,
             lod: false, // opt-in
             lod_radius: 32,
             lod_idle_factor: 8,
@@ -296,6 +335,7 @@ impl Default for Gameplay {
             npc_schedule: false,
             npc_work_hour: 7,
             npc_home_hour: 21,
+            expansion: Gameplay::ML,
         }
     }
 }
@@ -323,12 +363,30 @@ pub struct Outbound {
 pub struct FacetState {
     /// The floor, if this facet has a map loaded.
     pub terrain: Option<Box<dyn Terrain + Send + Sync>>,
+    /// How wide this facet's map is, in tiles.
+    ///
+    /// Kept here rather than asked of the terrain because the client has to be
+    /// *told* it — twice, at login (`0x1B`) and at every facet change (`0x76`) —
+    /// and the facets are not all the same shape: Felucca is 7168×4096 and
+    /// Tokuno is 1448×1448. A shard that sends Britannia's size for every facet
+    /// hands a character in Ilshenar a map three times too large, and the client
+    /// draws the edge of the world wherever it likes.
+    pub width: u32,
+    /// How tall this facet's map is, in tiles. See [`FacetState::width`].
+    pub height: u32,
     /// Who is near what, on this facet.
     pub sectors: Sectors,
     /// What the live world has put in the way: closed doors, placed decoration.
     pub obstructions: Obstructions,
     /// The named areas of this facet — towns, dungeons, guarded zones.
     pub regions: Regions,
+    /// What each block of this facet's ground still has left to give: the
+    /// mining, lumberjacking and fishing stock, per [`crate::harvest`] bank.
+    ///
+    /// Beside the sector grid and the obstruction index because it is the same
+    /// kind of thing — a fact about *this ground*, keyed by coordinates, that no
+    /// entity owns. Not persisted; see [`Banks`].
+    pub banks: Banks,
 }
 
 impl FacetState {
@@ -385,6 +443,63 @@ pub enum Origin {
     Container(Contained),
     /// It was worn by a mobile.
     Worn(Equipped),
+}
+
+/// One party to a secure trade: who they are and what they have agreed to.
+#[derive(Clone, Debug)]
+pub struct TradeSide {
+    /// The trading player.
+    pub player: EntityId,
+    /// Their connection, which is what a trade packet is addressed to.
+    pub connection: ConnectionId,
+    /// Their escrow container.
+    pub container: EntityId,
+    /// Its serial — the id the client names the window by, and the only handle a
+    /// `0x6F` from the client carries.
+    pub container_serial: Serial,
+    /// Whether their checkbox is ticked.
+    pub accepted: bool,
+}
+
+/// Two players exchanging goods, and the two escrow containers between them.
+///
+/// Nothing moves until both sides have ticked; every other ending puts each
+/// side's offering back in its own pack. Live only — a trade is transient, like
+/// a cast in flight or a spell field, and is never saved.
+#[derive(Clone, Debug)]
+pub struct Trade {
+    /// The player who started it, by dropping something on the other.
+    pub from: TradeSide,
+    /// The player it was offered to.
+    pub to: TradeSide,
+    /// What was in the two escrows when a checkbox was last ticked.
+    ///
+    /// ServUO clears both boxes from the container's own `OnItemAdded`/
+    /// `OnItemRemoved` — a call beside every mutation, the pattern this engine
+    /// avoids. The contents are diffed against this instead, and only while
+    /// somebody has actually ticked: an unticked box has nothing to clear, which
+    /// is what keeps the check off the common path.
+    pub witnessed: Vec<Serial>,
+}
+
+impl Trade {
+    /// The side `player` is on, and the other one.
+    #[must_use]
+    pub fn sides_for(&self, player: EntityId) -> Option<(&TradeSide, &TradeSide)> {
+        if self.from.player == player {
+            Some((&self.from, &self.to))
+        } else if self.to.player == player {
+            Some((&self.to, &self.from))
+        } else {
+            None
+        }
+    }
+
+    /// Whether `player` is one of the two parties.
+    #[must_use]
+    pub fn involves(&self, player: EntityId) -> bool {
+        self.from.player == player || self.to.player == player
+    }
 }
 
 /// The world's runtime state — the data every gameplay system operates on.
@@ -455,6 +570,12 @@ pub struct WorldState {
     /// an item consumed as a reagent, one decaying inside — can be pushed to the
     /// clients looking at it. A connection's opens are cleared on logout.
     pub open_containers: HashMap<Serial, HashSet<ConnectionId>>,
+    /// Every secure trade in progress.
+    ///
+    /// A `Vec` and not a map because there is almost never one: it is scanned
+    /// whole once a tick to find a trade whose parties have walked apart, which
+    /// is cheaper than the region diff it copies, and a player is in at most one.
+    pub trades: Vec<Trade>,
     /// Mobiles that have a targeting cursor up, and what the click is for. A `.tele`
     /// raises one; the `0x6C` answer looks here to know what to do with the spot.
     pub pending_targets: HashMap<EntityId, TargetPurpose>,
@@ -472,6 +593,22 @@ pub struct WorldState {
     /// exists only while someone is looking at it, and a reply that arrives for a
     /// window this side never opened is a reply to nothing. Cleared on logout.
     pub open_quest_gumps: HashMap<EntityId, QuestGumpContext>,
+    /// Which craft window each player has open, on which category and material.
+    ///
+    /// Session state beside [`open_quest_gumps`](Self::open_quest_gumps), and for
+    /// the same reason — but it carries more weight than the quest log's does:
+    /// the selected category, the chosen metal and the tool in hand all live
+    /// here and never in the packet, so a reply cannot name a material the
+    /// player did not pick. Cleared on logout.
+    pub open_craft_gumps: HashMap<EntityId, CraftGumpContext>,
+    /// Which runebook each player has open. The `open_craft_gumps` shape.
+    pub open_runebook_gumps: HashMap<EntityId, EntityId>,
+    /// Which gate each player has a destination list open for.
+    ///
+    /// The `open_craft_gumps` shape, and for the same reason: the reply carries a
+    /// button and a switch, never *which* gate asked, so a `0xB1` for a window
+    /// this side never drew must do nothing.
+    pub open_gate_gumps: HashMap<EntityId, EntityId>,
     /// The tunable rules — swing era, speech ranges, timers — the systems read.
     pub gameplay: Gameplay,
     /// Set by a staff `.save` to ask the tick for an immediate snapshot. The world
@@ -524,6 +661,40 @@ pub struct QuestGumpContext {
     pub giver: Option<Serial>,
 }
 
+/// Which part of the craft window a player is looking at.
+///
+/// ServUO keeps this as a `CraftPage` plus a separate `CraftGumpItem` gump; the
+/// two are one window here with one id, because they are the same reply channel
+/// and a second id is a second thing to route.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CraftGumpPage {
+    /// The recipe list of the selected category.
+    Items,
+    /// The material list, in place of the recipe list.
+    Resources,
+    /// One recipe's detail page, by its index in the system's table.
+    Details(u16),
+}
+
+/// What a player's open craft window is showing, and what it will make.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CraftGumpContext {
+    /// Which trade, by its index in the core table.
+    pub system: u8,
+    /// The tool the window was opened from. Re-checked on every attempt: a tool
+    /// dropped with the window still up makes nothing.
+    pub tool: EntityId,
+    /// The selected category.
+    pub group: u16,
+    /// The selected material, indexed into the system's axis.
+    pub sub_res: u8,
+    /// Which page.
+    pub page: CraftGumpPage,
+    /// The cliloc in the window's notice box — what the last attempt had to say.
+    /// Zero for none.
+    pub notice: u32,
+}
+
 /// What a raised targeting cursor is waiting to do with the click.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TargetPurpose {
@@ -563,6 +734,16 @@ pub enum TargetPurpose {
         kind: crate::components::TrapKind,
         /// How hard it hits, and how hard it is to take off.
         power: u16,
+    },
+    /// A harvesting tool waiting for the ground it will be swung at.
+    ///
+    /// The one purpose that raises a *location* cursor and needs the whole answer:
+    /// a mountain face is not an entity, so the reply's point and tile graphic are
+    /// the target, and the serial is nothing. See `skills`' harvest handler.
+    Harvest {
+        /// The tool, by entity. Re-checked when the click lands: a pickaxe dropped
+        /// while the cursor was up mines nothing.
+        tool: EntityId,
     },
     /// A key waiting to be turned on something — ServUO's `Key.OnDoubleClick`, which
     /// raises a cursor rather than guessing which of several nearby doors was meant.
@@ -909,10 +1090,19 @@ impl WorldState {
     /// before a greeting or a beg. A no-op if either has no position, or if the
     /// mobile is already facing that way — the broadcast is not free.
     pub fn face_toward(&mut self, mobile: EntityId, other: EntityId) {
-        let (Some(&Position(from)), Some(&Position(to))) = (
-            self.registry.get::<Position>(mobile),
-            self.registry.get::<Position>(other),
-        ) else {
+        let Some(&Position(to)) = self.registry.get::<Position>(other) else {
+            return;
+        };
+        self.face_point(mobile, to);
+    }
+
+    /// The same, at a spot on the ground rather than at somebody.
+    ///
+    /// A harvester turns to the rock face it is about to swing at, and there is
+    /// nothing there to be an entity — ServUO's `DoHarvestingEffect` opens with
+    /// `from.Direction = from.GetDirectionTo(loc)`.
+    pub fn face_point(&mut self, mobile: EntityId, to: Point) {
+        let Some(&Position(from)) = self.registry.get::<Position>(mobile) else {
             return;
         };
         let Some(direction) = openshard_movement::direction_toward(from, to) else {
@@ -954,7 +1144,7 @@ impl WorldState {
         let new_packet = ServerPacket::NewAnimation(NewAnimation {
             serial,
             animation_type: action.animation_type(),
-            action: 0,
+            action: action.sub_action(),
             delay: 0,
         });
         let (old_action, frames) = action.classic_action(humanoid);
@@ -992,6 +1182,12 @@ pub enum Action {
     Die,
     /// A spellcasting gesture.
     Cast,
+    /// Swinging a pick at a rock face.
+    Mine,
+    /// Swinging an axe at a tree.
+    Chop,
+    /// Casting a line.
+    Fish,
     /// A bow — what a beggar does before asking, and the one action here that is a
     /// courtesy rather than a blow.
     Bow,
@@ -1007,6 +1203,25 @@ impl Action {
             Self::Die => 3,    // Die
             Self::Cast => 11,  // Spell
             Self::Bow => 9,    // Bow
+            // ServUO's `DoHarvestingEffect` animates a harvest as an *attack* and
+            // says which one in the sub-action — see [`sub_action`](Self::sub_action).
+            Self::Mine | Self::Chop | Self::Fish => 0, // Attack
+        }
+    }
+
+    /// The `0xE2` sub-action, which narrows the category above.
+    ///
+    /// Zero — "whatever this body does for that category" — for everything the
+    /// client can pick itself. Harvesting is the exception: ServUO passes
+    /// `AnimationType.Attack` with the number of the swing it wants
+    /// (`DoHarvestingEffect`, the `Core.SA` branch), because mining, chopping and
+    /// casting a line are three different motions and none of them is "attack".
+    const fn sub_action(self) -> u16 {
+        match self {
+            Self::Mine => 3,
+            Self::Fish => 6,
+            Self::Chop => 7,
+            _ => 0,
         }
     }
 
@@ -1027,6 +1242,13 @@ impl Action {
             // at you, so the classic path animates nothing body-specific for it.
             (Self::Bow, true) => (32, 5), // human bow
             (Self::Bow, false) => (4, 4), // nothing better on a monster
+            // The pre-SA harvest actions, ServUO's `EffectActions`. Only a person
+            // swings a pick or casts a line; the creature arm is unreachable in
+            // practice, since a tool is double-clicked by a client.
+            (Self::Mine, true) => (11, 5), // human bend down / mine
+            (Self::Chop, true) => (13, 6), // human two-handed swing
+            (Self::Fish, true) => (12, 5), // human cast a line
+            (Self::Mine | Self::Chop | Self::Fish, false) => (4, 4),
         }
     }
 }
@@ -1045,15 +1267,92 @@ impl WorldState {
     /// refresh" bug. A walk does not need this because the client predicts its own
     /// step; a decree does, because the client was not expecting to move.
     pub fn teleport(&mut self, entity: EntityId, to: Point) {
-        let facet = self.facet_of(entity);
+        self.move_to(entity, self.facet_of(entity), to);
+    }
+
+    /// Move a mobile to `to` on `facet`, which may not be the one it is standing
+    /// on. The one door for every relocation: [`teleport`](Self::teleport) is
+    /// this with the facet it already has.
+    ///
+    /// A facet change is not a longer teleport. Five things remember where a
+    /// mobile is, and none of them is checked by a compiler: the traveller's own
+    /// screen, every watcher's screen, the old facet's sector grid, the region it
+    /// was last seen in, and the music its client is playing. Leave any one of
+    /// them behind and nothing errors — the client simply keeps drawing mobiles
+    /// from a world it is no longer in, at coordinates that now mean somewhere
+    /// else, and every `nearby` query on the facet it left keeps handing back
+    /// someone who is not there. So the order below is ServUO's `Mobile.Map`
+    /// setter, and each step says what it is for.
+    pub fn move_to(&mut self, entity: EntityId, facet: u8, to: Point) {
+        let from = self.facet_of(entity);
+        // Never strand someone on a facet the shard did not load; a mobile there
+        // would have no ground, no neighbours and no way back.
+        if from != facet && !self.facets.contains_key(&facet) {
+            return;
+        }
+
+        if from != facet {
+            // Take the traveller off every screen on the facet it is leaving,
+            // while `watchers_of` can still be trusted — after the move it is on
+            // another grid and this finds nobody.
+            if let Some(serial) = self.registry.serial_of(entity) {
+                for watcher in self.watchers_of(entity) {
+                    self.forget(watcher, entity, serial);
+                }
+            }
+            // And clear the traveller's own screen: everything on it belongs to
+            // the other facet. ServUO's `ClearScreen`, and the one step whose
+            // absence is invisible in a test and permanent in a client.
+            let remembered: Vec<EntityId> = self
+                .seen
+                .get(&entity)
+                .map(|seen| seen.iter().copied().collect())
+                .unwrap_or_default();
+            for other in remembered {
+                if let Some(serial) = self.registry.serial_of(other) {
+                    self.forget(entity, other, serial);
+                }
+            }
+            // Out of the old grid. `teleport` never had to do this, which is why
+            // the removal is easy to leave out and costly to leave out.
+            self.facet_state_mut(from).sectors.remove(entity);
+            self.registry.insert(entity, Facet(facet));
+            // The remembered region indexes the *old* facet's list, so keeping it
+            // would compare a Felucca id against an Ilshenar one.
+            self.registry.remove::<InRegion>(entity);
+        }
+
         self.registry.insert(entity, Position(to));
         // Keep the walker's own copy in step, or the next walk starts from the old
-        // tile.
+        // tile. The sequence goes back to fresh with it: the client zeroes its own
+        // on a jump, and a server that does not asks it for a resync it cannot give
+        // (Sphere says as much beside its own reset).
         if let Some(Movement(mut walker)) = self.registry.get::<Movement>(entity).copied() {
             walker.position = to;
+            walker.sequence.reset();
             self.registry.insert(entity, Movement(walker));
         }
         self.facet_state_mut(facet).sectors.insert(entity, to);
+
+        if from != facet {
+            if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
+                let (width, height) = {
+                    let state = self.facet_state(facet);
+                    (state.width, state.height)
+                };
+                // Which map to draw, then where on it and how big it is. No
+                // `0x1B`: that is the "entering the world" packet, and neither
+                // reference re-sends it mid-session.
+                self.send_packet(
+                    connection,
+                    &ServerPacket::MapChange(MapChange { map: facet }),
+                );
+                self.send(
+                    connection,
+                    encode_server_change(to, width as u16, height as u16),
+                );
+            }
+        }
 
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
             let serial = self.registry.serial_of(entity).map_or(0, |s| s.raw());
@@ -1306,6 +1605,20 @@ impl WorldState {
             }
         } else {
             return None;
+        }
+        // What a player made says so, and says whose work it is — ServUO's
+        // `AddCraftedProperties`. Both lines are appended rather than folded into
+        // the name, so an exceptional dagger is still "a dagger" to everything
+        // that reads the name.
+        if self
+            .registry
+            .get::<Quality>(entity)
+            .is_some_and(|quality| quality.exceptional)
+        {
+            list.add(1_060_636); // Exceptional
+        }
+        if let Some(CraftedBy(maker)) = self.registry.get::<CraftedBy>(entity) {
+            list.add_args(1_050_043, maker); // crafted by ~1_NAME~
         }
         Some(list.finish())
     }
@@ -1612,6 +1925,12 @@ impl WorldState {
         items
             .iter()
             .filter_map(|&item| {
+                // A trade escrow is worn so that reach and dropping-in work with
+                // no new machinery, but it is not clothing: drawing it hangs a
+                // mystery box off both traders on every onlooker's screen.
+                if self.registry.has::<TradeWindow>(item) {
+                    return None;
+                }
                 let serial = self.registry.serial_of(item)?;
                 let worn = self.registry.get::<Equipped>(item)?;
                 let Graphic { id, hue } = *self.registry.get::<Graphic>(item)?;

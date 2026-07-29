@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
-use openshard_gateway::{ConnectionId, Event, OutboxTx, Server, ServerEvent};
+use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent};
 use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
@@ -23,7 +23,9 @@ use tokio::net::TcpStream;
 
 /// Stand up a shard on an ephemeral port. Mirrors `main.rs`.
 async fn shard() -> SocketAddr {
-    let (server, mut events) = Server::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let (server, mut events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     let address = server.local_address().unwrap();
     let advertised = single_shard(Ipv4Addr::new(127, 0, 0, 1), address.port());
     tokio::spawn(server.run());

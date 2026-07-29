@@ -37,6 +37,13 @@ pub enum SpellTarget {
     Mobile,
     /// A spot on the ground.
     Location,
+    /// An object you can hold — the travel family, which aims at a recall rune
+    /// or a runebook rather than at a place.
+    ///
+    /// The distinction is not cosmetic: this raises the *object* cursor
+    /// (`0x6C` type 0), so the client itself refuses bare ground, and the
+    /// server re-checks that what came back is in reach before believing it.
+    Item,
 }
 
 /// The default effect the core runs when a spell lands.
@@ -76,6 +83,17 @@ pub enum SpellEffect {
     /// Paralyze — freezes the target mobile in place for a Magery-scaled span; a
     /// blow lifts it. See [`Frozen`](openshard_state::Frozen).
     Paralyze,
+    /// Write the caster's own position onto the aimed recall rune.
+    ///
+    /// The rune must be in the caster's *backpack*, not merely within reach:
+    /// ServUO says so with cliloc 1062422, and a rune lying on the floor of a
+    /// shop is somebody else's.
+    Mark,
+    /// Take the caster to where the aimed rune (or runebook) points.
+    Recall,
+    /// Open a pair of gates: one where the caster stands and one at the rune's
+    /// destination, each leading to the other, both closing together.
+    GateTravel,
     /// The core does not run this one yet — the pack owns it (fields, summons,
     /// travel, and the rest).
     Scripted,
@@ -105,7 +123,7 @@ use SpellEffect::{
     AreaCure, AreaDamage, BehaviourBuff, Cure, Damage, Field, Heal, Paralyze, Poison, Scripted,
     StatMod, Teleport,
 };
-use SpellTarget::{Location, Mobile, SelfCast};
+use SpellTarget::{Item, Location, Mobile, SelfCast};
 
 /// One table entry, kept terse so all 64 read at a glance.
 const fn spell(
@@ -329,8 +347,8 @@ pub static MAGERY: [SpellInfo; 64] = [
         "Recall",
         4,
         &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT],
-        SelfCast,
-        Scripted,
+        Item,
+        SpellEffect::Recall,
     ),
     // -- Fifth circle --------------------------------------------------------
     spell(
@@ -422,8 +440,8 @@ pub static MAGERY: [SpellInfo; 64] = [
         "Mark",
         6,
         &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT],
-        SelfCast,
-        Scripted,
+        Item,
+        SpellEffect::Mark,
     ),
     spell(
         "Mass Curse",
@@ -471,9 +489,12 @@ pub static MAGERY: [SpellInfo; 64] = [
     spell(
         "Gate Travel",
         7,
-        &[BLOOD_MOSS, MANDRAKE_ROOT, SULFUROUS_ASH],
-        SelfCast,
-        Scripted,
+        // Black pearl, not blood moss: ServUO's `GateTravel.cs` and the classic
+        // reagent list agree, and the row had blood moss — which made the one
+        // spell in the family that opens a gate cost the wrong reagent.
+        &[BLACK_PEARL, MANDRAKE_ROOT, SULFUROUS_ASH],
+        Item,
+        SpellEffect::GateTravel,
     ),
     spell(
         "Mana Vampire",
@@ -639,6 +660,44 @@ mod tests {
         assert_eq!(info(37).unwrap().name, "Paralyze");
         assert_eq!(info(46).unwrap().name, "Paralyze Field");
         assert!(info(64).is_none(), "there is no 65th spell");
+    }
+
+    /// The travel family's rows, pinned against ServUO's own `SpellInfo`.
+    ///
+    /// Worth a test of its own because a wrong reagent is invisible from every
+    /// other direction: the spell still casts, still costs, still works — it
+    /// just charges for something the player never needed to buy, and the only
+    /// symptom is a mage who cannot open a gate with a pack the reference says
+    /// is enough. Gate Travel's row *was* wrong (blood moss for black pearl) and
+    /// nothing in the suite pointed at the table when it was.
+    #[test]
+    fn the_travel_spells_cost_what_the_reference_says() {
+        let recall = info(31).unwrap();
+        assert_eq!(recall.name, "Recall");
+        assert_eq!(recall.reagents, &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT]);
+
+        let mark = info(44).unwrap();
+        assert_eq!(mark.name, "Mark");
+        assert_eq!(mark.reagents, &[BLOOD_MOSS, BLACK_PEARL, MANDRAKE_ROOT]);
+
+        let gate = info(51).unwrap();
+        assert_eq!(gate.name, "Gate Travel");
+        assert_eq!(
+            gate.reagents,
+            &[BLACK_PEARL, MANDRAKE_ROOT, SULFUROUS_ASH],
+            "black pearl, not blood moss — ServUO's GateTravel.cs"
+        );
+
+        // And all three aim at an object, which is what raises the cursor the
+        // client refuses to answer with bare ground.
+        for spell in [recall, mark, gate] {
+            assert_eq!(
+                spell.target,
+                SpellTarget::Item,
+                "{} aims at an item",
+                spell.name
+            );
+        }
     }
 
     #[test]

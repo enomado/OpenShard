@@ -79,6 +79,22 @@ impl World {
                     _ => self.notify_self(actor, "Only a container can be trapped."),
                 }
             }
+            openshard_state::TargetPurpose::Harvest { tool } => {
+                // The one purpose that wants the *ground* rather than an object,
+                // so it reads the reply's point and tile graphic and ignores the
+                // serial. What the tile actually is, the map decides — see
+                // `skills::resolve_harvest_target`, which is where a client naming
+                // a static that is not there is refused.
+                let facet = self.state.facet_of(actor);
+                if let Some(target) = skills::resolve_harvest_target(
+                    &self.state,
+                    facet,
+                    response.location,
+                    response.graphic.map_or(0, |graphic| graphic.0),
+                ) {
+                    skills::begin_harvest(&mut self.state, actor, tool, target);
+                }
+            }
             openshard_state::TargetPurpose::TurnKey { key } => {
                 // The key may have gone while the cursor was up, and the target may be
                 // nothing at all — a key turned on the sky opens nothing and says so.
@@ -125,6 +141,21 @@ impl World {
         // The quest dialogs answer themselves — the core owns that window, the
         // way it owns the container and vendor ones.
         if openshard_quests::handle(&mut self.state, connection, &response) {
+            return;
+        }
+        // And so does the craft window, for the same reason and by the same
+        // rule: the reply is matched against the context the server remembers
+        // drawing, so one for a window this side never opened does nothing.
+        if crafting::handle(&mut self.state, connection, &response) {
+            return;
+        }
+        // And the moongate destination list, likewise matched against what the
+        // server remembers drawing.
+        if self.handle_gate_gump(connection, &response) {
+            return;
+        }
+        // And the runebook.
+        if self.handle_runebook_gump(connection, &response) {
             return;
         }
         // A reply to a gump that is *not* the engine's own belongs to the pack

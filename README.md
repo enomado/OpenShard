@@ -100,6 +100,7 @@ crates/
     items         containers, drag/drop, stacking, decay, doors, mounts
     skills        checks, the gain curve
     magic         the 64-spell table, casting, typed damage, timed buffs
+    crafting      the five craft systems, 485 recipes, smelting
     ai            creature brains: LOS aggro, chase, kite, flee, give up
     npc           townsfolk: bankers, vendors, creature spawning
     quests        quest model, objectives, the gump
@@ -180,7 +181,7 @@ Other Rust work on the same client, worth reading before reinventing a wheel:
   in Rust.
 - [AngryLawyer/uo-rust-libs](https://github.com/AngryLawyer/uo-rust-libs) —
   Rust libraries for the client's data files (`.mul` / `.uop` art, map,
-  tiledata); the same ground `crates/server/server/world` covers.
+  tiledata); the same ground `crates/server/world` covers.
 
 ## Licence
 

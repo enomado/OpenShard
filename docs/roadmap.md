@@ -1051,10 +1051,162 @@ Roughly in dependency order, each script-first:
     lute or which of the four poisons is in a bottle. The poison is read off the
     **label**, which the converter carries through from ServUO: "a greater poison
     potion" is level two, and an unlabelled bottle is the middling one.
+  - [x] **Mining, Lumberjacking and Fishing — the harvest system.** ServUO's
+    `Scripts/Services/Harvest/`, and the pillar Crafting was waiting on: nothing
+    in the engine could produce a raw material. The four definitions (ore, sand,
+    lumber, fishing) are core data in `state::harvest` with their real numbers —
+    ore a bank of 8×8 holding 10–34, respawning in 10–20 minutes at reach 2, nine
+    veins from iron at 49.6% down to valorite at 1.4%, each richer vein
+    disappointing into iron one swing in two hundred; lumber a bank of 4×3 holding
+    20–45 over 20–30 minutes, ten logs a swing and twenty in Felucca; sand six
+    beats to a swing; fishing a single eight-second cast at reach 4. Skills in
+    tenths, chances in hundredths of a percent, every duration a tick count.
+
+    **A bank belongs to the ground, not to an entity**, so `Banks` sits on
+    `FacetState` beside the sector grid and the obstruction index, keyed by kind
+    and block. It is **deliberately not persisted**, as ServUO does not persist
+    it — a restart repays every vein, which is written beside the struct so it is
+    not filed as a bug later. What *is* saved is the vein's *position*: where
+    ServUO seeds a `Random` with `(x*17)+(y*11)+(map*3)`, this hashes the same
+    three inputs, because a bank that is not saved must still find the same ore
+    under the same block after a reboot or a valorite vein wanders.
+
+    **The load-bearing half is reading the tile.** A `0x6C` location reply carries
+    a graphic only when a *static* was clicked; a click on bare land arrives with
+    a graphic of **zero** and the land tile id is never on the wire, so the server
+    looks it up — a new `Terrain::land_tile`, beside `statics_at`. And a claimed
+    static is verified against the map at that exact id *and* z before it is
+    believed (ServUO's `PacketHandlers.cs` cancels the target otherwise): without
+    that a client names a tree at its feet and mines the middle of Britain. A
+    static is matched as `(id & 0x3FFF) | 0x4000` and land raw, which is why the
+    mountain *ground* and the mountain *wall* both reach the ore definition.
+
+    The rest is the shape the bandage slice set: a double-click on the tool
+    (`use_item_skill`, so an axe is a lumberjack's tool and a weapon at once —
+    derived from `state::weapon`'s `is_axe`, not listed twice), a **location**
+    cursor under `TargetPurpose::Harvest`, a `Harvesting` component beaten down on
+    the tick counter with its ServUO gesture and sound each time, and on the last
+    beat `CheckHarvestSkill` — the flat `req_skill` *and* `roll_skill_band`, the
+    same call combat's to-hit makes, so a miner trains from the attempt. Every
+    gate is re-checked on every beat, because all of them change under a swing
+    that takes seconds; walking away mid-swing gets a **different** line from
+    clicking too far off, which is ServUO's distinction and the whole feedback.
+    A tool spends a use per swing and breaks, which needed schema **v20**: one
+    nullable `uses` column serving both the new `Tool` and the existing
+    `Instrument` — the latter a bug this fixes, since a half-played lute came back
+    full at every reboot. The seven woods are gated on `[gameplay] expansion`
+    (ML by default), which threaded `expansion` into `Gameplay` as an ordinal so
+    the `0xB9` mask and the content tables read one setting.
+
+    The vendors already stocked the tools — 46 pickaxes, 40 hatchets, 21 fishing
+    poles — and were inert, exactly as the bandages and lutes were before their
+    slice. Deferred: ML **bonus resources** (gems, bark fragments, pearls), whose
+    items do not exist yet; **granite** and the special deep-water catches;
+    `BaseOre`'s pile-size art swap, without which rolling ServUO's four ore
+    graphics would leave four piles that refuse to merge; High Seas' lava tiles;
+    and a real **pack-capacity** refusal, since nothing in `items` caps what a
+    backpack holds — "your pack is full" fires only when there is no pack at all.
   - [ ] Sphere's per-skill `AdvRate` tables and its "learn only from a challenge"
     `GainRadius` — **dropped, not deferred**: ServUO's band *is* the
     learn-from-a-challenge rule, and its `gain_factor` column is the per-skill
     rate. Kept here only so nobody re-adds it from the old plan.
+- [x] `crafting` — **making things, and the 485 recipes to make.** The pillar the
+  harvest slice existed for: mining paid a player in ore and nothing in the
+  engine consumed a raw material. A port of ServUO's `Scripts/Services/Craft/` as
+  a system in the usual shape — `fn(&mut WorldState)` over `state`, its own
+  `ItemCrafted`, no peer calls — with five trades wired: **Blacksmithy**,
+  **Tailoring**, **Carpentry**, **Tinkering** and **Alchemy**.
+  - **The recipes are core data**, like `magic::spells` and `state::weapon`: a
+    bare shard has to be able to forge. `tools/gen-craft-tables` reads ServUO's
+    own `Def*.cs` once, its output is committed under `crafting/src/defs/`, and
+    those files are ordinary source from then on. The generator's hard half is
+    that ServUO names a crafted item by its **C# type** and this engine needs a
+    **graphic**, so it indexes every class under `Scripts/` and walks the
+    inheritance chain to whichever constructor finally passes a literal id.
+    **A type that will not resolve is dropped and printed**, never guessed — the
+    `resolveBody` lesson. Of 624 recipes parsed, **485 ship**; the 139 dropped
+    are counted in the run's own summary (86 recipe-scroll gated, 37 theme pack,
+    7 custom-craft, 5 on the scales axis, 4 whose art will not resolve). A
+    further 211 of ServUO's 835 sit behind `Core.SA`/`HS`/`TOL`/`EJ` guards the
+    parser removes whole, because `[gameplay] expansion` tops out at ML.
+  - **The material axis is a hue swap.** ServUO needs nine `IronIngot` subclasses
+    because a C# item *is* its class; an item here is a graphic and a hue, so the
+    nine rows of `AddSubRes` collapse to nine hues against one graphic — the same
+    nine `state::harvest::ORES` already pays a miner in, asserted equal in a test
+    so a hue can never mean valorite on the ground and copper at the forge. That
+    made **`items::take_from_backpack` hue-aware** (`take_from_backpack_of_hue`):
+    hue *is* identity for a material, and a hue-blind take quietly pays a
+    valorite order in iron.
+  - **The chance is ServUO's, and its three corners are each a place a plausible
+    simplification is wrong.** `chance_at_min + (val - min)/(max - min) *
+    (1 - chance_at_min)`, in per-mille. Failing the *band* and failing the *roll*
+    are different refusals — one costs nothing and gets cliloc 1044153, the other
+    costs the materials — and folding them together eats the ingots of every
+    player who clicked a recipe they were not yet good enough for. The
+    exceptional draw is **independent of the success draw and made first**, so
+    what follows a craft does not depend on how the craft went and the tick still
+    replays. And a chance can be *negative*, which is not clamped up: a recipe's
+    `min_skill_offset` licenses the attempt, it does not discount the odds.
+  - **Every gate is checked twice**, which is design and not redundancy: ServUO
+    dry-runs the whole of `ConsumeRes` before starting its timer and again when
+    it ends. A craft takes seconds, and in those seconds a player can step away
+    from the forge, hand the ingots to a friend, or wear the tongs out.
+  - **The workshop scan reads statics as well as items.** A forge is sometimes
+    decoration the converter placed and sometimes a tile baked into the map, and
+    Britannia has both kinds in the same buildings — `DefBlacksmithy` scans the
+    two separately for exactly that reason. Reading only the entities refuses a
+    craft at half the forges in the game, and the refusal reads as a broken
+    recipe rather than a missing scan. ServUO's per-candidate line-of-sight ray
+    is deliberately *not* copied; the ±16 z band already throws out the forge on
+    the floor above.
+  - **Smelting had to land with it**, or Blacksmithy is unreachable from Mining:
+    a miner is paid in ore and every smith recipe eats ingots. ServUO's
+    `BaseOre.OnDoubleClick`, with one deliberate difference — its target cursor
+    exists to pick which forge and to combine piles, and neither applies here
+    (one predicate answers "is there a forge", and identical piles merge on their
+    own).
+  - **The window** is `CraftGump`/`CraftGumpItem` through the typed `GumpLayout`,
+    the path `MondainQuestGump` took, with ServUO's `1 + kind + index * 7` button
+    encoding kept verbatim — the decode has to agree exactly and a scheme of
+    one's own is a second thing to get wrong. The reply is matched against
+    **what the server remembers drawing** (`open_craft_gumps` beside
+    `open_quest_gumps`), which carries more weight here than it does for a quest
+    log: the tool, the category and the chosen metal all live in the context and
+    never in the packet. One layout detail is load-bearing and was got wrong
+    first: the **categories are drawn on page zero**, which is what puts them on
+    every page of a paginated list — inside the pagination the whole left column
+    vanishes the moment a category runs past ten rows, which most of them do.
+  - **The way in is the tool's double-click**, through the same `use_item_skill`
+    seam the bandage, the lockpick and the pickaxe come through. There is no
+    craft packet at all. The tool table is `state::craft`, in `state` for the
+    reason `state::weapon` is — two crates read it: `items` to give a fresh
+    sewing kit its uses, `crafting` to know which of the five windows to open.
+    The vendors already stocked all of it (26 tongs, 28 sewing kits, 15 saws, 41
+    scribe's pens) and every one was an inert prop, exactly as the bandages,
+    lutes and pickaxes were before their slices.
+  - **Quality and the maker's mark persist (schema v21).** `Quality` and
+    `CraftedBy` are components on the item, and both are **read at the read
+    site** — `state::armor::piece_rating` adds ServUO's `-8 + 8 * quality` and a
+    material bonus derived from the hue (valorite +16 over iron, barbed +16 over
+    plain leather), so nothing is folded into the wearer and a fine breastplate
+    coming off leaves nothing to undo. That material ladder is what makes the
+    metal axis worth offering at all. The maker is a **name and not a serial**,
+    for the reason a corpse's killer is one: the smith logs out and the sword
+    outlives the session. Without the two columns every masterpiece on the shard
+    quietly becomes ordinary at the next boot — the `Murders` bug, over property
+    somebody spent an hour earning.
+  - Deferred, each its own system hanging off crafting: **Repair**, **Enhance**,
+    **AlterItem**, **Resmelt** (item back to ingots; *ore* smelting is in),
+    **recipe scrolls**, **make-number / make-max** and the **last-ten list**
+    (per-player UI state ServUO serializes, so it wants a decision about saving
+    UI). The six remaining tables — Cooking, Inscription, Bowcraft,
+    Glassblowing, Masonry, Cartography — are data the generator can emit when
+    they are wanted; Inscription waits on the writable book it is already tied
+    to. And two material chains stay unbuilt rather than implied: **hides →
+    leather** (scissors on a hide) and **cotton → thread → cloth** (a spinning
+    wheel and a loom), both of which are addon interactions in ServUO and not
+    crafts at all — until they exist a tailor buys cloth and leather from the
+    vendors that already stock them.
 - [x] `magic` — spells, reagents, casting
   - [x] **Mana, casting, and the effect seam.** A mobile carries `Mana` (spent by
     casting, trickling back on a tick-counter regen). `Command::CastSpell` is the
@@ -1215,8 +1367,80 @@ Roughly in dependency order, each script-first:
   - [ ] **Summons with a lifetime** — Blade Spirits, Energy Vortex, Summon
     Creature/Daemon: a spawned creature that despawns on its own timer and counts
     against the follower cap the status bar already carries.
-  - [ ] **Travel** — Recall, Gate Travel and Mark: needs runes/runebooks (item
-    data) and a cross-facet teleport; Gate also a paired physical object either end.
+  - [x] **Travel — Recall, Mark, Gate Travel, and the moongates.** The last big
+    Magery family out of `Scripted`, and the first reader of `no_recall`, which
+    had been carried through persistence, the converter and the script bridge
+    since regions landed with nothing to consume it.
+    - **`SpellTarget::Item`** is the fourth target kind: all three spells aim at
+      a rune or a runebook, so they raise the *object* cursor (`0x6C` type 0) and
+      the client itself refuses bare ground. A recall rune is a graphic plus a
+      `RuneMark { facet, destination }`, and a blank one is a rune *without* the
+      component — there is no `marked` flag to disagree with a destination that
+      would mean nothing when false. (Gate Travel's reagent row was wrong while
+      we were in it: blood moss where ServUO and the classic list both have black
+      pearl.)
+    - **The permission model is one end and one kind.** ServUO's
+      `SpellHelper.CheckTravel` is a `bool[7,24]` matrix over twenty-four corners
+      of Britannia; almost none exist here and the rest are region flags, so it
+      collapses onto `no_teleport` and `no_recall`. What survives is the shape:
+      the kinds are *directional*, and `RecallFrom` is the only permissive row,
+      so a dungeon nobody may recall **into** is still one you may recall **out**
+      of. Folding both ends into one call and testing them against a single kind
+      reads tidier and makes every such region a one-way trap; a test caught
+      exactly that, and the doc comment says why the tidy version is wrong.
+      Sphere's four separate antimagic bits (`RECALL_IN`/`RECALL_OUT`/`GATE`/
+      `TELEPORT`) are what the single bool collapses.
+    - **Recall's refusals cost nothing**, in `begin_cast` before a point of mana:
+      criminal, mid-fight, overloaded, holding something. The carry cap moved
+      into `items` beside the walk that sums what is under it — three rules read
+      `40 + 3.5 * str` now, and two copies is a shard where a mule can walk but
+      cannot recall.
+    - **Mark wants the rune in your own pack** (cliloc 1062422); **Recall does
+      not**, because ServUO's target does not — a rune held out by a friend is a
+      classic way to be fetched. The asymmetry is deliberate on both sides.
+    - **Gate Travel lays a pair with no link field**: each gate points at the
+      other's *tile*, so the link is the destination and there are not two halves
+      to keep honest. Spawned the `spawn_field_tile` way and never through
+      `items::spawn_item`, which would stamp a second, contradictory clock and
+      announce an `ItemSpawned` the pack reads as a drop. Excluded from the save
+      sweep beside `Field`, as ServUO deletes its own on deserialise: restored, a
+      half-minute portal is a permanent one whose caster no longer exists.
+    - **Walking in is found, not announced** (`tick/gates.rs`), off this tick's
+      `MobileMoved` — there are two movement paths and a call beside each is one
+      to forget, and unlike a position scan it cannot miss somebody who steps on
+      and off inside one batch of commands.
+    - **The nine city moongates carry no component at all.** Their destination is
+      derived from where they stand, so they are saved and restored as ordinary
+      decoration with no schema and no restore hook. They are placed *without* an
+      obstruction, which is the thing here that would have been silently wrong:
+      `place_decoration` seals a tile whose tiledata calls the graphic
+      impassable, and a blocked gate is not a worse gate but one whose walk-in
+      trigger is dead code that reads as a broken step check. Their list window
+      is the first engine code to read a gump's **switches**.
+    - **The runebook** binds sixteen destinations (the rune is consumed), spends
+      charges for free travel, and pays the ordinary price on its Recall and Gate
+      buttons through the one `magic::pay_and_roll`. Recharging leaves the
+      surplus on the cursor rather than eating it. ServUO's button ids verbatim,
+      decoded highest-range-first (`BOOK_USE_CHARGE + 40` would else read as a
+      Recall), with a row the book does not hold refused rather than clamped.
+    - **The facet change underneath** is `WorldState::move_to`, the one door every
+      relocation now goes through. Five caches remember where a mobile is and none
+      is compiler-checked: the traveller's own screen, every watcher's, the old
+      facet's sector grid, `InRegion` (which gained the facet its id belongs to —
+      region 3 on two facets compared equal, so a crossing between them fired no
+      event, no music and no guards) and the walk sequence, whose reset was a
+      latent bug in plain teleports too. The client is told with `0xBF 0x08` and
+      the new `0x76`, never `0x1B`; the size in it comes from new `FacetState`
+      dimensions, which also fixed login handing every facet Britannia's
+      hardcoded 7168×4096. `[gameplay] cross_facet_travel` (off) is the classic
+      pre-AoS refusal on top — a rule, not a missing feature.
+    - **Schema v22** carries the rune and the book; one bump and not two, because
+      there are no migrations and two inside one slice means throwing a test
+      database away twice.
+    - Deferred: Sacred Journey (decoded and ignored), the moon-phase gates,
+      red/young travel restrictions, ship-mark runes, an `op_place_moongate` for
+      the pack, and a tooltip that refreshes mid-life — a marked rune is the
+      first thing in the world whose *name* changes.
   - [x] **Resurrection** — landed with the ghost slice: `SpellEffect::Resurrect`
     raises the aimed ghost through the core `resurrect` path (a no-op on the
     living).
@@ -1320,9 +1544,12 @@ Roughly in dependency order, each script-first:
     left dormant** — its timer held, nothing spawned — until someone approaches,
     the standard "smart spawning". The three together turn a whole-facet Populate
     from a stall into a shrug.
-  - [ ] **Body-type tables** — door-opening and rideability are body-id lists
-    until a real table (tiledata or data-driven config) names which bodies have
-    hands and which carry a rider.
+  - [x] **Body-type tables** — ServUO's `Data/bodyTable.cfg` is ported
+    (`state::components::body_type`), so `body_opens_doors` is its rule verbatim
+    (`!Body.IsAnimal && !Body.IsSea`) rather than a list of eight human ids, and
+    rideability is derived from the `BaseMount` subclasses — thirty bodies, with
+    `mount_body_for` derived from the same table rather than kept as a second
+    hand-written half.
   - [ ] **Path to a tile *adjacent* to the quarry** rather than onto it — the
     remaining refinement from the A\* work; today a chase plans onto the target's
     own tile and stops one short by the reach check.
@@ -1627,9 +1854,59 @@ Roughly in dependency order, each script-first:
     is a parameter of `Walker::request` rather than a field on the walker, the
     read-site-derivation rule `equipped_weapon` follows — a mount goes on and comes off,
     and a copy here is one more thing to keep in step.
-  - [ ] **Secure trade between players** (`0x6F`) — the drag-onto-a-player trade
-    window. The `NewSecureTrade` feature gate exists in `protocol`; the handler
-    and the escrow container do not.
+  - [x] **Secure trade between players** (`0x6F`). Handing goods over by dropping
+    them on the ground and trusting the other party is the oldest scam in the
+    genre; this is the window UO answered it with, and it was the last thing
+    missing from *players interacting with each other*. Drag an item onto another
+    player within two tiles (ServUO's `InRange(Location, 2)`, tighter than
+    `ITEM_REACH`) and a window opens on both screens; either side adds and removes
+    with the ordinary drag machinery; when both boxes are ticked the goods swap
+    packs. Ported from ServUO's `SecureTrade.cs`/`SecureTradeContainer.cs`.
+
+    **The escrow is a worn container, and that is the load-bearing choice.** Each
+    party's half is an item on ServUO's own `Layer.SecureTrade` (`0x1E`, graphic
+    `0x1E5E`) carrying a `Container` — so `items::in_reach` works with nothing
+    written, since it already answers "your own worn container is always in reach"
+    and "somebody else's is at their tile", which are exactly the right rules for
+    your half of the window and theirs. Adding and taking back are
+    `drop_into_container` and `pick_up` unchanged. The price is that a worn thing
+    is drawn and saved by default, which one `TradeWindow` marker undoes in the
+    two places it must: `equipment_of` (or every onlooker's `0x78` hangs a mystery
+    box off both traders) and `inventory_of` (or the escrow *and everything in it*
+    is restored into a trade that no longer exists and can never be closed — the
+    argument `ground_items` already makes for a spell field and a moongate). It
+    also cannot be lifted, ServUO's `CheckLift`.
+
+    **A cancel is found, not announced.** ServUO revalidates every trade from
+    `Mobile.Location`'s setter — a call beside every mover, and this engine has
+    five of them. `items::validate_trades` runs once a tick over a list that is
+    almost always empty instead, the `tick/regions.rs` shape, and ends a trade
+    whose parties are no longer both online, alive, on one facet and in range.
+    The same pass is ServUO's `ClearChecks`: if the goods change after somebody
+    agreed to them, *both* boxes untick — but the contents are only fingerprinted
+    while at least one box is ticked, because an unticked pair has nothing to
+    clear and the walk is over the whole `Contained` column.
+
+    **Every ending returns the goods**, through one `cancel`: the client's own
+    close, a step out of range, a death, a logout — placed in `disconnect`
+    *before* the record and inventory are read, or the item would be in neither
+    the save nor the world — and the shutdown flush, which cancels every trade
+    before its final snapshot for the same reason. A crash without a clean stop
+    is the only remaining window, and it is the same one every unsaved second has.
+
+    Two fixes came with it, both of which the window needed and a chest also
+    wanted: `drop_into_container` and `pick_up` now tell **every** client watching
+    a container, not only the one acting (the "a second viewer must re-open to
+    refresh" limitation noted under **Containers** above), which is what makes an
+    offer visible across the window at all. **Where the references disagree this
+    follows ServUO**: Sphere pads Close/Update with a trailing `false` byte (17
+    bytes against 8 and 16) and its own `Trade_UpdateGold` reader contradicts its
+    writer about gold-versus-platinum order; ServUO is self-consistent and is what
+    a current ClassicUO is tested against. Deferred: the `NewSecureTrade`
+    gold/platinum half (actions `UpdateGold`/`UpdateLedger`), which is ServUO's
+    *account-level* virtual currency — gold is an item here, and it trades by
+    being dragged into the window like anything else; the inbound action is
+    decoded and ignored.
   - [x] **A* pathfinding**, so pursuit and homing route *around* walls instead of
     shuffling into them — the thing Sphere does badly. `movement::find_path` is a
     bounded A* over the `Terrain` (the same `can_step` the client's walk uses), with
@@ -1754,8 +2031,9 @@ Roughly in dependency order, each script-first:
     its children's, so scanning it for rectangles gives the parent ground that
     belongs to the child.
   - Deferred: `0x65` weather, a calendar that turns the season, per-region light
-    for creatures (only players are told), and the `no_recall`/`safe` flags, which
-    are carried in the data and wait on travel and PvP rules to read them.
+    for creatures (only players are told), and the `safe` flag, which is carried
+    in the data and waits on PvP rules to read it. (`no_recall` has its reader
+    now — see **Travel** below.)
 - [ ] `housing` — player houses: a multi placed on the map, a door with a real
   lock, decay unless refreshed, friends/co-owners. Wants multis (the client's
   `multi.mul`/UOP format, unread yet), a region concept and the door locks above.
@@ -1813,58 +2091,29 @@ started.
 
 - ~~**Regions.**~~ and ~~**Day and night.**~~ Both landed together; see
   **Regions, guards and the world clock** in §6 below. What is still open from
-  that entry: `0x65` weather, a calendar that turns the season, and the
-  `no_recall`/`safe` flags, which are carried in the data and have no consumer
-  until travel and PvP rules exist.
-- **Fame, karma and titles.** Absent, which is why the Felucca converter falls
-  back to a karma-sign heuristic for notoriety and why a murder count is the only
-  standing a character accumulates.
-- **Resource gathering.** Mining, lumberjacking and fishing. Its first step —
-  routing the client's skill use — is done (§6 `skills`), and what is left is the
-  harvest system itself, a port of ServUO's `Scripts/Services/Harvest/`:
-  - `HarvestDefinition`/`HarvestBank`/`HarvestVein`/`HarvestResource`, about six
-    hundred lines of structure. A **bank** is the depletion-and-respawn unit —
-    one per block of tiles, per facet — and belongs on `FacetState` beside the
-    sector grid and the obstruction index. Banks are **not** persisted, as they
-    are not in ServUO; a restart repays every vein, and that fact wants writing
-    down beside the struct or it will be reported as a bug.
-  - The roll is `CheckHarvestSkill`: `value >= resource.req_skill` and then the
-    band, so the same `roll_skill_band` everything else uses.
-  - The flow is a timer: a cursor, then N beats of `effect_delay` each with its
-    swing animation and sound, and the last one delivers. In **ticks**, never a
-    `Duration` — the same reason decay and swing timers are.
-  - Three systems with their real numbers: **Lumberjacking** (bank 4×3, 20–45,
-    respawn 20–30 min, 10 a swing and 20 in Felucca, seven woods and their veins),
-    **Mining** (bank 8×8, 10–34, respawn 10–20 min, the nine ores from Iron at
-    49.6% down to Valorite at 1.4%, plus sand), **Fishing** (bank 8×8, 5–15,
-    reach 4). Each carries a big table of tile ids — pin a few known values in a
-    test beside the constant, the `NO_SHOOT` rule.
-  - The resources are new stackable items (ore, logs, fish) through the existing
-    `items` crate.
-- **Crafting.** The craft gumps behind blacksmithy, tailoring, carpentry, alchemy,
-  inscription and the rest — about 13.5k lines of C# in
-  `Scripts/Services/Craft/`, of which ~5.5k are the eleven `Def*` recipe tables.
-  - The **system** is `CraftSystem`/`CraftItem`/`CraftRes`/`CraftSubRes`, and the
-    chance is `chance_at_min + ((val - min) / (max - min)) * (1 - chance_at_min)`,
-    with a passive `roll_skill_band` per required skill folded into the same
-    calculation.
-  - The **recipes** belong in the core, like `magic::spells` and
-    `combat::weapons` — a bare shard has to be able to forge. Generate them once
-    from ServUO with a throwaway script, then edit them as ordinary source.
-  - The **gump** is a port of `CraftGump`/`CraftGumpItem` through the typed
-    `GumpLayout` builder `protocol` already has, the same path `MondainQuestGump`
-    took. Its reply is checked against what the server remembers drawing.
-  - The **way in** is the tool's double-click, through the `ItemUsed` seam.
-  - Deliberately out of scope, each its own system hanging off crafting: Enhance,
-    AlterItem, Repair, Resmelt, locked Recipes, bulk order deeds, and Imbuing.
+  that entry: `0x65` weather, a calendar that turns the season, and the `safe`
+  flag, which is carried in the data and has no consumer until PvP rules exist.
+  `no_recall` got its first reader with travel.
+- ~~**Fame, karma and titles.**~~ Landed; see **A character has a standing** in
+  §6. The Felucca converter still falls back to a karma-sign heuristic for
+  *notoriety*, which is a converter gap and is listed as one below.
+- ~~**Resource gathering.**~~ Landed; see **Mining, Lumberjacking and Fishing**
+  in §6 below.
+- ~~**Crafting.**~~ Landed; see **Crafting** in §6 `crafting` below. Still open
+  from that entry: the six remaining `Def*` tables, Repair/Enhance/AlterItem/
+  Resmelt, recipe scrolls, make-number/make-max and the last-ten list, and the
+  two material chains (hides → leather, cotton → cloth) that are addon
+  interactions in ServUO rather than crafts.
+- ~~**Travel.**~~ Landed; see **Travel** in §6 `magic`. Still open from that
+  entry: Sacred Journey, the moon-phase gates, red/young restrictions, ship-mark
+  runes, and a tooltip that refreshes when a property changes — which travel gave
+  its first real consumer, since a marked rune's name changes under the player.
 - **Party (`0xBF 0x06`) and chat channels (`0xB3`/`0xB5`).** Group play has no
   protocol surface at all.
-- **Pets and taming.** Ownership, follower slots that mean something, control
-  commands through speech (all/come/stay/kill), and stabling. The status bar's
-  follower count reads a mount today and nothing else, because a mount is the
-  only follower the engine can have. Animal Taming, Herding and Veterinary in
-  §6 `skills` all wait on this — they are the same entry seen from the other
-  side, and none of them is a small skill sitting on top of a solved problem.
+- ~~**Pets and taming.**~~ Landed with Animal Taming; see **Taming, and the pets
+  it wanted** in §6 `skills`. Still open from that entry: **stabling** (which
+  wants a pet saved with no position, the logged-out-character shape),
+  **loyalty** (pointless without feeding) and **Herding**.
 - **CI.** `.github/workflows` holds a release workflow and nothing that runs
   `cargo test` / `clippy` / `fmt` on a push, though "all three silent" is a stated
   rule of the project. The one gap here that is about the project rather than the

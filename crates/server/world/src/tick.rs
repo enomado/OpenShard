@@ -44,7 +44,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::SpokenMessage;
 use openshard_protocol::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point,
-    Season, WalkAck, WalkReject, WalkRequest, DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH,
+    Season, WalkAck, WalkReject, WalkRequest,
 };
 use openshard_protocol::{
     access::AccessLevel,
@@ -60,6 +60,7 @@ use openshard_state::components::{
     Movement, Name, Position, Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook,
     Stackable, Stamina, Stats, Vendor,
 };
+use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
 use openshard_state::sectors::Sectors;
 use openshard_state::{
@@ -70,6 +71,7 @@ use openshard_state::{
 use openshard_ai as ai;
 use openshard_chat as chat;
 use openshard_combat as combat;
+use openshard_crafting as crafting;
 use openshard_items as items;
 use openshard_magic as magic;
 use openshard_npc as npc;
@@ -92,6 +94,7 @@ mod decor;
 mod defaults;
 mod enter;
 mod fields;
+mod gates;
 mod motion;
 mod persist;
 mod regions;
@@ -102,6 +105,7 @@ mod spells;
 mod staff;
 mod status;
 mod traps;
+mod travel;
 mod wake;
 
 pub use command::{Appearance, CharacterSheet, Command, DecorContainer, DecorDoor};
@@ -155,6 +159,10 @@ pub struct World {
     entered: Cursor<PlayerEntered>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     moved: Cursor<MobileMoved>,
+    /// The same moves, read to notice who stepped onto a gate. A cursor of its
+    /// own, not a second read of `moved`: each consumer needs every event, and
+    /// two of them sharing one cursor means whichever runs first eats the other's.
+    gated: Cursor<MobileMoved>,
     /// What combat reported hit, for the AI's retaliation.
     damaged: Cursor<openshard_combat::MobileDamaged>,
     /// Poisoners who fumbled a dose onto themselves, for the tick to apply.
@@ -231,9 +239,12 @@ impl World {
             DEFAULT_FACET,
             FacetState {
                 terrain: None,
+                width: FACET_WITHOUT_A_MAP.0,
+                height: FACET_WITHOUT_A_MAP.1,
                 sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
                 obstructions: Obstructions::default(),
                 regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
+                banks: Banks::default(),
             },
         );
         Self {
@@ -252,10 +263,14 @@ impl World {
                 worn: Default::default(),
                 outbox: Vec::new(),
                 open_containers: HashMap::new(),
+                trades: Vec::new(),
                 pending_targets: HashMap::new(),
                 quests: openshard_state::QuestDefs::default(),
                 dialogue: openshard_state::Dialogue::default(),
                 open_quest_gumps: HashMap::new(),
+                open_craft_gumps: HashMap::new(),
+                open_gate_gumps: HashMap::new(),
+                open_runebook_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
             },
@@ -265,6 +280,7 @@ impl World {
             departed: Vec::new(),
             entered: Cursor::default(),
             moved: Cursor::default(),
+            gated: Cursor::default(),
             damaged: Cursor::default(),
             fumbled: Cursor::default(),
             begged: Cursor::default(),
@@ -331,9 +347,12 @@ impl World {
             facet,
             FacetState {
                 terrain: Some(Box::new(terrain) as Box<dyn Terrain + Send + Sync>),
+                width,
+                height,
                 sectors,
                 obstructions: Obstructions::default(),
                 regions: Regions::new(width, height),
+                banks: Banks::default(),
             },
         );
         self
@@ -537,6 +556,11 @@ impl World {
         // Pulse and expire persistent fields — fire burns, poison seeps, walls hold
         // — before `reap`, so a field kill lays its corpse this tick.
         self.field_tick();
+        // Close the gates whose half-minute is up, and take through anyone who
+        // stepped onto one this tick. Before `reap` for the same reason a field
+        // is: what happens on arrival happens now, not next tick.
+        self.expire_gates();
+        self.gate_crossings();
         // Lift the stat buffs whose time is up, and redraw the bar for any player
         // whose stats just changed back — the decide-then-apply split again.
         let now = self.state.ticks;
@@ -561,6 +585,18 @@ impl World {
         skills::expire_ghost_contact(&mut self.state);
         skills::expire_songs(&mut self.state);
         self.finish_bandages();
+        // Swing every pick, axe and line whose beat has come, and remove the tools
+        // that broke doing it — the `InstrumentSpent` split once more, since a
+        // worn-out pickaxe is `items`' to make gone.
+        for worn in skills::advance_harvests(&mut self.state) {
+            if let Some(serial) = self.state.registry.serial_of(worn.tool) {
+                items::consume(&mut self.state, serial, 0);
+            }
+        }
+        // And every hammer, saw and pestle in flight. After the harvest for no
+        // reason but reading order: the two are independent, and a craft's
+        // materials are already in a pack before its first beat.
+        crafting::advance_crafts(&mut self.state);
         // An instrument that played its last tune. `skills` decides, `items`
         // removes — the same split the poison fumble and the beggar's coin use.
         let spent: Vec<openshard_skills::InstrumentSpent> = self
@@ -592,6 +628,11 @@ impl World {
         self.reap();
         items::decay(&mut self.state);
         items::close_doors(&mut self.state);
+        // End any trade whose two parties have walked apart, died or logged out,
+        // and untick both boxes if the goods moved after somebody agreed to them.
+        // Found rather than announced: ServUO does this from the `Location`
+        // setter, which is a call beside every one of this engine's five movers.
+        items::validate_trades(&mut self.state);
         self.maintain_spawners();
         // Notice who walked into a town or out of a dungeon: the crossing emits
         // its event and starts the region's music. Before the guards read it, and
@@ -954,10 +995,31 @@ impl World {
                         }
                         _ => false,
                     };
+                    // Two things the engine owns a window for, caught before the
+                    // ordinary item dispatch: a gate is stepped through rather
+                    // than opened, and a runebook draws a list. Neither is a
+                    // door, a container or a mobile, so left to fall through
+                    // both would reach the pack as a bare `ItemUsed`.
+                    let engine_window = match (
+                        self.state.players.get(&connection).copied(),
+                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                    ) {
+                        (Some(player), Some(target)) => {
+                            // A runebook is checked beside the gate for the same
+                            // reason: its window is the engine's, and left to
+                            // fall through it would reach the pack as a bare
+                            // `ItemUsed` on a book nobody could open.
+                            self.click_gate(player, target) || self.click_runebook(player, target)
+                        }
+                        _ => false,
+                    };
                     // Then the interaction: a vendor's shop first, if the click
                     // was a shopkeeper in range; anything else is the ordinary
                     // use rule.
-                    if !snoop_refused && !npc::open_shop(&mut self.state, connection, serial) {
+                    if !engine_window
+                        && !snoop_refused
+                        && !npc::open_shop(&mut self.state, connection, serial)
+                    {
                         items::double_click(&mut self.state, connection, serial);
                         // And the core's own answer for an item a skill knows what
                         // to do with — an instrument struck up, and the bandage and
@@ -1003,6 +1065,15 @@ impl World {
                 position,
                 container,
             } => items::drop_item(&mut self.state, connection, serial, position, container),
+            Command::TradeAction {
+                connection,
+                container,
+                accepted,
+            } => items::set_accepted(&mut self.state, connection, container, accepted),
+            Command::TradeCancel {
+                connection,
+                container,
+            } => items::cancel_by_container(&mut self.state, connection, container),
             Command::Disconnect { connection } => self.disconnect(connection),
             Command::DeleteCharacter { serial } => self.delete_character(serial),
             Command::Control { serial } => self.control(serial),
@@ -1336,6 +1407,11 @@ impl World {
         // captured the saddle that stands for it (below).
         // Forget any targeting cursor it had up: a gone mobile clicks nothing.
         self.state.pending_targets.remove(&entity);
+        // End any trade it was in, *before* the record and inventory are read
+        // below: cancelling puts both sides' offerings back in their own packs,
+        // and a trade escrow is deliberately not saved, so an item still sitting
+        // in one when the sweep runs is an item nobody gets back.
+        items::cancel_for(&mut self.state, entity);
         let serial = self.state.registry.serial_of(entity);
         let facet = self.state.facet_of(entity);
 
@@ -1397,6 +1473,10 @@ impl World {
 }
 
 #[cfg(test)]
+mod crafting_tests;
+#[cfg(test)]
+mod harvest_tests;
+#[cfg(test)]
 mod interest_tests;
 #[cfg(test)]
 mod persistence_tests;
@@ -1410,3 +1490,7 @@ mod skills_tests;
 mod status_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod trade_tests;
+#[cfg(test)]
+mod travel_tests;

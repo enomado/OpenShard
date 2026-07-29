@@ -1,12 +1,14 @@
 use super::*;
 use openshard_persistence::{
-    CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord,
+    CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord, RunebookData,
+    RunebookEntryData,
 };
 use openshard_state::components::{
-    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, DoneQuest,
-    Escortable, Field, Frozen, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price,
-    QuestGiver, QuestLog, QuestState, RangedAttack, Restock, Skills, Spellbook, StatMod, StatMods,
-    StockRecord, SwingSpeed, Title, Trap, TrapKind, Vendor,
+    body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy,
+    DoneQuest, Escortable, Field, Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges,
+    Poisoned, Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark,
+    Runebook, RunebookEntry, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title,
+    TradeWindow, Trap, TrapKind, Vendor,
 };
 
 impl World {
@@ -60,6 +62,15 @@ impl World {
             return;
         }
         self.take_snapshot();
+    }
+
+    /// End every secure trade in progress, returning both sides' offerings.
+    ///
+    /// The shutdown path calls this before its final snapshot: an escrow is not
+    /// saved, so goods left in one when the sweep runs would be lost. Outside
+    /// shutdown a trade ends by itself — see `items::validate_trades`.
+    pub fn cancel_all_trades(&mut self) {
+        items::cancel_all_trades(&mut self.state);
     }
 
     /// Take a snapshot now, whatever the cadence says.
@@ -177,6 +188,17 @@ impl World {
             if worn.mobile != owner {
                 continue;
             }
+            // A secure trade escrow is worn, but it is not the character's — it
+            // is the transient half of a conversation, and saving it (with the
+            // goods inside, since the walk below recurses into every container)
+            // would restore an escrow to a trade that no longer exists and can
+            // never be closed. The argument `ground_items` makes for a spell
+            // field and a moongate. The items are safe because every path that
+            // ends a trade puts them back in the two packs first, including the
+            // logout that reaches this function.
+            if registry.has::<TradeWindow>(item) {
+                continue;
+            }
             // The saddle *is* saved, on the mount layer like any worn item: it
             // carries the mount's graphic, and [`restore_inventory`] rebuilds the
             // ridden creature from it, so the rider logs back in still mounted.
@@ -229,10 +251,17 @@ impl World {
             // field tile (transient like a cast in flight — it does not persist, and
             // restoring one would leave an eternal static that no longer expires or
             // blocks).
+            //
+            // A spell's gate is excluded for exactly the same reason, and ServUO
+            // deletes its own on deserialise saying so: restored, a half-minute
+            // portal becomes a permanent one whose caster no longer exists. The
+            // eight city moongates are `Decoration` and are already out by the
+            // line above, so the two cases do not collide.
             if !registry.has::<Graphic>(item)
                 || registry.has::<Body>(item)
                 || registry.has::<Decoration>(item)
                 || registry.has::<Field>(item)
+                || registry.has::<Moongate>(item)
             {
                 continue;
             }
@@ -296,8 +325,117 @@ impl World {
             trap: registry
                 .get::<Trap>(item)
                 .map(|trap| (trap_kind_code(trap.kind), trap.power, trap.level)),
+            // And how much is left in a thing that wears out — a tool's swings or
+            // an instrument's tunes. One field for both, as they are one interface
+            // in ServUO; without it a half-played lute comes back full.
+            uses: items::uses_left(registry, item),
+            // And whose work it is, if it is anybody's. Without this every
+            // exceptional piece on the shard quietly becomes ordinary at the
+            // next restart — the `Murders` bug, over property somebody spent an
+            // hour earning.
+            crafted: registry
+                .get::<Quality>(item)
+                .map(|quality| quality.exceptional)
+                .or_else(|| registry.has::<CraftedBy>(item).then_some(false))
+                .map(|fine| {
+                    (
+                        fine,
+                        registry.get::<CraftedBy>(item).map(|maker| maker.0.clone()),
+                    )
+                }),
+            // And where a rune points, which is the whole of what a rune is —
+            // an unsaved one comes back a blank, and the walk that marked it was
+            // for nothing.
+            rune: registry.get::<RuneMark>(item).map(|mark| {
+                (
+                    mark.facet,
+                    mark.destination.x,
+                    mark.destination.y,
+                    mark.destination.z,
+                )
+            }),
+            // And a runebook's whole contents, for the same reason over sixteen
+            // times the work.
+            runebook: registry.get::<Runebook>(item).map(|book| RunebookData {
+                entries: book
+                    .entries
+                    .iter()
+                    .map(|entry| RunebookEntryData {
+                        facet: entry.facet,
+                        x: entry.destination.x,
+                        y: entry.destination.y,
+                        z: entry.destination.z,
+                        description: entry.description.clone(),
+                    })
+                    .collect(),
+                charges: book.charges,
+                max_charges: book.max_charges,
+                default_entry: book.default_entry,
+            }),
             location,
         })
+    }
+
+    /// Put a saved item's craftsmanship back: the exceptional mark, and the name
+    /// of whoever made it.
+    ///
+    /// One helper because both restore paths — a logged-out character's inventory
+    /// and the ground sweep — want the same two components, and a second copy is
+    /// the pair of hand-kept halves that lets a bank-boxed masterpiece come back
+    /// ordinary while a ground one does not.
+    fn restore_craftsmanship(&mut self, entity: EntityId, record: &ItemRecord) {
+        let Some((exceptional, ref maker)) = record.crafted else {
+            return;
+        };
+        if exceptional {
+            self.state.registry.insert(entity, Quality { exceptional });
+        }
+        if let Some(maker) = maker {
+            self.state.registry.insert(entity, CraftedBy(maker.clone()));
+        }
+    }
+
+    /// Put a saved item's travel state back: where a rune points, and what a
+    /// runebook holds.
+    ///
+    /// One helper for the same reason [`restore_craftsmanship`] is one: both
+    /// restore paths want it, and a second copy is how a rune in a bank box
+    /// comes back marked while one on the floor comes back blank — a difference
+    /// nothing shows until somebody casts.
+    ///
+    /// [`restore_craftsmanship`]: Self::restore_craftsmanship
+    fn restore_travel_state(&mut self, entity: EntityId, record: &ItemRecord) {
+        if let Some((facet, x, y, z)) = record.rune {
+            self.state.registry.insert(
+                entity,
+                RuneMark {
+                    facet,
+                    destination: Point::new(x, y, z),
+                },
+            );
+        }
+        if let Some(book) = record.runebook.as_ref() {
+            self.state.registry.insert(
+                entity,
+                Runebook {
+                    entries: book
+                        .entries
+                        .iter()
+                        .map(|entry| RunebookEntry {
+                            facet: entry.facet,
+                            destination: Point::new(entry.x, entry.y, entry.z),
+                            description: entry.description.clone(),
+                        })
+                        .collect(),
+                    charges: book.charges,
+                    max_charges: book.max_charges,
+                    default_entry: book.default_entry,
+                    // Not saved: a couple of seconds' cooldown that a restart
+                    // re-arms at zero, which errs the player's way.
+                    next_use: 0,
+                },
+            );
+        }
     }
 
     /// Every NPC mobile — townsperson, vendor, creature — as a saveable record:
@@ -843,6 +981,13 @@ impl World {
                 },
             );
         }
+        // The graphic says whether a saved use count is an instrument's tunes or a
+        // tool's swings, so `items` decides which component it comes back as.
+        if let Some(uses) = record.uses {
+            items::restore_uses(&mut self.state, entity, record.graphic, uses);
+        }
+        self.restore_craftsmanship(entity, record);
+        self.restore_travel_state(entity, record);
         // Loose clutter resumes rotting; a container does not (mark_decay skips
         // it) — except a corpse, which is a container that *must* rot, so it gets
         // a fresh timer here (the decay tick is not itself saved, so a restored
@@ -928,6 +1073,11 @@ impl World {
                     },
                 );
             }
+            if let Some(uses) = record.uses {
+                items::restore_uses(&mut self.state, entity, record.graphic, uses);
+            }
+            self.restore_craftsmanship(entity, record);
+            self.restore_travel_state(entity, record);
         }
         // Pass two: where each item goes.
         for record in &records {

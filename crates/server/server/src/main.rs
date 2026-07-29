@@ -27,7 +27,7 @@ use std::time::Instant;
 
 use openshard_config::{Config, DEFAULT_TOML};
 use openshard_gateway::{
-    ConnectionId, Event, OutboxTx, Server, ServerEvent, ServerEventRx, VersionTx,
+    ClientGatewayServer, ConnectionId, Event, OutboxTx, ServerEvent, ServerEventRx, VersionTx,
 };
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response};
 use openshard_persistence::{
@@ -44,6 +44,7 @@ use openshard_protocol::mobile::StatusQueryKind;
 use openshard_protocol::packet::{decode_packet, DecodePacket};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
+use openshard_protocol::trade::SecureTradeAction;
 use openshard_protocol::world::{CreateCharacter, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_world::{
@@ -102,7 +103,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
          and no way to carry one",
     )?;
 
-    let (server, events) = Server::bind(config.server.listen).await?;
+    let (gateway_server, events) = ClientGatewayServer::bind(config.server.listen).await?;
     info!(
         shard = config.server.name,
         listen = %config.server.listen,
@@ -119,7 +120,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let world = load_world(&config)?;
     let store = open_store(&config).await?;
-    tokio::spawn(server.run());
+
+    tokio::spawn(gateway_server.run());
+
     run_shard(events, &config, advertised, world, store).await;
+
     Ok(())
 }

@@ -22,6 +22,9 @@
 //!   in, and what holds there (guards, light, music).
 //! - [`skill`] — what the fifty-eight skills are: their client ids, their names,
 //!   and the per-skill numbers the check and the gain read.
+//! - [`harvest`] — what the ground yields to a pick, an axe or a line, and the
+//!   per-block banks that make a vein run dry. Data plus the depletion state that
+//!   belongs to a patch of map rather than to any entity.
 //! - [`weapon`], [`armor`], [`title`] — the same shape for gear and standing: data
 //!   keyed by graphic (or by fame and karma) that more than one system above reads,
 //!   so it sits below all of them. `combat` turns a weapon row into a swing and a
@@ -34,7 +37,9 @@
 
 pub mod armor;
 pub mod components;
+pub mod craft;
 pub mod dialogue;
+pub mod harvest;
 pub mod instrument;
 pub mod obstruct;
 pub mod quest;
@@ -51,12 +56,14 @@ pub use components::{
     effect, is_debuff, stat_shift, Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs,
     Body, BodyType, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
     Decoration, Discorded, Door, Equipped, Facet, Fame, Field, FieldKind, Frozen, Ghost, Graphic,
-    Guard, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Instrument, Karma, KeyValue,
-    LastStatGain, Lock, Mana, Meditating, MeleeDamage, Movement, MurderDecay, Murders, Name,
-    NightHome, Npc, Pacified, PoisonCharges, Poisoned, Position, Resistance, Scripted,
-    SkillCooldown, Skills, SpawnedBy, Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods,
-    Stats, Stealthing, SwingSpeed, Title, Trap, TrapKind, DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC,
-    FIELD_HEIGHT, POISON_POTION_GRAPHIC,
+    Guard, Harvesting, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Instrument, Karma,
+    KeyValue, LastStatGain, Lock, Mana, Meditating, MeleeDamage, Moongate, Movement, MurderDecay,
+    Murders, Name, NightHome, Npc, Pacified, PoisonCharges, Poisoned, Position, Resistance,
+    RuneMark, Runebook, RunebookEntry, Scripted, SkillCooldown, Skills, SpawnedBy, Stackable,
+    Stamina, StatLock, StatLocks, StatMod, StatMods, Stats, Stealthing, SwingSpeed, Title, Tool,
+    TradeWindow, Trap, TrapKind, DEFAULT_SKILL_CAP, EMPTY_BOTTLE_GRAPHIC, FIELD_HEIGHT,
+    MOONGATE_GRAPHIC, MOONGATE_REACH, POISON_POTION_GRAPHIC, RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES,
+    RUNEBOOK_GRAPHIC,
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{LiveTerrain, Obstacle, Obstructions, DOOR_HEIGHT};
@@ -64,8 +71,9 @@ pub use quest::{ObjectiveDef, ObjectiveKind, QuestDef, QuestDefs, RewardDef, Rew
 pub use region::{Region, RegionFlags, RegionRect, Regions};
 pub use rng::Rng;
 pub use runtime::{
-    Action, CastStyle, FacetState, Gameplay, HeldItem, Origin, Outbound, QuestGumpContext,
-    QuestSection, TargetPurpose, TooltipMode, WorldState, TICKS_PER_SECOND,
+    Action, CastStyle, CraftGumpContext, CraftGumpPage, FacetState, Gameplay, HeldItem, Origin,
+    Outbound, QuestGumpContext, QuestSection, TargetPurpose, TooltipMode, Trade, TradeSide,
+    WorldState, TICKS_PER_SECOND,
 };
 pub use sectors::{distance, in_range, Sectors, SECTOR_SIZE, VIEW_RANGE};
 pub use skill::{Skill, SkillInfo, StatCode, SKILLS, SKILL_COUNT};

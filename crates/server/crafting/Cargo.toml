@@ -1,0 +1,25 @@
+[package]
+name = "openshard-crafting"
+description = "Making things: the craft systems, their recipes, and the gump that drives them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openshard-entities.workspace = true
+# Making a thing and eating the materials are both `items`' doors. Acyclic:
+# `items` depends on neither this crate nor `skills`.
+openshard-items.workspace = true
+# The roll a craft makes is the roll a mined vein and a swung sword make.
+openshard-skills.workspace = true
+# For the gump builder and `Point`.
+openshard-protocol.workspace = true
+openshard-state.workspace = true
+# For `ConnectionId` alone — a gump reply names the connection it came from.
+openshard-gateway.workspace = true

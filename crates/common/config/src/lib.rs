@@ -205,6 +205,13 @@ pub struct GameplayConfig {
     /// the money strictly in hand, so a bank balance buys nothing.
     #[serde(default = "default_true")]
     pub vendor_bank_payment: bool,
+    /// Whether Recall and Gate Travel may take you to another facet. `false`
+    /// (the default) is the classic pre-AoS rule ServUO keeps — a rune marked in
+    /// Ilshenar is a rune you walk to — and `true` is the behaviour from AoS on.
+    /// The engine can move a mobile between facets either way; this decides only
+    /// whether the two spells are allowed to.
+    #[serde(default = "default_false")]
+    pub cross_facet_travel: bool,
     /// Level-of-detail: when `true`, a creature with no player within
     /// [`lod_radius`](Self::lod_radius) stops paying for the full AI decision
     /// (line-of-sight, target scan, pathfinding) each beat — it dozes at a
@@ -412,6 +419,7 @@ impl Default for GameplayConfig {
             reagent_loss_on_fail: default_true(),
             bank_gold_in_status: default_false(),
             vendor_bank_payment: default_true(),
+            cross_facet_travel: default_false(),
             lod: default_false(),
             lod_radius: default_lod_radius(),
             lod_idle_factor: default_lod_idle_factor(),

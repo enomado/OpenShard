@@ -20,6 +20,7 @@ use crate::properties::PropertyQueryRequest;
 use crate::skill::{SkillLockRequest, UseSkillRequest};
 use crate::speech::{TalkRequest, UnicodeTalkRequest};
 use crate::target::TargetResponse;
+use crate::trade::SecureTradeAction;
 use crate::vendor::{BuyReply, SellReply};
 use crate::version::ClientVersion;
 use crate::world::{CharacterPlay, WalkRequest};
@@ -78,6 +79,8 @@ pub enum ClientPacket {
     UseSkill(UseSkillRequest),
     /// `0x3A` from the client — a skill's lock arrow moved.
     SkillLock(SkillLockRequest),
+    /// `0x6F` — a secure trade window action.
+    SecureTrade(SecureTradeAction),
     /// An id this crate has no handler for, or a known envelope whose
     /// content this engine does not act on (a `0x12` text command other than
     /// "use skill"). `body` is everything from the id byte on, for a caller
@@ -179,6 +182,17 @@ impl ClientPacket {
             SkillLockRequest::ID => decode_packet(packet, version)
                 .map(Self::SkillLock)
                 .map_err(ClientDecodeError::SkillLock),
+            SecureTradeAction::ID => match SecureTradeAction::decode(packet) {
+                Ok(Some(action)) => Ok(Self::SecureTrade(action)),
+                // An action byte this end does not know: ServUO's own handler
+                // falls through the same way, so this is unhandled, not
+                // malformed.
+                Ok(None) => Ok(Self::Unknown {
+                    id,
+                    body: packet.to_vec(),
+                }),
+                Err(error) => Err(ClientDecodeError::SecureTrade(error)),
+            },
             _ => Ok(Self::Unknown {
                 id,
                 body: packet.to_vec(),
@@ -238,6 +252,8 @@ pub enum ClientDecodeError {
     UseSkill(DecodeError),
     /// `0x3A` did not decode.
     SkillLock(DecodeError),
+    /// `0x6F` did not decode.
+    SecureTrade(DecodeError),
 }
 
 #[cfg(test)]

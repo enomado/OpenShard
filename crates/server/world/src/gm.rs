@@ -275,17 +275,31 @@ fn where_am_i(state: &mut WorldState, actor: EntityId) {
     );
 }
 
-/// `.go <x> <y> [z]` — jump to coordinates, landing on the ground when no z is
-/// given. Sphere's `.go`. The instant teleport with a cursor is `.tele`.
+/// `.go <x> <y> [z] [facet]` — jump to coordinates, landing on the ground when
+/// no z is given. Sphere's `.go`. The instant teleport with a cursor is `.tele`.
+///
+/// The facet argument is what makes a second facet reachable at all: nothing
+/// else in the shard moves a mobile between them, so without it the whole
+/// cross-facet path would be code no one could run.
 fn go_to(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     let (Some(x), Some(y)) = (
         args.first().and_then(parse_u16),
         args.get(1).and_then(parse_u16),
     ) else {
-        notify(state, actor, "Usage: .go <x> <y> [z]");
+        notify(state, actor, "Usage: .go <x> <y> [z] [facet]");
         return;
     };
-    let facet = state.facet_of(actor);
+    let facet = match args.get(3).and_then(parse_u16) {
+        Some(named) => {
+            let named = named as u8;
+            if !state.facets.contains_key(&named) {
+                notify(state, actor, &format!("Facet {named} is not loaded."));
+                return;
+            }
+            named
+        }
+        None => state.facet_of(actor),
+    };
     // An explicit z wins; otherwise drop onto whatever the ground is there, and a
     // facet with no map (development mode) keeps the actor's current height.
     let z = match args.get(2).and_then(parse_i8) {
@@ -294,8 +308,12 @@ fn go_to(state: &mut WorldState, actor: EntityId, args: &[&str]) {
             .or_else(|| state.registry.get::<Position>(actor).map(|p| p.0.z))
             .unwrap_or(0),
     };
-    state.teleport(actor, Point::new(x, y, z));
-    notify(state, actor, &format!("Went to {x}, {y}, {z}."));
+    state.move_to(actor, facet, Point::new(x, y, z));
+    notify(
+        state,
+        actor,
+        &format!("Went to {x}, {y}, {z} on facet {facet}."),
+    );
 }
 
 /// `.tele` — Sphere's cursor teleport: raise a targeting cursor, and jump to the

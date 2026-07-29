@@ -184,6 +184,34 @@ pub(crate) fn dispatch(
             });
             true
         }
+        ClientPacket::SecureTrade(action) => {
+            if !session.in_world {
+                return true;
+            }
+            match action {
+                SecureTradeAction::Cancel { container } => {
+                    world.queue(Command::TradeCancel {
+                        connection: id,
+                        container,
+                    });
+                }
+                SecureTradeAction::Accept {
+                    container,
+                    accepted,
+                } => {
+                    world.queue(Command::TradeAction {
+                        connection: id,
+                        container,
+                        accepted,
+                    });
+                }
+                // Virtual gold and platinum: an account balance this shard does
+                // not keep. Gold is an item, and it trades by being dragged into
+                // the window like anything else.
+                SecureTradeAction::UpdateGold { .. } => {}
+            }
+            true
+        }
         ClientPacket::DoubleClick(click) => {
             if !session.in_world {
                 return true;

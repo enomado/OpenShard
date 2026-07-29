@@ -54,6 +54,13 @@ impl World {
             self.notify_self(caster, "That spell is not in your spellbook.");
             return;
         }
+        // The travel family's own refusals — ServUO's `CheckCast`, which runs
+        // *before* the cast and so costs nothing. Escaping is the whole point of
+        // Recall, and these are the four times you are not allowed to.
+        if let Some(refusal) = self.travel_check_cast(caster, info.effect) {
+            self.notify_self(caster, refusal);
+            return;
+        }
         match self.state.gameplay.cast_style {
             CastStyle::Walk => self.resolve_cast(caster, spell),
             CastStyle::Stop => {
@@ -178,12 +185,21 @@ impl World {
                     self.apply_spell_effect(caster, spell, 0, at);
                 }
             }
-            SpellTarget::Mobile | SpellTarget::Location => {
+            SpellTarget::Mobile | SpellTarget::Location | SpellTarget::Item => {
                 // Raise the cursor; the effect and the `SpellCast` wait for the
                 // aim (see `handle_target`). A creature with no client cannot aim,
                 // so its targeted cast simply lapses.
+                //
+                // An item-targeted spell raises the *object* cursor, so the client
+                // itself refuses bare ground — "Select Marked item." wants a thing,
+                // not a place. What comes back is still re-checked server-side.
                 if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(caster)
                 {
+                    let kind = if info.target == SpellTarget::Item {
+                        TargetKind::Object
+                    } else {
+                        TargetKind::Location
+                    };
                     self.state
                         .pending_targets
                         .insert(caster, TargetPurpose::Spell { spell, success });
@@ -191,7 +207,7 @@ impl World {
                         connection,
                         &ServerPacket::TargetCursor(TargetCursor {
                             cursor_id: CursorId(serial.raw()),
-                            kind: TargetKind::Location,
+                            kind,
                         }),
                     );
                 }
@@ -351,6 +367,9 @@ impl World {
                     self.resurrect(entity);
                 }
             }
+            SpellEffect::Mark => self.mark_rune(caster, target_serial),
+            SpellEffect::Recall => self.recall(caster, target_serial),
+            SpellEffect::GateTravel => self.open_gate_pair(caster, target_serial),
             SpellEffect::BehaviourBuff(kind) => {
                 // Night Sight can land on another mobile; the self-cast trio
                 // (Protection, Reactive Armor, Magic Reflection) answers its own
@@ -451,8 +470,17 @@ impl World {
                     _ => (0x01E9, Visual::OnTarget(0x375A)), // Magic Reflection
                 }
             }
+            // Mark: ServUO's chime and a sparkle on the rune being written.
+            SpellEffect::Mark => (0x01FA, Visual::OnTarget(0x3779)),
             // Handled above, before this match — a field voices itself and returns.
             SpellEffect::Field(_) => return,
+            // Recall voices itself where it lands: the departure and arrival
+            // sounds bracket the move, so an onlooker at *each* end hears one.
+            // A single packet here would play both at the tile left behind.
+            SpellEffect::Recall => return,
+            // And a gate voices itself at both ends as the pair opens; the gates
+            // themselves are the visual, as a field's tiles are.
+            SpellEffect::GateTravel => return,
             SpellEffect::Scripted => return, // the pack's to voice
         };
 
@@ -600,7 +628,7 @@ impl World {
 
     /// Whether the caster carries a spellbook that holds `spell` — a book in its
     /// backpack with the spell's bit set. The gate `begin_cast` reads.
-    fn caster_has_spell(&self, caster: EntityId, spell: u16) -> bool {
+    pub(super) fn caster_has_spell(&self, caster: EntityId, spell: u16) -> bool {
         let Some(serial) = self.state.registry.serial_of(caster) else {
             return false;
         };
@@ -622,7 +650,7 @@ impl World {
     }
 
     /// The backpack serial reagents come out of, or `0` if the caster wears none.
-    fn caster_pack(&self, caster: Serial) -> u32 {
+    pub(super) fn caster_pack(&self, caster: Serial) -> u32 {
         self.state
             .registry
             .query::<Equipped>()

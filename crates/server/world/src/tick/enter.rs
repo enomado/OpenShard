@@ -309,6 +309,14 @@ impl World {
         // lands there is no body to attach anything to — and 0x55 must come
         // last, because it is what tells the client to start drawing. What is
         // between can be reordered; the two ends cannot.
+        // The size of the facet this character is actually on, not Britannia's.
+        // The facets are not all the same shape — Ilshenar is 2304×1600 and
+        // Tokuno 1448×1448 — and a client told the world is 7168×4096 when it is
+        // not draws the edge of it wherever it likes.
+        let (map_width, map_height) = {
+            let state = self.state.facet_state(facet);
+            (state.width as u16, state.height as u16)
+        };
         self.state.send_packet(
             connection,
             &ServerPacket::PlayerStart(PlayerStart {
@@ -316,8 +324,8 @@ impl World {
                 body: body.id,
                 position,
                 facing,
-                map_width: DEFAULT_MAP_WIDTH,
-                map_height: DEFAULT_MAP_HEIGHT,
+                map_width,
+                map_height,
             }),
         );
         self.state.send_packet(

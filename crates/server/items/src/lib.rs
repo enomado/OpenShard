@@ -21,15 +21,17 @@ use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::spellbook::SpellbookContent;
 use openshard_protocol::target::{TargetCursor, TargetKind};
+use openshard_protocol::trade::{encode_trade_close, encode_trade_open, encode_trade_update};
 use openshard_protocol::wire::CursorId;
 use openshard_protocol::world::Point;
 use openshard_state::components::{
     mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Corpse,
-    Decays, Decoration, Door, Equipped, Facet, Graphic, KeyValue, Lock, Name, PoisonCharges,
-    Position, Ridden, Riding, Spellbook, Stackable, Weapon, SPELLBOOK_GRAPHIC,
+    Decays, Decoration, Door, Equipped, Facet, Ghost, Graphic, KeyValue, Lock, Name, PoisonCharges,
+    Position, Ridden, Riding, RuneMark, Runebook, RunebookEntry, Spellbook, Stackable, Weapon,
+    RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, SPELLBOOK_GRAPHIC,
 };
 use openshard_state::sectors::in_range;
-use openshard_state::{HeldItem, Origin, Outbound, WorldState, TICKS_PER_SECOND};
+use openshard_state::{HeldItem, Origin, Outbound, TradeWindow, WorldState, TICKS_PER_SECOND};
 use tracing::{debug, warn};
 
 mod backpack;
@@ -43,6 +45,7 @@ mod equip;
 mod mounts;
 mod spawn;
 mod stack;
+mod trade;
 mod trigger;
 mod weight;
 
@@ -50,12 +53,13 @@ pub use backpack::*;
 pub use consume::*;
 pub use containers::*;
 pub use decay::*;
-pub use defaults::apply_core_defaults;
+pub use defaults::{apply_core_defaults, restore_uses, uses_left};
 pub use doors::*;
 pub use drag::*;
 pub use equip::*;
 pub use mounts::*;
 pub use spawn::*;
 pub use stack::*;
+pub use trade::*;
 pub use trigger::*;
 pub use weight::*;

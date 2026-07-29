@@ -108,23 +108,62 @@ pub fn armor_data(graphic: u16) -> Option<&'static ArmorData> {
     ARMOR.iter().find(|a| a.graphic == graphic)
 }
 
-use crate::components::{Armor, Equipped, Graphic};
+use crate::components::{Armor, Equipped, Graphic, Quality};
 use crate::WorldState;
 use openshard_entities::EntityId;
 
+/// What an exceptional piece is worth — ServUO's `ar += -8 + 8 * (int)m_Quality`
+/// with `ItemQuality.Exceptional` being 2, so eight points over an ordinary one.
+const EXCEPTIONAL_BONUS: u16 = 8;
+
+/// The armour a material is worth over plain iron or plain leather — ServUO's
+/// `ArmorRating` switch on `CraftResource`.
+///
+/// Keyed by **hue**, because a hue is what a material is in this engine: the same
+/// nine ore hues [`crate::harvest::ORES`] pays a miner in, and the three leather
+/// grades. It is what makes the smith's material axis worth anything — a valorite
+/// breastplate is sixteen points better than an iron one, and until crafting
+/// landed there was no way to have one.
+#[must_use]
+pub fn material_bonus(hue: u16) -> u16 {
+    if let Some(index) = crate::harvest::ORES.iter().position(|ore| ore.hue == hue) {
+        // Two points a grade, iron at nothing through valorite at sixteen —
+        // ServUO's ladder exactly, and evenly spaced, which is why it is
+        // arithmetic here and a switch there.
+        return u16::try_from(index).unwrap_or(0) * 2;
+    }
+    match hue {
+        0x08AC => 10, // spined
+        0x0845 => 13, // horned
+        0x0851 => 16, // barbed
+        _ => 0,
+    }
+}
+
 /// One worn piece's rating: the pack's [`Armor`] override if the item carries
 /// one (an enchanted breastplate), else the core table's row for its graphic,
-/// else nothing.
+/// plus what its material and its craftsmanship are worth.
+///
+/// A **read-site derivation**, like a weapon's swing speed: nothing is folded
+/// into the wearer when a piece goes on, so nothing has to be undone when it
+/// comes off. A pack override is taken whole and gets neither bonus — a scripted
+/// rating is the shard saying exactly what the piece is worth.
 #[must_use]
 pub fn piece_rating(state: &WorldState, item: EntityId) -> u16 {
     if let Some(&Armor { rating }) = state.registry.get::<Armor>(item) {
         return rating;
     }
-    state
+    let Some(graphic) = state.registry.get::<Graphic>(item) else {
+        return 0;
+    };
+    let Some(armor) = armor_data(graphic.id) else {
+        return 0;
+    };
+    let exceptional = state
         .registry
-        .get::<Graphic>(item)
-        .and_then(|graphic| armor_data(graphic.id))
-        .map_or(0, |armor| armor.rating)
+        .get::<Quality>(item)
+        .is_some_and(|quality| quality.exceptional);
+    armor.rating + material_bonus(graphic.hue) + if exceptional { EXCEPTIONAL_BONUS } else { 0 }
 }
 
 /// The item a mobile wears on `layer`, if any.

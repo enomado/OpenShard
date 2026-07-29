@@ -95,7 +95,18 @@ use serde::{Deserialize, Serialize};
 /// - v19: the **trap on a container**. A restart that quietly disarms every chest
 ///   on the shard is the same class of silent loss as one that forgets a lock, and
 ///   the disarm is a skill somebody spent points on.
-pub const SCHEMA_VERSION: u32 = 19;
+/// - v20: **how much is left in a thing that wears out** — a harvesting tool's
+///   swings and an instrument's tunes, which are one interface in ServUO
+///   (`IUsesRemaining`) and so one column here. The instrument half is a bug this
+///   fixes rather than a feature it adds: a lute bought and half played came back
+///   full at every reboot, because nothing saved the count.
+/// - v22: **where a rune points and what a runebook holds**. Both columns land
+///   together even though the book fills a slice later than the rune: there are
+///   no migrations here — [`SqliteStore::init`](crate::SqliteStore) and its
+///   Postgres twin stamp a fresh database and refuse any other version — so two
+///   bumps inside one piece of work means an operator throwing their test shard
+///   away twice for one feature.
+pub const SCHEMA_VERSION: u32 = 22;
 
 /// An account, as saved.
 ///
@@ -406,8 +417,70 @@ pub struct ItemRecord {
     /// `None` for everything else, and defaulted so a pre-v19 save loads.
     #[serde(default)]
     pub trap: Option<(u8, u16, u8)>,
+    /// How many uses are left in it, if it is a thing that wears out — a
+    /// harvesting tool's swings or an instrument's tunes. One field for both,
+    /// because ServUO gives both the one `IUsesRemaining` interface, and the
+    /// *graphic* decides which component it comes back as. Defaulted so a pre-v20
+    /// save loads.
+    #[serde(default)]
+    pub uses: Option<u16>,
+    /// Whether it came out of a craft exceptional, and whose name is on it —
+    /// `(exceptional, maker)`. `None` for everything a player did not make, which
+    /// is nearly every item on a shard, so the column is empty far more often
+    /// than not. Defaulted so a pre-v21 save loads.
+    ///
+    /// The maker is a **name and not a serial**, for the reason the corpse's
+    /// killer is one: the smith logs out and the sword outlives the session.
+    #[serde(default)]
+    pub crafted: Option<(bool, Option<String>)>,
+    /// Where a recall rune points — `(facet, x, y, z)`. `None` for a blank rune
+    /// and for everything that is not one, and defaulted so a pre-v22 save
+    /// loads.
+    ///
+    /// The absence *is* "unmarked": the world has no `marked` flag either, so
+    /// there is no pair of halves to keep in step.
+    #[serde(default)]
+    pub rune: Option<(u8, u16, u16, i8)>,
+    /// What a runebook holds. `None` for everything that is not one. One column
+    /// for the whole book — the [`CorpseData`] shape — because its entries are a
+    /// list and a list does not become sixteen columns.
+    #[serde(default)]
+    pub runebook: Option<RunebookData>,
     /// Where it is.
     pub location: ItemLocation,
+}
+
+/// A runebook's contents, as saved.
+///
+/// `next_use` is deliberately absent: it is the couple of seconds ServUO makes a
+/// book rest between openings, and a restart that re-arms it at zero errs in the
+/// player's favour over a column that would be stale by the time it was read.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct RunebookData {
+    /// The destinations bound, in order.
+    pub entries: Vec<RunebookEntryData>,
+    /// Charges left.
+    pub charges: u8,
+    /// The ceiling recharging fills to.
+    pub max_charges: u8,
+    /// Which entry is the default, if any.
+    #[serde(default)]
+    pub default_entry: Option<u8>,
+}
+
+/// One bound destination, as saved.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RunebookEntryData {
+    /// Which facet it is on.
+    pub facet: u8,
+    /// East-west tile.
+    pub x: u16,
+    /// North-south tile.
+    pub y: u16,
+    /// Height.
+    pub z: i8,
+    /// What to call it in the window.
+    pub description: String,
 }
 
 /// A pet's ownership and standing order, as saved — a plain mirror of the world's
@@ -814,6 +887,21 @@ mod tests {
                 }),
                 poison: Some((2, 14)),
                 trap: Some((3, 40, 2)),
+                uses: Some(37),
+                crafted: Some((true, Some("Rowena".into()))),
+                rune: Some((0, 1495, 1629, -20)),
+                runebook: Some(RunebookData {
+                    entries: vec![RunebookEntryData {
+                        facet: 0,
+                        x: 1336,
+                        y: 1997,
+                        z: 5,
+                        description: "Britain".into(),
+                    }],
+                    charges: 4,
+                    max_charges: 10,
+                    default_entry: Some(0),
+                }),
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");

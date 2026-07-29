@@ -25,6 +25,12 @@ pub use spells::{
     MAGERY, MAGERY_SKILL,
 };
 
+mod travel;
+pub use travel::{
+    describe, destination_of, may_travel, public_gate_at, standing_at, PublicGate, TravelKind,
+    PUBLIC_MOONGATES,
+};
+
 /// What intelligence a mobile with no stat sheet regenerates as if it had — the
 /// same convention the status bar and the lore skills use for a missing stat.
 const DEFAULT_INTELLIGENCE: u16 = 100;

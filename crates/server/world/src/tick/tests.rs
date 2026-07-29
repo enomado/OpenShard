@@ -118,7 +118,7 @@ pub(super) fn walk(sequence: u8, direction: Direction) -> WalkRequest {
 }
 
 /// The serial the world gave the character a connection is driving.
-fn serial_of(world: &World, connection: ConnectionId) -> u32 {
+pub(super) fn serial_of(world: &World, connection: ConnectionId) -> u32 {
     let entity = world.state.players[&connection];
     world.state.registry.serial_of(entity).unwrap().raw()
 }
@@ -694,7 +694,7 @@ fn the_use_trigger_respects_reach() {
 }
 
 /// The serial of the backpack a connection's character is wearing.
-fn backpack_serial(world: &World, connection: ConnectionId) -> u32 {
+pub(super) fn backpack_serial(world: &World, connection: ConnectionId) -> u32 {
     let owner = world
         .registry()
         .serial_of(world.state.players[&connection])
@@ -4065,6 +4065,9 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
 
 /// A reagent graphic used by the cast tests.
 const BLACK_PEARL: u16 = 0x0F7A;
+/// The other two the travel family wants.
+const BLOOD_MOSS: u16 = 0x0F7B;
+const MANDRAKE_ROOT: u16 = 0x0F86;
 
 /// A player ready to cast: grandmaster Magery and a pack full of a reagent.
 /// Returns its connection and entity.
@@ -4205,6 +4208,42 @@ fn a_servuo_cast_waits_out_its_delay_then_targets() {
             .any(|p| p[0] == 0x6C),
         "then the target cursor came up"
     );
+}
+
+#[test]
+fn a_travel_spell_asks_for_an_object_and_not_a_patch_of_ground() {
+    let now = Instant::now();
+    let mut world = sphere_world(); // resolve at once, so the cursor comes up this tick
+    let (connection, _) = ready_caster(&mut world, BLACK_PEARL, now);
+    let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
+    for reagent in [BLOOD_MOSS, MANDRAKE_ROOT] {
+        openshard_items::give(&mut world.state, backpack, reagent, 0, 20);
+    }
+
+    // Recall aims at a rune, so the client itself must refuse bare ground.
+    world.queue(Command::RequestCast {
+        connection,
+        spell: 31,
+    });
+    world.tick(now);
+    let cursor = packets_for(&mut world, connection)
+        .into_iter()
+        .find(|p| p[0] == 0x6C)
+        .expect("the cursor came up");
+    assert_eq!(cursor[1], 0, "an object cursor, not a location one");
+
+    // A mobile-targeted spell still raises the permissive cursor, so the change
+    // is to the travel family and not to targeting at large.
+    world.queue(Command::RequestCast {
+        connection,
+        spell: 17, // Magic Arrow
+    });
+    world.tick(now);
+    let cursor = packets_for(&mut world, connection)
+        .into_iter()
+        .find(|p| p[0] == 0x6C)
+        .expect("the cursor came up");
+    assert_eq!(cursor[1], 1, "still a location cursor");
 }
 
 #[test]
@@ -5527,7 +5566,6 @@ fn paralyze_field_freezes_who_stands_in_it() {
 fn the_bless_spell_raises_the_targets_stats() {
     use openshard_state::components::Stats;
     const GARLIC: u16 = 0x0F84;
-    const MANDRAKE_ROOT: u16 = 0x0F86;
     let now = Instant::now();
     let mut world = sphere_world();
     let (connection, entity) = ready_caster(&mut world, GARLIC, now);
@@ -10641,19 +10679,28 @@ fn a_saved_character_remembers_whose_it_is() {
 
 /// Register a mapless facet, so a test can populate more than one without
 /// client files. Its interest grid is the same no-map size facet 0 uses.
-fn add_empty_facet(world: &mut World, facet: u8) {
+pub(super) fn add_empty_facet(world: &mut World, facet: u8) {
+    add_empty_facet_sized(world, facet, FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1);
+}
+
+/// The same, at a size of the test's choosing — the facets are not all the
+/// shape of Britannia, and what the client is told about that is a rule.
+pub(super) fn add_empty_facet_sized(world: &mut World, facet: u8, width: u32, height: u32) {
     world.state.facets.insert(
         facet,
         FacetState {
             terrain: None,
-            sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
+            width,
+            height,
+            sectors: Sectors::new(width, height),
             obstructions: Obstructions::default(),
-            regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
+            regions: Regions::new(width, height),
+            banks: Banks::default(),
         },
     );
 }
 
-fn enter_on_facet(world: &mut World, connection: ConnectionId, facet: u8, now: Instant) {
+pub(super) fn enter_on_facet(world: &mut World, connection: ConnectionId, facet: u8, now: Instant) {
     world.queue(Command::Enter {
         connection,
         version: ClientVersion::TOL,

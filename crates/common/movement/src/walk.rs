@@ -55,6 +55,20 @@ pub trait Terrain {
         None
     }
 
+    /// The *land* tile id at `(x, y)` — the index into `tiledata.mul`'s land
+    /// table, not a static's graphic.
+    ///
+    /// Read for what the ground *is* rather than how high it stands: a mountain
+    /// face is a land tile a pickaxe works and a patch of sand is a land tile a
+    /// shovel does, and neither can be told apart by height. It exists because the
+    /// client does not send it — a `0x6C` location reply carries a graphic only
+    /// when a *static* was clicked, and a click on bare land arrives with a
+    /// graphic of zero (ServUO `PacketHandlers.cs`, the `LandTarget` branch), so
+    /// the server has to look the tile up itself.
+    fn land_tile(&self, _x: u16, _y: u16) -> Option<u16> {
+        None
+    }
+
     /// The static tiles standing at `(x, y)`, appended to `out` as
     /// `(graphic, z)` pairs.
     ///
@@ -247,7 +261,7 @@ impl Walker {
         mounted: bool,
     ) -> Walk {
         if self.sequence.accept(request.sequence).is_err() {
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         }
 
@@ -270,19 +284,19 @@ impl Walker {
             // Moving faster than a body can move. Refuse the step rather than
             // the connection: the client snaps back, which is what a legitimate
             // one needs and what an illegitimate one deserves.
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         }
 
         let Some(target) = step_from(self.position, request.facing.direction) else {
             // Walked off the edge of the coordinate space. The client cannot
             // express where it wanted to go, so there is nowhere to allow.
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         };
 
         let Some(landed) = terrain.can_step(self.position, target) else {
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         };
 

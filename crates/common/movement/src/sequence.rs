@@ -42,7 +42,7 @@
 /// assert!(sequence.accept(1).is_ok());
 ///
 /// // A reject puts both ends back to zero.
-/// sequence.reject();
+/// sequence.reset();
 /// assert!(sequence.accept(5).is_err(), "the client must restart at zero");
 /// assert!(sequence.accept(0).is_ok());
 /// ```
@@ -78,7 +78,7 @@ impl WalkSequence {
     /// Take a walk request's sequence byte, advancing on success.
     ///
     /// Fails only when a fresh connection opens with something other than zero.
-    /// The caller should answer `0x21` and call [`WalkSequence::reject`].
+    /// The caller should answer `0x21` and call [`WalkSequence::reset`].
     pub fn accept(&mut self, sequence: u8) -> Result<(), OutOfSequence> {
         if self.expected == 0 && sequence != 0 {
             return Err(OutOfSequence { got: sequence });
@@ -89,11 +89,15 @@ impl WalkSequence {
         Ok(())
     }
 
-    /// Reset after refusing a step.
+    /// Go back to fresh, so the next step may carry any sequence.
     ///
-    /// The client resets its own count when it sees `0x21`, so both ends have to
-    /// agree that the next step is a zero.
-    pub fn reject(&mut self) {
+    /// Two things ask for this and they are the same thing from the client's
+    /// side: a refused step (it resets its own count when it sees `0x21`) and a
+    /// jump it did not predict — a teleport or a facet change, after which it
+    /// starts counting from zero again. Either way both ends have to agree that
+    /// the next step is a zero, or the server rejects a step that was correct
+    /// and the client asks for a resync it will not get.
+    pub fn reset(&mut self) {
         self.expected = 0;
     }
 }
@@ -168,7 +172,7 @@ mod tests {
         sequence.accept(1).unwrap();
         assert!(!sequence.is_fresh());
 
-        sequence.reject();
+        sequence.reset();
         assert!(sequence.is_fresh(), "the client resets too, on seeing 0x21");
         assert!(sequence.accept(0).is_ok());
     }
@@ -178,7 +182,7 @@ mod tests {
         let mut sequence = WalkSequence::new();
         sequence.accept(0).unwrap();
         sequence.accept(1).unwrap();
-        sequence.reject();
+        sequence.reset();
 
         assert_eq!(sequence.accept(2), Err(OutOfSequence { got: 2 }));
         assert!(sequence.accept(0).is_ok());
