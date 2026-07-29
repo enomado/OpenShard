@@ -1,8 +1,9 @@
 //! Making a creature or townsperson: the one function that turns a spec into a
 //! living mobile, and the event that announces it.
 
-use openshard_entities::{EntityId, Serial, SerialKind};
+use openshard_entities::EntityId;
 use openshard_movement::Walker;
+use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::{Direction, Facing, Notoriety, Point};
 use openshard_state::components::{
     body_opens_doors, creature_name, Aggression, Banker, Body, Brain, Facet, Fame, Heading,

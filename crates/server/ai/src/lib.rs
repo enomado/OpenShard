@@ -12,9 +12,10 @@
 
 use openshard_combat as combat;
 use openshard_combat::MobileDamaged;
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_items as items;
 use openshard_movement::{direction_toward, find_path, step_from, Terrain};
+use openshard_protocol::serial::Serial;
 use openshard_protocol::{Direction, Point};
 use openshard_state::components::{
     Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position,

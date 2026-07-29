@@ -155,7 +155,7 @@ pub fn complete(state: &mut WorldState, player: EntityId, key: &str) -> bool {
 /// no container, so nothing is created out of thin air either way.
 fn backpack_or_return(
     state: &WorldState,
-    player: openshard_entities::Serial,
-) -> openshard_entities::Serial {
+    player: openshard_protocol::serial::Serial,
+) -> openshard_protocol::serial::Serial {
     openshard_items::backpack_of(state, player).unwrap_or(player)
 }

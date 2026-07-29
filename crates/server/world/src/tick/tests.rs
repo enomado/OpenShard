@@ -2259,7 +2259,7 @@ fn a_player_who_dies_becomes_a_ghost() {
 fn a_dead_player_leaves_a_corpse_but_keeps_its_backpack() {
     // The corpse holds the worn armour; the backpack (a worn container, not loot)
     // stays on the ghost so a resurrected player is not left empty-handed.
-    use openshard_entities::SerialKind;
+    use openshard_protocol::serial::SerialKind;
     let now = Instant::now();
     let mut world = world();
     let player = enter(&mut world, now);
@@ -2441,7 +2441,7 @@ fn engage(world: &mut World, player: ConnectionId, target: u32, now: Instant) {
     });
     world.queue(Command::Attack {
         connection: player,
-        target,
+        target: openshard_protocol::serial::Serial::new(target),
     });
     world.tick(now);
 }
@@ -2460,7 +2460,7 @@ fn war_mode_and_attack_are_confirmed_to_the_client() {
     });
     world.queue(Command::Attack {
         connection: player,
-        target: mob,
+        target: openshard_protocol::serial::Serial::new(mob),
     });
     world.tick(now);
 
@@ -2840,7 +2840,7 @@ fn no_swing_without_war_mode() {
     // Aim, but stay at peace.
     world.queue(Command::Attack {
         connection: player,
-        target: mob,
+        target: openshard_protocol::serial::Serial::new(mob),
     });
     world.tick(now);
     for _ in 0..(WRESTLING_SWING_TICKS + 1) {
@@ -3336,7 +3336,7 @@ fn an_invulnerable_mobile_cannot_be_attacked() {
 
     world.queue(Command::Attack {
         connection: player,
-        target: mob,
+        target: openshard_protocol::serial::Serial::new(mob),
     });
     world.tick(now);
 
@@ -3371,7 +3371,7 @@ fn attacking_an_innocent_turns_the_attacker_grey() {
 
     world.queue(Command::Attack {
         connection: aggressor,
-        target: victim_serial,
+        target: openshard_protocol::serial::Serial::new(victim_serial),
     });
     world.tick(now);
 
@@ -3578,7 +3578,7 @@ fn attacking_an_enemy_is_not_a_crime() {
 
     world.queue(Command::Attack {
         connection: player,
-        target: mob,
+        target: openshard_protocol::serial::Serial::new(mob),
     });
     world.tick(now);
 
@@ -3600,7 +3600,7 @@ fn the_criminal_flag_lifts_when_its_time_runs_out() {
 
     world.queue(Command::Attack {
         connection: aggressor,
-        target: victim_serial,
+        target: openshard_protocol::serial::Serial::new(victim_serial),
     });
     world.tick(now);
     assert_eq!(
@@ -4267,11 +4267,11 @@ fn a_fireball_damages_the_mobile_it_is_aimed_at() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: target,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(target),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -4824,11 +4824,11 @@ fn magic_reflection_bounces_a_spell_back_at_the_caster() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: target,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(target),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -4875,11 +4875,11 @@ fn night_sight_lights_the_targets_screen() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: caster_serial,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(caster_serial),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5053,11 +5053,11 @@ fn fire_field_lays_a_row_and_burns_who_stands_in_it() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: 0,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(0),
             location: spot,
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5103,11 +5103,11 @@ fn poison_field_poisons_who_stands_in_it() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: 0,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(0),
             location: spot,
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5332,11 +5332,11 @@ fn the_paralyze_spell_freezes_its_target() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: victim,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(victim),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5486,11 +5486,11 @@ fn paralyze_field_freezes_who_stands_in_it() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: 0,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(0),
             location: spot,
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5528,11 +5528,11 @@ fn the_bless_spell_raises_the_targets_stats() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: self_serial,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(self_serial),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5559,11 +5559,11 @@ fn the_poison_spell_poisons_what_it_is_aimed_at() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: target,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(target),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5597,11 +5597,11 @@ fn a_resolved_cast_plays_its_sound_and_shows_its_bolt() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: target,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(target),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -5721,11 +5721,11 @@ fn mana_loss_on_fail_off_refunds_a_fizzle() {
     world.tick(now);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: target,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(target),
             location: Point::new(0, 0, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -6320,11 +6320,11 @@ fn anatomy_raises_a_cursor_and_reads_the_target() {
 
     world.queue(Command::TargetResponse {
         connection: looker,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: serial,
-            serial: mob,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(serial),
+            object: openshard_protocol::serial::Serial::new(mob),
             location: Point::new(START.0 + 1, START.1, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -6510,12 +6510,12 @@ fn reagents_are_consumed_on_a_cast_and_a_short_pack_fizzles() {
     // A pack with three of one reagent.
     const REAGENT: u16 = 0x0F7A;
     let pack = spawn_container_at(&mut world, Point::new(START.0, START.1, 0), now);
-    let container = openshard_entities::Serial::new(pack).unwrap();
+    let container = openshard_protocol::serial::Serial::new(pack).unwrap();
     for _ in 0..3 {
         let (item, _) = world
             .state
             .registry
-            .spawn_with_serial(openshard_entities::SerialKind::Item)
+            .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
             .unwrap();
         world.state.registry.insert(
             item,
@@ -6595,11 +6595,11 @@ fn consuming_a_reagent_redraws_an_open_pack() {
     // A container on the player's tile, one reagent inside.
     const REAGENT: u16 = 0x0F7A;
     let pack = spawn_container_at(&mut world, Point::new(START.0, START.1, 0), now);
-    let container = openshard_entities::Serial::new(pack).unwrap();
+    let container = openshard_protocol::serial::Serial::new(pack).unwrap();
     let (_, item_serial) = world
         .state
         .registry
-        .spawn_with_serial(openshard_entities::SerialKind::Item)
+        .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
         .unwrap();
     let item = world.state.registry.entity_of(item_serial).unwrap();
     world.state.registry.insert(
@@ -7281,11 +7281,11 @@ fn tele_raises_a_cursor_and_the_click_teleports() {
     let target = Point::new(START.0 + 9, START.1 + 3, before.0.z);
     world.queue(Command::TargetResponse {
         connection: gm,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: 0,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(0),
             location: target,
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -7309,11 +7309,11 @@ fn a_cancelled_tele_does_not_move() {
     let before = *world.registry().get::<Position>(entity).unwrap();
     world.queue(Command::TargetResponse {
         connection: gm,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: 0,
-            serial: 0,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(0),
+            object: openshard_protocol::serial::Serial::new(0),
             location: Point::new(START.0 + 9, START.1 + 3, before.0.z),
-            graphic: 0,
+            graphic: None,
             cancelled: true,
         },
     });
@@ -8023,7 +8023,7 @@ fn a_played_character_keeps_the_default_body() {
 
 #[test]
 fn a_characters_inventory_survives_a_logout_and_restore() {
-    use openshard_entities::SerialKind;
+    use openshard_protocol::serial::SerialKind;
 
     // A character with something in its backpack logs out; a fresh shard loads
     // the saved items and the same character logs back in to find them.
@@ -8134,7 +8134,7 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
 
 #[test]
 fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
-    use openshard_entities::SerialKind;
+    use openshard_protocol::serial::SerialKind;
     use openshard_state::components::{Spellbook, SPELLBOOK_GRAPHIC};
 
     // A bought spellbook with spells learned into it must open again after a
@@ -8223,7 +8223,7 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
 
 #[test]
 fn a_relogin_in_the_same_run_keeps_the_inventory() {
-    use openshard_entities::SerialKind;
+    use openshard_protocol::serial::SerialKind;
 
     // The bug the user hit: logging out and back in *without a restart* lost the
     // backpack, because the pending-inventory cache was only filled at boot.
@@ -8667,7 +8667,7 @@ fn decoration_and_door_state_survive_a_restart() {
 
 #[test]
 fn a_snapshot_saves_an_idle_online_character_and_the_ground() {
-    use openshard_entities::SerialKind;
+    use openshard_protocol::serial::SerialKind;
 
     // A save must capture an online character's inventory and loose ground items
     // even when nobody moved — an item picked up without a step, gold dropped and

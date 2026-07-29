@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use openshard_entities::{EntityId, Registry, Serial, SerialKind};
+use openshard_entities::{EntityId, Registry};
 use openshard_events::{Cursor, EventBus};
 use openshard_gateway::ConnectionId;
 use openshard_movement::{step_from, Terrain, Walk, Walker};
@@ -35,6 +35,7 @@ use openshard_persistence::{
     CharacterRecord, DecorationRecord, DoorState, Inventory, ItemLocation, ItemRecord, Journal,
     MobileRecord, Snapshot, SCHEMA_VERSION,
 };
+use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::{
     encode_context_menu, encode_gump_display, encode_light_level, encode_login_complete,
     encode_logout_ack, encode_map_change, encode_message, encode_season, encode_supported_features,
@@ -795,7 +796,7 @@ impl World {
                 serial,
                 amount,
                 DamageType::from_u8(damage_type),
-                openshard_entities::Serial::new(by),
+                openshard_protocol::serial::Serial::new(by),
             ),
             Command::CastSpell {
                 serial,

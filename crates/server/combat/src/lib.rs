@@ -12,12 +12,15 @@
 //! its timer. AI drives the same machinery — a brain that hands a creature a
 //! `Combat` is fought by `swings` exactly as a player is.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Terrain;
-use openshard_protocol::{
-    encode_attack, encode_graphical_effect, encode_war_mode, EffectKind, EffectPoint, Notoriety,
-};
+use openshard_protocol::combat::{AttackTarget, WarMode};
+use openshard_protocol::feedback::{EffectKind, GraphicalEffect};
+use openshard_protocol::serial::Serial;
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::Graphic as WireGraphic;
+use openshard_protocol::{Notoriety, Point};
 use openshard_state::components::{
     body_is_female, body_opens_doors, creature_base_sound, effect, BehaviourBuffs, Body, Client,
     Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard, Hitpoints, MeleeDamage,
@@ -510,19 +513,19 @@ pub fn war_mode(state: &mut WorldState, connection: ConnectionId, war: bool) {
     if let Some(combat) = state.registry.get_mut::<Combat>(player) {
         combat.warmode = war;
     }
-    state.send(connection, encode_war_mode(war));
+    state.send_packet(connection, &ServerPacket::WarMode(WarMode { war }));
 }
 
 /// Set a player's attack target. The blow itself is not struck here — this only
 /// aims; [`swings`] turns "in war mode, in reach, timer up" into damage.
-pub fn attack(state: &mut WorldState, connection: ConnectionId, target: u32) {
+pub fn attack(state: &mut WorldState, connection: ConnectionId, target: Option<Serial>) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
     // A target that cannot be attacked — a serial of zero, an item, the attacker
     // itself, or an invulnerable mobile — clears the aim and un-highlights the
     // client's bar.
-    let valid = Serial::new(target)
+    let valid = target
         .and_then(|serial| {
             state
                 .registry
@@ -536,7 +539,10 @@ pub fn attack(state: &mut WorldState, connection: ConnectionId, target: u32) {
         });
     let Some((serial, target_entity)) = valid else {
         clear_target(state, player);
-        state.send(connection, encode_attack(0));
+        state.send_packet(
+            connection,
+            &ServerPacket::AttackTarget(AttackTarget { target: None }),
+        );
         return;
     };
     let next = state.ticks + swing_speed(state, player);
@@ -553,7 +559,12 @@ pub fn attack(state: &mut WorldState, connection: ConnectionId, target: u32) {
     ) {
         flag_criminal(state, player);
     }
-    state.send(connection, encode_attack(target));
+    state.send_packet(
+        connection,
+        &ServerPacket::AttackTarget(AttackTarget {
+            target: Some(serial),
+        }),
+    );
 }
 
 /// Strike, for every mobile whose swing is due.
@@ -615,28 +626,20 @@ pub fn volleys(state: &mut WorldState) {
         // The bolt's flight, then the thwack — emitted before the blow lands, so
         // the mark is still drawn for the arrow to fly at. A moving effect from
         // shooter to target, then the hit sound, both to everyone who can see it.
-        let arrow = encode_graphical_effect(
-            EffectKind::Moving,
-            by.map_or(0, |s| s.raw()),
-            target_serial.raw(),
-            ARROW_GRAPHIC,
-            EffectPoint {
-                x: from.x,
-                y: from.y,
-                z: from.z,
-            },
-            EffectPoint {
-                x: to.x,
-                y: to.y,
-                z: to.z,
-            },
-            RANGED_EFFECT_SPEED,
-            1,
-            false,
-            false,
-        );
+        let arrow = GraphicalEffect {
+            kind: EffectKind::Moving,
+            from: by,
+            to: Some(target_serial),
+            art: WireGraphic(ARROW_GRAPHIC),
+            from_point: Point::new(from.x, from.y, from.z),
+            to_point: Point::new(to.x, to.y, to.z),
+            speed: RANGED_EFFECT_SPEED,
+            duration: 1,
+            fixed_direction: false,
+            explode: false,
+        };
         state.animate(attacker, Action::Attack);
-        state.broadcast_from(attacker, arrow);
+        state.broadcast_packet(attacker, &ServerPacket::Effect(arrow));
         let sound = attack_sound(state, attacker, RANGED_HIT_SOUND);
         state.play_sound(attacker, sound);
         // The bolt still flew and twanged; on a miss it simply finds no mark. The

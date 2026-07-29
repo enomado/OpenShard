@@ -18,6 +18,8 @@
 
 use std::fmt;
 
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::{expect_id, DecodeError};
 use crate::feature::Feature;
 use crate::version::ClientVersion;
 
@@ -303,9 +305,190 @@ pub fn frame_client_packet(
     }
 }
 
+// -- payload traits and the framing layer ---------------------------------
+
+/// A server-to-client payload: it writes its body and nothing else.
+///
+/// # The header is written once
+///
+/// An encoder that writes its own id byte and patches its own length field is
+/// an encoder that can forget to, and forty-seven of them are forty-seven
+/// chances. So a payload writes **body only**, [`encode_packet`] writes the
+/// header, and "the length field is wrong" stops being a thing an author can do.
+///
+/// [`Self::LENGTH`] is not decoration: for a fixed packet it is the size the
+/// body is checked against in debug builds, which catches a field added to a
+/// struct and forgotten in the encoder — the other half of the same bug class.
+///
+/// `version` is passed even to payloads that ignore it. A packet that grows a
+/// version-conditional tail later must not change the signature of every call
+/// site with it.
+pub trait EncodePacket {
+    /// The packet id byte.
+    const ID: u8;
+    /// How long the framed packet is, id and length field included.
+    const LENGTH: PacketLength;
+
+    /// Write the body — everything after the header.
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion);
+}
+
+/// A client-to-server payload: it reads its body from a reader already past the
+/// id byte.
+///
+/// Fallible all the way down, because every byte came off a socket. See
+/// [`crate::codec`].
+pub trait DecodePacket: Sized {
+    /// The packet id byte.
+    const ID: u8;
+
+    /// Read the body. The reader is positioned past the id, and for a
+    /// variable-length packet past the length field too.
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        version: ClientVersion,
+    ) -> Result<Self, DecodeError>;
+}
+
+/// Write `id`, the length field if the packet has one, then the body.
+///
+/// The single place a packet header is produced. A variable-length packet gets
+/// a placeholder length that is back-patched once the body's size is known, so
+/// no payload ever counts its own bytes.
+///
+/// Panics if a variable packet's body pushes the total past `u16::MAX`: the
+/// length field could not describe it, and truncating instead would desynchronise
+/// the client's stream in silence. That is a server bug in packet construction,
+/// and it costs one connection.
+pub fn frame_body(
+    id: u8,
+    length: PacketLength,
+    write_body: impl FnOnce(&mut PacketWriter),
+) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(length.minimum());
+    writer.u8(id);
+    match length {
+        PacketLength::Fixed(size) => {
+            write_body(&mut writer);
+            debug_assert_eq!(
+                writer.len(),
+                size as usize,
+                "packet 0x{id:02X} declares {size} bytes and wrote {}",
+                writer.len()
+            );
+        }
+        PacketLength::Variable => {
+            writer.u16(0); // placeholder, patched below
+            write_body(&mut writer);
+            let total = writer.len();
+            assert!(
+                total <= u16::MAX as usize,
+                "packet 0x{id:02X} is {total} bytes: too long for its own length field"
+            );
+            writer.patch_u16(1, total as u16);
+        }
+    }
+    writer.into_bytes()
+}
+
+/// Frame one payload for a client.
+///
+/// The only way a `ServerPacket` variant reaches the wire; see [`EncodePacket`].
+pub fn encode_packet<P: EncodePacket>(packet: &P, version: ClientVersion) -> Vec<u8> {
+    frame_body(P::ID, P::LENGTH, |out| packet.encode_body(out, version))
+}
+
+/// Check the id byte and decode the body behind it.
+///
+/// A mismatched id is a dispatch bug — the packet was routed to the wrong
+/// decoder — and is reported as one rather than being read as if it fitted.
+pub fn decode_packet<P: DecodePacket>(
+    bytes: &[u8],
+    version: ClientVersion,
+) -> Result<P, DecodeError> {
+    let mut reader = expect_id(bytes, P::ID)?;
+    P::decode_body(&mut reader, version)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fixed-length payload with nothing but a byte in it.
+    struct Ping(u8);
+
+    impl EncodePacket for Ping {
+        const ID: u8 = 0x73;
+        const LENGTH: PacketLength = PacketLength::Fixed(2);
+
+        fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+            out.u8(self.0);
+        }
+    }
+
+    /// A variable-length payload, so the length patch has something to patch.
+    /// `0xAD` because the round-trip test below frames it back through the
+    /// client table, which is the only length table there is.
+    struct Talk(&'static str);
+
+    impl EncodePacket for Talk {
+        const ID: u8 = 0xAD;
+        const LENGTH: PacketLength = PacketLength::Variable;
+
+        fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+            out.null_terminated_string(self.0);
+        }
+    }
+
+    fn any_version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
+
+    #[test]
+    fn framing_writes_the_id_and_the_body() {
+        assert_eq!(encode_packet(&Ping(0x2A), any_version()), vec![0x73, 0x2A]);
+    }
+
+    #[test]
+    fn framing_patches_a_variable_length() {
+        // id + length field + "hi\0" = 6 bytes, and the length field says so.
+        let bytes = encode_packet(&Talk("hi"), any_version());
+        assert_eq!(bytes, vec![0xAD, 0x00, 0x06, b'h', b'i', 0x00]);
+        assert_eq!(
+            u16::from_be_bytes([bytes[1], bytes[2]]) as usize,
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn a_framed_packet_frames_back() {
+        // The property that makes the length table one source of truth for both
+        // directions: what the framer writes, the framer can read.
+        let bytes = encode_packet(&Talk("well met"), any_version());
+        assert_eq!(
+            frame_client_packet(&bytes, None),
+            Ok(Frame::Complete(bytes.len())),
+            "0xAD is variable in the table and self-describing on the wire"
+        );
+    }
+
+    #[test]
+    fn decoding_rejects_a_foreign_id() {
+        struct Attack(u32);
+        impl DecodePacket for Attack {
+            const ID: u8 = 0x05;
+            fn decode_body(
+                reader: &mut PacketReader<'_>,
+                _version: ClientVersion,
+            ) -> Result<Self, DecodeError> {
+                Ok(Self(reader.u32()?))
+            }
+        }
+
+        let packet: Attack = decode_packet(&[0x05, 0, 0, 0, 0x2A], any_version()).unwrap();
+        assert_eq!(packet.0, 0x2A);
+        assert!(decode_packet::<Attack>(&[0x06, 0, 0, 0, 0x2A], any_version()).is_err());
+    }
 
     #[test]
     fn known_packets_have_plausible_lengths() {

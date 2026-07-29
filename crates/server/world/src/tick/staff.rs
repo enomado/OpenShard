@@ -7,7 +7,7 @@ impl World {
     pub(super) fn handle_target(
         &mut self,
         connection: ConnectionId,
-        response: openshard_protocol::TargetResponse,
+        response: openshard_protocol::target::TargetResponse,
     ) {
         let Some(&actor) = self.state.players.get(&connection) else {
             return;
@@ -18,12 +18,13 @@ impl World {
         if response.cancelled {
             return;
         }
+        let object_raw = response.object.map_or(0, |serial| serial.raw());
         match purpose {
             openshard_state::TargetPurpose::Teleport => {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
             openshard_state::TargetPurpose::Skill { skill } => {
-                let outcome = skills::on_target(&mut self.state, actor, skill, response.serial);
+                let outcome = skills::on_target(&mut self.state, actor, skill, object_raw);
                 if let Some(theft) = outcome.stolen {
                     self.carry_out_theft(theft);
                 }
@@ -41,7 +42,7 @@ impl World {
                 // The item-started skills (a bandage, a lockpick) answer with what
                 // to spend; the rest resolve on their own.
                 let (bandage, pick) =
-                    skills::on_item_target(&mut self.state, actor, skill, first, response.serial);
+                    skills::on_item_target(&mut self.state, actor, skill, first, object_raw);
                 if let Some(started) = bandage {
                     if let Some(serial) = self.state.registry.serial_of(started.bandage) {
                         items::consume(&mut self.state, serial, 1);
@@ -52,11 +53,12 @@ impl World {
                         items::consume(&mut self.state, serial, 1);
                     }
                 }
-                skills::on_second_target(&mut self.state, actor, skill, first, response.serial);
+                skills::on_second_target(&mut self.state, actor, skill, first, object_raw);
             }
             openshard_state::TargetPurpose::SetTrap { kind, power } => {
-                let target = openshard_entities::Serial::new(response.serial)
-                    .and_then(|s| self.state.registry.entity_of(s));
+                let target = response
+                    .object
+                    .and_then(|serial| self.state.registry.entity_of(serial));
                 match target {
                     Some(target)
                         if self
@@ -80,8 +82,9 @@ impl World {
             openshard_state::TargetPurpose::TurnKey { key } => {
                 // The key may have gone while the cursor was up, and the target may be
                 // nothing at all — a key turned on the sky opens nothing and says so.
-                let target = openshard_entities::Serial::new(response.serial)
-                    .and_then(|s| self.state.registry.entity_of(s));
+                let target = response
+                    .object
+                    .and_then(|serial| self.state.registry.entity_of(serial));
                 match target {
                     Some(target) if items::in_key_reach(&self.state, actor, target) => {
                         items::turn_key(&mut self.state, actor, key, target);
@@ -97,12 +100,12 @@ impl World {
                         caster: actor,
                         serial,
                         spell,
-                        target: response.serial,
+                        target: object_raw,
                         success,
                     });
                 }
                 if success {
-                    self.apply_spell_effect(actor, spell, response.serial, response.location);
+                    self.apply_spell_effect(actor, spell, object_raw, response.location);
                 }
             }
         }

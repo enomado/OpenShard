@@ -13,7 +13,10 @@
 //! themselves, the same "emit, don't reimplement" the rest of the world follows.
 
 use openshard_entities::EntityId;
-use openshard_protocol::{encode_message, encode_target_cursor, Point};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::target::{TargetCursor, TargetKind};
+use openshard_protocol::wire::CursorId;
+use openshard_protocol::{encode_message, Point};
 use openshard_state::components::{
     Client, Equipped, Position, Spellbook, Staff, Stats, SPELLBOOK_GRAPHIC,
 };
@@ -178,9 +181,12 @@ fn set_trap(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         openshard_state::TargetPurpose::SetTrap { kind, power },
     );
     if let Some((connection, serial)) = connection_and_serial(state, actor) {
-        state.send(
+        state.send_packet(
             connection,
-            openshard_protocol::encode_target_cursor_object(serial),
+            &ServerPacket::TargetCursor(TargetCursor {
+                cursor_id: CursorId(serial),
+                kind: TargetKind::Object,
+            }),
         );
     }
     notify(state, actor, "Which container shall I trap?");
@@ -302,7 +308,13 @@ fn teleport_cursor(state: &mut WorldState, actor: EntityId) {
     // Remember this game master is targeting for a teleport, so the click knows
     // what it is for.
     state.pending_targets.insert(actor, TargetPurpose::Teleport);
-    state.send(connection, encode_target_cursor(serial));
+    state.send_packet(
+        connection,
+        &ServerPacket::TargetCursor(TargetCursor {
+            cursor_id: CursorId(serial),
+            kind: TargetKind::Location,
+        }),
+    );
 }
 
 /// Finish a `.tele`: the game master clicked a spot; jump there. Called from the

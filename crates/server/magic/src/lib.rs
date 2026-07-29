@@ -10,8 +10,9 @@
 //! [`heal`] mends toward the maximum and redraws the bar; [`regen_mana`] trickles
 //! mana back on the tick counter, so it needs no clock and stays replayable.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_items::{count_in_container, take_from_container};
+use openshard_protocol::serial::Serial;
 use openshard_state::components::{
     stat_shift, BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina,
     StatMod, StatMods, Stats,

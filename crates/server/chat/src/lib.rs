@@ -12,8 +12,9 @@
 //! that owns the rule" — and `world` re-exports it for the reader (a script, the
 //! journal) that does not know chat by name.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::{encode_unicode_message, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC};
 use openshard_state::components::{Body, Client, Name, Position};
 use openshard_state::sectors::in_range;

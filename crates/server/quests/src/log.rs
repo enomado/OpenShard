@@ -1,8 +1,9 @@
 //! The ways into the quest system from outside: the paperdoll button, the
 //! "quest" keyword, and the two bindings the pack sets on an NPC.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
+use openshard_protocol::serial::Serial;
 use openshard_state::components::{Client, Escortable, QuestGiver};
 use openshard_state::{QuestGumpContext, QuestSection, WorldState};
 

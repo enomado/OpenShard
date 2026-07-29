@@ -14,9 +14,10 @@
 
 use std::collections::HashMap;
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Walker;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::{AccessLevel, ClientVersion, Facing, Point, SkillLock};
 
 /// Where a mobile or item is.
@@ -2418,7 +2419,8 @@ mod tests {
         assert_eq!(before, items.len(), "a mount item graphic is used twice");
     }
 
-    use openshard_entities::{Registry, SerialKind};
+    use openshard_entities::Registry;
+    use openshard_protocol::serial::SerialKind;
     use openshard_protocol::Direction;
 
     #[test]

@@ -13,8 +13,9 @@
 //! The rules that *care* — guards hunting a murderer who walks into town, the
 //! dark of a dungeon — read the region where they are decided, not here.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_protocol::encode_play_music;
+use openshard_protocol::serial::Serial;
 use openshard_state::components::{Client, InRegion, Position};
 use openshard_state::Region;
 use tracing::{info, warn};

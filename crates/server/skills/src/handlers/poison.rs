@@ -91,10 +91,7 @@ pub(super) fn chose_potion(state: &mut WorldState, actor: EntityId, potion: Enti
         },
     );
     state.localized_message(actor, APPLY_TO_WHAT, "");
-    state.send(
-        connection,
-        openshard_protocol::encode_target_cursor_object(serial.raw()),
-    );
+    super::send_object_cursor(state, connection, serial.raw());
 }
 
 /// The second cursor's answer: what to smear it on.

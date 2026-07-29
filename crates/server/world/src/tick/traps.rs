@@ -131,26 +131,21 @@ impl World {
         let Some(&Position(spot)) = self.state.registry.get::<Position>(at) else {
             return;
         };
-        let packet = openshard_protocol::encode_graphical_effect(
-            openshard_protocol::EffectKind::FixedXyz,
-            0,
-            0,
-            graphic,
-            openshard_protocol::EffectPoint {
-                x: spot.x,
-                y: spot.y,
-                z: spot.z,
-            },
-            openshard_protocol::EffectPoint {
-                x: spot.x,
-                y: spot.y,
-                z: spot.z,
-            },
-            9,
-            20,
-            true,
-            false,
+        let packet = openshard_protocol::feedback::GraphicalEffect {
+            kind: openshard_protocol::feedback::EffectKind::FixedXyz,
+            from: None,
+            to: None,
+            art: openshard_protocol::wire::Graphic(graphic),
+            from_point: spot,
+            to_point: spot,
+            speed: 9,
+            duration: 20,
+            fixed_direction: true,
+            explode: false,
+        };
+        self.state.broadcast_packet(
+            at,
+            &openshard_protocol::server_packet::ServerPacket::Effect(packet),
         );
-        self.state.broadcast_from(at, packet);
     }
 }

@@ -73,12 +73,11 @@ These are settled. Do not re-open them mid-rewrite.
 **D1. Two root enums.** `ClientPacket` (decoded, client → server) and
 `ServerPacket` (encoded, server → client). Both non-exhaustive.
 
-**D2. Variant payloads.** A variant carries its fields inline when it has at
-most four flat scalar fields (`WalkAck { sequence, notoriety }`). Anything with
-a list, a nested enum, a conditional field, or logic of its own becomes a named
-struct and the variant is a newtype around it (`Status(MobileStatus)`). Reason:
-inline is unreadable past four fields, and a struct that needs methods needs a
-name anyway.
+**D2. Variant payloads.** Every variant is a newtype around a named payload
+struct (`Status(MobileStatus)`, `WarMode(WarMode)`). The pilot disproved the
+inline exception: [`EncodePacket`] is implemented on a payload type, so inline
+variant fields would need a second body-writing path inside the root enum.
+One shape for every variant keeps the framing layer mechanical.
 
 **D3. The header is written once.** Payload encoders write **body only**. A
 single framing layer writes the id and, for variable packets, back-patches the
@@ -90,6 +89,7 @@ and makes the length table the single source of truth for both directions.
 ```rust
 pub trait EncodePacket {
     const ID: u8;
+    const LENGTH: PacketLength;
     fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion);
 }
 
@@ -104,12 +104,17 @@ pub trait DecodePacket: Sized {
 is unused — a packet that grows a version-conditional tail later must not
 change its signature and every call site with it.
 
+`EncodePacket::LENGTH` tells the framing layer whether a payload is fixed or
+variable length. For fixed packets, the framer debug-asserts that the encoded
+body matches the declared size, catching a field added to a struct but forgotten
+in its encoder.
+
 **D5. Nothing is silently dropped.** `ClientPacket` has an
 `Unknown { id: u8, body: Vec<u8> }` variant. An unhandled id is a logged fact,
 not a dropped connection and not a silent `true` return.
 
 **D6. Newtypes on the wire.** `Serial`, `Graphic`, `Hue`, `Layer`, `SoundId`,
-`BodyId`, `GumpId`, `CursorId`, `CliLocId`, `MusicId`. Bare `u32`/`u16` fields
+`GumpId`, `CursorId`, `CliLocId`, `MusicId`. Bare `u32`/`u16` fields
 are gone from packet definitions; `.0` is unwrapped only inside the codec.
 `Serial` already exists in `common/entities` and **moves into
 `common/protocol`** — it is a wire concept first; `entities` depends on
@@ -118,6 +123,11 @@ are gone from packet definitions; `.0` is unwrapped only inside the codec.
 Each newtype is introduced in the stage that first needs it, in `wire.rs`, not
 all of them up front: a type nothing uses yet is a guess about a packet nobody
 has read closely, and it hardens before it is right.
+
+`Option<Serial>` is the packet shape for an absent object field. A zero object
+serial on the wire decodes to `None`, and an absent object encodes as zero.
+Sound ids stop at the packet boundary for now: gameplay sound tables still carry
+plain `u16` and wrap them in `SoundId` only when building packets.
 
 **D7. `LoginDecodeError` is renamed `DecodeError`.** It was never login-specific
 (56 references across the workspace); the name lies about scope.
@@ -137,6 +147,36 @@ asserting the same bytes; only the call that produces them changes. A stage
 that cannot keep the bytes identical has found a bug — fix it deliberately and
 say so in the commit, do not adjust the expectation quietly.
 
+## Amendments forced by the Stage 1 pilot
+
+1. **D2 loses its inline case.** "At most four flat scalars go inline in the
+   variant" cannot hold: `EncodePacket` has to be implemented *on a type*, so a
+   variant with inline fields has no payload to implement it on and would need
+   a second body-writing path inside `ServerPacket`. Every payload is now a
+   named struct and every variant is a newtype around one.
+2. **`EncodePacket` gained `const LENGTH: PacketLength`.** D3 wants the
+   framing layer to write the length field, and the framer cannot know
+   whether there is one without asking the payload. It pays twice:
+   `frame_body` debug-asserts a fixed packet's body size, catching a field
+   added to a struct and forgotten in its encoder.
+3. **Stage 1 does not introduce `BodyId`,** and proves neither a
+   variable-length packet nor a list-carrying one — none of
+   `target`/`combat`/`feedback` has any of the three. The variable-length path
+   is exercised by a unit test in `packet.rs` instead; the real proof moves to
+   Stage 2 (`login`: shard list, character list). D6's own rule — a newtype
+   arrives with the packet that needs it — beats the stage bullet that
+   promised `BodyId`.
+4. **`Option<Serial>` is the shape of an empty object field.**
+   `TargetResponse.object`, `AttackRequest.target`, `AttackTarget.target`,
+   `GraphicalEffect.from`/`to`.
+5. **Sound ids stop at the packet boundary.** `WorldState::play_sound` still
+   takes a bare `u16` and wraps it in `SoundId` where the packet is built.
+   Converting the sound *tables* (spell definitions, creature voices,
+   instrument notes, the scripting op) is its own sweep and would drag serde
+   into the protocol newtypes. Same for `Graphic` at the spell-visual sites.
+6. **`EffectPoint` is gone** — it was `world::Point` field for field, and the
+   effect packets now use `Point`.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -149,11 +189,12 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
   written against packets nobody has re-read yet.
 - **Stage 1 — pilot: `target`, `combat`, `feedback`.** Smallest groups, fewest
   call sites. Brings in with them: the `Serial` move (D6), the first wire
-  newtypes (`SoundId`, `CursorId`, `Graphic`, `Hue`, `BodyId`), the two traits
-  (D4) and the framing layer (D3), plus the `ServerPacket` root enum with its
-  first variants. Proves the shape end to end, including a variable-length
-  packet and a list-carrying one. If D2/D3 are wrong, this is where it shows
-  and this document changes before anything else is migrated.
+  newtypes (`SoundId`, `CursorId`, `Graphic`, `Hue`), the two traits (D4) and
+  the framing layer (D3), plus the `ServerPacket` root enum with its first
+  variants. The variable-length path is covered by a packet unit test; the real
+  variable/list packet proof moves to Stage 2's login lists. If D2/D3 are wrong,
+  this is where it shows and this document changes before anything else is
+  migrated.
 - **Stage 2 — `login`.** The most version-conditional group (shard list,
   character list, feature flags) and its own dispatch path in `server/login`.
 - **Stage 3 — `world`, `mobile`.** The largest and hottest: movement, status,
@@ -174,7 +215,7 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | Stage | State | Commit |
 | --- | --- | --- |
 | 0 | done | `153e1f8` |
-| 1 | not started | |
+| 1 | done | |
 | 2 | not started | |
 | 3 | not started | |
 | 4 | not started | |

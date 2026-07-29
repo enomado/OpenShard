@@ -14,7 +14,8 @@
 //! the reply handler can be read against `MondainQuestGump.OnResponse` line by
 //! line, which is the only way to be sure a page chain is right.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::{
     encode_gump_display, GumpButton, GumpLayout, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED,
     GUMP_WHITE,

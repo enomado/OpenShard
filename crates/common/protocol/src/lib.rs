@@ -55,34 +55,40 @@
 mod access;
 mod casting;
 mod codec;
-mod combat;
+pub mod combat;
 mod containers;
 mod context;
 mod direction;
 mod encoded;
 mod error;
 mod feature;
-mod feedback;
+pub mod feedback;
 mod gump;
 pub mod huffman;
 mod items;
 mod login;
 mod mobile;
-mod packet;
+pub mod packet;
 mod properties;
 mod seed;
+pub mod serial;
+pub mod server_packet;
 mod skill;
 mod speech;
 mod spellbook;
-mod target;
+pub mod target;
 mod vendor;
 mod version;
+pub mod wire;
 mod world;
 
 pub use access::{AccessLevel, UnknownAccessLevel};
 pub use casting::CastSpellRequest;
 pub use codec::{CodecError, CodecResult, PacketReader, PacketWriter};
-pub use combat::{encode_attack, encode_health, encode_war_mode, AttackRequest, WarModeRequest};
+// `combat`, `feedback`, `serial`, `target`, `wire` and `server_packet` are
+// deliberately absent from this wall: they are the rewritten groups, and their
+// call sites import from the module the type lives in. The wall itself goes in
+// Stage 7 (`docs/protocol_rewrite.md`, D8).
 pub use containers::{
     encode_add_to_container, encode_container_contents, encode_open_container, ContainedItem,
     DoubleClick,
@@ -92,10 +98,6 @@ pub use direction::{Direction, Facing, RUNNING_BIT};
 pub use encoded::EncodedCommand;
 pub use error::{DecodeError, WrongPacket};
 pub use feature::{Feature, FeatureSet};
-pub use feedback::{
-    encode_action, encode_graphical_effect, encode_hued_effect, encode_new_action,
-    encode_play_sound, EffectKind, EffectPoint,
-};
 pub use gump::{
     encode_close_gump, encode_gump_display, gump_color_rgb, GumpButton, GumpLayout, GumpResponse,
     GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE,
@@ -132,7 +134,6 @@ pub use speech::{
     UnicodeTalkRequest, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC, SYSTEM_SERIAL,
 };
 pub use spellbook::encode_spellbook_content;
-pub use target::{encode_target_cursor, encode_target_cursor_object, TargetResponse};
 pub use vendor::{
     encode_buy_list, encode_sell_list, BuyLine, BuyReply, Purchase, Sale, SellLine, SellReply,
 };

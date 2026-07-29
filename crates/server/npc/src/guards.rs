@@ -21,9 +21,10 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::{
-    encode_graphical_effect, encode_play_sound, EffectKind, EffectPoint, Notoriety, Point,
-};
+use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
+use openshard_protocol::{Notoriety, Point};
 use openshard_state::components::{
     Aggression, Client, CriminalUntil, DamageType, Ghost, Guard, Hitpoints, Murders, Position,
     Staff,
@@ -243,25 +244,26 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
 /// everyone who can see the spot. A mobile that simply blinks into existence —
 /// or out of it — with no feedback reads as a client glitch.
 fn flash(state: &mut WorldState, guard: EntityId, at: Point) {
-    let point = EffectPoint {
-        x: at.x,
-        y: at.y,
-        z: at.z,
+    let packet = GraphicalEffect {
+        kind: EffectKind::FixedXyz,
+        from: None,
+        to: None,
+        art: WireGraphic(ARRIVAL_GRAPHIC),
+        from_point: at,
+        to_point: at,
+        speed: 9,
+        duration: 20,
+        fixed_direction: true,
+        explode: false,
     };
-    let packet = encode_graphical_effect(
-        EffectKind::FixedXyz,
-        0,
-        0,
-        ARRIVAL_GRAPHIC,
-        point,
-        point,
-        9,
-        20,
-        true,
-        false,
+    state.broadcast_packet(guard, &ServerPacket::Effect(packet));
+    state.broadcast_packet(
+        guard,
+        &ServerPacket::PlaySound(PlaySound {
+            sound: SoundId(ARRIVAL_SOUND),
+            at,
+        }),
     );
-    state.broadcast_from(guard, packet);
-    state.broadcast_from(guard, encode_play_sound(ARRIVAL_SOUND, at.x, at.y, at.z));
 }
 
 /// The sentence: the guard speaks, and the target takes its whole hit point

@@ -10,8 +10,12 @@
 //! The drawing goes through [`WorldState`]'s interest machinery (`reveal`,
 //! `show`, `forget`); this crate owns the *rules* of where a thing is.
 
-use openshard_entities::{EntityId, Serial, SerialKind};
+use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
+use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::target::{TargetCursor, TargetKind};
+use openshard_protocol::wire::CursorId;
 use openshard_protocol::{
     encode_add_to_container, encode_container_contents, encode_drag_cancel, encode_equip,
     encode_open_container, encode_open_paperdoll, encode_remove, encode_spellbook_content,

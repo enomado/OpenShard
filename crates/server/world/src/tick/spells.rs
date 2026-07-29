@@ -18,9 +18,10 @@
 
 use super::*;
 use openshard_magic::{SpellEffect, SpellTarget, MAGERY_SKILL};
-use openshard_protocol::{
-    encode_graphical_effect, encode_play_sound, encode_target_cursor, EffectKind, EffectPoint,
-};
+use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::target::{TargetCursor, TargetKind};
+use openshard_protocol::wire::{CursorId, Graphic as WireGraphic, SoundId};
 use openshard_state::components::{Casting, Skills};
 use openshard_state::{CastStyle, DamageType, FieldKind, TargetPurpose};
 
@@ -186,8 +187,13 @@ impl World {
                     self.state
                         .pending_targets
                         .insert(caster, TargetPurpose::Spell { spell, success });
-                    self.state
-                        .send(connection, encode_target_cursor(serial.raw()));
+                    self.state.send_packet(
+                        connection,
+                        &ServerPacket::TargetCursor(TargetCursor {
+                            cursor_id: CursorId(serial.raw()),
+                            kind: TargetKind::Location,
+                        }),
+                    );
                 }
             }
         }
@@ -403,8 +409,13 @@ impl World {
         if let SpellEffect::Field(kind) = effect {
             let sound = field_cast_sound(kind);
             let at = self.caster_position(caster);
-            self.state
-                .broadcast_from(caster, encode_play_sound(sound, at.x, at.y, at.z));
+            self.state.broadcast_packet(
+                caster,
+                &ServerPacket::PlaySound(PlaySound {
+                    sound: SoundId(sound),
+                    at,
+                }),
+            );
             self.state.animate(caster, openshard_state::Action::Cast);
             return;
         }
@@ -445,63 +456,61 @@ impl World {
             SpellEffect::Scripted => return, // the pack's to voice
         };
 
-        let caster_serial = self.state.registry.serial_of(caster).map_or(0, |s| s.raw());
+        let caster_serial = self.state.registry.serial_of(caster);
         let caster_pos = self.caster_position(caster);
         let target_pos = Serial::new(target_serial)
             .and_then(|s| self.state.registry.entity_of(s))
             .and_then(|e| self.state.registry.get::<Position>(e).map(|p| p.0))
             // An area spell (target_serial 0) aims at a spot, not a mobile.
             .unwrap_or(target_location);
-        let point = |p: Point| EffectPoint {
-            x: p.x,
-            y: p.y,
-            z: p.z,
-        };
-
         let packet = match visual {
-            Visual::Bolt(graphic) => encode_graphical_effect(
-                EffectKind::Moving,
-                caster_serial,
-                target_serial,
-                graphic,
-                point(caster_pos),
-                point(target_pos),
-                7,
-                0,
-                false,
-                true,
-            ),
-            Visual::OnTarget(graphic) => encode_graphical_effect(
-                EffectKind::FixedFrom,
-                target_serial,
-                0,
-                graphic,
-                point(target_pos),
-                point(target_pos),
-                9,
-                20,
-                true,
-                false,
-            ),
-            Visual::AtSpot(graphic) => encode_graphical_effect(
-                EffectKind::FixedXyz,
-                0,
-                0,
-                graphic,
-                point(target_location),
-                point(target_location),
-                9,
-                20,
-                true,
-                false,
-            ),
+            Visual::Bolt(graphic) => GraphicalEffect {
+                kind: EffectKind::Moving,
+                from: caster_serial,
+                to: Serial::new(target_serial),
+                art: WireGraphic(graphic),
+                from_point: caster_pos,
+                to_point: target_pos,
+                speed: 7,
+                duration: 0,
+                fixed_direction: false,
+                explode: true,
+            },
+            Visual::OnTarget(graphic) => GraphicalEffect {
+                kind: EffectKind::FixedFrom,
+                from: Serial::new(target_serial),
+                to: None,
+                art: WireGraphic(graphic),
+                from_point: target_pos,
+                to_point: target_pos,
+                speed: 9,
+                duration: 20,
+                fixed_direction: true,
+                explode: false,
+            },
+            Visual::AtSpot(graphic) => GraphicalEffect {
+                kind: EffectKind::FixedXyz,
+                from: None,
+                to: None,
+                art: WireGraphic(graphic),
+                from_point: target_location,
+                to_point: target_location,
+                speed: 9,
+                duration: 20,
+                fixed_direction: true,
+                explode: false,
+            },
         };
-        self.state.broadcast_from(caster, packet);
+        self.state
+            .broadcast_packet(caster, &ServerPacket::Effect(packet));
         // The sound at the point of the effect — target_pos is the aimed spot for
         // an area spell, since its target_serial is 0.
-        self.state.broadcast_from(
+        self.state.broadcast_packet(
             caster,
-            encode_play_sound(sound, target_pos.x, target_pos.y, target_pos.z),
+            &ServerPacket::PlaySound(PlaySound {
+                sound: SoundId(sound),
+                at: target_pos,
+            }),
         );
         // The caster's gesture. A Sphere-style cast resolves as it is made, so the
         // gesture plays with the effect; the ServUO rooted cast plays it too, on

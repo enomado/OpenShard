@@ -291,10 +291,7 @@ pub(super) fn provoke_first(state: &mut WorldState, bard: EntityId, target: Enti
         },
     );
     if let Some((connection, serial)) = super::client_of(state, bard) {
-        state.send(
-            connection,
-            openshard_protocol::encode_target_cursor_object(serial),
-        );
+        super::send_object_cursor(state, connection, serial);
     }
 }
 

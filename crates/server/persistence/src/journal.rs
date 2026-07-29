@@ -63,7 +63,8 @@
 
 use std::collections::HashSet;
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
+use openshard_protocol::serial::Serial;
 
 use crate::record::{
     CharacterRecord, DecorationRecord, Inventory, ItemRecord, MobileRecord, RegionRecord,
@@ -308,7 +309,8 @@ impl Journal {
 mod tests {
     use super::*;
     use crate::record::StatLockRecord;
-    use openshard_entities::{Registry, SerialKind};
+    use openshard_entities::Registry;
+    use openshard_protocol::serial::SerialKind;
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {

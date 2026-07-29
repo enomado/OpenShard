@@ -70,11 +70,11 @@ fn use_skill_on(
     let _ = packets_for(world, connection);
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id,
-            serial: target,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(cursor_id),
+            object: openshard_protocol::serial::Serial::new(target),
             location: Point::new(START.0 + 1, START.1, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -601,11 +601,11 @@ fn answer_cursor(
     };
     world.queue(Command::TargetResponse {
         connection,
-        response: openshard_protocol::TargetResponse {
-            cursor_id,
-            serial: target,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(cursor_id),
+            object: openshard_protocol::serial::Serial::new(target),
             location: Point::new(START.0 + 1, START.1, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });
@@ -694,7 +694,7 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
     });
     world.queue(Command::Attack {
         connection: player,
-        target: victim,
+        target: openshard_protocol::serial::Serial::new(victim),
     });
     // Swing until one lands — the to-hit roll can miss, and a miss spends nothing.
     let victim_entity = world
@@ -1473,7 +1473,7 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> u
         .query::<Body>()
         .filter(|(entity, b)| b.id == body && !world.state.registry.has::<Client>(*entity))
         .filter_map(|(entity, _)| world.state.registry.serial_of(entity))
-        .map(openshard_entities::Serial::raw)
+        .map(openshard_protocol::serial::Serial::raw)
         .next_back()
         .expect("the creature was spawned")
 }
@@ -1580,11 +1580,11 @@ fn animal_lore_reads_a_pet_and_refuses_a_wild_thing_to_a_novice() {
     let _ = packets_for(&mut world, looker);
     world.queue(Command::TargetResponse {
         connection: looker,
-        response: openshard_protocol::TargetResponse {
-            cursor_id: serial.raw(),
-            serial: horse,
+        response: openshard_protocol::target::TargetResponse {
+            cursor_id: openshard_protocol::wire::CursorId(serial.raw()),
+            object: openshard_protocol::serial::Serial::new(horse),
             location: Point::new(START.0 + 1, START.1, 0),
-            graphic: 0,
+            graphic: None,
             cancelled: false,
         },
     });

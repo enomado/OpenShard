@@ -14,13 +14,17 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use openshard_entities::{EntityId, Registry, Serial};
+use openshard_entities::{EntityId, Registry};
 use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Terrain;
+use openshard_protocol::combat::HealthBar;
+use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
+use openshard_protocol::serial::Serial;
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::SoundId;
 use openshard_protocol::{
-    encode_action, encode_health, encode_message, encode_new_action, encode_opl_info,
-    encode_play_sound, encode_remove, AccessLevel, ClientVersion, Equipment, Feature,
+    encode_message, encode_opl_info, encode_remove, AccessLevel, ClientVersion, Equipment, Feature,
     MobileIncoming, MobileMove, Notoriety, PlayerUpdate, Point, PropertyList, WorldItem,
 };
 
@@ -680,18 +684,27 @@ impl WorldState {
         let Some(serial) = self.registry.serial_of(entity) else {
             return;
         };
-        if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
+        if let Some(&Client {
+            connection,
+            version,
+        }) = self.registry.get::<Client>(entity)
+        {
+            let exact = ServerPacket::Health(HealthBar::exact(serial, max, current));
             self.outbox.push(Outbound {
                 connection,
-                packet: encode_health(serial.raw(), max, current, true),
+                packet: exact.encode(version),
             });
         }
-        let scaled = encode_health(serial.raw(), max, current, false);
+        let scaled = ServerPacket::Health(HealthBar::scaled(serial, max, current));
         for watcher in self.watchers_of(entity) {
-            if let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) {
+            if let Some(&Client {
+                connection,
+                version,
+            }) = self.registry.get::<Client>(watcher)
+            {
                 self.outbox.push(Outbound {
                     connection,
-                    packet: scaled.clone(),
+                    packet: scaled.encode(version),
                 });
             }
         }
@@ -735,12 +748,20 @@ impl WorldState {
     /// A no-op for a source with no `Position` (a contained item) — its holder's
     /// tile is where such a sound belongs, and that is the caller's to place. The
     /// `0x54` is placed in 3D so the client attenuates it by distance.
+    /// `sound` is still a bare id here, not a [`SoundId`]: the sound *tables* —
+    /// spell definitions, creature voices, instrument notes — carry raw numbers
+    /// out of config, and the newtype starts where the packet is built. Converting
+    /// those tables is its own sweep and would drag serde into the protocol
+    /// newtypes; nothing here unwraps a `SoundId`, which is the rule that matters.
     pub fn play_sound(&mut self, source: EntityId, sound: u16) {
         let Some(&Position(at)) = self.registry.get::<Position>(source) else {
             return;
         };
-        let packet = encode_play_sound(sound, at.x, at.y, at.z);
-        self.broadcast_from(source, packet);
+        let packet = ServerPacket::PlaySound(PlaySound {
+            sound: SoundId(sound),
+            at,
+        });
+        self.broadcast_packet(source, &packet);
     }
 
     /// Send `mobile` a private system line — seen by that client and no one else.
@@ -865,8 +886,11 @@ impl WorldState {
         let Some(&Position(at)) = self.registry.get::<Position>(mobile) else {
             return;
         };
-        let packet = encode_play_sound(sound, at.x, at.y, at.z);
-        self.send(connection, packet);
+        let packet = ServerPacket::PlaySound(PlaySound {
+            sound: SoundId(sound),
+            at,
+        });
+        self.send_packet(connection, &packet);
     }
 
     /// Turn `mobile` to look at `other`, and tell everyone watching.
@@ -917,32 +941,33 @@ impl WorldState {
             .get::<Body>(mobile)
             .is_some_and(|body| body_opens_doors(body.id));
         // Built once each; the per-recipient choice is only which to send.
-        let new_packet = encode_new_action(serial.raw(), action.animation_type(), 0, 0);
+        let new_packet = ServerPacket::NewAnimation(NewAnimation {
+            serial,
+            animation_type: action.animation_type(),
+            action: 0,
+            delay: 0,
+        });
         let (old_action, frames) = action.classic_action(humanoid);
-        let old_packet = encode_action(serial.raw(), old_action, frames, 1, true, false, 0);
+        let old_packet = ServerPacket::Animation(Animation {
+            serial,
+            action: old_action,
+            frame_count: frames,
+            repeat_count: 1,
+            forward: true,
+            repeat: false,
+            delay: 0,
+        });
 
-        let facet = self.facet_of(mobile);
-        let sectors = &self.facet_state(facet).sectors;
-        let Some(centre) = sectors.position_of(mobile) else {
-            return;
-        };
-        let audience: Vec<EntityId> = sectors
-            .nearby(centre, VIEW_RANGE)
-            .map(|(id, _)| id)
-            .collect();
-        for entity in audience {
-            if let Some(&Client {
+        for (connection, version) in self.audience_of(mobile) {
+            let packet = if version.supports(Feature::NewMobileAnimation) {
+                &new_packet
+            } else {
+                &old_packet
+            };
+            self.outbox.push(Outbound {
                 connection,
-                version,
-            }) = self.registry.get::<Client>(entity)
-            {
-                let packet = if version.supports(Feature::NewMobileAnimation) {
-                    new_packet.clone()
-                } else {
-                    old_packet.clone()
-                };
-                self.outbox.push(Outbound { connection, packet });
-            }
+                packet: packet.encode(version),
+            });
         }
     }
 }
@@ -1202,9 +1227,10 @@ impl WorldState {
         // and it reads full from the moment you see it, like every other client.
         if let Some(&Hitpoints { current, max }) = self.registry.get::<Hitpoints>(other) {
             if let Some(serial) = self.registry.serial_of(other) {
+                let bar = ServerPacket::Health(HealthBar::scaled(serial, max, current));
                 self.outbox.push(Outbound {
                     connection,
-                    packet: encode_health(serial.raw(), max, current, false),
+                    packet: bar.encode(version),
                 });
             }
         }
@@ -1608,6 +1634,81 @@ impl WorldState {
     /// Queue a raw packet for a connection.
     pub fn send(&mut self, connection: ConnectionId, packet: Vec<u8>) {
         self.outbox.push(Outbound { connection, packet });
+    }
+
+    /// The client version negotiated on `connection`.
+    ///
+    /// `None` for a connection with no player in the world. That is not a stopgap
+    /// for "don't know yet": every in-world packet is addressed to a mobile, and a
+    /// connection without one has nothing such a packet could tell it — it left,
+    /// or it has not entered.
+    #[must_use]
+    pub fn version_of(&self, connection: ConnectionId) -> Option<ClientVersion> {
+        let &player = self.players.get(&connection)?;
+        self.registry
+            .get::<Client>(player)
+            .map(|client| client.version)
+    }
+
+    /// Queue `packet` for a connection, framed for the version that connection
+    /// negotiated.
+    ///
+    /// The seam every server-to-client packet should go through: the caller names
+    /// *what* to say and this decides *how* to say it to this particular client.
+    /// A connection with no player is skipped — see [`version_of`](Self::version_of).
+    /// Encoding for a guessed version instead is how a client silently drops a
+    /// packet it cannot parse, which is the failure mode that is hardest to see.
+    pub fn send_packet(&mut self, connection: ConnectionId, packet: &ServerPacket) {
+        let Some(version) = self.version_of(connection) else {
+            return;
+        };
+        let bytes = packet.encode(version);
+        self.outbox.push(Outbound {
+            connection,
+            packet: bytes,
+        });
+    }
+
+    /// Send `packet` to every player within view range of `source` — its own
+    /// client included — each encoded for their own client version.
+    ///
+    /// The audience for a sound or an effect is who is *near*, not the `seen` set
+    /// a health redraw uses: a door never enters anyone's `seen` (it is decoration,
+    /// redrawn by `reveal`, not tracked as an interest), yet its creak must still
+    /// be heard — so this asks the spatial index for neighbours the way `reveal`
+    /// does, and keeps the ones with a client. The feedback seam every gameplay
+    /// system reaches for — a swing, a spell, a door — so the world is *felt*, not
+    /// merely correct.
+    ///
+    /// Unlike [`broadcast_from`](Self::broadcast_from) this encodes per recipient
+    /// rather than fanning out one buffer, so a packet that grows a
+    /// version-conditional tail needs no new call shape: the caller never learns
+    /// that the bytes differ.
+    pub fn broadcast_packet(&mut self, source: EntityId, packet: &ServerPacket) {
+        for (connection, version) in self.audience_of(source) {
+            let bytes = packet.encode(version);
+            self.outbox.push(Outbound {
+                connection,
+                packet: bytes,
+            });
+        }
+    }
+
+    /// The clients within view range of `source`, with the version each speaks.
+    ///
+    /// Collected up front so the sectors borrow is dropped before anything is
+    /// queued.
+    fn audience_of(&self, source: EntityId) -> Vec<(ConnectionId, ClientVersion)> {
+        let facet = self.facet_of(source);
+        let sectors = &self.facet_state(facet).sectors;
+        let Some(centre) = sectors.position_of(source) else {
+            return Vec::new();
+        };
+        sectors
+            .nearby(centre, VIEW_RANGE)
+            .filter_map(|(entity, _)| self.registry.get::<Client>(entity))
+            .map(|client| (client.connection, client.version))
+            .collect()
     }
 
     /// Draw a newly placed or changed `entity` to everyone in range who does not

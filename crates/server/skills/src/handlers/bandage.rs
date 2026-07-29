@@ -76,10 +76,7 @@ pub fn use_bandage(state: &mut WorldState, healer: EntityId, bandage: EntityId) 
         },
     );
     state.localized_message(healer, HEAL_WHOM, "");
-    state.send(
-        connection,
-        openshard_protocol::encode_target_cursor_object(serial),
-    );
+    super::send_object_cursor(state, connection, serial);
     true
 }
 
@@ -272,10 +269,7 @@ pub fn use_lockpick(state: &mut WorldState, picker: EntityId, pick: EntityId) ->
         },
     );
     state.localized_message(picker, 502_068, ""); // What do you want to pick?
-    state.send(
-        connection,
-        openshard_protocol::encode_target_cursor_object(serial),
-    );
+    super::send_object_cursor(state, connection, serial);
     true
 }
 

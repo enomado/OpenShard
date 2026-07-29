@@ -1,95 +1,13 @@
-//! UO serials: the identity an entity has *on the wire*.
+//! Handing out serials.
 //!
-//! The Ultima Online protocol addresses everything by a 32-bit serial, and the
-//! client infers an object's category from the numeric range it falls in.
-//! Mobiles and items therefore come from two disjoint pools and cannot be
-//! renumbered freely. This is a hard protocol constraint, not a Sphere-ism.
+//! The [`Serial`] type itself is a wire concept and lives in
+//! `openshard_protocol`; what belongs here is the server-side policy of *who
+//! gets which number*, which the client never sees and the protocol does not
+//! constrain beyond the pool boundaries.
 
 use std::fmt;
 
-/// Lowest valid mobile serial. Zero is reserved.
-pub const MOBILE_MIN: u32 = 0x0000_0001;
-/// Highest valid mobile serial.
-pub const MOBILE_MAX: u32 = 0x3FFF_FFFF;
-/// Lowest valid item serial.
-pub const ITEM_MIN: u32 = 0x4000_0000;
-/// Highest valid item serial.
-pub const ITEM_MAX: u32 = 0x7FFF_FFFF;
-
-/// Which pool a [`Serial`] belongs to. The client derives this from the range.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
-pub enum SerialKind {
-    /// A mobile: player, NPC, or pet.
-    Mobile,
-    /// An item: anything not a mobile, including multis.
-    Item,
-}
-
-/// A 32-bit object identity as understood by the UO client.
-///
-/// Construction is checked: a `Serial` always falls inside a valid pool, so
-/// [`Serial::kind`] is total and never lies.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Serial(u32);
-
-impl Serial {
-    /// Build a serial from a raw wire value.
-    ///
-    /// Returns `None` for values outside both pools (`0`, and anything at or
-    /// above `0x8000_0000`), which the client would not accept.
-    #[inline]
-    pub const fn new(raw: u32) -> Option<Self> {
-        if raw >= MOBILE_MIN && raw <= ITEM_MAX {
-            Some(Self(raw))
-        } else {
-            None
-        }
-    }
-
-    /// The raw value to put on the wire.
-    #[inline]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-
-    /// Which pool this serial came from.
-    #[inline]
-    pub const fn kind(self) -> SerialKind {
-        if self.0 <= MOBILE_MAX {
-            SerialKind::Mobile
-        } else {
-            SerialKind::Item
-        }
-    }
-
-    /// True if this serial addresses a mobile.
-    #[inline]
-    pub const fn is_mobile(self) -> bool {
-        self.0 <= MOBILE_MAX
-    }
-
-    /// True if this serial addresses an item.
-    #[inline]
-    pub const fn is_item(self) -> bool {
-        self.0 > MOBILE_MAX
-    }
-}
-
-impl fmt::Debug for Serial {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self.kind() {
-            SerialKind::Mobile => "Mobile",
-            SerialKind::Item => "Item",
-        };
-        write!(f, "Serial({kind} 0x{:08X})", self.0)
-    }
-}
-
-impl fmt::Display for Serial {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "0x{:08X}", self.0)
-    }
-}
+use openshard_protocol::serial::{Serial, SerialKind, ITEM_MAX, ITEM_MIN, MOBILE_MAX, MOBILE_MIN};
 
 /// The serial pool for one kind is full.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -143,7 +61,8 @@ impl SerialAllocator {
         if *next > max {
             return Err(SerialPoolExhausted(kind));
         }
-        let serial = Serial(*next);
+        // The watermark is inside the pool, so this is a serial by construction.
+        let serial = Serial::new(*next).unwrap();
         // Saturating so the exhausted pool stays exhausted rather than wrapping
         // back into the other pool's range.
         *next = next.saturating_add(1);
@@ -183,21 +102,6 @@ impl SerialAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn range_decides_kind() {
-        assert_eq!(Serial::new(MOBILE_MIN).unwrap().kind(), SerialKind::Mobile);
-        assert_eq!(Serial::new(MOBILE_MAX).unwrap().kind(), SerialKind::Mobile);
-        assert_eq!(Serial::new(ITEM_MIN).unwrap().kind(), SerialKind::Item);
-        assert_eq!(Serial::new(ITEM_MAX).unwrap().kind(), SerialKind::Item);
-    }
-
-    #[test]
-    fn rejects_out_of_range() {
-        assert_eq!(Serial::new(0), None);
-        assert_eq!(Serial::new(ITEM_MAX + 1), None);
-        assert_eq!(Serial::new(u32::MAX), None, "0xFFFFFFFF means 'nothing'");
-    }
 
     #[test]
     fn pools_are_independent_and_monotonic() {

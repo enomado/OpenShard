@@ -15,5 +15,6 @@ workspace = true
 openshard-combat.workspace = true
 openshard-entities.workspace = true
 openshard-items.workspace = true
+openshard-protocol.workspace = true
 openshard-skills.workspace = true
 openshard-state.workspace = true

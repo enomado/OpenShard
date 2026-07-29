@@ -5,7 +5,8 @@
 //! matters — a giver you already have a quest from must talk about *that* quest
 //! rather than offering another.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
+use openshard_protocol::serial::Serial;
 use openshard_state::components::{DoneQuest, QuestGiver, QuestLog, QuestState};
 use openshard_state::quest::ObjectiveKind;
 use openshard_state::{QuestGumpContext, QuestSection, WorldState, TICKS_PER_SECOND};

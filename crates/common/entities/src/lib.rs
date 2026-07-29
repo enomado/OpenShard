@@ -5,7 +5,8 @@
 //! *is* falls out of which components it carries.
 //!
 //! ```
-//! use openshard_entities::{Registry, SerialKind};
+//! use openshard_entities::Registry;
+//! use openshard_protocol::serial::SerialKind;
 //!
 //! struct Position { x: i32, y: i32 }
 //! struct Health(u32);
@@ -43,8 +44,8 @@
 //!
 //! This crate knows nothing about gameplay. It defines no `Position`, no
 //! `Health`, no `Combat` — those live in the crates that own those rules. What
-//! it provides is identity ([`EntityId`], [`Serial`]) and storage
-//! ([`Registry`]).
+//! it provides is identity ([`EntityId`], and the wire `Serial` it borrows from
+//! `openshard_protocol`) and storage ([`Registry`]).
 
 mod component;
 mod entity;
@@ -54,7 +55,4 @@ mod serial;
 pub use component::{Component, Entities, Iter, IterMut, SparseSet};
 pub use entity::EntityId;
 pub use registry::{BindSerialError, Query, QueryMut, Registry, SpawnError};
-pub use serial::{
-    Serial, SerialAllocator, SerialKind, SerialPoolExhausted, ITEM_MAX, ITEM_MIN, MOBILE_MAX,
-    MOBILE_MIN,
-};
+pub use serial::{SerialAllocator, SerialPoolExhausted};

@@ -270,6 +270,16 @@ impl PacketWriter {
         self.bytes.extend_from_slice(value);
     }
 
+    /// Overwrite the big-endian `u16` at `offset` with `value`.
+    ///
+    /// The framing layer's tool and nobody else's: a variable-length packet
+    /// carries its total length at offset 1, which is only known once the body
+    /// is written. Panics if the two bytes are not already there — a patch past
+    /// the end is a framing bug, not a runtime condition.
+    pub fn patch_u16(&mut self, offset: usize, value: u16) {
+        self.bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+
     /// Write `count` zero bytes.
     pub fn zeros(&mut self, count: usize) {
         self.bytes.resize(self.bytes.len() + count, 0);

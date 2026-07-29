@@ -29,7 +29,8 @@ pub use handlers::{
 };
 pub use stats::gain_stat;
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
+use openshard_protocol::serial::Serial;
 use openshard_state::components::{Hitpoints, Mana, Skills, Stamina, Stats};
 use openshard_state::WorldState;
 

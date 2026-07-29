@@ -169,7 +169,7 @@ pub enum Command {
         /// Which connection answered.
         connection: ConnectionId,
         /// The decoded response: what was clicked, or a cancel.
-        response: openshard_protocol::TargetResponse,
+        response: openshard_protocol::target::TargetResponse,
     },
     /// The script pack registers a spawn region — an area the tick then keeps
     /// populated. See [`crate::spawner`].
@@ -492,8 +492,8 @@ pub enum Command {
     Attack {
         /// Which connection.
         connection: ConnectionId,
-        /// The target's serial.
-        target: u32,
+        /// The target's serial, or none to clear the aim.
+        target: Option<openshard_protocol::serial::Serial>,
     },
     /// A client said something (`0x03`).
     Say {

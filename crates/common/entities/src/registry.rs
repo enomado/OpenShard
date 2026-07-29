@@ -6,7 +6,9 @@ use std::{fmt, iter, option};
 
 use crate::component::{split_two, Column, Component, Iter, IterMut, SparseSet};
 use crate::entity::{EntityAllocator, EntityId};
-use crate::serial::{Serial, SerialAllocator, SerialKind, SerialPoolExhausted};
+use openshard_protocol::serial::{Serial, SerialKind};
+
+use crate::serial::{SerialAllocator, SerialPoolExhausted};
 
 /// Iterator returned by [`Registry::query`].
 ///

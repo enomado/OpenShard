@@ -10,7 +10,8 @@
 //! pickaxe, Magery wants a spellbook — and the client has a line for exactly that
 //! case, cliloc 500014. It is not an error and it is not a gap: it is the answer.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
+use openshard_protocol::serial::Serial;
 use openshard_state::components::{Casting, Ghost, SkillCooldown};
 use openshard_state::{skill, WorldState};
 

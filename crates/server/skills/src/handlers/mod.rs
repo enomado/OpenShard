@@ -33,9 +33,12 @@ pub use social::Begged;
 pub use stealth::{snooping, Stolen};
 pub use taming::{followers_of, Tamed, MAX_FOLLOWERS};
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::encode_target_cursor_object;
+use openshard_protocol::serial::Serial;
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::target::{TargetCursor, TargetKind};
+use openshard_protocol::wire::CursorId;
 use openshard_state::components::{Client, HearsGhosts, Position};
 use openshard_state::{in_range, Skill, TargetPurpose, WorldState};
 
@@ -295,6 +298,16 @@ pub(super) fn client_of(state: &WorldState, mobile: EntityId) -> Option<(Connect
     Some((client.connection, serial.raw()))
 }
 
+pub(super) fn send_object_cursor(state: &mut WorldState, connection: ConnectionId, cursor_id: u32) {
+    state.send_packet(
+        connection,
+        &ServerPacket::TargetCursor(TargetCursor {
+            cursor_id: CursorId(cursor_id),
+            kind: TargetKind::Object,
+        }),
+    );
+}
+
 /// Whether two things are on the same facet and within `range` tiles.
 pub(super) fn within(state: &WorldState, a: EntityId, b: EntityId, range: u32) -> bool {
     let (Some(&Position(at)), Some(&Position(other))) = (
@@ -320,7 +333,7 @@ pub(super) fn raise_cursor(state: &mut WorldState, actor: EntityId, id: u8, prom
         .pending_targets
         .insert(actor, TargetPurpose::Skill { skill: id });
     state.localized_message(actor, prompt, "");
-    state.send(connection, encode_target_cursor_object(serial.raw()));
+    send_object_cursor(state, connection, serial.raw());
     true
 }
 

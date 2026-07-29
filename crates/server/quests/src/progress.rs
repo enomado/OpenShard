@@ -18,8 +18,9 @@
 //! already makes.
 
 use openshard_combat::MobileDied;
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
 use openshard_items::Contents;
+use openshard_protocol::serial::Serial;
 use openshard_state::components::{Escortable, QuestLog};
 use openshard_state::quest::ObjectiveKind;
 use openshard_state::{QuestSection, WorldState, TICKS_PER_SECOND};

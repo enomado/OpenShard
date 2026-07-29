@@ -10,7 +10,8 @@
 //! because the world's tick is what decides a player moved. `NpcKilled` will
 //! belong to combat; `HouseCreated` to housing.
 
-use openshard_entities::{EntityId, Serial};
+use openshard_entities::EntityId;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::{Facing, Point};
 
 /// A character entered the world.

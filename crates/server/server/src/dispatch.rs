@@ -156,7 +156,8 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(response) = TargetResponse::decode(packet) else {
+            let Ok(response) = decode_packet::<TargetResponse>(packet, session.login.version())
+            else {
                 warn!(%id, "malformed 0x6C");
                 return false;
             };
@@ -289,11 +290,11 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(WarModeRequest::ID) => {
+        Some(<WarMode as DecodePacket>::ID) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(request) = WarModeRequest::decode(packet) else {
+            let Ok(request) = decode_packet::<WarMode>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x72");
                 return false;
             };
@@ -307,7 +308,8 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(request) = AttackRequest::decode(packet) else {
+            let Ok(request) = decode_packet::<AttackRequest>(packet, session.login.version())
+            else {
                 warn!(%id, "malformed 0x05");
                 return false;
             };

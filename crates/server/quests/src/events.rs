@@ -1,4 +1,4 @@
-use openshard_entities::Serial;
+use openshard_protocol::serial::Serial;
 
 /// A player accepted a quest.
 #[derive(Clone, PartialEq, Eq, Debug)]

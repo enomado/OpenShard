@@ -7,10 +7,11 @@
 //! player's backpack and hands goods into it; selling is the mirror, at half
 //! price — the classic margin.
 
-use openshard_entities::{EntityId, Serial, SerialKind};
+use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_items as items;
 use openshard_movement::Terrain;
+use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::{
     encode_buy_list, encode_container_contents, encode_open_container, encode_sell_list, BuyLine,
     Purchase, Sale, SellLine,

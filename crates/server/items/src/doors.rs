@@ -57,7 +57,13 @@ pub fn use_key(state: &mut WorldState, connection: ConnectionId, player: EntityI
     state
         .pending_targets
         .insert(player, openshard_state::TargetPurpose::TurnKey { key });
-    state.send(connection, openshard_protocol::encode_target_cursor(0));
+    state.send_packet(
+        connection,
+        &ServerPacket::TargetCursor(TargetCursor {
+            cursor_id: CursorId(0),
+            kind: TargetKind::Location,
+        }),
+    );
 }
 
 /// Whether a player is close enough to turn a key on something.
