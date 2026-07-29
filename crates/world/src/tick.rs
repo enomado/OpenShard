@@ -40,7 +40,7 @@ use openshard_protocol::{
     encode_logout_ack, encode_map_change, encode_message, encode_season, encode_supported_features,
     encode_walk_ack, encode_walk_reject, AccessLevel, ClientVersion, Direction, Facing, Feature,
     MobileStatus, Notoriety, PlayerStart, PlayerUpdate, Point, WalkRequest, AOS_FEATURE_FLAGS,
-    DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH, LABEL_MODE,
+    LABEL_MODE,
 };
 use tracing::{debug, info, warn};
 
@@ -223,6 +223,8 @@ impl World {
             DEFAULT_FACET,
             FacetState {
                 terrain: None,
+                width: FACET_WITHOUT_A_MAP.0,
+                height: FACET_WITHOUT_A_MAP.1,
                 sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
                 obstructions: Obstructions::default(),
                 regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
@@ -325,6 +327,8 @@ impl World {
             facet,
             FacetState {
                 terrain: Some(Box::new(terrain) as Box<dyn Terrain + Send + Sync>),
+                width,
+                height,
                 sectors,
                 obstructions: Obstructions::default(),
                 regions: Regions::new(width, height),
@@ -1414,3 +1418,5 @@ mod skills_tests;
 mod status_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod travel_tests;

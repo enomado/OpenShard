@@ -182,6 +182,7 @@ impl World {
             self.state.registry.insert(
                 crossing.entity,
                 InRegion {
+                    facet: crossing.facet,
                     region: crossing.to,
                 },
             );
@@ -207,16 +208,16 @@ impl World {
                 let facet = self.state.facet_of(entity);
                 let region = self.state.region_at(facet, position.0);
                 let to = region.map(|region| region.id);
-                let from = self
-                    .state
-                    .registry
-                    .get::<InRegion>(entity)
-                    .and_then(|seen| seen.region);
+                let seen = self.state.registry.get::<InRegion>(entity);
+                let from = seen.and_then(|seen| seen.region);
                 // A mobile with no `InRegion` at all has just entered the world;
                 // it is only a crossing if it landed somewhere named, or `enter`
                 // would fire one for every login into open country.
-                let known = self.state.registry.has::<InRegion>(entity);
-                if known && from == to {
+                let known = seen.is_some();
+                // The facet is half the comparison: the same id on two facets is
+                // two different places, so a traveller has crossed even when the
+                // number has not changed.
+                if known && from == to && seen.is_some_and(|seen| seen.facet == facet) {
                     return None;
                 }
                 if !known && to.is_none() {

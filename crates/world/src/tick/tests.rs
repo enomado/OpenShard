@@ -116,7 +116,7 @@ pub(super) fn walk(sequence: u8, direction: Direction) -> WalkRequest {
 }
 
 /// The serial the world gave the character a connection is driving.
-fn serial_of(world: &World, connection: ConnectionId) -> u32 {
+pub(super) fn serial_of(world: &World, connection: ConnectionId) -> u32 {
     let entity = world.state.players[&connection];
     world.state.registry.serial_of(entity).unwrap().raw()
 }
@@ -10657,20 +10657,28 @@ fn a_saved_character_remembers_whose_it_is() {
 
 /// Register a mapless facet, so a test can populate more than one without
 /// client files. Its interest grid is the same no-map size facet 0 uses.
-fn add_empty_facet(world: &mut World, facet: u8) {
+pub(super) fn add_empty_facet(world: &mut World, facet: u8) {
+    add_empty_facet_sized(world, facet, FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1);
+}
+
+/// The same, at a size of the test's choosing — the facets are not all the
+/// shape of Britannia, and what the client is told about that is a rule.
+pub(super) fn add_empty_facet_sized(world: &mut World, facet: u8, width: u32, height: u32) {
     world.state.facets.insert(
         facet,
         FacetState {
             terrain: None,
-            sectors: Sectors::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
+            width,
+            height,
+            sectors: Sectors::new(width, height),
             obstructions: Obstructions::default(),
-            regions: Regions::new(FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1),
+            regions: Regions::new(width, height),
             banks: Banks::default(),
         },
     );
 }
 
-fn enter_on_facet(world: &mut World, connection: ConnectionId, facet: u8, now: Instant) {
+pub(super) fn enter_on_facet(world: &mut World, connection: ConnectionId, facet: u8, now: Instant) {
     world.queue(Command::Enter {
         connection,
         version: ClientVersion::TOL,

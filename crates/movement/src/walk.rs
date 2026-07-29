@@ -260,7 +260,7 @@ impl Walker {
         mounted: bool,
     ) -> Walk {
         if self.sequence.accept(request.sequence).is_err() {
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         }
 
@@ -283,19 +283,19 @@ impl Walker {
             // Moving faster than a body can move. Refuse the step rather than
             // the connection: the client snaps back, which is what a legitimate
             // one needs and what an illegitimate one deserves.
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         }
 
         let Some(target) = step_from(self.position, request.facing.direction) else {
             // Walked off the edge of the coordinate space. The client cannot
             // express where it wanted to go, so there is nowhere to allow.
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         };
 
         let Some(landed) = terrain.can_step(self.position, target) else {
-            self.sequence.reject();
+            self.sequence.reset();
             return Walk::Refused;
         };
 

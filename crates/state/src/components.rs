@@ -2422,7 +2422,14 @@ pub struct Movement(pub Walker);
 /// moment a new mover forgets to write it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct InRegion {
-    /// The region's id on its facet, or `None` out in the wilds.
+    /// Which facet's list [`region`](Self::region) indexes.
+    ///
+    /// An id alone is not an answer. Each facet numbers its own regions from
+    /// zero, so region 3 in Felucca and region 3 in Ilshenar compare equal —
+    /// and a traveller crossing between them would look to the diff like
+    /// somebody who had not moved: no `RegionChanged`, no music, no guards.
+    pub facet: u8,
+    /// The region's id on that facet, or `None` out in the wilds.
     pub region: Option<u16>,
 }
 

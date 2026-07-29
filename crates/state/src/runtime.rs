@@ -19,15 +19,16 @@ use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Terrain;
 use openshard_protocol::{
-    encode_action, encode_health, encode_message, encode_new_action, encode_opl_info,
-    encode_play_sound, encode_remove, AccessLevel, ClientVersion, Equipment, Feature,
-    MobileIncoming, MobileMove, Notoriety, PlayerUpdate, Point, PropertyList, WorldItem,
+    encode_action, encode_health, encode_map_change, encode_message, encode_new_action,
+    encode_opl_info, encode_play_sound, encode_remove, encode_server_change, AccessLevel,
+    ClientVersion, Equipment, Feature, MobileIncoming, MobileMove, Notoriety, PlayerUpdate, Point,
+    PropertyList, WorldItem,
 };
 
 use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost,
-    Graphic, Heading, HearsGhosts, Hidden, Hitpoints, Meditating, Movement, Name, Position,
-    Quality, Staff, Stealthing,
+    Graphic, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name,
+    Position, Quality, Staff, Stealthing,
 };
 use crate::dialogue::Dialogue;
 use crate::harvest::Banks;
@@ -344,6 +345,17 @@ pub struct Outbound {
 pub struct FacetState {
     /// The floor, if this facet has a map loaded.
     pub terrain: Option<Box<dyn Terrain + Send + Sync>>,
+    /// How wide this facet's map is, in tiles.
+    ///
+    /// Kept here rather than asked of the terrain because the client has to be
+    /// *told* it — twice, at login (`0x1B`) and at every facet change (`0x76`) —
+    /// and the facets are not all the same shape: Felucca is 7168×4096 and
+    /// Tokuno is 1448×1448. A shard that sends Britannia's size for every facet
+    /// hands a character in Ilshenar a map three times too large, and the client
+    /// draws the edge of the world wherever it likes.
+    pub width: u32,
+    /// How tall this facet's map is, in tiles. See [`FacetState::width`].
+    pub height: u32,
     /// Who is near what, on this facet.
     pub sectors: Sectors,
     /// What the live world has put in the way: closed doors, placed decoration.
@@ -1142,15 +1154,89 @@ impl WorldState {
     /// refresh" bug. A walk does not need this because the client predicts its own
     /// step; a decree does, because the client was not expecting to move.
     pub fn teleport(&mut self, entity: EntityId, to: Point) {
-        let facet = self.facet_of(entity);
+        self.move_to(entity, self.facet_of(entity), to);
+    }
+
+    /// Move a mobile to `to` on `facet`, which may not be the one it is standing
+    /// on. The one door for every relocation: [`teleport`](Self::teleport) is
+    /// this with the facet it already has.
+    ///
+    /// A facet change is not a longer teleport. Five things remember where a
+    /// mobile is, and none of them is checked by a compiler: the traveller's own
+    /// screen, every watcher's screen, the old facet's sector grid, the region it
+    /// was last seen in, and the music its client is playing. Leave any one of
+    /// them behind and nothing errors — the client simply keeps drawing mobiles
+    /// from a world it is no longer in, at coordinates that now mean somewhere
+    /// else, and every `nearby` query on the facet it left keeps handing back
+    /// someone who is not there. So the order below is ServUO's `Mobile.Map`
+    /// setter, and each step says what it is for.
+    pub fn move_to(&mut self, entity: EntityId, facet: u8, to: Point) {
+        let from = self.facet_of(entity);
+        // Never strand someone on a facet the shard did not load; a mobile there
+        // would have no ground, no neighbours and no way back.
+        if from != facet && !self.facets.contains_key(&facet) {
+            return;
+        }
+
+        if from != facet {
+            // Take the traveller off every screen on the facet it is leaving,
+            // while `watchers_of` can still be trusted — after the move it is on
+            // another grid and this finds nobody.
+            if let Some(serial) = self.registry.serial_of(entity) {
+                for watcher in self.watchers_of(entity) {
+                    self.forget(watcher, entity, serial);
+                }
+            }
+            // And clear the traveller's own screen: everything on it belongs to
+            // the other facet. ServUO's `ClearScreen`, and the one step whose
+            // absence is invisible in a test and permanent in a client.
+            let remembered: Vec<EntityId> = self
+                .seen
+                .get(&entity)
+                .map(|seen| seen.iter().copied().collect())
+                .unwrap_or_default();
+            for other in remembered {
+                if let Some(serial) = self.registry.serial_of(other) {
+                    self.forget(entity, other, serial);
+                }
+            }
+            // Out of the old grid. `teleport` never had to do this, which is why
+            // the removal is easy to leave out and costly to leave out.
+            self.facet_state_mut(from).sectors.remove(entity);
+            self.registry.insert(entity, Facet(facet));
+            // The remembered region indexes the *old* facet's list, so keeping it
+            // would compare a Felucca id against an Ilshenar one.
+            self.registry.remove::<InRegion>(entity);
+        }
+
         self.registry.insert(entity, Position(to));
         // Keep the walker's own copy in step, or the next walk starts from the old
-        // tile.
+        // tile. The sequence goes back to fresh with it: the client zeroes its own
+        // on a jump, and a server that does not asks it for a resync it cannot give
+        // (Sphere says as much beside its own reset).
         if let Some(Movement(mut walker)) = self.registry.get::<Movement>(entity).copied() {
             walker.position = to;
+            walker.sequence.reset();
             self.registry.insert(entity, Movement(walker));
         }
         self.facet_state_mut(facet).sectors.insert(entity, to);
+
+        if from != facet {
+            if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
+                let (width, height) = {
+                    let state = self.facet_state(facet);
+                    (state.width, state.height)
+                };
+                // Which map to draw, then where on it and how big it is. No
+                // `0x1B`: that is the "entering the world" packet, and neither
+                // reference re-sends it mid-session.
+                self.send(connection, encode_map_change(facet));
+                self.send(
+                    connection,
+                    encode_server_change(to, width as u16, height as u16),
+                );
+            }
+        }
 
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
             let serial = self.registry.serial_of(entity).map_or(0, |s| s.raw());

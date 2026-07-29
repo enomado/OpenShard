@@ -583,6 +583,37 @@ pub fn encode_map_change(map: u8) -> Vec<u8> {
     writer.into_bytes()
 }
 
+/// `0x76` — the client has changed facet: where it now stands, and how big the
+/// new world is. 16 bytes.
+///
+/// This is the packet a *facet change* needs and login does not. `0x1B` carries
+/// the map size too, but it is the "you are entering the world" packet and
+/// re-sending it mid-session restarts the session; ServUO's `Mobile.Map` setter
+/// sends this instead, after the `0xBF 0x08` that says which map to draw.
+///
+/// Both references define it identically — ServUO's `ServerChange` and Sphere's
+/// `PacketZoneChange` are the same sixteen bytes in the same order. They differ
+/// only in that Sphere never sends it, its resync being `0xBF 0x08` and a
+/// redraw; ServUO's is the one that actually changes maps at runtime, so this
+/// follows ServUO.
+///
+/// The three zeroed fields after `z` are unused in every client that reads it.
+#[must_use]
+pub fn encode_server_change(at: Point, width: u16, height: u16) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(16);
+    writer.u8(0x76);
+    writer.u16(at.x);
+    writer.u16(at.y);
+    // Sign-extended, as ServUO's `(short)m.Z` is: a dungeon floor is negative,
+    // and a zero-extended one puts the player 65,000 tiles in the air.
+    writer.u16(i16::from(at.z) as u16);
+    writer.zeros(5);
+    writer.u16(width);
+    writer.u16(height);
+    debug_assert_eq!(writer.len(), 16);
+    writer.into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -879,6 +910,33 @@ mod tests {
         );
         assert_eq!(u16::from_be_bytes([map[3], map[4]]), 0x08, "subcommand");
         assert_eq!(map[5], 1, "Trammel");
+    }
+
+    /// The facet-change packet, byte for byte.
+    ///
+    /// ServUO's `ServerChange` and Sphere's `PacketZoneChange` agree exactly on
+    /// this layout, which is as close to a specification as this genre gets, so
+    /// it is worth pinning rather than trusting a reading of either.
+    #[test]
+    fn the_server_change_says_where_and_how_big() {
+        let packet = encode_server_change(Point::new(1495, 1629, -20), 2304, 1600);
+
+        assert_eq!(packet.len(), 16, "fixed at sixteen bytes");
+        assert_eq!(packet[0], 0x76);
+        assert_eq!(u16::from_be_bytes([packet[1], packet[2]]), 1495, "x");
+        assert_eq!(u16::from_be_bytes([packet[3], packet[4]]), 1629, "y");
+        assert_eq!(
+            i16::from_be_bytes([packet[5], packet[6]]),
+            -20,
+            "z is signed — a dungeon floor is below zero"
+        );
+        assert_eq!(&packet[7..12], &[0; 5], "three unused fields");
+        assert_eq!(
+            u16::from_be_bytes([packet[12], packet[13]]),
+            2304,
+            "Ilshenar's width, not Britannia's"
+        );
+        assert_eq!(u16::from_be_bytes([packet[14], packet[15]]), 1600, "height");
     }
 
     #[test]
