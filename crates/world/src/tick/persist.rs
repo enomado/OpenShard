@@ -5,10 +5,10 @@ use openshard_persistence::{
 };
 use openshard_state::components::{
     body_opens_doors, effect, Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy,
-    DoneQuest, Escortable, Field, Frozen, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned,
-    Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark, Runebook,
-    RunebookEntry, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title, Trap,
-    TrapKind, Vendor,
+    DoneQuest, Escortable, Field, Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges,
+    Poisoned, Price, Quality, QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark,
+    Runebook, RunebookEntry, Skills, Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title,
+    Trap, TrapKind, Vendor,
 };
 
 impl World {
@@ -231,10 +231,17 @@ impl World {
             // field tile (transient like a cast in flight — it does not persist, and
             // restoring one would leave an eternal static that no longer expires or
             // blocks).
+            //
+            // A spell's gate is excluded for exactly the same reason, and ServUO
+            // deletes its own on deserialise saying so: restored, a half-minute
+            // portal becomes a permanent one whose caster no longer exists. The
+            // eight city moongates are `Decoration` and are already out by the
+            // line above, so the two cases do not collide.
             if !registry.has::<Graphic>(item)
                 || registry.has::<Body>(item)
                 || registry.has::<Decoration>(item)
                 || registry.has::<Field>(item)
+                || registry.has::<Moongate>(item)
             {
                 continue;
             }

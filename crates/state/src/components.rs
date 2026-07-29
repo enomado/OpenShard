@@ -1286,6 +1286,33 @@ pub struct Runebook {
 /// How many destinations one runebook holds — ServUO's `Runebook.MaxEntries`.
 pub const RUNEBOOK_ENTRIES: usize = 16;
 
+/// A moongate's item graphic — ServUO's `Moongate` and `PublicMoongate` alike.
+pub const MOONGATE_GRAPHIC: u16 = 0x0F6C;
+
+/// A gate on the ground, and where stepping into it leads.
+///
+/// Covers both kinds, which differ only in `expires_at`: a Gate Travel spell
+/// lays a pair that close after half a minute, and a city moongate stands
+/// forever. The pair needs no link field — each gate points at the other's tile,
+/// so the link *is* the destination and there are not two halves to keep honest.
+///
+/// A timed gate is transient, like a cast in flight, and is deliberately left
+/// out of the save sweep: restored, it would be a permanent portal whose caster
+/// no longer exists. ServUO deletes its own on deserialise for the same reason.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Moongate {
+    /// Which facet the far end is on.
+    pub facet: u8,
+    /// The tile it leads to.
+    pub destination: Point,
+    /// The tick it closes, or `None` for one that never does.
+    pub expires_at: Option<u64>,
+}
+
+/// How tall a gate stands, for the reach test on a double-click. ServUO's
+/// `Moongate.OnDoubleClick` wants range 1.
+pub const MOONGATE_REACH: u32 = 1;
+
 /// The corpse item graphic. A protocol special case: for item `0x2006` the
 /// client reads the `Amount` field as the dead body id, so a corpse draws as the
 /// creature it was. A corpse is a container (the loot window) that decays.

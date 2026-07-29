@@ -91,6 +91,9 @@ pub enum SpellEffect {
     Mark,
     /// Take the caster to where the aimed rune (or runebook) points.
     Recall,
+    /// Open a pair of gates: one where the caster stands and one at the rune's
+    /// destination, each leading to the other, both closing together.
+    GateTravel,
     /// The core does not run this one yet — the pack owns it (fields, summons,
     /// travel, and the rest).
     Scripted,
@@ -491,7 +494,7 @@ pub static MAGERY: [SpellInfo; 64] = [
         // spell in the family that opens a gate cost the wrong reagent.
         &[BLACK_PEARL, MANDRAKE_ROOT, SULFUROUS_ASH],
         Item,
-        Scripted,
+        SpellEffect::GateTravel,
     ),
     spell(
         "Mana Vampire",

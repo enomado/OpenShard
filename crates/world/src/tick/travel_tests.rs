@@ -16,8 +16,8 @@ use super::tests::{
 };
 use super::*;
 use openshard_state::components::{
-    Contained, CriminalUntil, Facet, InRegion, Mana, Movement, Position, RuneMark, Spellbook,
-    RECALL_RUNE_GRAPHIC, SPELLBOOK_GRAPHIC,
+    Contained, CriminalUntil, Decays, Facet, InRegion, Mana, Moongate, Movement, Position,
+    RuneMark, Spellbook, RECALL_RUNE_GRAPHIC, SPELLBOOK_GRAPHIC,
 };
 use openshard_state::{Region, RegionFlags, RegionRect};
 
@@ -322,6 +322,7 @@ const MARK: u16 = 44;
 const BLACK_PEARL: u16 = 0x0F7A;
 const BLOOD_MOSS: u16 = 0x0F7B;
 const MANDRAKE_ROOT: u16 = 0x0F86;
+const SULFUROUS_ASH: u16 = 0x0F8C;
 
 /// A caster who can afford either spell, with a rune in its pack.
 ///
@@ -345,7 +346,7 @@ fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, u32) {
     world.tick(now);
 
     let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
-    for reagent in [BLACK_PEARL, BLOOD_MOSS, MANDRAKE_ROOT] {
+    for reagent in [BLACK_PEARL, BLOOD_MOSS, MANDRAKE_ROOT, SULFUROUS_ASH] {
         openshard_items::give(&mut world.state, backpack, reagent, 0, 50);
     }
     if let Some(book) = openshard_items::give(&mut world.state, backpack, SPELLBOOK_GRAPHIC, 0, 1) {
@@ -624,5 +625,192 @@ fn a_criminal_cannot_recall_away_and_it_costs_them_nothing_to_find_out() {
         world.registry().get::<Mana>(caster).unwrap().current,
         mana_before,
         "and paid nothing to be refused"
+    );
+}
+
+// -- gates -------------------------------------------------------------------
+
+/// Gate Travel's spell id.
+const GATE_TRAVEL: u16 = 51;
+
+#[test]
+fn a_gate_opens_at_both_ends_and_each_leads_to_the_other() {
+    // Cross-linked by construction: each gate points at the other's tile, so
+    // there is no link field that can disagree with a destination.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let here = world.registry().get::<Position>(caster).unwrap().0;
+    let there = Point::new(START.0 + 15, START.1 + 15, 0);
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        rune,
+        RuneMark {
+            facet: 0,
+            destination: there,
+        },
+    );
+
+    cast_at(&mut world, connection, GATE_TRAVEL, rune_serial, now);
+
+    let near = world.gate_at(0, here).expect("a gate at the caster");
+    let far = world.gate_at(0, there).expect("and one at the destination");
+    assert_eq!(
+        world.registry().get::<Moongate>(near).unwrap().destination,
+        there
+    );
+    assert_eq!(
+        world.registry().get::<Moongate>(far).unwrap().destination,
+        here
+    );
+}
+
+#[test]
+fn walking_into_a_gate_takes_you_through_it() {
+    // There is no `OnMoveOver` here and there are two movement paths, so the
+    // crossing is read off this tick's `MobileMoved` rather than called from
+    // each — the shape `guard_crossings` uses.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let walker = world.state.players[&connection];
+    let from = world.registry().get::<Position>(walker).unwrap().0;
+    // Where the step actually lands, from the engine's own vector table — UO's
+    // compass is diagonal on screen, so guessing the offset is how a test ends up
+    // asserting about a tile nobody walked onto.
+    let onto = openshard_movement::step_from(from, Direction::North).expect("a tile north");
+    let far = Point::new(START.0 + 30, START.1, 0);
+    world.spawn_gate(
+        0,
+        onto,
+        Moongate {
+            facet: 0,
+            destination: far,
+            expires_at: None,
+        },
+    );
+
+    // Two requests: the first only turns the character to face the way it is
+    // going, as UO's walk does, and the second is the step that lands on the gate.
+    world.queue(Command::Walk {
+        connection,
+        request: walk(0, Direction::North),
+    });
+    world.tick(now);
+    world.queue(Command::Walk {
+        connection,
+        request: walk(1, Direction::North),
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.registry().get::<Position>(walker).unwrap().0,
+        far,
+        "the step onto the gate carried through it"
+    );
+}
+
+#[test]
+fn a_gate_closes_on_its_own_and_leaves_nothing_behind() {
+    // Three ways a gate outlives its half-minute, all quiet: a second clock from
+    // `spawn_item`, a save that restores it, or an expiry that forgets the
+    // sector grid and leaves an invisible gate that still works.
+    let now = Instant::now();
+    let mut world = world();
+    let at = Point::new(START.0 + 2, START.1, 0);
+    let gate = world
+        .spawn_gate(
+            0,
+            at,
+            Moongate {
+                facet: 0,
+                destination: Point::new(START.0 + 9, START.1, 0),
+                expires_at: Some(3),
+            },
+        )
+        .expect("a gate");
+    assert!(
+        world.registry().get::<Decays>(gate).is_none(),
+        "a gate owns its own lifetime and carries no second clock"
+    );
+
+    let mut later = now;
+    for _ in 0..5 {
+        later += TICK_INTERVAL;
+        world.tick(later);
+    }
+
+    assert!(
+        world.registry().get::<Moongate>(gate).is_none(),
+        "it closed"
+    );
+    assert_eq!(
+        world.state.facet_state(0).sectors.position_of(gate),
+        None,
+        "and left nothing on the sector grid to walk into"
+    );
+}
+
+#[test]
+fn a_gate_is_not_swept_into_the_save() {
+    // Restored, a half-minute portal becomes a permanent one whose caster no
+    // longer exists — which is why ServUO deletes its own on deserialise.
+    let now = Instant::now();
+    let mut world = world();
+    let _ = enter(&mut world, now);
+    world.spawn_gate(
+        0,
+        Point::new(START.0 + 2, START.1, 0),
+        Moongate {
+            facet: 0,
+            destination: Point::new(START.0 + 9, START.1, 0),
+            expires_at: Some(9_999),
+        },
+    );
+    world.tick(now);
+
+    world.take_snapshot();
+    let saved: Vec<_> = world.drain_saves().collect();
+    let ground = saved
+        .iter()
+        .filter_map(|snapshot| snapshot.ground.as_ref())
+        .flatten()
+        .count();
+    assert_eq!(ground, 0, "no gate reached the ground sweep");
+}
+
+#[test]
+fn two_gates_never_stand_on_one_tile() {
+    // ServUO checks both ends and Sphere checks both for a telepad: two gates on
+    // one spot are two overlapping ways out of it, and closing one leaves the
+    // other looking broken.
+    let now = Instant::now();
+    let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
+    let there = Point::new(START.0 + 15, START.1 + 15, 0);
+    let rune = world
+        .state
+        .registry
+        .entity_of(Serial::new(rune_serial).unwrap())
+        .unwrap();
+    world.state.registry.insert(
+        rune,
+        RuneMark {
+            facet: 0,
+            destination: there,
+        },
+    );
+    let here = world.registry().get::<Position>(caster).unwrap().0;
+
+    cast_at(&mut world, connection, GATE_TRAVEL, rune_serial, now);
+    let first = world.gate_at(0, here).expect("the first gate");
+    cast_at(&mut world, connection, GATE_TRAVEL, rune_serial, now);
+
+    assert_eq!(
+        world.gate_at(0, here),
+        Some(first),
+        "the second cast opened nothing new"
     );
 }

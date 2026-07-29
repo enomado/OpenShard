@@ -84,6 +84,7 @@ mod decor;
 mod defaults;
 mod enter;
 mod fields;
+mod gates;
 mod motion;
 mod persist;
 mod regions;
@@ -148,6 +149,10 @@ pub struct World {
     entered: Cursor<PlayerEntered>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     moved: Cursor<MobileMoved>,
+    /// The same moves, read to notice who stepped onto a gate. A cursor of its
+    /// own, not a second read of `moved`: each consumer needs every event, and
+    /// two of them sharing one cursor means whichever runs first eats the other's.
+    gated: Cursor<MobileMoved>,
     /// What combat reported hit, for the AI's retaliation.
     damaged: Cursor<openshard_combat::MobileDamaged>,
     /// Poisoners who fumbled a dose onto themselves, for the tick to apply.
@@ -262,6 +267,7 @@ impl World {
             departed: Vec::new(),
             entered: Cursor::default(),
             moved: Cursor::default(),
+            gated: Cursor::default(),
             damaged: Cursor::default(),
             fumbled: Cursor::default(),
             begged: Cursor::default(),
@@ -537,6 +543,11 @@ impl World {
         // Pulse and expire persistent fields — fire burns, poison seeps, walls hold
         // — before `reap`, so a field kill lays its corpse this tick.
         self.field_tick();
+        // Close the gates whose half-minute is up, and take through anyone who
+        // stepped onto one this tick. Before `reap` for the same reason a field
+        // is: what happens on arrival happens now, not next tick.
+        self.expire_gates();
+        self.gate_crossings();
         // Lift the stat buffs whose time is up, and redraw the bar for any player
         // whose stats just changed back — the decide-then-apply split again.
         let now = self.state.ticks;
@@ -965,10 +976,24 @@ impl World {
                         }
                         _ => false,
                     };
+                    // A gate is stepped through, not opened, so it is caught here
+                    // rather than in `items::double_click` — a moongate is not a
+                    // door, a container or a mobile, and left to fall through it
+                    // would reach the pack as a bare `ItemUsed`.
+                    let gate_clicked = match (
+                        self.state.players.get(&connection).copied(),
+                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                    ) {
+                        (Some(player), Some(target)) => self.click_gate(player, target),
+                        _ => false,
+                    };
                     // Then the interaction: a vendor's shop first, if the click
                     // was a shopkeeper in range; anything else is the ordinary
                     // use rule.
-                    if !snoop_refused && !npc::open_shop(&mut self.state, connection, serial) {
+                    if !gate_clicked
+                        && !snoop_refused
+                        && !npc::open_shop(&mut self.state, connection, serial)
+                    {
                         items::double_click(&mut self.state, connection, serial);
                         // And the core's own answer for an item a skill knows what
                         // to do with — an instrument struck up, and the bandage and

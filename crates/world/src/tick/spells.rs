@@ -363,6 +363,7 @@ impl World {
             }
             SpellEffect::Mark => self.mark_rune(caster, target_serial),
             SpellEffect::Recall => self.recall(caster, target_serial),
+            SpellEffect::GateTravel => self.open_gate_pair(caster, target_serial),
             SpellEffect::BehaviourBuff(kind) => {
                 // Night Sight can land on another mobile; the self-cast trio
                 // (Protection, Reactive Armor, Magic Reflection) answers its own
@@ -466,6 +467,9 @@ impl World {
             // sounds bracket the move, so an onlooker at *each* end hears one.
             // A single packet here would play both at the tile left behind.
             SpellEffect::Recall => return,
+            // And a gate voices itself at both ends as the pair opens; the gates
+            // themselves are the visual, as a field's tiles are.
+            SpellEffect::GateTravel => return,
             SpellEffect::Scripted => return, // the pack's to voice
         };
 

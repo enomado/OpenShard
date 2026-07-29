@@ -33,7 +33,10 @@ impl World {
         caster: EntityId,
         effect: magic::SpellEffect,
     ) -> Option<&'static str> {
-        if !matches!(effect, magic::SpellEffect::Recall) {
+        if !matches!(
+            effect,
+            magic::SpellEffect::Recall | magic::SpellEffect::GateTravel
+        ) {
             return None;
         }
         if self.state.is_staff(caster) {
@@ -116,10 +119,11 @@ impl World {
         // item and so does this, rather than a second field saying the same
         // thing. A rune that reads "1495, 1629" in a pack of sixteen is a rune
         // nobody can find twice.
-        // The rune's name changes here, which is the first thing in the world
-        // whose name does. Nothing re-sends a tooltip mid-life yet (the roadmap
-        // records it as a gap), so the client picks the new one up the next time
-        // it asks — and the spell's own line says what was marked meanwhile.
+        //
+        // It is also the first thing in the world whose name *changes*. Nothing
+        // re-sends a tooltip mid-life yet (the roadmap records that as a gap), so
+        // the client picks the new one up the next time it asks, and the spell's
+        // own line says what was marked meanwhile.
         let name = magic::describe(&self.state, facet, at);
         self.state
             .registry
