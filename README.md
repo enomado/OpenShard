@@ -166,7 +166,18 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
 
-All three are expected to be silent.
+All three are expected to be silent, and CI runs exactly these on every pull
+request.
+
+## Contributing
+
+Work lands through a pull request against a protected `main`. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the flow, and
+[`CLAUDE.md`](CLAUDE.md) for the reasoning behind the engine — the rules that
+are easy to trip over are in there, along with the traps already paid for.
+
+**No Ultima Online client files are in this repository and none ever will be.**
+They are copyrighted. Point the engine at whatever install you already have.
 
 ## Stack
 
