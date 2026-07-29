@@ -96,10 +96,15 @@ pub(crate) fn open_spellbook(
         // The gump `0xFFFF` is what tells the client this container is a book.
         encode_open_container(book_serial.raw(), 0xFFFF, version),
     );
-    state.send(
+    // Magery spells start at offset 1; the mask's bit `n` is spell `n`.
+    state.send_packet(
         connection,
-        // Magery spells start at offset 1; the mask's bit `n` is spell `n`.
-        encode_spellbook_content(book_serial.raw(), SPELLBOOK_GRAPHIC, 1, mask),
+        &ServerPacket::SpellbookContent(SpellbookContent {
+            serial: book_serial.raw(),
+            graphic: SPELLBOOK_GRAPHIC,
+            offset: 1,
+            content: mask,
+        }),
     );
 }
 

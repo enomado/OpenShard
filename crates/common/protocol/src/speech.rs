@@ -9,8 +9,10 @@
 //! that spoke `0xAD` gets `0xAE` back, so the words it typed survive the round
 //! trip intact.
 
-use crate::codec::PacketWriter;
-use crate::error::{expect_id, DecodeError};
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::DecodeError;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::version::ClientVersion;
 
 /// The name field in a `0x1C` is a fixed thirty bytes.
 const NAME_LENGTH: usize = 30;
@@ -32,14 +34,13 @@ pub struct TalkRequest {
     pub text: String,
 }
 
-impl TalkRequest {
-    /// The packet id.
-    pub const ID: u8 = 0x03;
+impl DecodePacket for TalkRequest {
+    const ID: u8 = 0x03;
 
-    /// Decode a whole `0x03` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         let mode = reader.u8()?;
         let hue = reader.u16()?;
         let font = reader.u16()?;
@@ -81,14 +82,13 @@ pub struct UnicodeTalkRequest {
     pub text: String,
 }
 
-impl UnicodeTalkRequest {
-    /// The packet id.
-    pub const ID: u8 = 0xAD;
+impl DecodePacket for UnicodeTalkRequest {
+    const ID: u8 = 0xAD;
 
-    /// Decode a whole `0xAD` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         let mode = reader.u8()?;
         let hue = reader.u16()?;
         let font = reader.u16()?;
@@ -140,30 +140,37 @@ fn utf16_be_to_string(bytes: &[u8]) -> String {
 /// `graphic` of `0xFFFF` are "the system talking", not a mobile; a real speaker
 /// sends its own serial, its body graphic, and its name in the fixed thirty-byte
 /// field.
-pub fn encode_message(
-    serial: u32,
-    graphic: u16,
-    mode: u8,
-    hue: u16,
-    font: u16,
-    name: &str,
-    text: &str,
-) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(44 + text.len());
-    writer.u8(0x1C);
-    writer.u16(0); // length, patched below
-    writer.u32(serial);
-    writer.u16(graphic);
-    writer.u8(mode);
-    writer.u16(hue);
-    writer.u16(font);
-    writer.fixed_string(name, NAME_LENGTH);
-    writer.null_terminated_string(text);
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SpokenMessage {
+    /// The speaker, or [`SYSTEM_SERIAL`].
+    pub serial: u32,
+    /// The speaker's body graphic, or [`NO_GRAPHIC`].
+    pub graphic: u16,
+    /// How it is said (0 normal, 2 emote, 8 whisper, 9 yell, [`LABEL_MODE`](crate::mobile::LABEL_MODE), …).
+    pub mode: u8,
+    /// The colour to draw it in.
+    pub hue: u16,
+    /// The font to draw it in.
+    pub font: u16,
+    /// The speaker's name, clamped to thirty bytes.
+    pub name: String,
+    /// What was said.
+    pub text: String,
+}
 
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a message outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
+impl EncodePacket for SpokenMessage {
+    const ID: u8 = 0x1C;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.u16(self.graphic);
+        out.u8(self.mode);
+        out.u16(self.hue);
+        out.u16(self.font);
+        out.fixed_string(&self.name, NAME_LENGTH);
+        out.null_terminated_string(&self.text);
+    }
 }
 
 /// `0xC1` — a **localized** message: the client looks the text up in its own
@@ -175,41 +182,46 @@ pub fn encode_message(
 ///
 /// `arguments` are the `\t`-separated substitutions the cliloc's `~1_val~` slots
 /// take, and they are UTF-16 **little-endian** — ServUO's `WriteLittleUniNull`.
-/// That is the opposite of the `0xAE` speech packet two functions up, which is
-/// big-endian, and it is exactly the detail a copy from there gets wrong: the
-/// client draws an empty line and says nothing about why.
-// One argument past clippy's limit, and the list is the packet's own field order —
-// the same shape `encode_message` above has, with the cliloc in place of the text.
-#[allow(clippy::too_many_arguments)]
-pub fn encode_localized_message(
-    serial: u32,
-    graphic: u16,
-    mode: u8,
-    hue: u16,
-    font: u16,
-    cliloc: u32,
-    name: &str,
-    arguments: &str,
-) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(50 + arguments.len() * 2);
-    writer.u8(0xC1);
-    writer.u16(0); // length, patched below
-    writer.u32(serial);
-    writer.u16(graphic);
-    writer.u8(mode);
-    writer.u16(hue);
-    writer.u16(font);
-    writer.u32(cliloc);
-    writer.fixed_string(name, NAME_LENGTH);
-    for unit in arguments.encode_utf16() {
-        writer.u16(unit.swap_bytes()); // little-endian, unlike 0xAE above
-    }
-    writer.u16(0);
+/// That is the opposite of the `0xAE` speech packet below, which is big-endian,
+/// and it is exactly the detail a copy from there gets wrong: the client draws
+/// an empty line and says nothing about why.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LocalizedMessage {
+    /// The speaker, or [`SYSTEM_SERIAL`].
+    pub serial: u32,
+    /// The speaker's body graphic, or [`NO_GRAPHIC`].
+    pub graphic: u16,
+    /// How it is said.
+    pub mode: u8,
+    /// The colour to draw it in.
+    pub hue: u16,
+    /// The font to draw it in.
+    pub font: u16,
+    /// The cliloc the client looks up and draws.
+    pub cliloc: u32,
+    /// The speaker's name, clamped to thirty bytes.
+    pub name: String,
+    /// The `\t`-separated substitutions for the cliloc's `~1_val~` slots.
+    pub arguments: String,
+}
 
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a localized message outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
+impl EncodePacket for LocalizedMessage {
+    const ID: u8 = 0xC1;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.u16(self.graphic);
+        out.u8(self.mode);
+        out.u16(self.hue);
+        out.u16(self.font);
+        out.u32(self.cliloc);
+        out.fixed_string(&self.name, NAME_LENGTH);
+        for unit in self.arguments.encode_utf16() {
+            out.u16(unit.swap_bytes()); // little-endian, unlike 0xAE below
+        }
+        out.u16(0);
+    }
 }
 
 /// The language tag in a `0xAE` is a fixed four bytes, ASCII with a NUL.
@@ -220,42 +232,46 @@ const DEFAULT_LANGUAGE: &str = "ENU";
 /// `0xAE` — draw *Unicode* speech over a source and put it in the journal.
 /// Variable length.
 ///
-/// The counterpart of [`encode_message`] for text `0x1C`'s Latin-1 cannot carry:
+/// The counterpart of [`SpokenMessage`] for text `0x1C`'s Latin-1 cannot carry:
 /// an accent, a non-Latin script. Ported from Sphere's `PacketMessageUNICODE`,
 /// the layout matches `0x1C` up to the name, then adds a four-byte language tag
 /// before it and sends the text as big-endian UTF-16 rather than ASCII. A client
 /// that spoke `0xAD` expects its own words back this way — the reason a shard
 /// whose players type accented names needs it and the ASCII path is not enough.
-// One argument past clippy's limit, and every one is a distinct wire field —
-// `encode_message`'s seven plus the language tag. Bundling them into a struct
-// would only move the same list one call up.
-#[allow(clippy::too_many_arguments)]
-pub fn encode_unicode_message(
-    serial: u32,
-    graphic: u16,
-    mode: u8,
-    hue: u16,
-    font: u16,
-    language: &str,
-    name: &str,
-    text: &str,
-) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(50 + text.len() * 2);
-    writer.u8(0xAE);
-    writer.u16(0); // length, patched below
-    writer.u32(serial);
-    writer.u16(graphic);
-    writer.u8(mode);
-    writer.u16(hue);
-    writer.u16(font);
-    writer.fixed_string(language, LANGUAGE_LENGTH);
-    writer.fixed_string(name, NAME_LENGTH);
-    writer.null_terminated_string_utf16(text);
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UnicodeMessage {
+    /// The speaker, or [`SYSTEM_SERIAL`].
+    pub serial: u32,
+    /// The speaker's body graphic, or [`NO_GRAPHIC`].
+    pub graphic: u16,
+    /// How it is said.
+    pub mode: u8,
+    /// The colour to draw it in.
+    pub hue: u16,
+    /// The font to draw it in.
+    pub font: u16,
+    /// The four-byte language tag, e.g. `"ENU"`. See [`DEFAULT_LANGUAGE_TAG`].
+    pub language: String,
+    /// The speaker's name, clamped to thirty bytes.
+    pub name: String,
+    /// What was said.
+    pub text: String,
+}
 
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a message outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
+impl EncodePacket for UnicodeMessage {
+    const ID: u8 = 0xAE;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.u16(self.graphic);
+        out.u8(self.mode);
+        out.u16(self.hue);
+        out.u16(self.font);
+        out.fixed_string(&self.language, LANGUAGE_LENGTH);
+        out.fixed_string(&self.name, NAME_LENGTH);
+        out.null_terminated_string_utf16(&self.text);
+    }
 }
 
 /// The default four-byte language tag (`"ENU\0"`) for a Unicode message whose
@@ -271,19 +287,27 @@ pub const NO_GRAPHIC: u16 = 0xFFFF;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::{decode_packet, encode_packet};
+
+    fn version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
 
     #[test]
     fn a_localized_message_carries_a_number_and_little_endian_arguments() {
         // 1042764 is "~1_NAME~ seems to belong to someone else." — one slot.
-        let packet = encode_localized_message(
-            0xFFFF_FFFF,
-            0xFFFF,
-            0,
-            0x03B2,
-            3,
-            1_042_764,
-            "System",
-            "Iolo",
+        let packet = encode_packet(
+            &LocalizedMessage {
+                serial: 0xFFFF_FFFF,
+                graphic: 0xFFFF,
+                mode: 0,
+                hue: 0x03B2,
+                font: 3,
+                cliloc: 1_042_764,
+                name: "System".to_owned(),
+                arguments: "Iolo".to_owned(),
+            },
+            version(),
         );
         assert_eq!(packet[0], 0xC1);
         assert_eq!(
@@ -320,7 +344,7 @@ mod tests {
         bytes.extend_from_slice(&3u16.to_be_bytes()); // font
         bytes.extend_from_slice(b"hi\0");
 
-        let talk = TalkRequest::decode(&bytes).unwrap();
+        let talk: TalkRequest = decode_packet(&bytes, version()).unwrap();
         assert_eq!(talk.mode, 0);
         assert_eq!(talk.hue, 0x0384);
         assert_eq!(talk.font, 3);
@@ -342,7 +366,7 @@ mod tests {
         bytes.extend_from_slice(&(total as u16).to_be_bytes());
         bytes.extend_from_slice(&body);
 
-        let talk = UnicodeTalkRequest::decode(&bytes).unwrap();
+        let talk: UnicodeTalkRequest = decode_packet(&bytes, version()).unwrap();
         assert_eq!(talk.mode, 0);
         assert_eq!(talk.hue, 0x0384);
         assert_eq!(talk.font, 3);
@@ -366,14 +390,25 @@ mod tests {
         bytes.extend_from_slice(&(total as u16).to_be_bytes());
         bytes.extend_from_slice(&body);
 
-        let talk = UnicodeTalkRequest::decode(&bytes).unwrap();
+        let talk: UnicodeTalkRequest = decode_packet(&bytes, version()).unwrap();
         assert_eq!(talk.mode, 0, "the keyword bits are stripped");
         assert_eq!(talk.text, "hello");
     }
 
     #[test]
     fn a_message_lays_out_its_header_and_pads_the_name() {
-        let packet = encode_message(0x0000_0002, 0x0190, 0, 0x0384, 3, "British", "hail");
+        let packet = encode_packet(
+            &SpokenMessage {
+                serial: 0x0000_0002,
+                graphic: 0x0190,
+                mode: 0,
+                hue: 0x0384,
+                font: 3,
+                name: "British".to_owned(),
+                text: "hail".to_owned(),
+            },
+            version(),
+        );
         assert_eq!(packet[0], 0x1C);
         assert_eq!(
             u16::from_be_bytes([packet[1], packet[2]]),
@@ -395,8 +430,19 @@ mod tests {
     fn a_unicode_message_carries_its_text_as_big_endian_utf16() {
         // The whole reason `0xAE` exists: text `0x1C`'s Latin-1 cannot hold. A
         // Portuguese "olá" comes back with the accented letter intact.
-        let packet =
-            encode_unicode_message(0x0000_0002, 0x0190, 0, 0x0384, 3, "PTB", "Cidadão", "olá");
+        let packet = encode_packet(
+            &UnicodeMessage {
+                serial: 0x0000_0002,
+                graphic: 0x0190,
+                mode: 0,
+                hue: 0x0384,
+                font: 3,
+                language: "PTB".to_owned(),
+                name: "Cidadão".to_owned(),
+                text: "olá".to_owned(),
+            },
+            version(),
+        );
         assert_eq!(packet[0], 0xAE);
         assert_eq!(
             u16::from_be_bytes([packet[1], packet[2]]),
@@ -422,7 +468,18 @@ mod tests {
 
     #[test]
     fn a_system_message_has_no_mobile_behind_it() {
-        let packet = encode_message(SYSTEM_SERIAL, NO_GRAPHIC, 0, 0, 3, "System", "welcome");
+        let packet = encode_packet(
+            &SpokenMessage {
+                serial: SYSTEM_SERIAL,
+                graphic: NO_GRAPHIC,
+                mode: 0,
+                hue: 0,
+                font: 3,
+                name: "System".to_owned(),
+                text: "welcome".to_owned(),
+            },
+            version(),
+        );
         assert_eq!(
             u32::from_be_bytes([packet[3], packet[4], packet[5], packet[6]]),
             SYSTEM_SERIAL

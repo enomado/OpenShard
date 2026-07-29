@@ -30,7 +30,8 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::{encode_message, SYSTEM_SERIAL};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::speech::{SpokenMessage, SYSTEM_SERIAL};
 use openshard_state::components::{Banker, Position};
 use openshard_state::sectors::in_range;
 use openshard_state::WorldState;
@@ -136,16 +137,16 @@ use openshard_items::banked_gold as bank_gold;
 /// Send a private system line to a connection — a `0x1C` from the system serial,
 /// the "the bank says" reply a keyword earns.
 pub(crate) fn notify(state: &mut WorldState, connection: ConnectionId, text: &str) {
-    let packet = encode_message(
-        SYSTEM_SERIAL,
-        0xFFFF,
-        0,
-        GREET_HUE,
-        GREET_FONT,
-        "System",
-        text,
-    );
-    state.send(connection, packet);
+    let packet = ServerPacket::SpokenMessage(SpokenMessage {
+        serial: SYSTEM_SERIAL,
+        graphic: 0xFFFF,
+        mode: 0,
+        hue: GREET_HUE,
+        font: GREET_FONT,
+        name: "System".to_owned(),
+        text: text.to_owned(),
+    });
+    state.send_packet(connection, &packet);
 }
 
 #[cfg(test)]

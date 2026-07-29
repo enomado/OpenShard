@@ -10,40 +10,67 @@
 //! Ported from ServUO's `NewSpellbookContent`.
 
 use crate::codec::PacketWriter;
+use crate::packet::{EncodePacket, PacketLength};
+use crate::version::ClientVersion;
 
-/// `0xBF` `0x1B` — the spells a book holds, as a 64-bit mask.
+/// `0xBF` `0x1B` — the spells a book holds, as a 64-bit mask. Fixed 23 bytes.
 ///
 /// `offset` is the spell the low bit stands for (`1` for Magery, so bit 0 is
 /// spell 1); `content` is the mask, written little-endian byte by byte.
-#[must_use]
-pub fn encode_spellbook_content(serial: u32, graphic: u16, offset: u16, content: u64) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(23);
-    writer.u8(0xBF);
-    writer.u16(0); // length, patched below
-    writer.u16(0x1B); // subcommand: spellbook content
-    writer.u16(0x01); // the "new" (post-4.0) form
-    writer.u32(serial);
-    writer.u16(graphic);
-    writer.u16(offset);
-    for i in 0..8 {
-        writer.u8((content >> (i * 8)) as u8);
-    }
+///
+/// # Fixed despite living under `0xBF`, and the length field is still hand-written
+///
+/// Like [`crate::mobile::StatLocks`], this subcommand's body never varies, so it
+/// declares `Fixed(23)`. [`crate::packet::frame_body`] only back-patches a length
+/// for [`PacketLength::Variable`], so the constant `u16(23)` is still written
+/// here by hand, exactly where the `0xBF` envelope always puts one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SpellbookContent {
+    /// The book.
+    pub serial: u32,
+    /// Its graphic.
+    pub graphic: u16,
+    /// The spell the low bit of `content` stands for.
+    pub offset: u16,
+    /// Bit `n` set means the book holds the `offset + n`-th spell.
+    pub content: u64,
+}
 
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a spellbook packet outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
+impl EncodePacket for SpellbookContent {
+    const ID: u8 = 0xBF;
+    const LENGTH: PacketLength = PacketLength::Fixed(23);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u16(23); // this subcommand's own, constant length
+        out.u16(0x1B); // subcommand: spellbook content
+        out.u16(0x01); // the "new" (post-4.0) form
+        out.u32(self.serial);
+        out.u16(self.graphic);
+        out.u16(self.offset);
+        for i in 0..8 {
+            out.u8((self.content >> (i * 8)) as u8);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::encode_packet;
 
     #[test]
     fn the_content_mask_is_little_endian() {
         // Spells 1 and 64 held: bits 0 and 63 of the mask.
         let content = 1u64 | (1u64 << 63);
-        let packet = encode_spellbook_content(0x4000_0001, 0x0EFA, 1, content);
+        let packet = encode_packet(
+            &SpellbookContent {
+                serial: 0x4000_0001,
+                graphic: 0x0EFA,
+                offset: 1,
+                content,
+            },
+            ClientVersion::new(7, 0, 45, 65),
+        );
         assert_eq!(packet[0], 0xBF);
         assert_eq!(
             u16::from_be_bytes([packet[1], packet[2]]),

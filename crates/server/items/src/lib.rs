@@ -15,11 +15,11 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::containers::{
     encode_add_to_container, encode_open_container, ContainedItem, ContainerContents,
 };
-use openshard_protocol::encode_spellbook_content;
 use openshard_protocol::items::{DragCancel, DragCancelReason, EquipUpdate, DROP_TO_GROUND};
 use openshard_protocol::mobile::{OpenPaperdoll, Remove, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::spellbook::SpellbookContent;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
 use openshard_protocol::world::Point;

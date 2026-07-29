@@ -7,7 +7,7 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::GumpResponse;
+use openshard_protocol::gump::GumpResponse;
 use openshard_state::components::QuestLog;
 use openshard_state::{QuestGumpContext, QuestSection, WorldState};
 

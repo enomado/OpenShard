@@ -22,7 +22,9 @@
 use crate::codec::PacketWriter;
 use crate::combat::{AttackTarget, HealthBar, WarMode};
 use crate::containers::ContainerContents;
+use crate::context::ContextMenu;
 use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, PlaySound};
+use crate::gump::{CloseGump, GumpDisplay};
 use crate::items::{DragCancel, EquipUpdate, WorldItem};
 use crate::login::{
     CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
@@ -31,6 +33,8 @@ use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Rem
 use crate::packet::{frame_body, EncodePacket, PacketLength};
 use crate::properties::TooltipRevision;
 use crate::skill::{SkillUpdate, SkillsFull};
+use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
+use crate::spellbook::SpellbookContent;
 use crate::target::TargetCursor;
 use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
@@ -128,6 +132,20 @@ pub enum ServerPacket {
     SkillsFull(SkillsFull),
     /// `0x3A` — one skill's line, following a change.
     SkillUpdate(SkillUpdate),
+    /// `0x1C` — speech drawn over a source and put in the journal.
+    SpokenMessage(SpokenMessage),
+    /// `0xC1` — a localized message: a cliloc and its substitutions.
+    LocalizedMessage(LocalizedMessage),
+    /// `0xAE` — Unicode speech drawn over a source.
+    UnicodeMessage(UnicodeMessage),
+    /// `0xBF` subcommand `0x14` — a context menu on an object.
+    ContextMenu(ContextMenu),
+    /// `0xBF` subcommand `0x1B` — the spells a spellbook holds.
+    SpellbookContent(SpellbookContent),
+    /// `0xBF` subcommand `0x04` — close an open gump on the client.
+    CloseGump(CloseGump),
+    /// `0xB0` — display a generic gump.
+    GumpDisplay(GumpDisplay),
 }
 
 impl ServerPacket {
@@ -180,6 +198,13 @@ impl ServerPacket {
             Self::TooltipRevision(_) => TooltipRevision::ID,
             Self::SkillsFull(_) => SkillsFull::ID,
             Self::SkillUpdate(_) => SkillUpdate::ID,
+            Self::SpokenMessage(_) => SpokenMessage::ID,
+            Self::LocalizedMessage(_) => LocalizedMessage::ID,
+            Self::UnicodeMessage(_) => UnicodeMessage::ID,
+            Self::ContextMenu(_) => ContextMenu::ID,
+            Self::SpellbookContent(_) => SpellbookContent::ID,
+            Self::CloseGump(_) => CloseGump::ID,
+            Self::GumpDisplay(_) => GumpDisplay::ID,
         }
     }
 
@@ -228,6 +253,13 @@ impl ServerPacket {
             Self::TooltipRevision(_) => TooltipRevision::LENGTH,
             Self::SkillsFull(_) => SkillsFull::LENGTH,
             Self::SkillUpdate(_) => SkillUpdate::LENGTH,
+            Self::SpokenMessage(_) => SpokenMessage::LENGTH,
+            Self::LocalizedMessage(_) => LocalizedMessage::LENGTH,
+            Self::UnicodeMessage(_) => UnicodeMessage::LENGTH,
+            Self::ContextMenu(_) => ContextMenu::LENGTH,
+            Self::SpellbookContent(_) => SpellbookContent::LENGTH,
+            Self::CloseGump(_) => CloseGump::LENGTH,
+            Self::GumpDisplay(_) => GumpDisplay::LENGTH,
         }
     }
 
@@ -286,6 +318,13 @@ impl ServerPacket {
             Self::TooltipRevision(packet) => packet.encode_body(out, version),
             Self::SkillsFull(packet) => packet.encode_body(out, version),
             Self::SkillUpdate(packet) => packet.encode_body(out, version),
+            Self::SpokenMessage(packet) => packet.encode_body(out, version),
+            Self::LocalizedMessage(packet) => packet.encode_body(out, version),
+            Self::UnicodeMessage(packet) => packet.encode_body(out, version),
+            Self::ContextMenu(packet) => packet.encode_body(out, version),
+            Self::SpellbookContent(packet) => packet.encode_body(out, version),
+            Self::CloseGump(packet) => packet.encode_body(out, version),
+            Self::GumpDisplay(packet) => packet.encode_body(out, version),
         }
     }
 }
@@ -531,6 +570,60 @@ mod tests {
                     lock: crate::skill::SkillLock::Up,
                     cap: 1000,
                 },
+            }),
+            ServerPacket::SpokenMessage(crate::speech::SpokenMessage {
+                serial: 0x0000_0002,
+                graphic: 0x0190,
+                mode: 0,
+                hue: 0x0384,
+                font: 3,
+                name: "British".to_owned(),
+                text: "hail".to_owned(),
+            }),
+            ServerPacket::LocalizedMessage(crate::speech::LocalizedMessage {
+                serial: crate::speech::SYSTEM_SERIAL,
+                graphic: crate::speech::NO_GRAPHIC,
+                mode: 0,
+                hue: 0x03B2,
+                font: 3,
+                cliloc: 1_042_764,
+                name: "System".to_owned(),
+                arguments: "Iolo".to_owned(),
+            }),
+            ServerPacket::UnicodeMessage(crate::speech::UnicodeMessage {
+                serial: 0x0000_0002,
+                graphic: 0x0190,
+                mode: 0,
+                hue: 0x0384,
+                font: 3,
+                language: "PTB".to_owned(),
+                name: "Cidadão".to_owned(),
+                text: "olá".to_owned(),
+            }),
+            ServerPacket::ContextMenu(crate::context::ContextMenu {
+                serial: 0x0000_00AB,
+                entries: vec![crate::context::ContextMenuEntry {
+                    cliloc: 3_000_362,
+                    flags: 0,
+                }],
+            }),
+            ServerPacket::SpellbookContent(crate::spellbook::SpellbookContent {
+                serial: 0x4000_0001,
+                graphic: 0x0EFA,
+                offset: 1,
+                content: 1,
+            }),
+            ServerPacket::CloseGump(crate::gump::CloseGump {
+                gump_id: 0x0051_0001,
+                button: 0,
+            }),
+            ServerPacket::GumpDisplay(crate::gump::GumpDisplay {
+                serial: 0,
+                gump_id: 0x0051_0001,
+                x: 75,
+                y: 25,
+                layout: "{ page 0 }".to_owned(),
+                lines: Vec::new(),
             }),
         ]
     }

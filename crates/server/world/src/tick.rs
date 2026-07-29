@@ -35,18 +35,18 @@ use openshard_persistence::{
     CharacterRecord, DecorationRecord, DoorState, Inventory, ItemLocation, ItemRecord, Journal,
     MobileRecord, Snapshot, SCHEMA_VERSION,
 };
+use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
+use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
 use openshard_protocol::login::{encode_supported_features, AOS_FEATURE_FLAGS};
 use openshard_protocol::mobile::{MobileStatus, Notoriety, StatLockBits, LABEL_MODE};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::speech::SpokenMessage;
 use openshard_protocol::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point,
     Season, WalkAck, WalkReject, WalkRequest, DEFAULT_MAP_HEIGHT, DEFAULT_MAP_WIDTH,
 };
-use openshard_protocol::{
-    encode_context_menu, encode_gump_display, encode_message, AccessLevel, ClientVersion,
-    Direction, Facing, Feature,
-};
+use openshard_protocol::{AccessLevel, ClientVersion, Direction, Facing, Feature};
 use tracing::{debug, info, warn};
 
 use openshard_state::components::{
@@ -1245,9 +1245,15 @@ impl World {
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
-        let packet =
-            encode_gump_display(serial, gump_id, i32::from(x), i32::from(y), layout, lines);
-        self.state.send(connection, packet);
+        let packet = ServerPacket::GumpDisplay(GumpDisplay {
+            serial,
+            gump_id,
+            x: i32::from(x),
+            y: i32::from(y),
+            layout: layout.to_owned(),
+            lines: lines.to_vec(),
+        });
+        self.state.send_packet(connection, &packet);
     }
 
     /// Close an open dialog on a player's client. Silent if the serial names no
@@ -1260,8 +1266,8 @@ impl World {
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
-        let packet = openshard_protocol::encode_close_gump(gump_id, 0);
-        self.state.send(connection, packet);
+        let packet = ServerPacket::CloseGump(CloseGump { gump_id, button: 0 });
+        self.state.send_packet(connection, &packet);
     }
 
     /// Drop an item into a player's backpack — a quest reward. Merges onto a like

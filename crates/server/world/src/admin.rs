@@ -11,7 +11,8 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::{encode_gump_display, GumpResponse};
+use openshard_protocol::gump::{GumpDisplay, GumpResponse};
+use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::Client;
 use openshard_state::WorldState;
 
@@ -57,8 +58,15 @@ pub fn open_menu(state: &mut WorldState, actor: EntityId) {
     // keys the open gump on and echoes back. A zero here can leave some clients
     // with no gump to answer for, so no `0xB1` ever comes.
     let serial = state.registry.serial_of(actor).map_or(0, |s| s.raw());
-    let packet = encode_gump_display(serial, ADMIN_GUMP, 100, 100, layout, &lines);
-    state.send(connection, packet);
+    let packet = ServerPacket::GumpDisplay(GumpDisplay {
+        serial,
+        gump_id: ADMIN_GUMP,
+        x: 100,
+        y: 100,
+        layout: layout.to_owned(),
+        lines: lines.to_vec(),
+    });
+    state.send_packet(connection, &packet);
 }
 
 /// Interpret a `0xB1` for the admin gump: the acting mobile and the *verb* its

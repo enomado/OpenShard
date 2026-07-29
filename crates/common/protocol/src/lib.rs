@@ -53,17 +53,17 @@
 //! `docs/roadmap.md`.
 
 mod access;
-mod casting;
+pub mod casting;
 mod codec;
 pub mod combat;
 pub mod containers;
-mod context;
+pub mod context;
 mod direction;
 mod encoded;
 mod error;
 mod feature;
 pub mod feedback;
-mod gump;
+pub mod gump;
 pub mod huffman;
 pub mod items;
 pub mod login;
@@ -74,8 +74,8 @@ mod seed;
 pub mod serial;
 pub mod server_packet;
 pub mod skill;
-mod speech;
-mod spellbook;
+pub mod speech;
+pub mod spellbook;
 pub mod target;
 pub mod vendor;
 mod version;
@@ -83,30 +83,20 @@ pub mod wire;
 pub mod world;
 
 pub use access::{AccessLevel, UnknownAccessLevel};
-pub use casting::CastSpellRequest;
 pub use codec::{CodecError, CodecResult, PacketReader, PacketWriter};
-// `combat`, `containers`, `feedback`, `items`, `login`, `mobile`, `properties`,
-// `serial`, `server_packet`, `skill`, `target`, `vendor`, `wire` and `world`
-// are deliberately absent from this wall: they are the rewritten groups, and
+// `casting`, `combat`, `containers`, `context`, `feedback`, `gump`, `items`,
+// `login`, `mobile`, `properties`, `serial`, `server_packet`, `skill`,
+// `speech`, `spellbook`, `target`, `vendor`, `wire` and `world` are
+// deliberately absent from this wall: they are the rewritten groups, and
 // their call sites import from the module the type lives in. The wall itself
 // goes in Stage 7 (`docs/protocol_rewrite.md`, D8).
-pub use context::{encode_context_menu, ContextMenuRequest, ContextMenuSelect};
 pub use direction::{Direction, Facing, RUNNING_BIT};
 pub use encoded::EncodedCommand;
 pub use error::{DecodeError, WrongPacket};
 pub use feature::{Feature, FeatureSet};
-pub use gump::{
-    encode_close_gump, encode_gump_display, gump_color_rgb, GumpButton, GumpLayout, GumpResponse,
-    GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE,
-};
 pub use packet::{
     client_packet_length, frame_client_packet, Frame, FrameError, PacketLength, MAX_PACKET_SIZE,
     SEED_LENGTH_NEW, SEED_LENGTH_OLD,
 };
 pub use seed::{Seed, SeedReader, SEED_COMMAND};
-pub use speech::{
-    encode_localized_message, encode_message, encode_unicode_message, TalkRequest,
-    UnicodeTalkRequest, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC, SYSTEM_SERIAL,
-};
-pub use spellbook::encode_spellbook_content;
 pub use version::{ClientVersion, Era, ParseVersionError};

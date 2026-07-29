@@ -120,7 +120,7 @@ impl World {
     pub(super) fn handle_gump_response(
         &mut self,
         connection: ConnectionId,
-        response: openshard_protocol::GumpResponse,
+        response: GumpResponse,
     ) {
         // The quest dialogs answer themselves — the core owns that window, the
         // way it owns the container and vendor ones.

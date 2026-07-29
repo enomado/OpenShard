@@ -137,8 +137,16 @@ impl World {
 
         // The object's own serial makes the client draw the text over it; an empty
         // speaker name and the label mode make it a name tag, not speech.
-        let packet = encode_message(serial, graphic, LABEL_MODE, hue, 3, "", &text);
-        self.state.send(connection, packet);
+        let packet = ServerPacket::SpokenMessage(SpokenMessage {
+            serial,
+            graphic,
+            mode: LABEL_MODE,
+            hue,
+            font: 3,
+            name: String::new(),
+            text,
+        });
+        self.state.send_packet(connection, &packet);
     }
 
     /// Answer an AoS tooltip request (`0xD6`): send each named object's property

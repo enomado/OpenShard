@@ -101,7 +101,7 @@ fn press_with(
 ) {
     world.queue(Command::GumpResponse {
         connection,
-        response: openshard_protocol::GumpResponse {
+        response: openshard_protocol::gump::GumpResponse {
             serial: 0,
             gump_id,
             button,

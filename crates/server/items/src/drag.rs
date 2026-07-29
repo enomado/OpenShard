@@ -324,9 +324,14 @@ fn drop_scroll_on_book(
     state.held.remove(&connection);
     state.registry.despawn(held.entity);
     // Refresh the open book so the new spell appears at once.
-    state.send(
+    state.send_packet(
         connection,
-        encode_spellbook_content(book_serial.raw(), SPELLBOOK_GRAPHIC, 1, mask.0),
+        &ServerPacket::SpellbookContent(SpellbookContent {
+            serial: book_serial.raw(),
+            graphic: SPELLBOOK_GRAPHIC,
+            offset: 1,
+            content: mask.0,
+        }),
     );
     debug!(spell, "learned a spell from a scroll");
 }

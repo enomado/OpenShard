@@ -16,6 +16,8 @@
 
 use crate::codec::PacketWriter;
 use crate::error::{expect_id, DecodeError};
+use crate::packet::{EncodePacket, PacketLength};
+use crate::version::ClientVersion;
 
 /// `0xBF` subcommand `0x13` — the client asking for an object's context menu.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,32 +76,51 @@ impl ContextMenuSelect {
     }
 }
 
-/// `0xBF` subcommand `0x14` — draw a context menu on an object.
+/// One entry in a [`ContextMenu`]: the cliloc the client localizes and shows,
+/// and flags — `0` for a plain enabled entry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ContextMenuEntry {
+    /// The cliloc the client looks up and shows.
+    pub cliloc: u32,
+    /// `0` for a plain enabled entry.
+    pub flags: u16,
+}
+
+/// `0xBF` subcommand `0x14` — draw a context menu on an object. Variable length.
 ///
 /// The new (`0x02`) format, which every client since 6.0.0.0
 /// ([`Feature::NewContextMenu`](crate::Feature::NewContextMenu)) reads: each entry
 /// is a four-byte cliloc, a two-byte tag (its position, sent back on select), and
-/// two-byte flags — `0` for a plain enabled entry. Ported from ServUO's
-/// `DisplayContextMenu`.
-#[must_use]
-pub fn encode_context_menu(serial: u32, entries: &[(u32, u16)]) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(12 + entries.len() * 8);
-    writer.u8(0xBF);
-    writer.u16(0); // length, patched below
-    writer.u16(0x14); // subcommand: display popup
-    writer.u16(0x02); // the new format
-    writer.u32(serial);
-    writer.u8(entries.len() as u8);
-    for (index, &(cliloc, flags)) in entries.iter().enumerate() {
-        writer.u32(cliloc);
-        writer.u16(index as u16); // the tag the client returns on select
-        writer.u16(flags);
-    }
+/// two-byte flags. Ported from ServUO's `DisplayContextMenu`.
+///
+/// Unlike [`crate::mobile::StatLocks`] or [`crate::mobile::MapChange`](crate::world::MapChange),
+/// this `0xBF` subcommand is genuinely variable — the entry count is the caller's
+/// — so it needs no hand-written length literal: the envelope's own `u16` length
+/// field sits at the same offset every packet's does, and [`crate::packet::frame_body`]
+/// patches it exactly as it would for any other [`PacketLength::Variable`] payload.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ContextMenu {
+    /// The object the menu was opened on.
+    pub serial: u32,
+    /// The entries to show, in the order the client tags them from zero.
+    pub entries: Vec<ContextMenuEntry>,
+}
 
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a context menu outgrew its u16 length");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
+impl EncodePacket for ContextMenu {
+    const ID: u8 = 0xBF;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u16(0x14); // subcommand: display popup
+        out.u16(0x02); // the new format
+        out.u32(self.serial);
+        out.u8(self.entries.len() as u8);
+        for (index, entry) in self.entries.iter().enumerate() {
+            out.u32(entry.cliloc);
+            out.u16(index as u16); // the tag the client returns on select
+            out.u16(entry.flags);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -141,7 +162,22 @@ mod tests {
 
     #[test]
     fn a_menu_tags_each_entry_with_its_position() {
-        let packet = encode_context_menu(0x0000_00AB, &[(3_000_362, 0), (6_103, 0)]);
+        let packet = crate::packet::encode_packet(
+            &ContextMenu {
+                serial: 0x0000_00AB,
+                entries: vec![
+                    ContextMenuEntry {
+                        cliloc: 3_000_362,
+                        flags: 0,
+                    },
+                    ContextMenuEntry {
+                        cliloc: 6_103,
+                        flags: 0,
+                    },
+                ],
+            },
+            ClientVersion::new(7, 0, 45, 65),
+        );
         assert_eq!(packet[0], 0xBF);
         assert_eq!(
             u16::from_be_bytes([packet[1], packet[2]]),

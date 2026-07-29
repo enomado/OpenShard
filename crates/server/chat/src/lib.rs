@@ -15,10 +15,11 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::{encode_unicode_message, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::speech::{UnicodeMessage, DEFAULT_LANGUAGE_TAG, NO_GRAPHIC};
 use openshard_state::components::{Body, Client, Name, Position};
 use openshard_state::sectors::in_range;
-use openshard_state::{Gameplay, Outbound, WorldState};
+use openshard_state::{Gameplay, WorldState};
 
 /// A mobile said something.
 ///
@@ -104,16 +105,16 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
     // the moment a word carried an accent. One font, the modern one, for every
     // line; `0xAE` also carries any script `0x1C` cannot. The hue is left as the
     // caller (the client, for a player) chose it.
-    let packet = encode_unicode_message(
-        serial.raw(),
+    let packet = ServerPacket::UnicodeMessage(UnicodeMessage {
+        serial: serial.raw(),
         graphic,
         mode,
         hue,
         font,
-        DEFAULT_LANGUAGE_TAG,
-        &name,
-        text,
-    );
+        language: DEFAULT_LANGUAGE_TAG.to_owned(),
+        name,
+        text: text.to_owned(),
+    });
 
     let range = speech_range(mode, &state.gameplay);
     let sectors = &state.facet_state(facet).sectors;
@@ -135,10 +136,7 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
         .collect();
     for listener in listeners {
         if let Some(&Client { connection, .. }) = state.registry.get::<Client>(listener) {
-            state.outbox.push(Outbound {
-                connection,
-                packet: packet.clone(),
-            });
+            state.send_packet(connection, &packet);
         }
     }
     state.bus.send(MobileSpoke {

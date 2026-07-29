@@ -307,6 +307,61 @@ streaming builder rather than a value `EncodePacket` can wrap.
    neighbours were already out was the inconsistency D8 exists to prevent,
    not a reason to defer it.
 
+## Amendments forced by the Stage 5 pilot (`speech`, `gump`, `spellbook`, `context`, `casting`)
+
+Stage 5 is the first group built entirely out of `0xBF` subcommands and their
+own root-level messages, with no fresh newtype and no version-conditional
+tail — the pattern questions here are all about which packets fit `EncodePacket`
+at all, not about wire shapes.
+
+1. **`CastSpellRequest`, `ContextMenuRequest` and `ContextMenuSelect` are left
+   exactly as surveyed,** for the same reason `StatLockRequest` and
+   `UseSkillRequest` were in Stages 3 and 4: `0xBF` is a whole family of
+   subcommands sharing one id, so `decode(bytes) -> Result<Option<Self>,
+   DecodeError>` already says "not mine" for the ones a given type does not
+   handle. `DecodePacket` assumes one `const ID` maps to one logical packet,
+   which none of these three are — merging them into a single decode is
+   Stage 6's `ExtendedRequest` unification, not this stage's.
+2. **`ContextMenu` (`0xBF` `0x14`, outbound) is the first *variable*-length
+   `0xBF` subcommand to become an `EncodePacket`.** Unlike `MapChange` and
+   `StatLocks` (Stage 3) or `CloseGump` and `SpellbookContent` below, its entry
+   count is the caller's, so it declares `LENGTH = PacketLength::Variable`
+   rather than a hand-rolled `Fixed`. No special-casing was needed: the
+   `0xBF` envelope's own length field sits at the same offset every packet's
+   does, so `frame_body` patches it exactly as it would for any other variable
+   payload.
+3. **`CloseGump` (`0xBF` `0x04`) and `SpellbookContent` (`0xBF` `0x1B`) are
+   `Fixed`, and both still hand-write their own length literal,** for the same
+   reason `MapChange` and `StatLocks` did in Stage 3: `frame_body` only
+   back-patches a length field for `Variable`, so a fixed-size subcommand
+   under the `0xBF` envelope writes its own constant `u16` in exactly the spot
+   the envelope always puts one.
+4. **`GumpLayout` stays a hand-written builder, not an `EncodePacket`,** for
+   the same reason `PropertyList` did in Stage 4: it accumulates elements
+   (and interns their text) across an unbounded number of calls, with nothing
+   to hand back until [`finish`](gump::GumpLayout::finish) but the two
+   half-built pieces. `GumpDisplay` (`0xB0`), which takes the *finished*
+   layout string and line table, has no such obstacle and became the
+   `EncodePacket`.
+5. **The three outbound speech packets became named payload structs** —
+   `SpokenMessage` (`0x1C`), `LocalizedMessage` (`0xC1`), `UnicodeMessage`
+   (`0xAE`) — replacing `encode_message`, `encode_localized_message` and
+   `encode_unicode_message`. None needed a new wire newtype: every field is
+   already the shape Stage 1's `SoundId`/`Graphic`/`Hue` covered or a plain
+   scalar, and D6's own rule — a newtype arrives with the packet that first
+   needs it — had nothing left to add here.
+6. **`GumpResponse` (`0xB1`) becomes a `DecodePacket`, and its manual
+   length-skip is gone.** The old `decode` skipped the `u16` length field by
+   hand because it read the whole packet itself; `0xB1` is `Variable` in
+   `client_packet_length`, so `decode_packet` already skips those two bytes
+   before calling `decode_body` (per Stage 2's amendment), and skipping them a
+   second time would just be the same check done twice.
+7. **All five modules left the `lib.rs` re-export wall (D8)** in this stage
+   rather than waiting for Stage 7, the same one-stage-early move Stage 3 and
+   4 made for their own groups: leaving a freshly rewritten module in the wall
+   while its neighbours were already out would be the inconsistency D8 exists
+   to prevent.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,

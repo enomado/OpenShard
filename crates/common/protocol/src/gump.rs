@@ -11,8 +11,10 @@
 //! `0xDD`, and ClassicUO and the modern 2D client both still render `0xB0`, so the
 //! compression is a later optimisation, not a requirement.
 
-use crate::codec::PacketWriter;
-use crate::error::{expect_id, DecodeError};
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::DecodeError;
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::version::ClientVersion;
 
 /// The client's white, in the 15-bit colour a gump element takes.
 pub const GUMP_WHITE: u32 = 0x7FFF;
@@ -470,22 +472,36 @@ impl GumpLayout {
     }
 }
 
-/// `0xBF` subcommand `0x04` — close an open gump on the client.
+/// `0xBF` subcommand `0x04` — close an open gump on the client. Fixed 13 bytes.
 ///
 /// The server sends this before re-sending a dialog that replaces itself (the
 /// quest gump's own page chain does exactly that); without it the client stacks
 /// the new window on the old one. `button` is what the closed gump reports as its
 /// answer — ServUO passes `0` for a silent close. Ported from ServUO's
 /// `CloseGump`.
-#[must_use]
-pub fn encode_close_gump(gump_id: u32, button: u32) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(13);
-    writer.u8(0xBF);
-    writer.u16(13);
-    writer.u16(0x04);
-    writer.u32(gump_id);
-    writer.u32(button);
-    writer.into_bytes()
+///
+/// Fixed despite living under `0xBF`, for the same reason [`crate::mobile::StatLocks`]
+/// is: the body never varies, so the constant `u16(13)` is written here by hand,
+/// since [`crate::packet::frame_body`] only back-patches a length for
+/// [`PacketLength::Variable`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CloseGump {
+    /// Which dialog to close.
+    pub gump_id: u32,
+    /// What the closed gump reports as its answer. ServUO passes `0`.
+    pub button: u32,
+}
+
+impl EncodePacket for CloseGump {
+    const ID: u8 = 0xBF;
+    const LENGTH: PacketLength = PacketLength::Fixed(13);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u16(13);
+        out.u16(0x04);
+        out.u32(self.gump_id);
+        out.u32(self.button);
+    }
 }
 
 /// `0xB0` — display a generic gump. Variable length.
@@ -495,42 +511,48 @@ pub fn encode_close_gump(gump_id: u32, button: u32) -> Vec<u8> {
 /// back in its `0xB1` so the server knows what was answered. `layout` is the gump
 /// command string; `lines` are the strings it references by index (`{ text X Y
 /// LINE }` picks `lines[LINE]`), sent as big-endian UTF-16.
-pub fn encode_gump_display(
-    serial: u32,
-    gump_id: u32,
-    x: i32,
-    y: i32,
-    layout: &str,
-    lines: &[String],
-) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(64 + layout.len());
-    writer.u8(0xB0);
-    writer.u16(0); // length, patched below
-    writer.u32(serial);
-    writer.u32(gump_id);
-    writer.u32(x as u32);
-    writer.u32(y as u32);
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GumpDisplay {
+    /// The context the gump belongs to (a mobile, an item, or `0` standalone).
+    pub serial: u32,
+    /// Which dialog — echoed back in the `0xB1`.
+    pub gump_id: u32,
+    /// Screen x.
+    pub x: i32,
+    /// Screen y.
+    pub y: i32,
+    /// The gump command string — see [`GumpLayout::finish`].
+    pub layout: String,
+    /// The strings the layout refers to by index.
+    pub lines: Vec<String>,
+}
 
-    // The layout is ASCII with a byte-count prefix; the client reads exactly that
-    // many bytes, so no terminator is needed.
-    let layout = layout.as_bytes();
-    writer.u16(u16::try_from(layout.len()).unwrap_or(u16::MAX));
-    writer.bytes(layout);
+impl EncodePacket for GumpDisplay {
+    const ID: u8 = 0xB0;
+    const LENGTH: PacketLength = PacketLength::Variable;
 
-    // The text table: a count, then each line as its own UTF-16 run.
-    writer.u16(u16::try_from(lines.len()).unwrap_or(u16::MAX));
-    for line in lines {
-        let units: Vec<u16> = line.encode_utf16().collect();
-        writer.u16(u16::try_from(units.len()).unwrap_or(u16::MAX));
-        for unit in units {
-            writer.u16(unit); // big-endian, like every u16 on the wire
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial);
+        out.u32(self.gump_id);
+        out.u32(self.x as u32);
+        out.u32(self.y as u32);
+
+        // The layout is ASCII with a byte-count prefix; the client reads exactly
+        // that many bytes, so no terminator is needed.
+        let layout = self.layout.as_bytes();
+        out.u16(u16::try_from(layout.len()).unwrap_or(u16::MAX));
+        out.bytes(layout);
+
+        // The text table: a count, then each line as its own UTF-16 run.
+        out.u16(u16::try_from(self.lines.len()).unwrap_or(u16::MAX));
+        for line in &self.lines {
+            let units: Vec<u16> = line.encode_utf16().collect();
+            out.u16(u16::try_from(units.len()).unwrap_or(u16::MAX));
+            for unit in units {
+                out.u16(unit); // big-endian, like every u16 on the wire
+            }
         }
     }
-
-    let mut bytes = writer.into_bytes();
-    let length = u16::try_from(bytes.len()).expect("a gump outgrew its u16 length field");
-    bytes[1..3].copy_from_slice(&length.to_be_bytes());
-    bytes
 }
 
 /// `0xB1` — the client's answer to a gump: which button was pressed, plus the
@@ -552,16 +574,15 @@ pub struct GumpResponse {
     pub text_entries: Vec<(u16, String)>,
 }
 
-impl GumpResponse {
-    /// The packet id.
-    pub const ID: u8 = 0xB1;
+impl DecodePacket for GumpResponse {
+    const ID: u8 = 0xB1;
 
-    /// Decode a whole `0xB1` packet.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        // The 0xB1 carries its own u16 length at offset 1; skip it — the framer
-        // already sized the slice.
-        reader.u16()?;
+    /// `decode_packet` has already skipped the length field for a `Variable`
+    /// id — see its doc comment — so this starts straight at the serial.
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
         let serial = reader.u32()?;
         let gump_id = reader.u32()?;
         let button = reader.u32()?;
@@ -597,6 +618,11 @@ impl GumpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::{decode_packet, encode_packet};
+
+    fn version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
 
     #[test]
     fn a_built_element_matches_the_string_it_replaces() {
@@ -683,7 +709,13 @@ mod tests {
 
     #[test]
     fn a_close_gump_names_its_dialog_and_button() {
-        let bytes = encode_close_gump(0x0051_0001, 0);
+        let bytes = encode_packet(
+            &CloseGump {
+                gump_id: 0x0051_0001,
+                button: 0,
+            },
+            version(),
+        );
         assert_eq!(bytes.len(), 13, "ServUO's EnsureCapacity(13)");
         assert_eq!(bytes[0], 0xBF);
         assert_eq!(u16::from_be_bytes([bytes[1], bytes[2]]), 13);
@@ -700,7 +732,17 @@ mod tests {
         layout.background(0, 0, 340, 220, 5054);
         layout.label(20, 18, 1153, "A Plague of Rats");
         let (string, lines) = layout.finish();
-        let bytes = encode_gump_display(0, 0x0051_0001, 75, 25, string, lines);
+        let bytes = encode_packet(
+            &GumpDisplay {
+                serial: 0,
+                gump_id: 0x0051_0001,
+                x: 75,
+                y: 25,
+                layout: string.to_owned(),
+                lines: lines.to_vec(),
+            },
+            version(),
+        );
         let declared = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
         assert_eq!(declared, bytes.len());
     }
@@ -727,20 +769,23 @@ mod tests {
         let len = u16::try_from(p.len()).unwrap();
         p[1..3].copy_from_slice(&len.to_be_bytes());
 
-        let got = GumpResponse::decode(&p).unwrap();
+        let got: GumpResponse = decode_packet(&p, version()).unwrap();
         assert_eq!(got.button, 1);
         assert_eq!(got.switches, vec![1], "which radio was set");
     }
 
     #[test]
     fn a_gump_declares_its_own_length_and_id() {
-        let bytes = encode_gump_display(
-            0,
-            0x00AD_0001,
-            50,
-            40,
-            "{ resizepic 0 0 5054 200 200 }{ button 10 10 4005 4007 1 0 1 }",
-            &["Spawn".to_owned()],
+        let bytes = encode_packet(
+            &GumpDisplay {
+                serial: 0,
+                gump_id: 0x00AD_0001,
+                x: 50,
+                y: 40,
+                layout: "{ resizepic 0 0 5054 200 200 }{ button 10 10 4005 4007 1 0 1 }".to_owned(),
+                lines: vec!["Spawn".to_owned()],
+            },
+            version(),
         );
         assert_eq!(bytes[0], 0xB0);
         let declared = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
@@ -759,7 +804,17 @@ mod tests {
     #[test]
     fn a_line_rides_as_big_endian_utf16() {
         // "Ok" is two code units; each is a big-endian u16.
-        let bytes = encode_gump_display(0, 1, 0, 0, "{ page 0 }", &["Ok".to_owned()]);
+        let bytes = encode_packet(
+            &GumpDisplay {
+                serial: 0,
+                gump_id: 1,
+                x: 0,
+                y: 0,
+                layout: "{ page 0 }".to_owned(),
+                lines: vec!["Ok".to_owned()],
+            },
+            version(),
+        );
         // Find the text table: it is the tail, `count(2) len(2) 'O'(2) 'k'(2)`.
         let tail = &bytes[bytes.len() - 8..];
         assert_eq!(u16::from_be_bytes([tail[0], tail[1]]), 1, "one line");
@@ -785,7 +840,7 @@ mod tests {
         let len = u16::try_from(p.len()).unwrap();
         p[1..3].copy_from_slice(&len.to_be_bytes());
 
-        let got = GumpResponse::decode(&p).unwrap();
+        let got: GumpResponse = decode_packet(&p, version()).unwrap();
         assert_eq!(got.serial, 0x1234);
         assert_eq!(got.gump_id, 0x00AD_0001);
         assert_eq!(got.button, 3);
@@ -804,7 +859,7 @@ mod tests {
         let len = u16::try_from(p.len()).unwrap();
         p[1..3].copy_from_slice(&len.to_be_bytes());
 
-        let got = GumpResponse::decode(&p).unwrap();
+        let got: GumpResponse = decode_packet(&p, version()).unwrap();
         assert_eq!(got.button, 0, "the close box");
         assert!(got.switches.is_empty());
     }

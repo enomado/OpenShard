@@ -161,7 +161,7 @@ pub enum Command {
         /// Which connection answered.
         connection: ConnectionId,
         /// The decoded response: which gump, which button, and any fields.
-        response: openshard_protocol::GumpResponse,
+        response: GumpResponse,
     },
     /// A client answered a targeting cursor — a `0x6C`. Routed to whatever raised
     /// the cursor; today that is the `.tele` command.

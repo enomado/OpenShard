@@ -7266,7 +7266,7 @@ fn a_gm_can_teleport_add_and_set() {
 fn admin_response(connection: ConnectionId, button: u32) -> Command {
     Command::GumpResponse {
         connection,
-        response: openshard_protocol::GumpResponse {
+        response: openshard_protocol::gump::GumpResponse {
             serial: 0,
             gump_id: crate::admin::ADMIN_GUMP,
             button,
@@ -12906,7 +12906,7 @@ fn take_item_is_all_or_nothing_and_reports_what_it_took() {
 #[test]
 fn a_non_admin_gump_reply_reaches_the_pack_as_gump_answered() {
     use crate::events::GumpAnswered;
-    use openshard_protocol::GumpResponse as WireGumpResponse;
+    use openshard_protocol::gump::GumpResponse as WireGumpResponse;
     let now = Instant::now();
     let mut world = world();
     let conn = enter(&mut world, now);

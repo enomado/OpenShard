@@ -142,7 +142,8 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(response) = GumpResponse::decode(packet) else {
+            let Ok(response) = decode_packet::<GumpResponse>(packet, session.login.version())
+            else {
                 warn!(%id, "malformed 0xB1");
                 return false;
             };
@@ -331,7 +332,7 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(talk) = TalkRequest::decode(packet) else {
+            let Ok(talk) = decode_packet::<TalkRequest>(packet, session.login.version()) else {
                 warn!(%id, "malformed 0x03");
                 return false;
             };
@@ -350,7 +351,8 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(talk) = UnicodeTalkRequest::decode(packet) else {
+            let Ok(talk) = decode_packet::<UnicodeTalkRequest>(packet, session.login.version())
+            else {
                 warn!(%id, "malformed 0xAD");
                 return false;
             };

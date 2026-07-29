@@ -12,7 +12,8 @@
 //! - above it, anything, with the wild ones rolled against 100.0.
 
 use openshard_entities::EntityId;
-use openshard_protocol::{encode_gump_display, GumpLayout};
+use openshard_protocol::gump::{GumpButton, GumpDisplay, GumpLayout};
+use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::{
     Body, BodyType, Client, Ghost, Hitpoints, Mana, Pet, Resistance, Skills, Stamina, Stats,
 };
@@ -155,15 +156,7 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
         false,
     );
     // The close button, the one control ServUO gives it.
-    gump.button(
-        240,
-        77,
-        2093,
-        2093,
-        openshard_protocol::GumpButton::Reply,
-        0,
-        0,
-    );
+    gump.button(240, 77, 2093, 2093, GumpButton::Reply, 0, 0);
 
     gump.page(1);
     gump.image(128, 152, 2086);
@@ -212,15 +205,7 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
     gump.html_localized_colored(147, 276, 160, 18, 3_001_016, 200, false, false); // Miscellaneous
     row(&mut gump, 294, 1_049_581, stat(Some(armour))); // Armor Rating
     row(&mut gump, 312, 1_061_646, percent(physical)); // Physical
-    gump.button(
-        340,
-        358,
-        5601,
-        5605,
-        openshard_protocol::GumpButton::Page,
-        2,
-        0,
-    );
+    gump.button(340, 358, 5601, 5605, GumpButton::Page, 2, 0);
 
     gump.page(2);
     gump.image(128, 152, 2086);
@@ -254,19 +239,18 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
             false,
         );
     }
-    gump.button(
-        317,
-        358,
-        5603,
-        5607,
-        openshard_protocol::GumpButton::Page,
-        1,
-        0,
-    );
+    gump.button(317, 358, 5603, 5607, GumpButton::Page, 1, 0);
 
     let (layout, lines) = gump.finish();
-    let packet = encode_gump_display(ANIMAL_LORE_GUMP, ANIMAL_LORE_GUMP, 250, 50, layout, lines);
-    state.send(connection, packet);
+    let packet = ServerPacket::GumpDisplay(GumpDisplay {
+        serial: ANIMAL_LORE_GUMP,
+        gump_id: ANIMAL_LORE_GUMP,
+        x: 250,
+        y: 50,
+        layout: layout.to_owned(),
+        lines: lines.to_vec(),
+    });
+    state.send_packet(connection, &packet);
 }
 
 /// The hue ServUO draws a label in.

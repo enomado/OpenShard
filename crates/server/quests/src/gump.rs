@@ -15,11 +15,12 @@
 //! line, which is the only way to be sure a page chain is right.
 
 use openshard_entities::EntityId;
-use openshard_protocol::serial::Serial;
-use openshard_protocol::{
-    encode_gump_display, GumpButton, GumpLayout, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED,
+use openshard_protocol::gump::{
+    CloseGump, GumpButton, GumpDisplay, GumpLayout, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED,
     GUMP_WHITE,
 };
+use openshard_protocol::serial::Serial;
+use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::{Client, QuestLog};
 use openshard_state::quest::{ObjectiveKind, QuestDef};
 use openshard_state::{QuestGumpContext, QuestSection, WorldState};
@@ -115,17 +116,20 @@ pub(crate) fn show(state: &mut WorldState, player: EntityId, context: QuestGumpC
     // Close the window already open before drawing the new one. The section chain
     // replaces itself, and a client told to draw twice draws two — ServUO closes
     // first in every branch of `OnResponse`, and this is that.
-    let close = openshard_protocol::encode_close_gump(QUEST_GUMP, 0);
-    let packet = encode_gump_display(
-        serial.raw(),
-        QUEST_GUMP,
-        i32::from(WINDOW_X),
-        i32::from(WINDOW_Y),
-        string,
-        lines,
-    );
-    state.send(connection, close);
-    state.send(connection, packet);
+    let close = ServerPacket::CloseGump(CloseGump {
+        gump_id: QUEST_GUMP,
+        button: 0,
+    });
+    let packet = ServerPacket::GumpDisplay(GumpDisplay {
+        serial: serial.raw(),
+        gump_id: QUEST_GUMP,
+        x: i32::from(WINDOW_X),
+        y: i32::from(WINDOW_Y),
+        layout: string.to_owned(),
+        lines: lines.to_vec(),
+    });
+    state.send_packet(connection, &close);
+    state.send_packet(connection, &packet);
     state.open_quest_gumps.insert(player, context);
 }
 
@@ -754,8 +758,15 @@ pub(crate) fn show_resign(state: &mut WorldState, player: EntityId, key: &str) {
     layout.button(265, 220, 0x00F7, 0x00F8, GumpButton::Reply, 0, RESIGN_OK);
 
     let (string, lines) = layout.finish();
-    let packet = encode_gump_display(serial.raw(), QUEST_RESIGN_GUMP, 120, 50, string, lines);
-    state.send(connection, packet);
+    let packet = ServerPacket::GumpDisplay(GumpDisplay {
+        serial: serial.raw(),
+        gump_id: QUEST_RESIGN_GUMP,
+        x: 120,
+        y: 50,
+        layout: string.to_owned(),
+        lines: lines.to_vec(),
+    });
+    state.send_packet(connection, &packet);
 }
 
 /// The switch id meaning "yes, give it up" in the resign dialog.

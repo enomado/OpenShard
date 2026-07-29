@@ -25,9 +25,10 @@ use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriet
 use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::speech::{LocalizedMessage, SpokenMessage, NO_GRAPHIC, SYSTEM_SERIAL};
 use openshard_protocol::wire::SoundId;
 use openshard_protocol::world::{PlayerUpdate, Point};
-use openshard_protocol::{encode_message, AccessLevel, ClientVersion, Feature};
+use openshard_protocol::{AccessLevel, ClientVersion, Feature};
 
 use crate::components::{
     body_opens_doors, Access, Amount, Body, Client, Contained, Equipped, Facet, Ghost, Graphic,
@@ -775,16 +776,16 @@ impl WorldState {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
-        let packet = encode_message(
-            openshard_protocol::SYSTEM_SERIAL,
-            openshard_protocol::NO_GRAPHIC,
-            0, // regular mode
-            SYSTEM_HUE,
-            SYSTEM_FONT,
-            "System",
-            text,
-        );
-        self.send(connection, packet);
+        let packet = ServerPacket::SpokenMessage(SpokenMessage {
+            serial: SYSTEM_SERIAL,
+            graphic: NO_GRAPHIC,
+            mode: 0, // regular mode
+            hue: SYSTEM_HUE,
+            font: SYSTEM_FONT,
+            name: "System".to_owned(),
+            text: text.to_owned(),
+        });
+        self.send_packet(connection, &packet);
     }
 
     /// Send `mobile` a private **localized** line — a cliloc the client looks up
@@ -798,17 +799,17 @@ impl WorldState {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
-        let packet = openshard_protocol::encode_localized_message(
-            openshard_protocol::SYSTEM_SERIAL,
-            openshard_protocol::NO_GRAPHIC,
-            0, // regular mode
-            SYSTEM_HUE,
-            SYSTEM_FONT,
+        let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
+            serial: SYSTEM_SERIAL,
+            graphic: NO_GRAPHIC,
+            mode: 0, // regular mode
+            hue: SYSTEM_HUE,
+            font: SYSTEM_FONT,
             cliloc,
-            "System",
-            arguments,
-        );
-        self.send(connection, packet);
+            name: "System".to_owned(),
+            arguments: arguments.to_owned(),
+        });
+        self.send_packet(connection, &packet);
     }
 
     /// Draw a localized line over `source`'s head, for `watcher` alone.
@@ -833,18 +834,18 @@ impl WorldState {
             .get::<Body>(source)
             .map(|body| body.id)
             .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
-            .unwrap_or(openshard_protocol::NO_GRAPHIC);
-        let packet = openshard_protocol::encode_localized_message(
+            .unwrap_or(NO_GRAPHIC);
+        let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
             serial,
             graphic,
-            0, // regular mode
-            SYSTEM_HUE,
-            SYSTEM_FONT,
+            mode: 0, // regular mode
+            hue: SYSTEM_HUE,
+            font: SYSTEM_FONT,
             cliloc,
-            "",
-            arguments,
-        );
-        self.send(connection, packet);
+            name: String::new(),
+            arguments: arguments.to_owned(),
+        });
+        self.send_packet(connection, &packet);
     }
 
     /// Draw `text` over `source` for `watcher` alone — ServUO's
@@ -865,9 +866,17 @@ impl WorldState {
             .get::<Body>(source)
             .map(|body| body.id)
             .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
-            .unwrap_or(openshard_protocol::NO_GRAPHIC);
-        let packet = encode_message(serial, graphic, 0, SYSTEM_HUE, SYSTEM_FONT, "", text);
-        self.send(connection, packet);
+            .unwrap_or(NO_GRAPHIC);
+        let packet = ServerPacket::SpokenMessage(SpokenMessage {
+            serial,
+            graphic,
+            mode: 0,
+            hue: SYSTEM_HUE,
+            font: SYSTEM_FONT,
+            name: String::new(),
+            text: text.to_owned(),
+        });
+        self.send_packet(connection, &packet);
     }
 
     /// Play `sound` for `mobile` alone — a sound about the player, not about the

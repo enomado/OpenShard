@@ -13,8 +13,8 @@
 //! themselves, the same "emit, don't reimplement" the rest of the world follows.
 
 use openshard_entities::EntityId;
-use openshard_protocol::encode_message;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::speech::SpokenMessage;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
 use openshard_protocol::world::Point;
@@ -247,16 +247,16 @@ fn toggle_gm_mode(state: &mut WorldState, actor: EntityId, args: &[&str]) {
 fn save_world(state: &mut WorldState, actor: EntityId) {
     let connections: Vec<_> = state.players.keys().copied().collect();
     for connection in connections {
-        let packet = encode_message(
-            u32::MAX,
-            0xFFFF,
-            0,
-            SYSTEM_HUE,
-            SYSTEM_FONT,
-            "System",
-            "The world is being saved.",
-        );
-        state.send(connection, packet);
+        let packet = ServerPacket::SpokenMessage(SpokenMessage {
+            serial: u32::MAX,
+            graphic: 0xFFFF,
+            mode: 0,
+            hue: SYSTEM_HUE,
+            font: SYSTEM_FONT,
+            name: "System".to_owned(),
+            text: "The world is being saved.".to_owned(),
+        });
+        state.send_packet(connection, &packet);
     }
     state.save_requested = true;
     notify(state, actor, "World save requested.");

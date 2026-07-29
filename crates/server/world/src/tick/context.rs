@@ -55,9 +55,18 @@ impl World {
         if entries.is_empty() {
             return;
         }
-        let wire: Vec<(u32, u16)> = entries.iter().map(|(cliloc, _)| (*cliloc, 0)).collect();
-        let packet = encode_context_menu(serial, &wire);
-        self.state.send(connection, packet);
+        let wire = entries
+            .iter()
+            .map(|(cliloc, _)| ContextMenuEntry {
+                cliloc: *cliloc,
+                flags: 0,
+            })
+            .collect();
+        let packet = ServerPacket::ContextMenu(ContextMenu {
+            serial,
+            entries: wire,
+        });
+        self.state.send_packet(connection, &packet);
     }
 
     /// Act on a context-menu choice (`0xBF` `0x15`): rebuild the object's entries
