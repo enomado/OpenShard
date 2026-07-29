@@ -14,8 +14,8 @@
 //! `Event_AOSPopupMenuSelect`. The tag the client sends back is the entry's
 //! position in the list, so the world can map it to an action by index.
 
-use crate::codec::PacketWriter;
-use crate::error::{expect_id, DecodeError};
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::DecodeError;
 use crate::packet::{EncodePacket, PacketLength};
 use crate::version::ClientVersion;
 
@@ -27,23 +27,16 @@ pub struct ContextMenuRequest {
 }
 
 impl ContextMenuRequest {
-    /// The packet id — the extended-command envelope.
-    pub const ID: u8 = 0xBF;
-    /// The subcommand that means "open a context menu".
+    /// The subcommand that means "open a context menu". See
+    /// [`ExtendedRequest`](crate::extended::ExtendedRequest), the single place
+    /// that reads a `0xBF` envelope and picks a subcommand's body decoder by it.
     pub const SUBCOMMAND: u16 = 0x13;
 
-    /// Decode a `0xBF`, returning the request if that is its subcommand. Any other
-    /// `0xBF` reads as `None`, so the dispatcher can pass on the ones it does not
-    /// handle — the same shape as [`CastSpellRequest`](crate::CastSpellRequest).
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
-        if reader.u16()? != Self::SUBCOMMAND {
-            return Ok(None);
-        }
-        Ok(Some(Self {
+    /// Read the body, `reader` already past the id, length and subcommand.
+    pub(crate) fn decode_body(reader: &mut PacketReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
             serial: reader.u32()?,
-        }))
+        })
     }
 }
 
@@ -57,22 +50,16 @@ pub struct ContextMenuSelect {
 }
 
 impl ContextMenuSelect {
-    /// The packet id — the extended-command envelope.
-    pub const ID: u8 = 0xBF;
-    /// The subcommand that means "a menu entry was chosen".
+    /// The subcommand that means "a menu entry was chosen". See
+    /// [`ExtendedRequest`](crate::extended::ExtendedRequest).
     pub const SUBCOMMAND: u16 = 0x15;
 
-    /// Decode a `0xBF`, returning the selection if that is its subcommand.
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
-        if reader.u16()? != Self::SUBCOMMAND {
-            return Ok(None);
-        }
-        Ok(Some(Self {
+    /// Read the body, `reader` already past the id, length and subcommand.
+    pub(crate) fn decode_body(reader: &mut PacketReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
             serial: reader.u32()?,
             index: reader.u16()?,
-        }))
+        })
     }
 }
 
@@ -126,6 +113,7 @@ impl EncodePacket for ContextMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extended::ExtendedRequest;
 
     #[test]
     fn a_request_reads_its_serial() {
@@ -135,8 +123,13 @@ mod tests {
         let len = u16::try_from(bytes.len()).unwrap();
         bytes[1..3].copy_from_slice(&len.to_be_bytes());
 
-        let request = ContextMenuRequest::decode(&bytes).unwrap().unwrap();
-        assert_eq!(request.serial, 0x0000_1234);
+        let request = ExtendedRequest::decode(&bytes).unwrap();
+        assert_eq!(
+            request,
+            ExtendedRequest::ContextMenuRequest(ContextMenuRequest {
+                serial: 0x0000_1234
+            })
+        );
     }
 
     #[test]
@@ -148,16 +141,14 @@ mod tests {
         let len = u16::try_from(bytes.len()).unwrap();
         bytes[1..3].copy_from_slice(&len.to_be_bytes());
 
-        let select = ContextMenuSelect::decode(&bytes).unwrap().unwrap();
-        assert_eq!((select.serial, select.index), (0x0000_5678, 2));
-    }
-
-    #[test]
-    fn another_extended_command_is_not_a_context_menu() {
-        // A 0xBF that is not one of the context subcommands reads as None.
-        let packet = vec![0xBF, 0x00, 0x07, 0x00, 0x1C, 0x00, 0x00];
-        assert_eq!(ContextMenuRequest::decode(&packet).unwrap(), None);
-        assert_eq!(ContextMenuSelect::decode(&packet).unwrap(), None);
+        let select = ExtendedRequest::decode(&bytes).unwrap();
+        assert_eq!(
+            select,
+            ExtendedRequest::ContextMenuSelect(ContextMenuSelect {
+                serial: 0x0000_5678,
+                index: 2,
+            })
+        );
     }
 
     #[test]

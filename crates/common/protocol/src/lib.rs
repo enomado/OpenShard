@@ -54,13 +54,15 @@
 
 mod access;
 pub mod casting;
+pub mod client_packet;
 mod codec;
 pub mod combat;
 pub mod containers;
 pub mod context;
 mod direction;
-mod encoded;
+pub mod encoded;
 mod error;
+pub mod extended;
 mod feature;
 pub mod feedback;
 pub mod gump;
@@ -84,14 +86,14 @@ pub mod world;
 
 pub use access::{AccessLevel, UnknownAccessLevel};
 pub use codec::{CodecError, CodecResult, PacketReader, PacketWriter};
-// `casting`, `combat`, `containers`, `context`, `feedback`, `gump`, `items`,
-// `login`, `mobile`, `properties`, `serial`, `server_packet`, `skill`,
-// `speech`, `spellbook`, `target`, `vendor`, `wire` and `world` are
-// deliberately absent from this wall: they are the rewritten groups, and
-// their call sites import from the module the type lives in. The wall itself
-// goes in Stage 7 (`docs/protocol_rewrite.md`, D8).
+// `casting`, `client_packet`, `combat`, `containers`, `context`, `encoded`,
+// `extended`, `feedback`, `gump`, `items`, `login`, `mobile`, `properties`,
+// `serial`, `server_packet`, `skill`, `speech`, `spellbook`, `target`,
+// `vendor`, `wire` and `world` are deliberately absent from this wall: they
+// are the rewritten groups, and their call sites import from the module the
+// type lives in. The wall itself goes in Stage 7 (`docs/protocol_rewrite.md`,
+// D8).
 pub use direction::{Direction, Facing, RUNNING_BIT};
-pub use encoded::EncodedCommand;
 pub use error::{DecodeError, WrongPacket};
 pub use feature::{Feature, FeatureSet};
 pub use packet::{

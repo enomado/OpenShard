@@ -6,7 +6,7 @@
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
-use crate::error::{expect_id, DecodeError};
+use crate::error::DecodeError;
 use crate::feature::Feature;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
@@ -119,6 +119,46 @@ impl DecodePacket for LookRequest {
         Ok(Self {
             serial: reader.u32()?,
         })
+    }
+}
+
+/// `0x34` — a status or skill-list query. Fixed, 10 bytes.
+///
+/// ServUO's `MobileQuery`: a magic word, a type byte, then the queried serial.
+/// Type `0x05` is the skill window opening; anything else is the status bar.
+/// Answering every query with the status, as before, left the skill window
+/// empty. The queried serial is not modelled: every query this engine acts on
+/// is about the asking player's own mobile, which the connection already
+/// knows without reading it back off the wire.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StatusQuery {
+    /// Which window is asking.
+    pub kind: StatusQueryKind,
+}
+
+/// What a [`StatusQuery`] is asking for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StatusQueryKind {
+    /// The status bar.
+    Status,
+    /// The skill list.
+    Skills,
+}
+
+impl DecodePacket for StatusQuery {
+    const ID: u8 = 0x34;
+
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
+        let _magic = reader.u32()?;
+        let kind = if reader.u8()? == 0x05 {
+            StatusQueryKind::Skills
+        } else {
+            StatusQueryKind::Status
+        };
+        Ok(Self { kind })
     }
 }
 
@@ -486,28 +526,21 @@ pub struct StatLockRequest {
 }
 
 impl StatLockRequest {
-    /// The packet id — the extended-command envelope.
-    pub const ID: u8 = 0xBF;
-    /// The subcommand that means "a stat's arrow moved".
+    /// The subcommand that means "a stat's arrow moved". See
+    /// [`ExtendedRequest`](crate::extended::ExtendedRequest), the single place
+    /// that reads a `0xBF` envelope and picks a subcommand's body decoder by it.
     pub const SUBCOMMAND: u16 = 0x1A;
 
-    /// Decode a `0xBF`, returning the request if that is its subcommand. Any other
-    /// `0xBF` reads as `None`, so the dispatcher can pass on the ones it does not
-    /// handle — the same shape as [`ContextMenuRequest`](crate::ContextMenuRequest).
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, DecodeError> {
-        let mut reader = expect_id(bytes, Self::ID)?;
-        let _length = reader.u16()?;
-        if reader.u16()? != Self::SUBCOMMAND {
-            return Ok(None);
-        }
+    /// Read the body, `reader` already past the id, length and subcommand.
+    pub(crate) fn decode_body(reader: &mut PacketReader<'_>) -> Result<Self, DecodeError> {
         let stat = reader.u8()?;
         // ServUO folds anything past "locked" back to "up" rather than refusing
         // the packet, and a stat past the third is simply ignored upstream.
         let lock = reader.u8()?;
-        Ok(Some(Self {
+        Ok(Self {
             stat,
             lock: if lock > 2 { 0 } else { lock },
-        }))
+        })
     }
 }
 
@@ -515,6 +548,7 @@ impl StatLockRequest {
 mod tests {
     use super::*;
     use crate::direction::Direction;
+    use crate::extended::ExtendedRequest;
     use crate::packet::encode_packet;
 
     fn version() -> ClientVersion {
@@ -555,23 +589,32 @@ mod tests {
     fn a_stat_lock_request_reads_its_stat_and_arrow() {
         // 0xBF, length, subcommand 0x1A, stat 1 (dexterity), lock 1 (down).
         let packet = [0xBF, 0x00, 0x07, 0x00, 0x1A, 0x01, 0x01];
-        let request = StatLockRequest::decode(&packet).unwrap().unwrap();
-        assert_eq!(request.stat, 1);
-        assert_eq!(request.lock, 1);
+        let request = ExtendedRequest::decode(&packet).unwrap();
+        assert_eq!(
+            request,
+            ExtendedRequest::StatLock(StatLockRequest { stat: 1, lock: 1 })
+        );
     }
 
     #[test]
     fn an_impossible_stat_arrow_reads_as_up() {
         // ServUO folds anything past "locked" back to "up" rather than refusing.
         let packet = [0xBF, 0x00, 0x07, 0x00, 0x1A, 0x00, 0x63];
-        assert_eq!(StatLockRequest::decode(&packet).unwrap().unwrap().lock, 0);
+        let ExtendedRequest::StatLock(request) = ExtendedRequest::decode(&packet).unwrap() else {
+            panic!("expected a stat-lock request");
+        };
+        assert_eq!(request.lock, 0);
     }
 
     #[test]
-    fn another_extended_command_is_not_a_stat_lock() {
-        // 0x13 is the context-menu request; this decoder must pass it on.
-        let packet = [0xBF, 0x00, 0x09, 0x00, 0x13, 0x00, 0x00, 0x00, 0x01];
-        assert_eq!(StatLockRequest::decode(&packet).unwrap(), None);
+    fn a_status_query_reads_the_type_byte() {
+        let skills = [0x34, 0x00, 0x00, 0x12, 0x34, 0x05, 0x40, 0x00, 0x00, 0x2A];
+        let query: StatusQuery = crate::packet::decode_packet(&skills, version()).unwrap();
+        assert_eq!(query.kind, StatusQueryKind::Skills);
+
+        let status = [0x34, 0x00, 0x00, 0x12, 0x34, 0x04, 0x40, 0x00, 0x00, 0x2A];
+        let query: StatusQuery = crate::packet::decode_packet(&status, version()).unwrap();
+        assert_eq!(query.kind, StatusQueryKind::Status);
     }
 
     #[test]

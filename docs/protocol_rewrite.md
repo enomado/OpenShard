@@ -362,6 +362,70 @@ at all, not about wire shapes.
    while its neighbours were already out would be the inconsistency D8 exists
    to prevent.
 
+## Amendments forced by the Stage 6 pilot (`ClientPacket`, `dispatch.rs`)
+
+Stage 6 is the first to decode a whole packet family in one place rather than
+one module at a time — `ClientPacket` covers everything `dispatch.rs` acts on
+— and the first to have to decide what a decode failure means once decoding
+no longer sits behind the `session.in_world` gate that used to run first.
+
+1. **`ClientPacket::decode` is unconditional, ahead of every `in_world`
+   check.** Before this stage, most of `dispatch.rs`'s arms checked
+   `session.in_world` *before* decoding, so a malformed packet arriving
+   before world entry was never even read — silently accepted, not silently
+   dropped. Decoding once at the edge means that check can no longer run
+   first, and a client sending unparseable bytes on a recognised id now
+   drops the connection regardless of world state. Deliberate, not
+   incidental: a client sending bytes that do not decode is not one this
+   shard has a reason to keep trusting, at any point in the conversation.
+   No existing test exercised the old, more permissive timing.
+2. **`ExtendedRequest` collapses `CastSpellRequest`, `ContextMenuRequest`,
+   `ContextMenuSelect` and `StatLockRequest` (Stages 1, 5) into one `0xBF`
+   decode.** Each used to read the id, length and subcommand for itself and
+   decide independently whether a given `0xBF` was its own — the "three
+   different 0xBF types … each re-read the same envelope" duplication the
+   top of this document calls out. Every one of the four keeps its payload
+   struct and its `SUBCOMMAND` constant, but trades its standalone
+   `decode(bytes) -> Result<Option<Self>, DecodeError>` for a
+   `pub(crate) decode_body(reader: &mut PacketReader<'_>) -> Result<Self,
+   DecodeError>` that only `ExtendedRequest::decode` calls, with the reader
+   already past the subcommand. An unrecognised subcommand reads as
+   `ExtendedRequest::Unknown(subcommand)`, not an error — the same shape as
+   `ClientPacket::Unknown` — where the old per-type probing simply did
+   nothing and logged nothing if none of the three matched.
+3. **`0xD7` does not get its own sub-enum.** The plan named
+   `EncodedRequest` as `0xBF`'s sibling collapse, but `EncodedCommand`
+   was already exactly one type for exactly one id — nothing was probing the
+   same envelope twice the way the three `0xBF` types were. `ClientPacket::
+   Encoded(EncodedCommand)` wraps it unchanged; `dispatch` still matches on
+   `command.subcommand` by its `*_REQUEST` constants, same as before
+   `EncodedCommand` moved out of the `lib.rs` wall (D8) alongside it.
+4. **`mobile::StatusQuery` is new** — `0x34` had no payload type at all
+   before this stage, just `dispatch` reaching into the raw buffer with
+   `packet.get(5) == Some(&0x05)`. `StatusQuery` models only the one bit
+   `dispatch` reads, `kind: StatusQueryKind`, not the magic word or the
+   queried serial: nothing downstream ever used the serial (every query this
+   engine acts on is about the asking connection's own mobile), and D6 does
+   not ask for a field nothing reads.
+5. **`UseSkillRequest`'s `Ok(None)` (a `0x12` text command that is not "use
+   skill") folds into `ClientPacket::Unknown`,** rather than `ClientPacket`
+   growing an `Option`-shaped variant. `dispatch` special-cases
+   `Unknown { id: UseSkillRequest::ID, .. }` to keep the one debug log the
+   old code had for it; every other `Unknown` id logs nothing, as before —
+   `dispatch` runs on *every* packet, including the login conversation's own
+   ids (`0x80`, `0xA0`, `0x91`, `0xBD`), and logging those as "unhandled"
+   would be noise on every normal connection, not a diagnostic.
+6. **`ClientPacket` and `ClientDecodeError` are `#[non_exhaustive]`,
+   matching `ClientLoginPacket`/`ClientLoginDecodeError`** (the login
+   conversation's own version of this pattern, added just ahead of this
+   stage). Both `dispatch`'s match on `ClientPacket` and its inner match on
+   `ExtendedRequest` (also `#[non_exhaustive]`) end in `_ =>
+   unreachable!(...)`, the same "every variant that exists today is matched
+   above" comment `LoginServer::handle` uses.
+7. **`encoded` and `extended` leave the `lib.rs` re-export wall (D8)
+   alongside `client_packet`,** the same one-stage-early move every prior
+   stage made for the modules it touched.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -405,5 +469,5 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | 3 | done | `1c94006` |
 | 4 | done | `d483bb3` |
 | 5 | done | `0d39525` |
-| 6 | not started | |
+| 6 | done | |
 | 7 | not started | |

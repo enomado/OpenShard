@@ -33,25 +33,19 @@ use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response
 use openshard_persistence::{
     AccountRecord, CharacterRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store,
 };
-use openshard_protocol::casting::CastSpellRequest;
-use openshard_protocol::combat::{AttackRequest, WarMode};
-use openshard_protocol::containers::DoubleClick;
-use openshard_protocol::context::{ContextMenuRequest, ContextMenuSelect};
-use openshard_protocol::gump::GumpResponse;
-use openshard_protocol::items::{DropItem, EquipItemRequest, PickUpItem};
+use openshard_protocol::client_packet::ClientPacket;
+use openshard_protocol::encoded::EncodedCommand;
+use openshard_protocol::extended::ExtendedRequest;
 use openshard_protocol::login::{
     CharacterListUpdate, DeleteCharacter, DeleteReject, DeleteResult, GameServerLogin, LoginDenied,
     StartLocation,
 };
-use openshard_protocol::mobile::{LookRequest, StatLockRequest};
+use openshard_protocol::mobile::StatusQueryKind;
 use openshard_protocol::packet::{decode_packet, DecodePacket};
-use openshard_protocol::properties::PropertyQueryRequest;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::skill::{SkillLock, SkillLockRequest, UseSkillRequest};
-use openshard_protocol::speech::{TalkRequest, UnicodeTalkRequest};
-use openshard_protocol::target::TargetResponse;
-use openshard_protocol::world::{CharacterPlay, CreateCharacter, Point, WalkRequest};
-use openshard_protocol::{huffman, AccessLevel, EncodedCommand};
+use openshard_protocol::skill::SkillLock;
+use openshard_protocol::world::{CreateCharacter, Point};
+use openshard_protocol::{huffman, AccessLevel};
 use openshard_world::{
     Appearance, CharacterSheet, Command, Gameplay, Map, MapTerrain, StatLock, TileData, World,
     TICK_INTERVAL,

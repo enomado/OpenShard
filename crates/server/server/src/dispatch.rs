@@ -4,6 +4,15 @@ use super::*;
 ///
 /// Nothing here answers the client. Every reply comes out of a tick, which is
 /// what keeps the two ends in one order.
+///
+/// The packet is decoded exactly once, by [`ClientPacket::decode`] — see
+/// `docs/protocol_rewrite.md` Stage 6. That decode is unconditional, ahead of
+/// every `session.in_world` gate below: a packet that fails to decode drops
+/// the connection regardless of world state, which is stricter than the id-
+/// peeking match this replaced (a malformed packet arriving before world entry
+/// used to go unread and be silently accepted). A client that sends
+/// unparseable bytes on a known id, at any point in the conversation, is not
+/// one this shard has a reason to keep trusting.
 pub(crate) fn dispatch(
     session: &mut Session,
     world: &mut World,
@@ -12,12 +21,16 @@ pub(crate) fn dispatch(
     saved: &HashMap<(String, String), CharacterRecord>,
     access: AccessLevel,
 ) -> bool {
-    match packet.first().copied() {
-        Some(CharacterPlay::ID) => {
-            let Ok(play) = decode_packet::<CharacterPlay>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x5D");
-                return false;
-            };
+    let packet = match ClientPacket::decode(packet, session.login.version()) {
+        Ok(packet) => packet,
+        Err(error) => {
+            warn!(%id, ?error, "malformed packet");
+            return false;
+        }
+    };
+
+    match packet {
+        ClientPacket::CharacterPlay(play) => {
             let account = session.login.account().unwrap_or_default().to_owned();
             // A stored character enters on its saved serial, spot and look; one
             // the database has never seen — a config-only character on a fresh
@@ -75,22 +88,18 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(WalkRequest::ID) => {
+        ClientPacket::Walk(request) => {
             if !session.in_world {
                 debug!(%id, "0x02 before entering the world");
                 return true;
             }
-            let Ok(request) = decode_packet::<WalkRequest>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x02");
-                return false;
-            };
             world.queue(Command::Walk {
                 connection: id,
                 request,
             });
             true
         }
-        Some(0xD1) => {
+        ClientPacket::LogoutRequest => {
             // "Log Out" on the paperdoll. The client tells the server it is
             // leaving and then waits to be told it may — see `encode_logout_ack`.
             // Queued like everything else, so the answer comes out of a tick.
@@ -99,22 +108,20 @@ pub(crate) fn dispatch(
             }
             true
         }
-        Some(0x34) => {
-            // A status/skills query: a magic word (4), a type byte, and a serial.
-            // Type 0x05 asks for the skill list — the client sends it when the
-            // skill window opens — and type 0x04 (and the rest) for the status
-            // bar. ServUO's `MobileQuery`. Answering every query with the status,
-            // as before, left the skill window empty.
+        ClientPacket::StatusQuery(query) => {
             if session.in_world {
-                if packet.get(5) == Some(&0x05) {
-                    world.queue(Command::RequestSkills { connection: id });
-                } else {
-                    world.queue(Command::RequestStatus { connection: id });
+                match query.kind {
+                    StatusQueryKind::Skills => {
+                        world.queue(Command::RequestSkills { connection: id });
+                    }
+                    StatusQueryKind::Status => {
+                        world.queue(Command::RequestStatus { connection: id });
+                    }
                 }
             }
             true
         }
-        Some(EncodedCommand::ID) => {
+        ClientPacket::Encoded(command) => {
             // The AoS "encoded command": the paperdoll's own buttons, which are
             // not gump replies — the paperdoll is drawn client-side and has no
             // server layout to answer. Without this the Quest button does nothing
@@ -122,10 +129,6 @@ pub(crate) fn dispatch(
             if !session.in_world {
                 return true;
             }
-            let Ok(command) = EncodedCommand::decode(packet) else {
-                warn!(%id, "malformed 0xD7");
-                return false;
-            };
             match command.subcommand {
                 EncodedCommand::QUEST_GUMP_REQUEST => {
                     world.queue(Command::QuestLogRequest { connection: id });
@@ -138,44 +141,30 @@ pub(crate) fn dispatch(
             }
             true
         }
-        Some(GumpResponse::ID) => {
+        ClientPacket::GumpResponse(response) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(response) = decode_packet::<GumpResponse>(packet, session.login.version())
-            else {
-                warn!(%id, "malformed 0xB1");
-                return false;
-            };
             world.queue(Command::GumpResponse {
                 connection: id,
                 response,
             });
             true
         }
-        Some(TargetResponse::ID) => {
+        ClientPacket::TargetResponse(response) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(response) = decode_packet::<TargetResponse>(packet, session.login.version())
-            else {
-                warn!(%id, "malformed 0x6C");
-                return false;
-            };
             world.queue(Command::TargetResponse {
                 connection: id,
                 response,
             });
             true
         }
-        Some(<PickUpItem as DecodePacket>::ID) => {
+        ClientPacket::PickUpItem(pickup) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(pickup) = decode_packet::<PickUpItem>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x07");
-                return false;
-            };
             world.queue(Command::PickUpItem {
                 connection: id,
                 serial: pickup.serial,
@@ -183,14 +172,10 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(DropItem::ID) => {
+        ClientPacket::DropItem(drop) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(drop) = decode_packet::<DropItem>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x08");
-                return false;
-            };
             world.queue(Command::DropItem {
                 connection: id,
                 serial: drop.serial,
@@ -199,32 +184,21 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(<DoubleClick as DecodePacket>::ID) => {
+        ClientPacket::DoubleClick(click) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(click) = decode_packet::<DoubleClick>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x06");
-                return false;
-            };
             world.queue(Command::DoubleClick {
                 connection: id,
                 serial: click.serial,
             });
             true
         }
-        Some(0x3B) => {
+        ClientPacket::Buy(reply) => {
             // A vendor purchase, answered out of the tick like everything else.
             if !session.in_world {
                 return true;
             }
-            let Ok(reply) = decode_packet::<openshard_protocol::vendor::BuyReply>(
-                packet,
-                session.login.version(),
-            ) else {
-                warn!(%id, "malformed 0x3B");
-                return false;
-            };
             world.queue(Command::Buy {
                 connection: id,
                 vendor: reply.vendor,
@@ -232,17 +206,10 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(0x9F) => {
+        ClientPacket::Sell(reply) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(reply) = decode_packet::<openshard_protocol::vendor::SellReply>(
-                packet,
-                session.login.version(),
-            ) else {
-                warn!(%id, "malformed 0x9F");
-                return false;
-            };
             world.queue(Command::Sell {
                 connection: id,
                 vendor: reply.vendor,
@@ -250,31 +217,22 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(LookRequest::ID) => {
+        ClientPacket::Look(look) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(look) = decode_packet::<LookRequest>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x09");
-                return false;
-            };
             world.queue(Command::SingleClick {
                 connection: id,
                 serial: look.serial,
             });
             true
         }
-        Some(PropertyQueryRequest::ID) => {
+        ClientPacket::PropertyQuery(query) => {
             // The AoS tooltip batch query: a client hovering wants these objects'
             // property lists. Answered out of the tick like every other reply.
             if !session.in_world {
                 return true;
             }
-            let Ok(query) = decode_packet::<PropertyQueryRequest>(packet, session.login.version())
-            else {
-                warn!(%id, "malformed 0xD6");
-                return false;
-            };
             debug!(%id, count = query.serials.len(), "0xD6 tooltip query");
             world.queue(Command::QueryProperties {
                 connection: id,
@@ -282,15 +240,10 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(<EquipItemRequest as DecodePacket>::ID) => {
+        ClientPacket::Equip(equip) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(equip) = decode_packet::<EquipItemRequest>(packet, session.login.version())
-            else {
-                warn!(%id, "malformed 0x13");
-                return false;
-            };
             world.queue(Command::EquipItem {
                 connection: id,
                 item: equip.item,
@@ -299,43 +252,30 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(<WarMode as DecodePacket>::ID) => {
+        ClientPacket::WarMode(request) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(request) = decode_packet::<WarMode>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x72");
-                return false;
-            };
             world.queue(Command::WarMode {
                 connection: id,
                 war: request.war,
             });
             true
         }
-        Some(AttackRequest::ID) => {
+        ClientPacket::Attack(request) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(request) = decode_packet::<AttackRequest>(packet, session.login.version())
-            else {
-                warn!(%id, "malformed 0x05");
-                return false;
-            };
             world.queue(Command::Attack {
                 connection: id,
                 target: request.target,
             });
             true
         }
-        Some(TalkRequest::ID) => {
+        ClientPacket::Talk(talk) => {
             if !session.in_world {
                 return true;
             }
-            let Ok(talk) = decode_packet::<TalkRequest>(packet, session.login.version()) else {
-                warn!(%id, "malformed 0x03");
-                return false;
-            };
             world.queue(Command::Say {
                 connection: id,
                 mode: talk.mode,
@@ -345,17 +285,12 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(UnicodeTalkRequest::ID) => {
+        ClientPacket::UnicodeTalk(talk) => {
             // What a modern client actually sends when you type. Same `Say` as the
             // ASCII 0x03 once the words are out.
             if !session.in_world {
                 return true;
             }
-            let Ok(talk) = decode_packet::<UnicodeTalkRequest>(packet, session.login.version())
-            else {
-                warn!(%id, "malformed 0xAD");
-                return false;
-            };
             world.queue(Command::Say {
                 connection: id,
                 mode: talk.mode,
@@ -365,85 +300,81 @@ pub(crate) fn dispatch(
             });
             true
         }
-        Some(CastSpellRequest::ID) => {
-            // `0xBF` is a whole family of extended commands; only the cast
-            // subcommand is one we act on, and `decode` says which it is.
+        ClientPacket::Extended(request) => {
+            // `0xBF` is a whole family of extended commands; `ExtendedRequest`
+            // has already picked the one subcommand this packet carries.
             if !session.in_world {
                 return true;
             }
-            match CastSpellRequest::decode(packet) {
-                Ok(Some(cast)) => world.queue(Command::RequestCast {
-                    connection: id,
-                    spell: cast.spell,
-                }),
-                // Not a cast — the same `0xBF` envelope carries the context-menu
-                // request and selection, told apart by their own subcommand word.
-                Ok(None) => {
-                    if let Ok(Some(request)) = ContextMenuRequest::decode(packet) {
-                        debug!(%id, serial = request.serial, "0xBF context-menu request");
-                        world.queue(Command::ContextMenuRequest {
-                            connection: id,
-                            serial: request.serial,
-                        });
-                    } else if let Ok(Some(select)) = ContextMenuSelect::decode(packet) {
-                        world.queue(Command::ContextMenuSelect {
-                            connection: id,
-                            serial: select.serial,
-                            index: select.index,
-                        });
-                    } else if let Ok(Some(request)) = StatLockRequest::decode(packet) {
-                        world.queue(Command::SetStatLock {
-                            connection: id,
-                            stat: request.stat,
-                            lock: StatLock::from_bits(request.lock),
-                        });
-                    }
+            match request {
+                ExtendedRequest::Cast(cast) => {
+                    world.queue(Command::RequestCast {
+                        connection: id,
+                        spell: cast.spell,
+                    });
                 }
-                Err(_) => {
-                    warn!(%id, "malformed 0xBF cast");
-                    return false;
+                ExtendedRequest::ContextMenuRequest(request) => {
+                    debug!(%id, serial = request.serial, "0xBF context-menu request");
+                    world.queue(Command::ContextMenuRequest {
+                        connection: id,
+                        serial: request.serial,
+                    });
                 }
+                ExtendedRequest::ContextMenuSelect(select) => {
+                    world.queue(Command::ContextMenuSelect {
+                        connection: id,
+                        serial: select.serial,
+                        index: select.index,
+                    });
+                }
+                ExtendedRequest::StatLock(request) => {
+                    world.queue(Command::SetStatLock {
+                        connection: id,
+                        stat: request.stat,
+                        lock: StatLock::from_bits(request.lock),
+                    });
+                }
+                ExtendedRequest::Unknown(subcommand) => {
+                    debug!(%id, subcommand = format!("0x{subcommand:02X}"), "unhandled 0xBF");
+                }
+                // `ExtendedRequest` is `#[non_exhaustive]` for callers outside
+                // this workspace; every variant that exists today is matched
+                // above.
+                _ => unreachable!("every ExtendedRequest variant is matched above"),
             }
             true
         }
-        Some(UseSkillRequest::ID) => {
-            // `0x12` is the client's text-command envelope, and "use skill" is one
-            // command inside it; anything else — an emote, a `go` — decodes as
-            // `None` and is passed over rather than treated as an error.
+        ClientPacket::UseSkill(request) => {
             if !session.in_world {
                 return true;
             }
-            match UseSkillRequest::decode(packet) {
-                Ok(Some(request)) => world.queue(Command::UseSkillButton {
-                    connection: id,
-                    skill: request.skill,
-                }),
-                Ok(None) => debug!(%id, "0x12 text command we do not act on"),
-                Err(_) => {
-                    warn!(%id, "malformed 0x12 text command");
-                    return false;
-                }
-            }
+            world.queue(Command::UseSkillButton {
+                connection: id,
+                skill: request.skill,
+            });
             true
         }
-        Some(<SkillLockRequest as DecodePacket>::ID) => {
+        ClientPacket::SkillLock(request) => {
             if !session.in_world {
                 return true;
             }
-            match decode_packet::<SkillLockRequest>(packet, session.login.version()) {
-                Ok(request) => world.queue(Command::SetSkillLock {
-                    connection: id,
-                    skill: request.skill,
-                    lock: request.lock,
-                }),
-                Err(_) => {
-                    warn!(%id, "malformed 0x3A skill lock");
-                    return false;
-                }
-            }
+            world.queue(Command::SetSkillLock {
+                connection: id,
+                skill: request.skill,
+                lock: request.lock,
+            });
             true
         }
-        _ => true,
+        // A `0x12` text command that is not "use skill" reaches here as
+        // Unknown, not an error — see `ClientPacket::decode`.
+        ClientPacket::Unknown { id: 0x12, .. } => {
+            debug!(%id, "0x12 text command we do not act on");
+            true
+        }
+        ClientPacket::Unknown { .. } => true,
+        // `ClientPacket` is `#[non_exhaustive]` for callers outside this
+        // workspace; every variant that exists today is matched above.
+        _ => unreachable!("every ClientPacket variant is matched above"),
     }
 }
 
