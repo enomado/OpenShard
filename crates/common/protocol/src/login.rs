@@ -1,0 +1,1368 @@
+//! The login conversation, from account name to character list.
+//!
+//! ```text
+//!   client                                server
+//!     │  seed (see crate::seed::SeedReader) │
+//!     │────────────────────────────────────>│
+//!     │  0x80 account login                 │
+//!     │────────────────────────────────────>│
+//!     │              0xA8 shard list        │   or 0x82 denied
+//!     │<────────────────────────────────────│
+//!     │  0xA0 select shard                  │
+//!     │────────────────────────────────────>│
+//!     │              0x8C relay             │
+//!     │<────────────────────────────────────│
+//!  ── reconnect to the game server ─────────────────────────────
+//!     │  seed again, then 0x91 game login   │
+//!     │────────────────────────────────────>│
+//!     │              0xA9 character list    │   or 0x82 denied
+//!     │<────────────────────────────────────│
+//! ```
+//!
+//! Layouts are ported from SphereServer's `network/send.cpp` and `receive.cpp`.
+//!
+//! # Field widths are not padding
+//!
+//! Names and passwords sit in fixed 30-byte fields. The client reads exactly 30
+//! bytes and does not care what the server meant, so a field that is one byte
+//! wrong desynchronises everything after it in the packet — usually presenting
+//! as a client that silently shows an empty character list.
+//!
+//! # Client-to-server payloads keep a plain `encode()`
+//!
+//! [`AccountLogin`], [`SelectShard`], [`GameServerLogin`] and
+//! [`ClientVersionReport`] only ever arrive over the wire — this server never
+//! sends one. Their `encode()` exists purely to build test fixtures, so it is a
+//! plain inherent method rather than [`EncodePacket`]: that trait is for the
+//! packets this server actually sends, where [`crate::server_packet::ServerPacket`]
+//! is the only thing allowed to call it.
+
+use std::net::Ipv4Addr;
+
+use crate::codec::{PacketReader, PacketWriter};
+use crate::error::DecodeError;
+use crate::feature::Feature;
+use crate::packet::{decode_packet, DecodePacket, EncodePacket, PacketLength};
+use crate::version::ClientVersion;
+
+/// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
+pub const ACCOUNT_NAME_LENGTH: usize = 30;
+/// Width of a password field. Sphere's `MAX_NAME_SIZE`.
+pub const PASSWORD_LENGTH: usize = 30;
+/// Width of a character name field.
+pub const CHARACTER_NAME_LENGTH: usize = 30;
+/// Width of a shard name field in the 0xA8 list.
+pub const SHARD_NAME_LENGTH: usize = 32;
+
+// -- 0x80 account login ---------------------------------------------------
+
+/// `0x80` — the client offers an account name and password. 62 bytes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AccountLogin {
+    /// The account name, as typed.
+    pub account: String,
+    /// The password, in plaintext.
+    ///
+    /// The UO protocol has no password hashing: it is plaintext inside the
+    /// login encryption, and the login encryption is trivially broken. Treat
+    /// this as public, never log it, and hash it before it reaches storage.
+    pub password: String,
+}
+
+impl DecodePacket for AccountLogin {
+    const ID: u8 = 0x80;
+
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
+        let account = reader.fixed_string(ACCOUNT_NAME_LENGTH)?;
+        let password = reader.fixed_string(PASSWORD_LENGTH)?;
+        // Sphere: "NextLoginKey value from uo.cfg on client machine" — the
+        // server has no use for it.
+        reader.skip(1)?;
+        Ok(Self { account, password })
+    }
+}
+
+impl AccountLogin {
+    /// Encode a whole 0x80 packet. Test fixtures only — see the module docs.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = PacketWriter::with_capacity(62);
+        writer.u8(Self::ID);
+        writer.fixed_string(&self.account, ACCOUNT_NAME_LENGTH);
+        writer.fixed_string(&self.password, PASSWORD_LENGTH);
+        writer.u8(0);
+        writer.into_bytes()
+    }
+}
+
+// -- 0x82 login denied ----------------------------------------------------
+
+/// Why a login was refused.
+///
+/// # Only five of these reach the client
+///
+/// The client understands exactly five codes. Everything else a server might
+/// want to say — bad auth id, too many characters, IP blocked, rate limited —
+/// has no wire representation and must collapse into one of the five.
+///
+/// Sphere keeps both sets in one enum and relies on callers to translate.
+/// Splitting them means the compiler does it: a [`DenyReason`] is anything the
+/// server can decide, and [`DenyReason::wire_code`] is the total function that
+/// maps it to what the client can hear.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[non_exhaustive]
+pub enum DenyReason {
+    /// No such account.
+    NoAccount,
+    /// The account is already logged in.
+    InUse,
+    /// The account is blocked or banned.
+    Blocked,
+    /// Wrong password.
+    BadPassword,
+    /// Anything else: timeout, internal error.
+    Other,
+    /// The client version is not allowed on this shard.
+    BadVersion,
+    /// The selected character does not exist.
+    BadCharacter,
+    /// The auth id from 0x8C did not match.
+    BadAuthId,
+    /// The account name is malformed.
+    MalformedAccount,
+    /// The password is malformed.
+    MalformedPassword,
+    /// The character is already in the world.
+    CharacterInUse,
+    /// The account holds too many characters.
+    TooManyCharacters,
+    /// The connecting IP is blocked.
+    BlockedIp,
+    /// The shard is full.
+    ShardFull,
+    /// Too many password attempts.
+    TooManyAttempts,
+}
+
+impl DenyReason {
+    /// The byte the client actually understands.
+    ///
+    /// Reasons with no wire code of their own collapse to the nearest of the
+    /// five the client knows. That collapse loses information *deliberately*:
+    /// telling an attacker apart "no such account" from "wrong password" is a
+    /// user-enumeration oracle, and the client has no way to show the
+    /// difference anyway. Log the real reason server-side.
+    pub const fn wire_code(self) -> u8 {
+        match self {
+            Self::NoAccount => 0x00,
+            Self::InUse | Self::CharacterInUse => 0x01,
+            Self::Blocked | Self::BlockedIp | Self::TooManyAttempts => 0x02,
+            Self::BadPassword | Self::MalformedPassword => 0x03,
+            Self::Other
+            | Self::BadVersion
+            | Self::BadCharacter
+            | Self::BadAuthId
+            | Self::MalformedAccount
+            | Self::TooManyCharacters
+            | Self::ShardFull => 0x04,
+        }
+    }
+}
+
+/// `0x82` — refuse a login. 2 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LoginDenied {
+    /// Why, collapsed to what the client can hear.
+    pub reason: DenyReason,
+}
+
+impl EncodePacket for LoginDenied {
+    const ID: u8 = 0x82;
+    const LENGTH: PacketLength = PacketLength::Fixed(2);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(self.reason.wire_code());
+    }
+}
+
+// -- 0xA8 shard list ------------------------------------------------------
+
+/// One shard in the 0xA8 list.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ShardEntry {
+    /// Shard name. Truncated to 32 bytes on the wire.
+    pub name: String,
+    /// How full, 0–100. The client renders anything above 100 as garbage.
+    pub percent_full: u8,
+    /// Timezone, as the client's own oddity: hours west of GMT.
+    pub timezone: u8,
+    /// Where to reach it.
+    pub address: Ipv4Addr,
+}
+
+/// The client refuses to render more than this many shards, and crashes on more.
+///
+/// Sphere caps at the same number with the comment "too many servers in list can
+/// crash the client".
+pub const MAX_SHARDS: usize = 32;
+
+/// `0xA8` — the shard list.
+///
+/// # The address goes in backwards, and that is correct
+///
+/// A shard at 192.168.11.6 is sent to a modern client as `06 0B A8 C0` — the
+/// octets reversed. Clients before 4.0.0 get `C0 A8 0B 06` instead.
+///
+/// This is the opposite of [`Relay`], which always sends the octets in order.
+/// Two packets, two conventions, in the same conversation, about the same
+/// address. There is no reason for it; it is simply what the client does, and
+/// both SphereServer and ServUO encode it exactly this way.
+///
+/// **Do not "fix" this by reading Sphere's comments.** `send.cpp` labels the
+/// branch that emits `C0 A8 0B 06` as sending the IP "in reverse", because it
+/// reverses the *dword*. The dword is `s_addr`, which is already network byte
+/// order, so reversing it un-reverses the address. The comments are the wrong
+/// way round for the bytes that actually leave. The shifts are not.
+///
+/// Entries past [`MAX_SHARDS`] are dropped rather than sent, because sending
+/// them crashes the client.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ShardList {
+    /// The shards to offer. Anything past [`MAX_SHARDS`] is silently dropped.
+    pub shards: Vec<ShardEntry>,
+}
+
+impl EncodePacket for ShardList {
+    const ID: u8 = 0xA8;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        let shards = &self.shards[..self.shards.len().min(MAX_SHARDS)];
+        let reversed_ip = version.supports(Feature::ReversedShardIp);
+
+        out.u8(0xFF); // system info flag; Sphere sends 0xFF unconditionally
+        out.u16(shards.len() as u16);
+
+        for (index, shard) in shards.iter().enumerate() {
+            // The client indexes shards from zero in 0xA0, but Sphere numbers
+            // the list from one here and subtracts on the way back.
+            out.u16((index + 1) as u16);
+            out.fixed_string(&shard.name, SHARD_NAME_LENGTH);
+            out.u8(shard.percent_full.min(100));
+            out.u8(shard.timezone);
+
+            let octets = shard.address.octets();
+            if reversed_ip {
+                out.bytes(&[octets[3], octets[2], octets[1], octets[0]]);
+            } else {
+                out.bytes(&octets);
+            }
+        }
+    }
+}
+
+// -- 0xA0 select shard ----------------------------------------------------
+
+/// `0xA0` — the client picks a shard. 3 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SelectShard {
+    /// The index the client chose, as sent — one-based, matching 0xA8.
+    pub index: u16,
+}
+
+impl DecodePacket for SelectShard {
+    const ID: u8 = 0xA0;
+
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
+        Ok(Self {
+            index: reader.u16()?,
+        })
+    }
+}
+
+impl SelectShard {
+    /// The zero-based index into the list that was sent.
+    ///
+    /// Returns `None` for index 0, which is out of range: this is untrusted
+    /// input and a naive `index - 1` underflows.
+    pub const fn slot(self) -> Option<usize> {
+        if self.index == 0 {
+            None
+        } else {
+            Some(self.index as usize - 1)
+        }
+    }
+
+    /// Encode a whole 0xA0 packet. Test fixtures only — see the module docs.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = PacketWriter::with_capacity(3);
+        writer.u8(Self::ID);
+        writer.u16(self.index);
+        writer.into_bytes()
+    }
+}
+
+// -- 0x8C relay -----------------------------------------------------------
+
+/// `0x8C` — go connect to the game server. 11 bytes.
+///
+/// # The octets go in order, on every client version
+///
+/// A shard at 192.168.11.6 is sent as `C0 A8 0B 06`. Unconditionally: there is
+/// no version gate here, unlike [`ShardList`], which reverses them for clients
+/// from 4.0.0 on. The same address, two packets apart, in two different
+/// orders. Both SphereServer and ServUO encode it exactly this way.
+///
+/// This is the single most expensive byte order in the file to get wrong, and it
+/// is silent on this end. The client takes the relay, dials whatever it was
+/// handed, and never comes back; the server sees a login, a clean disconnect,
+/// and no second connection. Nothing here fails. The packet was well-formed and
+/// pointed at 6.11.168.192.
+///
+/// It was wrong for exactly that reason once, from reading Sphere's
+/// `PacketServerRelay` and seeing `writeByte((ip) & 0xFF)` written first. That
+/// looks like a little-endian write of an address, and it is — of an `s_addr`,
+/// which is *already* network byte order, so the low byte is the first octet.
+/// The shifts undo an endianness the value never had. Trace it, do not read it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Relay {
+    /// Where the game server is.
+    pub address: Ipv4Addr,
+    /// Which port.
+    pub port: u16,
+    /// The key the client must present back on the game connection.
+    pub auth_key: u32,
+}
+
+impl EncodePacket for Relay {
+    const ID: u8 = 0x8C;
+    const LENGTH: PacketLength = PacketLength::Fixed(11);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.bytes(&self.address.octets());
+        out.u16(self.port);
+        out.u32(self.auth_key);
+    }
+}
+
+// -- 0x91 game server login -----------------------------------------------
+
+/// `0x91` — login to the game server after a relay. 65 bytes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GameServerLogin {
+    /// The key handed out in the 0x8C relay. The server must check it.
+    pub auth_key: u32,
+    /// The account name, again.
+    pub account: String,
+    /// The password, again, still plaintext.
+    pub password: String,
+}
+
+impl DecodePacket for GameServerLogin {
+    const ID: u8 = 0x91;
+
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
+        Ok(Self {
+            auth_key: reader.u32()?,
+            account: reader.fixed_string(ACCOUNT_NAME_LENGTH)?,
+            password: reader.fixed_string(PASSWORD_LENGTH)?,
+        })
+    }
+}
+
+impl GameServerLogin {
+    /// Encode a whole 0x91 packet. Test fixtures only — see the module docs.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = PacketWriter::with_capacity(65);
+        writer.u8(Self::ID);
+        writer.u32(self.auth_key);
+        writer.fixed_string(&self.account, ACCOUNT_NAME_LENGTH);
+        writer.fixed_string(&self.password, PASSWORD_LENGTH);
+        writer.into_bytes()
+    }
+}
+
+// -- 0xA9 character list --------------------------------------------------
+
+/// One character slot in the 0xA9 list.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct CharacterEntry {
+    /// The character's name. Empty means an unused slot.
+    pub name: String,
+}
+
+/// One starting city offered at character creation.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StartLocation {
+    /// The region name, e.g. "Britain".
+    pub area: String,
+    /// The specific spot, e.g. "Castle Britannia".
+    pub name: String,
+    /// Where the character appears.
+    pub position: (i32, i32, i32),
+    /// Which map.
+    pub map: i32,
+    /// Cliloc id for the description. Ignored by clients before 7.0.13.0.
+    pub description_cliloc: i32,
+}
+
+/// The minimum number of character slots the list must contain.
+///
+/// Clients since 3.0.0.10 read a fixed five slots regardless of the count byte
+/// and mis-render a shorter list. Sphere calls this `MINCLIVER_PADCHARLIST`.
+pub const MIN_CHARACTER_SLOTS: usize = 5;
+
+/// Character-list (`0xA9`) flag: the client may open **context menus** (the
+/// `0xBF` popup). ClassicUO's `CharacterListFlags.CLF_CONTEXT_MENU`; it sets
+/// `ClientFeatures.PopupEnabled` from this bit — *this* packet, not the `0xB9`.
+pub const CLF_CONTEXT_MENU: u32 = 0x08;
+
+/// Character-list (`0xA9`) flag: the client may use **AoS object tooltips**
+/// (OPL). ClassicUO's `CLF_PALADIN_NECROMANCER_TOOLTIPS`; it sets
+/// `ClientFeatures.TooltipsEnabled` from this bit (plus its own client-version
+/// check, so the server just needs to offer it). This is what makes a modern
+/// client send `0xD6` tooltip requests at all — the flag lives in the character
+/// list, not in `0xB9`.
+pub const CLF_TOOLTIPS: u32 = 0x20;
+
+/// The `0xB9` SupportedFeatures mask that turns on AoS: ServUO's `FeatureFlags`
+/// `T2A|UOR|UOTD|LBR|AOS` (`0x1F`). The AOS bit (`0x10`) is what makes a modern
+/// client use object tooltips and context menus; the lower expansion bits ride
+/// along as the core-expansion default and a 2D client ignores the ones it does
+/// not use. Left out is `LiveAccount` (`0x8000`), which would ask for a sixth
+/// character slot the list is not sized for.
+pub const AOS_FEATURE_FLAGS: u32 = 0x1F;
+
+/// The `0xB9` mask for Samurai Empire: AoS plus `SE` (`0x40`). ServUO's
+/// `FeatureFlags.ExpansionSE`, again without `LiveAccount`.
+pub const SE_FEATURE_FLAGS: u32 = AOS_FEATURE_FLAGS | 0x40;
+
+/// The `0xB9` mask for Mondain's Legacy: SE plus `ML` (`0x80`) and `NinthAge`
+/// (`0x200`, the custom-house tiles ML shipped). ServUO's
+/// `FeatureFlags.ExpansionML`, without `LiveAccount`.
+///
+/// **This is what makes the client draw the paperdoll's Quest button.** A client
+/// told the shard is AoS has no quest system to show a button for, so the button
+/// is simply absent — and a server that answers `0xD7`/`0x32` perfectly will
+/// still look broken, because nothing ever sends one. The same goes for the
+/// Guild button beside it.
+pub const ML_FEATURE_FLAGS: u32 = SE_FEATURE_FLAGS | 0x80 | 0x200;
+
+/// `0xB9` — the SupportedFeatures mask, sent before the character list.
+///
+/// # Why this stays a free function
+///
+/// Every other packet in this crate is [`Fixed`](PacketLength::Fixed) — a
+/// constant size — or [`Variable`](PacketLength::Variable) — a self-describing
+/// `u16` length field. `0xB9` is neither: it has no length field at all, and
+/// its size (3 or 5 bytes) depends on the client version. [`EncodePacket::LENGTH`]
+/// is a `const`, so it cannot ask `version` which shape this packet is before
+/// framing runs. Forcing it into `Variable` would insert a length field the
+/// wire format does not have; forcing a single `Fixed` size would be wrong for
+/// half the clients. Until the framing layer can express "fixed, but the fixed
+/// size depends on the version" (`0x08`'s problem too, on the decode side —
+/// see [`crate::packet::client_packet_length`]), this one packet is written by
+/// hand rather than bent to fit a model it does not.
+///
+/// It tells the client which expansion feature sets to turn on — chiefly, for
+/// this engine, the AoS bit that enables object tooltips and context menus.
+/// Without it (or without that bit) a modern client stays on the classic
+/// single-click name path. The mask is the caller's to compose, since what a
+/// shard enables is configuration rather than protocol.
+///
+/// `extended` picks the wire width: newer clients ([`Feature::ExtraFeatureMask`],
+/// since 6.0.14.2) read a four-byte mask; older ones two. Mirrors ServUO's
+/// `SupportedFeatures` / `NetState.ExtendedSupportedFeatures`.
+#[must_use]
+pub fn encode_supported_features(flags: u32, extended: bool) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(5);
+    writer.u8(0xB9);
+    if extended {
+        writer.u32(flags);
+    } else {
+        writer.u16(flags as u16);
+    }
+    writer.into_bytes()
+}
+
+/// `0xA9` — the character list and starting cities.
+///
+/// `flags` is the client-capability mask; it is the caller's to compose, since
+/// what a shard enables is configuration rather than protocol.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CharacterList {
+    /// The account's characters, one per slot.
+    pub characters: Vec<CharacterEntry>,
+    /// The starting cities offered at character creation.
+    pub starts: Vec<StartLocation>,
+    /// The client-capability mask; see [`CLF_CONTEXT_MENU`], [`CLF_TOOLTIPS`].
+    pub flags: u32,
+}
+
+impl EncodePacket for CharacterList {
+    const ID: u8 = 0xA9;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        let slots = if version.supports(Feature::PaddedCharacterList) {
+            self.characters.len().max(MIN_CHARACTER_SLOTS)
+        } else {
+            self.characters.len()
+        };
+
+        out.u8(slots as u8);
+        for slot in 0..slots {
+            let name = self
+                .characters
+                .get(slot)
+                .map_or("", |entry| entry.name.as_str());
+            write_character_slot(out, name);
+        }
+
+        out.u8(self.starts.len().min(u8::MAX as usize) as u8);
+        let extra_info = version.supports(Feature::ExtraStartInfo);
+        for (index, start) in self.starts.iter().take(u8::MAX as usize).enumerate() {
+            out.u8(index as u8);
+            if extra_info {
+                // Since 7.0.13.0 the name fields are one byte wider *and* six
+                // extra dwords follow. Getting the width wrong shifts
+                // everything after it.
+                out.fixed_string(&start.area, 32);
+                out.fixed_string(&start.name, 32);
+                out.i32(start.position.0);
+                out.i32(start.position.1);
+                out.i32(start.position.2);
+                out.i32(start.map);
+                out.i32(start.description_cliloc);
+                out.u32(0);
+            } else {
+                out.fixed_string(&start.area, 31);
+                out.fixed_string(&start.name, 31);
+            }
+        }
+
+        if version.supports(Feature::CharacterListFlags) {
+            out.u32(self.flags);
+        }
+    }
+}
+
+/// Write one 60-byte character slot: a 30-byte name and the vestigial 30-byte
+/// password field. Shared by the `0xA9` list and the `0x86` post-delete resend,
+/// so the two never disagree about the slot width.
+fn write_character_slot(writer: &mut PacketWriter, name: &str) {
+    writer.fixed_string(name, CHARACTER_NAME_LENGTH);
+    // The password field is vestigial: the client sends it back but no modern
+    // server puts anything in it.
+    writer.fixed_string("", PASSWORD_LENGTH);
+}
+
+// -- 0x83 delete character ------------------------------------------------
+
+/// `0x83` — the client asks to delete a character by slot. 39 bytes.
+///
+/// The client sends a vestigial 30-byte password field (which no modern server
+/// trusts), then the slot index, then its own IP (which we ignore). ServUO's
+/// `PacketHandlers.DeleteCharacter` seeks past the 30 and reads only the index;
+/// this does the same, so only the slot survives decoding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DeleteCharacter {
+    /// The slot to delete, as an index into the character list.
+    pub slot: u32,
+}
+
+impl DecodePacket for DeleteCharacter {
+    const ID: u8 = 0x83;
+
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
+        reader.skip(PASSWORD_LENGTH)?; // vestigial password field
+        let slot = reader.u32()?;
+        // The trailing client IP is unused.
+        Ok(Self { slot })
+    }
+}
+
+// -- 0x85 delete rejected -------------------------------------------------
+
+/// Why a character deletion was refused — the `0x85` result code.
+///
+/// The client renders each as its own message on the character-select screen.
+/// From ServUO's `DeleteResultType`; the codes are the client's, not ours.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DeleteResult {
+    /// The account password did not check out.
+    PasswordInvalid = 0,
+    /// No character in that slot.
+    CharNotExist = 1,
+    /// The character is logged in and cannot be deleted.
+    CharBeingPlayed = 2,
+    /// The character is too young to delete (the newbie window).
+    CharTooYoung = 3,
+    /// The character is queued for deletion.
+    CharQueued = 4,
+    /// The request made no sense.
+    BadRequest = 5,
+}
+
+/// `0x85` — a character deletion was refused, with the reason. 2 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DeleteReject {
+    /// Why.
+    pub result: DeleteResult,
+}
+
+impl EncodePacket for DeleteReject {
+    const ID: u8 = 0x85;
+    const LENGTH: PacketLength = PacketLength::Fixed(2);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(self.result as u8);
+    }
+}
+
+// -- 0x86 character list update -------------------------------------------
+
+/// `0x86` — resend the character list after a successful deletion.
+///
+/// The character block of `0xA9` on its own, no city list: a count byte then
+/// `count` 60-byte slots. The count is padded to [`MIN_CHARACTER_SLOTS`] like
+/// the full list, so the client redraws all five rows. Ported from ServUO's
+/// `CharacterListUpdate`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CharacterListUpdate {
+    /// The account's characters, one per slot, after the delete.
+    pub characters: Vec<CharacterEntry>,
+}
+
+impl EncodePacket for CharacterListUpdate {
+    const ID: u8 = 0x86;
+    const LENGTH: PacketLength = PacketLength::Variable;
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        let slots = self.characters.len().max(MIN_CHARACTER_SLOTS);
+        out.u8(slots as u8);
+        for slot in 0..slots {
+            let name = self
+                .characters
+                .get(slot)
+                .map_or("", |entry| entry.name.as_str());
+            write_character_slot(out, name);
+        }
+    }
+}
+
+// -- 0xBD client version --------------------------------------------------
+
+/// `0xBD` — the client reports its version as a string.
+///
+/// Variable length: id, `u16` length, then a NUL-terminated ASCII version.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClientVersionReport {
+    /// Exactly what the client sent, before parsing.
+    ///
+    /// Kept raw because it carries more than the version: Sphere sniffs `UO:3D`
+    /// out of this string to tell the 3D client apart, and a shard may want to
+    /// log or fingerprint the rest.
+    pub raw: String,
+}
+
+impl DecodePacket for ClientVersionReport {
+    const ID: u8 = 0xBD;
+
+    /// `decode_packet` has already consumed the length field before calling
+    /// this — see its doc comment — so `reader.rest()` here is exactly the
+    /// declared body: whatever the client wrote, already bounded by the frame
+    /// that got us here. No terminator is required: a client that omits the
+    /// NUL still gets a version out of whatever is left, which is the same
+    /// leniency `raw` documents for junk content.
+    fn decode_body(
+        reader: &mut PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, DecodeError> {
+        let body = reader.rest();
+        let end = body
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(body.len())
+            .min(Self::MAX_LENGTH);
+        Ok(Self {
+            raw: body[..end].iter().map(|byte| *byte as char).collect(),
+        })
+    }
+}
+
+impl ClientVersionReport {
+    /// Sphere clamps the version string to this before reading it.
+    pub const MAX_LENGTH: usize = 20;
+
+    /// Parse the reported version, if it is a version at all.
+    ///
+    /// `None` for a string the client made up. That is not fatal on its own —
+    /// the seed usually carried a version already.
+    pub fn version(&self) -> Option<ClientVersion> {
+        self.raw.parse().ok()
+    }
+
+    /// Whether the client identified itself as the 3D client.
+    ///
+    /// Sphere looks for this substring; there is no cleaner signal.
+    pub fn is_3d_client(&self) -> bool {
+        self.raw.contains("UO:3D")
+    }
+
+    /// Encode a whole 0xBD packet. Test fixtures only — see the module docs.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = PacketWriter::with_capacity(4 + self.raw.len());
+        writer.u8(Self::ID);
+        writer.u16(0);
+        writer.null_terminated_string(&self.raw);
+        patch_length(writer.into_bytes())
+    }
+}
+
+/// Write the final length into a variable-length packet's `u16` at offset 1.
+///
+/// Used only by [`ClientVersionReport::encode`]'s test fixtures: every
+/// server-to-client variable packet in this module goes through
+/// [`crate::packet::frame_body`] instead, which is the one place production
+/// code patches a length.
+fn patch_length(mut bytes: Vec<u8>) -> Vec<u8> {
+    let length = u16::try_from(bytes.len()).expect("packet outgrew its u16 length field");
+    bytes[1..3].copy_from_slice(&length.to_be_bytes());
+    bytes
+}
+
+// -- the decoded client packet ---------------------------------------------
+
+/// One packet the login conversation understood, already decoded.
+///
+/// Without this, `LoginServer::handle` matched the raw id byte to pick a
+/// handler, and each handler decoded the same bytes again to get a typed
+/// value — one place that knew the id, another that knew the type, and the
+/// two could in principle disagree. [`ClientLoginPacket::decode`] does both
+/// in one pass, so `handle` matches on the result and nothing else in the
+/// login crate touches a raw packet buffer.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum ClientLoginPacket {
+    /// `0xBD`, successfully framed. Whether the version *string* itself
+    /// parsed is a separate question — see [`ClientVersionReport::version`].
+    VersionReport(ClientVersionReport),
+    /// `0xBD` arrived too mangled to reach a body decoder at all. Not fatal:
+    /// the seed usually already carried a version, and a client sending junk
+    /// here is the normal case [`ClientVersionReport`] tolerates, just one
+    /// layer further in.
+    MalformedVersionReport,
+    /// `0x80` — account name and password.
+    AccountLogin(AccountLogin),
+    /// `0xA0` — the shard the client picked.
+    SelectShard(SelectShard),
+    /// `0x91` — login to the game server after a relay.
+    GameServerLogin(GameServerLogin),
+    /// Any id the login conversation does not act on. Real clients send
+    /// several of these during login (`0xBE` assist version, `0xA4` system
+    /// info), and dropping the connection over them would break every one of
+    /// them for no reason.
+    Unknown(u8),
+}
+
+impl ClientLoginPacket {
+    /// Decode `packet` by its id byte.
+    ///
+    /// `packet` must be non-empty. That is an invariant, not a checked
+    /// precondition: every packet reaching this point has already survived
+    /// [`crate::packet::frame_client_packet`], whose shortest possible frame is
+    /// one byte (the id), so an empty slice here means a caller skipped
+    /// framing — a bug worth panicking on rather than laundering through an
+    /// `Option` every caller would immediately unwrap.
+    ///
+    /// `Err(_)` only for a known id whose body failed to decode; an unknown id
+    /// is `Ok(Self::Unknown)`, not an error, per [`Self::Unknown`].
+    pub fn decode(packet: &[u8], version: ClientVersion) -> Result<Self, ClientLoginDecodeError> {
+        let id = *packet
+            .first()
+            .expect("packet is empty: caller skipped framing, which never produces one");
+        match id {
+            ClientVersionReport::ID => Ok(decode_packet(packet, version)
+                .map_or(Self::MalformedVersionReport, Self::VersionReport)),
+            AccountLogin::ID => decode_packet(packet, version)
+                .map(Self::AccountLogin)
+                .map_err(ClientLoginDecodeError::AccountLogin),
+            SelectShard::ID => decode_packet(packet, version)
+                .map(Self::SelectShard)
+                .map_err(ClientLoginDecodeError::SelectShard),
+            GameServerLogin::ID => decode_packet(packet, version)
+                .map(Self::GameServerLogin)
+                .map_err(ClientLoginDecodeError::GameServerLogin),
+            _ => Ok(Self::Unknown(id)),
+        }
+    }
+}
+
+/// A known client-login packet id arrived but its body did not decode.
+///
+/// Fatal in every case: the login conversation closes the connection rather
+/// than act on half-read credentials or a forged relay key. Kept as one
+/// variant per packet, rather than collapsing to `(u8, DecodeError)`, so a
+/// caller can match the packet by type the same way it would match
+/// [`ClientLoginPacket`] itself.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ClientLoginDecodeError {
+    /// `0x80` did not decode.
+    AccountLogin(DecodeError),
+    /// `0xA0` did not decode.
+    SelectShard(DecodeError),
+    /// `0x91` did not decode.
+    GameServerLogin(DecodeError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::WrongPacket;
+    use crate::packet::{client_packet_length, encode_packet};
+
+    fn version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
+
+    /// The `u16` a variable-length packet declares at offset 1.
+    fn declared_length(bytes: &[u8]) -> usize {
+        u16::from_be_bytes([bytes[1], bytes[2]]) as usize
+    }
+
+    /// The shard count, which sits after the id, the length and the 0xFF flag.
+    fn shard_count(bytes: &[u8]) -> usize {
+        u16::from_be_bytes([bytes[4], bytes[5]]) as usize
+    }
+
+    fn shard(name: &str, address: [u8; 4]) -> ShardEntry {
+        ShardEntry {
+            name: name.to_owned(),
+            percent_full: 10,
+            timezone: 5,
+            address: Ipv4Addr::from(address),
+        }
+    }
+
+    #[test]
+    fn account_login_round_trips_at_the_declared_length() {
+        let login = AccountLogin {
+            account: "admin".to_owned(),
+            password: "hunter2".to_owned(),
+        };
+        let bytes = login.encode();
+
+        assert_eq!(
+            client_packet_length(AccountLogin::ID, None),
+            Some(PacketLength::Fixed(62))
+        );
+        assert_eq!(bytes.len(), 62, "the table and the encoder must agree");
+        assert_eq!(
+            decode_packet::<AccountLogin>(&bytes, version()).unwrap(),
+            login
+        );
+    }
+
+    #[test]
+    fn account_login_rejects_the_wrong_packet() {
+        let mut bytes = AccountLogin {
+            account: "a".to_owned(),
+            password: "b".to_owned(),
+        }
+        .encode();
+        bytes[0] = 0x91;
+        assert_eq!(
+            decode_packet::<AccountLogin>(&bytes, version()),
+            Err(DecodeError::WrongPacket(WrongPacket {
+                expected: 0x80,
+                found: 0x91,
+            }))
+        );
+    }
+
+    #[test]
+    fn account_login_rejects_a_truncated_packet() {
+        let bytes = [0x80u8, b'a', b'b'];
+        assert!(matches!(
+            decode_packet::<AccountLogin>(&bytes, version()),
+            Err(DecodeError::Codec(_))
+        ));
+    }
+
+    #[test]
+    fn delete_character_reads_the_slot_past_the_vestigial_fields() {
+        // 39 bytes: id + 30 pad + u32 slot + 4 client IP.
+        let mut bytes = vec![DeleteCharacter::ID];
+        bytes.extend(std::iter::repeat_n(0u8, PASSWORD_LENGTH));
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes.extend_from_slice(&[192, 168, 0, 1]);
+        assert_eq!(
+            client_packet_length(DeleteCharacter::ID, None),
+            Some(PacketLength::Fixed(39))
+        );
+        assert_eq!(bytes.len(), 39, "the table and the wire form must agree");
+        assert_eq!(
+            decode_packet::<DeleteCharacter>(&bytes, version())
+                .unwrap()
+                .slot,
+            3
+        );
+    }
+
+    #[test]
+    fn delete_character_rejects_the_wrong_packet() {
+        let bytes = [0x91u8; 39];
+        assert!(matches!(
+            decode_packet::<DeleteCharacter>(&bytes, version()),
+            Err(DecodeError::WrongPacket(_))
+        ));
+    }
+
+    #[test]
+    fn delete_reject_is_two_bytes_carrying_the_reason() {
+        assert_eq!(
+            encode_packet(
+                &DeleteReject {
+                    result: DeleteResult::CharBeingPlayed
+                },
+                version()
+            ),
+            vec![0x85, 2]
+        );
+    }
+
+    #[test]
+    fn character_list_update_pads_to_five_slots() {
+        let characters = vec![CharacterEntry {
+            name: "Dupre".to_owned(),
+        }];
+        let bytes = encode_packet(&CharacterListUpdate { characters }, version());
+        assert_eq!(bytes[0], 0x86);
+        assert_eq!(declared_length(&bytes), bytes.len(), "self-declared length");
+        assert_eq!(bytes[3], MIN_CHARACTER_SLOTS as u8, "padded to five rows");
+        assert_eq!(bytes.len(), 4 + MIN_CHARACTER_SLOTS * 60);
+        // The first slot's name sits right after the count byte.
+        assert_eq!(&bytes[4..9], b"Dupre");
+        // The second slot is empty.
+        assert_eq!(bytes[64], 0);
+    }
+
+    #[test]
+    fn account_login_truncates_an_overlong_name_to_its_field() {
+        let login = AccountLogin {
+            account: "x".repeat(50),
+            password: String::new(),
+        };
+        assert_eq!(login.encode().len(), 62, "a long name must not overrun");
+        assert_eq!(
+            decode_packet::<AccountLogin>(&login.encode(), version())
+                .unwrap()
+                .account
+                .len(),
+            30
+        );
+    }
+
+    #[test]
+    fn deny_reasons_collapse_onto_the_five_the_client_knows() {
+        for reason in [
+            DenyReason::NoAccount,
+            DenyReason::InUse,
+            DenyReason::Blocked,
+            DenyReason::BadPassword,
+            DenyReason::Other,
+            DenyReason::BadVersion,
+            DenyReason::BadCharacter,
+            DenyReason::BadAuthId,
+            DenyReason::MalformedAccount,
+            DenyReason::MalformedPassword,
+            DenyReason::CharacterInUse,
+            DenyReason::TooManyCharacters,
+            DenyReason::BlockedIp,
+            DenyReason::ShardFull,
+            DenyReason::TooManyAttempts,
+        ] {
+            let code = reason.wire_code();
+            assert!(
+                code <= 0x04,
+                "{reason:?} sends 0x{code:02X}, which the client cannot read"
+            );
+        }
+
+        // Spot-check the collapse, which is the part that loses information.
+        assert_eq!(
+            DenyReason::BlockedIp.wire_code(),
+            0x02,
+            "reads as 'blocked'"
+        );
+        assert_eq!(DenyReason::ShardFull.wire_code(), 0x04, "reads as 'other'");
+    }
+
+    #[test]
+    fn login_denied_matches_the_declared_length() {
+        let bytes = encode_packet(
+            &LoginDenied {
+                reason: DenyReason::BadPassword,
+            },
+            version(),
+        );
+        assert_eq!(bytes, vec![0x82, 0x03]);
+        assert_eq!(bytes.len(), 2);
+    }
+
+    #[test]
+    fn shard_list_frames_and_declares_its_own_length() {
+        let shards = vec![shard("Britannia", [10, 0, 0, 1])];
+        let bytes = encode_packet(&ShardList { shards }, ClientVersion::TOL);
+
+        assert_eq!(bytes.len(), 46, "Sphere's PacketServerList base length");
+        assert_eq!(
+            declared_length(&bytes),
+            46,
+            "the declared length must match reality"
+        );
+        assert_eq!(bytes[3], 0xFF, "system info flag");
+        assert_eq!(shard_count(&bytes), 1);
+        assert_eq!(bytes[6..8], [0x00, 0x01], "list is numbered from one");
+    }
+
+    #[test]
+    fn shard_list_reverses_the_ip_for_modern_clients() {
+        // The address is 192.168.11.6 because that is the one that caught this:
+        // a real client, told to dial 6.11.168.192, timing out.
+        //
+        // Reversed for the NEWER client. That is the way round it goes, it is
+        // the opposite of the relay two packets later, and both SphereServer and
+        // ServUO do exactly this. Sphere's inline comments say otherwise and are
+        // wrong; its shifts are right. This test is the shifts.
+        let shards = vec![shard("Britannia", [192, 168, 11, 6])];
+
+        let modern = encode_packet(
+            &ShardList {
+                shards: shards.clone(),
+            },
+            ClientVersion::new(4, 0, 0, 0),
+        );
+        assert_eq!(
+            &modern[42..46],
+            &[6, 11, 168, 192],
+            "since 4.0.0 the shard list carries the address backwards"
+        );
+
+        let ancient = encode_packet(&ShardList { shards }, ClientVersion::new(3, 255, 255, 255));
+        assert_eq!(
+            &ancient[42..46],
+            &[192, 168, 11, 6],
+            "one patch below, the octets go in order"
+        );
+    }
+
+    #[test]
+    fn shard_list_drops_entries_past_the_client_crash_point() {
+        let shards: Vec<_> = (0..40)
+            .map(|i| shard(&format!("s{i}"), [1, 2, 3, 4]))
+            .collect();
+        let bytes = encode_packet(&ShardList { shards }, ClientVersion::TOL);
+        assert_eq!(
+            shard_count(&bytes),
+            MAX_SHARDS,
+            "more than 32 crashes the client, so they are dropped not sent"
+        );
+    }
+
+    #[test]
+    fn shard_list_clamps_a_nonsense_fullness() {
+        let mut entry = shard("Britannia", [10, 0, 0, 1]);
+        entry.percent_full = 250;
+        let bytes = encode_packet(
+            &ShardList {
+                shards: vec![entry],
+            },
+            ClientVersion::TOL,
+        );
+        assert_eq!(bytes[40], 100, "the client renders >100 as garbage");
+    }
+
+    #[test]
+    fn select_shard_round_trips() {
+        let select = SelectShard { index: 1 };
+        let bytes = select.encode();
+        assert_eq!(bytes.len(), 3);
+        assert_eq!(
+            client_packet_length(SelectShard::ID, None),
+            Some(PacketLength::Fixed(3))
+        );
+        assert_eq!(
+            decode_packet::<SelectShard>(&bytes, version()).unwrap(),
+            select
+        );
+        assert_eq!(select.slot(), Some(0), "the wire is one-based");
+    }
+
+    #[test]
+    fn select_shard_zero_does_not_underflow() {
+        // Untrusted input: `index - 1` on a u16 zero would wrap to 65535 and
+        // index far out of the shard list.
+        assert_eq!(SelectShard { index: 0 }.slot(), None);
+    }
+
+    #[test]
+    fn the_relay_sends_the_octets_in_order() {
+        // This is the packet that decides whether anyone ever reaches the shard,
+        // and getting it wrong is invisible from the server: the client dials
+        // what it was given, finds nothing, and the log shows a clean login
+        // followed by a disconnect that looks entirely normal.
+        //
+        // It shipped reversed once. A real ClassicUO, told 192.168.11.6, said:
+        //
+        //     Connecting to tcp://6.11.168.192:2593/
+        //     error while connecting ... Operation timed out
+        //
+        // Hence the address. This test is that log line.
+        let bytes = encode_packet(
+            &Relay {
+                address: Ipv4Addr::new(192, 168, 11, 6),
+                port: 2593,
+                auth_key: 0xDEAD_BEEF,
+            },
+            version(),
+        );
+        assert_eq!(bytes.len(), 11);
+        assert_eq!(&bytes[1..5], &[192, 168, 11, 6]);
+        assert_eq!(
+            &bytes[5..7],
+            &2593u16.to_be_bytes(),
+            "the port is not touched"
+        );
+        assert_eq!(&bytes[7..11], &0xDEAD_BEEFu32.to_be_bytes());
+    }
+
+    #[test]
+    fn the_relay_and_the_shard_list_disagree_about_the_same_address() {
+        // Not a curiosity: this is the whole trap, and a change that makes these
+        // two agree has broken one of them. Two packets, one conversation, one
+        // address, opposite orders — because that is what the client does.
+        let address = Ipv4Addr::new(192, 168, 11, 6);
+        let modern = ClientVersion::new(7, 0, 45, 65);
+
+        let list = encode_packet(
+            &ShardList {
+                shards: vec![shard("Britannia", address.octets())],
+            },
+            modern,
+        );
+        let relay = encode_packet(
+            &Relay {
+                address,
+                port: 2593,
+                auth_key: 0,
+            },
+            modern,
+        );
+
+        assert_eq!(&list[42..46], &[6, 11, 168, 192]);
+        assert_eq!(&relay[1..5], &[192, 168, 11, 6]);
+    }
+
+    #[test]
+    fn the_relay_does_not_care_what_the_client_is() {
+        // 0xA8 has a version gate. This one does not, and adding one would be
+        // the obvious "symmetry" fix that breaks every modern client.
+        for version in [
+            ClientVersion::OLDEST,
+            ClientVersion::new(3, 0, 0, 0),
+            ClientVersion::new(4, 0, 0, 0),
+            ClientVersion::TOL,
+        ] {
+            let bytes = encode_packet(
+                &Relay {
+                    address: Ipv4Addr::new(192, 168, 11, 6),
+                    port: 2593,
+                    auth_key: 0,
+                },
+                version,
+            );
+            assert_eq!(&bytes[1..5], &[192, 168, 11, 6]);
+        }
+    }
+
+    #[test]
+    fn game_server_login_round_trips_at_the_declared_length() {
+        let login = GameServerLogin {
+            auth_key: 0x1234_5678,
+            account: "admin".to_owned(),
+            password: "hunter2".to_owned(),
+        };
+        let bytes = login.encode();
+        assert_eq!(
+            client_packet_length(GameServerLogin::ID, None),
+            Some(PacketLength::Fixed(65))
+        );
+        assert_eq!(bytes.len(), 65);
+        assert_eq!(
+            decode_packet::<GameServerLogin>(&bytes, version()).unwrap(),
+            login
+        );
+    }
+
+    #[test]
+    fn character_list_pads_to_five_slots() {
+        // Clients since 3.0.0.10 read five slots whatever the count byte says.
+        let characters = vec![CharacterEntry {
+            name: "Lord British".to_owned(),
+        }];
+        let bytes = encode_packet(
+            &CharacterList {
+                characters,
+                starts: Vec::new(),
+                flags: 0,
+            },
+            ClientVersion::TOL,
+        );
+
+        assert_eq!(bytes[3], 5, "one character still means five slots");
+        assert_eq!(&bytes[4..16], b"Lord British");
+        assert_eq!(&bytes[64..76], &[0u8; 12], "slot two is blank, not absent");
+        assert_eq!(declared_length(&bytes), bytes.len());
+    }
+
+    #[test]
+    fn character_list_does_not_pad_for_clients_that_predate_the_rule() {
+        let characters = vec![CharacterEntry {
+            name: "Lord British".to_owned(),
+        }];
+        let old = ClientVersion::new(3, 0, 0, 9);
+        assert!(!old.supports(Feature::PaddedCharacterList));
+
+        let bytes = encode_packet(
+            &CharacterList {
+                characters,
+                starts: Vec::new(),
+                flags: 0,
+            },
+            old,
+        );
+        assert_eq!(bytes[3], 1);
+    }
+
+    #[test]
+    fn character_list_start_locations_widen_at_7_0_13_0() {
+        let starts = vec![StartLocation {
+            area: "Britain".to_owned(),
+            name: "Castle Britannia".to_owned(),
+            position: (1475, 1774, 0),
+            map: 0,
+            description_cliloc: 1075072,
+        }];
+
+        let list = CharacterList {
+            characters: Vec::new(),
+            starts,
+            flags: 0,
+        };
+        let modern = encode_packet(&list, ClientVersion::new(7, 0, 13, 0));
+        let ancient = encode_packet(&list, ClientVersion::new(7, 0, 12, 255));
+        assert_eq!(
+            modern.len() - ancient.len(),
+            (1 + 32 + 32 + 24) - (1 + 31 + 31),
+            "extra start info is two wider fields plus six dwords"
+        );
+    }
+
+    #[test]
+    fn character_list_omits_flags_for_the_oldest_clients() {
+        // Straddle the boundary exactly. A wider gap would also move the
+        // character-slot padding, which is a different gate entirely.
+        let list = CharacterList {
+            characters: Vec::new(),
+            starts: Vec::new(),
+            flags: 0xAABB_CCDD,
+        };
+        let with_flags = encode_packet(&list, ClientVersion::new(1, 26, 0, 1));
+        let without = encode_packet(&list, ClientVersion::new(1, 26, 0, 0));
+        assert_eq!(
+            with_flags.len() - without.len(),
+            4,
+            "send.cpp gates the flags dword on version > 1.26.0.0"
+        );
+        assert_eq!(
+            &with_flags[with_flags.len() - 4..],
+            &0xAABB_CCDDu32.to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn client_version_report_round_trips() {
+        let report = ClientVersionReport {
+            raw: "7.0.45.65".to_owned(),
+        };
+        let bytes = report.encode();
+        assert_eq!(
+            client_packet_length(ClientVersionReport::ID, None),
+            Some(PacketLength::Variable)
+        );
+        assert_eq!(declared_length(&bytes), bytes.len());
+
+        let decoded: ClientVersionReport = decode_packet(&bytes, version()).unwrap();
+        assert_eq!(decoded, report);
+        assert_eq!(decoded.version(), Some(ClientVersion::new(7, 0, 45, 65)));
+        assert!(!decoded.is_3d_client());
+    }
+
+    #[test]
+    fn client_version_report_spots_the_3d_client() {
+        let report = ClientVersionReport {
+            raw: "4.0.0a, UO:3D".to_owned(),
+        };
+        let decoded: ClientVersionReport = decode_packet(&report.encode(), version()).unwrap();
+        assert!(decoded.is_3d_client());
+    }
+
+    #[test]
+    fn client_version_report_survives_junk() {
+        // The version is a claim from the network; garbage must not be fatal.
+        let report = ClientVersionReport {
+            raw: "not a version".to_owned(),
+        };
+        let decoded: ClientVersionReport = decode_packet(&report.encode(), version()).unwrap();
+        assert_eq!(decoded.version(), None);
+    }
+
+    /// `decode_packet` skips the length field rather than re-checking it: by
+    /// the time a body decoder runs, `frame_client_packet` has already proved
+    /// `bytes` is a complete, correctly-bounded packet (see its doc comment).
+    /// So a length field that lies about the packet's true size no longer
+    /// fails *here* — that check now lives once, at the framing layer, not
+    /// duplicated in every variable-length decoder.
+    #[test]
+    fn decoding_does_not_re_validate_a_length_field_framing_already_checked() {
+        let bytes = [0xBD, 0xFF, 0xFF, b'7', 0x00];
+        let decoded: ClientVersionReport = decode_packet(&bytes, version()).unwrap();
+        assert_eq!(decoded.raw, "7");
+    }
+
+    #[test]
+    fn client_version_report_clamps_a_long_string() {
+        let report = ClientVersionReport {
+            raw: "9".repeat(80),
+        };
+        let decoded: ClientVersionReport = decode_packet(&report.encode(), version()).unwrap();
+        assert_eq!(
+            decoded.raw.len(),
+            ClientVersionReport::MAX_LENGTH,
+            "Sphere clamps to 20 before reading"
+        );
+    }
+}

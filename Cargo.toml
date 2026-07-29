@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/common/*", "crates/server/*", "crates/client/*"]
 
 [workspace.package]
 version = "0.0.1"
@@ -26,31 +26,31 @@ debug = false
 
 [workspace.dependencies]
 # Internal crates
-openshard-ai = { path = "crates/ai", version = "0.0.1" }
-openshard-chat = { path = "crates/chat", version = "0.0.1" }
-openshard-combat = { path = "crates/combat", version = "0.0.1" }
-openshard-config = { path = "crates/config", version = "0.0.1" }
-openshard-crafting = { path = "crates/crafting", version = "0.0.1" }
-openshard-entities = { path = "crates/entities", version = "0.0.1" }
-openshard-events = { path = "crates/events", version = "0.0.1" }
-openshard-gateway = { path = "crates/gateway", version = "0.0.1" }
-openshard-guilds = { path = "crates/guilds", version = "0.0.1" }
-openshard-housing = { path = "crates/housing", version = "0.0.1" }
-openshard-items = { path = "crates/items", version = "0.0.1" }
-openshard-login = { path = "crates/login", version = "0.0.1" }
-openshard-magic = { path = "crates/magic", version = "0.0.1" }
-openshard-metrics = { path = "crates/metrics", version = "0.0.1" }
-openshard-movement = { path = "crates/movement", version = "0.0.1" }
-openshard-npc = { path = "crates/npc", version = "0.0.1" }
-openshard-persistence = { path = "crates/persistence", version = "0.0.1" }
-openshard-plugins = { path = "crates/plugins", version = "0.0.1" }
-openshard-protocol = { path = "crates/protocol", version = "0.0.1" }
-openshard-quests = { path = "crates/quests", version = "0.0.1" }
-openshard-scripting = { path = "crates/scripting", version = "0.0.1" }
-openshard-server = { path = "crates/server", version = "0.0.1" }
-openshard-skills = { path = "crates/skills", version = "0.0.1" }
-openshard-state = { path = "crates/state", version = "0.0.1" }
-openshard-world = { path = "crates/world", version = "0.0.1" }
+openshard-ai = { path = "crates/server/ai", version = "0.0.1" }
+openshard-chat = { path = "crates/server/chat", version = "0.0.1" }
+openshard-combat = { path = "crates/server/combat", version = "0.0.1" }
+openshard-config = { path = "crates/common/config", version = "0.0.1" }
+openshard-crafting = { path = "crates/server/crafting", version = "0.0.1" }
+openshard-entities = { path = "crates/common/entities", version = "0.0.1" }
+openshard-events = { path = "crates/common/events", version = "0.0.1" }
+openshard-gateway = { path = "crates/server/gateway", version = "0.0.1" }
+openshard-guilds = { path = "crates/server/guilds", version = "0.0.1" }
+openshard-housing = { path = "crates/server/housing", version = "0.0.1" }
+openshard-items = { path = "crates/server/items", version = "0.0.1" }
+openshard-login = { path = "crates/server/login", version = "0.0.1" }
+openshard-magic = { path = "crates/server/magic", version = "0.0.1" }
+openshard-metrics = { path = "crates/common/metrics", version = "0.0.1" }
+openshard-movement = { path = "crates/common/movement", version = "0.0.1" }
+openshard-npc = { path = "crates/server/npc", version = "0.0.1" }
+openshard-persistence = { path = "crates/server/persistence", version = "0.0.1" }
+openshard-plugins = { path = "crates/server/plugins", version = "0.0.1" }
+openshard-protocol = { path = "crates/common/protocol", version = "0.0.1" }
+openshard-quests = { path = "crates/server/quests", version = "0.0.1" }
+openshard-scripting = { path = "crates/server/scripting", version = "0.0.1" }
+openshard-server = { path = "crates/server/server", version = "0.0.1" }
+openshard-skills = { path = "crates/server/skills", version = "0.0.1" }
+openshard-state = { path = "crates/server/state", version = "0.0.1" }
+openshard-world = { path = "crates/server/world", version = "0.0.1" }
 
 # External
 anyhow = "1"

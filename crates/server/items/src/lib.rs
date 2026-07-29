@@ -1,0 +1,65 @@
+//! Items: spawning, the drag protocol, stacking, decay, containers, and gear.
+//!
+//! A gameplay system in its own crate, operating on the shared [`WorldState`].
+//! An item is an entity in exactly one of three places — on the ground
+//! ([`Position`]), inside a container ([`Contained`]), or worn ([`Equipped`]) —
+//! and these functions move it between them: spawn it, lift it onto a cursor,
+//! drop it, stack or split it, decay it, put it in a container, wear it. Reach
+//! and layer checks are server-authoritative; the client's word is never taken.
+//!
+//! The drawing goes through [`WorldState`]'s interest machinery (`reveal`,
+//! `show`, `forget`); this crate owns the *rules* of where a thing is.
+
+use openshard_entities::EntityId;
+use openshard_gateway::ConnectionId;
+use openshard_protocol::containers::{
+    encode_add_to_container, encode_open_container, ContainedItem, ContainerContents,
+};
+use openshard_protocol::items::{DragCancel, DragCancelReason, EquipUpdate, DROP_TO_GROUND};
+use openshard_protocol::mobile::{OpenPaperdoll, Remove, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE};
+use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::spellbook::SpellbookContent;
+use openshard_protocol::target::{TargetCursor, TargetKind};
+use openshard_protocol::trade::{encode_trade_close, encode_trade_open, encode_trade_update};
+use openshard_protocol::wire::CursorId;
+use openshard_protocol::world::Point;
+use openshard_state::components::{
+    mount_item_for, scroll_spell, Amount, Body, Client, Combat, Contained, Container, Corpse,
+    Decays, Decoration, Door, Equipped, Facet, Ghost, Graphic, KeyValue, Lock, Name, PoisonCharges,
+    Position, Ridden, Riding, RuneMark, Runebook, RunebookEntry, Spellbook, Stackable, Weapon,
+    RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, SPELLBOOK_GRAPHIC,
+};
+use openshard_state::sectors::in_range;
+use openshard_state::{HeldItem, Origin, Outbound, TradeWindow, WorldState, TICKS_PER_SECOND};
+use tracing::{debug, warn};
+
+mod backpack;
+mod consume;
+mod containers;
+mod decay;
+mod defaults;
+mod doors;
+mod drag;
+mod equip;
+mod mounts;
+mod spawn;
+mod stack;
+mod trade;
+mod trigger;
+mod weight;
+
+pub use backpack::*;
+pub use consume::*;
+pub use containers::*;
+pub use decay::*;
+pub use defaults::{apply_core_defaults, restore_uses, uses_left};
+pub use doors::*;
+pub use drag::*;
+pub use equip::*;
+pub use mounts::*;
+pub use spawn::*;
+pub use stack::*;
+pub use trade::*;
+pub use trigger::*;
+pub use weight::*;

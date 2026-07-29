@@ -79,30 +79,39 @@ a direct write to the world.
 
 ## Layout
 
+Three groups, and the direction of dependency is the point: `server` may depend
+on `common`, `client` may depend on `common`, and the two never see each other.
+
 ```
 crates/
-  entities      ECS: EntityId, Serial, sparse sets, Registry
-  events        double-buffered typed event bus
-  protocol      versions, feature gates, packets, codec, framing
-  gateway       sans-io connection + Tokio listener
-  login         accounts, auth keys, the whole login sequence
-  movement      the walk handshake, terrain rules, A* pathfinding
-  state         WorldState: components, sectors, rng, interest
-  combat        damage, swings, ranged volleys, poison, notoriety, murder counts
-  chat          speech in, speech out, speech ranges
-  items         containers, drag/drop, stacking, decay, doors, mounts
-  skills        checks, the gain curve
-  magic         the 64-spell table, casting, typed damage, timed buffs
-  ai            creature brains: LOS aggro, chase, kite, flee, give up
-  npc           townsfolk: bankers, vendors, creature spawning
-  world         the tick, client map/tiledata formats, the journal
-  persistence   journal, snapshots, SQLite and PostgreSQL stores
-  scripting     the TypeScript runtime (deno_core)
-  config        TOML, validated at load
-  server        the binary — glue only
-  housing guilds metrics plugins                    stubs, future
+  common/       everything both sides of the wire agree on
+    protocol      versions, feature gates, packets, codec, framing
+    entities      ECS: EntityId, Serial, sparse sets, Registry
+    events        double-buffered typed event bus
+    movement      the walk handshake, terrain rules, A* pathfinding
+    config        TOML, validated at load
+    metrics       counters                                stub, future
+  server/       the shard
+    gateway       sans-io connection + Tokio listener
+    login         accounts, auth keys, the whole login sequence
+    state         WorldState: components, sectors, rng, interest
+    combat        damage, swings, ranged volleys, poison, notoriety, murder counts
+    chat          speech in, speech out, speech ranges
+    items         containers, drag/drop, stacking, decay, doors, mounts
+    skills        checks, the gain curve
+    magic         the 64-spell table, casting, typed damage, timed buffs
+    crafting      the five craft systems, 485 recipes, smelting
+    ai            creature brains: LOS aggro, chase, kite, flee, give up
+    npc           townsfolk: bankers, vendors, creature spawning
+    quests        quest model, objectives, the gump
+    world         the tick, client map/tiledata formats, the journal
+    persistence   journal, snapshots, SQLite and PostgreSQL stores
+    scripting     the TypeScript runtime (deno_core)
+    server        the binary — glue only
+    housing guilds plugins                              stubs, future
+  client/       nothing yet — the stock UO client is the client
 tools/
-  dashboard launcher map-editor cli                 planned
+  dashboard launcher map-editor cli                     planned
 ```
 
 ## Running
@@ -163,6 +172,16 @@ All three are expected to be silent.
 
 Rust + Tokio. SQLite or PostgreSQL, operator's choice. TypeScript via embedded
 V8 (`deno_core`) for gameplay. React and Next.js for tooling.
+
+## Related projects
+
+Other Rust work on the same client, worth reading before reinventing a wheel:
+
+- [broker0/path_server](https://github.com/broker0/path_server) — a UO server
+  in Rust.
+- [AngryLawyer/uo-rust-libs](https://github.com/AngryLawyer/uo-rust-libs) —
+  Rust libraries for the client's data files (`.mul` / `.uop` art, map,
+  tiledata); the same ground `crates/server/world` covers.
 
 ## Licence
 

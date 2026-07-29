@@ -3,7 +3,7 @@
 // Turn ServUO's craft tables into Rust.
 //
 // A one-shot build tool, not an engine feature: it runs once, its output is
-// committed under `crates/crafting/src/defs/`, and from then on those files are
+// committed under `crates/server/crafting/src/defs/`, and from then on those files are
 // edited as ordinary source. The same bargain the Community Pack's
 // `convert-servuo.cjs` makes, and the roadmap's own instruction for the recipes.
 //
@@ -26,7 +26,7 @@ const SERVUO = process.argv[2] && !process.argv[2].startsWith('--')
   ? process.argv[2]
   : path.join(process.env.HOME, 'Git', 'ServUO');
 const DRY = process.argv.includes('--dry');
-const OUT = path.join(__dirname, '..', '..', 'crates', 'crafting', 'src', 'defs');
+const OUT = path.join(__dirname, '..', '..', 'crates', 'server', 'crafting', 'src', 'defs');
 
 // The expansions this shard can be set to. `[gameplay] expansion` tops out at
 // ML, so anything gated above it names content the engine does not have.

@@ -1,0 +1,17 @@
+[package]
+name = "openshard-entities"
+description = "Entity Component System core plus UO serial identity."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# For `Serial`: the wire identity the registry borrows as an entity's external
+# name. The dependency runs this way and never the other — see the crate docs.
+openshard-protocol.workspace = true

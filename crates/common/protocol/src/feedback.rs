@@ -1,0 +1,415 @@
+//! Audiovisual feedback: sound, animation and graphical effects.
+//!
+//! The packets that make a world *felt* rather than merely correct — a swing
+//! whooshes, a fireball flies, a body crumples. UO drives all of it from the
+//! server: there is no client-side "you swung, so animate" rule, so a state
+//! change with no feedback packet is silent and still to the client, which reads
+//! as broken even when the numbers are right. Every one of these is broadcast to
+//! the watchers who can see the actor, through the same interest machinery as a
+//! `0x78`.
+//!
+//! Layouts are ported from ServUO's `Server/Network/Packets.cs`
+//! (`PlaySound`, `MobileAnimation`, `NewMobileAnimation`, `GraphicalEffect`,
+//! `HuedEffect`) and agree with Sphere's `sphereproto.h`. The wire is
+//! big-endian, like the rest of the protocol.
+//!
+//! # Animation numbers stay bare
+//!
+//! `action`, `animation_type` and the frame counts are deliberately plain `u16`
+//! rather than newtypes. They are indices into the client's animation tables,
+//! and — this is the trap — `0x6E`'s numbering is body-specific while `0xE2`'s is
+//! a body-agnostic category. One shared `AnimationId` would let a caller hand a
+//! classic action number to the new packet and be believed, which is exactly the
+//! confusion a newtype is supposed to prevent. Each packet documents its own
+//! numbering instead.
+
+use crate::codec::PacketWriter;
+use crate::packet::{EncodePacket, PacketLength};
+use crate::serial::{raw_or_none, Serial};
+use crate::version::ClientVersion;
+use crate::wire::{Graphic, Hue, SoundId};
+use crate::world::Point;
+
+/// `0x54` — play a sound at a world location. 12 bytes.
+///
+/// The point places the sound in 3D so the client attenuates it by distance; a
+/// sound with no place (a UI blip) is not this packet. `volume` is left at
+/// ServUO's `0` — the client scales by distance — and the flag byte is its fixed
+/// `1`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PlaySound {
+    /// Which sound.
+    pub sound: SoundId,
+    /// Where it happens.
+    pub at: Point,
+}
+
+impl EncodePacket for PlaySound {
+    const ID: u8 = 0x54;
+    const LENGTH: PacketLength = PacketLength::Fixed(12);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(0x01); // flags — ServUO's constant
+        out.u16(self.sound.0);
+        out.u16(0x0000); // volume; the client scales by distance
+        out.u16(self.at.x);
+        out.u16(self.at.y);
+        // ServUO writes Z as a full `short`, so a negative height sign-extends to
+        // 16 bits — not the 8-bit z the map tiles carry.
+        out.u16(i16::from(self.at.z) as u16);
+    }
+}
+
+/// `0x6E` — animate a mobile with the classic action packet. 14 bytes.
+///
+/// The pre-7.0 form, and what a client without [`Feature::NewMobileAnimation`]
+/// understands. `action` here is **body-specific**: the same number means
+/// different frames on a human and on a dragon. A swing, a bow, a cast gesture,
+/// a death throe are all one of these.
+///
+/// [`Feature::NewMobileAnimation`]: crate::feature::Feature::NewMobileAnimation
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Animation {
+    /// Who moves.
+    pub serial: Serial,
+    /// Which action, in the numbering for this mobile's body.
+    pub action: u16,
+    /// How many frames the action runs for.
+    pub frame_count: u16,
+    /// How many times to repeat it.
+    pub repeat_count: u16,
+    /// Play the frames in order. Written inverted on the wire, where the field is
+    /// really "reverse"; this takes the intuitive sense and flips it, as ServUO
+    /// does.
+    pub forward: bool,
+    /// Loop rather than play once.
+    pub repeat: bool,
+    /// Frame delay.
+    pub delay: u8,
+}
+
+impl EncodePacket for Animation {
+    const ID: u8 = 0x6E;
+    const LENGTH: PacketLength = PacketLength::Fixed(14);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial.raw());
+        out.u16(self.action);
+        out.u16(self.frame_count);
+        out.u16(self.repeat_count);
+        out.bool(!self.forward); // the wire field is "reverse"
+        out.bool(self.repeat);
+        out.u8(self.delay);
+    }
+}
+
+/// `0xE2` — animate a mobile with the 7.0.0.0+ action packet. 10 bytes.
+///
+/// Gate the choice between this and [`Animation`] on
+/// [`Feature::NewMobileAnimation`], never on era. `animation_type` selects a
+/// body-agnostic category the client maps to its own newer tables, so unlike
+/// [`Animation::action`] it needs no body table on the server — and the two
+/// numberings are not interchangeable.
+///
+/// [`Feature::NewMobileAnimation`]: crate::feature::Feature::NewMobileAnimation
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NewAnimation {
+    /// Who moves.
+    pub serial: Serial,
+    /// Which category of action, in the `0xE2` numbering.
+    pub animation_type: u16,
+    /// Which action within the category.
+    pub action: u16,
+    /// Frame delay.
+    pub delay: u8,
+}
+
+impl EncodePacket for NewAnimation {
+    const ID: u8 = 0xE2;
+    const LENGTH: PacketLength = PacketLength::Fixed(10);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(self.serial.raw());
+        out.u16(self.animation_type);
+        out.u16(self.action);
+        out.u8(self.delay);
+    }
+}
+
+/// How a graphical effect moves, ServUO's `EffectType`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum EffectKind {
+    /// A projectile from one point/mobile to another — a bolt, an arrow.
+    Moving = 0x00,
+    /// A lightning strike on the source.
+    Lightning = 0x01,
+    /// A fixed animation at a world point.
+    FixedXyz = 0x02,
+    /// A fixed animation on the source mobile.
+    FixedFrom = 0x03,
+}
+
+/// `0x70` — a graphical effect: a projectile, a strike, a fixed animation. 28 bytes.
+///
+/// `art` is the effect's sprite (a fireball graphic, a bolt). `from`/`to` are the
+/// mobiles it links, `None` when a point is used instead. The uncoloured form; for
+/// a tinted or particle effect wrap it in a [`HuedEffect`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GraphicalEffect {
+    /// How it moves.
+    pub kind: EffectKind,
+    /// The mobile it comes from, if any.
+    pub from: Option<Serial>,
+    /// The mobile it goes to, if any.
+    pub to: Option<Serial>,
+    /// The effect's sprite.
+    pub art: Graphic,
+    /// Where it starts.
+    pub from_point: Point,
+    /// Where it ends. The same as `from_point` for a fixed effect.
+    pub to_point: Point,
+    /// How fast a moving effect travels.
+    pub speed: u8,
+    /// How long a fixed effect lasts.
+    pub duration: u8,
+    /// Keep the sprite's orientation rather than turning it along its path.
+    pub fixed_direction: bool,
+    /// Play the client's explosion at the end.
+    pub explode: bool,
+}
+
+impl EncodePacket for GraphicalEffect {
+    const ID: u8 = 0x70;
+    const LENGTH: PacketLength = PacketLength::Fixed(28);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u8(self.kind as u8);
+        out.u32(raw_or_none(self.from));
+        out.u32(raw_or_none(self.to));
+        out.u16(self.art.0);
+        out.u16(self.from_point.x);
+        out.u16(self.from_point.y);
+        out.u8(self.from_point.z as u8);
+        out.u16(self.to_point.x);
+        out.u16(self.to_point.y);
+        out.u8(self.to_point.z as u8);
+        out.u8(self.speed);
+        out.u8(self.duration);
+        out.u16(0x0000); // two reserved bytes ServUO zeroes
+        out.bool(self.fixed_direction);
+        out.bool(self.explode);
+    }
+}
+
+/// `0xC0` — a hued graphical effect: a [`GraphicalEffect`] plus a colour and a
+/// render mode. 36 bytes.
+///
+/// The body is the `0x70` body with two fields appended, and it is written by
+/// [`GraphicalEffect`]'s own encoder rather than a copy of it — the two packets
+/// cannot drift apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HuedEffect {
+    /// Everything the uncoloured form carries.
+    pub effect: GraphicalEffect,
+    /// Tints the effect art: a green poison bolt, a blue frost.
+    pub hue: Hue,
+    /// The client's blend: 0 normal, higher values additive or translucent.
+    pub render_mode: u32,
+}
+
+impl EncodePacket for HuedEffect {
+    const ID: u8 = 0xC0;
+    const LENGTH: PacketLength = PacketLength::Fixed(36);
+
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        self.effect.encode_body(out, version);
+        // The hue field is a full dword here, not the u16 a hue is elsewhere.
+        out.u32(u32::from(self.hue.0));
+        out.u32(self.render_mode);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packet::encode_packet;
+
+    fn version() -> ClientVersion {
+        ClientVersion::new(7, 0, 45, 65)
+    }
+
+    fn mobile(raw: u32) -> Serial {
+        Serial::new(raw).unwrap()
+    }
+
+    #[test]
+    fn play_sound_is_twelve_bytes_ported_from_servuo() {
+        // 0x54, flag 1, sound, volume 0, x, y, z-as-short. A negative z must
+        // sign-extend, not be truncated — a sound underground is otherwise placed
+        // at z 65408 and silent.
+        let packet = encode_packet(
+            &PlaySound {
+                sound: SoundId(0x0028),
+                at: Point::new(0x0568, 0x0640, -5),
+            },
+            version(),
+        );
+        assert_eq!(packet.len(), 12);
+        assert_eq!(packet[0], 0x54);
+        assert_eq!(packet[1], 0x01);
+        assert_eq!(&packet[2..4], &[0x00, 0x28], "sound id, big-endian");
+        assert_eq!(&packet[4..6], &[0x00, 0x00], "volume");
+        assert_eq!(&packet[6..8], &[0x05, 0x68], "x");
+        assert_eq!(&packet[8..10], &[0x06, 0x40], "y");
+        assert_eq!(&packet[10..12], &[0xFF, 0xFB], "z = -5 sign-extended");
+    }
+
+    #[test]
+    fn classic_animation_inverts_forward_like_servuo() {
+        // 0x6E, serial, action, frameCount, repeatCount, !forward, repeat, delay.
+        let packet = encode_packet(
+            &Animation {
+                serial: mobile(0x0000_1234),
+                action: 0x000A,
+                frame_count: 0x0007,
+                repeat_count: 0x0001,
+                forward: true,
+                repeat: false,
+                delay: 0,
+            },
+            version(),
+        );
+        assert_eq!(packet.len(), 14);
+        assert_eq!(packet[0], 0x6E);
+        assert_eq!(&packet[1..5], &[0x00, 0x00, 0x12, 0x34]);
+        assert_eq!(&packet[5..7], &[0x00, 0x0A], "action");
+        assert_eq!(&packet[7..9], &[0x00, 0x07], "frame count");
+        assert_eq!(&packet[9..11], &[0x00, 0x01], "repeat count");
+        assert_eq!(packet[11], 0x00, "forward=true writes reverse=0");
+        assert_eq!(packet[12], 0x00, "repeat=false");
+        assert_eq!(packet[13], 0x00, "delay");
+    }
+
+    #[test]
+    fn new_animation_is_ten_bytes() {
+        let packet = encode_packet(
+            &NewAnimation {
+                serial: mobile(0x0000_1234),
+                animation_type: 0x0005,
+                action: 0x0009,
+                delay: 1,
+            },
+            version(),
+        );
+        assert_eq!(packet.len(), 10);
+        assert_eq!(packet[0], 0xE2);
+        assert_eq!(&packet[1..5], &[0x00, 0x00, 0x12, 0x34]);
+        assert_eq!(&packet[5..7], &[0x00, 0x05], "type");
+        assert_eq!(&packet[7..9], &[0x00, 0x09], "action");
+        assert_eq!(packet[9], 0x01, "delay");
+    }
+
+    #[test]
+    fn graphical_effect_is_twenty_eight_bytes() {
+        let packet = encode_packet(
+            &GraphicalEffect {
+                kind: EffectKind::Moving,
+                from: Serial::new(0x0000_0001),
+                to: Serial::new(0x0000_0002),
+                art: Graphic(0x36D4),
+                from_point: Point::new(0x0568, 0x0640, 0),
+                to_point: Point::new(0x0570, 0x0640, 0),
+                speed: 7,
+                duration: 0,
+                fixed_direction: false,
+                explode: true,
+            },
+            version(),
+        );
+        assert_eq!(packet.len(), 28);
+        assert_eq!(packet[0], 0x70);
+        assert_eq!(packet[1], 0x00, "EffectKind::Moving");
+        assert_eq!(&packet[2..6], &[0x00, 0x00, 0x00, 0x01], "from serial");
+        assert_eq!(&packet[6..10], &[0x00, 0x00, 0x00, 0x02], "to serial");
+        assert_eq!(&packet[10..12], &[0x36, 0xD4], "effect graphic");
+        assert_eq!(packet[27], 0x01, "explode=true");
+    }
+
+    #[test]
+    fn an_effect_with_no_mobiles_writes_zero_serials() {
+        let packet = encode_packet(
+            &GraphicalEffect {
+                kind: EffectKind::FixedXyz,
+                from: None,
+                to: None,
+                art: Graphic(0x373A),
+                from_point: Point::new(1, 2, 3),
+                to_point: Point::new(1, 2, 3),
+                speed: 9,
+                duration: 20,
+                fixed_direction: true,
+                explode: false,
+            },
+            version(),
+        );
+        assert_eq!(&packet[2..10], &[0u8; 8], "both serial fields are empty");
+    }
+
+    #[test]
+    fn hued_effect_is_thirty_six_bytes_with_the_colour_last() {
+        let effect = GraphicalEffect {
+            kind: EffectKind::FixedFrom,
+            from: Serial::new(0x0000_0001),
+            to: None,
+            art: Graphic(0x373A),
+            from_point: Point::new(0x0568, 0x0640, 0),
+            to_point: Point::new(0x0568, 0x0640, 0),
+            speed: 9,
+            duration: 20,
+            fixed_direction: true,
+            explode: false,
+        };
+        let packet = encode_packet(
+            &HuedEffect {
+                effect,
+                hue: Hue(0x0026),
+                render_mode: 0x0000_0001,
+            },
+            version(),
+        );
+        assert_eq!(packet.len(), 36);
+        assert_eq!(packet[0], 0xC0);
+        assert_eq!(packet[1], 0x03, "EffectKind::FixedFrom");
+        assert_eq!(&packet[28..32], &[0x00, 0x00, 0x00, 0x26], "hue");
+        assert_eq!(&packet[32..36], &[0x00, 0x00, 0x00, 0x01], "render mode");
+    }
+
+    #[test]
+    fn a_hued_effect_body_is_the_plain_one_plus_eight_bytes() {
+        // The reuse is the point: 0xC0 cannot drift away from 0x70.
+        let effect = GraphicalEffect {
+            kind: EffectKind::Lightning,
+            from: Serial::new(0x0000_0007),
+            to: None,
+            art: Graphic(0x0000),
+            from_point: Point::new(10, 20, -3),
+            to_point: Point::new(10, 20, -3),
+            speed: 0,
+            duration: 0,
+            fixed_direction: false,
+            explode: false,
+        };
+        let plain = encode_packet(&effect, version());
+        let hued = encode_packet(
+            &HuedEffect {
+                effect,
+                hue: Hue::NONE,
+                render_mode: 0,
+            },
+            version(),
+        );
+        assert_eq!(plain[1..], hued[1..28], "same body, different id");
+        assert_eq!(&hued[28..], &[0u8; 8]);
+    }
+}

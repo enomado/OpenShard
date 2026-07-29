@@ -1285,6 +1285,9 @@ dependencies = [
 [[package]]
 name = "openshard-entities"
 version = "0.0.1"
+dependencies = [
+ "openshard-protocol",
+]
 
 [[package]]
 name = "openshard-events"
@@ -1374,6 +1377,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "openshard-entities",
+ "openshard-protocol",
  "rusqlite",
  "serde",
  "serde_json",
