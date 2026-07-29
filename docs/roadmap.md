@@ -1367,8 +1367,80 @@ Roughly in dependency order, each script-first:
   - [ ] **Summons with a lifetime** — Blade Spirits, Energy Vortex, Summon
     Creature/Daemon: a spawned creature that despawns on its own timer and counts
     against the follower cap the status bar already carries.
-  - [ ] **Travel** — Recall, Gate Travel and Mark: needs runes/runebooks (item
-    data) and a cross-facet teleport; Gate also a paired physical object either end.
+  - [x] **Travel — Recall, Mark, Gate Travel, and the moongates.** The last big
+    Magery family out of `Scripted`, and the first reader of `no_recall`, which
+    had been carried through persistence, the converter and the script bridge
+    since regions landed with nothing to consume it.
+    - **`SpellTarget::Item`** is the fourth target kind: all three spells aim at
+      a rune or a runebook, so they raise the *object* cursor (`0x6C` type 0) and
+      the client itself refuses bare ground. A recall rune is a graphic plus a
+      `RuneMark { facet, destination }`, and a blank one is a rune *without* the
+      component — there is no `marked` flag to disagree with a destination that
+      would mean nothing when false. (Gate Travel's reagent row was wrong while
+      we were in it: blood moss where ServUO and the classic list both have black
+      pearl.)
+    - **The permission model is one end and one kind.** ServUO's
+      `SpellHelper.CheckTravel` is a `bool[7,24]` matrix over twenty-four corners
+      of Britannia; almost none exist here and the rest are region flags, so it
+      collapses onto `no_teleport` and `no_recall`. What survives is the shape:
+      the kinds are *directional*, and `RecallFrom` is the only permissive row,
+      so a dungeon nobody may recall **into** is still one you may recall **out**
+      of. Folding both ends into one call and testing them against a single kind
+      reads tidier and makes every such region a one-way trap; a test caught
+      exactly that, and the doc comment says why the tidy version is wrong.
+      Sphere's four separate antimagic bits (`RECALL_IN`/`RECALL_OUT`/`GATE`/
+      `TELEPORT`) are what the single bool collapses.
+    - **Recall's refusals cost nothing**, in `begin_cast` before a point of mana:
+      criminal, mid-fight, overloaded, holding something. The carry cap moved
+      into `items` beside the walk that sums what is under it — three rules read
+      `40 + 3.5 * str` now, and two copies is a shard where a mule can walk but
+      cannot recall.
+    - **Mark wants the rune in your own pack** (cliloc 1062422); **Recall does
+      not**, because ServUO's target does not — a rune held out by a friend is a
+      classic way to be fetched. The asymmetry is deliberate on both sides.
+    - **Gate Travel lays a pair with no link field**: each gate points at the
+      other's *tile*, so the link is the destination and there are not two halves
+      to keep honest. Spawned the `spawn_field_tile` way and never through
+      `items::spawn_item`, which would stamp a second, contradictory clock and
+      announce an `ItemSpawned` the pack reads as a drop. Excluded from the save
+      sweep beside `Field`, as ServUO deletes its own on deserialise: restored, a
+      half-minute portal is a permanent one whose caster no longer exists.
+    - **Walking in is found, not announced** (`tick/gates.rs`), off this tick's
+      `MobileMoved` — there are two movement paths and a call beside each is one
+      to forget, and unlike a position scan it cannot miss somebody who steps on
+      and off inside one batch of commands.
+    - **The nine city moongates carry no component at all.** Their destination is
+      derived from where they stand, so they are saved and restored as ordinary
+      decoration with no schema and no restore hook. They are placed *without* an
+      obstruction, which is the thing here that would have been silently wrong:
+      `place_decoration` seals a tile whose tiledata calls the graphic
+      impassable, and a blocked gate is not a worse gate but one whose walk-in
+      trigger is dead code that reads as a broken step check. Their list window
+      is the first engine code to read a gump's **switches**.
+    - **The runebook** binds sixteen destinations (the rune is consumed), spends
+      charges for free travel, and pays the ordinary price on its Recall and Gate
+      buttons through the one `magic::pay_and_roll`. Recharging leaves the
+      surplus on the cursor rather than eating it. ServUO's button ids verbatim,
+      decoded highest-range-first (`BOOK_USE_CHARGE + 40` would else read as a
+      Recall), with a row the book does not hold refused rather than clamped.
+    - **The facet change underneath** is `WorldState::move_to`, the one door every
+      relocation now goes through. Five caches remember where a mobile is and none
+      is compiler-checked: the traveller's own screen, every watcher's, the old
+      facet's sector grid, `InRegion` (which gained the facet its id belongs to —
+      region 3 on two facets compared equal, so a crossing between them fired no
+      event, no music and no guards) and the walk sequence, whose reset was a
+      latent bug in plain teleports too. The client is told with `0xBF 0x08` and
+      the new `0x76`, never `0x1B`; the size in it comes from new `FacetState`
+      dimensions, which also fixed login handing every facet Britannia's
+      hardcoded 7168×4096. `[gameplay] cross_facet_travel` (off) is the classic
+      pre-AoS refusal on top — a rule, not a missing feature.
+    - **Schema v22** carries the rune and the book; one bump and not two, because
+      there are no migrations and two inside one slice means throwing a test
+      database away twice.
+    - Deferred: Sacred Journey (decoded and ignored), the moon-phase gates,
+      red/young travel restrictions, ship-mark runes, an `op_place_moongate` for
+      the pack, and a tooltip that refreshes mid-life — a marked rune is the
+      first thing in the world whose *name* changes.
   - [x] **Resurrection** — landed with the ghost slice: `SpellEffect::Resurrect`
     raises the aimed ghost through the core `resurrect` path (a no-op on the
     living).
@@ -1909,8 +1981,9 @@ Roughly in dependency order, each script-first:
     its children's, so scanning it for rectangles gives the parent ground that
     belongs to the child.
   - Deferred: `0x65` weather, a calendar that turns the season, per-region light
-    for creatures (only players are told), and the `no_recall`/`safe` flags, which
-    are carried in the data and wait on travel and PvP rules to read them.
+    for creatures (only players are told), and the `safe` flag, which is carried
+    in the data and waits on PvP rules to read it. (`no_recall` has its reader
+    now — see **Travel** below.)
 - [ ] `housing` — player houses: a multi placed on the map, a door with a real
   lock, decay unless refreshed, friends/co-owners. Wants multis (the client's
   `multi.mul`/UOP format, unread yet), a region concept and the door locks above.
@@ -1968,9 +2041,9 @@ started.
 
 - ~~**Regions.**~~ and ~~**Day and night.**~~ Both landed together; see
   **Regions, guards and the world clock** in §6 below. What is still open from
-  that entry: `0x65` weather, a calendar that turns the season, and the
-  `no_recall`/`safe` flags, which are carried in the data and have no consumer
-  until travel and PvP rules exist.
+  that entry: `0x65` weather, a calendar that turns the season, and the `safe`
+  flag, which is carried in the data and has no consumer until PvP rules exist.
+  `no_recall` got its first reader with travel.
 - ~~**Fame, karma and titles.**~~ Landed; see **A character has a standing** in
   §6. The Felucca converter still falls back to a karma-sign heuristic for
   *notoriety*, which is a converter gap and is listed as one below.
@@ -1981,6 +2054,10 @@ started.
   Resmelt, recipe scrolls, make-number/make-max and the last-ten list, and the
   two material chains (hides → leather, cotton → cloth) that are addon
   interactions in ServUO rather than crafts.
+- ~~**Travel.**~~ Landed; see **Travel** in §6 `magic`. Still open from that
+  entry: Sacred Journey, the moon-phase gates, red/young restrictions, ship-mark
+  runes, and a tooltip that refreshes when a property changes — which travel gave
+  its first real consumer, since a marked rune's name changes under the player.
 - **Party (`0xBF 0x06`) and chat channels (`0xB3`/`0xB5`).** Group play has no
   protocol surface at all.
 - ~~**Pets and taming.**~~ Landed with Animal Taming; see **Taming, and the pets
