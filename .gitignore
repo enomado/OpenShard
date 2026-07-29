@@ -27,4 +27,11 @@ dist/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Local agent tooling: notes for the assistant and an MCP server config that
+# points at one machine's absolute binary path. Neither is anyone else's.
 CLAUDE.md
+.mcp.json
+# Embedding models the code-index server downloads into the working directory.
+.fastembed_cache/
+.skeleton/
