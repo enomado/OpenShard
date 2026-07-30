@@ -16,6 +16,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::texmaps::TextureId;
+
 /// How many land tiles a client knows about.
 pub const LAND_TILE_COUNT: usize = 0x4000;
 /// How many static tiles a client knows about.
@@ -185,6 +187,13 @@ impl fmt::Debug for TileFlags {
 pub struct LandTile {
     /// What it can do.
     pub flags: TileFlags,
+    /// Which square texture the ground is stretched over where it slopes.
+    ///
+    /// Its own index space — see [`crate::texmaps`] — and unrelated to the tile's
+    /// art graphic. [`TextureId(0)`](TextureId) is the ordinary "none": entry 0
+    /// of `texidx.mul` is empty, and the client draws such a tile flat however
+    /// the ground around it stands.
+    pub texture: TextureId,
     /// Its name, for logs and tools. Often "NoName".
     pub name: String,
 }
@@ -350,9 +359,11 @@ impl TileData {
 
         let flags = read_flags(raw, format);
         // flags, then a u16 texture id, then the name.
-        let name_at = format.flag_bytes() + 2;
+        let texture_at = format.flag_bytes();
+        let name_at = texture_at + 2;
         Some(LandTile {
             flags,
+            texture: TextureId(u16::from_le_bytes([raw[texture_at], raw[texture_at + 1]])),
             name: read_name(&raw[name_at..]),
         })
     }
@@ -499,8 +510,9 @@ mod tests {
         let format = TileDataFormat::HighSeas;
         let mut bytes = vec![0u8; format.land_table_len()];
 
-        // Land tile 0: flags WATER|BLOCK, named "water".
+        // Land tile 0: flags WATER|BLOCK, texture 0x1234, named "water".
         bytes[4..12].copy_from_slice(&(TileFlags::WATER | TileFlags::BLOCK).to_le_bytes());
+        bytes[12..14].copy_from_slice(&0x1234u16.to_le_bytes());
         bytes[14..19].copy_from_slice(b"water");
 
         // One static group: tile 0 is a 20-tall wall.
@@ -525,6 +537,11 @@ mod tests {
         assert_eq!(water.name, "water");
         assert!(water.flags.is_water());
         assert!(water.flags.is_blocking());
+        // The texture id sits between the flags and the name, and it was read
+        // past for this reader's whole life. Reading it one byte out gives a
+        // plausible id for every tile in the game and textures the ground with
+        // somebody else's terrain — a picture, and the wrong one.
+        assert_eq!(water.texture, TextureId(0x1234), "texture id right after the flags");
 
         let wall = data.static_tile(0);
         assert_eq!(wall.name, "wooden wall", "name at 21, not 20");

@@ -197,6 +197,23 @@ pub enum RefusedReason {
     TooFast,
 }
 
+/// A client said it is leaving — the `0xD1` the world has just acked.
+///
+/// Not a departure: the character is still standing there, and stays until the
+/// client hangs up and `Command::Disconnect` runs. What it names is the window
+/// between the two, which is a state a connection genuinely spends time in and
+/// which nothing used to say out loud — so in-world packets went on being
+/// accepted from a connection that had announced it was going.
+///
+/// The `0xD1` ack is what the client waits for before closing, so the window is
+/// as long as a round trip plus whatever the client does with it. Nothing in the
+/// protocol reopens it: there is no un-logout.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PlayerLeaving {
+    /// Which connection announced it.
+    pub connection: ConnectionId,
+}
+
 /// A character left the world.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayerLeft {

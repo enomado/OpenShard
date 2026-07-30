@@ -12,18 +12,32 @@
 
 use std::path::PathBuf;
 
-use openshard_client_render::atlas::LandAtlas;
+use openshard_client_render::atlas::{LandAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::renderer::{GroundRenderer, Target};
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
+use openshard_uofiles::color::Color16;
+use openshard_uofiles::image::Image;
 use openshard_uofiles::map::Map;
+use openshard_uofiles::texmaps::TexMaps;
+use openshard_uofiles::tiledata::TileData;
 
 /// The client's files, or `None` when the environment does not point at any.
 fn client_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("OPENSHARD_CLIENT")?))
+}
+
+/// The texture atlas for a set of land graphics, read from a real install.
+///
+/// Two files rather than one: the textures themselves, and the `tiledata` that
+/// says which of them a land graphic uses.
+fn texmap_atlas(dir: &std::path::Path, wanted: impl IntoIterator<Item = Graphic>) -> TexmapAtlas {
+    let texmaps = TexMaps::open(dir).expect("texidx.mul and texmaps.mul");
+    let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+    TexmapAtlas::build(&texmaps, &tiledata, wanted).expect("a screen of textures fits")
 }
 
 /// A GPU to draw with, or `None` where there is none.
@@ -70,6 +84,7 @@ fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
     quads: &[GroundQuad],
     width: u32,
     height: u32,
@@ -100,7 +115,7 @@ fn render(
         mapped_at_creation: false,
     });
 
-    let mut renderer = GroundRenderer::new(device, queue, format, atlas);
+    let mut renderer = GroundRenderer::new(device, queue, format, atlas, texmaps);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target {
         view: &view,
@@ -180,9 +195,11 @@ fn a_lone_sprite_matches_the_art_it_came_from() {
         y: f32::from(LAND_TILE_SIZE) / 2.0,
         corners: [0.0; 4],
         region,
+        texmap: None,
     }];
     let side = u32::from(LAND_TILE_SIZE);
-    let frame = render(&device, &queue, &atlas, &quads, 64, 64);
+    let empty = TexmapAtlas::pack([]).expect("nothing always fits");
+    let frame = render(&device, &queue, &atlas, &empty, &quads, 64, 64);
 
     let mut compared = 0;
     for y in 0..side {

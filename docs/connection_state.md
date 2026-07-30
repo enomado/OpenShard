@@ -386,12 +386,22 @@ will read it.
   which was checked against the wrapper swallowing the error. What is left is the
   clock: a `PlayerEntered` that the shard loop never *reads* — a phase sync that
   stops draining — would still strand the session, and nothing bounds the wait.
-- **A logout leaves the phase on `Playing`.** `Command::LogoutRequest` answers
-  the ack and stops; the character is not let go of until the socket closes and
-  `Disconnect` runs. So between the ack and the client hanging up, in-world
-  packets are still accepted from a connection that has announced it is leaving.
-  Harmless today — the client sends nothing in that window — but it is the state
-  the first draft called `LoggingOut`, and it is unnamed.
+- ~~**A logout leaves the phase on `Playing`.**~~ Fixed, and it is named
+  `LoggingOut` after all. `Command::LogoutRequest` still answers the ack and lets
+  go of nothing — the character stands there until the socket closes and
+  `Disconnect` runs — but it now emits `PlayerLeaving` beside the ack, and
+  `PhaseSync` moves the session on it. The gate does the rest: `may_act` is false
+  there, so the window between the ack and the client hanging up stops accepting
+  in-world packets from a connection that has said it is going.
+
+  It is the second in-between state and the opposite answer to the first:
+  `Entering` may act because the queue is ordered and a command applies after the
+  `Enter` it follows, while `LoggingOut` may not, because there is nothing left
+  for a client to say after "I am leaving". Worth stating that the phases are now
+  applied in lifecycle order — one tick can carry an `Enter` and the `0xD1`
+  behind it, and each cursor reads its own event type without saying anything
+  about the others' order.
+  Guarded by `a_connection_that_announced_a_logout_stops_being_asked_for_more`.
 
 - **`pending_inventories` did not collapse, and cannot.** S4's plan above said it
   would fold into the roster's record along with `departed`. Two of the three

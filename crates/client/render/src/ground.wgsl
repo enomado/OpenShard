@@ -15,11 +15,23 @@
 //   * Anything else — a slope. Drawn as the diamond itself: four vertices at
 //     the tile's four corners, each lifted by its own height. Neighbouring
 //     tiles then share vertices instead of merely abutting, so a seam between
-//     them is not expressible. The texture is the art diamond stretched over
-//     that shape, which is an approximation until `texmaps.mul` is read.
+//     them is not expressible.
 //
 // On level ground the two agree exactly: the diamond's vertices land on the
 // square's edge midpoints and the texture map is the identity.
+//
+// A slope is textured from `texmaps.mul` and not from the art. The art is a
+// 44x44 diamond drawn for level ground, and pulling it over a steep quad smears
+// it; the texture maps are square pictures of the same terrain, made to be
+// mapped corner to corner onto exactly this shape. Which corner is which is
+// ClassicUO's `DrawStretchedLand`, and it is the identity here: the unit quad's
+// (0,0) is the tile's top vertex and the texture's top-left, (1,0) the right,
+// (0,1) the left, (1,1) the bottom.
+//
+// A tile whose graphic has no texture — most of them do not — falls back to the
+// stretched art. The client instead refuses to stretch such a tile at all and
+// draws it flat, which leaves gaps against its stretched neighbours; ours stays
+// watertight and is textured approximately. See docs/client.md.
 
 struct Viewport {
     // Pixels across, and down.
@@ -35,6 +47,7 @@ struct Viewport {
 @group(0) @binding(0) var<uniform> viewport: Viewport;
 @group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
+@group(0) @binding(3) var texmap_texture: texture_2d<f32>;
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
@@ -42,6 +55,9 @@ struct VertexOut {
     // Constant across the instance, so ordinary interpolation reproduces it
     // exactly and no interpolation attribute is needed to keep it intact.
     @location(1) is_flat: f32,
+    // Where to sample the texture atlas, and whether there is anything there.
+    @location(2) texmap_uv: vec2<f32>,
+    @location(3) has_texmap: f32,
 };
 
 @vertex
@@ -55,6 +71,9 @@ fn vs_main(
     @location(2) heights: vec4<f32>,
     // Per instance: its place in the atlas, as (u, v, du, dv).
     @location(3) region: vec4<f32>,
+    // Per instance: its place in the texture atlas, the same way. A size of
+    // zero means the tile has no texture map.
+    @location(4) texmap: vec4<f32>,
 ) -> VertexOut {
     let half = viewport.tile * 0.5;
     let is_flat = f32(all(heights == vec4<f32>(heights.x)));
@@ -98,11 +117,21 @@ fn vs_main(
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.uv = region.xy + local_uv * region.zw;
     out.is_flat = is_flat;
+    // Corner to corner: the unit quad's own coordinates *are* the texture's.
+    out.texmap_uv = texmap.xy + corner * texmap.zw;
+    out.has_texmap = f32(texmap.z > 0.0);
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    // A slope with a texture of its own takes it, and nothing else about the
+    // tile changes: the shape is still the diamond its four corners make.
+    if in.is_flat < 0.5 && in.has_texmap > 0.5 {
+        let textured = textureSample(texmap_texture, atlas_sampler, in.texmap_uv);
+        return vec4<f32>(textured.rgb, 1.0);
+    }
+
     let color = textureSample(atlas_texture, atlas_sampler, in.uv);
 
     // A flat tile's quad is the sprite's square, so a quarter of it is outside

@@ -10,7 +10,7 @@ use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 
-use crate::atlas::{LandAtlas, Region};
+use crate::atlas::{LandAtlas, Region, TexmapAtlas};
 use crate::camera::Camera;
 
 /// One ground quad: where it goes, how its corners stand, and what to sample.
@@ -34,21 +34,39 @@ pub struct GroundQuad {
     /// Floats for the same reason as the position; every value came from an
     /// `i8` and converts back exactly.
     pub corners: [f32; 4],
-    /// Where its sprite lives in the atlas.
+    /// Where its sprite lives in the land atlas.
     pub region: Region,
+    /// Where its square texture lives in the texture atlas, if it has one.
+    ///
+    /// Absent is ordinary and means what it says: three quarters of the land
+    /// index has no texture at all, and such a tile is drawn from `region` at
+    /// whatever shape its corners make. The shader is told by a zero size, which
+    /// no real region can have.
+    pub texmap: Option<Region>,
 }
 
 impl GroundQuad {
     /// Bytes one quad occupies in the instance buffer.
     ///
-    /// Ten floats: position, the four corner heights, then the atlas region.
-    /// Written by hand rather than cast from a struct — `bytemuck`'s derive
-    /// emits `unsafe impl`, and this workspace denies `unsafe_code` outright.
-    /// Ten `to_le_bytes` is a cheaper price than an exception to that rule.
-    pub const STRIDE: u64 = 10 * 4;
+    /// Fourteen floats: position, the four corner heights, the land region and
+    /// the texture region. Written by hand rather than cast from a struct —
+    /// `bytemuck`'s derive emits `unsafe impl`, and this workspace denies
+    /// `unsafe_code` outright. Fourteen `to_le_bytes` is a cheaper price than an
+    /// exception to that rule.
+    pub const STRIDE: u64 = 14 * 4;
 
     /// Append this quad to an instance buffer.
     pub fn write(&self, out: &mut Vec<u8>) {
+        // A tile with no texture writes a region of zero size. The shader tests
+        // the size rather than the position, because (0, 0) is a legitimate
+        // corner of the atlas and a zero *extent* is not a texture anything
+        // could be sampled from.
+        let texmap = self.texmap.unwrap_or(Region {
+            u: 0.0,
+            v: 0.0,
+            du: 0.0,
+            dv: 0.0,
+        });
         for value in [
             self.x,
             self.y,
@@ -60,6 +78,10 @@ impl GroundQuad {
             self.region.v,
             self.region.du,
             self.region.dv,
+            texmap.u,
+            texmap.v,
+            texmap.du,
+            texmap.dv,
         ] {
             out.extend_from_slice(&value.to_le_bytes());
         }
@@ -83,13 +105,16 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// A tile whose graphic is not in the atlas is dropped: either the client ships
 /// no art for it, or the atlas was built for a different camera. Both are
 /// "nothing to draw here", and neither is worth failing a frame over.
-pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas) -> Vec<GroundQuad> {
+pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas, texmaps: &TexmapAtlas) -> Vec<GroundQuad> {
     let mut quads: Vec<(i32, i32, GroundQuad)> = Vec::new();
 
     for_each_visible_cell(map, camera, |x, y, cell| {
         let Some(region) = atlas.region(Graphic(cell.tile)) else {
             return;
         };
+        // `None` here is not a failure to find anything: most land graphics have
+        // no texture, and the shader draws those from the art.
+        let texmap = texmaps.region(Graphic(cell.tile));
         let corners = corner_heights(map, x, y, cell.z);
         // Height deliberately left at zero: the shader lifts each corner by its
         // own, and folding a representative height in here would count one of
@@ -112,6 +137,7 @@ pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas) -> Vec<GroundQuad>
                 y: at.y as f32,
                 corners,
                 region,
+                texmap,
             },
         ));
     });
@@ -195,6 +221,12 @@ mod tests {
                 du: 0.125,
                 dv: 0.125,
             },
+            texmap: Some(Region {
+                u: 0.75,
+                v: 0.5,
+                du: 0.03125,
+                dv: 0.03125,
+            }),
         };
         let mut out = Vec::new();
         quad.write(&mut out);
@@ -205,6 +237,33 @@ mod tests {
         assert_eq!(&out[8..12], &3.0f32.to_le_bytes());
         assert_eq!(&out[20..24], &6.0f32.to_le_bytes());
         assert_eq!(&out[24..28], &0.25f32.to_le_bytes());
+        // And the texture region is the last four, at offset 40.
+        assert_eq!(&out[40..44], &0.75f32.to_le_bytes());
+        assert_eq!(&out[52..56], &0.03125f32.to_le_bytes());
+    }
+
+    /// A tile with no texture still writes a full instance — the buffer is a
+    /// stride, not a list — and says so with a zero *size* rather than a zero
+    /// position, which is a real corner of the atlas.
+    #[test]
+    fn a_quad_with_no_texture_writes_a_region_of_no_size() {
+        let quad = GroundQuad {
+            x: 0.0,
+            y: 0.0,
+            corners: [0.0; 4],
+            region: Region {
+                u: 0.0,
+                v: 0.0,
+                du: 0.021484375,
+                dv: 0.021484375,
+            },
+            texmap: None,
+        };
+        let mut out = Vec::new();
+        quad.write(&mut out);
+        assert_eq!(out.len() as u64, GroundQuad::STRIDE);
+        assert_eq!(&out[48..52], &0.0f32.to_le_bytes(), "du");
+        assert_eq!(&out[52..56], &0.0f32.to_le_bytes(), "dv");
     }
 
     /// The whole point of corner heights: a corner belongs to four tiles at

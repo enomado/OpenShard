@@ -44,6 +44,17 @@ pub(crate) enum WorldPhase {
     /// The world says this connection is driving a character — a `PlayerEntered`
     /// arrived for it.
     Playing,
+    /// The client sent its `0xD1` and the world acked it. The character is still
+    /// standing there — nothing lets go of it until the socket closes — but this
+    /// connection has said it is going, so nothing more is queued from it.
+    ///
+    /// The other in-between state, and it is the same shape as
+    /// [`Entering`](Self::Entering): a client that announced a logout and a client
+    /// that has left are not the same thing, and `Playing` said they were. The
+    /// difference from `Entering` is which way the gate falls — a command queued
+    /// during an entry applies after the `Enter` it follows, while a command
+    /// queued during a logout is a client contradicting what it just said.
+    LoggingOut,
     /// It was in the world and is not any more: a logout, or an entry the world
     /// refused. Terminal — a connection never comes back from here to the
     /// character screen, because a `0xD1` is answered with an ack and the client
@@ -54,9 +65,12 @@ pub(crate) enum WorldPhase {
 impl WorldPhase {
     /// Whether a packet meant for the world may be queued from this connection.
     ///
-    /// Both in-between states count, and that is deliberate: a command queued
-    /// while the `Enter` is still in the queue applies after it, because the queue
-    /// is ordered.
+    /// `Entering` counts, and that is deliberate: a command queued while the
+    /// `Enter` is still in the queue applies after it, because the queue is
+    /// ordered. [`LoggingOut`](Self::LoggingOut) does not, which is the other
+    /// in-between state and the opposite answer — a client that has announced it
+    /// is going has nothing left to say, and the character it would act with is
+    /// only still there because the socket has not closed yet.
     fn may_act(&self) -> bool {
         matches!(self, Self::Entering | Self::Playing)
     }
@@ -120,6 +134,20 @@ impl Session {
     pub(crate) fn entered_world(&mut self) {
         if !matches!(self.phase, WorldPhase::Left) {
             self.phase = WorldPhase::Playing;
+        }
+    }
+
+    /// This connection announced a logout and the world acked it — a
+    /// `PlayerLeaving`.
+    ///
+    /// Not terminal, because the character is not gone: `PlayerLeft` still
+    /// follows, when the socket closes and the world lets go. What it stops is
+    /// this side queueing anything more from a client that said it was going.
+    /// `Left` is left alone — a connection the world has already let go of does
+    /// not go back to leaving.
+    pub(crate) fn leaving_world(&mut self) {
+        if !matches!(self.phase, WorldPhase::Left) {
+            self.phase = WorldPhase::LoggingOut;
         }
     }
 
@@ -225,6 +253,7 @@ impl Sessions {
 /// cannot eat the script's copy of the same event.
 pub(crate) struct PhaseSync {
     entered: Cursor<PlayerEntered>,
+    leaving: Cursor<PlayerLeaving>,
     left: Cursor<PlayerLeft>,
     refused: Cursor<PlayerRefused>,
 }
@@ -235,6 +264,7 @@ impl PhaseSync {
     pub(crate) fn new(world: &World) -> Self {
         Self {
             entered: world.bus().cursor(),
+            leaving: world.bus().cursor(),
             left: world.bus().cursor(),
             refused: world.bus().cursor(),
         }
@@ -254,12 +284,23 @@ impl PhaseSync {
         // bus, and the writes below borrow the table.
         let bus = world.bus();
         let entered: Vec<ConnectionId> = bus.read(&mut self.entered).map(|e| e.connection).collect();
+        let leaving: Vec<ConnectionId> = bus.read(&mut self.leaving).map(|e| e.connection).collect();
         let left: Vec<ConnectionId> = bus.read(&mut self.left).map(|e| e.connection).collect();
         let refused: Vec<PlayerRefused> = bus.read(&mut self.refused).copied().collect();
 
+        // Applied in the order a connection lives through them, because one tick
+        // can carry more than one for the same connection — an `Enter` and the
+        // `0xD1` behind it in the same batch of commands, say. Each cursor reads
+        // its own event type and says nothing about the others' order, so the
+        // lifecycle is what decides which fact is the later one.
         for connection in entered {
             if let Some(session) = sessions.get_mut(connection) {
                 session.entered_world();
+            }
+        }
+        for connection in leaving {
+            if let Some(session) = sessions.get_mut(connection) {
+                session.leaving_world();
             }
         }
         for connection in left {
@@ -443,6 +484,50 @@ mod tests {
             !sessions.get(id).unwrap().in_world(),
             "the world let the character go, so nothing may be queued for it"
         );
+    }
+
+    #[test]
+    fn a_connection_that_announced_a_logout_stops_being_asked_for_more() {
+        // The window `Playing` used to cover: the `0xD1` is acked and the
+        // character stays standing until the client hangs up, so between the two
+        // the world went on accepting in-world packets from a connection that had
+        // said it was leaving. No real client sends anything there — it is waiting
+        // to close — which is exactly why nothing caught it.
+        let now = Instant::now();
+        let mut world = World::new((1363, 1600));
+        let mut phases = PhaseSync::new(&world);
+        let mut sessions = Sessions::new();
+        let id = ConnectionId::from_raw(1);
+        let (session, _wire) = fresh();
+        sessions.open(id, session);
+
+        sessions.get_mut(id).unwrap().enter_world();
+        world.queue(entering(id));
+        world.tick(now);
+        phases.apply(&world, &mut sessions);
+        assert!(sessions.get(id).unwrap().in_world());
+
+        world.queue(Command::LogoutRequest { connection: id });
+        world.tick(now);
+        assert!(
+            phases.apply(&world, &mut sessions).is_empty(),
+            "a logout closes nothing here — the client closes its own socket"
+        );
+        assert!(
+            matches!(sessions.get(id).unwrap().phase, WorldPhase::LoggingOut),
+            "it announced a logout, and has not left yet"
+        );
+        assert!(
+            !sessions.get(id).unwrap().in_world(),
+            "so nothing more is queued from it"
+        );
+
+        // And the character really is still there until the socket goes.
+        assert_eq!(world.player_count(), 1);
+        world.queue(Command::Disconnect { connection: id });
+        world.tick(now);
+        phases.apply(&world, &mut sessions);
+        assert!(matches!(sessions.get(id).unwrap().phase, WorldPhase::Left));
     }
 
     #[test]

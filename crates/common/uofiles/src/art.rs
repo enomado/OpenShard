@@ -44,6 +44,7 @@ use std::path::{Path, PathBuf};
 use openshard_protocol::wire::Graphic;
 
 use crate::color::Color16;
+use crate::image::Image;
 use crate::uop::{Uop, UopError};
 
 /// A land tile is this many pixels on a side.
@@ -126,55 +127,6 @@ pub fn land_row(y: u16) -> Range<u16> {
     start..start + run
 }
 
-/// A decoded sprite: a rectangle of pixels, transparent where nothing is drawn.
-///
-/// Row-major, `width * height` long. Transparency is [`Color16::TRANSPARENT`]
-/// rather than a mask, because that is how the file stores it and a renderer
-/// wants one buffer, not two.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Image {
-    width: u16,
-    height: u16,
-    pixels: Vec<Color16>,
-}
-
-impl fmt::Debug for Image {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let drawn = self.pixels.iter().filter(|p| !p.is_transparent()).count();
-        f.debug_struct("Image")
-            .field("size", &format!("{}x{}", self.width, self.height))
-            .field("drawn", &drawn)
-            .finish()
-    }
-}
-
-impl Image {
-    /// Its width in pixels.
-    pub const fn width(&self) -> u16 {
-        self.width
-    }
-
-    /// Its height in pixels.
-    pub const fn height(&self) -> u16 {
-        self.height
-    }
-
-    /// Every pixel, row-major from the top-left.
-    pub fn pixels(&self) -> &[Color16] {
-        &self.pixels
-    }
-
-    /// One pixel, or `None` outside the image.
-    pub fn pixel(&self, x: u16, y: u16) -> Option<Color16> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.pixels
-            .get(y as usize * self.width as usize + x as usize)
-            .copied()
-    }
-}
-
 /// The client's art, open and addressable.
 #[derive(Debug)]
 pub struct Art {
@@ -230,11 +182,7 @@ impl Art {
             }
         }
 
-        Ok(Some(Image {
-            width: LAND_TILE_SIZE,
-            height: LAND_TILE_SIZE,
-            pixels,
-        }))
+        Ok(Some(Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, pixels)))
     }
 
     /// The sprite for a static graphic, or `None` if the client ships none.
@@ -334,11 +282,7 @@ fn decode_static(graphic: Graphic, raw: &[u8]) -> Result<Image, ArtError> {
         }
     }
 
-    Ok(Image {
-        width,
-        height,
-        pixels,
-    })
+    Ok(Image::new(width, height, pixels))
 }
 
 #[cfg(test)]

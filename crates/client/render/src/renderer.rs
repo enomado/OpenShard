@@ -5,7 +5,7 @@
 //! It never asks for an adapter and never presents: a surface belongs to the
 //! application, and a test has no surface at all.
 
-use crate::atlas::LandAtlas;
+use crate::atlas::{LandAtlas, TexmapAtlas};
 use crate::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use crate::ground::GroundQuad;
 
@@ -71,42 +71,20 @@ impl GroundRenderer {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         atlas: &LandAtlas,
+        texmaps: &TexmapAtlas,
     ) -> Self {
-        let side = LandAtlas::side();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("land atlas"),
-            size: wgpu::Extent3d {
-                width: side,
-                height: side,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            atlas.pixels(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(side * 4),
-                rows_per_image: Some(side),
-            },
-            wgpu::Extent3d {
-                width: side,
-                height: side,
-                depth_or_array_layers: 1,
-            },
+        // Two atlases of the same size, uploaded the same way: the flat art and
+        // the textures a slope is stretched over. They stay apart because their
+        // grids do — 44 pixels against 64 — and not because the shader could not
+        // sample one texture.
+        let view = upload(device, queue, "land atlas", LandAtlas::side(), atlas.pixels());
+        let texmap_view = upload(
+            device,
+            queue,
+            "texmap atlas",
+            TexmapAtlas::side(),
+            texmaps.pixels(),
         );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Nearest, and clamped. UO art is pixel art on an exact grid: filtering
         // it would sample a neighbouring tile across the atlas seam, which shows
@@ -158,6 +136,16 @@ impl GroundRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -176,6 +164,10 @@ impl GroundRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&texmap_view),
                 },
             ],
         });
@@ -232,6 +224,11 @@ impl GroundRenderer {
                                 format: wgpu::VertexFormat::Float32x4,
                                 offset: 24,
                                 shader_location: 3,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 40,
+                                shader_location: 4,
                             },
                         ],
                     }),
@@ -357,6 +354,54 @@ impl GroundRenderer {
         pass.set_vertex_buffer(1, self.instances.slice(..));
         pass.draw(0..4, 0..quads.len() as u32);
     }
+}
+
+/// Create a square RGBA8 texture, fill it, and hand back a view of it.
+///
+/// `Rgba8Unorm` and never `…Srgb`: the atlas holds the file's own bytes and a
+/// gamma conversion here would mean the pixel that went in is not the pixel that
+/// comes out — see the crate docs.
+fn upload(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    side: u32,
+    pixels: &[u8],
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: side,
+            height: side,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(side * 4),
+            rows_per_image: Some(side),
+        },
+        wgpu::Extent3d {
+            width: side,
+            height: side,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 fn new_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
