@@ -1251,6 +1251,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshard-client-net"
+version = "0.0.1"
+dependencies = [
+ "openshard-protocol",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "openshard-combat"
 version = "0.0.1"
 dependencies = [

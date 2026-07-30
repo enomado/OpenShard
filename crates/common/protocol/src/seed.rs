@@ -64,6 +64,42 @@ pub struct Seed {
     pub version: Option<ClientVersion>,
 }
 
+impl Seed {
+    /// Write the new-style handshake a client opens with.
+    ///
+    /// Always the `0xEF` form: the old four-byte seed carries no version, and a
+    /// client that has one has no reason to withhold it — the server sizes half
+    /// its packets from what it reads here, and the alternative is being
+    /// identified later by `0xBD`, several packets after the first mistake.
+    ///
+    /// The version is not `Option` for the same reason. A seed *this* engine
+    /// writes always knows what it is; decoding keeps the `Option` because a
+    /// legacy client is a thing that can arrive, not a thing to emit.
+    ///
+    /// ```
+    /// use openshard_protocol::seed::{RawSeedValue, Seed, SeedReader};
+    /// use openshard_protocol::version::ClientVersion;
+    ///
+    /// let version = ClientVersion::new(7, 0, 45, 65);
+    /// let bytes = Seed::encode(RawSeedValue(0x0A00_0001), version);
+    ///
+    /// let (used, seed) = SeedReader::new().feed(&bytes);
+    /// assert_eq!(used, bytes.len());
+    /// assert_eq!(seed.unwrap().version, Some(version));
+    /// ```
+    #[must_use]
+    pub fn encode(value: RawSeedValue, version: ClientVersion) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(SEED_LENGTH_NEW);
+        bytes.push(SEED_COMMAND);
+        bytes.extend_from_slice(&value.0.to_be_bytes());
+        for field in [version.major, version.minor, version.revision, version.patch] {
+            bytes.extend_from_slice(&u32::from(field).to_be_bytes());
+        }
+        debug_assert_eq!(bytes.len(), SEED_LENGTH_NEW);
+        bytes
+    }
+}
+
 /// Reads the opening handshake across however many TCP reads it takes.
 ///
 /// Feed it bytes; it tells you how many it consumed and whether it is done.
