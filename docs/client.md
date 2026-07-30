@@ -26,9 +26,10 @@ exactly the half the server needed:
   socket, not a buffer.
 
 The readers for the client's own data files — `map`, `statics`, `uop`,
-`tiledata`, `terrain` — live in `crates/server/world`. A client crate may not
-depend on them: `server/*` and `client/*` never depend on each other. They move
-to `crates/common` before anything draws a tile.
+`tiledata`, `terrain` — used to live in `crates/server/world`, where a client
+crate may not depend on them: `server/*` and `client/*` never depend on each
+other. They now live in `crates/common/uofiles`, which both sides may use, and
+`crates/server/world` keeps the gameplay built on top of them.
 
 None of this is a defect. It is what "sans-io, server-side" honestly produces,
 and the missing halves are mostly mechanical. What matters is that they are
@@ -136,6 +137,29 @@ Then statics, then mobiles, then the labels — and with them UO's draw order,
 which is the part of a UO renderer that is actually hard. The camera follows
 `0x20`, and blocks load around the player.
 
+**The ground half is done.** `crates/client/render` draws it and
+`crates/client/app` puts it in a window: `OPENSHARD_CLIENT=… cargo run -p
+openshard-client-app` opens on Britain and the arrow keys walk the camera. The
+crate is `wgpu`, and it is browser-shaped on purpose — WebGL2's ceiling, no
+compute, no storage buffers, instancing through vertex buffers, every device
+request `async`, and a 2048 atlas because that is the only texture size WebGL2
+guarantees. It compiles for `wasm32-unknown-unknown`; nothing runs there yet,
+because a browser has no filesystem and every reader in `uofiles` opens a path.
+
+What made it worth doing rather than looking at: the renderer draws into an
+offscreen texture just as readily as into a surface, so `tests/frame.rs` reads
+frames back and asserts on the bytes. A lone sprite is compared to the art it
+came from texel for texel, and level ground is asserted to cover **every** pixel
+of the viewport — 393,216 of 393,216. Both found real defects on their first
+run: `visible_tiles` was widened for `z` in only one direction, which loses a
+band of ground wherever the terrain goes negative, and the atlas treated a black
+pixel as a transparent one. Neither would have been visible on a screenshot.
+
+Deliberately not done here: **hue**. Ground carries no hue — `LandCell` has a
+graphic and a height and nothing else — so the hue table has no consumer until
+statics arrive, and building the plumbing for it now would be building it
+untested.
+
 ## M4 — the gump layer
 
 The journal and the speech line, the status bar, the paperdoll, containers, and
@@ -152,6 +176,24 @@ targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
 - **Crates.** `crates/client/net`, `crates/client/render`, `crates/client/app`,
   plus `crates/common/uofiles`. The direction rule stands: a client crate
   depends on `common`, never on `server`.
+- **What we draw with.** `wgpu`, directly — no engine. Bevy and its neighbours
+  would supply a window, input and sprite batching, and none of what is actually
+  hard here: UO's draw order, the hue table, and streaming map blocks out of a
+  155MB container. What they *would* impose is a second ECS beside `WorldView`,
+  ownership of the main loop, and a frame that cannot be rendered inside
+  `cargo test`. ClassicUO does not use an engine either, and not out of poverty.
+- **The browser is a target, so it constrains the design now.** WebGL2's ceiling
+  rather than native Vulkan: no compute, no storage buffers, instancing through
+  vertex buffers, a 2048 atlas, and `async` device requests because a browser
+  cannot be blocked on. Cheap to honour from the first triangle and painful to
+  retrofit. What is *not* done: `uofiles` still opens paths, and a browser has
+  no filesystem — the parsing is already separate from the reading, so the fix
+  is byte-taking constructors and `std::fs` behind `cfg`, not a rewrite.
+- **Colour is never converted.** Textures and targets are `Rgba8Unorm`, never
+  `…Srgb`. The files hold five bits a channel with no colour space attached, and
+  a gamma conversion anywhere means the pixel that went into the atlas is not
+  the pixel in the frame — which turns every exact test assertion into a
+  tolerance nobody can justify.
 - **Which version we claim to be.** The client announces one in its seed, and
   every `Feature` gate on the server follows from it. 7.0.45.65 — what
   ClassicUO opens with — keeps us on the modern packet set instead of the legacy
@@ -207,6 +249,35 @@ own understanding had written.
   art. Harmless for a shard, which never opens it, and not obviously right for a
   renderer holding several containers at once. The place to fix it is
   `Uop::open`, once something actually draws.
+
+## Backlog, found while drawing the ground
+
+- **Ground is drawn flat, so hillsides have seams.** A tile is one 44×44 diamond
+  at its own `z`, and neighbours at different heights pull apart: a screen of
+  Britain covers 97–98% of its pixels, the sea covers 100%. The client stretches
+  ground onto its four corner heights and textures a sloped tile from
+  `texmaps.mul`, which no reader here touches yet. That is the next piece of M3
+  and it needs a new reader, not just a shader.
+  `broken_terrain_drops_no_tile_but_does_leave_seams` fails on purpose once this
+  lands.
+- **Void land tiles are drawn as black diamonds.** Under a building the map's
+  ground is a "nothing here" graphic that the real client covers with statics.
+  Until statics are drawn this leaves black holes in the picture, which is
+  honest, but it is worth checking whether `tiledata`'s flags name these
+  explicitly before deciding whether the renderer should skip them.
+- **The atlas is rebuilt whole whenever the camera walks off it.**
+  `client/app` repacks and recreates the pipeline on a miss. Free for ground —
+  a screen holds a few dozen graphics of the 2,116 that fit — and not free once
+  statics share the atlas. The place to fix it is an eviction policy in
+  `LandAtlas`, once something needs one.
+- **`Map` cannot be built in memory, so the renderer has no offline tests.**
+  Every assertion about `ground::collect` lives in `tests/frame.rs` behind
+  `OPENSHARD_CLIENT` and a GPU, because the only way to get a `Map` is to load
+  one from a file. A constructor taking cells — or a small fixture facet — would
+  let the projection and the visible-set logic be tested with neither.
+- **Nothing reads `Feature` or the client version yet.** The renderer draws what
+  the files hold. That is right for ground, and it stops being right at the
+  first packet the client draws from.
 
 ## Backlog, found while building M0, M1 and M1a
 

@@ -110,6 +110,24 @@ use. This was a systemic miss for most of the project's life; do not add to it.
 `.mul` may be a stub full of zeroes. `Map::load_facet` prefers the UOP. See
 `world::uop`.
 
+**A zero pixel inside a land diamond is black, not transparent.** Statics carry
+their transparency as `0x0000` pixels, and applying the same rule to the ground
+is wrong: a land tile's shape is the diamond and nothing else, and real tiles
+contain a handful of genuinely black pixels inside it — three to nine on a
+typical one. `Image` cannot tell the two apart, because it stores the corners
+outside the diamond as `Color16::TRANSPARENT` too, so the shape has to come from
+`art::land_row` rather than from the colours. Reading it out of the colours
+instead punches pinholes through the ground, which look exactly like dark
+texture: the first renderer to do it covered 97.7% of a viewport instead of
+100%, and the missing 2.3% was invisible on a screenshot.
+
+**Ground is not drawn as a flat diamond where the terrain steps.** The client
+stretches a land tile onto the heights of its four corners and takes the texture
+for a sloped one from `texmaps.mul`; flat 44×44 diamonds drawn at each tile's own
+`z` pull apart along a slope and leave seams. Level ground tiles exactly — the
+sea covers a viewport to the pixel — so this is visible only where the ground
+moves, which is why it is worth writing down rather than rediscovering.
+
 **No client files are in this repository and none ever will be.** They are
 copyrighted and they are not ours to redistribute. `world.client_files` points
 at whatever install the operator already has; the tests that need one read
