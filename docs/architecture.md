@@ -257,6 +257,94 @@ customisable.
 Every boundary lives in `Feature::since`, ported from Sphere's `MINCLIVER_*`
 table. One table to fix when a boundary turns out to be off by a patch.
 
+## Sessions and the character registry
+
+A character is two different things, and most of the awkwardness in the shard
+loop came from the two not being told apart.
+
+- **It exists.** A name on an account, listed on the character screen, there
+  whether or not anybody is logged in.
+- **It is present.** An entity in the running world, with a serial, a position
+  and hit points, there only while somebody is playing it.
+
+So the operations are not symmetric, and it is worth writing the table out
+because reading it settles every question below:
+
+| | exists | present |
+|---|---|---|
+| Create (`0x00`/`0xF8`) | create | instantiate |
+| Select (`0x5D`) | — | instantiate |
+| Logout (`0xD1`) | — | de-instantiate |
+| Delete (`0x83`) | delete | refuse if present |
+
+Character *select* is pure instantiation, which is why it falls out as a single
+`Command::Enter` and always did. Create is creation glued to instantiation, and
+delete is deletion plus a question about presence — which is why those two are
+the ones that kept wanting to reach into the world.
+
+### Three owners, and the boundary between them
+
+- **Existence lives on the account** (`openshard-login`): names, nothing more.
+  It never learns a serial or a position, which is what keeps that crate down to
+  `protocol` + `getrandom` + `argon2` and testable as a sequence of byte slices.
+- **State lives in the roster** (`server/src/roster.rs`): where each character
+  was when last seen — serial, spot, look, sheet. Seeded from the store at boot,
+  refreshed from `World::drain_departed` on every logout, because the store is
+  written *later* and a player can beat their own save back in.
+- **Presence lives in the sessions** (`server/src/session.rs`): which connection
+  is playing which character, from the moment `Enter` is queued.
+
+The boundary between the login crate and the binary is exactly one question:
+**does this need the saved record?** Select needs it, so select cannot live in
+the login crate without dragging `openshard-persistence` — and with it bundled
+SQLite and `tokio-postgres` — into a crate whose whole value is that it has
+neither. And because select must stay, moving create and delete out of the
+binary would not reunite the character-screen conversation, only move the seam to
+a different arbitrary packet. So all three live together, on the binary's side of
+that line, and `Command` stays in `openshard-world`.
+
+### Presence is asked of the sessions, never of the world
+
+"Is this character being played?" is answered by scanning the session table, not
+by looking for its entity. The world can only be asked about a *serial*, and the
+only route to a serial from the character screen is the roster — which a
+character created during this run is not in until it logs out. Asking the world
+therefore skipped the check entirely for exactly the character most likely to be
+online, and deleted it out from under the connection playing it. The sessions
+know what they are playing from the moment they ask to.
+
+### The world mints serials; the roster only remembers them
+
+A serial is durable — it is what every packet ever sent about a character
+referred to, so a restored character must come back on the one it was saved
+under. It is tempting to conclude that the registry should therefore own it, and
+that `Command::Enter { serial: Option<u32> }` and `World::reserve_serial` are an
+inversion showing through. They are not. Items, NPCs and decoration are persisted
+and reserve their serials at boot in exactly the same way; players are not a
+special case, and serials are one space (`SerialKind`) shared by all of them.
+Splitting a player range out would put two allocators over one pool to fix
+nothing. `None` on `Enter` is honest: a character being created has no serial
+yet, which is absence and not ignorance.
+
+### Where the login conversation ends
+
+`LoginSession` is a state machine over a client that dials **twice** — the login
+socket (`0x80`/`0xA0`, ending in a relay and a key) and the game socket
+(`0x91`, ending in the character list). Which socket this is cannot be known
+until the first packet and never changes after, so it is a branch of the state
+enum, not a flag beside it. Two things follow, and both used to be fields that
+had to be kept in step by hand:
+
+- **The account rides in the state**, so there is no `Option<AccountName>`
+  meaning "not known yet". It is deliberately readable only on the game socket:
+  the question `LoginSession::account` answers is *whose character may this
+  connection play*, and a `0x5D` arriving on a login socket that only got as far
+  as the shard list must find nothing.
+- **A game socket is compressed from the moment the `0x91` is read**, refusal or
+  not — Sphere sets `CONNECT_GAME` during the crypt handshake, before the
+  password is looked at. Every path out of the game-login handler returns a
+  `Game(..)` state, so no new refusal can forget it.
+
 ## The world
 
 The entire world is in memory. The database is persistence, never a query

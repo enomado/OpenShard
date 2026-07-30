@@ -581,7 +581,8 @@ fn regions_and_the_clock_survive_a_restart() {
     let snapshot = world.drain_saves().next().expect("regions are worth a snapshot");
     let saved = snapshot.regions.clone().expect("the sweep took them");
     assert_eq!(saved.len(), 2);
-    assert_eq!(snapshot.clock_minutes, Some(13 * 60));
+    let world_row = snapshot.world.expect("the sweep took the world's own scalars");
+    assert_eq!(world_row.clock_minutes, 13 * 60);
 
     // A fresh world, restored from those records, is the same world.
     let mut restored = super::tests::world();
@@ -605,7 +606,7 @@ fn regions_and_the_clock_survive_a_restart() {
         "the surface above it is still open sky"
     );
 
-    let restored = restored.with_clock_minutes(snapshot.clock_minutes.unwrap());
+    let restored = restored.with_clock_minutes(world_row.clock_minutes);
     assert_eq!(restored.uo_time_at(0).0, 13, "and it is one in the afternoon");
 }
 

@@ -25,7 +25,7 @@ use openshard_protocol::identity::AccountName;
 use crate::journal::Snapshot;
 use crate::record::{
     AccountRecord, CharacterRecord, DecorationRecord, ItemRecord, MobileRecord, RegionRecord, SCHEMA_VERSION,
-    SpawnerRecord,
+    SpawnerRecord, WorldRecord,
 };
 
 /// What a store could not do.
@@ -96,12 +96,19 @@ pub trait Store: Send + Sync {
     /// If the store cannot be read.
     async fn regions(&self) -> Result<Vec<RegionRecord>, StoreError>;
 
-    /// The world clock, in UO minutes, as last saved. `0` on a store that has
-    /// never held one — a fresh shard starts at midnight.
+    /// The world's own scalars, as last saved — the clock and where the roll
+    /// generator got to. One read for the one row, so a scalar added to
+    /// [`WorldRecord`] does not add a method here and a query to every backend.
+    ///
+    /// `None` means this store has never held the row: a world nobody has saved
+    /// yet. That is not the same as a row of zeroes, and the difference matters for
+    /// the generator — zero is a seed like any other, so a caller handed
+    /// `WorldRecord::default()` would overwrite whatever the config asked for with
+    /// it. Absence leaves the fresh world's own seed alone.
     ///
     /// # Errors
     /// If the store cannot be read.
-    async fn clock_minutes(&self) -> Result<u64, StoreError>;
+    async fn world(&self) -> Result<Option<WorldRecord>, StoreError>;
 
     /// Every account.
     async fn accounts(&self) -> Result<Vec<AccountRecord>, StoreError>;
@@ -130,8 +137,9 @@ pub struct MemoryStore {
     decorations: Mutex<HashMap<u32, DecorationRecord>>,
     /// Named regions, keyed by `(facet, id)`.
     regions: Mutex<HashMap<(u8, u16), RegionRecord>>,
-    /// The world clock, in UO minutes.
-    clock: Mutex<u64>,
+    /// The world's own scalars: the clock, and where the rolls got to. `None` until
+    /// a snapshot carries them.
+    world: Mutex<Option<WorldRecord>>,
     accounts: Mutex<HashMap<AccountName, AccountRecord>>,
     /// How many saves have landed. What a test asserts on.
     saves: Mutex<u64>,
@@ -233,8 +241,9 @@ impl Store for MemoryStore {
                 regions.insert((record.facet, record.id), record.clone());
             }
         }
-        if let Some(minutes) = snapshot.clock_minutes {
-            *self.clock.lock().expect("the mutex is never poisoned") = minutes;
+        // The world's own row, replaced whole when a snapshot carries it.
+        if let Some(record) = snapshot.world {
+            *self.world.lock().expect("the mutex is never poisoned") = Some(record);
         }
         *self.saves.lock().expect("the mutex is never poisoned") += 1;
         Ok(())
@@ -300,8 +309,8 @@ impl Store for MemoryStore {
             .collect())
     }
 
-    async fn clock_minutes(&self) -> Result<u64, StoreError> {
-        Ok(*self.clock.lock().expect("the mutex is never poisoned"))
+    async fn world(&self) -> Result<Option<WorldRecord>, StoreError> {
+        Ok(*self.world.lock().expect("the mutex is never poisoned"))
     }
 
     async fn accounts(&self) -> Result<Vec<AccountRecord>, StoreError> {
@@ -368,7 +377,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         }
     }
 
@@ -425,7 +434,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
         assert!(matches!(error, StoreError::SchemaMismatch { .. }));
@@ -510,7 +519,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
-                clock_minutes: None,
+                world: None,
             })
             .await
             .expect("save");
@@ -529,7 +538,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
-                clock_minutes: None,
+                world: None,
             })
             .await
             .expect("save");
@@ -598,7 +607,7 @@ mod tests {
                 mobiles: Some(vec![mobile(2, 30), mobile(3, 30)]),
                 decorations: None,
                 regions: None,
-                clock_minutes: None,
+                world: None,
             })
             .await
             .expect("save");
@@ -616,7 +625,7 @@ mod tests {
                 mobiles: Some(vec![mobile(3, 7)]),
                 decorations: None,
                 regions: None,
-                clock_minutes: None,
+                world: None,
             })
             .await
             .expect("save");
@@ -649,7 +658,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
-                clock_minutes: None,
+                world: None,
             })
             .await
             .expect("save");
@@ -666,7 +675,7 @@ mod tests {
                 mobiles: None,
                 decorations: None,
                 regions: None,
-                clock_minutes: None,
+                world: None,
             })
             .await
             .expect("save");

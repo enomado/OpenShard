@@ -90,6 +90,98 @@ machine each one is a deterministic test with no ports and no sleeps.
 world code inside a network task, on whatever thread Tokio picked, whenever bytes
 arrived. The channel is where async stops and the tick begins.
 
+### Entering the world says which character, once
+
+`Command::Enter` carried seven fields, four of them `Option`s that were only ever
+all present or all absent together: the saved serial, the saved spot, the look and
+the sheet. Four correlated `Option`s are four chances to build a state that cannot
+happen — a saved serial with no saved position puts a character every packet ever
+sent refers to back at the start city — and nothing could check it. Every caller
+had to unpack a row correctly instead.
+
+It now carries one `Entering`, whose `character` is a two-variant `Character`:
+`Fresh(FreshCharacter)` has a facet, an optional start and an optional look and
+sheet; `Stored(StoredCharacter)` has all five and no `Option` at all, so a
+half-restored character cannot be spelled. `StoredCharacter::from_record` is the
+one place a `CharacterRecord` is unpacked, and the relogin tests call it rather
+than keeping their own copy of the unpacking. The private `struct Entering` beside
+`World::enter` — a field-for-field copy of the command's own payload — is gone.
+
+The remaining step is the one this makes worth doing:
+
+- [ ] **The roster belongs in the world.** Characters are the only saved thing
+      whose `restore_*` hands data back to the caller instead of into `World`, and
+      the only one that asks the world for a favour (`reserve_serial`) rather than
+      giving it something. Moving it in deletes `departed`, `pending_inventories`
+      and the roster's place in `run_shard`'s signature; the character list becomes
+      a `Command` answered with a `0xA9`, exactly as `RequestStatus` is answered
+      with a status, and "exists" and "is being played" become two states of one
+      record rather than two tables. Accounts stay outside: argon2 must not run
+      inside a tick, and `openshard-login` exists to be sans-io. This is also the
+      shape UO itself has — an account is global, a character belongs to a shard.
+
+Found while doing it, none of them blockers:
+
+- **A player's saved `facing` is written and never read.** `record.facing` is
+  saved, and `enter` sets `Facing::walking(Direction::South)` unconditionally — so
+  every character relogs facing south. NPCs do get theirs back
+  (`Facing::from_bits(record.facing)` in `restore_mobiles`), which is what makes
+  the omission easy to miss.
+- **A zero stat age means two different things.** On save, `strength_age` is
+  `now - last_gain`, and a character that never gained is saved with a large age
+  that restores to zero — correct. But a *new* character carries
+  `StatLockRecord::default()`, whose zero ages restore as `now - 0 = now`: it
+  reads as "rose this instant" and imposes a full `stat_gain_ticks` cooldown at
+  every login. The two readers of `LastStatGain` treat an absent component as
+  zero, so the fix is probably to keep it absent when every age is zero.
+- **Belongings already live in the world**, in `pending_inventories` keyed by
+  serial, filled by `restore_items` at boot and by logout. So a `StoredCharacter`
+  that carried its own items would duplicate what the world holds, not simplify
+  it — another argument for the roster moving in rather than the items moving out.
+- **The newtypes stop one line short.** `Facet` and `Appearance` are carried to
+  `enter` and unwrapped there, because `WorldState::facets` is still keyed by a
+  raw `u8` and `Body` is still a pair of raw `u16`. Both want the wire newtypes
+  (`Graphic`, `Hue`) carried through.
+
+### Still to do: the character screen is one conversation, split across two files
+
+The design this works toward is settled and written down — see "Sessions and the
+character registry" in [architecture.md](architecture.md). Done so far:
+`LoginSession` carries the account and the socket kind in its state rather than
+in fields kept in step by hand; `Sessions` answers who is playing what; `Roster`
+replaced a bare `HashMap<(String, String), CharacterRecord>` threaded through
+five functions. What is left:
+
+- [ ] **`charscreen.rs`.** Create (`0x00`/`0xF8`), delete (`0x83`) and select
+      (`0x5D`) are one conversation and belong in one module. Select is in
+      `dispatch.rs` today only because it arrives as a `ClientPacket`, not
+      because it is about the world; it reads the roster exactly as the other two
+      do. What stays in `dispatch.rs` afterwards is the pure mapping of an
+      in-world packet to a `Command`.
+- [ ] **Nothing on the character screen takes `&mut World`.** Those three return
+      the `Command` for the caller to queue instead of queueing it themselves.
+      They already only ever produce one; the type should say so. This is the
+      same rule the tick already enforces for network tasks, applied one level
+      up: login's half of the shard can ask the world for something, and cannot
+      write to it.
+- [ ] **`run_shard` shrinks.** The seven `restore_*` functions are boot, and
+      belong in `boot.rs` beside `load_world` and `open_store`. `world_tick`
+      takes `&mut LoginServer` for one line — `keys.expire()`, which is memory
+      upkeep for abandoned relay keys and wants its own `select!` arm on a timer,
+      not a place in the tick.
+
+Two smaller things noticed on the way through, neither blocking:
+
+- `dispatch_world_packet` opens with `session.login.account().cloned()
+  .unwrap_or_default()`, so a `0x5D` with no game login behind it builds an
+  `Enter` for the empty account rather than being refused. Harmless today because
+  the roster cannot match an empty account, but it is a default standing in for
+  absence — exactly what the style canon says not to do.
+- `Command::Enter` carries a `CharacterSheet` built out of four
+  `openshard-persistence` record types. The tick's input vocabulary should not be
+  shaped by the database's row format; it is also the single reason `Command`
+  cannot move below `openshard-world` should that ever be wanted.
+
 ## 3. World — a client walks in Britannia
 
 - [x] `Direction` / `Facing` — steps ported verbatim from Sphere's `sm_Moves`

@@ -1,7 +1,7 @@
 use super::*;
 use openshard_persistence::{
     CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord, RunebookData,
-    RunebookEntryData,
+    RunebookEntryData, WorldRecord,
 };
 use openshard_protocol::identity::CharacterName;
 use openshard_state::components::{
@@ -82,7 +82,7 @@ impl World {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         });
 
         // Every online character, whole: its record and its entire carried
@@ -125,12 +125,16 @@ impl World {
         snapshot.mobiles = Some(mobiles);
         // And every placed decoration, door state included.
         snapshot.decorations = Some(self.decoration_records());
-        // And the named regions of every facet, and the hour of the day. Neither
-        // is a thing a player changes, but both are things a restart would
-        // silently lose: no guards, no music, daylight in the dungeons, and every
-        // night starting over.
+        // And the named regions of every facet, and the world's own scalars —
+        // the hour of the day and where the rolls got to. None of the three is a
+        // thing a player changes, and all three are things a restart would silently
+        // lose: no guards, no music, daylight in the dungeons, every night starting
+        // over, and every roll of the previous run dealt again.
         snapshot.regions = Some(self.region_records());
-        snapshot.clock_minutes = Some(self.clock_minutes());
+        snapshot.world = Some(WorldRecord {
+            clock_minutes: self.clock_minutes(),
+            rng_state: self.rng_state(),
+        });
 
         // Skip only a genuinely empty save, so a quiet, empty shard queues nothing.
         let ground_empty = snapshot.ground.as_ref().is_none_or(Vec::is_empty);

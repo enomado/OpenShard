@@ -798,7 +798,8 @@ mod tests {
     use openshard_gateway::ConnectionId;
     use openshard_protocol::identity::{AccountName, CharacterName};
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-    use openshard_world::Position;
+    use openshard_world::components::Facet;
+    use openshard_world::{Character, Entering, Position};
     use std::time::Instant;
 
     /// A script file that lasts as long as the test and cleans up after itself.
@@ -858,18 +859,14 @@ mod tests {
         let mut world = World::new(start);
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now); // emits PlayerEntered
         scripts.pump(&mut world); // script hears it, queues two Steps
         world.tick(now); // the Steps apply: turn north, then walk north
@@ -905,18 +902,14 @@ mod tests {
         let mut world = World::new((1363, 1600));
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now); // PlayerEntered
         let _ = world.drain_outbound().count(); // the login burst
         scripts.pump(&mut world); // script drops an item, queues SpawnItem
@@ -945,18 +938,14 @@ mod tests {
         let mut world = World::new((1363, 1600));
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now);
         scripts.pump(&mut world); // spawns the container
         world.tick(now);
@@ -1157,18 +1146,14 @@ mod tests {
         let mut world = World::new((1363, 1600));
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now); // PlayerEntered
         scripts.pump(&mut world); // set + use the skill queued
         world.tick(now); // the skill is used, SkillUsed emitted
@@ -1207,18 +1192,14 @@ mod tests {
         let mut world = World::new((1363, 1600));
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now); // PlayerEntered
         scripts.pump(&mut world); // train + spawn the target queued
         world.tick(now); // skill set, target spawned
@@ -1282,18 +1263,14 @@ mod tests {
         let mut world = World::new((1363, 1600));
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now);
         scripts.pump(&mut world); // the creature is spawned
         world.tick(now);
@@ -1338,18 +1315,14 @@ mod tests {
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
         let connection = ConnectionId::from_raw(1);
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection,
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now);
         scripts.pump(&mut world);
         let _ = world.drain_outbound().count();
@@ -1400,18 +1373,14 @@ mod tests {
         let mut world = World::new((1363, 1600));
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(1),
             version: ClientVersion::TOL,
             account: AccountName("admin".to_owned()),
             name: CharacterName("Lord British".to_owned()),
-            serial: None,
-            position: None,
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::fresh(Facet(0)),
+        }));
         world.tick(now); // PlayerEntered
         scripts.pump(&mut world); // the script registers the regions
         world.tick(now); // the world takes them

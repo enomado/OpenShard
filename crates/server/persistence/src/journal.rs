@@ -68,7 +68,7 @@ use openshard_protocol::serial::Serial;
 
 use crate::record::{
     CharacterRecord, DecorationRecord, Inventory, ItemRecord, MobileRecord, RegionRecord, SCHEMA_VERSION,
-    SpawnerRecord,
+    SpawnerRecord, WorldRecord,
 };
 
 /// A consistent picture of everything that changed, taken at one tick.
@@ -108,9 +108,14 @@ pub struct Snapshot {
     /// again — the pack owns the whole map of the world, so a partial write would
     /// be worse than none.
     pub regions: Option<Vec<RegionRecord>>,
-    /// The world clock, in UO minutes, when this snapshot was taken. `None` in a
-    /// snapshot that carried only character changes; the stored value stands.
-    pub clock_minutes: Option<u64>,
+    /// The world's own scalars — the clock and the roll generator's position — when
+    /// this snapshot swept them. `None` in a snapshot that carried only character
+    /// changes; the stored row stands.
+    ///
+    /// One field for the whole row, rather than one per scalar, so the next thing
+    /// the world alone knows costs a [`WorldRecord`] field and touches no caller
+    /// here.
+    pub world: Option<WorldRecord>,
 }
 
 impl Snapshot {
@@ -296,7 +301,7 @@ impl Journal {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         })
     }
 }

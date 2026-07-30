@@ -36,6 +36,17 @@ client_files = ""
 # Ter Mur. A character stays on its facet; there is no travel between them yet.
 facets = [0]
 
+# The seed the world's rolls start from, on a world that has never been saved.
+#
+# Leave it out and the engine's own default seed stands. Set it to reproduce a
+# fresh world — a bug that only appears with one sequence of rolls, a benchmark
+# that has to be comparable between runs.
+#
+# It has no effect on a shard with a save behind it: the save carries where the
+# generator got to and a restart picks that up, because re-seeding at boot would
+# deal the previous run's rolls all over again.
+#seed = 1
+
 # Where a new character appears. The height comes from the map, not from here.
 #
 # This default is open ground on one facet and may be open water on yours.

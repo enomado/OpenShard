@@ -142,7 +142,15 @@ mod character_name {
 ///   Postgres twin stamp a fresh database and refuse any other version — so two
 ///   bumps inside one piece of work means an operator throwing their test shard
 ///   away twice for one feature.
-pub const SCHEMA_VERSION: u32 = 22;
+/// - v23: **where the world's roll generator got to** ([`WorldRecord::rng_state`]),
+///   beside the clock it already shares a row with. Unsaved, the generator was
+///   re-seeded from a constant at every boot, so a restart dealt out the exact
+///   sequence of rolls the previous run had dealt — every skill gain, every
+///   swing, every loot roll, in order. That is the `Murders` class of bug from
+///   v15 (a rule correct in memory and lost at the door) with an exploit attached,
+///   since the one thing a player can do to a roll they dislike is get the shard
+///   restarted.
+pub const SCHEMA_VERSION: u32 = 23;
 
 /// An account, as saved.
 ///
@@ -857,14 +865,29 @@ pub struct RegionRecord {
 
 /// The world's own scalars, as saved — one row, not one per anything.
 ///
-/// Just the clock today: the UO minute the shard stopped at, so a restart does
-/// not put the world back at midnight and make every night a fresh one. The tick
-/// counter cannot carry it, since that resets at boot by design (every restored
-/// timer is an offset from zero).
+/// Two things a restart cannot re-derive. The clock, because the tick counter
+/// resets at boot by design (every restored timer is an offset from zero), so
+/// without it every night starts over. And the roll generator's position, because
+/// the alternative is not "slightly different rolls" but *the same rolls again*:
+/// a shard that re-seeds at boot replays the sequence it played last run, which a
+/// player can notice and then farm.
+///
+/// Both default to zero, which is a real value for each: midnight, and a seed the
+/// generator replaces with its own non-zero constant — a store that has never
+/// been written reads as a fresh world.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct WorldRecord {
     /// The world clock, in UO minutes.
     pub clock_minutes: u64,
+    /// Where the world's roll generator had got to. `openshard_state::rng::Rng`'s
+    /// whole state, and the reason it is one `u64` rather than a seed plus a
+    /// count: `xorshift64*` *is* its state, so resuming needs nothing else.
+    ///
+    /// Spans every `u64`, high bit included, while both stores keep it in a signed
+    /// 64-bit column — the sign is reinterpreted, never clamped. See
+    /// `SqliteStore::save`.
+    #[serde(default)]
+    pub rng_state: u64,
 }
 
 /// A character's whole carried inventory, replaced as a unit.

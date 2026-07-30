@@ -66,12 +66,15 @@ pub(super) const MAX_FOLLOWERS: u8 = openshard_skills::MAX_FOLLOWERS;
 /// reason [`BODY_WEIGHT`] is: three rules read it now, and two copies of
 /// `40 + 3.5 * str` is a shard where a mule can walk but cannot recall.
 pub(super) use openshard_items::max_weight;
-/// The seed the world's roll generator starts from.
+/// The seed a world's roll generator starts from when nothing says otherwise.
 ///
-/// Fixed, so a fresh world's rolls are reproducible in a test and a replay. A
-/// live shard that wanted unpredictable rolls would seed from the clock at
-/// startup and save the seed with the world; that is an additive change, and one
-/// value, not a redesign.
+/// Fixed, so a fresh world's rolls are reproducible in a test and a replay. An
+/// operator overrides it with `world.seed`
+/// ([`World::with_seed`](super::World::with_seed)), which is the only way the
+/// value here is ever replaced — a live shard does not re-seed at boot, it
+/// *resumes*: the save carries where the stream got to and
+/// [`World::with_rng_state`](super::World::with_rng_state) picks it up. Seeding a
+/// restored world would deal the previous run's rolls a second time.
 pub(super) const DEFAULT_SEED: u64 = 0x0DEE_5340_0000_0001;
 
 /// How often the world offers a snapshot to persistence, in ticks.

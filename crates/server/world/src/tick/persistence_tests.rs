@@ -236,31 +236,35 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
     let mut world = eager();
     let now = Instant::now();
     let connection = ConnectionId::from_raw(7);
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Revenant".to_owned()),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: Some(Appearance { body: 0x0190, hue: 0 }),
-        sheet: Some(CharacterSheet {
-            strength: 100,
-            dexterity: 100,
-            intelligence: 100,
-            skills: Vec::new(),
-            effects: Vec::new(),
-            stat_locks: Default::default(),
-            dead: true,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: Vec::new(),
-            done_quests: Vec::new(),
-        }),
         access: AccessLevel::Player,
-    });
+        character: Character::Fresh(FreshCharacter {
+            facet: Facet(0),
+            start: None,
+            appearance: Some(Appearance {
+                body: openshard_protocol::wire::Graphic(0x0190),
+                hue: openshard_protocol::wire::Hue::NONE,
+            }),
+            sheet: Some(CharacterSheet {
+                strength: 100,
+                dexterity: 100,
+                intelligence: 100,
+                skills: Vec::new(),
+                effects: Vec::new(),
+                stat_locks: Default::default(),
+                dead: true,
+                fame: 0,
+                karma: 0,
+                murders: 0,
+                quests: Vec::new(),
+                done_quests: Vec::new(),
+            }),
+        }),
+    }));
     world.tick(now);
 
     let entity = world.state.players[&connection];
@@ -297,6 +301,66 @@ fn a_world_with_nowhere_to_save_keeps_no_journal_anyone_waits_on() {
     world.take_snapshot();
     assert_eq!(only_snapshot(&mut world).expect("a change").characters.len(), 1);
     assert_eq!(world.unsaved(), 0);
+}
+
+#[test]
+fn a_restart_continues_the_roll_stream_instead_of_dealing_it_again() {
+    // The bug this is here for is not "the rolls differ across a restart" — it is
+    // that without saving the generator they are *identical*. A shard re-seeded from
+    // a constant at every boot replays the sequence it played last run, in order, so
+    // a player who dislikes a roll has a way to ask for it again: get the shard
+    // restarted. That makes it an exploit, not a cosmetic loss.
+    let mut world = World::new(START).with_save_every(0);
+    let now = Instant::now();
+    enter(&mut world, now);
+    // Some play, so the stream is plainly not at its seed any more.
+    let rolled: Vec<u32> = (0..64).map(|_| world.state.rng.below(1000)).collect();
+
+    world.take_snapshot();
+    let snapshot = only_snapshot(&mut world).expect("a character entered");
+    let saved = snapshot
+        .world
+        .expect("a full sweep carries the world's own scalars");
+    assert_eq!(
+        saved.rng_state,
+        world.rng_state(),
+        "the save carries where the rolls got to"
+    );
+
+    // The shard comes back up on that save.
+    let mut restored = World::new(START).with_rng_state(saved.rng_state);
+    let after_restart: Vec<u32> = (0..64).map(|_| restored.state.rng.below(1000)).collect();
+    let kept_running: Vec<u32> = (0..64).map(|_| world.state.rng.below(1000)).collect();
+    assert_eq!(
+        after_restart, kept_running,
+        "a restored world must roll on from the save, not from a seed"
+    );
+    assert_ne!(
+        after_restart, rolled,
+        "and must not deal the pre-save rolls a second time"
+    );
+
+    // The gate above would also pass if `with_rng_state` were a no-op and both
+    // worlds simply started from the same default seed, so pin that it is not.
+    let mut fresh = World::new(START);
+    let from_the_default_seed: Vec<u32> = (0..64).map(|_| fresh.state.rng.below(1000)).collect();
+    assert_ne!(
+        after_restart, from_the_default_seed,
+        "restoring a state has to actually move the generator off its default seed"
+    );
+}
+
+#[test]
+fn a_pinned_seed_decides_a_fresh_worlds_rolls() {
+    // What `world.seed` buys an operator: two fresh worlds built the same way roll
+    // the same, and a different seed rolls differently. Only fresh ones — a world
+    // with a save behind it resumes, and the test above is why.
+    let rolls = |seed: u64| -> Vec<u32> {
+        let mut world = World::new(START).with_seed(seed);
+        (0..32).map(|_| world.state.rng.below(1000)).collect()
+    };
+    assert_eq!(rolls(0x1234_5678_9ABC_DEF0), rolls(0x1234_5678_9ABC_DEF0));
+    assert_ne!(rolls(0x1234_5678_9ABC_DEF0), rolls(0x0FED_CBA9_8765_4321));
 }
 
 #[test]

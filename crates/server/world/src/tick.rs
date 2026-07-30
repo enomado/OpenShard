@@ -107,25 +107,12 @@ mod traps;
 mod travel;
 mod wake;
 
-pub use command::{Appearance, CharacterSheet, Command, DecorContainer, DecorDoor};
+pub use command::{
+    Appearance, Character, CharacterSheet, Command, DecorContainer, DecorDoor, Entering, FreshCharacter,
+    StoredCharacter,
+};
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
-
-/// Everything [`World::enter`] needs: who is entering, and as what. A plain
-/// bundle so the one function that puts a character in the world takes one
-/// argument instead of seven.
-struct Entering {
-    connection: ConnectionId,
-    version: ClientVersion,
-    account: AccountName,
-    name: CharacterName,
-    serial: Option<u32>,
-    position: Option<Point>,
-    facet: u8,
-    appearance: Option<Appearance>,
-    sheet: Option<CharacterSheet>,
-    access: AccessLevel,
-}
 
 // `Outbound`, `FacetState`, `HeldItem` and `Origin` are the world's runtime
 // state, moved down into `openshard-state` with `WorldState` so the systems can
@@ -330,6 +317,39 @@ impl World {
         self
     }
 
+    /// Start a fresh world's rolls from `seed` instead of the engine's default.
+    ///
+    /// What `world.seed` in the config reaches. For a world with a save behind it
+    /// this is the wrong door — use [`with_rng_state`] and continue the stream the
+    /// save was taken from.
+    ///
+    /// [`with_rng_state`]: World::with_rng_state
+    #[must_use]
+    pub const fn with_seed(mut self, seed: u64) -> Self {
+        self.state.rng = Rng::new(seed);
+        self
+    }
+
+    /// Resume the roll stream at the point a save recorded.
+    ///
+    /// The counterpart of [`rng_state`], and the reason the pair exists rather
+    /// than one `with_seed`: the two callers mean different things. A fresh world
+    /// is *seeded*; a restored one is *resumed*, and seeding it instead would deal
+    /// the previous run's rolls again — see [`Rng::state`].
+    ///
+    /// [`rng_state`]: World::rng_state
+    #[must_use]
+    pub const fn with_rng_state(mut self, state: u64) -> Self {
+        self.state.rng = Rng::new(state);
+        self
+    }
+
+    /// Where the roll stream has got to, for the save.
+    #[must_use]
+    pub const fn rng_state(&self) -> u64 {
+        self.state.rng.state()
+    }
+
     /// Give the default facet a map.
     pub fn with_terrain(self, terrain: MapTerrain) -> Self {
         let facet = self.state.default_facet;
@@ -429,18 +449,6 @@ impl World {
     /// that closes the gap.
     pub fn drain_departed(&mut self) -> std::vec::Drain<'_, CharacterRecord> {
         self.departed.drain(..)
-    }
-
-    /// Whether a serial belongs to a character that is in the world right now.
-    ///
-    /// The server asks before deleting a character (`0x83`): a character being
-    /// played cannot be deleted out from under its own session. This reads live
-    /// world state, which is safe between ticks — the shard loop owns the world.
-    pub fn is_online(&self, serial: u32) -> bool {
-        self.state
-            .players
-            .values()
-            .any(|&entity| self.state.registry.serial_of(entity).map(|s| s.raw()) == Some(serial))
     }
 
     /// Delete a logged-out character's saved state.
@@ -681,29 +689,7 @@ impl World {
 
     fn apply(&mut self, command: Command, now: Instant) {
         match command {
-            Command::Enter {
-                connection,
-                version,
-                account,
-                name,
-                serial,
-                position,
-                facet,
-                appearance,
-                sheet,
-                access,
-            } => self.enter(Entering {
-                connection,
-                version,
-                account,
-                name,
-                serial,
-                position,
-                facet,
-                appearance,
-                sheet,
-                access,
-            }),
+            Command::Enter(entering) => self.enter(entering),
             Command::Walk { connection, request } => self.walk(connection, request, now),
             Command::RequestStatus { connection } => {
                 if let Some(&entity) = self.state.players.get(&connection) {

@@ -48,18 +48,14 @@ pub(super) fn enter(world: &mut World, now: Instant) -> ConnectionId {
 }
 
 pub(super) fn enter_as(world: &mut World, connection: ConnectionId, now: Instant) -> ConnectionId {
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::fresh(Facet(0)),
+    }));
     world.tick(now);
     connection
 }
@@ -67,18 +63,14 @@ pub(super) fn enter_as(world: &mut World, connection: ConnectionId, now: Instant
 /// Enter as a game master — the authority the `.`-command tests need.
 pub(super) fn enter_gm(world: &mut World, now: Instant) -> ConnectionId {
     let connection = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::GameMaster,
-    });
+        character: Character::fresh(Facet(0)),
+    }));
     world.tick(now);
     connection
 }
@@ -3791,35 +3783,16 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
     world.queue(Command::Disconnect { connection: conn });
     world.tick(now);
     let conn = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: conn,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(serial),
-        position: Some(Point::new(START.0, START.1, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: Some(CharacterSheet {
-            strength: record.strength,
-            dexterity: record.dexterity,
-            intelligence: record.intelligence,
-            skills: record
-                .skills
-                .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
-                .collect(),
-            effects: record.effects.clone(),
-            stat_locks: record.stat_locks,
-            dead: record.dead,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: record.quests.clone(),
-            done_quests: record.done_quests.clone(),
-        }),
         access: AccessLevel::Player,
-    });
+        // Through the very function the server uses, so the test cannot pass on
+        // an unpacking the shard does not do.
+        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+    }));
     world.tick(now);
     let player = world.state.players[&conn];
     assert_eq!(
@@ -4168,7 +4141,6 @@ fn poison_survives_a_relogin() {
     // is a free cure. ServUO keeps the logged-out mobile in-world with the timer
     // still running; this shard saves the effect to the character row instead, so
     // it comes back on the sheet. The same path carries buffs and debuffs later.
-    use openshard_protocol::skill::SkillLock;
     use openshard_state::components::Poisoned;
     let now = Instant::now();
     let mut world = world();
@@ -4197,35 +4169,16 @@ fn poison_survives_a_relogin() {
     world.queue(Command::Disconnect { connection: conn });
     world.tick(now);
     let conn = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: conn,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(serial),
-        position: Some(Point::new(START.0, START.1, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: Some(CharacterSheet {
-            strength: record.strength,
-            dexterity: record.dexterity,
-            intelligence: record.intelligence,
-            skills: record
-                .skills
-                .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
-                .collect(),
-            effects: record.effects.clone(),
-            stat_locks: record.stat_locks,
-            dead: record.dead,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: record.quests.clone(),
-            done_quests: record.done_quests.clone(),
-        }),
         access: AccessLevel::Player,
-    });
+        // Through the very function the server uses, so the test cannot pass on
+        // an unpacking the shard does not do.
+        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+    }));
     world.tick(now);
 
     let player = world.state.players[&conn];
@@ -4384,7 +4337,6 @@ fn a_stat_buff_survives_a_relogin() {
     // character (its shift folded into the saved stats, its timer on the effects
     // list) and comes back on relog — still buffed, and still counting down to the
     // same base it would have returned to.
-    use openshard_protocol::skill::SkillLock;
     use openshard_state::components::{StatMods, Stats};
     use openshard_state::effect;
     let now = Instant::now();
@@ -4416,35 +4368,16 @@ fn a_stat_buff_survives_a_relogin() {
     world.queue(Command::Disconnect { connection: conn });
     world.tick(now);
     let conn = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: conn,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(serial),
-        position: Some(Point::new(START.0, START.1, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: Some(CharacterSheet {
-            strength: record.strength,
-            dexterity: record.dexterity,
-            intelligence: record.intelligence,
-            skills: record
-                .skills
-                .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
-                .collect(),
-            effects: record.effects.clone(),
-            stat_locks: record.stat_locks,
-            dead: record.dead,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: record.quests.clone(),
-            done_quests: record.done_quests.clone(),
-        }),
         access: AccessLevel::Player,
-    });
+        // Through the very function the server uses, so the test cannot pass on
+        // an unpacking the shard does not do.
+        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+    }));
     world.tick(now);
 
     let player = world.state.players[&conn];
@@ -4732,7 +4665,6 @@ fn a_behaviour_buff_expires_on_its_tick_and_a_recast_refreshes() {
 fn a_behaviour_buff_survives_a_relogin() {
     // The non-stat buffs ride the same effects list a poison or a Bless does: saved
     // with the character, restored on relog, still counting down.
-    use openshard_protocol::skill::SkillLock;
     use openshard_state::effect;
     let now = Instant::now();
     let mut world = world();
@@ -4760,35 +4692,16 @@ fn a_behaviour_buff_survives_a_relogin() {
     world.queue(Command::Disconnect { connection: conn });
     world.tick(now);
     let conn = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: conn,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(serial),
-        position: Some(Point::new(START.0, START.1, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: Some(CharacterSheet {
-            strength: record.strength,
-            dexterity: record.dexterity,
-            intelligence: record.intelligence,
-            skills: record
-                .skills
-                .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
-                .collect(),
-            effects: record.effects.clone(),
-            stat_locks: record.stat_locks,
-            dead: record.dead,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: record.quests.clone(),
-            done_quests: record.done_quests.clone(),
-        }),
         access: AccessLevel::Player,
-    });
+        // Through the very function the server uses, so the test cannot pass on
+        // an unpacking the shard does not do.
+        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+    }));
     world.tick(now);
 
     let player = world.state.players[&conn];
@@ -5154,7 +5067,6 @@ fn paralysis_lifts_on_its_tick() {
 
 #[test]
 fn paralysis_survives_a_relogin() {
-    use openshard_protocol::skill::SkillLock;
     use openshard_state::components::Frozen;
     use openshard_state::effect;
     let now = Instant::now();
@@ -5181,35 +5093,16 @@ fn paralysis_survives_a_relogin() {
     world.queue(Command::Disconnect { connection: conn });
     world.tick(now);
     let conn = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: conn,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(serial),
-        position: Some(Point::new(START.0, START.1, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: Some(CharacterSheet {
-            strength: record.strength,
-            dexterity: record.dexterity,
-            intelligence: record.intelligence,
-            skills: record
-                .skills
-                .iter()
-                .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
-                .collect(),
-            effects: record.effects.clone(),
-            stat_locks: record.stat_locks,
-            dead: record.dead,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: record.quests.clone(),
-            done_quests: record.done_quests.clone(),
-        }),
         access: AccessLevel::Player,
-    });
+        // Through the very function the server uses, so the test cannot pass on
+        // an unpacking the shard does not do.
+        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+    }));
     world.tick(now);
 
     let player = world.state.players[&conn];
@@ -7549,18 +7442,14 @@ fn a_command_does_nothing_until_the_tick() {
     // on a network thread at an arbitrary point, and two clients racing would
     // produce a different world depending on which packet won.
     let mut world = world();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: connection(),
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::fresh(Facet(0)),
+    }));
 
     assert_eq!(world.player_count(), 0, "queued, not applied");
     assert_eq!(world.drain_outbound().count(), 0, "and nothing sent");
@@ -7641,21 +7530,22 @@ fn a_created_character_enters_with_its_chosen_body() {
     // world must spawn that rather than its default human male.
     let mut world = world();
     let connection = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Nyx".to_owned()),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: Some(Appearance {
-            body: 0x025E,
-            hue: 0x0430,
-        }),
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::Fresh(FreshCharacter {
+            facet: Facet(0),
+            start: None,
+            appearance: Some(Appearance {
+                body: openshard_protocol::wire::Graphic(0x025E),
+                hue: openshard_protocol::wire::Hue(0x0430),
+            }),
+            sheet: None,
+        }),
+    }));
     world.tick(Instant::now());
 
     let entity = world.state.players[&connection];
@@ -7751,18 +7641,20 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
     shard.reserve_serial(char_serial);
     shard.restore_items(records);
     let conn_b = connection();
-    shard.queue(Command::Enter {
+    shard.queue(Command::Enter(Entering {
         connection: conn_b,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(char_serial),
-        position: Some(Point::new(1500, 1000, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::Stored(StoredCharacter {
+            serial: Serial::new(char_serial).unwrap(),
+            facet: Facet(0),
+            position: Point::new(1500, 1000, 0),
+            appearance: Appearance::default_human(),
+            sheet: CharacterSheet::starting(),
+        }),
+    }));
     shard.tick(now);
 
     // Exactly one backpack (the restored one, not a fresh starter too), with the
@@ -7849,18 +7741,20 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     shard.reserve_serial(char_serial);
     shard.restore_items(records);
     let conn_b = connection();
-    shard.queue(Command::Enter {
+    shard.queue(Command::Enter(Entering {
         connection: conn_b,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(char_serial),
-        position: Some(Point::new(1500, 1000, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::Stored(StoredCharacter {
+            serial: Serial::new(char_serial).unwrap(),
+            facet: Facet(0),
+            position: Point::new(1500, 1000, 0),
+            appearance: Appearance::default_human(),
+            sheet: CharacterSheet::starting(),
+        }),
+    }));
     shard.tick(now);
 
     let book = shard
@@ -7908,18 +7802,20 @@ fn a_relogin_in_the_same_run_keeps_the_inventory() {
     world.queue(Command::Disconnect { connection: conn });
     world.tick(now);
     let conn = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: conn,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(char_serial),
-        position: Some(Point::new(1500, 1000, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::Stored(StoredCharacter {
+            serial: Serial::new(char_serial).unwrap(),
+            facet: Facet(0),
+            position: Point::new(1500, 1000, 0),
+            appearance: Appearance::default_human(),
+            sheet: CharacterSheet::starting(),
+        }),
+    }));
     world.tick(now);
 
     let gold = world
@@ -8709,31 +8605,32 @@ fn a_murderer_stays_red_across_a_restart() {
 
     // And a fresh login from that record comes back red and infamous.
     let mut booted = World::new(START);
-    booted.queue(Command::Enter {
+    booted.queue(Command::Enter(Entering {
         connection: ConnectionId::from_raw(9),
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: record.name.clone(),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: None,
-        sheet: Some(CharacterSheet {
-            strength: record.strength,
-            dexterity: record.dexterity,
-            intelligence: record.intelligence,
-            skills: Vec::new(),
-            effects: Vec::new(),
-            stat_locks: Default::default(),
-            dead: false,
-            fame: record.fame,
-            karma: record.karma,
-            murders: record.murders,
-            quests: Vec::new(),
-            done_quests: Vec::new(),
-        }),
         access: AccessLevel::Player,
-    });
+        character: Character::Fresh(FreshCharacter {
+            facet: Facet(0),
+            start: None,
+            appearance: None,
+            sheet: Some(CharacterSheet {
+                strength: record.strength,
+                dexterity: record.dexterity,
+                intelligence: record.intelligence,
+                skills: Vec::new(),
+                effects: Vec::new(),
+                stat_locks: Default::default(),
+                dead: false,
+                fame: record.fame,
+                karma: record.karma,
+                murders: record.murders,
+                quests: Vec::new(),
+                done_quests: Vec::new(),
+            }),
+        }),
+    }));
     booted.tick(now);
     let back = booted.state.players[&ConnectionId::from_raw(9)];
     assert_eq!(
@@ -10127,21 +10024,23 @@ fn a_loaded_character_returns_on_its_saved_serial_and_spot() {
     let mut world = world();
     let connection = connection();
     world.reserve_serial(0x0000_0202);
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(0x0000_0202),
-        position: Some(Point::new(1500, 1000, -5)),
-        facet: 0,
-        appearance: Some(Appearance {
-            body: 0x0191,
-            hue: 0x83EA,
-        }),
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::Stored(StoredCharacter {
+            serial: Serial::new(0x0000_0202).unwrap(),
+            facet: Facet(0),
+            position: Point::new(1500, 1000, -5),
+            appearance: Appearance {
+                body: openshard_protocol::wire::Graphic(0x0191),
+                hue: openshard_protocol::wire::Hue(0x83EA),
+            },
+            sheet: CharacterSheet::starting(),
+        }),
+    }));
     world.tick(Instant::now());
 
     let entity = world.state.players[&connection];
@@ -10197,18 +10096,14 @@ pub(super) fn add_empty_facet_sized(world: &mut World, facet: u8, width: u32, he
 }
 
 pub(super) fn enter_on_facet(world: &mut World, connection: ConnectionId, facet: u8, now: Instant) {
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("P".to_owned()),
-        serial: None,
-        position: None,
-        facet,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::fresh(Facet(facet)),
+    }));
     world.tick(now);
 }
 
@@ -10466,18 +10361,14 @@ fn a_command_queued_during_a_tick_waits_for_the_next_one() {
     world.tick(now);
     let before = world.ticks();
 
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: connection(),
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("a".to_owned()),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::Player,
-    });
+        character: Character::fresh(Facet(0)),
+    }));
     assert_eq!(world.player_count(), 0);
     world.tick(now);
     assert_eq!(world.ticks(), before + 1);
@@ -11316,18 +11207,20 @@ fn a_mounted_character_logs_back_in_still_mounted() {
     world.queue(Command::Disconnect { connection: gm });
     world.tick(now);
     let gm = connection();
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection: gm,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(char_serial),
-        position: Some(Point::new(START.0, START.1, 0)),
-        facet: 0,
-        appearance: None,
-        sheet: None,
         access: AccessLevel::GameMaster,
-    });
+        character: Character::Stored(StoredCharacter {
+            serial: Serial::new(char_serial).unwrap(),
+            facet: Facet(0),
+            position: Point::new(START.0, START.1, 0),
+            appearance: Appearance::default_human(),
+            sheet: CharacterSheet::starting(),
+        }),
+    }));
     world.tick(now);
     let player = world.state.players[&gm];
     let riding = world

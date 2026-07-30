@@ -309,6 +309,35 @@ fn facets_are_read_as_a_list() {
 }
 
 #[test]
+fn the_world_seed_is_absent_unless_an_operator_pins_it() {
+    // Absent, not zero: zero is a seed like any other, and a default would read
+    // exactly like a number somebody chose.
+    assert_eq!(config(MINIMAL).world.seed, None);
+    let default: Config = toml::from_str(DEFAULT_TOML).unwrap();
+    assert_eq!(default.world.seed, None);
+}
+
+#[test]
+fn a_pinned_world_seed_is_read_whole() {
+    // At the top of what TOML can spell: its integers are signed 64-bit, so the
+    // seeds an operator can write stop at `i64::MAX`. That is not a clamp to be
+    // fixed — it is the whole expressible range, and it is 9.2e18 seeds wide. The
+    // generator's *state*, which does use every `u64`, is never written by hand.
+    let config = config(
+        r#"
+            [server]
+            name = "OpenShard"
+            listen = "0.0.0.0:2593"
+            advertise = "127.0.0.1:2593"
+
+            [world]
+            seed = 9223372036854775807
+            "#,
+    );
+    assert_eq!(config.world.seed, Some(0x7FFF_FFFF_FFFF_FFFF));
+}
+
+#[test]
 fn a_database_path_is_read() {
     let config = config(
         r#"

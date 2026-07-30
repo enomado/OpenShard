@@ -30,7 +30,8 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::world::Point;
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-use openshard_world::{Command, Gameplay, TICK_INTERVAL, World};
+use openshard_world::components::Facet;
+use openshard_world::{Character, Command, Entering, FreshCharacter, Gameplay, TICK_INTERVAL, World};
 
 /// Britain, the same spot the tests use.
 const START: (u16, u16) = (1363, 1600);
@@ -49,18 +50,19 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
     let side = (f64::from(folk)).sqrt().ceil() as u16;
 
     for i in 0..players {
-        world.queue(Command::Enter {
+        world.queue(Command::Enter(Entering {
             connection: ConnectionId::from_raw(u64::from(i + 1)),
             version: ClientVersion::TOL,
             account: AccountName("bench".to_owned()),
             name: CharacterName(format!("Player{i}")),
-            serial: None,
-            position: Some(Point::new(START.0 + side + (i % 4) as u16, START.1 + side, 0)),
-            facet: 0,
-            appearance: None,
-            sheet: None,
             access: AccessLevel::Player,
-        });
+            character: Character::Fresh(FreshCharacter {
+                facet: Facet(0),
+                start: Some(Point::new(START.0 + side + (i % 4) as u16, START.1 + side, 0)),
+                appearance: None,
+                sheet: None,
+            }),
+        }));
     }
 
     let trades = [

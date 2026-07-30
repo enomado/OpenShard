@@ -763,31 +763,16 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
     // And it comes back on login.
     let mut shard = super::tests::world();
     shard.state.quests.set(vec![rat_cull()]);
-    shard.queue(Command::Enter {
+    shard.queue(Command::Enter(Entering {
         connection: connection_two(),
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
-        serial: Some(record.serial),
-        position: None,
-        facet: 0,
-        appearance: None,
-        sheet: Some(CharacterSheet {
-            strength: record.strength,
-            dexterity: record.dexterity,
-            intelligence: record.intelligence,
-            skills: Vec::new(),
-            effects: Vec::new(),
-            stat_locks: Default::default(),
-            dead: false,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: record.quests.clone(),
-            done_quests: record.done_quests.clone(),
-        }),
         access: AccessLevel::Player,
-    });
+        // Through the very function the server uses, so the test cannot pass on
+        // an unpacking the shard does not do.
+        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+    }));
     shard.tick(now);
 
     let log = log_of(&shard, connection_two());

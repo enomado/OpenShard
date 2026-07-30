@@ -11,32 +11,48 @@ impl World {
             version,
             account,
             name,
-            serial,
-            position,
-            facet,
-            appearance,
-            sheet,
             access,
+            character,
         } = entering;
         if self.state.players.contains_key(&connection) {
             warn!(%connection, "already in the world");
             return;
         }
 
+        // Split the two arrivals into what the rest of this function reads. The
+        // `Option`s below are the honest ones — a character nobody ever described
+        // has no look and no sheet — and they are local now: a *stored* character
+        // cannot reach here half-unpacked, because `StoredCharacter` has no way to
+        // say it.
+        let (requested_facet, saved_serial, saved_position, appearance, sheet) = match character {
+            Character::Stored(stored) => (
+                stored.facet,
+                Some(stored.serial),
+                Some(stored.position),
+                Some(stored.appearance),
+                Some(stored.sheet),
+            ),
+            Character::Fresh(fresh) => (fresh.facet, None, fresh.start, fresh.appearance, fresh.sheet),
+        };
+
         // A character can only stand on a facet the shard loaded. An unloaded one
         // — a save from a shard that had more facets, say — falls back to the
         // default rather than leaving the character nowhere.
-        let facet = if self.state.facets.contains_key(&facet) {
-            facet
+        //
+        // `.0` because the facet tables are still keyed by the raw byte; the
+        // newtype stops at this line rather than at the codec, and carrying it
+        // further is its own change.
+        let facet = if self.state.facets.contains_key(&requested_facet.0) {
+            requested_facet.0
         } else {
-            warn!(%connection, facet, "unloaded facet; falling back to the default");
+            warn!(%connection, facet = requested_facet.0, "unloaded facet; falling back to the default");
             self.state.default_facet
         };
 
         // A stored character comes back on the serial it was saved under; a new
         // one takes a fresh serial from the pool. The saved serial was reserved
         // at boot (see `World::reserve_serial`), so binding it here cannot collide.
-        let (entity, serial) = match serial.and_then(Serial::new) {
+        let (entity, serial) = match saved_serial {
             Some(saved) => {
                 let entity = self.state.registry.spawn();
                 if let Err(error) = self.state.registry.bind_serial(entity, saved) {
@@ -57,13 +73,15 @@ impl World {
 
         // A loaded character spawns exactly where it was saved, its own z
         // included; a fresh one takes the world's configured start on its facet.
-        let position = position.unwrap_or_else(|| self.state.start_position(facet));
+        let position = saved_position.unwrap_or_else(|| self.state.start_position(facet));
         let facing = Facing::walking(Direction::South);
         // A created or loaded character brings its body and hue; without one it
-        // falls back to the default.
+        // falls back to the default. `.0` because `Body` is still a pair of raw
+        // `u16`s — the same one-line stop as the facet above.
+        let look = appearance.unwrap_or_else(Appearance::default_human);
         let body = Body {
-            id: appearance.map_or(BODY_HUMAN_MALE, |look| look.body),
-            hue: appearance.map_or(DEFAULT_HUE, |look| look.hue),
+            id: look.body.0,
+            hue: look.hue.0,
         };
 
         self.state.registry.insert(entity, Position(position));

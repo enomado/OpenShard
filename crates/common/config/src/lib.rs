@@ -461,6 +461,22 @@ pub struct WorldConfig {
     /// stays on the facet it is on — there is no travel between them yet.
     #[serde(default = "default_facets")]
     pub facets: Vec<u8>,
+
+    /// The seed the world's roll generator starts a *fresh* world from.
+    ///
+    /// Absent means the engine's own default seed stands — this is an override,
+    /// the way a region's `music` is, not a value every config must carry.
+    ///
+    /// # It only applies to a world with no save behind it
+    ///
+    /// A shard that has saved once restores where its generator *got to*, not
+    /// where it started, so changing this on a live shard changes nothing. That is
+    /// the point: rewinding the stream at every boot would repeat the previous
+    /// run's rolls. Set it to reproduce a fresh world — a bug that only shows up
+    /// with one sequence of rolls, a benchmark that must be comparable between
+    /// runs — and leave it alone otherwise.
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 impl Default for WorldConfig {
@@ -469,6 +485,7 @@ impl Default for WorldConfig {
             client_files: String::new(),
             start: StartConfig::default(),
             facets: default_facets(),
+            seed: None,
         }
     }
 }
