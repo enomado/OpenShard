@@ -63,7 +63,7 @@ const SPIRIT_SPEAK_DELAY: u64 = TICKS_PER_SECOND;
 pub(super) fn meditation(state: &mut WorldState, actor: EntityId) {
     let id = Skill::Meditation.id();
     // A cursor already up is something else being concentrated on.
-    if state.pending_targets.contains_key(&actor) {
+    if state.has_target(actor) {
         state.localized_message(actor, BUSY, "");
         crate::set_skill_delay(state, actor, SHORT_DELAY);
         return;

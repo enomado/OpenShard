@@ -277,7 +277,7 @@ pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container:
         return;
     };
     // The reply must name a window this side actually drew, and one this player
-    // is a party to — the `open_quest_gumps` rule, for the same reason.
+    // is a party to — the `Connection::quest_gump` rule, for the same reason.
     let Some(index) = trade_of_container(state, container) else {
         return;
     };
@@ -430,7 +430,7 @@ fn despawn_escrow(state: &mut WorldState, container: EntityId) {
 /// The client shut its window: end the trade it names.
 ///
 /// The container has to name a window this side drew *and* one this player is a
-/// party to — the `open_quest_gumps` rule, so a `0x6F` naming somebody else's
+/// party to — the `Connection::quest_gump` rule, so a `0x6F` naming somebody else's
 /// trade cannot end it.
 pub fn cancel_by_container(state: &mut WorldState, connection: ConnectionId, container: RawSerial) {
     let Some(&player) = state.players.get(&connection) else {

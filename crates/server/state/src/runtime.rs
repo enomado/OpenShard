@@ -584,9 +584,6 @@ pub struct WorldState {
     /// whole once a tick to find a trade whose parties have walked apart, which
     /// is cheaper than the region diff it copies, and a player is in at most one.
     pub trades: Vec<Trade>,
-    /// Mobiles that have a targeting cursor up, and what the click is for. A `.tele`
-    /// raises one; the `0x6C` answer looks here to know what to do with the spot.
-    pub pending_targets: HashMap<EntityId, TargetPurpose>,
     /// Every quest this shard knows, as the script pack defined them. Replaced
     /// wholesale on a pack reload, and never persisted — the pack is the truth
     /// about what a quest *is*, every boot; only a player's progress is saved.
@@ -595,28 +592,12 @@ pub struct WorldState {
     /// on a reload and never persisted, for the same reason as
     /// [`quests`](Self::quests): the pack is the truth about content.
     pub dialogue: Dialogue,
-    /// Which quest dialog each player has open, and on which page.
-    ///
-    /// Session state, like [`pending_targets`](Self::pending_targets): a gump
-    /// exists only while someone is looking at it, and a reply that arrives for a
-    /// window this side never opened is a reply to nothing. Cleared on logout.
-    pub open_quest_gumps: HashMap<EntityId, QuestGumpContext>,
-    /// Which craft window each player has open, on which category and material.
-    ///
-    /// Session state beside [`open_quest_gumps`](Self::open_quest_gumps), and for
-    /// the same reason — but it carries more weight than the quest log's does:
-    /// the selected category, the chosen metal and the tool in hand all live
-    /// here and never in the packet, so a reply cannot name a material the
-    /// player did not pick. Cleared on logout.
-    pub open_craft_gumps: HashMap<EntityId, CraftGumpContext>,
-    /// Which runebook each player has open. The `open_craft_gumps` shape.
-    pub open_runebook_gumps: HashMap<EntityId, EntityId>,
-    /// Which gate each player has a destination list open for.
-    ///
-    /// The `open_craft_gumps` shape, and for the same reason: the reply carries a
-    /// button and a switch, never *which* gate asked, so a `0xB1` for a window
-    /// this side never drew must do nothing.
-    pub open_gate_gumps: HashMap<EntityId, EntityId>,
+    // The targeting cursor and the four gump contexts used to be maps here, keyed
+    // by the *player's entity*. They are fields on the connection's row now —
+    // `connection::Connection` — reached through `row_of`/`row_of_mut`. They are
+    // about a client's screen and not about a mobile: every one of them was
+    // already unreachable without a `Client`, and keying them by the entity meant
+    // nothing swept them when the client went. Four of the five leaked outright.
     /// The tunable rules — swing era, speech ranges, timers — the systems read.
     pub gameplay: Gameplay,
     /// Set by a staff `.save` to ask the tick for an immediate snapshot. The world
@@ -1993,6 +1974,50 @@ impl WorldState {
             !watchers.is_empty()
         });
         self.connections.remove(&connection)
+    }
+
+    /// The row of the client playing `entity`, if it is a connected player.
+    ///
+    /// The seam for the state that is *about a screen* but is reached holding a
+    /// mobile — a targeting cursor, an open gump. `None` for a creature, for a
+    /// character between sessions, and for an entity that is not a mobile at all,
+    /// which is one absence and not three: none of them has a screen.
+    ///
+    /// One lookup and not a walk of [`players`](Self::players): the entity says
+    /// which connection through its [`Client`] component.
+    #[must_use]
+    pub fn row_of(&self, entity: EntityId) -> Option<&Connection> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        self.connections.get(&connection)
+    }
+
+    /// The same row, to write to. See [`row_of`](Self::row_of).
+    pub fn row_of_mut(&mut self, entity: EntityId) -> Option<&mut Connection> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        self.connections.get_mut(&connection)
+    }
+
+    /// Put a targeting cursor up for `entity`, remembering what the click is for.
+    ///
+    /// Nothing happens for a mobile with no client, which is the invariant every
+    /// caller used to spell out for itself: a creature has no cursor to raise.
+    pub fn raise_target(&mut self, entity: EntityId, purpose: TargetPurpose) {
+        if let Some(row) = self.row_of_mut(entity) {
+            row.pending_target = Some(purpose);
+        }
+    }
+
+    /// Take down `entity`'s targeting cursor and say what it was for. `None` when
+    /// none was up — a `0x6C` for a cursor this side never raised.
+    pub fn take_target(&mut self, entity: EntityId) -> Option<TargetPurpose> {
+        self.row_of_mut(entity).and_then(|row| row.pending_target.take())
+    }
+
+    /// Whether `entity` already has a cursor up and is therefore busy.
+    #[must_use]
+    pub fn has_target(&self, entity: EntityId) -> bool {
+        self.row_of(entity)
+            .is_some_and(|row| row.pending_target.is_some())
     }
 
     /// What `connection` is dragging on its cursor, if anything.

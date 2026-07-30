@@ -555,7 +555,7 @@ fn an_exceptional_piece_is_still_exceptional_after_a_restart() {
     let record = World::item_record(
         &world.state.registry,
         sword,
-        owner.raw(),
+        Some(owner),
         openshard_persistence::ItemLocation::Ground {
             facet: 0,
             x: START.0,
@@ -578,7 +578,7 @@ fn an_exceptional_piece_is_still_exceptional_after_a_restart() {
     let plain = World::item_record(
         &world.state.registry,
         plain,
-        owner.raw(),
+        Some(owner),
         openshard_persistence::ItemLocation::Ground {
             facet: 0,
             x: START.0,
@@ -656,7 +656,10 @@ fn double_clicking_the_tongs_is_what_opens_the_window() {
 
     let player = world.state.players[&connection];
     assert!(
-        world.state.open_craft_gumps.contains_key(&player),
+        world
+            .state
+            .row_of(player)
+            .is_some_and(|row| row.craft_gump.is_some()),
         "the server remembers drawing it"
     );
     assert!(
@@ -664,6 +667,26 @@ fn double_clicking_the_tongs_is_what_opens_the_window() {
             .iter()
             .any(|packet| packet[0] == 0xB0),
         "and the client was sent one"
+    );
+
+    // And it is forgotten when the client goes. It used to be keyed by the
+    // player's entity in a map of its own, which `disconnect` did not sweep — so
+    // logging out with the window open left a context behind for an entity that
+    // no longer existed, for as long as the process ran. Its own doc said
+    // "Cleared on logout", which was true of the map it was written beside.
+    world.queue(Command::Disconnect { connection });
+    now += TICK_INTERVAL;
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .connections
+            .values()
+            .filter(|row| row.craft_gump.is_some())
+            .count(),
+        0,
+        "nothing anywhere still remembers drawing it"
     );
 }
 

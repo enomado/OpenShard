@@ -155,12 +155,16 @@ pub fn open(state: &mut WorldState, player: EntityId, context: CraftGumpContext)
             lines: lines.to_vec(),
         }),
     );
-    state.open_craft_gumps.insert(player, context);
+    if let Some(row) = state.row_of_mut(player) {
+        row.craft_gump = Some(context);
+    }
 }
 
 /// Shut the window and forget it.
 pub fn close(state: &mut WorldState, player: EntityId) {
-    state.open_craft_gumps.remove(&player);
+    if let Some(row) = state.row_of_mut(player) {
+        row.craft_gump = None;
+    }
     if let Some(&Client { connection, .. }) = state.registry.get::<Client>(player) {
         state.send_packet(
             connection,
@@ -519,7 +523,7 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
     let Some(&player) = state.players.get(&connection) else {
         return true;
     };
-    let Some(context) = state.open_craft_gumps.remove(&player) else {
+    let Some(context) = state.row_of_mut(player).and_then(|row| row.craft_gump.take()) else {
         return true;
     };
     let Some(def) = system(context.system) else {

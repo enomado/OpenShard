@@ -19,7 +19,7 @@ checks that they do.
 |---|---|---|
 | which socket, which client version | `Session::login` | `Client { version }` on the entity |
 | is it playing, and what | `Session::playing` | `WorldState::players` |
-| what it is dragging, watching, has open | — | `held`, `open_containers`, `open_quest_gumps`, `open_craft_gumps`, `pending_targets`, `last_status`, `last_light`, `last_music` |
+| what it is dragging, watching, has open | — | `held`, `open_containers`, `open_quest_gumps`, `open_craft_gumps`, `pending_targets`, `last_status`, `last_light`, `last_music` — the row's own fields since S7, bar `open_containers` |
 
 Five things follow from the split, and each is a reason on its own:
 
@@ -52,9 +52,10 @@ Five things follow from the split, and each is a reason on its own:
    state machine that can disagree with itself"* — which is what `playing` is.
 5. **Teardown is hand-written.** `World::disconnect` clears eight maps by name.
    The ninth one added without a line there leaks, and nothing catches it.
-   *(S7a: four of them already had. The connection-keyed state is fields on the
-   row now and goes with it; see the backlog for the two that stay indexes and
-   for S7b.)*
+   *(S7: four of them already had — the gump tables, each promising in its own
+   doc to be cleared on logout. All eight are fields on the connection's row now
+   and go with it; `open_containers` is the one exception and the backlog says
+   why.)*
 
 ## The shape this works toward
 
@@ -294,7 +295,7 @@ follows.
       bounded that by having no choice but to run one at a time; taking the
       serialisation away without putting a bound back would have been a new door.
 
-- [ ] **S7. The rest of the per-connection state joins the row.** In two parts,
+- [x] **S7. The rest of the per-connection state joins the row.** Done, in two parts,
       because the eight maps turned out to be two different problems wearing one
       name.
 
@@ -326,18 +327,31 @@ follows.
             by it without anybody remembering to extend it, which is the whole
             property the shape was changed for.
 
-      - [ ] **S7b. What is keyed by an entity.** `pending_targets`,
+      - [x] **S7b. What is keyed by an entity.** Done. `pending_targets`,
             `open_quest_gumps`, `open_craft_gumps`, `open_runebook_gumps` and
-            `open_gate_gumps` are keyed by the *player's entity*, so `disconnect`
-            cannot sweep them by connection — and four of the five it does not
-            sweep at all, though their own docs say "Cleared on logout". They are
-            client windows, not properties of a mobile: re-keying them by
-            connection puts them on the row and closes the leak in one move.
-            `Client { connection }` on the entity makes the lookup O(1), so the
-            cost is roughly twenty call sites across six crates, not a design
-            problem.
+            `open_gate_gumps` were keyed by the *player's entity*, so `disconnect`
+            could not sweep them by connection — and four of the five it did not
+            sweep at all, though each one's own doc said "Cleared on logout". They
+            are fields on the row now, reached through `WorldState::row_of` and
+            `row_of_mut`, which resolve the entity's `Client` component in one
+            lookup rather than walking `players`.
 
-## Backlog, found while doing S1 through S7a
+            The re-keying is not a convenience: every one of the six sites that
+            raises a targeting cursor already began by refusing to raise one
+            without a `Client` — "a creature has no cursor to raise" — so the
+            connection was what the state was about, and the entity key made the
+            invariant something to restate at each site instead of something the
+            type holds. `raise_target`/`take_target`/`has_target` are the seam,
+            and they are total: a mobile with no client gets no cursor and is
+            asked no questions.
+
+            Guarded by `a_targeting_cursor_belongs_to_the_screen_it_is_drawn_on`
+            in `world/src/tick/tests.rs` and by the disconnect half added to
+            `double_clicking_the_tongs_is_what_opens_the_window`. Both assert the
+            state is remembered *before* the logout as well as gone after it: a
+            leak test on a window nobody opened is green for the wrong reason.
+
+## Backlog, found while doing S1 through S7
 
 None is a blocker; each is written down where the next step through this area
 will read it.
@@ -509,6 +523,6 @@ will read it.
 
 ## Status
 
-S1 through S6 landed, and S7a with them; S7b is next. Findings are recorded in
+S1 through S7 have landed. Findings are recorded in
 [`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
 that must agree".

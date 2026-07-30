@@ -22,7 +22,9 @@ use openshard_protocol::identity::AccountName;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::world::{Light, MusicId};
 
-use crate::runtime::HeldItem;
+use openshard_entities::EntityId;
+
+use crate::runtime::{CraftGumpContext, HeldItem, QuestGumpContext, TargetPurpose};
 
 /// The derived half of a player's status bar, kept to compare against next time.
 ///
@@ -114,6 +116,33 @@ pub struct Connection {
     /// change it does not restart it. Re-sending `0x6D` with the same id starts
     /// the track over.
     pub last_music: Option<MusicId>,
+
+    /// The targeting cursor this client has up, and what the click is for.
+    ///
+    /// A `.tele` raises one, a skill raises one; the `0x6C` answer reads it to
+    /// know what to do with the spot. On the connection rather than the mobile
+    /// because a cursor is a thing on a screen — every site that raises one
+    /// already refused to do so without a `Client`, which is that invariant
+    /// written out longhand at six call sites instead of held by the type.
+    pub pending_target: Option<TargetPurpose>,
+    /// The quest dialog this client has open, and on which page.
+    ///
+    /// A gump exists only while somebody is looking at it, and a reply naming a
+    /// window this side never drew is a reply to nothing — which is the whole
+    /// reason the context is kept rather than trusted off the packet.
+    pub quest_gump: Option<QuestGumpContext>,
+    /// The craft window this client has open, on which category and material.
+    ///
+    /// Carries more weight than the quest log's: the selected category, the
+    /// chosen metal and the tool in hand all live here and never in the packet,
+    /// so a reply cannot name a material the player did not pick.
+    pub craft_gump: Option<CraftGumpContext>,
+    /// The runebook this client has open.
+    pub runebook_gump: Option<EntityId>,
+    /// The gate this client has a destination list open for. The `craft_gump`
+    /// shape, and for the same reason: the reply carries a button and a switch,
+    /// never *which* gate asked.
+    pub gate_gump: Option<EntityId>,
 }
 
 impl Connection {
@@ -128,6 +157,11 @@ impl Connection {
             last_status: None,
             last_light: None,
             last_music: None,
+            pending_target: None,
+            quest_gump: None,
+            craft_gump: None,
+            runebook_gump: None,
+            gate_gump: None,
         }
     }
 

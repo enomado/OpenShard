@@ -420,7 +420,9 @@ impl World {
                 lines: lines.to_vec(),
             }),
         );
-        self.state.open_runebook_gumps.insert(player, book);
+        if let Some(row) = self.state.row_of_mut(player) {
+            row.runebook_gump = Some(book);
+        }
     }
 
     /// Answer a runebook. Returns whether the reply was one of ours.
@@ -437,7 +439,11 @@ impl World {
         };
         // Taken, not borrowed: a reply for a window this side never drew finds
         // nothing and does nothing.
-        let Some(book) = self.state.open_runebook_gumps.remove(&player) else {
+        let Some(book) = self
+            .state
+            .row_of_mut(player)
+            .and_then(|row| row.runebook_gump.take())
+        else {
             return true;
         };
 

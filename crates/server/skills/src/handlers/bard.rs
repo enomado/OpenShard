@@ -264,7 +264,7 @@ pub(super) fn provoke_first(state: &mut WorldState, bard: EntityId, target: Enti
     }
     play(state, bard, item, true);
     state.localized_message(bard, ANGERED_WHOM, "");
-    state.pending_targets.insert(
+    state.raise_target(
         bard,
         TargetPurpose::SkillSecond {
             skill: Skill::Provocation.id(),

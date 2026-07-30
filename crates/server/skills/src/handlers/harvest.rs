@@ -129,9 +129,7 @@ pub fn use_tool(state: &mut WorldState, harvester: EntityId, tool: EntityId) -> 
     let Some(serial) = state.registry.serial_of(harvester) else {
         return true;
     };
-    state
-        .pending_targets
-        .insert(harvester, TargetPurpose::Harvest { tool });
+    state.raise_target(harvester, TargetPurpose::Harvest { tool });
     state.localized_message(harvester, DIG_WHERE, "");
     // The *location* cursor, not the object one: a mountain face and a patch of
     // water are not entities, and an object cursor would refuse the click.

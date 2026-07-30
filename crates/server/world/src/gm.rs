@@ -166,9 +166,7 @@ fn set_trap(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         }
     };
     let power: u16 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(30);
-    state
-        .pending_targets
-        .insert(actor, openshard_state::TargetPurpose::SetTrap { kind, power });
+    state.raise_target(actor, openshard_state::TargetPurpose::SetTrap { kind, power });
     if let Some((connection, serial)) = connection_and_serial(state, actor) {
         state.send_packet(
             connection,
@@ -309,7 +307,7 @@ fn teleport_cursor(state: &mut WorldState, actor: EntityId) {
     let serial = state.registry.serial_of(actor).map_or(0, |s| s.raw());
     // Remember this game master is targeting for a teleport, so the click knows
     // what it is for.
-    state.pending_targets.insert(actor, TargetPurpose::Teleport);
+    state.raise_target(actor, TargetPurpose::Teleport);
     state.send_packet(
         connection,
         &ServerPacket::TargetCursor(TargetCursor {

@@ -83,7 +83,7 @@ pub(super) fn chose_potion(state: &mut WorldState, actor: EntityId, potion: Enti
     let Some(serial) = state.registry.serial_of(actor) else {
         return;
     };
-    state.pending_targets.insert(
+    state.raise_target(
         actor,
         TargetPurpose::SkillSecond {
             skill: Skill::Poisoning.id(),

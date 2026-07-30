@@ -71,7 +71,7 @@ pub fn use_bandage(state: &mut WorldState, healer: EntityId, bandage: EntityId) 
     let Some((connection, serial)) = super::client_of(state, healer) else {
         return true;
     };
-    state.pending_targets.insert(
+    state.raise_target(
         healer,
         TargetPurpose::SkillSecond {
             skill: Skill::Healing.id(),
@@ -258,7 +258,7 @@ pub fn use_lockpick(state: &mut WorldState, picker: EntityId, pick: EntityId) ->
     let Some((connection, serial)) = super::client_of(state, picker) else {
         return true;
     };
-    state.pending_targets.insert(
+    state.raise_target(
         picker,
         TargetPurpose::SkillSecond {
             skill: Skill::Lockpicking.id(),

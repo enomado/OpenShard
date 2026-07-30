@@ -842,7 +842,7 @@ fn remove_trap_refuses_before_it_raises_a_cursor() {
     });
     world.tick(now);
     assert!(
-        !world.state.pending_targets.contains_key(&entity),
+        !world.state.has_target(entity),
         "no cursor for someone who knows nothing about locks"
     );
     assert!(clilocs(&mut world, player).contains(&502_366));
@@ -1044,7 +1044,7 @@ fn a_bard_with_no_instrument_gets_no_cursor() {
         skill: RawSkillId(Skill::Provocation.id()),
     });
     world.tick(now);
-    assert!(!world.state.pending_targets.contains_key(&entity));
+    assert!(!world.state.has_target(entity));
     assert!(clilocs(&mut world, bard).contains(&500_617));
 }
 
@@ -1141,7 +1141,7 @@ fn a_bandage_takes_time_and_then_mends() {
     });
     world.tick(now);
     assert!(
-        world.state.pending_targets.contains_key(&entity),
+        world.state.has_target(entity),
         "the bandage asks who it is for: {:?}",
         clilocs(&mut world, healer)
     );

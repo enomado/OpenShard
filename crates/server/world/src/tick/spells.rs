@@ -197,8 +197,7 @@ impl World {
                         TargetKind::Location
                     };
                     self.state
-                        .pending_targets
-                        .insert(caster, TargetPurpose::Spell { spell, success });
+                        .raise_target(caster, TargetPurpose::Spell { spell, success });
                     self.state.send_packet(
                         connection,
                         &ServerPacket::TargetCursor(TargetCursor {

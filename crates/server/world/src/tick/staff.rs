@@ -14,7 +14,7 @@ impl World {
         let Some(&actor) = self.state.players.get(&connection) else {
             return;
         };
-        let Some(purpose) = self.state.pending_targets.remove(&actor) else {
+        let Some(purpose) = self.state.take_target(actor) else {
             return; // no cursor was up for this mobile
         };
         if response.cancelled {

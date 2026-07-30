@@ -43,7 +43,7 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
     // The context is the server's memory of what it drew. A reply with none is a
     // reply to a window this side never opened — a stale click, or a crafted
     // packet — and does nothing.
-    let Some(context) = state.open_quest_gumps.remove(&player) else {
+    let Some(context) = state.row_of_mut(player).and_then(|row| row.quest_gump.take()) else {
         return true;
     };
     quest_reply(state, player, &context, response.button.interpret());
@@ -84,7 +84,9 @@ fn quest_reply(state: &mut WorldState, player: EntityId, context: &QuestGumpCont
             gump::show_resign(state, player, &context.quest);
             // Remembered so the confirmation's reply knows which quest it is
             // about: the resign dialog carries no quest of its own.
-            state.open_quest_gumps.insert(player, context.clone());
+            if let Some(row) = state.row_of_mut(player) {
+                row.quest_gump = Some(context.clone());
+            }
         }
         button::COMPLETE if !context.offer => {
             hand_in(state, player, context);
@@ -167,7 +169,7 @@ const fn page(from: QuestSection, forward: bool) -> QuestSection {
 
 /// The resign confirmation: only the "yes" radio actually gives the quest up.
 fn resign_reply(state: &mut WorldState, player: EntityId, response: &GumpResponse) {
-    let context = state.open_quest_gumps.remove(&player);
+    let context = state.row_of_mut(player).and_then(|row| row.quest_gump.take());
     let Some(context) = context else {
         return;
     };

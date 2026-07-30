@@ -328,9 +328,7 @@ pub(super) fn raise_cursor(state: &mut WorldState, actor: EntityId, id: u8, prom
     let Some(serial) = state.registry.serial_of(actor) else {
         return false;
     };
-    state
-        .pending_targets
-        .insert(actor, TargetPurpose::Skill { skill: id });
+    state.raise_target(actor, TargetPurpose::Skill { skill: id });
     state.localized_message(actor, prompt, "");
     send_object_cursor(state, connection, serial.raw());
     true

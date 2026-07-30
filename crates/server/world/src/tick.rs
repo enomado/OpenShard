@@ -255,13 +255,8 @@ impl World {
                 outbox: Vec::new(),
                 open_containers: HashMap::new(),
                 trades: Vec::new(),
-                pending_targets: HashMap::new(),
                 quests: openshard_state::QuestDefs::default(),
                 dialogue: openshard_state::Dialogue::default(),
-                open_quest_gumps: HashMap::new(),
-                open_craft_gumps: HashMap::new(),
-                open_gate_gumps: HashMap::new(),
-                open_runebook_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
             },
@@ -1400,8 +1395,6 @@ impl World {
         // horseback where every other emulator would have dropped them on foot.
         // The transient creature itself is despawned once the inventory has
         // captured the saddle that stands for it (below).
-        // Forget any targeting cursor it had up: a gone mobile clicks nothing.
-        self.state.pending_targets.remove(&entity);
         // End any trade it was in, *before* the record and inventory are read
         // below: cancelling puts both sides' offerings back in their own packs,
         // and a trade escrow is deliberately not saved, so an item still sitting

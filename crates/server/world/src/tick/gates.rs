@@ -397,7 +397,9 @@ impl World {
         );
         // Remembered so the reply can re-check the player is still beside the
         // gate it answered for, and so a `0xB1` this side never drew does nothing.
-        self.state.open_gate_gumps.insert(traveller, gate);
+        if let Some(row) = self.state.row_of_mut(traveller) {
+            row.gate_gump = Some(gate);
+        }
     }
 
     /// Answer a destination list. Returns whether the reply was one of ours.
@@ -410,7 +412,7 @@ impl World {
         };
         // Taken, not borrowed: a reply to a window this side never drew finds
         // nothing and does nothing.
-        let Some(gate) = self.state.open_gate_gumps.remove(&player) else {
+        let Some(gate) = self.state.row_of_mut(player).and_then(|row| row.gate_gump.take()) else {
             return true;
         };
         if response.button.interpret() != GumpAnswer::Pressed(MOONGATE_OK) {

@@ -6184,7 +6184,7 @@ fn anatomy_raises_a_cursor_and_reads_the_target() {
         .expect("a targeting cursor went up");
     assert_eq!(cursor[1], 0, "an object cursor: bare ground has no anatomy");
     assert!(
-        world.state.pending_targets.contains_key(&entity),
+        world.state.has_target(entity),
         "and the world remembers which skill asked"
     );
 
@@ -10832,6 +10832,40 @@ fn a_disconnect_takes_everything_the_connection_was_in_the_middle_of() {
     assert!(
         world.state.registry.has::<Position>(item),
         "and the item it was dragging is back on the ground"
+    );
+}
+
+#[test]
+fn a_targeting_cursor_belongs_to_the_screen_it_is_drawn_on() {
+    // It used to be keyed by the *mobile*, and `disconnect` swept it there by
+    // name — one line for one map, which is the shape S7 exists to delete. Every
+    // site that raises a cursor already refused to raise one for a mobile with no
+    // client ("a creature has no cursor to raise"), so the connection was always
+    // what it was really about; keying it by the entity only meant the invariant
+    // had to be restated at each of the six of them.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter_gm(&mut world, now);
+    let entity = world.state.players[&connection];
+
+    gm_say(&mut world, connection, ".tele", now);
+    assert!(
+        world.state.has_target(entity),
+        "the staff command put a cursor up"
+    );
+
+    world.queue(Command::Disconnect { connection });
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .connections
+            .values()
+            .filter(|row| row.pending_target.is_some())
+            .count(),
+        0,
+        "and it went with the screen it was drawn on"
     );
 }
 

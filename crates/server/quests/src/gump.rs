@@ -149,7 +149,9 @@ pub(crate) fn show(state: &mut WorldState, player: EntityId, context: QuestGumpC
     });
     state.send_packet(connection, &close);
     state.send_packet(connection, &packet);
-    state.open_quest_gumps.insert(player, context);
+    if let Some(row) = state.row_of_mut(player) {
+        row.quest_gump = Some(context);
+    }
 }
 
 /// Build the layout for one section.

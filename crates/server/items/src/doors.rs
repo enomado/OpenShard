@@ -55,9 +55,7 @@ pub fn use_key(state: &mut WorldState, connection: ConnectionId, player: EntityI
     if !state.registry.has::<KeyValue>(key) {
         return;
     }
-    state
-        .pending_targets
-        .insert(player, openshard_state::TargetPurpose::TurnKey { key });
+    state.raise_target(player, openshard_state::TargetPurpose::TurnKey { key });
     state.send_packet(
         connection,
         &ServerPacket::TargetCursor(TargetCursor {
