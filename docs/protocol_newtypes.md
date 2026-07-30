@@ -621,6 +621,27 @@ rather than two.
    *client-supplied* one, and its check — is there that much in the stack —
    exists today in `items::pick_up`.
 
+### Backlog from this stage
+
+- **The component sweep.** `Contained.{x, y, grid}`, `Container.gump` and
+  `components::Graphic.{id, hue}` are the bare integers directly under the
+  packets this stage typed, and each is one `Layer`-sized job: `grid` and `gump`
+  reach the persistence record and both stores' SQL, `Graphic` reaches most of
+  the server. Worth doing as its own stage after N8, with the cliloc and
+  `SoundId` table sweeps N3 left — they share the blocker, which is that the
+  numbers should arrive from config already typed.
+- **`GumpPoint` for N5.** Three modules now carry an `x`/`y` pair that is a
+  *gump* coordinate rather than a world one: `containers::ContainedItem`,
+  `gump::GumpDisplay`, and `Command::ShowGump`. N5 owns `gump.rs` and should
+  name the type; `containers.rs`'s two fields join it then and come off the
+  allowlist.
+- **`state::Graphic` and `wire::Graphic` collide by name**, so four files now
+  spell one of them out in full (`openshard_protocol::wire::Graphic(id)`) and
+  `runtime.rs` imports it `as WireGraphic`. Neither name is wrong — one is the
+  component an item is *drawn* by, the other the id on the wire — but three
+  spellings of the same conversion across the server is a smell. Renaming the
+  component (`Drawn`? `Art`?) is a `state` question, not a protocol one.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
