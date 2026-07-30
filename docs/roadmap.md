@@ -29,10 +29,16 @@ The codec deliberately has no dependencies — not even `bytes`. Keeping the
 foundation crates dependency-free is what lets them build in environments where
 crates.io is unreachable.
 
-### Backlog from the newtype sweep (`docs/protocol_newtypes.md`, stage N1)
+### Backlog from the newtype sweep (`docs/protocol_newtypes.md`) — sweep done
 
-Found while wrapping `world.rs`'s remaining bare integers. None of these blocks
-a stage; each is a seam the sweep made visible rather than one it created.
+Found while wrapping `world.rs`'s remaining bare integers, back when the sweep
+was only N1. The sweep itself (N-pilot through N8) is now complete: every
+bare-integer field in `crates/common/protocol`'s packet structs is either a
+named type or on the reasoned, machine-checked allowlist
+`crates/common/protocol/tests/bare_integer_fields.rs` enforces. What is left
+below is what the sweep found but could not fix, because the fix crosses out
+of `protocol` — into `state`, `config`, or the tick — which the sweep's own
+rule (`common/*` is below the server) puts out of its reach on purpose.
 
 - **Two types for one facet byte.** `openshard_state::components::Facet(pub u8)`
   and the wire's new `world::MapId(pub u8)` are the same number, converted at
@@ -55,10 +61,10 @@ a stage; each is a seam the sweep made visible rather than one it created.
   converted with `Season::from_bits` at world entry. Config validates the range
   at startup, so nothing is unchecked — but the enum now exists and the mirror
   does not have to stay a byte.
-- **`mobile::OpenPaperdoll::flags` is a bare `u8`** with two named constants
-  (`PAPERDOLL_WARMODE`, `PAPERDOLL_CAN_LIFT`) and no type holding them. Stage N2
-  owns `mobile.rs`; noted so it is not mistaken for done when `StatusFlags`
-  lands beside it.
+- ~~**`mobile::OpenPaperdoll::flags` is a bare `u8`**~~ Fixed in N2:
+  `PaperdollFlags` replaced the two loose `pub const u8`s
+  (`PAPERDOLL_WARMODE`, `PAPERDOLL_CAN_LIFT`) with a named `with`, on N10's
+  allowlist for nothing because there is no bare field left to allowlist.
 
 ### Login encryption is deliberately deferred
 
