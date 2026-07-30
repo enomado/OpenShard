@@ -509,3 +509,12 @@ Each stage ends with all four silent: `cargo check --workspace --all-targets`,
 | 5 | done | `0d39525` |
 | 6 | done | `ca20428` |
 | 7 | done | `5b74452` |
+
+## What this plan left for the next one
+
+[D6](#decisions) — newtypes on the wire — was scoped to "a newtype arrives with
+the packet that first needs it", which is why `Serial`, `Graphic`, `Hue`,
+`SoundId`, `CursorId` and `AuthKey` exist and 193 other packet fields are still
+bare integers. Finishing that, and adding the raw-versus-validated split those
+fields need to say whether anyone checked them, is
+[`protocol_newtypes.md`](protocol_newtypes.md).
