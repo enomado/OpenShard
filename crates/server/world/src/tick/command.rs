@@ -808,12 +808,12 @@ pub enum Command {
     ShowGump {
         /// Who sees it, by wire serial.
         serial: u32,
-        /// The gump id the reply is keyed on.
-        gump_id: u32,
-        /// Window x.
-        x: u16,
-        /// Window y.
-        y: u16,
+        /// The gump id the reply is keyed on. A [`GumpId`] and not a raw one:
+        /// the pack chose it, and the script bridge is where its JSON number
+        /// became a type — the same seam `Command::Speak` crosses.
+        gump_id: openshard_protocol::gump::GumpId,
+        /// Where the window opens on the screen.
+        at: openshard_protocol::gump::GumpPoint,
         /// The gump layout string.
         layout: String,
         /// The text lines the layout indexes into.
@@ -862,7 +862,7 @@ pub enum Command {
         /// Whose client, by wire serial.
         serial: u32,
         /// Which dialog, by the id it was opened under.
-        gump_id: u32,
+        gump_id: openshard_protocol::gump::GumpId,
     },
     /// Send a player a private system line. From a script.
     Message {

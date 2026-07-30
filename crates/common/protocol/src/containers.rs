@@ -17,6 +17,7 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::feature::Feature;
+use crate::gump::GumpPoint;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
@@ -112,10 +113,14 @@ pub struct ContainedItem {
     pub graphic: Graphic,
     /// Its stack size.
     pub amount: u16,
-    /// Its column in the container gump.
-    pub x: u16,
-    /// Its row in the container gump.
-    pub y: u16,
+    /// Where its icon sits inside the container's gump art.
+    ///
+    /// The pair N4 left on the allowlist for N5 to name: it is a gump
+    /// coordinate, not a world one, and [`GumpPoint`] is the type — measured
+    /// from the art's top left here, and from the screen's for a window. Two
+    /// bytes go out where a window's four do; the value is the server's, and a
+    /// container's art is a few hundred pixels wide.
+    pub at: GumpPoint,
     /// Its slot in the enhanced grid view. Sent only to grid clients.
     pub grid: GridSlot,
     /// Its hue.
@@ -129,8 +134,8 @@ impl ContainedItem {
         writer.u16(self.graphic.0);
         writer.u8(0); // graphic offset, always zero
         writer.u16(self.amount);
-        writer.u16(self.x);
-        writer.u16(self.y);
+        writer.u16(self.at.x as u16);
+        writer.u16(self.at.y as u16);
         if grid {
             writer.u8(self.grid.0);
         }
@@ -297,8 +302,7 @@ mod tests {
             serial: Serial::new(0x4000_0002).unwrap(),
             graphic: Graphic(0x0EED),
             amount: 3,
-            x: 44,
-            y: 65,
+            at: GumpPoint::new(44, 65),
             grid: GridSlot(7),
             hue: Hue::NONE,
         };
@@ -322,8 +326,7 @@ mod tests {
             serial: Serial::new(0x4000_0002).unwrap(),
             graphic: Graphic(0x0EED),
             amount: 3,
-            x: 44,
-            y: 65,
+            at: GumpPoint::new(44, 65),
             grid: GridSlot(7),
             hue: Hue::NONE,
         };
@@ -340,8 +343,7 @@ mod tests {
                 serial: Serial::new(0x4000_0002).unwrap(),
                 graphic: Graphic(0x0EED),
                 amount: 1,
-                x: 10,
-                y: 10,
+                at: GumpPoint::new(10, 10),
                 grid: GridSlot(0),
                 hue: Hue::NONE,
             },
@@ -349,8 +351,7 @@ mod tests {
                 serial: Serial::new(0x4000_0003).unwrap(),
                 graphic: Graphic(0x0F0E),
                 amount: 5,
-                x: 20,
-                y: 20,
+                at: GumpPoint::new(20, 20),
                 grid: GridSlot(1),
                 hue: Hue(0x21),
             },

@@ -7,17 +7,22 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::gump::GumpResponse;
+use openshard_protocol::gump::{ButtonId, GumpAnswer, GumpId, GumpResponse, RawGumpId};
 use openshard_state::components::QuestLog;
 use openshard_state::{QuestGumpContext, QuestSection, WorldState};
 
-use crate::gump::{self, QUEST_GUMP, QUEST_RESIGN_GUMP, RESIGN_OK, RESIGN_SWITCH_YES, button};
+use crate::gump::{
+    self, QUEST_GUMP, QUEST_RESIGN_GUMP, RESIGN_OK, RESIGN_SWITCH_YES, RESIGN_SWITCHES, button,
+};
 use crate::{offer, turnin};
+
+/// The two windows the quest system draws, and the only ids it answers for.
+const QUEST_GUMPS: [GumpId; 2] = [QUEST_GUMP, QUEST_RESIGN_GUMP];
 
 /// Whether a gump id belongs to the quest system.
 #[must_use]
-pub const fn owns(gump_id: u32) -> bool {
-    gump_id == QUEST_GUMP || gump_id == QUEST_RESIGN_GUMP
+pub fn owns(gump_id: RawGumpId) -> bool {
+    gump_id.validate(&QUEST_GUMPS).is_some()
 }
 
 /// Act on a quest dialog's reply.
@@ -25,13 +30,13 @@ pub const fn owns(gump_id: u32) -> bool {
 /// Returns whether the reply was one of ours, so the router can fall through to
 /// the pack for anything else.
 pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpResponse) -> bool {
-    if !owns(response.gump_id) {
+    let Some(gump) = response.gump_id.validate(&QUEST_GUMPS) else {
         return false;
-    }
+    };
     let Some(&player) = state.players.get(&connection) else {
         return true;
     };
-    if response.gump_id == QUEST_RESIGN_GUMP {
+    if gump == QUEST_RESIGN_GUMP {
         resign_reply(state, player, response);
         return true;
     }
@@ -41,12 +46,18 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
     let Some(context) = state.open_quest_gumps.remove(&player) else {
         return true;
     };
-    quest_reply(state, player, &context, response.button);
+    quest_reply(state, player, &context, response.button.interpret());
     true
 }
 
 /// The main window's buttons.
-fn quest_reply(state: &mut WorldState, player: EntityId, context: &QuestGumpContext, pressed: u32) {
+fn quest_reply(state: &mut WorldState, player: EntityId, context: &QuestGumpContext, answer: GumpAnswer) {
+    // The `X` this layout draws carries the close box's own id, so dismissing
+    // the window and pressing it are the same answer by construction — see
+    // `button::CLOSE`.
+    let GumpAnswer::Pressed(pressed) = answer else {
+        return;
+    };
     match pressed {
         button::CLOSE => {}
         button::CLOSE_QUEST => {
@@ -124,8 +135,8 @@ fn hand_in(state: &mut WorldState, player: EntityId, context: &QuestGumpContext)
 }
 
 /// A row in the quest log: open that quest's detail page.
-fn open_row(state: &mut WorldState, player: EntityId, pressed: u32) {
-    let Some(index) = pressed.checked_sub(gump::ROW_OFFSET) else {
+fn open_row(state: &mut WorldState, player: EntityId, pressed: ButtonId) {
+    let Some(index) = gump::row_of(pressed) else {
         return;
     };
     let Some(entry) = state
@@ -160,10 +171,17 @@ fn resign_reply(state: &mut WorldState, player: EntityId, response: &GumpRespons
     let Some(context) = context else {
         return;
     };
-    if response.button != RESIGN_OK {
+    if response.button.interpret() != GumpAnswer::Pressed(RESIGN_OK) {
         return; // dismissed
     }
-    if response.switches.contains(&RESIGN_SWITCH_YES) {
+    // The choice rides in the switch, so it is checked like one: an id past the
+    // pair this dialog drew is not "no", it is nothing at all.
+    let yes = response
+        .switches
+        .iter()
+        .filter_map(|switch| switch.validate(RESIGN_SWITCHES).ok())
+        .any(|switch| switch == RESIGN_SWITCH_YES);
+    if yes {
         offer::resign(state, player, &context.quest);
     } else {
         // Kept: back to the quest's page, where it was.

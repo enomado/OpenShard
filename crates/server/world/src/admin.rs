@@ -11,22 +11,24 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::gump::{GumpDisplay, GumpResponse};
+use openshard_protocol::gump::{ButtonId, GumpAnswer, GumpDisplay, GumpId, GumpKey, GumpPoint, GumpResponse};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::WorldState;
 use openshard_state::components::Client;
 
 /// The id the admin gump answers under. High byte `0xAD` for "admin", so a stray
 /// `0xB1` for some other dialog never lands in the admin handler by accident.
-pub const ADMIN_GUMP: u32 = 0x00AD_0001;
+pub const ADMIN_GUMP: GumpId = GumpId(0x00AD_0001);
 
-/// Button ids the layout gives its reply buttons. `0` is the client's close box.
-const BTN_POPULATE_FELUCCA: u32 = 13;
-const BTN_DECORATE_FELUCCA: u32 = 22;
-const BTN_REGIONS_FELUCCA: u32 = 31;
-const BTN_CLEAR: u32 = 12;
-const BTN_CLEAR_DECO: u32 = 21;
-const BTN_CLEAR_REGIONS: u32 = 30;
+/// Button ids the layout gives its reply buttons. `0` is the client's close box
+/// ([`ButtonId::CLOSE_BOX`]), which this menu never offers as a button of its
+/// own.
+const BTN_POPULATE_FELUCCA: ButtonId = ButtonId(13);
+const BTN_DECORATE_FELUCCA: ButtonId = ButtonId(22);
+const BTN_REGIONS_FELUCCA: ButtonId = ButtonId(31);
+const BTN_CLEAR: ButtonId = ButtonId(12);
+const BTN_CLEAR_DECO: ButtonId = ButtonId(21);
+const BTN_CLEAR_REGIONS: ButtonId = ButtonId(30);
 
 /// Open the admin menu for `actor`. The caller has already checked the authority
 /// (the `.admin` command is game-master-gated), so this only draws.
@@ -54,15 +56,18 @@ pub fn open_menu(state: &mut WorldState, actor: EntityId) {
         "Clear deco".to_owned(),
         "Clear regions".to_owned(),
     ];
-    // The context serial is the game master's own — a non-zero value the client
-    // keys the open gump on and echoes back. A zero here can leave some clients
-    // with no gump to answer for, so no `0xB1` ever comes.
-    let serial = state.registry.serial_of(actor).map_or(0, |s| s.raw());
+    // The key is the game master's own serial — a non-zero value the client
+    // keys the open gump on and echoes back. `GumpKey::STANDALONE` can leave
+    // some clients with no gump to answer for, so no `0xB1` ever comes; a
+    // player always has a serial, so this falls back only in principle.
+    let serial = state
+        .registry
+        .serial_of(actor)
+        .map_or(GumpKey::STANDALONE, GumpKey::on);
     let packet = ServerPacket::GumpDisplay(GumpDisplay {
         serial,
         gump_id: ADMIN_GUMP,
-        x: 100,
-        y: 100,
+        at: GumpPoint::new(100, 100),
         layout: layout.to_owned(),
         lines: lines.to_vec(),
     });
@@ -82,9 +87,7 @@ pub fn button_action(
     connection: ConnectionId,
     response: &GumpResponse,
 ) -> Option<(EntityId, &'static str)> {
-    if response.gump_id != ADMIN_GUMP {
-        return None;
-    }
+    response.gump_id.validate(&[ADMIN_GUMP])?;
     let &actor = state.players.get(&connection)?;
     // Re-checked on the button, not only on open — and on the account's
     // authority, the same gate the `.` commands use, so a game master testing
@@ -93,14 +96,17 @@ pub fn button_action(
         return None;
     }
 
-    let verb = match response.button {
+    let GumpAnswer::Pressed(button) = response.button.interpret() else {
+        return None; // the close box
+    };
+    let verb = match button {
         BTN_POPULATE_FELUCCA => "populate:felucca",
         BTN_DECORATE_FELUCCA => "decorate:felucca",
         BTN_REGIONS_FELUCCA => "regions:felucca",
         BTN_CLEAR => "clear",
         BTN_CLEAR_DECO => "clear:deco",
         BTN_CLEAR_REGIONS => "clear:regions",
-        _ => return None, // the close box, or a button we do not know
+        _ => return None, // a button this layout never drew
     };
     Some((actor, verb))
 }

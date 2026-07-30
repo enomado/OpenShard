@@ -164,10 +164,10 @@ fn craft(
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial,
-            gump_id: openshard_crafting::CRAFT_GUMP,
+            serial: openshard_protocol::gump::RawGumpKey(serial),
+            gump_id: openshard_protocol::gump::RawGumpId(openshard_crafting::CRAFT_GUMP.0),
             // ServUO's `1 + kind + index * 7`, kind 1 being "make".
-            button: 1 + 1 + u32::try_from(row).unwrap() * 7,
+            button: openshard_protocol::gump::RawButtonId(1 + 1 + u32::try_from(row).unwrap() * 7),
             switches: Vec::new(),
             text_entries: Vec::new(),
         },
@@ -510,9 +510,9 @@ fn a_gump_reply_for_a_window_the_server_never_opened_makes_nothing() {
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial,
-            gump_id: openshard_crafting::CRAFT_GUMP,
-            button: 2, // "make", row 0
+            serial: openshard_protocol::gump::RawGumpKey(serial),
+            gump_id: openshard_protocol::gump::RawGumpId(openshard_crafting::CRAFT_GUMP.0),
+            button: openshard_protocol::gump::RawButtonId(2), // "make", row 0
             switches: Vec::new(),
             text_entries: Vec::new(),
         },

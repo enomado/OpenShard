@@ -6862,9 +6862,9 @@ fn admin_response(connection: ConnectionId, button: u32) -> Command {
     Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: 0,
-            gump_id: crate::admin::ADMIN_GUMP,
-            button,
+            serial: openshard_protocol::gump::RawGumpKey(0),
+            gump_id: openshard_protocol::gump::RawGumpId(crate::admin::ADMIN_GUMP.0),
+            button: openshard_protocol::gump::RawButtonId(button),
             switches: Vec::new(),
             text_entries: Vec::new(),
         },
@@ -12310,9 +12310,9 @@ fn a_non_admin_gump_reply_reaches_the_pack_as_gump_answered() {
     world.queue(Command::GumpResponse {
         connection: conn,
         response: WireGumpResponse {
-            serial: serial.raw(),
-            gump_id: 0x1234_5678,
-            button: 2,
+            serial: openshard_protocol::gump::RawGumpKey(serial.raw()),
+            gump_id: openshard_protocol::gump::RawGumpId(0x1234_5678),
+            button: openshard_protocol::gump::RawButtonId(2),
             switches: vec![],
             text_entries: vec![],
         },
@@ -12321,7 +12321,10 @@ fn a_non_admin_gump_reply_reaches_the_pack_as_gump_answered() {
 
     let events: Vec<GumpAnswered> = world.bus().read(&mut answered).cloned().collect();
     assert_eq!(events.len(), 1, "the pack heard the reply");
-    assert_eq!(events[0].gump_id, 0x1234_5678);
-    assert_eq!(events[0].button, 2);
+    assert_eq!(
+        events[0].gump_id,
+        openshard_protocol::gump::RawGumpId(0x1234_5678)
+    );
+    assert_eq!(events[0].button, openshard_protocol::gump::RawButtonId(2));
     assert_eq!(events[0].serial, serial);
 }

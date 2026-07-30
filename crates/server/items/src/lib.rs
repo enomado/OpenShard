@@ -15,6 +15,7 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::containers::{
     BOOK_GUMP, ContainedItem, ContainerContents, GridSlot, encode_add_to_container, encode_open_container,
 };
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::items::{DROP_TO_GROUND, DragCancel, DragCancelReason, EquipUpdate};
 use openshard_protocol::mobile::{OpenPaperdoll, PaperdollFlags, Remove};
 use openshard_protocol::serial::{RawSerial, Serial, SerialKind};

@@ -158,7 +158,7 @@ impl World {
         // that opened it (a notice board, a shard's custom menu). Forward it as a
         // `GumpAnswered` rather than dropping it, then stop — only the admin gump
         // runs the staff path below.
-        if response.gump_id != crate::admin::ADMIN_GUMP {
+        if response.gump_id.validate(&[crate::admin::ADMIN_GUMP]).is_none() {
             if let Some(&actor) = self.state.players.get(&connection) {
                 if let Some(serial) = self.state.registry.serial_of(actor) {
                     self.state.bus.send(crate::events::GumpAnswered {

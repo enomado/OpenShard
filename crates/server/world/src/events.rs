@@ -12,6 +12,7 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::direction::Facing;
+use openshard_protocol::gump::{RawButtonId, RawGumpId, RawSwitchId};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
 
@@ -228,12 +229,19 @@ pub struct AdminMenuAction {
 pub struct GumpAnswered {
     /// Who answered, by wire identity.
     pub serial: Serial,
-    /// Which dialog — the `gump_id` the pack sent.
-    pub gump_id: u32,
-    /// The button pressed; `0` is the close box (dismissed without a choice).
-    pub button: u32,
+    /// Which dialog — the `gump_id` the pack sent, exactly as the client
+    /// echoed it.
+    ///
+    /// The raw types travel all the way out to the pack on purpose: the engine
+    /// drew none of these windows, so it is in no position to say which ids
+    /// were offered. The pack knows, and the script bridge is where a raw id
+    /// becomes a JSON number — the same serialization seam `Command::Speak`
+    /// crosses in N3.
+    pub gump_id: RawGumpId,
+    /// The button pressed, or the close box.
+    pub button: RawButtonId,
     /// The switch (checkbox/radio) ids left on.
-    pub switches: Vec<u32>,
+    pub switches: Vec<RawSwitchId>,
     /// Any text fields, as `(field id, contents)`.
     pub text_entries: Vec<(u16, String)>,
 }

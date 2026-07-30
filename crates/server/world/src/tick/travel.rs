@@ -11,7 +11,10 @@
 //! handful of things ServUO checks at the moment of arrival.
 
 use super::*;
-use openshard_protocol::gump::{CloseGump, GUMP_WHITE, GumpButton, GumpDisplay, GumpLayout};
+use openshard_protocol::gump::{
+    ButtonId, CloseGump, GUMP_WHITE, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout,
+    GumpPoint,
+};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::{
     Combat, Contained, CriminalUntil, Equipped, Position, RECALL_RUNE_GRAPHIC, RuneMark, Runebook,
@@ -277,7 +280,7 @@ const RECALL_SOUND: u16 = 0x01FC;
 /// The gump id the runebook is drawn under — its own, distinct from the quest
 /// log's `0x0051_*`, the craft window's `0x0052_0001` and the moongate list's
 /// `0x0053_0002`.
-pub(super) const RUNEBOOK_GUMP: u32 = 0x0053_0001;
+pub(super) const RUNEBOOK_GUMP: GumpId = GumpId(0x0053_0001);
 
 /// ServUO's `RunebookGump` button ids, kept verbatim.
 ///
@@ -292,6 +295,17 @@ const BOOK_RECALL: u32 = 50;
 const BOOK_GATE: u32 = 100;
 const BOOK_DROP: u32 = 200;
 const BOOK_DEFAULT: u32 = 300;
+
+/// The button id a book row takes: its action's base plus the row.
+///
+/// The bases are an *encoding* and not ids of their own — no single button is
+/// `BOOK_RECALL` — so they stay bare numbers and this is where the two become
+/// a [`ButtonId`]. The inverse is the range ladder in `handle_runebook_gump`,
+/// which has to read highest-first or `BOOK_USE_CHARGE + 40` decodes as a
+/// Recall.
+const fn book_button(base: u32, slot: u32) -> ButtonId {
+    ButtonId(base + slot)
+}
 
 /// Recall's spell id, for the mana and reagents a book's paid buttons spend.
 const RECALL_SPELL: u16 = 31;
@@ -373,12 +387,13 @@ impl World {
                 0x00FB,
                 GumpButton::Reply,
                 0,
-                BOOK_USE_CHARGE + slot,
+                book_button(BOOK_USE_CHARGE, slot),
             );
-            layout.button(280, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_RECALL + slot);
-            layout.button(310, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_GATE + slot);
-            layout.button(340, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_DEFAULT + slot);
-            layout.button(370, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, BOOK_DROP + slot);
+            let row = |base| book_button(base, slot);
+            layout.button(280, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, row(BOOK_RECALL));
+            layout.button(310, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, row(BOOK_GATE));
+            layout.button(340, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, row(BOOK_DEFAULT));
+            layout.button(370, y, 0x00FA, 0x00FB, GumpButton::Reply, 0, row(BOOK_DROP));
         }
         layout.label(250, 30, GUMP_WHITE, "use  rec  gate  def  drop");
 
@@ -388,16 +403,19 @@ impl World {
             connection,
             &ServerPacket::CloseGump(CloseGump {
                 gump_id: RUNEBOOK_GUMP,
-                button: 0,
+                button: ButtonId::CLOSE_BOX,
             }),
         );
         self.state.send_packet(
             connection,
             &ServerPacket::GumpDisplay(GumpDisplay {
-                serial: self.state.registry.serial_of(player).map_or(0, |s| s.raw()),
+                serial: self
+                    .state
+                    .registry
+                    .serial_of(player)
+                    .map_or(GumpKey::STANDALONE, GumpKey::on),
                 gump_id: RUNEBOOK_GUMP,
-                x: 60,
-                y: 60,
+                at: GumpPoint::new(60, 60),
                 layout: text.to_owned(),
                 lines: lines.to_vec(),
             }),
@@ -411,7 +429,7 @@ impl World {
         connection: ConnectionId,
         response: &openshard_protocol::gump::GumpResponse,
     ) -> bool {
-        if response.gump_id != RUNEBOOK_GUMP {
+        if response.gump_id.validate(&[RUNEBOOK_GUMP]).is_none() {
             return false;
         }
         let Some(&player) = self.state.players.get(&connection) else {
@@ -422,9 +440,7 @@ impl World {
         let Some(book) = self.state.open_runebook_gumps.remove(&player) else {
             return true;
         };
-        if response.button == 0 {
-            return true; // the close box
-        }
+
         // Reach is re-checked here and not only at the open: a window sits on
         // screen while its owner walks away.
         if !openshard_items::in_reach(&self.state, book, player) {
@@ -432,7 +448,10 @@ impl World {
             return true;
         }
 
-        let button = response.button;
+        let GumpAnswer::Pressed(pressed) = response.button.interpret() else {
+            return true; // the close box
+        };
+        let button = pressed.0;
         // Highest range first, or `BOOK_USE_CHARGE + 40` would read as a Recall.
         let (base, slot) = if button >= BOOK_DEFAULT {
             (BOOK_DEFAULT, button - BOOK_DEFAULT)

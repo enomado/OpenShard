@@ -247,11 +247,14 @@ impl Scripts {
                 });
             }
             for e in bus.read(&mut self.gump) {
+                // The script bridge is a serialization seam, so this is where
+                // the pack's own ids stop being types and become JSON numbers —
+                // the same unwrapping a SQL bind or the wire itself does.
                 events.push(ScriptEvent::GumpAnswered {
                     serial: e.serial.raw(),
-                    gump_id: e.gump_id,
-                    button: e.button,
-                    switches: e.switches.clone(),
+                    gump_id: e.gump_id.0,
+                    button: e.button.0,
+                    switches: e.switches.iter().map(|switch| switch.0).collect(),
                     text: e.text_entries.clone(),
                 });
             }
@@ -646,9 +649,8 @@ fn into_world(command: ScriptCommand) -> Command {
             lines,
         } => Command::ShowGump {
             serial,
-            gump_id,
-            x,
-            y,
+            gump_id: openshard_protocol::gump::GumpId(gump_id),
+            at: openshard_protocol::gump::GumpPoint::new(i32::from(x), i32::from(y)),
             layout,
             lines,
         },
@@ -668,7 +670,10 @@ fn into_world(command: ScriptCommand) -> Command {
         ScriptCommand::MakeEscortable { serial, destination } => {
             Command::MakeEscortable { serial, destination }
         }
-        ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump { serial, gump_id },
+        ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump {
+            serial,
+            gump_id: openshard_protocol::gump::GumpId(gump_id),
+        },
         ScriptCommand::Message { serial, text } => Command::Message { serial, text },
         ScriptCommand::PlaySound { serial, sound } => Command::PlaySound { serial, sound },
         ScriptCommand::GiveItem {

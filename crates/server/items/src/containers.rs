@@ -641,14 +641,17 @@ pub(crate) fn tell_watchers_updated_except(
 pub fn contained_record(state: &WorldState, entity: EntityId) -> Option<ContainedItem> {
     let serial = state.registry.serial_of(entity)?;
     let Contained { x, y, grid, .. } = *state.registry.get::<Contained>(entity)?;
+    // The component still keeps the two halves apart — `Contained.{x, y}` is
+    // the component sweep's job, not this one — so the pair is made here, at
+    // the one place the record is built.
+    let at = GumpPoint::new(i32::from(x), i32::from(y));
     let Graphic { id, hue } = *state.registry.get::<Graphic>(entity)?;
     let amount = state.registry.get::<Amount>(entity).map_or(1, |a| a.0);
     Some(ContainedItem {
         serial,
         graphic: openshard_protocol::wire::Graphic(id),
         amount,
-        x,
-        y,
+        at,
         grid: GridSlot(grid),
         hue: Hue(hue),
     })

@@ -20,7 +20,10 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::gump::{CloseGump, GumpButton, GumpDisplay, GumpLayout, GumpResponse};
+use openshard_protocol::gump::{
+    ButtonId, CloseGump, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint,
+    GumpResponse, RawGumpId,
+};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::Client;
 use openshard_state::{CraftGumpContext, CraftGumpPage, WorldState};
@@ -33,7 +36,7 @@ use crate::system::{CraftSystemDef, Text};
 
 /// The window's own id. Distinct from the quest log's, so the two claims of a
 /// `0xB1` cannot be confused.
-pub const CRAFT_GUMP: u32 = 0x0052_0001;
+pub const CRAFT_GUMP: GumpId = GumpId(0x0052_0001);
 
 /// Where the window sits, ServUO's `base(40, 40)`.
 const WINDOW_X: i32 = 40;
@@ -77,30 +80,36 @@ mod misc {
 
 /// The detail page's buttons, which are plain small numbers rather than encoded.
 mod detail {
-    /// Back to the list.
-    pub const BACK: u32 = 0;
+    use openshard_protocol::gump::ButtonId;
+
+    /// Back to the list. ServUO's `CraftGumpItem` gives this button the close
+    /// box's own id, so dismissing the detail page and pressing Back are one
+    /// answer and cannot be told apart — see the reply, which keeps that.
+    pub const BACK: ButtonId = ButtonId::CLOSE_BOX;
     /// Make it.
-    pub const MAKE: u32 = 1;
+    pub const MAKE: ButtonId = ButtonId(1);
 }
 
 /// Whether a gump id is this window's.
 #[must_use]
-pub const fn owns(gump_id: u32) -> bool {
-    gump_id == CRAFT_GUMP
+pub fn owns(gump_id: RawGumpId) -> bool {
+    gump_id.validate(&[CRAFT_GUMP]).is_some()
 }
 
 /// ServUO's `GetButtonID`.
-const fn button_id(kind: u32, index: u32) -> u32 {
-    1 + kind + index * kind::COUNT
+const fn button_id(kind: u32, index: u32) -> ButtonId {
+    ButtonId(1 + kind + index * kind::COUNT)
 }
 
-/// And its inverse.
-const fn decode_button(id: u32) -> Option<(u32, u32)> {
-    if id == 0 {
-        return None;
-    }
-    let id = id - 1;
-    Some((id % kind::COUNT, id / kind::COUNT))
+/// And its inverse: which kind of button, and which row of it.
+///
+/// Total on a [`ButtonId`], where it used to have to answer `None` for `0` as
+/// well: the close box is no longer a button id at all — `RawButtonId::
+/// interpret` takes it apart one step earlier — so the `id == 0` guard this
+/// function opened with is gone.
+const fn decode_button(button: ButtonId) -> (u32, u32) {
+    let id = button.0 - 1;
+    (id % kind::COUNT, id / kind::COUNT)
 }
 
 /// Draw the craft window for a player, and remember what they are looking at.
@@ -132,16 +141,15 @@ pub fn open(state: &mut WorldState, player: EntityId, context: CraftGumpContext)
         connection,
         &ServerPacket::CloseGump(CloseGump {
             gump_id: CRAFT_GUMP,
-            button: 0,
+            button: ButtonId::CLOSE_BOX,
         }),
     );
     state.send_packet(
         connection,
         &ServerPacket::GumpDisplay(GumpDisplay {
-            serial: serial.raw(),
+            serial: GumpKey::on(serial),
             gump_id: CRAFT_GUMP,
-            x: WINDOW_X,
-            y: WINDOW_Y,
+            at: GumpPoint::new(WINDOW_X, WINDOW_Y),
             layout: string.to_owned(),
             lines: lines.to_vec(),
         }),
@@ -157,7 +165,7 @@ pub fn close(state: &mut WorldState, player: EntityId) {
             connection,
             &ServerPacket::CloseGump(CloseGump {
                 gump_id: CRAFT_GUMP,
-                button: 0,
+                button: ButtonId::CLOSE_BOX,
             }),
         );
     }
@@ -200,7 +208,7 @@ fn main(
     layout.html_localized_colored(215, 37, 305, 22, 1_044_011, LABEL, false, false); // SELECTIONS
     layout.html_localized_colored(10, 302, 150, 25, 1_044_012, LABEL, false, false); // NOTICES
 
-    layout.button(15, 442, 4017, 4019, GumpButton::Reply, 0, 0);
+    layout.button(15, 442, 4017, 4019, GumpButton::Reply, 0, ButtonId::CLOSE_BOX);
     layout.html_localized_colored(50, 445, 150, 18, 1_011_441, LABEL, false, false); // EXIT
 
     layout.button(
@@ -311,13 +319,13 @@ fn items(layout: &mut GumpLayout, def: &CraftSystemDef, group: u16) {
         let page = u32::try_from(i / PER_PAGE).unwrap_or(0) + 1;
         if row == 0 {
             if i > 0 {
-                layout.button(370, 260, 4005, 4007, GumpButton::Page, page, 0);
+                layout.button(370, 260, 4005, 4007, GumpButton::Page, page, ButtonId::UNUSED);
                 layout.html_localized_colored(405, 263, 100, 18, 1_044_045, LABEL, false, false);
                 // NEXT PAGE
             }
             layout.page(page);
             if i > 0 {
-                layout.button(220, 260, 4014, 4015, GumpButton::Page, page - 1, 0);
+                layout.button(220, 260, 4014, 4015, GumpButton::Page, page - 1, ButtonId::UNUSED);
                 layout.html_localized_colored(255, 263, 100, 18, 1_044_044, LABEL, false, false);
                 // PREV PAGE
             }
@@ -354,11 +362,11 @@ fn resources(layout: &mut GumpLayout, state: &WorldState, player: EntityId, def:
         let page = u32::try_from(i / PER_PAGE).unwrap_or(0) + 1;
         if row == 0 {
             if i > 0 {
-                layout.button(485, 290, 4005, 4007, GumpButton::Page, page, 0);
+                layout.button(485, 290, 4005, 4007, GumpButton::Page, page, ButtonId::UNUSED);
             }
             layout.page(page);
             if i > 0 {
-                layout.button(455, 290, 4014, 4015, GumpButton::Page, page - 1, 0);
+                layout.button(455, 290, 4014, 4015, GumpButton::Page, page - 1, ButtonId::UNUSED);
             }
         }
         let y = 60 + i32::try_from(row).unwrap_or(0) * 20;
@@ -506,6 +514,7 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
     if !owns(response.gump_id) {
         return false;
     }
+    let answer = response.button.interpret();
     let Some(&player) = state.players.get(&connection) else {
         return true;
     };
@@ -519,23 +528,26 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
     // The detail page's buttons are plain small numbers, not encoded ones, so it
     // is dispatched on its own before the list's decode.
     if let CraftGumpPage::Details(recipe) = context.page {
-        match response.button {
-            detail::MAKE => {
+        match answer {
+            GumpAnswer::Pressed(detail::MAKE) => {
                 make(state, player, context, recipe);
             }
-            detail::BACK => {
+            // `detail::BACK` *is* the close box (see the constant), so this arm
+            // is both, exactly as ServUO's `OnResponse` reads it.
+            GumpAnswer::Closed => {
                 let mut back = context;
                 back.page = CraftGumpPage::Items;
                 open(state, player, back);
             }
-            _ => {}
+            GumpAnswer::Pressed(_) => {}
         }
         return true;
     }
 
-    let Some((kind, index)) = decode_button(response.button) else {
-        return true; // EXIT, or the close box
+    let GumpAnswer::Pressed(pressed) = answer else {
+        return true; // EXIT, or the close box — the same id on this page
     };
+    let (kind, index) = decode_button(pressed);
     match kind {
         kind::GROUP => {
             let mut next = context;
@@ -630,17 +642,22 @@ mod tests {
         for kind in 0..kind::COUNT {
             for index in 0..50 {
                 let id = button_id(kind, index);
-                assert_eq!(decode_button(id), Some((kind, index)));
+                assert_eq!(decode_button(id), (kind, index));
             }
         }
     }
 
     #[test]
-    fn the_exit_button_decodes_to_nothing() {
+    fn the_exit_button_is_not_a_button_id_at_all() {
         // Button 0 is EXIT and the window's close box alike, and it must never
-        // read as a category — index 0 of kind 0 is button *1*.
-        assert_eq!(decode_button(0), None);
-        assert_eq!(decode_button(button_id(kind::GROUP, 0)), Some((0, 0)));
+        // read as a category — index 0 of kind 0 is button *1*. The guard that
+        // used to live in `decode_button` is now one step earlier and applies
+        // to every window: `RawButtonId::interpret`.
+        assert_eq!(
+            openshard_protocol::gump::RawButtonId(0).interpret(),
+            GumpAnswer::Closed
+        );
+        assert_eq!(decode_button(button_id(kind::GROUP, 0)), (0, 0));
     }
 
     #[test]

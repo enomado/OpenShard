@@ -37,7 +37,7 @@ use openshard_persistence::{
 };
 use openshard_protocol::containers::UseRequest;
 use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
-use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
+use openshard_protocol::gump::{ButtonId, CloseGump, GumpDisplay, GumpId, GumpKey, GumpPoint, GumpResponse};
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{AOS_FEATURE_FLAGS, encode_supported_features};
 use openshard_protocol::mobile::{MobileStatus, Notoriety, Stat, StatLockBits, StatusFlags, Vitals};
@@ -1054,11 +1054,10 @@ impl World {
             Command::ShowGump {
                 serial,
                 gump_id,
-                x,
-                y,
+                at,
                 layout,
                 lines,
-            } => self.show_gump(serial, gump_id, x, y, &layout, &lines),
+            } => self.show_gump(serial, gump_id, at, &layout, &lines),
             Command::RegisterNpcSpeech {
                 trades,
                 male_names,
@@ -1272,18 +1271,20 @@ impl World {
     /// Send a pack-built gump to a mobile's client — the pack-facing counterpart
     /// of the admin menu's own `GumpDisplay`. Silent if the serial names
     /// no mobile, or it has no client to draw on.
-    fn show_gump(&mut self, serial: u32, gump_id: u32, x: u16, y: u16, layout: &str, lines: &[String]) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    fn show_gump(&mut self, serial: u32, gump_id: GumpId, at: GumpPoint, layout: &str, lines: &[String]) {
+        let Some(object) = Serial::new(serial) else {
+            return;
+        };
+        let Some(entity) = self.state.registry.entity_of(object) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
         let packet = ServerPacket::GumpDisplay(GumpDisplay {
-            serial,
+            serial: GumpKey::on(object),
             gump_id,
-            x: i32::from(x),
-            y: i32::from(y),
+            at,
             layout: layout.to_owned(),
             lines: lines.to_vec(),
         });
@@ -1292,14 +1293,17 @@ impl World {
 
     /// Close an open dialog on a player's client. Silent if the serial names no
     /// mobile, or it has no client to close anything on.
-    fn close_gump(&mut self, serial: u32, gump_id: u32) {
+    fn close_gump(&mut self, serial: u32, gump_id: GumpId) {
         let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
-        let packet = ServerPacket::CloseGump(CloseGump { gump_id, button: 0 });
+        let packet = ServerPacket::CloseGump(CloseGump {
+            gump_id,
+            button: ButtonId::CLOSE_BOX,
+        });
         self.state.send_packet(connection, &packet);
     }
 

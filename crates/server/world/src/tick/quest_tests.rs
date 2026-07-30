@@ -88,19 +88,33 @@ fn log_of(world: &World, connection: ConnectionId) -> QuestLog {
 }
 
 /// Answer the open quest gump with a button.
-fn press(world: &mut World, connection: ConnectionId, gump_id: u32, button: u32) {
+fn press(
+    world: &mut World,
+    connection: ConnectionId,
+    gump_id: openshard_protocol::gump::GumpId,
+    button: u32,
+) {
     press_with(world, connection, gump_id, button, Vec::new());
 }
 
 /// Answer with a button and a set of switches on — the resign dialog's shape.
-fn press_with(world: &mut World, connection: ConnectionId, gump_id: u32, button: u32, switches: Vec<u32>) {
+fn press_with(
+    world: &mut World,
+    connection: ConnectionId,
+    gump_id: openshard_protocol::gump::GumpId,
+    button: u32,
+    switches: Vec<u32>,
+) {
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: 0,
-            gump_id,
-            button,
-            switches,
+            serial: openshard_protocol::gump::RawGumpKey(0),
+            gump_id: openshard_protocol::gump::RawGumpId(gump_id.0),
+            button: openshard_protocol::gump::RawButtonId(button),
+            switches: switches
+                .into_iter()
+                .map(openshard_protocol::gump::RawSwitchId)
+                .collect(),
             text_entries: Vec::new(),
         },
     });

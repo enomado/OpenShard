@@ -1036,9 +1036,9 @@ fn a_charge_takes_you_there_for_free_and_is_spent() {
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: serial_of(&world, connection),
-            gump_id: 0x0053_0001,
-            button: 10, // BOOK_USE_CHARGE + slot 0
+            serial: openshard_protocol::gump::RawGumpKey(serial_of(&world, connection)),
+            gump_id: openshard_protocol::gump::RawGumpId(0x0053_0001),
+            button: openshard_protocol::gump::RawButtonId(10), // BOOK_USE_CHARGE + slot 0
             switches: Vec::new(),
             text_entries: Vec::new(),
         },
@@ -1079,9 +1079,9 @@ fn a_reply_for_a_row_the_book_does_not_hold_does_nothing() {
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: serial_of(&world, connection),
-            gump_id: 0x0053_0001,
-            button: 10 + 9, // a row an empty book has never had
+            serial: openshard_protocol::gump::RawGumpKey(serial_of(&world, connection)),
+            gump_id: openshard_protocol::gump::RawGumpId(0x0053_0001),
+            button: openshard_protocol::gump::RawButtonId(10 + 9), // a row an empty book has never had
             switches: Vec::new(),
             text_entries: Vec::new(),
         },
