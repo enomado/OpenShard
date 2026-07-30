@@ -10,6 +10,7 @@ use openshard_protocol::login::{
     ACCOUNT_NAME_LENGTH, CHARACTER_NAME_LENGTH, CharacterEntry, DenyReason, MIN_CHARACTER_SLOTS,
     PASSWORD_LENGTH,
 };
+use openshard_protocol::wire::RawCharacterSlot;
 
 use crate::password;
 
@@ -95,7 +96,11 @@ pub trait Accounts {
     /// delete-reject code. Whether the character may be deleted *at all* (it is
     /// not being played, it is old enough) is the caller's to check: this store
     /// does not know who is in the world.
-    fn delete_character(&mut self, account: &AccountName, slot: u32) -> Result<CharacterName, DenyReason>;
+    fn delete_character(
+        &mut self,
+        account: &AccountName,
+        slot: RawCharacterSlot,
+    ) -> Result<CharacterName, DenyReason>;
 
     /// The authority the account's characters play with — what staff commands
     /// they may run. Defaults to [`AccessLevel::Player`] so a store that has no
@@ -285,15 +290,21 @@ impl Accounts for DevAccounts {
         Ok((slot, character))
     }
 
-    fn delete_character(&mut self, account: &AccountName, slot: u32) -> Result<CharacterName, DenyReason> {
+    fn delete_character(
+        &mut self,
+        account: &AccountName,
+        slot: RawCharacterSlot,
+    ) -> Result<CharacterName, DenyReason> {
         let Some(entry) = self.accounts.get_mut(&account.normalized()) else {
             return Err(DenyReason::NoAccount);
         };
-        let index = slot as usize;
-        if index >= entry.characters.len() {
-            return Err(DenyReason::BadCharacter);
-        }
-        Ok(entry.characters.remove(index).name)
+        // Promoted here and not by the caller: this list is the store's, and a
+        // slot checked against anyone else's would be a check about the wrong
+        // thing. The client's number stays raw right up to the list it indexes.
+        let slot = slot
+            .validate(entry.characters.len())
+            .map_err(|_| DenyReason::BadCharacter)?;
+        Ok(entry.characters.remove(slot.0 as usize).name)
     }
 }
 
@@ -552,7 +563,7 @@ mod tests {
         let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("Second"));
         let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("Third"));
         assert_eq!(
-            store.delete_character(&AccountName::new("a"), 1),
+            store.delete_character(&AccountName::new("a"), RawCharacterSlot(1)),
             Ok(CharacterName::new("Second"))
         );
         let names: Vec<_> = store
@@ -568,11 +579,11 @@ mod tests {
         let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
         let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("Only"));
         assert_eq!(
-            store.delete_character(&AccountName::new("a"), 1),
+            store.delete_character(&AccountName::new("a"), RawCharacterSlot(1)),
             Err(DenyReason::BadCharacter)
         );
         assert_eq!(
-            store.delete_character(&AccountName::new("nobody"), 0),
+            store.delete_character(&AccountName::new("nobody"), RawCharacterSlot(0)),
             Err(DenyReason::NoAccount)
         );
     }

@@ -411,8 +411,8 @@ pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocatio
             area: area.to_owned(),
             name: name.to_owned(),
             position: (x, y, z),
-            map: 0,
-            description_cliloc: 0,
+            map: MapId(0),
+            description_cliloc: ClilocId(0),
         }
     }
 
@@ -428,7 +428,7 @@ pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocatio
         city("Vesper", "The Ironwood Inn", 2771, 976, 0),
     ]
     .into_iter()
-    .filter(|city| facets.contains(&(city.map as u8)))
+    .filter(|city| facets.contains(&city.map.0))
     .collect();
 
     if cities.is_empty() {
@@ -436,8 +436,8 @@ pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocatio
             area: "Britannia".to_owned(),
             name: "Britain".to_owned(),
             position: (i32::from(start.0), i32::from(start.1), 0),
-            map: i32::from(facets.first().copied().unwrap_or(0)),
-            description_cliloc: 0,
+            map: MapId(facets.first().copied().unwrap_or(0)),
+            description_cliloc: ClilocId(0),
         });
     }
     cities
@@ -496,7 +496,7 @@ pub(crate) fn create_character(
     // falls back to the default facet and a fresh spawn.
     let (facet, start) = match login.starts.get(create.start_location.0 as usize) {
         Some(city) => (
-            Facet(city.map as u8),
+            Facet(city.map.0),
             Some(Point::new(
                 city.position.0 as u16,
                 city.position.1 as u16,
@@ -597,7 +597,6 @@ pub(crate) fn delete_character(
     delete: DeleteCharacter,
     id: ConnectionId,
 ) -> bool {
-    let slot = delete.slot;
     let session = sessions
         .get(id)
         .expect("world_handle_network looks the session up before routing a packet to here");
@@ -607,17 +606,27 @@ pub(crate) fn delete_character(
     };
 
     // The slot indexes the very list the client was last sent, which is the
-    // account's in-memory character list.
-    let Some(entry) = login.accounts.characters(&account).into_iter().nth(slot as usize) else {
-        let _ = session.send_packet(
-            ServerPacket::DeleteReject(DeleteReject {
-                result: DeleteResult::CharNotExist,
-            })
-            .encode(session.login.version()),
-        );
-        return true;
+    // account's in-memory character list — so that list's length is the whole
+    // domain, and a slot outside it names no character to look up.
+    let characters = login.accounts.characters(&account);
+    let slot = match delete.slot.validate(characters.len()) {
+        Ok(slot) => slot,
+        Err(error) => {
+            warn!(%id, %account, %error, "delete refused");
+            let _ = session.send_packet(
+                ServerPacket::DeleteReject(DeleteReject {
+                    result: DeleteResult::CharNotExist,
+                })
+                .encode(session.login.version()),
+            );
+            return true;
+        }
     };
-    let name = entry.name;
+    let name = characters
+        .into_iter()
+        .nth(slot.0 as usize)
+        .expect("validate proved the slot is inside the list this was built from")
+        .name;
 
     // A character being played cannot be deleted out from under its session.
     // Asked of the connections and not of the world: the world knows a serial,
@@ -633,8 +642,10 @@ pub(crate) fn delete_character(
         return true;
     }
 
-    // Drop it from the authoritative in-memory list. A failure here is a bad slot.
-    if let Err(reason) = login.accounts.delete_character(&account, slot) {
+    // Drop it from the authoritative in-memory list. The store checks the slot
+    // against its own list rather than trusting the one checked above — two
+    // lists, two checks — so a failure here is still a bad slot.
+    if let Err(reason) = login.accounts.delete_character(&account, delete.slot) {
         warn!(%id, %account, %name, ?reason, "delete refused");
         let _ = session.send_packet(
             ServerPacket::DeleteReject(DeleteReject {
@@ -669,6 +680,7 @@ pub(crate) fn delete_character(
 mod tests {
     use super::*;
     use crate::testing::{admin, at_character_screen, login_server, lord_british};
+    use openshard_protocol::wire::RawCharacterSlot;
 
     #[test]
     fn a_character_being_played_cannot_be_deleted_from_another_connection() {
@@ -702,7 +714,9 @@ mod tests {
                 &mut login,
                 &mut world,
                 &mut roster,
-                DeleteCharacter { slot: 0 },
+                DeleteCharacter {
+                    slot: RawCharacterSlot(0),
+                },
                 screen,
             ),
             "a refused delete keeps the connection"
@@ -743,7 +757,9 @@ mod tests {
             &mut login,
             &mut world,
             &mut roster,
-            DeleteCharacter { slot: 0 },
+            DeleteCharacter {
+                slot: RawCharacterSlot(0),
+            },
             screen,
         ));
 
@@ -767,7 +783,7 @@ mod tests {
             "Britain is one of them"
         );
         for city in &cities {
-            assert_eq!(city.map, 0, "every classic city is on Felucca");
+            assert_eq!(city.map, MapId(0), "every classic city is on Felucca");
             assert!(
                 city.position.0 > 0 && city.position.1 > 0,
                 "a real spot, not the origin"
@@ -784,7 +800,7 @@ mod tests {
         let cities = start_cities(&[1], (1363, 1600));
         assert_eq!(cities.len(), 1, "never empty");
         assert_eq!(cities[0].position, (1363, 1600, 0));
-        assert_eq!(cities[0].map, 1, "on a loaded facet");
+        assert_eq!(cities[0].map, MapId(1), "on a loaded facet");
     }
 
     #[test]

@@ -15,7 +15,9 @@ use openshard_login::{DevAccounts, LoginServer, LoginSession, Response, single_s
 use openshard_protocol::identity::{
     AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
 };
-use openshard_protocol::login::{AccountLogin, GameServerLogin, LoginStagePacket, SelectShard};
+use openshard_protocol::login::{
+    AccountLogin, GameServerLogin, LoginStagePacket, RawShardIndex, SelectShard,
+};
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::AuthKey;
 
@@ -65,9 +67,14 @@ pub(crate) fn at_character_screen(login: &mut LoginServer<DevAccounts>, now: Ins
     let Response::Send(_) = login.handle(&mut auth, pkt(&account_login.encode()), now) else {
         panic!("expected the shard list");
     };
-    let Response::SendThenClose(relay) =
-        login.handle(&mut auth, pkt(&SelectShard { index: 1 }.encode()), now)
-    else {
+    let Response::SendThenClose(relay) = login.handle(
+        &mut auth,
+        pkt(&SelectShard {
+            index: RawShardIndex(1),
+        }
+        .encode()),
+        now,
+    ) else {
         panic!("expected a relay");
     };
     let key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));

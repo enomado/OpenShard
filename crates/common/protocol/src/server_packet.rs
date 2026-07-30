@@ -400,8 +400,7 @@ mod tests {
                 }],
             }),
             ServerPacket::Relay(Relay {
-                address: std::net::Ipv4Addr::new(127, 0, 0, 1),
-                port: 2593,
+                endpoint: std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 2593),
                 auth_key: AuthKey(0xDEAD_BEEF),
             }),
             ServerPacket::CharacterList(CharacterList {
@@ -409,7 +408,7 @@ mod tests {
                     name: crate::identity::CharacterName("Lord British".to_owned()),
                 }],
                 starts: Vec::new(),
-                flags: 0,
+                flags: crate::login::CharacterListFlags::NONE,
             }),
             ServerPacket::DeleteReject(DeleteReject {
                 result: crate::login::DeleteResult::CharNotExist,

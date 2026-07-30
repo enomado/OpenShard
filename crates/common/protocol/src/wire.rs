@@ -14,6 +14,8 @@
 //! exception and lives in its own module: it carries a validity rule and a
 //! pool split, not just a name.
 
+use std::fmt;
+
 /// An art id: what the client draws. Tiles, items, effect sprites and gump art
 /// all index the same `art.mul`, so they share one type.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -114,15 +116,65 @@ pub struct RawHue(pub u16);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct RawGraphic(pub u16);
 
-/// Which character slot a client asked to fill or play, exactly as sent.
+/// Which character slot a client asked to fill, play, or delete, exactly as
+/// sent.
 ///
-/// Class D for now: `create_character` fills the first free slot and
-/// `character_play` looks the character up by name, so neither reads this
-/// value. It becomes class C — validated against the account's actual
-/// character count — the day slot choice is honoured; see
-/// `docs/protocol_newtypes.md`.
+/// Three packets carry one and only the third reads it. `create_character`
+/// fills the first free slot and `character_play` looks the character up by
+/// name, so for `0x00`/`0xF8` and `0x5D` this stays what the pilot called it:
+/// a class D value, named and ignored. `0x83` delete is different — the slot
+/// *is* the whole request — so the type grew [`validate`](Self::validate) in
+/// N6, and the promotion is there for the other two the day slot choice is
+/// honoured. See `docs/protocol_newtypes.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 pub struct RawCharacterSlot(pub u32);
+
+impl RawCharacterSlot {
+    /// The slot this names, when the account has `held` characters.
+    ///
+    /// The same "is this one I offered" check `RawContextMenuIndex::validate`
+    /// makes, against a different list: the client is answering the character
+    /// list it was last sent, so that list's length is the whole domain. A slot
+    /// past the end is a stale screen or a crafted packet, and is refused
+    /// rather than clamped — clamping would delete *some* character instead of
+    /// none.
+    ///
+    /// `held` is a count, so an empty account refuses every slot, zero
+    /// included.
+    pub const fn validate(self, held: usize) -> Result<CharacterSlot, InvalidCharacterSlot> {
+        if (self.0 as usize) < held {
+            Ok(CharacterSlot(self.0))
+        } else {
+            Err(InvalidCharacterSlot { slot: self.0, held })
+        }
+    }
+}
+
+/// A character slot the account actually has: an index into the list the client
+/// was last sent, counted from zero.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct CharacterSlot(pub u32);
+
+/// A packet named a character slot the account does not have.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct InvalidCharacterSlot {
+    /// The slot the client sent.
+    pub slot: u32,
+    /// How many characters the account actually holds.
+    pub held: usize,
+}
+
+impl fmt::Display for InvalidCharacterSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "character slot {} was named on an account holding {}",
+            self.slot, self.held
+        )
+    }
+}
+
+impl std::error::Error for InvalidCharacterSlot {}
 
 /// A client's self-reported IPv4 address, exactly as sent. Never trusted,
 /// never read — the server already knows the real address from the socket.

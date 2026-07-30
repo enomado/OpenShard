@@ -132,23 +132,23 @@ fn expansion_index(name: &str) -> u8 {
     }
 }
 
-pub(crate) fn supported_features_of(config: &Config) -> u32 {
+pub(crate) fn supported_features_of(config: &Config) -> SupportedFeatures {
     let g = &config.gameplay;
     // The expansion the operator asked for. This is what the client builds its
     // paperdoll from: under AoS there is no Quest button to press, so the whole
     // `0xD7`/`0x32` path is unreachable however correctly it is implemented.
     let expansion = match g.expansion.trim().to_ascii_lowercase().as_str() {
-        "aos" => openshard_protocol::login::AOS_FEATURE_FLAGS,
-        "se" => openshard_protocol::login::SE_FEATURE_FLAGS,
+        "aos" => SupportedFeatures::AOS,
+        "se" => SupportedFeatures::SE,
         // `config` has already refused anything else; ML is the default.
-        _ => openshard_protocol::login::ML_FEATURE_FLAGS,
+        _ => SupportedFeatures::ML,
     };
     // With tooltips and context menus both off the shard advertises nothing at
     // all and a modern client falls back to the classic single-click name — the
     // pre-AoS feel, which is a choice an operator can still make.
     let aos = openshard_world::TooltipMode::parse(&g.tooltips) != openshard_world::TooltipMode::Off
         || g.context_menus;
-    if aos { expansion } else { 0 }
+    if aos { expansion } else { SupportedFeatures::NONE }
 }
 
 /// The `0xA9` character-list flags this shard advertises, from the tooltip and
@@ -159,14 +159,14 @@ pub(crate) fn supported_features_of(config: &Config) -> u32 {
 /// keys on the character-list flags, not the `0xB9` SupportedFeatures. Without
 /// the right bits here a modern client never sends a tooltip (`0xD6`) or
 /// context-menu (`0xBF`) request, whatever its version.
-pub(crate) fn character_list_flags_of(config: &Config) -> u32 {
+pub(crate) fn character_list_flags_of(config: &Config) -> CharacterListFlags {
     let g = &config.gameplay;
-    let mut flags = 0;
+    let mut flags = CharacterListFlags::NONE;
     if openshard_world::TooltipMode::parse(&g.tooltips) != openshard_world::TooltipMode::Off {
-        flags |= openshard_protocol::login::CLF_TOOLTIPS;
+        flags = flags.with(CharacterListFlags::TOOLTIPS);
     }
     if g.context_menus {
-        flags |= openshard_protocol::login::CLF_CONTEXT_MENU;
+        flags = flags.with(CharacterListFlags::CONTEXT_MENU);
     }
     flags
 }

@@ -160,6 +160,8 @@ The allowlist so far, each entry argued where it was decided:
 | `items::WorldItem::amount`, `items::PickUpItem::amount` | the same quantity, outbound and in — [N4 amendment 9](#amendments-forced-by-n4-itemsrs) |
 | `vendor::BuyLine::price`, `vendor::SellLine::price` | gold: the `MobileStatus::gold` argument — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
 | `vendor::{Purchase, Sale, SellLine}::amount` | the same stack size, inbound and out — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
+| `login::ShardEntry::{percent_full, timezone}` | quantities, by the `MobileStatus` argument — [N6 amendment 8](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
+| `version::ClientVersion::{major, minor, revision, patch}` | components of one version, and not a packet struct — [N6 amendment 7](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
 
 `containers::ContainedItem::{x, y}` came *off* this list in N5: they are one
 `GumpPoint` now, as [N4 amendment 6](#amendments-forced-by-n4-containersrs)
@@ -811,6 +813,100 @@ every number in it is one the server chose — which makes this the module where
   and it belongs with the component sweep N4 left rather than with a protocol
   stage.
 
+## Amendments forced by N6 (`login.rs`, `seed.rs`, `version.rs`)
+
+The stage the plan sized at thirteen fields across three files, and the one where
+the sweep's value showed up somewhere other than the wire: two of `login.rs`'s
+dwords were a *pair* nothing but a reader's attention kept apart, and they were
+sitting in adjacent fields of a server struct rather than in a packet at all.
+
+1. **Two capability masks, one type, adjacent fields.** `0xA9`'s character-list
+   flags and `0xB9`'s SupportedFeatures were both `u32`, both about whether the
+   client behaves like an AoS client, and both stored in
+   `openshard_login::LoginServer` one line apart (`character_list_flags`,
+   `supported_features`). Swapping them compiles, and the shard it produces has
+   clients that draw no tooltips with nothing anywhere logging why — the client
+   does not complain about a mask it does not understand, it simply does less.
+   They are `CharacterListFlags` and `SupportedFeatures` now, and the five loose
+   `pub const u32`s became associated constants on the two, with the bits pinned
+   in a test beside them (CLAUDE.md's rule for a ported flag). `with` rather than
+   a `BitOr` impl, on N2 amendment 8's argument. The name is `SupportedFeatures`
+   and not ServUO's `FeatureFlags` because this crate already has a `Feature`,
+   which asks the opposite question — what a *version* can do, rather than what
+   the shard claims.
+2. **`address` + `port` is one `SocketAddrV4`, and the caller already had one.**
+   `Relay`'s two fields were being filled from `LoginServer::game_address`, a
+   `SocketAddrV4` taken apart at the call site and put back together in the
+   encoder. This is N4 amendment 6's `GumpPoint` move with a std type instead of
+   a new one — "look for it before writing it" — and it takes `port` off the
+   count without a newtype existing for it. The `0x8C` byte order, which is the
+   expensive thing in this file, is untouched and its test still asserts
+   `[192, 168, 11, 6]`.
+3. **One promotion replaced two checks a hundred lines apart.**
+   `SelectShard::index` had `slot() -> Option<usize>` refusing zero in
+   `protocol`, and `openshard_login::on_select_shard` separately refusing
+   anything past `shards.len()`. `RawShardIndex::validate(offered)` does both and
+   says which: `InvalidShardIndex::Zero` (the wire numbers from one, so a naive
+   `index - 1` on a `u16` zero wraps to 65535) versus `PastEnd`. First error type
+   in the sweep with two variants, and the reason is that the two are genuinely
+   different bugs — one is impossible input, the other is a stale or forged list.
+4. **`RawCharacterSlot` became class C, as the pilot's row predicted.** The pilot
+   filed it class D with "it becomes class C the day slot choice is honoured";
+   `0x83` delete honours it, and always did. Three packets carry the type and
+   only this one reads it, so the promotion exists and two of its three uses
+   still do not call it — which is the honest shape, not an omission.
+5. **The store promotes, not the seam — because the list is the store's.**
+   `Accounts::delete_character` takes a `RawCharacterSlot` and validates against
+   its own character list. `dispatch.rs` validates too, against the list it just
+   read to find the name. Two lists, two checks, neither pretending to be the
+   other: a slot checked against somebody else's list is a check about the wrong
+   thing. This is N2's "promotion lives on the seam" read strictly — the seam is
+   wherever the domain is in hand, and here that is two places.
+6. **`seed.rs`'s one field is class D and will stay that way.** `Seed::value` is
+   the client's claimed IPv4 on old clients and the login cipher's key material
+   on all of them. This engine implements no login encryption (the password is
+   plaintext inside a cipher that is broken either way — see
+   `AccountLogin::password`), and the address is the claim `RawClientIp` already
+   refuses to believe with the socket's real address free for the asking. So
+   `RawSeedValue` has no promotion, and the type is the record of that.
+7. **`version.rs` needed no change at all.** Its four are `ClientVersion`'s own
+   components and `ClientVersion` is not a packet struct — what arrives off the
+   wire is a seed dword or a `0xBD` string, both narrowed into it. `Point`'s
+   argument applies verbatim and the doc comment now says so. A stage whose whole
+   answer is "the allowlist already covers this" is worth writing down: the next
+   reader would otherwise re-derive it.
+8. **`ShardEntry`'s two bytes are allowlisted, against first instinct.** They are
+   adjacent `u8`s of unrelated meaning — `percent_full` and `timezone` — which
+   looks exactly like the confusion the sweep exists to remove. It is not: N2
+   amendment 3 settled this for `strength`/`dexterity`/`intelligence`, three
+   adjacent `u8`s with the same shape. They are quantities, compared and clamped,
+   and the only place either is written names it. Two newtypes here would be two
+   types that only ever unwrap.
+9. **Two byte-level writes changed type without changing bytes (N8).**
+   `StartLocation::map` and `description_cliloc` went to `MapId` and `ClilocId` —
+   reuse, per N4 — and their `out.i32` became `out.u32`. Same four big-endian
+   bytes for every value either type can hold, and `create_character` lost a
+   lossy `city.map as u8` on the way in.
+10. **Bare-integer field count: `login.rs` 8 before, 2 after** (amendment 8's
+    pair, allowlisted); **`seed.rs` 1 before, 0 after**; **`version.rs` 4 before,
+    4 after**, all four allowlisted by amendment 7. `wire.rs` gained
+    `CharacterSlot`/`InvalidCharacterSlot` and no bare fields.
+
+### Backlog from this stage
+
+- **`StartLocation::position` is a bare `(i32, i32, i32)`** and escapes N10's
+  count entirely, because the count looks for `pub name: int` and a tuple has no
+  names. It is a `Point` in everything but type — `create_character` casts it to
+  one, `as u16`/`as i8`, three casts a `Point` would not need. The wire width is
+  the only reason it is not one, and N8's "same bytes" would survive the change.
+- **N10's counting check must count tuple fields too**, or it will report zero
+  while the line above is still there. The same hole hides any
+  `pub thing: (u16, u16)` a later packet adds.
+- **`ShardEntry::percent_full` is clamped in the encoder** (`.min(100)`), which
+  is a client rule enforced at the last possible moment rather than where the
+  value is chosen. Harmless today because the only caller passes `0`; worth a
+  named constructor the day an operator's shard actually reports fullness.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -837,7 +933,9 @@ request (`main` is protected).
 - **N5 — `vendor.rs`, `gump.rs`, `context.rs`.** Gump ids and button ids are the
   interesting inbound case: a `0xB1` response echoes ids the *server* chose, so
   the check is "is this one I offered", not a range.
-- **N6 — `login.rs`, `seed.rs`, `version.rs`.**
+- **N6 — `login.rs`, `seed.rs`, `version.rs`.** The stage where the confusion the
+  sweep exists to remove turned up outside a packet: two capability masks, one
+  `u32`, adjacent fields of a server struct.
 - **N7 — `feedback.rs`, `skill.rs`, `combat.rs`, `properties.rs`,
   `spellbook.rs`, `encoded.rs`, `casting.rs`.** The tail, one commit if it
   stays mechanical.
@@ -892,6 +990,6 @@ resolved silently in one module is a pattern the next module contradicts.
 | N3 | done — `speech.rs` 22 bare int fields → 0 | |
 | N4 | done — `containers.rs` 9 → 3, `items.rs` 16 → 3, all allowlisted | |
 | N5 | done — `vendor.rs` 14 → 5 allowlisted, `context.rs` 6 → 0, `gump.rs` 9 → 0 | |
-| N6 | not started | |
+| N6 | done — `login.rs` 8 → 2 allowlisted, `seed.rs` 1 → 0, `version.rs` 4 → 4 allowlisted | |
 | N7 | not started | |
 | N8 | not started | |

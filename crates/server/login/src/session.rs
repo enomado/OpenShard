@@ -6,8 +6,9 @@ use std::time::Instant;
 
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
-    AccountLogin, CharacterList, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied,
-    LoginStagePacket, Relay, SelectShard, ShardEntry, ShardList, StartLocation, encode_supported_features,
+    AccountLogin, CharacterList, CharacterListFlags, ClientVersionReport, DenyReason, GameServerLogin,
+    LoginDenied, LoginStagePacket, Relay, SelectShard, ShardEntry, ShardList, StartLocation,
+    SupportedFeatures, encode_supported_features,
 };
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::{feature::Feature, seed::Seed, version::ClientVersion};
@@ -24,19 +25,6 @@ pub struct Reason(pub &'static str);
 impl fmt::Display for Reason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)
-    }
-}
-
-/// Turn a value that is fatal to the conversation when absent into a
-/// [`Reason`], so the caller can `?` it instead of hand-rolling a
-/// `let Some(..) = .. else { return Err(..) }`.
-trait OptionExt<T> {
-    fn map_reason(self, reason: &'static str) -> Result<T, Reason>;
-}
-
-impl<T> OptionExt<T> for Option<T> {
-    fn map_reason(self, reason: &'static str) -> Result<T, Reason> {
-        self.ok_or(Reason(reason))
     }
 }
 
@@ -218,12 +206,12 @@ pub struct LoginServer<A: Accounts> {
     /// The starting cities offered at character creation.
     pub starts: Vec<StartLocation>,
     /// The client-capability mask for the 0xA9 list.
-    pub character_list_flags: u32,
+    pub character_list_flags: CharacterListFlags,
     /// The AoS `0xB9` SupportedFeatures mask sent before the character list. Zero
     /// means "do not advertise" — no `0xB9` is sent, and a modern client stays on
     /// the classic single-click name path. The `server` crate sets the AoS bits
     /// from the `[gameplay]` tooltip/context-menu config.
-    pub supported_features: u32,
+    pub supported_features: SupportedFeatures,
 }
 
 impl<A: Accounts> LoginServer<A> {
@@ -240,8 +228,8 @@ impl<A: Accounts> LoginServer<A> {
             }],
             game_address,
             starts: Vec::new(),
-            character_list_flags: 0,
-            supported_features: 0,
+            character_list_flags: CharacterListFlags::NONE,
+            supported_features: SupportedFeatures::NONE,
         }
     }
 
@@ -379,23 +367,25 @@ impl<A: Accounts> LoginServer<A> {
         select: SelectShard,
         now: Instant,
     ) -> Result<(Response, LoginSessionState), Reason> {
-        // The wire index is one-based and untrusted; `slot` refuses zero rather
-        // than underflowing.
-        let slot = select.slot().map_reason("shard index out of range")?;
-        if slot >= self.shards.len() {
-            warn!(slot, "shard index out of range");
-            return Err(Reason("shard index out of range"));
-        }
+        // One check, not two: the wire index is one-based and untrusted, and
+        // `validate` refuses both zero (which would underflow) and anything
+        // past the list this connection was actually sent.
+        let shard = match select.index.validate(self.shards.len()) {
+            Ok(shard) => shard,
+            Err(error) => {
+                warn!(%error, "shard index out of range");
+                return Err(Reason("shard index out of range"));
+            }
+        };
 
         // The version goes with the key: the game connection has no other way
         // to learn it. See `PendingLogin::version`.
         let key = self.keys.issue(&account, session.version, now);
-        debug!(%account, slot, "relaying to the game server");
+        debug!(%account, slot = shard.0, "relaying to the game server");
         Ok((
             Response::SendThenClose(
                 ServerPacket::Relay(Relay {
-                    address: *self.game_address.ip(),
-                    port: self.game_address.port(),
+                    endpoint: self.game_address,
                     auth_key: key,
                 })
                 .encode(session.version),
@@ -492,13 +482,13 @@ impl<A: Accounts> LoginServer<A> {
         // order, so one buffer carries both. Zero means "classic": no 0xB9, and a
         // modern client falls back to single-click names. The four-byte mask is
         // for clients new enough to read it.
-        let response = if self.supported_features == 0 {
+        let response = if self.supported_features == SupportedFeatures::NONE {
             debug!("0xB9 SupportedFeatures not advertised (tooltips/context menus off)");
             Response::Send(character_list)
         } else {
             let extended = session.version.supports(Feature::ExtraFeatureMask);
             debug!(
-                flags = format!("0x{:X}", self.supported_features),
+                flags = format!("0x{:X}", self.supported_features.0),
                 extended,
                 version = %session.version,
                 "sending 0xB9 SupportedFeatures before the character list"
@@ -529,6 +519,8 @@ mod tests {
     use openshard_protocol::identity::{
         AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
     };
+    use openshard_protocol::login::RawShardIndex;
+    use openshard_protocol::seed::RawSeedValue;
     use openshard_protocol::wire::AuthKey;
 
     fn server() -> LoginServer<DevAccounts> {
@@ -547,7 +539,7 @@ mod tests {
     fn modern_session() -> LoginSession {
         let mut session = LoginSession::new();
         session.on_seed(Seed {
-            value: 0x0A00_0001,
+            value: RawSeedValue(0x0A00_0001),
             version: Some(ClientVersion::TOL),
         });
         session
@@ -585,9 +577,14 @@ mod tests {
         session: &mut LoginSession,
         now: Instant,
     ) -> AuthKey {
-        let Response::SendThenClose(relay) =
-            server.handle(session, pkt(&SelectShard { index: 1 }.encode()), now)
-        else {
+        let Response::SendThenClose(relay) = server.handle(
+            session,
+            pkt(&SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode()),
+            now,
+        ) else {
             panic!("expected a relay");
         };
         AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]))
@@ -600,9 +597,14 @@ mod tests {
             server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
             Response::Send(_)
         ));
-        let Response::SendThenClose(relay) =
-            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
-        else {
+        let Response::SendThenClose(relay) = server.handle(
+            &mut session,
+            pkt(&SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode()),
+            now,
+        ) else {
             panic!("expected a relay");
         };
         AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]))
@@ -620,9 +622,14 @@ mod tests {
         };
         assert_eq!(shards[0], 0xA8);
 
-        let Response::SendThenClose(relay) =
-            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
-        else {
+        let Response::SendThenClose(relay) = server.handle(
+            &mut session,
+            pkt(&SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode()),
+            now,
+        ) else {
             panic!("expected a relay");
         };
         assert_eq!(relay[0], 0x8C);
@@ -704,7 +711,10 @@ mod tests {
         let mut session = modern_session();
         let response = server.handle(
             &mut session,
-            pkt(&SelectShard { index: 1 }.encode()),
+            pkt(&SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode()),
             Instant::now(),
         );
         assert!(matches!(response, Response::Close(_)));
@@ -735,7 +745,14 @@ mod tests {
         let now = Instant::now();
         let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(&mut session, pkt(&SelectShard { index: 0 }.encode()), now),
+            server.handle(
+                &mut session,
+                pkt(&SelectShard {
+                    index: RawShardIndex(0),
+                }
+                .encode()),
+                now
+            ),
             Response::Close(_)
         ));
     }
@@ -747,7 +764,14 @@ mod tests {
         let now = Instant::now();
         let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(&mut session, pkt(&SelectShard { index: 99 }.encode()), now),
+            server.handle(
+                &mut session,
+                pkt(&SelectShard {
+                    index: RawShardIndex(99),
+                }
+                .encode()),
+                now
+            ),
             Response::Close(_)
         ));
     }
@@ -871,9 +895,14 @@ mod tests {
 
         let mut session = modern_session();
         let _ = server.handle(&mut session, pkt(&login("alice", "a")), now);
-        let Response::SendThenClose(relay) =
-            server.handle(&mut session, pkt(&SelectShard { index: 1 }.encode()), now)
-        else {
+        let Response::SendThenClose(relay) = server.handle(
+            &mut session,
+            pkt(&SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode()),
+            now,
+        ) else {
             panic!("expected a relay");
         };
         let alices_key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
@@ -946,7 +975,7 @@ mod tests {
         // Connection one: the client announces a modern version in the seed.
         let mut first = LoginSession::new();
         first.on_seed(Seed {
-            value: 1,
+            value: RawSeedValue(1),
             version: Some(ClientVersion::TOL),
         });
         let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
@@ -991,7 +1020,7 @@ mod tests {
 
         let mut first = LoginSession::new();
         first.on_seed(Seed {
-            value: 1,
+            value: RawSeedValue(1),
             version: Some(ClientVersion::new(2, 0, 0, 0)),
         });
         let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
@@ -1021,7 +1050,7 @@ mod tests {
 
         let mut modern = LoginSession::new();
         modern.on_seed(Seed {
-            value: 1,
+            value: RawSeedValue(1),
             version: Some(ClientVersion::new(4, 0, 0, 0)),
         });
         let Response::Send(list) = server.handle(&mut modern, pkt(&login("admin", "hunter2")), now) else {
@@ -1031,7 +1060,7 @@ mod tests {
 
         let mut ancient = LoginSession::new();
         ancient.on_seed(Seed {
-            value: 1,
+            value: RawSeedValue(1),
             version: Some(ClientVersion::new(3, 255, 255, 255)),
         });
         let Response::Send(list) = server.handle(&mut ancient, pkt(&login("admin", "hunter2")), now) else {
@@ -1055,7 +1084,7 @@ mod tests {
         let mut server = server();
         let mut session = LoginSession::new();
         session.on_seed(Seed {
-            value: 0xC0A8_0001,
+            value: RawSeedValue(0xC0A8_0001),
             version: None,
         });
         assert_eq!(session.version(), ClientVersion::OLDEST);

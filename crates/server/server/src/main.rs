@@ -39,15 +39,15 @@ use openshard_protocol::encoded::EncodedCommand;
 use openshard_protocol::extended::ExtendedRequest;
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{
-    CharacterListUpdate, ClientLoginDecodeError, DeleteCharacter, DeleteReject, DeleteResult, LoginDenied,
-    LoginStagePacket, StartLocation,
+    CharacterListFlags, CharacterListUpdate, ClientLoginDecodeError, DeleteCharacter, DeleteReject,
+    DeleteResult, LoginDenied, LoginStagePacket, StartLocation, SupportedFeatures,
 };
 use openshard_protocol::mobile::StatusQueryKind;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::trade::SecureTradeAction;
-use openshard_protocol::wire::{Graphic, Hue};
-use openshard_protocol::world::{CreateCharacter, Point};
+use openshard_protocol::wire::{ClilocId, Graphic, Hue};
+use openshard_protocol::world::{CreateCharacter, MapId, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_world::components::Facet;
 use openshard_world::{

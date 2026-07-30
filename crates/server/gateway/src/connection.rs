@@ -287,7 +287,10 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
+    use openshard_protocol::{
+        seed::{RawSeedValue, SEED_COMMAND},
+        version::ClientVersion,
+    };
 
     /// A well-formed new-style seed for 7.0.45.65.
     fn modern_seed() -> Vec<u8> {
@@ -327,7 +330,7 @@ mod tests {
         connection.receive(&[192, 168, 0, 1]);
         let events = drain(&mut connection).unwrap();
         assert!(matches!(&events[0], Event::Seeded(seed)
-            if seed.value == 0xC0A8_0001 && seed.version.is_none()));
+            if seed.value == RawSeedValue(0xC0A8_0001) && seed.version.is_none()));
     }
 
     #[test]

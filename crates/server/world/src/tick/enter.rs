@@ -374,8 +374,10 @@ impl World {
         // shard serves neither.
         if self.state.gameplay.tooltip_mode != TooltipMode::Off || self.state.gameplay.context_menus {
             let extended = version.supports(Feature::ExtraFeatureMask);
-            self.state
-                .send(connection, encode_supported_features(AOS_FEATURE_FLAGS, extended));
+            self.state.send(
+                connection,
+                encode_supported_features(SupportedFeatures::AOS, extended),
+            );
         }
         // Which season the client draws its trees in, with the change sound off:
         // this is a login, not a turn of the year. Between the map change and the

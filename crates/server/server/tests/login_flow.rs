@@ -19,7 +19,7 @@ use openshard_login::{DevAccounts, LoginServer, LoginSession, Response, single_s
 use openshard_protocol::identity::{
     AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
 };
-use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
+use openshard_protocol::login::{AccountLogin, GameServerLogin, RawShardIndex, SelectShard};
 use openshard_protocol::wire::AuthKey;
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -134,7 +134,12 @@ async fn a_client_reaches_the_character_list() {
     assert_eq!(&shards[8..17], b"OpenShard");
 
     client
-        .write_all(&SelectShard { index: 1 }.encode())
+        .write_all(
+            &SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode(),
+        )
         .await
         .unwrap();
 
@@ -259,7 +264,12 @@ async fn a_stolen_auth_key_is_useless_over_a_real_socket() {
         .unwrap();
     let _ = read_variable(&mut client).await;
     client
-        .write_all(&SelectShard { index: 1 }.encode())
+        .write_all(
+            &SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode(),
+        )
         .await
         .unwrap();
     let mut relay = [0u8; 11];
