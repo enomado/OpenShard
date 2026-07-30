@@ -17,6 +17,7 @@ use openshard_items as items;
 use openshard_movement::{Terrain, direction_toward, find_path, step_from};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::SoundId;
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::components::{
@@ -159,7 +160,7 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
             // moment it notices prey, and only a creature growls (a human does not).
             let growl = combat::anger_sound(state, creature);
             if let Some(growl) = growl {
-                state.play_sound(creature, growl);
+                state.play_sound(creature, SoundId(growl));
             }
             return None;
         }

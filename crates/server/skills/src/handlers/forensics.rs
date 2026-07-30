@@ -8,6 +8,7 @@
 //! moment it happened; nothing here reconstructs anything.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Amount, BodyType, Corpse, body_type};
 use openshard_state::{Skill, WorldState};
 
@@ -15,17 +16,17 @@ use crate::check::roll_skill_band;
 
 /// "You notice nothing unusual." — the answer to a body read by someone with too
 /// little skill to read one at all.
-const NOTHING_UNUSUAL: u32 = 501_003;
+const NOTHING_UNUSUAL: ClilocId = ClilocId(501_003);
 /// "You cannot determine anything useful." — the failed roll.
-const NOTHING_USEFUL: u32 = 501_001;
+const NOTHING_USEFUL: ClilocId = ClilocId(501_001);
 /// "The corpse has not been desecrated."
-const NOT_DESECRATED: u32 = 501_002;
+const NOT_DESECRATED: ClilocId = ClilocId(501_002);
 /// "The forensicist ~1_NAME~ has already discovered that:"
-const ALREADY_READ: u32 = 1_042_750;
+const ALREADY_READ: ClilocId = ClilocId(1_042_750);
 /// "This person was killed by ~1_KILLER_NAME~"
-const KILLED_BY: u32 = 1_042_751;
+const KILLED_BY: ClilocId = ClilocId(1_042_751);
 /// "This body has been disturbed by ~1_PLAYER_NAMES~"
-const DISTURBED_BY: u32 = 1_042_752;
+const DISTURBED_BY: ClilocId = ClilocId(1_042_752);
 /// What ServUO reads out when nobody is on record as the killer.
 const NO_ONE: &str = "no one";
 

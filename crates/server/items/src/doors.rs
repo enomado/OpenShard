@@ -9,8 +9,8 @@ pub(crate) const DOOR_OPEN_TICKS: u64 = 20 * TICKS_PER_SECOND;
 /// the pack lays down. A metal or barred door would sound different, but the
 /// engine's `Door` is a generic toggle with no material, so wooden it is until a
 /// door carries its own sound.
-const DOOR_OPEN_SOUND: u16 = 0x00EA;
-const DOOR_CLOSE_SOUND: u16 = 0x00F1;
+const DOOR_OPEN_SOUND: SoundId = SoundId(0x00EA);
+const DOOR_CLOSE_SOUND: SoundId = SoundId(0x00F1);
 
 /// Open or close a door the player double-clicked, if it is in reach.
 ///

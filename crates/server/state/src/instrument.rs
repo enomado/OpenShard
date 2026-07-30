@@ -7,15 +7,17 @@
 //! [`crate::weapon`] and [`crate::armor`] use, and how worn a given instrument is
 //! lives on the item as an [`Instrument`](crate::Instrument).
 
+use openshard_protocol::wire::SoundId;
+
 /// One instrument class: the graphic, and the two sounds it makes.
 #[derive(Debug, Clone, Copy)]
 pub struct InstrumentData {
     /// The item graphic this row describes.
     pub graphic: u16,
     /// What it sounds like played well — ServUO's `SuccessSound`.
-    pub well: u16,
+    pub well: SoundId,
     /// And badly.
-    pub badly: u16,
+    pub badly: SoundId,
 }
 
 /// How many tunes a fresh instrument holds — ServUO's `InitMinUses`/`InitMaxUses`,
@@ -45,7 +47,11 @@ static INSTRUMENTS: &[InstrumentData] = &[
 
 /// A row, so the table reads as data.
 const fn i(graphic: u16, well: u16, badly: u16) -> InstrumentData {
-    InstrumentData { graphic, well, badly }
+    InstrumentData {
+        graphic,
+        well: SoundId(well),
+        badly: SoundId(badly),
+    }
 }
 
 #[cfg(test)]
@@ -57,9 +63,9 @@ mod tests {
         // A lute and a drum are not interchangeable, and the pair is what makes a
         // failed performance audibly different from a good one.
         let lute = instrument_data(0x0EB3).expect("a lute");
-        assert_eq!((lute.well, lute.badly), (0x4C, 0x4D));
+        assert_eq!((lute.well, lute.badly), (SoundId(0x4C), SoundId(0x4D)));
         let drums = instrument_data(0x0E9C).expect("drums");
-        assert_eq!((drums.well, drums.badly), (0x38, 0x39));
+        assert_eq!((drums.well, drums.badly), (SoundId(0x38), SoundId(0x39)));
         assert!(instrument_data(0x0000).is_none());
     }
 

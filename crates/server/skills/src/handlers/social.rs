@@ -5,27 +5,28 @@
 //! and neither is large enough to be alone.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Body, BodyType, Client, Fame, Karma, Lock, Riding, Trap, body_type};
 use openshard_state::{Skill, WorldState};
 
 use crate::check::roll_skill_band;
 
 /// "Perhaps just asking would work better." — begging from a player.
-const BEG_FROM_PLAYER: u32 = 500_398;
+const BEG_FROM_PLAYER: ClilocId = ClilocId(500_398);
 /// "There is little chance of getting money from that!"
-const BEG_FROM_A_THING: u32 = 500_399;
+const BEG_FROM_A_THING: ClilocId = ClilocId(500_399);
 /// "You are too far away to beg from him."
-const TOO_FAR_HIM: u32 = 500_401;
+const TOO_FAR_HIM: ClilocId = ClilocId(500_401);
 /// "You are too far away to beg from her."
-const TOO_FAR_HER: u32 = 500_402;
+const TOO_FAR_HER: ClilocId = ClilocId(500_402);
 /// "They seem unwilling to give you any money." — mounted, or a failed roll.
-const UNWILLING: u32 = 500_404;
+const UNWILLING: ClilocId = ClilocId(500_404);
 /// "I feel sorry for thee..." — said by the giver, over their head.
-const FEEL_SORRY: u32 = 500_405;
+const FEEL_SORRY: ClilocId = ClilocId(500_405);
 /// "Thou dost not look trustworthy... no gold for thee today!"
-const NOT_TRUSTWORTHY: u32 = 500_406;
+const NOT_TRUSTWORTHY: ClilocId = ClilocId(500_406);
 /// "I have not enough money to give thee any!" — said by a giver with nothing.
-const NOT_ENOUGH_MONEY: u32 = 500_407;
+const NOT_ENOUGH_MONEY: ClilocId = ClilocId(500_407);
 /// How close you must be to beg — ServUO's `InRange(targ, 2)`.
 const BEG_RANGE: u32 = 2;
 /// The karma floor begging pushes toward, and the most it takes at once.
@@ -44,26 +45,26 @@ const BAD_KARMA_BASE: i32 = 500;
 const BAD_KARMA_DIVISOR: i32 = 857;
 
 /// "You do not know enough about locks. Become better at picking locks."
-const NOT_ENOUGH_LOCKS: u32 = 502_366;
+const NOT_ENOUGH_LOCKS: ClilocId = ClilocId(502_366);
 /// "You are not perceptive enough. Become better at detect hidden."
-const NOT_PERCEPTIVE: u32 = 502_367;
+const NOT_PERCEPTIVE: ClilocId = ClilocId(502_367);
 /// "That is locked."
-const THAT_IS_LOCKED: u32 = 501_283;
+const THAT_IS_LOCKED: ClilocId = ClilocId(501_283);
 /// "That doesn't appear to be trapped."
-const NOT_TRAPPED: u32 = 502_373;
+const NOT_TRAPPED: ClilocId = ClilocId(502_373);
 /// "You successfully render the trap harmless."
-const TRAP_REMOVED: u32 = 502_377;
+const TRAP_REMOVED: ClilocId = ClilocId(502_377);
 /// "You fail to disarm the trap... but you don't set it off."
-const TRAP_NOT_REMOVED: u32 = 502_372;
+const TRAP_NOT_REMOVED: ClilocId = ClilocId(502_372);
 /// "You feel that such an action would be inappropriate." — disarming a person.
-const INAPPROPRIATE: u32 = 502_816;
+const INAPPROPRIATE: ClilocId = ClilocId(502_816);
 /// The Lockpicking and Detect Hidden a would-be trap remover needs, in tenths.
 const TRAP_PREREQUISITE: u16 = 500;
 /// How much harder than its power a trap is to take off — ServUO's band.
 const TRAP_BAND_WIDTH: i32 = 100;
 
 /// Whether a mobile may be begged from at all, and the line if not.
-fn beg_refusal(state: &WorldState, target: EntityId) -> Option<u32> {
+fn beg_refusal(state: &WorldState, target: EntityId) -> Option<ClilocId> {
     if state.registry.has::<Client>(target) {
         return Some(BEG_FROM_PLAYER);
     }

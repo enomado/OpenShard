@@ -897,8 +897,9 @@ pub enum Command {
     PlaySound {
         /// Who hears it, by wire serial.
         serial: u32,
-        /// The sound id.
-        sound: u16,
+        /// The sound id. The script bridge is where the raw JSON number becomes
+        /// this type — the same seam `Command::Speak` crosses for its `Hue`.
+        sound: openshard_protocol::wire::SoundId,
     },
     /// Put an item into a player's backpack — a quest reward. From a script.
     GiveItem {

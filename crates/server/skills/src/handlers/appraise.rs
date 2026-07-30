@@ -10,7 +10,7 @@
 //! turns a weapon row into a swing, and this turns the same row into a sentence.
 
 use openshard_entities::EntityId;
-use openshard_protocol::wire::Layer;
+use openshard_protocol::wire::{ClilocId, Layer};
 use openshard_state::armor::armor_data;
 use openshard_state::components::{Body, Graphic, Name, PoisonCharges, Price};
 use openshard_state::weapon::{LAYER_TWO_HANDED, WeaponKind, by_era, weapon_data, weapon_layer};
@@ -19,9 +19,9 @@ use openshard_state::{Skill, WorldState};
 use crate::check::roll_skill_band;
 
 /// "You are not certain..." — the failure both skills share.
-const NOT_CERTAIN: u32 = 500_353;
+const NOT_CERTAIN: ClilocId = ClilocId(500_353);
 /// "This is neither weapon nor armor."
-const NEITHER: u32 = 500_352;
+const NEITHER: ClilocId = ClilocId(500_352);
 
 /// The base of Arms Lore's damage sentences for a weapon the table calls an axe, a
 /// polearm or a staff — ServUO's final `else` branch. Each block is nine clilocs
@@ -43,14 +43,14 @@ const ARMS_DAMAGE_STRIDE: u32 = 9;
 const ARMS_ARMOR: u32 = 1_038_295;
 /// "It appears to have poison smeared on it." — the same line Taste ID uses, which
 /// is ServUO's: a weapon master notices a coated blade without having to lick it.
-const SMEARED_WITH_POISON: u32 = 1_038_284;
+const SMEARED_WITH_POISON: ClilocId = ClilocId(1_038_284);
 
 /// "You have no idea how much it might be worth." — Item ID's failure.
-const ITEM_ID_FAILED: u32 = 1_041_352;
+const ITEM_ID_FAILED: ClilocId = ClilocId(1_041_352);
 /// "It appears to be:" — followed by what it is.
-const ITEM_ID_IS: u32 = 1_041_349;
+const ITEM_ID_IS: ClilocId = ClilocId(1_041_349);
 /// "You guess the value of that item at:" — followed by a number.
-const ITEM_ID_VALUE: u32 = 1_041_351;
+const ITEM_ID_VALUE: ClilocId = ClilocId(1_041_351);
 
 /// Arms Lore: what a weapon does, or how well a piece of armour protects.
 ///
@@ -98,7 +98,7 @@ pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityI
             _ => ARMS_OTHER + hand + band * ARMS_DAMAGE_STRIDE,
         };
         if roll_skill_band(state, actor, id, 0, 1000) {
-            state.localized_message(actor, line, "");
+            state.localized_message(actor, ClilocId(line), "");
             // And whether somebody has been at it with a bottle.
             if state.registry.has::<PoisonCharges>(target) {
                 state.localized_message(actor, SMEARED_WITH_POISON, "");
@@ -113,7 +113,7 @@ pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityI
         // Eight lines over a rating capped at thirty-five, in bands of five.
         let band = u32::from(armor.rating).min(35).div_ceil(5);
         if roll_skill_band(state, actor, id, 0, 1000) {
-            state.localized_message(actor, ARMS_ARMOR + band, "");
+            state.localized_message(actor, ClilocId(ARMS_ARMOR + band), "");
         } else {
             state.localized_message(actor, NOT_CERTAIN, "");
         }

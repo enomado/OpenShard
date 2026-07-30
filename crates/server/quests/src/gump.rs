@@ -83,14 +83,16 @@ pub(crate) const fn row_of(button: ButtonId) -> Option<u32> {
 /// The sounds a quest plays, from `BaseQuest`. All four are per-player: they are
 /// feedback on a dialog one person is looking at.
 pub(crate) mod sound {
+    use openshard_protocol::wire::SoundId;
+
     /// A quest accepted.
-    pub const ACCEPT: u16 = 0x5B4;
+    pub const ACCEPT: SoundId = SoundId(0x5B4);
     /// A quest resigned.
-    pub const RESIGN: u16 = 0x5B3;
+    pub const RESIGN: SoundId = SoundId(0x5B3);
     /// A quest finished.
-    pub const COMPLETE: u16 = 0x5B5;
+    pub const COMPLETE: SoundId = SoundId(0x5B5);
     /// An objective moved.
-    pub const UPDATE: u16 = 0x5B6;
+    pub const UPDATE: SoundId = SoundId(0x5B6);
 }
 
 /// Clilocs the frame and the objective lines use, from `MondainQuestGump`.
@@ -668,7 +670,7 @@ pub(crate) const RESIGN_SWITCHES: usize = 2;
 pub(crate) const RESIGN_OK: ButtonId = ButtonId(1);
 
 /// Play one of the quest sounds for a player.
-pub(crate) fn play(state: &mut WorldState, player: EntityId, sound: u16) {
+pub(crate) fn play(state: &mut WorldState, player: EntityId, sound: openshard_protocol::wire::SoundId) {
     state.play_sound_to(player, sound);
 }
 

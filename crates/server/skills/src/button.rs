@@ -12,17 +12,17 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::wire::RawSkillId;
+use openshard_protocol::wire::{ClilocId, RawSkillId};
 use openshard_state::components::{Casting, Ghost, SkillCooldown};
 use openshard_state::{WorldState, skill};
 
 /// "That skill cannot be used directly." — the client's own line for a skill with
 /// no button behaviour.
-const CANNOT_USE_DIRECTLY: u32 = 500_014;
+const CANNOT_USE_DIRECTLY: ClilocId = ClilocId(500_014);
 
 /// "You must wait a few moments to use another skill." — ServUO's
 /// `Mobile.SendSkillMessage`.
-const MUST_WAIT: u32 = 500_118;
+const MUST_WAIT: ClilocId = ClilocId(500_118);
 
 /// A player asked to use a skill from the window.
 ///

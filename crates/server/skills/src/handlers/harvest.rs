@@ -19,7 +19,7 @@ use openshard_entities::EntityId;
 use openshard_movement::Terrain;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
-use openshard_protocol::wire::CursorId;
+use openshard_protocol::wire::{ClilocId, CursorId};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{Client, Harvesting, Position, Tool};
 use openshard_state::harvest::{
@@ -31,17 +31,17 @@ use crate::check::{roll_skill_band, skill_value};
 
 /// "You have worn out your tool!" — said before a cursor goes up, so a spent
 /// pickaxe never asks a question it cannot answer.
-const WORN_OUT: u32 = 1_044_038;
+const WORN_OUT: ClilocId = ClilocId(1_044_038);
 /// "Where do you wish to dig?" / the prompt each tool asks with.
-const DIG_WHERE: u32 = 503_033;
+const DIG_WHERE: ClilocId = ClilocId(503_033);
 /// "Target a mountain or cave." — what a pick says about a patch of grass.
-const NOT_MINABLE: u32 = 501_862;
+const NOT_MINABLE: ClilocId = ClilocId(501_862);
 /// "You can't use an axe on that." — ServUO's `Lumberjacking.OnBadHarvestTarget`.
-const NOT_CHOPPABLE: u32 = 500_489;
+const NOT_CHOPPABLE: ClilocId = ClilocId(500_489);
 /// "You can't fish there." — a line cast at dry land.
-const NOT_FISHABLE: u32 = 500_979;
+const NOT_FISHABLE: ClilocId = ClilocId(500_979);
 /// "You are already harvesting." — one swing at a time per tool.
-const ALREADY_BUSY: u32 = 500_972;
+const ALREADY_BUSY: ClilocId = ClilocId(500_972);
 
 /// The facet a Felucca-rate harvest is worth double on.
 ///
@@ -519,7 +519,7 @@ fn within_reach(state: &WorldState, harvester: EntityId, at: Point, range: u32) 
 
 /// What a tool says about ground it cannot work — ServUO's per-system
 /// `OnBadHarvestTarget`, which is a different sentence for each.
-fn bad_target_line(state: &WorldState, tool: EntityId) -> u32 {
+fn bad_target_line(state: &WorldState, tool: EntityId) -> ClilocId {
     let skill = state
         .registry
         .get::<openshard_state::components::Graphic>(tool)

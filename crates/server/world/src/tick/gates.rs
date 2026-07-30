@@ -14,13 +14,15 @@
 //! position it cannot miss somebody who steps on and off a gate inside one
 //! batch of commands, which is an ordinary thing for the inbox to hold.
 
-use super::*;
 use openshard_protocol::gump::{
     ButtonId, CloseGump, GUMP_WHITE, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout,
     GumpPoint, GumpResponse, SwitchId,
 };
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::SoundId;
 use openshard_state::components::{MOONGATE_GRAPHIC, MOONGATE_REACH, Moongate, Position};
+
+use super::*;
 
 /// The gump id the destination list is drawn under.
 ///
@@ -39,9 +41,9 @@ const MOONGATE_OK: ButtonId = ButtonId(1);
 const GATE_LIFETIME_SECONDS: u64 = 30;
 
 /// ServUO's `GateTravel` sound, played at both ends as the pair opens.
-const GATE_OPEN_SOUND: u16 = 0x020E;
+const GATE_OPEN_SOUND: SoundId = SoundId(0x020E);
 /// And the one a traveller makes arriving through one.
-const GATE_USE_SOUND: u16 = 0x01FE;
+const GATE_USE_SOUND: SoundId = SoundId(0x01FE);
 
 impl World {
     /// Open a gate at the caster and another at `destination`, each leading to

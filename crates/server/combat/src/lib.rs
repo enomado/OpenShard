@@ -20,7 +20,7 @@ use openshard_protocol::feedback::{EffectKind, GraphicalEffect};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::wire::Graphic as WireGraphic;
+use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
 use openshard_protocol::world::Point;
 use openshard_state::components::{
     BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
@@ -470,7 +470,7 @@ pub fn die(state: &mut WorldState, entity: EntityId, serial: Serial, killer: Opt
     // a wolf's yelp, a human's death gasp.
     state.animate(entity, Action::Die);
     if let Some(sound) = death_sound(state, entity) {
-        state.play_sound(entity, sound);
+        state.play_sound(entity, SoundId(sound));
     }
     // Announce it and stop. What becomes of the body — a corpse for a creature, a
     // ghost for a player — is the world's job off this event (the tick's `reap`);
@@ -611,7 +611,7 @@ pub fn volleys(state: &mut WorldState) {
         state.animate(attacker, Action::Attack);
         state.broadcast_packet(attacker, &ServerPacket::Effect(arrow));
         let sound = attack_sound(state, attacker, RANGED_HIT_SOUND);
-        state.play_sound(attacker, sound);
+        state.play_sound(attacker, SoundId(sound));
         // The bolt still flew and twanged; on a miss it simply finds no mark. The
         // hit roll trains the shooter's Archery the same as a melee swing trains
         // its weapon. Damage precedence matches melee via `scaled_blow`.
@@ -674,7 +674,7 @@ pub fn swings(state: &mut WorldState) {
         // Roll to hit (and train the weapon skill by trying). A miss whistles past
         // and does no damage; the timer resets either way.
         if !check_hit(state, attacker, target) {
-            state.play_sound(attacker, miss_sound(state, attacker));
+            state.play_sound(attacker, SoundId(miss_sound(state, attacker)));
             set_next_swing(state, attacker, now + swing_speed(state, attacker));
             continue;
         }
@@ -684,7 +684,7 @@ pub fn swings(state: &mut WorldState) {
         // just killed the target.
         let sound = attack_sound(state, attacker, MELEE_HIT_SOUND);
         damage(state, target_serial.raw(), blow, DamageType::Physical, by);
-        state.play_sound(attacker, sound);
+        state.play_sound(attacker, SoundId(sound));
         // A coated blade spends a dose into whatever it just cut.
         deliver_weapon_poison(state, attacker, target_serial.raw(), now);
         set_next_swing(state, attacker, now + swing_speed(state, attacker));

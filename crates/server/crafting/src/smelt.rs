@@ -14,6 +14,7 @@
 //! a double-click anywhere else says so.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::ClilocId;
 use openshard_skills::{roll_skill_band, skill_value};
 use openshard_state::components::{Graphic, Stackable};
 use openshard_state::harvest::{ORE_GRAPHIC, ORES};
@@ -37,15 +38,15 @@ const MAX_PER_SMELT: u16 = 30_000;
 /// "You must be near a forge to smelt ore." — ServUO says this by simply not
 /// accepting the target; a shard that answers nothing at all reads as broken, so
 /// the nearest stock line is used.
-const NO_FORGE: u32 = 1_044_267;
+const NO_FORGE: ClilocId = ClilocId(1_044_267);
 /// "You have no idea how to smelt this strange ore!"
-const TOO_STRANGE: u32 = 501_986;
+const TOO_STRANGE: ClilocId = ClilocId(501_986);
 /// "There is not enough metal-bearing ore in this pile to make an ingot."
-const NOT_ENOUGH: u32 = 501_987;
+const NOT_ENOUGH: ClilocId = ClilocId(501_987);
 /// "You smelt the ore removing the impurities and put the metal in your backpack."
-const SMELTED: u32 = 501_988;
+const SMELTED: ClilocId = ClilocId(501_988);
 /// "You burn away the impurities but are left with less useable metal."
-const BURNED: u32 = 501_990;
+const BURNED: ClilocId = ClilocId(501_990);
 
 /// How hard each metal is to smelt, in tenths — ServUO's `difficulty` switch,
 /// indexed like [`ORES`].

@@ -15,6 +15,7 @@
 //! without combat, magic or the AI knowing what a lute is.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{
     Contained, Discorded, Equipped, Graphic, Hitpoints, Instrument, Mana, Pacified, Skills, Stamina,
 };
@@ -24,40 +25,40 @@ use openshard_state::{Skill, TICKS_PER_SECOND, TargetPurpose, WorldState};
 use crate::check::roll_skill_band;
 
 /// "You play poorly, and there is no effect." — the Musicianship check failing.
-const PLAY_POORLY: u32 = 500_612;
+const PLAY_POORLY: ClilocId = ClilocId(500_612);
 /// "You must have an instrument to play." — nothing in the pack.
-const NEED_AN_INSTRUMENT: u32 = 500_617;
+const NEED_AN_INSTRUMENT: ClilocId = ClilocId(500_617);
 /// "Whom do you wish to calm?"
-const CALM_WHOM: u32 = 1_049_525;
+const CALM_WHOM: ClilocId = ClilocId(1_049_525);
 /// "You attempt to calm everyone, but fail."
-const AREA_CALM_FAILED: u32 = 500_613;
+const AREA_CALM_FAILED: ClilocId = ClilocId(500_613);
 /// "You have pacified the creature."
-const PACIFIED_IT: u32 = 1_049_532;
+const PACIFIED_IT: ClilocId = ClilocId(1_049_532);
 /// "You attempt to calm your target, but fail."
-const CALM_FAILED: u32 = 1_049_531;
+const CALM_FAILED: ClilocId = ClilocId(1_049_531);
 /// "You cannot calm that!"
-const CANNOT_CALM: u32 = 1_049_528;
+const CANNOT_CALM: ClilocId = ClilocId(1_049_528);
 /// "Whom do you wish to incite?"
-const INCITE_WHOM: u32 = 501_587;
+const INCITE_WHOM: ClilocId = ClilocId(501_587);
 /// "You play your music and your target becomes angered. Whom do you wish them to
 /// attack?"
-const ANGERED_WHOM: u32 = 1_008_085;
+const ANGERED_WHOM: ClilocId = ClilocId(1_008_085);
 /// "Your music fails to incite enough anger."
-const NOT_ANGRY_ENOUGH: u32 = 501_599;
+const NOT_ANGRY_ENOUGH: ClilocId = ClilocId(501_599);
 /// "Your music succeeds, as you start a fight."
-const FIGHT_STARTED: u32 = 501_602;
+const FIGHT_STARTED: ClilocId = ClilocId(501_602);
 /// "You can't tell someone to attack themselves!"
-const ATTACK_THEMSELVES: u32 = 501_593;
+const ATTACK_THEMSELVES: ClilocId = ClilocId(501_593);
 /// "You can't incite that!"
-const CANNOT_INCITE: u32 = 501_589;
+const CANNOT_INCITE: ClilocId = ClilocId(501_589);
 /// "Whom do you wish to entice?" — Discordance's prompt.
-const ENTICE_WHOM: u32 = 1_049_541;
+const ENTICE_WHOM: ClilocId = ClilocId(1_049_541);
 /// "You play the song suppressing your target's strength."
-const SUPPRESSED: u32 = 1_049_539;
+const SUPPRESSED: ClilocId = ClilocId(1_049_539);
 /// "You fail to disrupt your target."
-const DISCORD_FAILED: u32 = 1_049_540;
+const DISCORD_FAILED: ClilocId = ClilocId(1_049_540);
 /// "You hear jarring music, suppressing your strength." — told to the target.
-const HEAR_JARRING: u32 = 1_072_061;
+const HEAR_JARRING: ClilocId = ClilocId(1_072_061);
 
 /// The base of a bard's reach, in tiles — ServUO's `8 + value/15`.
 const BARD_RANGE_BASE: u32 = 8;

@@ -40,6 +40,7 @@ use crate::components::{
     Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing,
     TradeWindow, body_opens_doors,
 };
+use crate::connection::Connection;
 use crate::dialogue::Dialogue;
 use crate::harvest::Banks;
 use crate::obstruct::{LiveTerrain, Obstructions};
@@ -47,13 +48,12 @@ use crate::quest::QuestDefs;
 use crate::region::{Region, Regions};
 use crate::rng::Rng;
 use crate::sectors::{Sectors, VIEW_RANGE};
-use crate::session::Session;
 
 /// A character's height above the ground when the facet has no map to ask.
 const Z_WITHOUT_A_MAP: i8 = 0;
 
 /// "You stop meditating." — the line a broken trance says, ServUO's 500134.
-const STOP_MEDITATING: u32 = 500_134;
+const STOP_MEDITATING: ClilocId = ClilocId(500_134);
 
 /// The hue and font a private system line is drawn in — the client's usual muted
 /// grey, so it reads as the server talking rather than as a mobile speaking.
@@ -540,8 +540,9 @@ pub struct WorldState {
     /// Wider than [`players`](Self::players) on purpose: a connection exists from
     /// the moment the login conversation hands it over, which is before it has
     /// picked a character and after it has left one behind. See
-    /// [`Session`](crate::session::Session) for why that has to be expressible.
-    pub sessions: HashMap<ConnectionId, Session>,
+    /// [`Connection`](crate::connection::Connection) for why that has to be
+    /// expressible.
+    pub connections: HashMap<ConnectionId, Connection>,
     /// What each player's client currently has on screen.
     ///
     /// The server has to remember, because the client never says. There is no
@@ -929,19 +930,11 @@ impl WorldState {
     /// A no-op for a source with no `Position` (a contained item) — its holder's
     /// tile is where such a sound belongs, and that is the caller's to place. The
     /// `0x54` is placed in 3D so the client attenuates it by distance.
-    /// `sound` is still a bare id here, not a [`SoundId`]: the sound *tables* —
-    /// spell definitions, creature voices, instrument notes — carry raw numbers
-    /// out of config, and the newtype starts where the packet is built. Converting
-    /// those tables is its own sweep and would drag serde into the protocol
-    /// newtypes; nothing here unwraps a `SoundId`, which is the rule that matters.
-    pub fn play_sound(&mut self, source: EntityId, sound: u16) {
+    pub fn play_sound(&mut self, source: EntityId, sound: SoundId) {
         let Some(&Position(at)) = self.registry.get::<Position>(source) else {
             return;
         };
-        let packet = ServerPacket::PlaySound(PlaySound {
-            sound: SoundId(sound),
-            at,
-        });
+        let packet = ServerPacket::PlaySound(PlaySound { sound, at });
         self.broadcast_packet(source, &packet);
     }
 
@@ -974,14 +967,7 @@ impl WorldState {
     /// reads it in their own language, and the shard ships no English. `arguments`
     /// fills the cliloc's `~1_val~` slots, tab-separated, and is usually empty.
     /// A mobile with no client hears nothing, like [`system_message`](Self::system_message).
-    ///
-    /// `cliloc` is still a bare number here and not a [`ClilocId`], for the reason
-    /// [`play_sound`](Self::play_sound) gives: the *tables* — every ported ServUO
-    /// message id in `skills`, `crafting` and `items` — are raw numbers, and the
-    /// newtype starts where the packet is built. Converting those tables is its
-    /// own sweep; nothing here unwraps a `ClilocId`, which is the rule that
-    /// matters.
-    pub fn localized_message(&mut self, mobile: EntityId, cliloc: u32, arguments: &str) {
+    pub fn localized_message(&mut self, mobile: EntityId, cliloc: ClilocId, arguments: &str) {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
@@ -991,7 +977,7 @@ impl WorldState {
             mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
-            cliloc: ClilocId(cliloc),
+            cliloc,
             name: "System".to_owned(),
             arguments: arguments.to_owned(),
         });
@@ -1008,7 +994,7 @@ impl WorldState {
         &mut self,
         watcher: EntityId,
         source: EntityId,
-        cliloc: u32,
+        cliloc: ClilocId,
         arguments: &str,
     ) {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
@@ -1030,7 +1016,7 @@ impl WorldState {
             mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
-            cliloc: ClilocId(cliloc),
+            cliloc,
             name: String::new(),
             arguments: arguments.to_owned(),
         });
@@ -1079,17 +1065,14 @@ impl WorldState {
     /// mobile's own tile, so the client does not attenuate it away.
     ///
     /// A no-op for a mobile with no client (an NPC) or no position.
-    pub fn play_sound_to(&mut self, mobile: EntityId, sound: u16) {
+    pub fn play_sound_to(&mut self, mobile: EntityId, sound: SoundId) {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
         let Some(&Position(at)) = self.registry.get::<Position>(mobile) else {
             return;
         };
-        let packet = ServerPacket::PlaySound(PlaySound {
-            sound: SoundId(sound),
-            at,
-        });
+        let packet = ServerPacket::PlaySound(PlaySound { sound, at });
         self.send_packet(connection, &packet);
     }
 
@@ -1970,7 +1953,7 @@ impl WorldState {
     /// [`session`](crate::session).
     #[must_use]
     pub fn version_of(&self, connection: ConnectionId) -> Option<ClientVersion> {
-        self.sessions.get(&connection).map(|session| session.version)
+        self.connections.get(&connection).map(|client| client.version)
     }
 
     /// Who to answer for `entity`, and in which dialect: its connection and that

@@ -13,6 +13,7 @@
 //! animation for a craft that was never possible.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::{ClilocId, SoundId};
 use openshard_state::WorldState;
 use openshard_state::components::{CraftedBy, Crafting, Name, Position, Quality, Tool};
 
@@ -24,23 +25,23 @@ use crate::recipe::Recipe;
 use crate::system::{CraftSystemDef, SystemId};
 
 /// "You have worn out your tool!"
-const TOOL_WORN_OUT: u32 = 1_044_038;
+const TOOL_WORN_OUT: ClilocId = ClilocId(1_044_038);
 /// "The tool must be on your person to use."
-const TOOL_NOT_ON_PERSON: u32 = 1_044_263;
+const TOOL_NOT_ON_PERSON: ClilocId = ClilocId(1_044_263);
 /// "You don't have the required skills to attempt this item."
-const NO_SKILL: u32 = 1_044_153;
+const NO_SKILL: ClilocId = ClilocId(1_044_153);
 /// "You failed to create the item, and some of your materials are lost."
-const FAILED_LOST: u32 = 1_044_043;
+const FAILED_LOST: ClilocId = ClilocId(1_044_043);
 /// "You failed to create the item, but no materials were lost."
-const FAILED_KEPT: u32 = 1_044_157;
+const FAILED_KEPT: ClilocId = ClilocId(1_044_157);
 /// "You create the item."
-const MADE: u32 = 1_044_154;
+const MADE: ClilocId = ClilocId(1_044_154);
 /// "You create an exceptional quality item."
-const MADE_EXCEPTIONAL: u32 = 1_044_155;
+const MADE_EXCEPTIONAL: ClilocId = ClilocId(1_044_155);
 /// "You create an exceptional quality item and affix your maker's mark."
-const MADE_MARKED: u32 = 1_044_156;
+const MADE_MARKED: ClilocId = ClilocId(1_044_156);
 /// "You must wait to perform another action." — ServUO's `BeginAction` refusal.
-const ALREADY_BUSY: u32 = 500_119;
+const ALREADY_BUSY: ClilocId = ClilocId(500_119);
 /// The base skill a maker's mark wants: grandmaster, in tenths.
 const MARK_AT: u16 = 1000;
 
@@ -76,7 +77,7 @@ enum Blocked {
     /// It is not on the crafter's person.
     NotCarried,
     /// The workshop is not here.
-    NoWorkshop(u32),
+    NoWorkshop(ClilocId),
 }
 
 /// The tool and workshop gates — ServUO's `CanCraft`, less the recipe's own.
@@ -130,7 +131,7 @@ fn say_materials(state: &mut WorldState, crafter: EntityId, refusal: Refusal) {
         // needs telling.
         Refusal::NoPack => {}
         Refusal::NotEnough(text) | Refusal::CannotWork(text) => match text {
-            crate::system::Text::Cliloc(cliloc) => state.localized_message(crafter, cliloc, ""),
+            crate::system::Text::Cliloc(cliloc) => state.localized_message(crafter, ClilocId(cliloc), ""),
             crate::system::Text::Str(line) => state.system_message(crafter, line),
         },
     }
@@ -243,7 +244,7 @@ fn strike(state: &mut WorldState, crafter: EntityId, def: &CraftSystemDef) {
     // it gives a hidden crafter away.
     state.disrupt(crafter);
     state.break_cover(crafter);
-    if def.craft_sound != 0 {
+    if def.craft_sound != SoundId(0) {
         state.play_sound(crafter, def.craft_sound);
     }
 }

@@ -10,16 +10,18 @@
 //! is whether the *world* allows it, which is `magic::may_travel` plus the
 //! handful of things ServUO checks at the moment of arrival.
 
-use super::*;
 use openshard_protocol::gump::{
     ButtonId, CloseGump, GUMP_WHITE, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout,
     GumpPoint,
 };
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::SoundId;
 use openshard_state::components::{
     Combat, Contained, CriminalUntil, Equipped, Position, RECALL_RUNE_GRAPHIC, RuneMark, Runebook,
     RunebookEntry,
 };
+
+use super::*;
 
 impl World {
     /// The travel family's pre-cast refusals — ServUO's `Recall.CheckCast` and
@@ -275,7 +277,7 @@ impl World {
 const MAX_CONTAINER_DEPTH: usize = 16;
 
 /// ServUO's `Recall.cs` sound, played on departure and again on arrival.
-const RECALL_SOUND: u16 = 0x01FC;
+const RECALL_SOUND: SoundId = SoundId(0x01FC);
 
 /// The gump id the runebook is drawn under — its own, distinct from the quest
 /// log's `0x0051_*`, the craft window's `0x0052_0001` and the moongate list's

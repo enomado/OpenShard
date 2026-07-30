@@ -15,10 +15,13 @@
 //! The banks — the depletion-and-respawn state that makes a vein run dry — are
 //! [`Banks`], which lives on `FacetState` beside the sector grid.
 
+use std::collections::HashMap;
+
+use openshard_protocol::wire::{ClilocId, SoundId};
+
 use crate::rng::Rng;
 use crate::runtime::TICKS_PER_SECOND;
 use crate::skill::Skill;
-use std::collections::HashMap;
 
 /// Which of the four definitions a row is, and the key half of a bank's address.
 ///
@@ -68,7 +71,7 @@ pub struct HarvestResource {
     /// And the top.
     pub max_skill: i32,
     /// The cliloc said on a success — "You have found some iron ore."
-    pub success_cliloc: u32,
+    pub success_cliloc: ClilocId,
     /// The item art the yield is made of.
     pub graphic: u16,
     /// And its hue — ServUO's `CraftResources.GetHue`, which is the *only* thing
@@ -98,20 +101,20 @@ pub struct HarvestVein {
 #[derive(Clone, Copy, Debug)]
 pub struct HarvestMessages {
     /// The bank is empty, said when the swing is *begun*.
-    pub no_resources: u32,
+    pub no_resources: ClilocId,
     /// The bank ran empty *during* the swing — somebody else got there first.
-    pub double_harvest: u32,
+    pub double_harvest: ClilocId,
     /// Too far away, said when the swing is begun.
-    pub out_of_range: u32,
+    pub out_of_range: ClilocId,
     /// Walked away mid-swing. A different line from `out_of_range`, and the
     /// difference is the point: one is a mistake, the other is giving up.
-    pub timed_out_of_range: u32,
+    pub timed_out_of_range: ClilocId,
     /// The roll failed — "You loosen some rocks but fail to find any useable ore."
-    pub fail: u32,
+    pub fail: ClilocId,
     /// The yield would not fit in the pack.
-    pub pack_full: u32,
+    pub pack_full: ClilocId,
     /// The tool is spent.
-    pub tool_broke: u32,
+    pub tool_broke: ClilocId,
 }
 
 /// One harvesting system — ServUO's `HarvestDefinition`.
@@ -147,7 +150,7 @@ pub struct HarvestDef {
     /// The gesture each beat plays.
     pub action: HarvestAction,
     /// The sounds each beat may play, rolled between. Fishing has none.
-    pub sounds: &'static [u16],
+    pub sounds: &'static [SoundId],
     /// How many beats one harvest takes.
     pub beats: u16,
     /// How long a beat is, in ticks.
@@ -447,18 +450,18 @@ const ORE: HarvestDef = HarvestDef {
     consumed_felucca: 2,
     place_at_feet: false,
     action: HarvestAction::Mine,
-    sounds: &[0x125, 0x126],
+    sounds: &[SoundId(0x125), SoundId(0x126)],
     beats: 1,
     beat_ticks: BEAT_TICKS,
     sound_ticks: SOUND_TICKS,
     messages: HarvestMessages {
-        no_resources: 503_040,       // There is no metal here to mine.
-        double_harvest: 503_042,     // Someone has gotten to the metal before you.
-        out_of_range: 500_446,       // That is too far away.
-        timed_out_of_range: 503_041, // You have moved too far away to continue mining.
-        fail: 503_043,               // You loosen some rocks but fail to find any useable ore.
-        pack_full: 1_010_481,        // Your backpack is full, so the ore you mined is lost.
-        tool_broke: 1_044_038,       // You have worn out your tool!
+        no_resources: ClilocId(503_040),       // There is no metal here to mine.
+        double_harvest: ClilocId(503_042),     // Someone has gotten to the metal before you.
+        out_of_range: ClilocId(500_446),       // That is too far away.
+        timed_out_of_range: ClilocId(503_041), // You have moved too far away to continue mining.
+        fail: ClilocId(503_043), // You loosen some rocks but fail to find any useable ore.
+        pack_full: ClilocId(1_010_481), // Your backpack is full, so the ore you mined is lost.
+        tool_broke: ClilocId(1_044_038), // You have worn out your tool!
     },
     resources: ORES,
     veins: ORE_VEINS,
@@ -481,18 +484,18 @@ const SAND: HarvestDef = HarvestDef {
     consumed_felucca: 2,
     place_at_feet: false,
     action: HarvestAction::Mine,
-    sounds: &[0x125, 0x126],
+    sounds: &[SoundId(0x125), SoundId(0x126)],
     beats: 6,
     beat_ticks: BEAT_TICKS,
     sound_ticks: SOUND_TICKS,
     messages: HarvestMessages {
-        no_resources: 1_044_629,     // There is no sand here to mine.
-        double_harvest: 1_044_629,   // There is no sand here to mine.
-        out_of_range: 500_446,       // That is too far away.
-        timed_out_of_range: 503_041, // You have moved too far away to continue mining.
-        fail: 1_044_630,             // You dig for a while but fail to find any of sufficient quality.
-        pack_full: 1_044_632,        // Your backpack can't hold the sand, and it is lost!
-        tool_broke: 1_044_038,       // You have worn out your tool!
+        no_resources: ClilocId(1_044_629),     // There is no sand here to mine.
+        double_harvest: ClilocId(1_044_629),   // There is no sand here to mine.
+        out_of_range: ClilocId(500_446),       // That is too far away.
+        timed_out_of_range: ClilocId(503_041), // You have moved too far away to continue mining.
+        fail: ClilocId(1_044_630), // You dig for a while but fail to find any of sufficient quality.
+        pack_full: ClilocId(1_044_632), // Your backpack can't hold the sand, and it is lost!
+        tool_broke: ClilocId(1_044_038), // You have worn out your tool!
     },
     resources: SANDS,
     veins: ONE_VEIN,
@@ -516,18 +519,18 @@ const LUMBER_ML: HarvestDef = HarvestDef {
     consumed_felucca: 20,
     place_at_feet: false,
     action: HarvestAction::Chop,
-    sounds: &[0x13E],
+    sounds: &[SoundId(0x13E)],
     beats: 1,
     beat_ticks: BEAT_TICKS,
     sound_ticks: SOUND_TICKS,
     messages: HarvestMessages {
-        no_resources: 500_493,       // There's not enough wood here to harvest.
-        double_harvest: 500_493,     // There's not enough wood here to harvest.
-        out_of_range: 500_446,       // That is too far away.
-        timed_out_of_range: 500_446, // That is too far away.
-        fail: 500_495, // You hack at the tree for a while, but fail to produce any useable wood.
-        pack_full: 500_497, // You can't place any wood into your backpack!
-        tool_broke: 500_499, // You broke your axe.
+        no_resources: ClilocId(500_493),       // There's not enough wood here to harvest.
+        double_harvest: ClilocId(500_493),     // There's not enough wood here to harvest.
+        out_of_range: ClilocId(500_446),       // That is too far away.
+        timed_out_of_range: ClilocId(500_446), // That is too far away.
+        fail: ClilocId(500_495), // You hack at the tree for a while, but fail to produce any useable wood.
+        pack_full: ClilocId(500_497), // You can't place any wood into your backpack!
+        tool_broke: ClilocId(500_499), // You broke your axe.
     },
     resources: WOODS,
     veins: WOOD_VEINS,
@@ -573,13 +576,13 @@ const FISHING: HarvestDef = HarvestDef {
     beat_ticks: TICKS_PER_SECOND * 8,
     sound_ticks: 0,
     messages: HarvestMessages {
-        no_resources: 503_172,       // The fish don't seem to be biting here.
-        double_harvest: 503_172,     // The fish don't seem to be biting here.
-        out_of_range: 500_976,       // You need to be closer to the water to fish!
-        timed_out_of_range: 500_976, // You need to be closer to the water to fish!
-        fail: 503_171,               // You fish a while, but fail to catch anything.
-        pack_full: 503_176,          // You do not have room in your backpack for a fish.
-        tool_broke: 503_174,         // You broke your fishing pole.
+        no_resources: ClilocId(503_172),       // The fish don't seem to be biting here.
+        double_harvest: ClilocId(503_172),     // The fish don't seem to be biting here.
+        out_of_range: ClilocId(500_976),       // You need to be closer to the water to fish!
+        timed_out_of_range: ClilocId(500_976), // You need to be closer to the water to fish!
+        fail: ClilocId(503_171), // You fish a while, but fail to catch anything.
+        pack_full: ClilocId(503_176), // You do not have room in your backpack for a fish.
+        tool_broke: ClilocId(503_174), // You broke your fishing pole.
     },
     resources: FISHES,
     veins: ONE_VEIN,
@@ -628,7 +631,7 @@ const fn ore(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestReso
         req_skill: req,
         min_skill: min,
         max_skill: max,
-        success_cliloc: cliloc,
+        success_cliloc: ClilocId(cliloc),
         graphic: ORE_GRAPHIC,
         hue,
     }
@@ -666,7 +669,7 @@ static PLAIN_WOOD: &[HarvestResource] = &[HarvestResource {
     req_skill: 0,
     min_skill: 0,
     max_skill: 1000,
-    success_cliloc: 500_498, // You put some logs in your backpack.
+    success_cliloc: ClilocId(500_498), // You put some logs in your backpack.
     graphic: LOG_GRAPHIC,
     hue: 0,
 }];
@@ -677,7 +680,7 @@ const fn wood(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestRes
         req_skill: req,
         min_skill: min,
         max_skill: max,
-        success_cliloc: cliloc,
+        success_cliloc: ClilocId(cliloc),
         graphic: LOG_GRAPHIC,
         hue,
     }
@@ -700,7 +703,7 @@ static SANDS: &[HarvestResource] = &[HarvestResource {
     req_skill: 1000,
     min_skill: 700,
     max_skill: 1000,
-    success_cliloc: 1_044_631, // You carefully dig up some workable sand.
+    success_cliloc: ClilocId(1_044_631), // You carefully dig up some workable sand.
     graphic: SAND_GRAPHIC,
     hue: 0,
 }];
@@ -710,7 +713,7 @@ static FISHES: &[HarvestResource] = &[HarvestResource {
     req_skill: 0,
     min_skill: 0,
     max_skill: 1200,
-    success_cliloc: 1_043_297, // You pull out a heavy and beautiful fish!
+    success_cliloc: ClilocId(1_043_297), // You pull out a heavy and beautiful fish!
     graphic: FISH_GRAPHIC,
     hue: 0,
 }];

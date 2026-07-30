@@ -23,7 +23,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::spellbook::SpellbookContent;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::trade::{encode_trade_close, encode_trade_open, encode_trade_update};
-use openshard_protocol::wire::{CursorId, Hue, Layer, RawLayer};
+use openshard_protocol::wire::{ClilocId, CursorId, Hue, Layer, RawLayer, SoundId};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{
     Amount, Body, Client, Combat, Contained, Container, Corpse, Decays, Decoration, Door, Equipped, Ghost,

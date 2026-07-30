@@ -11,6 +11,7 @@
 //! cursor was up poisons nothing.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::{ClilocId, SoundId};
 use openshard_state::components::{
     Amount, EMPTY_BOTTLE_GRAPHIC, Graphic, POISON_POTION_GRAPHIC, PoisonCharges,
 };
@@ -20,22 +21,22 @@ use openshard_state::{Skill, TargetPurpose, WorldState};
 use crate::check::roll_skill_band;
 
 /// "To what do you wish to apply the poison?" — the prompt for the second cursor.
-const APPLY_TO_WHAT: u32 = 502_142;
+const APPLY_TO_WHAT: ClilocId = ClilocId(502_142);
 /// "That is not a poison potion."
-const NOT_A_POTION: u32 = 502_139;
+const NOT_A_POTION: ClilocId = ClilocId(502_139);
 /// "You cannot poison that! You can only poison bladed or piercing weapons, food
 /// or drink." — the pre-AoS refusal.
-const CANNOT_POISON: u32 = 502_145;
+const CANNOT_POISON: ClilocId = ClilocId(502_145);
 /// "You apply the poison."
-const APPLIED: u32 = 1_010_517;
+const APPLIED: ClilocId = ClilocId(1_010_517);
 /// "You fail to apply a sufficient dose of poison on the blade" — the slashing form.
-const FAILED_ON_BLADE: u32 = 1_010_516;
+const FAILED_ON_BLADE: ClilocId = ClilocId(1_010_516);
 /// "You fail to apply a sufficient dose of poison" — everything else.
-const FAILED: u32 = 1_010_518;
+const FAILED: ClilocId = ClilocId(1_010_518);
 /// "You make a grave mistake while applying the poison."
-const GRAVE_MISTAKE: u32 = 502_148;
+const GRAVE_MISTAKE: ClilocId = ClilocId(502_148);
 /// The sound of a bottle being uncorked over a blade — ServUO's `PlaySound(0x4F)`.
-const APPLY_SOUND: u16 = 0x004F;
+const APPLY_SOUND: SoundId = SoundId(0x004F);
 /// What poisoning yourself costs in karma on success — ServUO's `AwardKarma(-20)`.
 /// Coating a blade is not a nice thing to do.
 const KARMA_COST: i32 = -20;
@@ -45,13 +46,13 @@ const FUMBLE_BELOW: u16 = 800;
 const FUMBLE_ONE_IN: u32 = 20;
 
 /// "It appears to have poison smeared on it."
-const TASTES_POISONED: u32 = 1_038_284;
+const TASTES_POISONED: ClilocId = ClilocId(1_038_284);
 /// "You detect nothing unusual about this substance."
-const TASTES_CLEAN: u32 = 1_010_600;
+const TASTES_CLEAN: ClilocId = ClilocId(1_010_600);
 /// "You cannot discern anything about this substance." — the failed roll.
-const CANNOT_DISCERN: u32 = 502_823;
+const CANNOT_DISCERN: ClilocId = ClilocId(502_823);
 /// "You feel that such an action would be inappropriate." — tasting a person.
-const INAPPROPRIATE: u32 = 502_816;
+const INAPPROPRIATE: ClilocId = ClilocId(502_816);
 
 /// The Poisoning band each poison strength is applied against, in tenths — the
 /// potion classes' `MinPoisoningSkill`/`MaxPoisoningSkill`, indexed by level.

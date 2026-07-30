@@ -14,6 +14,7 @@
 use openshard_entities::EntityId;
 use openshard_protocol::gump::{ButtonId, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint};
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{
     Body, BodyType, Client, Ghost, Hitpoints, Mana, Pet, Resistance, Skills, Stamina, Stats,
 };
@@ -22,15 +23,15 @@ use openshard_state::{Skill, WorldState};
 use crate::check::roll_skill_band;
 
 /// "That's not an animal!"
-const NOT_AN_ANIMAL: u32 = 500_329;
+const NOT_AN_ANIMAL: ClilocId = ClilocId(500_329);
 /// "The spirits of the dead are not the province of animal lore."
-const NOT_THE_DEAD: u32 = 500_331;
+const NOT_THE_DEAD: ClilocId = ClilocId(500_331);
 /// "At your skill level, you can only lore tamed creatures."
-const ONLY_TAMED: u32 = 1_049_674;
+const ONLY_TAMED: ClilocId = ClilocId(1_049_674);
 /// "At your skill level, you can only lore tamed or tameable creatures."
-const ONLY_TAMEABLE: u32 = 1_049_675;
+const ONLY_TAMEABLE: ClilocId = ClilocId(1_049_675);
 /// "You can't think of anything you know offhand."
-const NOTHING_OFFHAND: u32 = 500_334;
+const NOTHING_OFFHAND: ClilocId = ClilocId(500_334);
 
 /// The gump id the window is drawn under. Its own number, so a reply cannot be
 /// confused with a quest dialog's.

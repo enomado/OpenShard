@@ -675,7 +675,10 @@ fn into_world(command: ScriptCommand) -> Command {
             gump_id: openshard_protocol::gump::GumpId(gump_id),
         },
         ScriptCommand::Message { serial, text } => Command::Message { serial, text },
-        ScriptCommand::PlaySound { serial, sound } => Command::PlaySound { serial, sound },
+        ScriptCommand::PlaySound { serial, sound } => Command::PlaySound {
+            serial,
+            sound: openshard_protocol::wire::SoundId(sound),
+        },
         ScriptCommand::GiveItem {
             serial,
             graphic,

@@ -56,11 +56,11 @@ pub const TRADE_LAYER: Layer = Layer(0x1E);
 const TRADE_CONTAINER_GUMP: u16 = 0x003C;
 
 /// "You cannot trade with someone who is dragging something."
-const CLILOC_PARTNER_IS_DRAGGING: u32 = 1_062_727;
+const CLILOC_PARTNER_IS_DRAGGING: ClilocId = ClilocId(1_062_727);
 /// "That person is already involved in a trade."
-const CLILOC_THEY_ARE_TRADING: u32 = 1_062_779;
+const CLILOC_THEY_ARE_TRADING: ClilocId = ClilocId(1_062_779);
 /// "You are already trading with someone else!"
-const CLILOC_YOU_ARE_TRADING: u32 = 1_062_781;
+const CLILOC_YOU_ARE_TRADING: ClilocId = ClilocId(1_062_781);
 
 /// Whether `entity` is a player: a body with a client behind it.
 ///

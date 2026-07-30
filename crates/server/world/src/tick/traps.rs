@@ -1,24 +1,26 @@
-use super::*;
+use openshard_protocol::wire::{ClilocId, SoundId};
 use openshard_state::components::{Trap, TrapKind};
 
+use super::*;
+
 /// The sound a sprung magic or explosion trap makes — ServUO's `PlaySound(0x307)`.
-const BLAST_SOUND: u16 = 0x0307;
+const BLAST_SOUND: SoundId = SoundId(0x0307);
 /// A dart trap's twang.
-const DART_SOUND: u16 = 0x0223;
+const DART_SOUND: SoundId = SoundId(0x0223);
 /// The hiss of a poison cloud.
-const POISON_SOUND: u16 = 0x0231;
+const POISON_SOUND: SoundId = SoundId(0x0231);
 /// The explosion's flame, and the dart's — ServUO's `0x36BD` location effect.
 const BLAST_GRAPHIC: u16 = 0x36BD;
 /// The green cloud a poison trap lets out.
 const CLOUD_GRAPHIC: u16 = 0x113A;
 /// "You set off a trap!"
-const SET_OFF_A_TRAP: u32 = 502_999;
+const SET_OFF_A_TRAP: ClilocId = ClilocId(502_999);
 /// "Your skin blisters from the heat!"
-const SKIN_BLISTERS: u32 = 503_000;
+const SKIN_BLISTERS: ClilocId = ClilocId(503_000);
 /// "A dart imbeds itself in your flesh!"
-const DART_IN_FLESH: u32 = 502_998;
+const DART_IN_FLESH: ClilocId = ClilocId(502_998);
 /// "You are enveloped in a noxious green cloud!"
-const NOXIOUS_CLOUD: u32 = 503_004;
+const NOXIOUS_CLOUD: ClilocId = ClilocId(503_004);
 
 impl World {
     /// Spring a container's trap on whoever just opened it, if it has one.

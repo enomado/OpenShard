@@ -10,6 +10,7 @@
 //! the version this engine's ghosts are built for.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::{ClilocId, SoundId};
 use openshard_state::components::{Equipped, HearsGhosts, Hitpoints, Mana, Meditating, Spellbook};
 use openshard_state::weapon::{LAYER_ONE_HANDED, LAYER_TWO_HANDED};
 use openshard_state::{Skill, TICKS_PER_SECOND, WorldState};
@@ -17,28 +18,28 @@ use openshard_state::{Skill, TICKS_PER_SECOND, WorldState};
 use crate::check::roll_skill_band;
 
 /// "You are busy doing something else and cannot focus."
-const BUSY: u32 = 501_845;
+const BUSY: ClilocId = ClilocId(501_845);
 /// "The mind is strong but the body is weak." — under a tenth of your hit points.
-const BODY_TOO_WEAK: u32 = 501_849;
+const BODY_TOO_WEAK: ClilocId = ClilocId(501_849);
 /// "You are at peace." — nothing to meditate for.
-const AT_PEACE: u32 = 501_846;
+const AT_PEACE: ClilocId = ClilocId(501_846);
 /// "Your hands must be free to cast spells or meditate."
-const HANDS_NOT_FREE: u32 = 502_626;
+const HANDS_NOT_FREE: ClilocId = ClilocId(502_626);
 /// "You enter a meditative trance."
-const TRANCE: u32 = 501_851;
+const TRANCE: ClilocId = ClilocId(501_851);
 /// "You cannot focus your concentration."
-const NO_FOCUS: u32 = 501_850;
+const NO_FOCUS: ClilocId = ClilocId(501_850);
 /// The sound a trance begins with — ServUO's `PlaySound(0xF9)`.
-const TRANCE_SOUND: u16 = 0x00F9;
+const TRANCE_SOUND: SoundId = SoundId(0x00F9);
 
 /// "You contact the netherworld."
-const CONTACT: u32 = 502_444;
+const CONTACT: ClilocId = ClilocId(502_444);
 /// "You fail to contact the netherworld."
-const NO_CONTACT: u32 = 502_443;
+const NO_CONTACT: ClilocId = ClilocId(502_443);
 /// "You feel your contact with the netherworld fading."
-const CONTACT_FADING: u32 = 502_445;
+const CONTACT_FADING: ClilocId = ClilocId(502_445);
 /// The sound of reaching the netherworld — ServUO's `PlaySound(0x24A)`.
-const CONTACT_SOUND: u16 = 0x024A;
+const CONTACT_SOUND: SoundId = SoundId(0x024A);
 /// The shortest contact with the dead, in seconds, however little skill was used.
 const CONTACT_FLOOR_SECONDS: u64 = 15;
 

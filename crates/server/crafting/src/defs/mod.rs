@@ -12,6 +12,7 @@ pub mod carpentry;
 pub mod tailoring;
 pub mod tinkering;
 
+use openshard_protocol::wire::{ClilocId, SoundId};
 use openshard_state::{Skill, TICKS_PER_SECOND};
 
 use crate::system::{CraftSystemDef, Eca, Needs, SystemId, Text};
@@ -22,7 +23,7 @@ use crate::system::{CraftSystemDef, Eca, Needs, SystemId, Text};
 const DELAY_TICKS: u64 = TICKS_PER_SECOND * 5 / 4;
 
 /// "You must be near an anvil and a forge to smith items."
-const NEEDS_SMITHY: u32 = 1_044_267;
+const NEEDS_SMITHY: ClilocId = ClilocId(1_044_267);
 
 /// The trades a shard can practise, in the order their ids are numbered.
 ///
@@ -41,7 +42,7 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x2A,
+        craft_sound: SoundId(0x2A),
         needs: Needs::smithy(),
         needs_message: NEEDS_SMITHY,
         groups: blacksmithy::GROUPS,
@@ -59,9 +60,9 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x248,
+        craft_sound: SoundId(0x248),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: tailoring::GROUPS,
         recipes: tailoring::RECIPES,
         sub_res: Some(tailoring::SUB_RES),
@@ -75,9 +76,9 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x23D,
+        craft_sound: SoundId(0x23D),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: carpentry::GROUPS,
         recipes: carpentry::RECIPES,
         sub_res: Some(carpentry::SUB_RES),
@@ -91,9 +92,9 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x23B,
+        craft_sound: SoundId(0x23B),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: tinkering::GROUPS,
         recipes: tinkering::RECIPES,
         sub_res: Some(tinkering::SUB_RES),
@@ -109,9 +110,9 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x242,
+        craft_sound: SoundId(0x242),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: alchemy::GROUPS,
         recipes: alchemy::RECIPES,
         sub_res: None,
