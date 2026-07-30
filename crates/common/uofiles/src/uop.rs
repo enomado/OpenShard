@@ -378,6 +378,86 @@ mod tests {
         assert!(Header::parse(&good).is_some());
     }
 
+    /// Point `OPENSHARD_CLIENT` at a UO client install to run the tests below.
+    ///
+    /// They skip when it is unset: a test that needs two gigabytes of
+    /// copyrighted files cannot be a test everyone runs, and there is no path
+    /// that is correct on two machines.
+    fn client_dir() -> Option<PathBuf> {
+        let dir = PathBuf::from(std::env::var_os("OPENSHARD_CLIENT")?);
+        dir.join("map0LegacyMUL.uop").exists().then_some(dir)
+    }
+
+    #[test]
+    fn a_real_containers_entries_are_not_in_offset_order() {
+        // The claim `read_concatenated` is built on, checked against a shipped
+        // container rather than reasoning. Sorting entries by offset and
+        // skipping the hash is the obvious shortcut, and on this file it is
+        // catastrophic: index 0 lives at byte 17,699,812 and index 1 at byte
+        // 512, so the shortcut would put the second chunk of Felucca first and
+        // the map would parse perfectly and be scrambled.
+        //
+        // If a future client ever did write its entries in index order, this
+        // test failing is the good outcome: it would mean the shortcut had
+        // become tempting again on the very file that disproves it.
+        let Some(dir) = client_dir() else {
+            return;
+        };
+        let path = dir.join("map0LegacyMUL.uop");
+        let bytes = std::fs::read(&path).unwrap();
+        let header = Header::parse(&bytes).expect("a shipped map container is a UOP");
+        let entries = header.entries(&bytes, &path).unwrap();
+
+        assert!(header.file_count > 1, "a facet is more than one chunk");
+        assert_eq!(
+            entries.len(),
+            header.file_count,
+            "every index resolves to exactly one entry, so no chunk is missing or doubled"
+        );
+
+        let offsets: Vec<usize> = (0..header.file_count)
+            .map(|index| {
+                let hash = hash_file_name(format!("build/map0legacymul/{index:08}.dat").as_bytes());
+                entries
+                    .get(&hash)
+                    .unwrap_or_else(|| panic!("index {index} hashes to no entry"))
+                    .data_offset
+            })
+            .collect();
+
+        assert!(
+            !offsets.windows(2).all(|pair| pair[0] < pair[1]),
+            "entries came out in offset order, which would make the name hash look optional"
+        );
+    }
+
+    #[test]
+    fn every_chunk_of_a_real_facet_is_stored_uncompressed() {
+        // `UopError::Compressed` exists because a chunk we cannot inflate is a
+        // hole in the world rather than something to skip. It has never fired,
+        // and this is what says so about a client someone actually runs — not
+        // about the one whose behaviour got the error written.
+        let Some(dir) = client_dir() else {
+            return;
+        };
+        let mut checked = 0;
+        for facet in 0..=5u8 {
+            let path = dir.join(format!("map{facet}LegacyMUL.uop"));
+            if !path.exists() {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            let header = Header::parse(&bytes).unwrap();
+            for entry in header.entries(&bytes, &path).unwrap().values() {
+                assert_eq!(entry.compression, 0, "{} has a compressed chunk", path.display());
+                checked += 1;
+            }
+        }
+        // Without this the test passes just as happily on a directory of no
+        // containers at all.
+        assert!(checked > 100, "only {checked} chunks were examined");
+    }
+
     #[test]
     fn a_block_chain_that_loops_is_refused_rather_than_hanging() {
         // A corrupt container can point a block at itself. Without a bound this

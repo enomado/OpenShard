@@ -14,6 +14,18 @@
 //! `map0.mul` has no header. The only thing that says how wide a facet is, is
 //! the file's own length divided by the block size. A modern map0 is 7168×4096
 //! — the post-ML expansion — not the 6144×4096 of every tutorial.
+//!
+//! # And the block count does not always name one facet
+//!
+//! Malas is 2560×4096/8² and Ter Mur is 1280×4096/8², and both come to **81,920
+//! blocks**. The two files are the same length, neither carries a header, and
+//! their `staidx` files are the same length too — so every check the block count
+//! can make passes for the wrong one. Loading Ter Mur as Malas is the exact
+//! failure the block-order note above describes: 512 blocks per column read as
+//! 256, so everything past the first column lands somewhere else, and it parses
+//! perfectly. The facet's *number* is the only thing that separates them, which
+//! is why [`Map::load_facet`] carries it into the size decision and [`Map::load`]
+//! — which has only a path — cannot.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -176,18 +188,25 @@ impl fmt::Debug for Map {
 }
 
 impl Map {
-    /// Load a facet, working out its size from the file.
+    /// Load a facet from a path alone, working out its size from the file.
     ///
     /// `statics` is optional: a map with no statics is bare ground, which is
     /// wrong but not unusable, and being able to load one makes the map testable
     /// on its own.
+    ///
+    /// # This cannot tell Malas from Ter Mur
+    ///
+    /// They are the same number of blocks and a path is not a facet number, so
+    /// an 81,920-block file loads as Malas. Prefer [`Map::load_facet`], which
+    /// knows which facet it asked for; this exists for a file that is not in a
+    /// client install at all.
     pub fn load(
         map_path: impl AsRef<Path>,
         statics_paths: Option<(impl AsRef<Path>, impl AsRef<Path>)>,
     ) -> Result<Self, MapError> {
         let map_path = map_path.as_ref();
         let bytes = read(map_path)?;
-        Self::from_bytes(map_path, bytes, statics_paths)
+        Self::from_bytes(map_path, bytes, statics_paths, None)
     }
 
     /// Load a facet, preferring the UOP container over the `.mul`.
@@ -208,28 +227,35 @@ impl Map {
             dir.join(format!("statics{facet}.mul")),
         ));
 
-        let bytes = if uop.exists() {
+        // Whichever file was actually read is the one an error should name.
+        let (source_path, bytes) = if uop.exists() {
             let pattern = |index: usize| format!("build/map{facet}legacymul/{index:08}.dat");
-            crate::uop::read_concatenated(&uop, &pattern).map_err(|source| MapError::Uop {
+            let bytes = crate::uop::read_concatenated(&uop, &pattern).map_err(|source| MapError::Uop {
                 path: uop.clone(),
                 source: Box::new(source),
-            })?
+            })?;
+            (uop, bytes)
         } else {
-            read(&dir.join(format!("map{facet}.mul")))?
+            let mul = dir.join(format!("map{facet}.mul"));
+            let bytes = read(&mul)?;
+            (mul, bytes)
         };
 
-        Self::from_bytes(&uop, bytes, statics)
+        Self::from_bytes(&source_path, bytes, statics, Some(facet))
     }
 
+    /// `facet` is the facet number when the caller knows it, and is what breaks
+    /// the Malas/Ter Mur tie described in this module's header.
     fn from_bytes(
         map_path: &Path,
         mut bytes: Vec<u8>,
         statics_paths: Option<(impl AsRef<Path>, impl AsRef<Path>)>,
+        facet: Option<u8>,
     ) -> Result<Self, MapError> {
         // A UOP container is allocated in fixed chunks and comes out a block or
         // two longer than the facet. Trim to the largest whole facet that fits
         // rather than refusing: the tail is padding, not data.
-        if let Some(size) = largest_facet_within(bytes.len() / BLOCK_BYTES) {
+        if let Some(size) = largest_facet_within(bytes.len() / BLOCK_BYTES, facet) {
             bytes.truncate(size * BLOCK_BYTES);
         }
 
@@ -240,7 +266,7 @@ impl Map {
             });
         }
         let blocks = bytes.len() / BLOCK_BYTES;
-        let (width, height) = facet_size(blocks).ok_or_else(|| MapError::UnknownFacet {
+        let (width, height) = facet_size(blocks, facet).ok_or_else(|| MapError::UnknownFacet {
             path: map_path.to_owned(),
             blocks,
         })?;
@@ -415,15 +441,21 @@ fn read(path: &Path) -> Result<Vec<u8>, MapError> {
     })
 }
 
-/// Work out a facet's dimensions from its block count.
+/// How many blocks a facet of this shape holds.
+const fn blocks_in(width: u32, height: u32) -> usize {
+    ((width / BLOCK_SIZE) * (height / BLOCK_SIZE)) as usize
+}
+
+/// The largest whole facet that fits in `blocks`, so a padded UOP can be
+/// trimmed to it.
 ///
-/// The file has no header, so this is the only source of truth. Known facets
-/// first; anything else is refused rather than guessed, because a wrong guess
-/// transposes the map silently.
-fn largest_facet_within(blocks: usize) -> Option<usize> {
-    KNOWN_FACETS
+/// Bounded by `facet`'s own shapes when the caller knows which facet this is:
+/// trimming to a shape this facet could never be would be padding removed by
+/// coincidence.
+fn largest_facet_within(blocks: usize, facet: Option<u8>) -> Option<usize> {
+    candidate_shapes(facet)
         .iter()
-        .map(|(width, height)| ((width / BLOCK_SIZE) * (height / BLOCK_SIZE)) as usize)
+        .map(|(width, height)| blocks_in(*width, *height))
         .filter(|size| *size <= blocks)
         .max()
 }
@@ -438,13 +470,44 @@ const KNOWN_FACETS: [(u32, u32); 6] = [
     (1280, 4096),
 ];
 
-fn facet_size(blocks: usize) -> Option<(u32, u32)> {
-    for (width, height) in KNOWN_FACETS {
-        if blocks == ((width / BLOCK_SIZE) * (height / BLOCK_SIZE)) as usize {
-            return Some((width, height));
-        }
-    }
-    None
+/// The shapes each facet number is allowed to be.
+///
+/// Britannia is listed twice because it grew: map0 and map1 were 6144 wide until
+/// Mondain's Legacy widened them to 7168, and a client of either age is a client
+/// somebody runs. Every other facet has exactly one shape, and that is what
+/// makes this table able to answer a question the block count cannot — Malas and
+/// Ter Mur are both 81,920 blocks, and only their *number* tells them apart.
+const FACET_SHAPES: [&[(u32, u32)]; 6] = [
+    &[(7168, 4096), (6144, 4096)], // 0 Felucca
+    &[(7168, 4096), (6144, 4096)], // 1 Trammel
+    &[(2304, 1600)],               // 2 Ilshenar
+    &[(2560, 2048)],               // 3 Malas
+    &[(1448, 1448)],               // 4 Tokuno
+    &[(1280, 4096)],               // 5 Ter Mur
+];
+
+/// The shapes worth considering for `facet`.
+///
+/// A facet number past the table is one no client ships. It falls back to every
+/// known shape rather than refusing, because the caller has a file in hand and
+/// the block count may well still identify it.
+fn candidate_shapes(facet: Option<u8>) -> &'static [(u32, u32)] {
+    facet
+        .and_then(|facet| FACET_SHAPES.get(facet as usize).copied())
+        .unwrap_or(&KNOWN_FACETS)
+}
+
+/// Work out a facet's dimensions from its block count, and from which facet it
+/// is when the count alone cannot say.
+///
+/// The file has no header, so this is the only source of truth. Anything that
+/// matches no candidate is refused rather than guessed, because a wrong guess
+/// transposes the map silently.
+fn facet_size(blocks: usize, facet: Option<u8>) -> Option<(u32, u32)> {
+    candidate_shapes(facet)
+        .iter()
+        .copied()
+        .find(|(width, height)| blocks == blocks_in(*width, *height))
 }
 
 #[cfg(test)]
@@ -496,22 +559,62 @@ mod tests {
         // every block after the first column in the wrong place.
         let blocks = 89_915_392 / BLOCK_BYTES;
         assert_eq!(blocks, 458_752);
-        assert_eq!(facet_size(blocks), Some((7168, 4096)));
+        assert_eq!(facet_size(blocks, Some(0)), Some((7168, 4096)));
+        assert_eq!(facet_size(blocks, None), Some((7168, 4096)));
         assert_eq!(describe_size(7168, 4096), "Felucca/Trammel (post-ML)");
     }
 
     #[test]
     fn the_classic_facet_is_still_recognised() {
-        let blocks = ((6144 / BLOCK_SIZE) * (4096 / BLOCK_SIZE)) as usize;
-        assert_eq!(facet_size(blocks), Some((6144, 4096)));
+        let blocks = blocks_in(6144, 4096);
+        assert_eq!(facet_size(blocks, Some(0)), Some((6144, 4096)));
+        assert_eq!(facet_size(blocks, None), Some((6144, 4096)));
     }
 
     #[test]
     fn an_unknown_block_count_is_refused_rather_than_guessed() {
         // Guessing would transpose the map, and it would parse cleanly.
-        assert_eq!(facet_size(0), None);
-        assert_eq!(facet_size(1), None);
-        assert_eq!(facet_size(458_751), None);
+        assert_eq!(facet_size(0, None), None);
+        assert_eq!(facet_size(1, None), None);
+        assert_eq!(facet_size(458_751, None), None);
+    }
+
+    #[test]
+    fn malas_and_ter_mur_are_the_same_size_and_only_the_facet_number_parts_them() {
+        // The collision itself, in arithmetic: 320x256 and 160x512.
+        assert_eq!(blocks_in(2560, 2048), 81_920);
+        assert_eq!(blocks_in(1280, 4096), 81_920);
+
+        // With the facet number, each file is what it says it is.
+        assert_eq!(facet_size(81_920, Some(3)), Some((2560, 2048)), "Malas");
+        assert_eq!(facet_size(81_920, Some(5)), Some((1280, 4096)), "Ter Mur");
+
+        // Without it there is no honest answer, and the documented one is Malas.
+        // Pinned so that changing it is a decision rather than a reordering of
+        // `KNOWN_FACETS`.
+        assert_eq!(facet_size(81_920, None), Some((2560, 2048)));
+    }
+
+    #[test]
+    fn a_facet_number_no_client_ships_falls_back_to_every_shape() {
+        // Not an error: the caller has a file, and the block count may still
+        // identify it. It must not silently become "no known facet".
+        assert_eq!(facet_size(blocks_in(1448, 1448), Some(9)), Some((1448, 1448)));
+        assert_eq!(facet_size(7, Some(9)), None);
+    }
+
+    #[test]
+    fn a_padded_container_is_trimmed_to_the_shape_its_facet_can_be() {
+        // A UOP is allocated in chunks and runs past the facet. Ter Mur's
+        // container holds a few blocks more than 81,920; trimming must land on
+        // Ter Mur's own size and not on some larger facet's.
+        assert_eq!(largest_facet_within(81_920 + 5, Some(5)), Some(81_920));
+        assert_eq!(largest_facet_within(81_920 + 5, Some(3)), Some(81_920));
+        // Tokuno is smaller than either, and its own shape is the right answer
+        // even though bigger shapes exist.
+        assert_eq!(largest_facet_within(81_920, Some(4)), Some(blocks_in(1448, 1448)));
+        // Nothing fits inside a file smaller than the smallest facet.
+        assert_eq!(largest_facet_within(3, Some(4)), None);
     }
 
     /// A 2x2-block map (16x16 tiles) where every cell records its own index.

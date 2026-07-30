@@ -161,6 +161,35 @@ targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
   ends quietly agree on the same mistake. Every packet this client learns should
   be checked against a real client's behaviour, not only against our own server.
 
+## Backlog, found while pointing the readers at a real install
+
+`crates/common/uofiles/tests/client_files.rs` is the suite that found these: the
+readers had good tests, and every one of them was against a fixture the reader's
+own understanding had written.
+
+- ~~**Ter Mur loaded as Malas.**~~ Fixed. Malas is 320×256 blocks and Ter Mur is
+  160×512, and both are **81,920** — so the block count, the only thing the file
+  offers, names the wrong facet. Their `staidx` files are the same length too,
+  which means the one consistency check that exists also passes. The result was a
+  facet read at 256 blocks per column instead of 512: everything past the first
+  column somewhere else, no error, no complaint. `facet_size` now takes the facet
+  number `load_facet` already had. `Map::load`, which has only a path, still
+  cannot tell them apart, and its doc now says so.
+- **`Map::load` is public and called only by its own tests.** It is also the one
+  entry point that cannot resolve the collision above. Either it grows a facet
+  argument or it stops being `pub` — but that is a decision about who is supposed
+  to call it, and nobody does yet.
+- **The land table's record 0 is written in the pre-High-Seas shape.** Its name
+  sits six bytes into a 30-byte record, so read at the modern offsets tile 0 has
+  flags `0x4E55_0000_0000_0000` and the name `"ED"` — the tail of `"UNUSED"`.
+  Every other record in the file is fine, so this is the file's quirk and not the
+  stride. It is deliberately not special-cased: the junk lands entirely above bit
+  32 and every flag movement reads is below it, so tile 0 cannot come out
+  walkable, water, or a floor — which is what the test asserts instead.
+- **The remaining M2 readers are still missing.** `hues`, `art`, `gumpart`,
+  `anim`, `unifont`, `cliloc`, `multi`, `texmaps`, `light`, `radarcol`, `sound`,
+  `verdata`. The first picture needs the first two and nothing else.
+
 ## Backlog, found while building M0, M1 and M1a
 
 Each is a seam the work made visible. None blocks the next milestone.
