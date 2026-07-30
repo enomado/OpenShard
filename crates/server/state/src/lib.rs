@@ -37,6 +37,7 @@
 
 pub mod armor;
 pub mod components;
+pub mod connection;
 pub mod craft;
 pub mod dialogue;
 pub mod harvest;
@@ -47,7 +48,6 @@ pub mod region;
 pub mod rng;
 pub mod runtime;
 pub mod sectors;
-pub mod session;
 pub mod skill;
 pub mod tame;
 pub mod title;

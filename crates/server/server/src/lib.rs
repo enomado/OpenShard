@@ -67,8 +67,8 @@ use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 use openshard_world::{
-    Appearance, Character, CharacterSheet, Command, Entering, FreshCharacter, Gameplay, MapTerrain, StatLock,
-    StoredCharacter, TICK_INTERVAL, World,
+    Appearance, Character, CharacterSheet, Command, Entering, FreshCharacter, Gameplay, MapTerrain,
+    PlayerEntered, PlayerLeft, PlayerRefused, StatLock, StoredCharacter, TICK_INTERVAL, World,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -87,7 +87,7 @@ use boot::{load_config, load_world, open_store};
 use dispatch::{create_character, delete_character, dispatch_world_packet, start_cities};
 use roster::Roster;
 use scripting::Scripts;
-use session::{Session, Sessions};
+use session::{PhaseSync, Session, Sessions};
 use shard::run_shard;
 
 /// Where the config lives, relative to the working directory.

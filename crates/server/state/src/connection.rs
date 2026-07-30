@@ -25,20 +25,24 @@ use openshard_protocol::version::ClientVersion;
 /// connection over, and closed by `Command::Disconnect`. A row exists for a
 /// connection that is playing nothing — that is the point of it.
 ///
-/// It carries one field today. The phases that will join it (authenticated,
-/// entering, playing, logging out) and the per-connection state currently spread
-/// across eight maps on [`WorldState`](crate::WorldState) are steps S2 and S7 of
-/// the plan in `docs/connection_state.md`; the row is what they need to exist
-/// first.
+/// # Not a session
+///
+/// The *session* — which character this connection is playing, and whether it is
+/// in the world yet — is the binary's, and stays there: the packet router has to
+/// answer "may this reach the world" synchronously, and the world answers no
+/// synchronous question. This is only what the world itself has to remember about
+/// a socket. The per-connection state currently spread across eight maps on
+/// [`WorldState`](crate::WorldState) belongs here and is step S7 of the plan in
+/// `docs/connection_state.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Session {
+pub struct Connection {
     /// What the client claims to be. Every feature gate and every encoder reads
     /// it, and this is the only place it lives: the game socket never states its
     /// version, so this is what the login socket carried across on the auth key.
     pub version: ClientVersion,
 }
 
-impl Session {
+impl Connection {
     /// A connection that has just been handed over by the login conversation.
     pub const fn new(version: ClientVersion) -> Self {
         Self { version }

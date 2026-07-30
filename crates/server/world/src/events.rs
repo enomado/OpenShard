@@ -11,20 +11,65 @@
 //! belong to combat; `HouseCreated` to housing.
 
 use openshard_entities::EntityId;
+use openshard_gateway::ConnectionId;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawSwitchId};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
 
 /// A character entered the world.
+///
+/// The confirmation half of `Command::Enter`, and the only thing that may move a
+/// connection's session on to "playing" — see `docs/connection_state.md`. Queuing
+/// the command is a request, and `World::enter` can refuse it
+/// ([`PlayerRefused`]); a caller that treats the request as the arrival gets a
+/// session claiming to play a character that does not exist.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayerEntered {
+    /// Which connection is driving it. Carried so the shard loop can answer
+    /// "which socket did this happen to" without a reverse lookup it would have
+    /// to keep in step.
+    pub connection: ConnectionId,
     /// The entity.
     pub entity: EntityId,
     /// Its wire identity.
     pub serial: Serial,
     /// Where it appeared.
     pub position: Point,
+}
+
+/// A character did not enter the world after all.
+///
+/// The other half of [`PlayerEntered`], and the reason it exists: `World::enter`
+/// has failure paths, and every one of them used to end in a bare `return` that
+/// told nobody. The client sat on "logging into shard" until it timed out, the
+/// shard loop went on believing the character was in play, and the log said only
+/// what had gone wrong — never that a person was still waiting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PlayerRefused {
+    /// Which connection asked.
+    pub connection: ConnectionId,
+    /// Why it was refused.
+    pub reason: RefusedEntry,
+}
+
+/// Why a character could not be brought into the world.
+///
+/// None of these is the player's doing, and none is recoverable by trying the
+/// same character again — which is why the shard loop drops the connection on all
+/// three rather than putting the client back on the character screen to hit the
+/// same wall.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[non_exhaustive]
+pub enum RefusedEntry {
+    /// This connection is already driving a character. A second `Enter` on one
+    /// socket is a client (or a shard loop) that lost track of what it had.
+    AlreadyInWorld,
+    /// The saved serial would not bind: something else in the world holds it, or
+    /// the row named one that is not a valid mobile serial.
+    SerialInUse,
+    /// There are no mobile serials left to give a new character.
+    NoSerialsLeft,
 }
 
 // `ItemSpawned` moved to `openshard-items` with the item system that emits it.
@@ -150,6 +195,9 @@ pub enum RefusedReason {
 /// A character left the world.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayerLeft {
+    /// Which connection was driving it. The session it belongs to ends here: a
+    /// character is not "still being played" by a socket the world has let go of.
+    pub connection: ConnectionId,
     /// The entity, now despawned.
     pub entity: EntityId,
     /// Its wire identity, now released.

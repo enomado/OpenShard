@@ -328,13 +328,19 @@ fn build_login_server(
 /// is not.
 fn world_tick(
     world: &mut World,
-    sessions: &Sessions,
+    sessions: &mut Sessions,
+    phases: &mut PhaseSync,
     saves: &SnapshotTx,
     roster: &mut Roster,
     scripts: &mut Option<Scripts>,
     login_server: &mut LoginServer<DevAccounts>,
 ) {
     world.tick(Instant::now());
+    // Before anything is sent: what the world did this tick decides which
+    // connections are in it, and a refusal means there is nobody left to send to.
+    for connection in phases.apply(world, sessions) {
+        sessions.close(connection);
+    }
     for out in world.drain_outbound() {
         if let Some(session) = sessions.get(out.connection) {
             // A connection reaches the world only after its game
@@ -408,6 +414,10 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
     let mut scripts = Scripts::load(&config.scripting.main, &world);
 
     let mut sessions = Sessions::new();
+    // Built after the world is restored, so the arrivals and departures of the
+    // restore are not read back as phase changes for connections that do not
+    // exist yet.
+    let mut phases = PhaseSync::new(&world);
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
     // A tick that ran late must not try to catch up by running several in a row:
     // that turns a hiccup into a stall, and a fixed timestep into a variable one.
@@ -421,7 +431,15 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
             biased;
 
             _ = ticker.tick() => {
-                world_tick(&mut world, &sessions, &saves, &mut roster, &mut scripts, &mut login_server);
+                world_tick(
+                    &mut world,
+                    &mut sessions,
+                    &mut phases,
+                    &saves,
+                    &mut roster,
+                    &mut scripts,
+                    &mut login_server,
+                );
             }
 
             // Before `events`: a store that is failing is worth hearing about

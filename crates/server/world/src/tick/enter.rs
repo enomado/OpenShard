@@ -19,8 +19,8 @@ impl World {
     /// [`WorldState::send_packet`]: openshard_state::WorldState::send_packet
     pub(super) fn attach(&mut self, connection: ConnectionId, version: ClientVersion) {
         self.state
-            .sessions
-            .insert(connection, openshard_state::session::Session::new(version));
+            .connections
+            .insert(connection, openshard_state::connection::Connection::new(version));
     }
 
     /// The facet a mobile is on, or the default if it carries none.
@@ -38,6 +38,7 @@ impl World {
         } = entering;
         if self.state.players.contains_key(&connection) {
             warn!(%connection, "already in the world");
+            self.refuse_entry(connection, RefusedEntry::AlreadyInWorld);
             return;
         }
 
@@ -89,6 +90,7 @@ impl World {
                 if let Err(error) = self.state.registry.bind_serial(entity, saved) {
                     warn!(%connection, ?error, "could not restore the saved serial");
                     self.state.registry.despawn(entity);
+                    self.refuse_entry(connection, RefusedEntry::SerialInUse);
                     return;
                 }
                 (entity, saved)
@@ -97,6 +99,7 @@ impl World {
                 Ok(pair) => pair,
                 Err(_) => {
                     warn!(%connection, "the mobile serial pool is exhausted");
+                    self.refuse_entry(connection, RefusedEntry::NoSerialsLeft);
                     return;
                 }
             },
@@ -460,6 +463,7 @@ impl World {
             .send_packet(connection, &ServerPacket::LoginComplete(LoginComplete));
 
         self.state.bus.send(PlayerEntered {
+            connection,
             entity,
             serial,
             position,

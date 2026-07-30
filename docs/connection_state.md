@@ -83,25 +83,38 @@ and two passes against a 50 ms `TICK_INTERVAL`; a password check inside a tick
 stalls the whole shard for one client's benefit. What moves is everything *after*
 the `0x91`.
 
-**D2. The connection record lives in `WorldState`, keyed by `ConnectionId`.**
-Named `Session` there, because it is the thing this refactor is moving. The
-binary's `Session`/`Sessions` become `Socket`/`Sockets` in the same step that
-takes the phase away from them — what stays behind is a pipe, not a session, and
-two types called `Session` in one workspace is how a reader loses track of which
-one is authoritative.
+**D2. The world's record of a connection is `openshard_state::connection::Connection`.**
+What the world knows about a client that is not its character: its version
+today, the per-connection state of S7 later. It is deliberately *not* called a
+session — the session is the binary's, see D4 — and the two must not share a
+name, or a reader has to work out each time which of them is authoritative.
 
 **D3. The phase is an enum, and `Entering` is a state of its own.** It is the
 distinction `Option<PlayedCharacter>` could not carry, and the one that makes
 point 1 above unspellable rather than merely fixed.
 
-**D4. `Entering → Playing` is driven by the world, not by the caller.**
-`PlayerEntered`/`PlayerLeft` gain a `connection` field (the world knows it) and
-the phase moves when the tick says so. A refusal inside `World::enter` stops
-being silent in the same change: the connection is told, instead of waiting.
+**D4. The phase lives in the binary and is moved only by the world.**
+
+The first half is forced: the packet router has to decide *now* whether a packet
+may reach the world, and the world answers no synchronous question — only
+`queue(Command)` in, `drain_*` and the bus out. That rule is why `World::is_online`
+was deleted (see `architecture.md`), and a phase held in `WorldState` would put it
+straight back by making the router read the world on every packet.
+
+The second half is what keeps it honest: `Session::enter_world` may only move
+`Outside → Entering`, and nothing but a world event moves it further.
+`PlayerEntered`, `PlayerLeft` and the new `PlayerRefused` carry the connection,
+and the shard loop drains them beside `drain_departed`. The binary's phase is a
+*projection* of the world's fact, not a second copy of it: the one direction it
+can be wrong in is being one tick behind, and `Entering` is the name of exactly
+that gap.
 
 Commands queued while `Entering` are still queued, not dropped — the queue is
 ordered, so they apply after the `Enter` that precedes them. This is why the
 phase must exist rather than the gate simply being moved later.
+
+*Changed after S1, which had this backwards.* The first draft put the phase in
+`WorldState` and had the binary read it. It cannot: see above.
 
 **D5. The character screen becomes world commands only after the roster moves
 in.** Ordering, not preference: until the world owns the saved records it cannot
@@ -141,12 +154,19 @@ follows.
       Guarded by `a_connection_can_be_answered_before_it_has_a_character` and
       `a_disconnect_forgets_the_connection_itself` in `world/src/tick/tests.rs`.
 
-- [ ] **S2. The phase replaces the bool.** `Authenticated → Entering → Playing →
-      LoggingOut` on the world's session row. `Session::playing` and `in_world()`
-      leave the binary; `Session`/`Sessions` there become `Socket`/`Sockets`.
-      `PlayerEntered`/`PlayerLeft` carry the connection and move the phase.
-      *Done when:* a test makes `World::enter` refuse and the connection is told,
-      rather than left in a phase that claims it is playing.
+- [x] **S2. The phase replaces the bool.** Done. `WorldPhase` — `Outside →
+      Entering → Playing → Left` — on the binary's `Session`, in place of
+      `playing: Option<PlayedCharacter>`. `PlayerEntered`/`PlayerLeft` carry the
+      connection, the new `PlayerRefused` carries why an entry did not happen,
+      and `PhaseSync` (cursors, drained at the top of `world_tick`) is the only
+      thing that moves a phase past `Entering` — see D4. A refusal comes back
+      from `PhaseSync::apply` as a connection to close, because the protocol has
+      no way to tell a client its `0x5D` failed: the socket dropping is what
+      turns an indefinite hang into a reconnect.
+      Guarded by `the_phase_moves_on_only_when_the_world_says_it_did`,
+      `an_entry_the_world_refuses_takes_the_connection_down` and
+      `a_character_the_world_let_go_of_is_no_longer_being_played` in
+      `server/src/session.rs`.
 
 - [ ] **S3. One gate instead of thirty.** `dispatch_world_packet` matches the
       phase once on the way in and returns `Option<Command>` instead of taking
@@ -186,5 +206,6 @@ follows.
 
 ## Status
 
-S1 landed; S2 is next. Findings are recorded in [`roadmap.md` §2](roadmap.md)
-under "A connection's state is kept in two tables that must agree".
+S1 and S2 landed; S3 is next. Findings are recorded in
+[`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
+that must agree".

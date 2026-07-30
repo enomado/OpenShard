@@ -43,7 +43,7 @@ pub mod tick;
 // it. Re-exported here so `openshard_world::Position` and friends keep resolving.
 pub use events::{
     AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileRestored, MobileSpawned, MobileTurned,
-    PlayerEntered, PlayerLeft, RefusedReason, SpellRequested, StepRefused,
+    PlayerEntered, PlayerLeft, PlayerRefused, RefusedEntry, RefusedReason, SpellRequested, StepRefused,
 };
 pub use openshard_chat::MobileSpoke;
 pub use openshard_combat::{MobileDamaged, MobileDied};

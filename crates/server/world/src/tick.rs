@@ -81,8 +81,8 @@ use openshard_skills as skills;
 
 use crate::doorgen;
 use crate::events::{
-    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeft, RefusedReason,
-    RegionChanged, StepRefused,
+    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeft, PlayerRefused,
+    RefusedEntry, RefusedReason, RegionChanged, StepRefused,
 };
 use crate::gm;
 use crate::terrain::MapTerrain;
@@ -242,7 +242,7 @@ impl World {
                 facets,
                 default_facet: Facet(DEFAULT_FACET),
                 players: HashMap::new(),
-                sessions: HashMap::new(),
+                connections: HashMap::new(),
                 seen: HashMap::new(),
                 held: HashMap::new(),
                 start,
@@ -1341,7 +1341,7 @@ impl World {
         // connection addressable, and there is nothing left to say to a socket
         // that is gone. Unconditional, because a connection that never picked a
         // character has one of these and nothing else below.
-        self.state.sessions.remove(&connection);
+        self.state.connections.remove(&connection);
         // A client that logs out mid-drag would otherwise leave its item nowhere —
         // off the ground and out of any container, on a cursor that is gone. Put
         // it back where it was.
@@ -1433,9 +1433,23 @@ impl World {
         self.state.registry.despawn(entity);
 
         if let Some(serial) = serial {
-            self.state.bus.send(PlayerLeft { entity, serial });
+            self.state.bus.send(PlayerLeft {
+                connection,
+                entity,
+                serial,
+            });
             info!(%serial, "left the world");
         }
+    }
+
+    /// Say that a connection asked to enter and did not.
+    ///
+    /// Every caller is a failure path inside [`enter`](Self::enter) that used to
+    /// end in a bare `return`. Emitting rather than answering the client directly:
+    /// what to *do* about it — close the socket, log it, count it — is the shard
+    /// loop's, and the world's job ends at saying so.
+    fn refuse_entry(&mut self, connection: ConnectionId, reason: RefusedEntry) {
+        self.state.bus.send(PlayerRefused { connection, reason });
     }
 }
 
