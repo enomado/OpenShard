@@ -584,14 +584,27 @@ impl SupportedFeatures {
 /// `SupportedFeatures` / `NetState.ExtendedSupportedFeatures`.
 #[must_use]
 pub fn encode_supported_features(flags: SupportedFeatures, extended: bool) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(5);
+    let mut writer = PacketWriter::with_capacity(supported_features_length(extended).minimum());
     writer.u8(0xB9);
     if extended {
         writer.u32(flags.0);
     } else {
         writer.u16(flags.0 as u16);
     }
+    debug_assert_eq!(writer.len(), supported_features_length(extended).minimum());
     writer.into_bytes()
+}
+
+/// How [`encode_supported_features`] is framed, for the mask width it was
+/// written with.
+///
+/// Kept beside the encoder for the same reason as the encoder's own docs give
+/// for not being an `EncodePacket`: the size is a function of the client, and a
+/// framer on the other end has to reach the same answer from the same rule
+/// rather than from a copy of the number.
+#[must_use]
+pub fn supported_features_length(extended: bool) -> PacketLength {
+    PacketLength::Fixed(if extended { 5 } else { 3 })
 }
 
 /// `0xA9` — the character list and starting cities.

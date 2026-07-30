@@ -21,14 +21,18 @@
 
 use crate::codec::PacketWriter;
 use crate::combat::{AttackTarget, HealthBar, WarMode};
-use crate::containers::ContainerContents;
+use crate::containers::{ContainerContents, add_to_container_length, open_container_length};
 use crate::context::ContextMenu;
+use crate::feature::Feature;
 use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, PlaySound};
 use crate::gump::{CloseGump, GumpDisplay};
 use crate::items::{DragCancel, EquipUpdate, WorldItem};
-use crate::login::{CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList};
+use crate::login::{
+    CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
+    supported_features_length,
+};
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
-use crate::packet::{EncodePacket, PacketLength, frame_body};
+use crate::packet::{EncodePacket, Frame, FrameError, PacketLength, frame_body, frame_packet};
 use crate::properties::TooltipRevision;
 use crate::skill::{SkillUpdate, SkillsFull};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
@@ -38,7 +42,7 @@ use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
 use crate::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart, PlayerUpdate,
-    SeasonChange, WalkAck, WalkReject,
+    SERVER_CHANGE_LENGTH, SeasonChange, WalkAck, WalkReject,
 };
 
 /// A packet the server sends to a client.
@@ -325,6 +329,138 @@ impl ServerPacket {
             Self::GumpDisplay(packet) => packet.encode_body(out, version),
         }
     }
+}
+
+// -- framing, from the client's side --------------------------------------
+
+/// How long the server-to-client packet with this id is, if we send it.
+///
+/// The mirror of [`client_packet_length`](crate::packet::client_packet_length),
+/// and the table a client needs for the same reason a server needs that one:
+/// the wire has no self-describing frame, so a stream cannot be split into
+/// packets without knowing, per id, which kind it is.
+///
+/// # The numbers are not written here
+///
+/// Every payload already declares its own [`EncodePacket::LENGTH`], so this
+/// reads those constants rather than repeating them — the same argument as
+/// [`ServerPacket::id`]. What it does hold is the *ids*, and a wrong one is
+/// caught by `every_packet_frames_to_its_own_length`, which frames the real
+/// bytes of one of every variant.
+///
+/// # `None` is deliberate, not incomplete
+///
+/// An id this engine never sends has no entry, and framing it is fatal for the
+/// connection. The alternative — guessing a length from a reference for a packet
+/// no encoder here writes — would put an unverified number in the one table
+/// whose entire job is to be right, and would be discovered as a desynchronised
+/// stream hundreds of bytes later. When a packet is added, its length arrives
+/// with it.
+///
+/// # Why `version` is not optional
+///
+/// The server takes `Option<ClientVersion>` because it frames packets before it
+/// knows what is connected. A client always knows what it is, so there is no
+/// unknown state to model — and three packets need the answer: `0x24`, `0x25`
+/// and `0xB9` are fixed-length in a size that depends on the client, which is
+/// exactly why they are hand-written free functions rather than `EncodePacket`s.
+// The column alignment is load-bearing, as in the client table: this is read as
+// a table, and rustfmt would reflow it into an unscannable list.
+#[rustfmt::skip]
+#[must_use]
+pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLength> {
+    use PacketLength::Variable;
+
+    // The three whose size is a function of the client. Each rule lives beside
+    // the encoder that obeys it, so neither side can drift.
+    match id {
+        0x24 => return Some(open_container_length(version)),
+        0x25 => return Some(add_to_container_length(version)),
+        0xB9 => return Some(supported_features_length(
+            version.supports(Feature::ExtraFeatureMask),
+        )),
+        _ => {}
+    }
+
+    Some(match id {
+        0x11 => MobileStatus::LENGTH,
+        0x1A => WorldItem::LENGTH,
+        0x1B => PlayerStart::LENGTH,
+        0x1C => SpokenMessage::LENGTH,
+        0x1D => Remove::LENGTH,
+        0x20 => PlayerUpdate::LENGTH,
+        0x21 => WalkReject::LENGTH,
+        0x22 => WalkAck::LENGTH,
+        0x27 => DragCancel::LENGTH,
+        0x2C => DeathStatus::LENGTH,
+        0x2E => EquipUpdate::LENGTH,
+        0x3A => SkillsFull::LENGTH,          // and SkillUpdate: same id, both Variable
+        0x3C => ContainerContents::LENGTH,
+        0x4F => LightLevel::LENGTH,
+        0x54 => PlaySound::LENGTH,
+        0x55 => LoginComplete::LENGTH,
+        0x6C => TargetCursor::LENGTH,
+        0x6D => PlayMusic::LENGTH,
+        0x6E => Animation::LENGTH,
+        0x6F => Variable,                    // secure trade, hand-written in trade.rs
+        0x70 => GraphicalEffect::LENGTH,
+        0x72 => <WarMode as EncodePacket>::LENGTH,
+        0x74 => BuyList::LENGTH,
+        0x76 => SERVER_CHANGE_LENGTH,        // facet change, hand-written in world.rs
+        0x77 => MobileMove::LENGTH,
+        0x78 => MobileIncoming::LENGTH,
+        0x82 => LoginDenied::LENGTH,
+        0x85 => DeleteReject::LENGTH,
+        0x86 => CharacterListUpdate::LENGTH,
+        0x88 => OpenPaperdoll::LENGTH,
+        0x8C => Relay::LENGTH,
+        0x9E => SellList::LENGTH,
+        0xA1 => HealthBar::LENGTH,
+        0xA8 => ShardList::LENGTH,
+        0xA9 => CharacterList::LENGTH,
+        0xAA => AttackTarget::LENGTH,
+        0xAE => UnicodeMessage::LENGTH,
+        0xB0 => GumpDisplay::LENGTH,
+        0xBC => SeasonChange::LENGTH,
+        // 0xBF is the one id whose payloads disagree with the table on purpose.
+        // Each subcommand declares `Fixed(n)` and writes its own `u16` length
+        // into its body — that is what the extended-command format is — so from
+        // outside, every 0xBF on the wire is length-prefixed at offset 1 and is
+        // framed as `Variable`. Reading MapChange's `Fixed(6)` here would frame
+        // a 13-byte gump-close as six bytes and desynchronise everything after.
+        0xBF => Variable,
+        0xC0 => HuedEffect::LENGTH,
+        0xC1 => LocalizedMessage::LENGTH,
+        0xD1 => LogoutAck::LENGTH,
+        0xDC => TooltipRevision::LENGTH,
+        0xE2 => NewAnimation::LENGTH,
+        _ => return None,
+    })
+}
+
+/// Find the first whole server-to-client packet at the front of `buffer`.
+///
+/// The client's [`frame_client_packet`](crate::packet::frame_client_packet):
+/// same rule, other table. Does not copy and does not consume.
+///
+/// ```
+/// use openshard_protocol::packet::Frame;
+/// use openshard_protocol::server_packet::frame_server_packet;
+/// use openshard_protocol::version::ClientVersion;
+///
+/// let modern = ClientVersion::new(7, 0, 45, 65);
+///
+/// // 0x55 "you may start drawing" is one byte.
+/// assert_eq!(frame_server_packet(&[0x55], modern), Ok(Frame::Complete(1)));
+///
+/// // 0xB9 is three bytes for an old client and five for this one.
+/// assert_eq!(
+///     frame_server_packet(&[0xB9, 0, 0, 0], modern),
+///     Ok(Frame::Incomplete { needed: 5 }),
+/// );
+/// ```
+pub fn frame_server_packet(buffer: &[u8], version: ClientVersion) -> Result<Frame, FrameError> {
+    frame_packet(buffer, |id| server_packet_length(id, version))
 }
 
 #[cfg(test)]
@@ -653,6 +789,102 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_packet_frames_to_its_own_length() {
+        // The oracle for `server_packet_length`: encode one of every variant and
+        // ask the framer to find it again. It catches a wrong id in the table, a
+        // length that disagrees with the encoder, and — the reason this is done
+        // over bytes rather than over `packet.length()` — a 0xBF subcommand whose
+        // declared `Fixed(n)` must still be framed as length-prefixed.
+        for packet in one_of_each() {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                frame_server_packet(&bytes, version()),
+                Ok(Frame::Complete(bytes.len())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_packet_split_across_reads_asks_for_the_rest() {
+        // What a socket does to a client: half a packet arrives, and the framer
+        // has to say how much more it needs rather than guess or fail. Over every
+        // variant, because a variable-length packet answers this from its length
+        // field and a fixed one from the table.
+        for packet in one_of_each() {
+            let bytes = packet.encode(version());
+            if bytes.len() < 2 {
+                continue; // nothing to cut short
+            }
+            assert_eq!(
+                frame_server_packet(&bytes[..bytes.len() - 1], version()),
+                Ok(Frame::Incomplete { needed: bytes.len() }),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hand_written_packets_are_in_the_table() {
+        // 0x24, 0x25, 0xB9 and 0x76 are not `EncodePacket`s, so `one_of_each`
+        // cannot reach them — and a client that cannot frame them stops dead on
+        // the first container it opens.
+        let serial = Serial::new(0x0000_002A).unwrap();
+        let bytes = crate::containers::encode_open_container(serial, crate::wire::Graphic(0x3C), version());
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+
+        let bytes = crate::login::encode_supported_features(crate::login::SupportedFeatures::ML, true);
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+
+        let bytes = crate::world::encode_server_change(
+            crate::world::Point::new(1, 2, 3),
+            crate::world::MapSize {
+                width: 6144,
+                height: 4096,
+            },
+        );
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+    }
+
+    #[test]
+    fn the_old_feature_mask_is_two_bytes_narrower() {
+        // The one place the table's `version` earns its place: same id, and a
+        // client from before 6.0.14.2 reads two fewer bytes. Framing it with the
+        // modern length swallows the first two bytes of whatever follows.
+        let old = ClientVersion::new(5, 0, 9, 1);
+        assert_eq!(
+            server_packet_length(0xB9, old),
+            Some(PacketLength::Fixed(3)),
+            "an old client reads a 16-bit mask"
+        );
+        assert_eq!(
+            server_packet_length(0xB9, version()),
+            Some(PacketLength::Fixed(5))
+        );
+    }
+
+    #[test]
+    fn an_id_this_engine_never_sends_is_fatal() {
+        // Not a silent skip: without a length there is no way to find where the
+        // next packet starts, so the connection is over. 0xD6 is a real
+        // server-to-client packet this engine does not send — see the table.
+        assert_eq!(server_packet_length(0xD6, version()), None);
+        assert_eq!(
+            frame_server_packet(&[0xD6, 0x00, 0x05], version()),
+            Err(FrameError::UnknownPacket(0xD6))
+        );
     }
 
     #[test]

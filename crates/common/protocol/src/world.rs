@@ -928,7 +928,7 @@ impl EncodePacket for MapChange {
 /// The three zeroed fields after `z` are unused in every client that reads it.
 #[must_use]
 pub fn encode_server_change(at: Point, size: MapSize) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(16);
+    let mut writer = PacketWriter::with_capacity(SERVER_CHANGE_LENGTH.minimum());
     writer.u8(0x76);
     writer.u16(at.x);
     writer.u16(at.y);
@@ -938,9 +938,18 @@ pub fn encode_server_change(at: Point, size: MapSize) -> Vec<u8> {
     writer.zeros(5);
     writer.u16(size.width);
     writer.u16(size.height);
-    debug_assert_eq!(writer.len(), 16);
+    debug_assert_eq!(writer.len(), SERVER_CHANGE_LENGTH.minimum());
     writer.into_bytes()
 }
+
+/// How [`encode_server_change`] is framed.
+///
+/// A hand-written packet still has to be readable from the other end, and the
+/// client's framer needs this length before it can find where the next packet
+/// starts. Naming it here keeps the size beside the code that writes it — a
+/// number copied into a framing table is a number that can disagree with the
+/// encoder.
+pub const SERVER_CHANGE_LENGTH: PacketLength = PacketLength::Fixed(16);
 
 #[cfg(test)]
 mod tests {
