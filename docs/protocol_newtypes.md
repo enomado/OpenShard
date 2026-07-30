@@ -156,9 +156,14 @@ The allowlist so far, each entry argued where it was decided:
 | `world::MapSize::{width, height}` | same |
 | `mobile::Vitals::{current, max}` | components of one bar — [N2 amendment 2](#amendments-forced-by-n2-mobilers) |
 | `mobile::MobileStatus::{strength, dexterity, intelligence, gold, armor, weight, max_weight, stat_cap, followers, followers_max}` | the status bar's quantities — [N2 amendment 3](#amendments-forced-by-n2-mobilers) |
-| `containers::ContainedItem::{x, y}` | the item's place in the gump: a pair whose type is `gump.rs`'s to name, in N5 — [N4 amendment 6](#amendments-forced-by-n4-containersrs) |
 | `containers::ContainedItem::amount` | a stack size: a quantity, by the `MobileStatus` argument — [N4 amendment 8](#amendments-forced-by-n4-containersrs) |
 | `items::WorldItem::amount`, `items::PickUpItem::amount` | the same quantity, outbound and in — [N4 amendment 9](#amendments-forced-by-n4-itemsrs) |
+| `vendor::BuyLine::price`, `vendor::SellLine::price` | gold: the `MobileStatus::gold` argument — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
+| `vendor::{Purchase, Sale, SellLine}::amount` | the same stack size, inbound and out — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
+
+`containers::ContainedItem::{x, y}` came *off* this list in N5: they are one
+`GumpPoint` now, as [N4 amendment 6](#amendments-forced-by-n4-containersrs)
+promised — [N5 amendment 6](#amendments-forced-by-n5-gumprs).
 
 **N11. No compatibility shims.** Same as D9: a stage wraps a group of fields
 **and** updates every call site in the same commit.
@@ -642,6 +647,168 @@ rather than two.
   spellings of the same conversion across the server is a smell. Renaming the
   component (`Drawn`? `Art`?) is a `state` question, not a protocol one.
 
+## Amendments forced by N5 (`vendor.rs`)
+
+The module is four packets in two mirrored pairs, and N1's direction rule sorted
+them with nothing left over: the two lists the server draws are class A, the two
+replies are `RawSerial`. Its content is the *quantities*, which are the first
+fields in the sweep to go on N10's allowlist because of what they are rather
+than where their type would live.
+
+1. **A price and an amount are quantities, and they stay bare.** `BuyLine::
+   price`, `SellLine::{amount, price}`, `Purchase::amount` and `Sale::amount`
+   are N2 amendment 3's case exactly: multiplied into a total, compared against
+   what a purse holds, split off a stack — and their rules (what a vendor
+   charges, what half price is, how much is on the shelf) live in
+   `openshard_npc` and `openshard_items`, far above `protocol`. `Purchase::
+   amount` is client-supplied and still bare, on `PickUpItem::amount`'s
+   precedent (N4 items amendment 9): the check that matters is "is there that
+   much", it exists in `vendor::buy` as `have.min(purchase.amount)`, and a
+   newtype would not be it.
+2. **A decoder that reads a byte and drops it is not the N2/N3 finding.**
+   `BuyReply::decode_body` branches on `0x02` and keeps nothing. The two earlier
+   findings (`StatLockRequest`, `0xAD`) *stored* a folded value, so the client's
+   own byte was gone; here the byte is framing — it says whether a list
+   follows — and the two answers it separates, "closed" and "bought nothing",
+   are the same empty basket to everything downstream. The distinction is
+   written in a comment beside it, because the shape looks identical at a
+   glance. **What makes a normalising decoder a bug is that something
+   downstream can no longer tell two inputs apart**; where nothing downstream
+   cares, there is nothing to preserve.
+3. **Wrapping deleted four `Serial::new` guards and two `.raw()` calls** —
+   N2 amendment 1 and N4 containers amendment 3, in one module and both
+   directions at once.
+4. **Bare-integer field count in `vendor.rs`: 14 before, 5 after** (N10), the
+   five being amendment 1's quantities.
+
+## Amendments forced by N5 (`context.rs`)
+
+1. **The tag is class C and its promotion is a `Result`.** A `0x15` echoes the
+   entry's position in the list the `0x14` drew, so the count of entries is the
+   whole domain: `RawContextMenuIndex::validate(offered)`. Unlike
+   `RawSerial::validate`'s `Option` (N2 amendment 1) there is no wire value here
+   that *means* "no entry", so every rejection is a refusal worth logging, and
+   the error carries the tag and the count to log. The check itself is not new —
+   `entries.get(index)` was doing it — but it was silent, and it could not be
+   skipped by accident before only because one call site happened to be careful.
+2. **`ContextMenuFlags` is a named byte, not an enum**, for `Layer`'s reason (N2
+   amendment 7): ServUO's `CMEFlags` has a dozen bits this engine has never set.
+3. **`ClilocId` reached its second module**, as N3 amendment 6 said the four
+   remaining carriers would. The cliloc *constants* in `tick/context.rs` are
+   typed with it; the ~190-call-site table sweep N3 recorded is still open.
+4. **Bare-integer field count in `context.rs`: 6 before, 0 after** (N10).
+
+## Amendments forced by N5 (`gump.rs`)
+
+The stage the plan ordered N5 for. Six windows answer through one packet, and
+every number in it is one the server chose — which makes this the module where
+"is this one I offered" had to become three different checks rather than one.
+
+1. **`RawGumpId::validate` takes a *list* and answers `Option`.** The list
+   because the quest system draws two windows and claims a reply for either; the
+   `Option` because the router asks each handler in turn and four of the five
+   legitimately answer "not mine". A typed error would be an error nobody could
+   act on. This is N2 amendment 1's licence extended from "the wire has a word
+   for nothing" to "not-mine is an answer this control flow depends on" — and
+   the reply that matches *no* engine dialog is not refused at all: it belongs to
+   the script pack and is forwarded.
+2. **A button id is class B, which the field table did not predict.**
+   `RawButtonId::interpret -> GumpAnswer { Closed, Pressed(ButtonId) }` is
+   `DoubleClick::interpret`'s shape (N4 containers amendment 1): one field
+   carrying a value *and* an answer. The close box is `0`, and it was being
+   compared against by hand in three handlers; `crafting::decode_button`'s own
+   `if id == 0 { return None }` guard is gone with them, which is the third time
+   in this sweep that wrapping a field deleted a guard.
+3. **Two layouts deliberately give a button the close box's id, and that had to
+   survive.** ServUO's `Buttons.Close = 0` (the quest window's `X`) and
+   `CraftGumpItem`'s Back button both send `0`, so dismissing those windows and
+   pressing their own button are the same answer *by construction* — pressing
+   Back and closing the craft detail page both return to the list, in ServUO and
+   here. The refactor's temptation was to treat `Closed` as "do nothing", which
+   would have quietly changed both. They are now `ButtonId::CLOSE_BOX` constants
+   with the collision stated, rather than a `0` that reads like a coincidence.
+   `ButtonId::UNUSED` is the same value again with a third meaning — what a
+   `Page` button writes where a reply button writes its id — and has its own
+   name for the same reason.
+4. **Whether a button was *offered* stays in each handler's `match`.** There is
+   no list to check it against: the craft window's ids are computed
+   (`1 + kind + index * 7`), the quest log's are a table plus a row offset, the
+   runebook's are five ranges. So the sweep names the encodings instead —
+   `quests::gump::{row_button, row_of}` and `travel::book_button`, both
+   directions with names, the `to_wire`/`from_wire` shape of N2 amendment 6 —
+   and the arithmetic stops being open code at five call sites.
+5. **`RawSwitchId::validate` takes a count, because a radio group is its rows
+   numbered from zero.** Both groups this engine draws are; the group's length
+   is the one thing a handler still has when the reply arrives. The moongate
+   list was already checking with `.get`; the resign dialog was not, and its
+   `switches.contains(&YES)` would have accepted any id the client invented as
+   long as one of them was `1`.
+6. **`GumpPoint` closes N4's backlog item, and the wire widths differ.**
+   `GumpDisplay`, `Command::ShowGump` and `containers::ContainedItem` all
+   carried a loose `x`/`y` pair in *gump* space; they share one type now and
+   `ContainedItem`'s two fields come off N10's allowlist. The two are measured
+   from different origins (a window from the screen, an icon from the container
+   art's corner) and go out four bytes wide and two — neither of which makes
+   them different quantities, any more than a `Serial` stops being one where a
+   packet writes it short. Signed, because the layout language needs it: the
+   quest frame puts an element at `x = -16` and an unsigned type would send
+   `4294967280`, which the client answers by dropping the whole layout.
+7. **The first field of a `0xB0` is not a serial, and `GumpKey` says so.** The
+   engine keys a window on the mobile it drew it for, which is why the field was
+   called `serial` — but `0` is legal there and means a standalone dialog, the
+   animal-lore window keys on its own dialog id, and ServUO puts `Gump.Serial`
+   in it, a per-instance counter that is never an object. So it is `CursorId`'s
+   twin: server-chosen, echoed, opaque. This also settles that the two
+   `map_or(0, |s| s.raw())` sites here are **not** N1 amendment 7's bug — zero
+   is a meaning in this field, not a nonsense serial — which is the answer to a
+   pattern this sweep has otherwise found three times.
+8. **The inbound key is class D.** `GumpResponse::serial` is echoed and nothing
+   reads it: a reply is routed by its gump id, and each handler then matches
+   against the context it *remembers* drawing, which is a stronger check than an
+   echo can be. `RawGumpKey` therefore has no promotion, and the doc comment
+   says why — the class-D record N3 asks for.
+9. **The layout builder takes the typed ids, because it is the encoder.**
+   `GumpLayout::button`/`radio`/`check` take `ButtonId`/`SwitchId` and unwrap
+   inside, so one constant serves both the layout that drew a button and the
+   arm that answers it — which is the whole loop N5 exists to close. Its other
+   arguments (coordinates, gump art, hues, clilocs) stay bare: they are the
+   client's positional format, nothing echoes them, and the cliloc column in
+   particular is N3 amendment 7's parked table sweep, not this stage's.
+10. **The engine types what the engine reads.** `GumpResponse::text_entries`
+    stays `(u16, String)`: no window this engine draws has a text field, so
+    every one of them is a *pack* gump, the id is one the pack chose, and "is
+    this a field I drew" is a check only the pack can make. Typing it here would
+    be a wrapper with no promotion and no reader — a `Raw` type that means
+    nothing. This is the rule that decided the whole `Vec` question: `switches`
+    got a type because `gates` and `quests` read them, `text_entries` did not.
+11. **Raw ids cross the event bus to the pack.** `GumpAnswered` carries
+    `RawGumpId`, `RawButtonId` and `Vec<RawSwitchId>`, and
+    `openshard_server::scripting` unwraps them into JSON numbers. N3 amendment 9
+    put raw types on `Command` going *in*; this is the same argument going out,
+    and it is stronger: the engine drew none of these windows, so it is in no
+    position to validate ids it never issued. The script bridge is the
+    serialization seam, exactly as `Command::Speak` established.
+12. **Bare-integer field count in `gump.rs`: 9 before, 0 after** (N10).
+    `containers.rs` went 3 to 1 — the stack amount alone — when its `x`/`y`
+    became a `GumpPoint`.
+
+### Backlog from this stage
+
+- **The admin menu is the one window still written as a layout string by hand**
+  (`world/src/admin.rs`), so its six button ids appear twice: as literals inside
+  the string and as `ButtonId` constants beside the handler. Every other window
+  went through `GumpLayout` and now has one spelling. Building it through the
+  builder would make the constants the only copy.
+- **`ButtonId::CLOSE_BOX` and `ButtonId::UNUSED` are the same value with
+  different meanings**, and a third would be one too many; if one appears, the
+  type wants to be an enum with a `Reply(u32)` arm rather than a newtype with
+  named zeroes.
+- **`Command::ShowGump::serial` and its siblings are still bare `u32`s from the
+  script bridge.** Roughly a dozen script-raised commands name a mobile that
+  way and each re-does `Serial::new` in the tick. That is one sweep of its own,
+  and it belongs with the component sweep N4 left rather than with a protocol
+  stage.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -722,7 +889,7 @@ resolved silently in one module is a pattern the next module contradicts.
 | N2 | done — `mobile.rs` 37 bare int fields → 12 allowlisted | |
 | N3 | done — `speech.rs` 22 bare int fields → 0 | |
 | N4 | done — `containers.rs` 9 → 3, `items.rs` 16 → 3, all allowlisted | |
-| N5 | not started | |
+| N5 | done — `vendor.rs` 14 → 5 allowlisted, `context.rs` 6 → 0, `gump.rs` 9 → 0 | |
 | N6 | not started | |
 | N7 | not started | |
 | N8 | not started | |
