@@ -734,7 +734,7 @@ mod tests {
             }),
             ServerPacket::LogoutAck(LogoutAck),
             ServerPacket::MapChange(MapChange {
-                map: crate::world::MapId(0),
+                map: crate::world::Facet(0),
             }),
             ServerPacket::Remove(Remove { serial }),
             ServerPacket::OpenPaperdoll(OpenPaperdoll {
@@ -1297,7 +1297,7 @@ mod tests {
                 area: "Britain".to_owned(),
                 name: "Castle Britannia".to_owned(),
                 position: crate::world::Point::new(1475, 1770, 20),
-                map: crate::world::MapId(0),
+                map: crate::world::Facet(0),
                 description_cliloc: crate::wire::ClilocId(1075072),
             }],
             flags: crate::login::CharacterListFlags::TOOLTIPS,

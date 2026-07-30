@@ -28,9 +28,8 @@ use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-use openshard_world::components::Facet;
 use openshard_world::{Character, Command, Entering, FreshCharacter, Gameplay, TICK_INTERVAL, World};
 
 /// Britain, the same spot the tests use.

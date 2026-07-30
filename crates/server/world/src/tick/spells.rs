@@ -602,15 +602,13 @@ impl World {
 
     /// Send a mobile its personal light level, if it has a client — the seam Night
     /// Sight lights and its expiry restores. A creature (no `Client`) is a no-op.
-    pub(super) fn send_light(&mut self, serial: u32, level: u8) {
+    pub(super) fn send_light(&mut self, serial: u32, level: Light) {
         let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
             return;
         };
         if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) {
-            self.state.send_packet(
-                connection,
-                &ServerPacket::LightLevel(LightLevel { level: Light(level) }),
-            );
+            self.state
+                .send_packet(connection, &ServerPacket::LightLevel(LightLevel { level }));
         }
     }
 

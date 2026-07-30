@@ -107,8 +107,9 @@ impl DecodePacket for CharacterPlay {
 }
 
 impl CharacterPlay {
-    /// Encode a whole 0x5D packet. Test fixtures only — see `login`'s module
-    /// docs: this server never sends one, only ever decodes it.
+    /// Encode a whole 0x5D packet. What `crates/client/net`'s login state
+    /// machine sends for real — see `login`'s module docs: this server never
+    /// sends one, only ever decodes it.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(73);
         writer.u8(Self::ID);
@@ -885,6 +886,20 @@ impl Season {
             _ => Self::Spring,
         }
     }
+
+    /// Read a season from its byte, refusing anything the client cannot draw
+    /// instead of falling back to spring — for a caller like config validation
+    /// that needs to reject a bad byte rather than silently accept one.
+    pub const fn try_from_bits(bits: u8) -> Option<Self> {
+        match bits {
+            0 => Some(Self::Spring),
+            1 => Some(Self::Summer),
+            2 => Some(Self::Fall),
+            3 => Some(Self::Winter),
+            4 => Some(Self::Desolation),
+            _ => None,
+        }
+    }
 }
 
 /// `0xBC` — which season the client draws. 3 bytes.
@@ -959,18 +974,21 @@ impl EncodePacket for LogoutAck {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapChange {
     /// Which map (facet) to draw.
-    pub map: MapId,
+    pub map: Facet,
 }
 
-/// Which of the client's maps — its facets — to draw: `0` Felucca, `1` Trammel,
-/// `2` Ilshenar, and so on up through whatever the shard's own files hold.
+/// Which facet the client draws, and which a mobile is on: `0` Felucca, `1`
+/// Trammel, `2` Ilshenar, and so on up through whatever the shard's own files
+/// hold.
 ///
 /// The number indexes the client's `map*.mul`/`map*.uop` files, so its meaning
-/// is fixed by what the player installed and not by anything the server decides.
-/// The server's own notion of a facet (`openshard_state::components::Facet`)
-/// wraps the same byte a layer up.
+/// is fixed by what the player installed and not by anything the server
+/// decides. One type for both the wire's own idea of a facet and the world's —
+/// they used to be two (`world::MapId` here, `state::components::Facet`
+/// separately), converted at every seam; see "Two types for one facet byte" in
+/// `docs/protocol_newtypes.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
-pub struct MapId(pub u8);
+pub struct Facet(pub u8);
 
 impl EncodePacket for MapChange {
     const ID: u8 = 0xBF;
@@ -1372,7 +1390,7 @@ mod tests {
         // 0xBF is variable-length on the client's own table, but this
         // subcommand's own body never varies, so it declares its own length at
         // offset 1 the same way every other fixed packet does.
-        let map = encode_packet(&MapChange { map: MapId(1) }, version());
+        let map = encode_packet(&MapChange { map: Facet(1) }, version());
         assert_eq!(map.len(), 6);
         assert_eq!(map[0], 0xBF);
         assert_eq!(u16::from_be_bytes([map[1], map[2]]), 6, "declares its length");
@@ -1486,11 +1504,16 @@ mod tests {
         ] {
             assert_eq!(season.to_bits(), bits, "{season:?}");
             assert_eq!(Season::from_bits(bits), season);
+            assert_eq!(Season::try_from_bits(bits), Some(season));
         }
         // Total, and the fallback is the one the client can always draw. A
         // shard config cannot reach here — `openshard_config` refuses a sixth
         // season at startup — but a script or a save from another shard can.
         assert_eq!(Season::from_bits(5), Season::Spring);
         assert_eq!(Season::from_bits(u8::MAX), Season::Spring);
+        // `try_from_bits` is what config validation uses instead: unlike
+        // `from_bits` it refuses rather than silently drawing spring.
+        assert_eq!(Season::try_from_bits(5), None);
+        assert_eq!(Season::try_from_bits(u8::MAX), None);
     }
 }

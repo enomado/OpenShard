@@ -27,10 +27,10 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::TalkMode;
 use openshard_protocol::wire::Layer;
 use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Client, CriminalUntil, DamageType, Facet, Ghost, Guard, Hitpoints, Murders, Position, Staff,
+    Aggression, Client, CriminalUntil, DamageType, Ghost, Guard, Hitpoints, Murders, Position, Staff,
 };
 use openshard_state::sectors::in_range;
 

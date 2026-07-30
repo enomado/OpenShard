@@ -323,7 +323,7 @@ mod tests {
     };
     use openshard_protocol::serial::Serial;
     use openshard_protocol::wire::{ClilocId, Graphic};
-    use openshard_protocol::world::{Light, LightLevel, LoginComplete, MapId, MapSize, Point};
+    use openshard_protocol::world::{Facet, Light, LightLevel, LoginComplete, MapSize, Point};
 
     use super::*;
 
@@ -363,7 +363,7 @@ mod tests {
                 area: "Britain".to_owned(),
                 name: "Castle Britannia".to_owned(),
                 position: Point::new(1475, 1770, 20),
-                map: MapId(0),
+                map: Facet(0),
                 description_cliloc: ClilocId(1_075_072),
             }],
             flags: CharacterListFlags::TOOLTIPS,

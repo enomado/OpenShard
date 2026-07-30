@@ -29,8 +29,8 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::direction::{Direction, Facing};
-use openshard_protocol::world::Point;
-use openshard_state::components::{Facet, Heading, Npc, Position};
+use openshard_protocol::world::{Facet, Point};
+use openshard_state::components::{Heading, Npc, Position};
 use openshard_state::sectors::in_range;
 use openshard_state::{Rng, WorldState};
 

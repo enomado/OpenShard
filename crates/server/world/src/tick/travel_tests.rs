@@ -17,8 +17,8 @@ use super::tests::{
 use super::*;
 use openshard_protocol::serial::RawSerial;
 use openshard_state::components::{
-    Contained, CriminalUntil, Decays, Facet, InRegion, Mana, Moongate, Movement, Position,
-    RECALL_RUNE_GRAPHIC, RuneMark, SPELLBOOK_GRAPHIC, Spellbook,
+    Contained, CriminalUntil, Decays, InRegion, Mana, Moongate, Movement, Position, RECALL_RUNE_GRAPHIC,
+    RuneMark, SPELLBOOK_GRAPHIC, Spellbook,
 };
 use openshard_state::{Region, RegionFlags, RegionRect};
 

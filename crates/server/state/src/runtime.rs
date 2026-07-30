@@ -30,13 +30,15 @@ use openshard_protocol::speech::{Font, LocalizedMessage, SpokenMessage, TalkMode
 // hue together — so the wire's one-field newtype is imported under the name the
 // packet field has.
 use openshard_protocol::wire::{ClilocId, Graphic as WireGraphic, Hue, SoundId};
-use openshard_protocol::world::{MapChange, MapId, MapSize, PlayerUpdate, Point, encode_server_change};
+use openshard_protocol::world::{
+    Facet, MapChange, MapSize, PlayerUpdate, Point, Season, encode_server_change,
+};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
-    Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost, Graphic, Heading,
-    HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff,
-    Stealthing, TradeWindow, body_opens_doors,
+    Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Ghost, Graphic, Heading, HearsGhosts,
+    Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing,
+    TradeWindow, body_opens_doors,
 };
 use crate::dialogue::Dialogue;
 use crate::harvest::Banks;
@@ -161,9 +163,8 @@ pub struct Gameplay {
     /// Ticks in one UO minute — how fast the world clock runs. ServUO's five real
     /// seconds to the minute puts a whole UO day in two real hours.
     pub uo_minute_ticks: u64,
-    /// The season the client draws: 0 spring, 1 summer, 2 fall, 3 winter, 4
-    /// desolation. Static for now; sent on world entry.
-    pub season: u8,
+    /// The season the client draws. Static for now; sent on world entry.
+    pub season: Season,
     /// Whether guards answer at all in the regions marked guarded — ServUO's
     /// per-region `Disabled`, as one shard-wide switch.
     pub guards: bool,
@@ -328,7 +329,7 @@ impl Default for Gameplay {
             lod_idle_factor: 8,
             // ServUO's rate: a whole UO day in two real hours.
             uo_minute_ticks: Self::ticks(5),
-            season: 0, // spring
+            season: Season::Spring,
             guards: true,
             // Ours, not the references'; opt-in, and inert without pack data.
             npc_schedule: false,
@@ -1346,12 +1347,7 @@ impl WorldState {
                 // Which map to draw, then where on it and how big it is. No
                 // `0x1B`: that is the "entering the world" packet, and neither
                 // reference re-sends it mid-session.
-                // `.0` because the wire's own facet type is `MapId`, and this
-                // is where the server's `Facet` crosses into it.
-                self.send_packet(
-                    connection,
-                    &ServerPacket::MapChange(MapChange { map: MapId(facet.0) }),
-                );
+                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
                 self.send(connection, encode_server_change(to, size));
             }
         }

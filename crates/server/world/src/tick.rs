@@ -46,8 +46,8 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, RawFont, RawTalkMode, SpokenMessage, TalkMode};
 use openshard_protocol::wire::{Hue, Layer, RawHue, RawLayer};
 use openshard_protocol::world::{
-    DeathStatus, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapId, MapSize, PlayerStart,
-    PlayerUpdate, Point, RawStepSequence, Season, SeasonChange, WalkAck, WalkReject, WalkRequest,
+    DeathStatus, Facet, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapSize, MusicId,
+    PlayerStart, PlayerUpdate, Point, RawStepSequence, SeasonChange, WalkAck, WalkReject, WalkRequest,
 };
 use openshard_protocol::{
     access::AccessLevel,
@@ -59,8 +59,8 @@ use tracing::{debug, info, warn};
 
 use openshard_state::components::{
     Access, Account, Amount, Body, Brain, Client, Combat, Contained, Container, DamageType, Decoration, Door,
-    Equipped, Facet, Ghost, Graphic, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position,
-    Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
+    Equipped, Ghost, Graphic, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position, Resistance,
+    Ridden, Riding, Scripted, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
 };
 use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
@@ -195,10 +195,10 @@ pub struct World {
     last_status: HashMap<ConnectionId, status::StatusSnapshot>,
     /// The light level last sent to each connected player, the remembered half of
     /// the ambient diff. See `tick/ambient.rs`.
-    last_light: HashMap<ConnectionId, u8>,
+    last_light: HashMap<ConnectionId, Light>,
     /// The music track each player is currently hearing, so a crossing that does
     /// not change it does not restart it. See `tick/regions.rs`.
-    last_music: HashMap<ConnectionId, u16>,
+    last_music: HashMap<ConnectionId, MusicId>,
     /// Where the world clock started, in UO minutes — restored at boot so a
     /// restart does not put the world back at midnight. See `tick/ambient.rs`.
     clock_base: u64,

@@ -816,8 +816,8 @@ mod tests {
     use openshard_protocol::serial::RawSerial;
     use openshard_protocol::speech::{RawFont, RawTalkMode};
     use openshard_protocol::wire::RawHue;
+    use openshard_protocol::world::Facet;
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-    use openshard_world::components::Facet;
     use openshard_world::{Character, Entering, Position};
     use std::time::Instant;
 

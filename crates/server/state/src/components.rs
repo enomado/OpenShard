@@ -382,13 +382,6 @@ pub struct Access(pub AccessLevel);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Staff;
 
-/// Which facet a mobile is on: 0 Felucca, 1 Trammel, and so on.
-///
-/// A mobile only ever interacts with others on the same facet — the world keeps
-/// a separate map and interest grid per facet — so this is what selects which.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct Facet(pub u8);
-
 /// Marks an entity as driven by a person rather than by the server.
 ///
 /// Carries the connection so the world can answer it, and the version so

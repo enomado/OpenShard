@@ -7,12 +7,11 @@ use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::wire::Layer;
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Banker, Body, Brain, Facet, Fame, Heading, Hitpoints, Karma, MeleeDamage, Movement, Name,
-    NightHome, Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors,
-    creature_name,
+    Aggression, Banker, Body, Brain, Fame, Heading, Hitpoints, Karma, MeleeDamage, Movement, Name, NightHome,
+    Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors, creature_name,
 };
 use tracing::{debug, warn};
 

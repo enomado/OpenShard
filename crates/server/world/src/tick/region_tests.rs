@@ -196,7 +196,7 @@ fn a_dungeon_is_dark_at_noon_and_night_sight_beats_both() {
     world.tick(now);
     assert_eq!(
         packets_of(&mut world, player, 0x4F).last().map(|p| p[1]),
-        Some(LIGHT_NIGHTSIGHT),
+        Some(LIGHT_NIGHTSIGHT.0),
         "Night Sight lights the cave"
     );
 }

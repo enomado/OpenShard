@@ -32,10 +32,13 @@
 //!
 //! [`AccountLogin`], [`SelectShard`], [`GameServerLogin`] and
 //! [`ClientVersionReport`] only ever arrive over the wire — this server never
-//! sends one. Their `encode()` exists purely to build test fixtures, so it is a
-//! plain inherent method rather than [`EncodePacket`]: that trait is for the
-//! packets this server actually sends, where [`crate::server_packet::ServerPacket`]
-//! is the only thing allowed to call it.
+//! sends one, so `encode()` is a plain inherent method rather than
+//! [`EncodePacket`]: that trait is for the packets this server actually sends,
+//! where [`crate::server_packet::ServerPacket`] is the only thing allowed to
+//! call it. `AccountLogin`, `SelectShard` and `GameServerLogin` are what
+//! `crates/client/net`'s login state machine (`session.rs`) sends for real now;
+//! only [`ClientVersionReport::encode`] is still test-fixtures only, waiting on
+//! the client announcing its own version.
 
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -47,7 +50,7 @@ use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength, decode_packet};
 use crate::version::ClientVersion;
 use crate::wire::{AuthKey, ClilocId, RawCharacterSlot};
-use crate::world::{CreateCharacter, MapId, Point};
+use crate::world::{CreateCharacter, Facet, Point};
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
 pub const ACCOUNT_NAME_LENGTH: usize = 30;
@@ -87,7 +90,8 @@ impl DecodePacket for AccountLogin {
 }
 
 impl AccountLogin {
-    /// Encode a whole 0x80 packet. Test fixtures only — see the module docs.
+    /// Encode a whole 0x80 packet. What `crates/client/net`'s login state
+    /// machine sends for real — see the module docs.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(62);
         writer.u8(Self::ID);
@@ -427,7 +431,8 @@ impl DecodePacket for SelectShard {
 }
 
 impl SelectShard {
-    /// Encode a whole 0xA0 packet. Test fixtures only — see the module docs.
+    /// Encode a whole 0xA0 packet. What `crates/client/net`'s login state
+    /// machine sends for real — see the module docs.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(3);
         writer.u8(Self::ID);
@@ -523,7 +528,8 @@ impl DecodePacket for GameServerLogin {
 }
 
 impl GameServerLogin {
-    /// Encode a whole 0x91 packet. Test fixtures only — see the module docs.
+    /// Encode a whole 0x91 packet. What `crates/client/net`'s login state
+    /// machine sends for real — see the module docs.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(65);
         writer.u8(Self::ID);
@@ -556,7 +562,7 @@ pub struct StartLocation {
     /// coordinate, so decode narrows it back down.
     pub position: Point,
     /// Which map.
-    pub map: MapId,
+    pub map: Facet,
     /// Cliloc id for the description. Ignored by clients before 7.0.13.0.
     pub description_cliloc: ClilocId,
 }
@@ -805,7 +811,7 @@ impl DecodePacket for CharacterList {
             let area = reader.fixed_string(32)?;
             let name = reader.fixed_string(32)?;
             let position = Point::new(reader.i32()? as u16, reader.i32()? as u16, reader.i32()? as i8);
-            let map = MapId(reader.u32()? as u8);
+            let map = Facet(reader.u32()? as u8);
             let description_cliloc = ClilocId(reader.u32()?);
             reader.skip(4)?; // the trailing zero dword
             starts.push(StartLocation {
@@ -1646,7 +1652,7 @@ mod tests {
             area: "Britain".to_owned(),
             name: "Castle Britannia".to_owned(),
             position: Point::new(1475, 1774, 0),
-            map: MapId(0),
+            map: Facet(0),
             description_cliloc: ClilocId(1_075_072),
         }];
 

@@ -16,9 +16,9 @@
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::world::{MusicId, PlayMusic};
+use openshard_protocol::world::{Facet, MusicId, PlayMusic};
 use openshard_state::Region;
-use openshard_state::components::{Client, Facet, InRegion, Position};
+use openshard_state::components::{Client, InRegion, Position};
 use tracing::{info, warn};
 
 use super::World;
@@ -48,6 +48,18 @@ impl World {
         if !self.state.facets.contains_key(&Facet(facet)) {
             warn!(facet, "regions for a facet this shard has not loaded");
             return;
+        }
+        for region in &regions {
+            if let Some(light) = region.light {
+                if light > 0x1F {
+                    warn!(
+                        facet,
+                        region = %region.name,
+                        light,
+                        "region light above 0x1F; the client clamps it to pitch dark rather than complaining"
+                    );
+                }
+            }
         }
         let count = regions.len();
         self.state.facet_state_mut(Facet(facet)).regions.set(regions);
@@ -249,7 +261,7 @@ impl World {
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
-        let Some(track) = music else {
+        let Some(track) = music.map(MusicId) else {
             // Leaving a region does not stop the music: there is no "silence"
             // track, and the client fading out on its own is what UO does. The
             // remembered track stays, so walking back in is still a no-op.
@@ -259,12 +271,8 @@ impl World {
             return;
         }
         self.last_music.insert(connection, track);
-        self.state.send_packet(
-            connection,
-            &ServerPacket::PlayMusic(PlayMusic {
-                track: MusicId(track),
-            }),
-        );
+        self.state
+            .send_packet(connection, &ServerPacket::PlayMusic(PlayMusic { track }));
     }
 
     /// Forget a departed connection's music, so a reconnect hears its region

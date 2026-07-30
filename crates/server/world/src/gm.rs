@@ -18,10 +18,8 @@ use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
 use openshard_protocol::wire::Hue;
-use openshard_protocol::world::Point;
-use openshard_state::components::{
-    Client, Equipped, Facet, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats,
-};
+use openshard_protocol::world::{Facet, Point};
+use openshard_state::components::{Client, Equipped, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats};
 use openshard_state::{TargetPurpose, WorldState};
 
 use openshard_items as items;

@@ -419,7 +419,7 @@ pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocatio
             area: area.to_owned(),
             name: name.to_owned(),
             position: Point::new(x, y, z),
-            map: MapId(0),
+            map: Facet(0),
             description_cliloc: ClilocId(0),
         }
     }
@@ -444,7 +444,7 @@ pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocatio
             area: "Britannia".to_owned(),
             name: "Britain".to_owned(),
             position: Point::new(start.0, start.1, 0),
-            map: MapId(facets.first().copied().unwrap_or(0)),
+            map: Facet(facets.first().copied().unwrap_or(0)),
             description_cliloc: ClilocId(0),
         });
     }
@@ -784,7 +784,7 @@ mod tests {
             "Britain is one of them"
         );
         for city in &cities {
-            assert_eq!(city.map, MapId(0), "every classic city is on Felucca");
+            assert_eq!(city.map, Facet(0), "every classic city is on Felucca");
             assert!(
                 city.position.x > 0 && city.position.y > 0,
                 "a real spot, not the origin"
@@ -801,7 +801,7 @@ mod tests {
         let cities = start_cities(&[1], (1363, 1600));
         assert_eq!(cities.len(), 1, "never empty");
         assert_eq!(cities[0].position, Point::new(1363, 1600, 0));
-        assert_eq!(cities[0].map, MapId(1), "on a loaded facet");
+        assert_eq!(cities[0].map, Facet(1), "on a loaded facet");
     }
 
     #[test]

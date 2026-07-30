@@ -181,10 +181,12 @@ Each is a seam the work made visible. None blocks the next milestone.
   carries no coordinates, so there is no honest `StartLocation` to build; the
   decoder says so rather than inventing zeros. If this engine ever wants to be
   a client to an *old* shard, that is where to start.
-- **The client-to-server encoders are still labelled "test fixtures only".**
-  `AccountLogin::encode`, `SelectShard::encode`, `GameServerLogin::encode` and
-  `CharacterPlay::encode` are what the client actually sends now. Their docs
-  describe a world where only tests called them.
+- ~~**The client-to-server encoders are still labelled "test fixtures only".**~~
+  Fixed: `AccountLogin::encode`, `SelectShard::encode`, `GameServerLogin::encode`
+  and `CharacterPlay::encode` now say what `crates/client/net`'s login state
+  machine (`session.rs`) actually calls them for. Only `ClientVersionReport::encode`
+  is genuinely still test-fixtures only, since the client does not announce its
+  version yet.
 - **`Login` fixes the seed value at `0x0A000001`.** It is never read — see
   `RawSeedValue` — but a client that will one day face a shard implementing
   login encryption will need it to be the value that keys the cipher.

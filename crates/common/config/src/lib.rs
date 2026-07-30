@@ -36,6 +36,7 @@ use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 
 use openshard_protocol::identity::{AccountName, CharacterName, PlaintextPassword};
+use openshard_protocol::world::Season;
 use serde::{Deserialize, Serialize};
 
 /// A whole shard configuration.
@@ -238,11 +239,10 @@ pub struct GameplayConfig {
     /// the sun down; `0` is refused, since a stopped clock is permanent midnight.
     #[serde(default = "default_uo_minute_seconds")]
     pub uo_minute_seconds: u64,
-    /// Which season the client draws: `0` spring, `1` summer, `2` fall, `3`
-    /// winter, `4` desolation. Sent once, on world entry — there is no calendar
-    /// turning it yet.
-    #[serde(default = "default_season")]
-    pub season: u8,
+    /// Which season the client draws. Sent once, on world entry — there is no
+    /// calendar turning it yet.
+    #[serde(default = "default_season", with = "season")]
+    pub season: Season,
     /// Whether guards answer in the regions marked guarded. `true` (the default)
     /// is a town where a criminal is punished; `false` is ServUO's per-region
     /// `Disabled` applied shard-wide, for a shard that wants no safe ground.
@@ -376,8 +376,8 @@ fn default_uo_minute_seconds() -> u64 {
     5
 }
 /// Spring — the season a shard with no calendar sits in.
-fn default_season() -> u8 {
-    0
+fn default_season() -> Season {
+    Season::Spring
 }
 
 fn default_expansion() -> String {
@@ -648,6 +648,32 @@ mod plaintext_password {
     }
 }
 
+/// (De)serialize a [`Season`] as its wire byte, rejecting one the client
+/// cannot draw at deserialize time rather than letting a sixth season through
+/// to be caught later — [`Season::from_bits`] is total and silently falls
+/// back to spring, which is right for a packet off the wire but wrong for a
+/// config typo that deserves to be refused. See [`account_name`] for why this
+/// lives here rather than on the type.
+mod season {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::Season;
+
+    pub fn serialize<S: Serializer>(value: &Season, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u8(value.to_bits())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Season, D::Error> {
+        let bits = u8::deserialize(d)?;
+        Season::try_from_bits(bits).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "gameplay.season {bits} is not a season the client draws (0 spring, \
+                 1 summer, 2 fall, 3 winter, 4 desolation)"
+            ))
+        })
+    }
+}
+
 /// (De)serialize a `Vec<CharacterName>` as a TOML array of bare strings. See
 /// [`account_name`] for why this lives here rather than on the type.
 mod character_names {
@@ -782,11 +808,6 @@ pub enum ConfigError {
     /// `gameplay.uo_minute_seconds` is zero, which stops the world clock — a
     /// shard frozen at midnight, with no error to say why.
     ZeroUoMinuteSeconds,
-    /// `gameplay.season` is not one the client draws.
-    UnknownSeason {
-        /// The value given.
-        season: u8,
-    },
     /// `gameplay.expansion` is not an expansion the shard can advertise.
     UnknownExpansion {
         /// The value given.
@@ -873,11 +894,6 @@ impl fmt::Display for ConfigError {
                 f,
                 "gameplay.stat_cap_individual {individual} is above stat_cap {total}; one \
                  stat cannot be allowed more than all three together",
-            ),
-            Self::UnknownSeason { season } => write!(
-                f,
-                "gameplay.season {season} is not a season the client draws (0 spring, \
-                 1 summer, 2 fall, 3 winter, 4 desolation)"
             ),
         }
     }
@@ -983,12 +999,8 @@ impl Config {
                 expansion: self.gameplay.expansion.clone(),
             });
         }
-        // The client knows five seasons; a sixth draws nothing at all.
-        if self.gameplay.season > 4 {
-            return Err(ConfigError::UnknownSeason {
-                season: self.gameplay.season,
-            });
-        }
+        // `gameplay.season`'s own deserialize already refuses a sixth season —
+        // see the `season` module — so there is nothing left to check here.
         // The gain chance divides by the total skill cap, and a per-stat cap above
         // the total one is a ceiling that can never be reached — both read as the
         // caps "not working" rather than as a bad setting.

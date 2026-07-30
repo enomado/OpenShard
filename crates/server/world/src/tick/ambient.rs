@@ -84,17 +84,17 @@ impl World {
     /// The scale runs backwards — 0 is blinding, higher is darker — so the two
     /// ramps interpolate in opposite directions.
     #[must_use]
-    pub fn daylight_at(&self, x: u16) -> u8 {
+    pub fn daylight_at(&self, x: u16) -> Light {
         let (hours, minutes) = self.uo_time_at(x);
-        let day = i64::from(LIGHT_DAY);
-        let night = i64::from(LIGHT_NIGHT);
+        let day = i64::from(LIGHT_DAY.0);
+        let night = i64::from(LIGHT_NIGHT.0);
         let level = match hours {
             h if h < 4 => night,
             h if h < 6 => night + (((h - 4) * 60 + minutes) as i64 * (day - night)) / 120,
             h if h < 22 => day,
             h => day + (((h - 22) * 60 + minutes) as i64 * (night - day)) / 120,
         };
-        u8::try_from(level.clamp(0, 0x1F)).unwrap_or(LIGHT_DAY)
+        Light(u8::try_from(level.clamp(0, 0x1F)).unwrap_or(LIGHT_DAY.0))
     }
 
     /// The light level one mobile should be seeing right now.
@@ -106,12 +106,12 @@ impl World {
     /// 2. **The region** — a dungeon is dark at noon, and says so in its own data
     ///    rather than in a rule here.
     /// 3. **The hour**, at this mobile's longitude.
-    fn light_for(&self, entity: EntityId) -> u8 {
+    fn light_for(&self, entity: EntityId) -> Light {
         if magic::behaviour_buff(&self.state, entity, openshard_state::effect::NIGHT_SIGHT).is_some() {
             return LIGHT_NIGHTSIGHT;
         }
         if let Some(light) = self.state.region_of(entity).and_then(|region| region.light) {
-            return light;
+            return Light(light);
         }
         let x = self
             .state
@@ -124,7 +124,7 @@ impl World {
     /// Send every player whose light level has changed the new one, and nobody
     /// else. The one place `0x4F` goes out after login.
     pub(super) fn refresh_light(&mut self) {
-        let changed: Vec<(ConnectionId, u8)> = self
+        let changed: Vec<(ConnectionId, Light)> = self
             .state
             .players
             .iter()
@@ -135,16 +135,14 @@ impl World {
             .collect();
         for (connection, level) in changed {
             self.last_light.insert(connection, level);
-            self.state.send_packet(
-                connection,
-                &ServerPacket::LightLevel(LightLevel { level: Light(level) }),
-            );
+            self.state
+                .send_packet(connection, &ServerPacket::LightLevel(LightLevel { level }));
         }
     }
 
     /// The light a player entering the world is told about, remembered so the
     /// refresh pass does not immediately send it again.
-    pub(super) fn initial_light(&mut self, connection: ConnectionId) -> u8 {
+    pub(super) fn initial_light(&mut self, connection: ConnectionId) -> Light {
         let level = self
             .state
             .players

@@ -17,11 +17,11 @@ use openshard_items as items;
 use openshard_movement::{Terrain, direction_toward, find_path, step_from};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Brain, ChasePath, Client, Combat, Facet, Heading, Hitpoints, Pet, PetOrder, Position,
-    RangedAttack, Scripted,
+    Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position, RangedAttack,
+    Scripted,
 };
 use openshard_state::sectors::{distance, in_range};
 

@@ -40,27 +40,35 @@ below is what the sweep found but could not fix, because the fix crosses out
 of `protocol` — into `state`, `config`, or the tick — which the sweep's own
 rule (`common/*` is below the server) puts out of its reach on purpose.
 
-- **Two types for one facet byte.** `openshard_state::components::Facet(pub u8)`
-  and the wire's new `world::MapId(pub u8)` are the same number, converted at
-  every seam (`MapId(facet.0)`, twice today). One layer should own it — most
-  likely `protocol`, the way `Serial` is owned there and borrowed by
-  `entities` — but the decision touches every `Facet` in `state` and is not a
-  packet-encoding change, so it is its own piece of work.
-- **A region's light level is never bounded.** `region.light: Option<u8>`
-  travels from region data and from scripting (`scripting/src/engine/ops.rs`)
-  into `0x4F` without ever meeting the `0..=0x1F` the client actually reads;
-  `world::Light` deliberately does not clamp, because the client does. Benign
-  today — a `200` renders as "as dark as it gets" — but it means a shard that
-  typos a light value gets no complaint from anything.
-- **The tick keeps light and music as bare numbers.** `last_light:
-  HashMap<_, u8>`, `last_music: HashMap<_, u16>`, and the `LIGHT_*` constants
-  are wrapped into `Light`/`MusicId` only at the packet seam. Carrying the
-  newtypes inward is a separate, server-side sweep; the protocol crate's own
-  count is clean without it.
-- **`gameplay.season` is still a `u8` in config and in `WorldState`,**
-  converted with `Season::from_bits` at world entry. Config validates the range
-  at startup, so nothing is unchecked — but the enum now exists and the mirror
-  does not have to stay a byte.
+- ~~**Two types for one facet byte.**~~ Fixed: `protocol` owns the one
+  `world::Facet(pub u8)` now, the way `Serial` is owned there and borrowed by
+  `entities`; `state::components::Facet` is gone, and every crate that used it
+  (`world`, `npc`, `ai`, `items`, `skills`, `magic`, `server`, the client) reads
+  `openshard_protocol::world::Facet` directly instead. The two `MapId(facet.0)`
+  double-conversions collapse to a plain `facet` — the packet's own field and
+  the world's notion of a facet are the same value now, not two synchronised
+  ones.
+- ~~**A region's light level is never bounded.**~~ Fixed: `World::register_regions`
+  (`world/src/tick/regions.rs`, the one place every `Command::RegisterRegions`
+  — today only from `scripting::op_register_regions` — lands) now warns per
+  region whose `light` is above `0x1F`. `world::Light` still does not clamp,
+  deliberately, because the client does; this only makes a shard's own typo
+  audible instead of silent.
+- ~~**The tick keeps light and music as bare numbers.**~~ Fixed: `last_light`
+  is `HashMap<_, Light>`, `last_music` is `HashMap<_, MusicId>`, and the
+  `LIGHT_*` constants in `tick/defaults.rs` are `Light`, not `u8`. Only the
+  seam where a `Region`'s own `Option<u8>`/`Option<u16>` data enters the tick
+  (`light_for`, `start_music`) still wraps — the same boundary every other
+  newtype in `state` converts at.
+- ~~**`gameplay.season` is still a `u8` in config and in `WorldState`.**~~
+  Fixed: `GameplayConfig::season` and `Gameplay::season` are both `Season`
+  now. Config deserializes it through a `#[serde(with = "season")]` module
+  (`crates/common/config/src/lib.rs`, the way `AccountName` already does)
+  that calls the new `Season::try_from_bits` — unlike `from_bits`, which
+  silently falls back to spring, this refuses a sixth season at parse time,
+  so `ConfigError::UnknownSeason` (which duplicated the same check one step
+  later) is gone. `tick/enter.rs`'s world-entry send no longer calls
+  `Season::from_bits` at all — the value has been a `Season` since boot.
 - ~~**`mobile::OpenPaperdoll::flags` is a bare `u8`**~~ Fixed in N2:
   `PaperdollFlags` replaced the two loose `pub const u8`s
   (`PAPERDOLL_WARMODE`, `PAPERDOLL_CAN_LIFT`) with a named `with`, on N10's
