@@ -2362,10 +2362,15 @@ protocol in the direction a client reads it, and a `crates/client/net` that
 connects, logs in and walks into the world. The milestones, and what is already
 missing for each, are in [`docs/client.md`](client.md).
 
-- [ ] M0 — `server_packet_length`, `frame_server_packet`, `ServerPacket::decode`,
-      `ClientPacket::encode`, incremental Huffman, round-trip tests
-- [ ] M1 — `crates/client/net`: sans-io connection, login state machine,
-      `WorldView`, walking
+- [x] M0 — `server_packet_length`, `frame_server_packet`, incremental Huffman,
+      and `ServerPacket::decode` for the login set. `ClientPacket::encode` and
+      the rest of the decoders land as a milestone needs them.
+- [x] M1 — `crates/client/net`: sans-io connection, login state machine,
+      `WorldView`, and `crates/e2e` proving a client reaches the world against
+      the real shard
+- [ ] M1a — walking: `0x02` with its sequence and fastwalk key, `0x22`/`0x21`,
+      and the decoders that fill a `WorldView` (`0x20`, `0x11`, `0x77`, `0x78`,
+      `0x1A`, `0x1D`)
 - [ ] M2 — `crates/common/uofiles`: move the format readers out of `world`, add
       the ones a renderer needs
 - [ ] M3 — the first picture
