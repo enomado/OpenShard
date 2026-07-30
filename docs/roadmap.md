@@ -311,14 +311,16 @@ if guessed:
   `hashlittle2(key, len, &pc, &pb)`, so `(c << 32) | b` is the natural reading.
   It matches zero entries.
 
-**Backlog: `map::tests::a_map_with_no_statics_loads_as_bare_ground` is racy.**
-It writes `std::env::temp_dir()/openshard-map-test/tiny.mul` — one fixed path in
-a directory shared by every process on the machine — and deletes it at the end,
-so two concurrent runs of the workspace's tests interleave a write, a read and a
-remove on the same file. Observed failing once under a full `cargo test
---workspace` and passing alone immediately after. The fix is a unique directory
-per run (the test already builds ~3MB of zeroes, so the cost is not the file);
-this is the only test in the crate that names a fixed path outside `target/`.
+**The map tests no longer share one path under `temp_dir()`.** Two of them wrote
+fixtures to `std::env::temp_dir()/openshard-map-test/` — one fixed directory in a
+place every process on the machine shares — and deleted them at the end, so two
+concurrent runs of the workspace's tests interleaved a write, a read and a remove
+on the same file. `a_map_with_no_statics_loads_as_bare_ground` was seen failing
+once under a full `cargo test --workspace` and passing alone immediately after,
+which is how that flake always presents. Both now take a `ScratchDir`: a
+directory named by pid and a counter, removed on `Drop` — so a failing assertion
+also stops leaving the fixture behind, which the old explicit `remove_file` did
+not.
 
 ### The pace limiter takes Sphere's numbers and not its arithmetic
 

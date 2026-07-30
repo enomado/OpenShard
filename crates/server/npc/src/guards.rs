@@ -24,7 +24,6 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::TalkMode;
 use openshard_protocol::wire::Layer;
 use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
 use openshard_protocol::world::{Facet, Point};
@@ -270,14 +269,7 @@ fn flash(state: &mut WorldState, guard: EntityId, at: Point) {
 /// loot, the `MobileDied` and the criminal bookkeeping all happen the usual way,
 /// and there is no second death path to keep in step with the first.
 fn execute(state: &mut WorldState, guard: EntityId, target: EntityId) {
-    openshard_chat::speak(
-        state,
-        guard,
-        TalkMode::Regular,
-        crate::GREET_HUE,
-        crate::GREET_FONT,
-        GUARD_LINE,
-    );
+    crate::say(state, guard, GUARD_LINE);
     let Some(serial) = state.registry.serial_of(target) else {
         return;
     };

@@ -451,6 +451,39 @@ fn facet_size(blocks: usize) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
 
+    /// A directory of one test's own, removed when the test ends.
+    ///
+    /// The fixtures below are written to disk because `Map::load` takes a path,
+    /// and a fixed name under `temp_dir()` is shared state: two runs of this
+    /// suite at once — a second `cargo test`, or CI's — write and delete each
+    /// other's file, and the loser fails on a file that was whole a moment ago.
+    /// It happened once on a full workspace run and never on the test alone,
+    /// which is exactly how that class of flake presents. The pid and the
+    /// counter make the name unique across processes and within one; `Drop`
+    /// does the cleanup so a failing assertion still leaves no litter.
+    struct ScratchDir(std::path::PathBuf);
+
+    impl ScratchDir {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("openshard-map-test-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn join(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn a_block_is_the_size_sphere_says() {
         assert_eq!(BLOCK_BYTES, 196, "4-byte header plus 64 cells of 3 bytes");
@@ -569,20 +602,17 @@ mod tests {
 
     #[test]
     fn a_map_that_is_not_whole_blocks_is_refused() {
-        let dir = std::env::temp_dir().join("openshard-map-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ScratchDir::new();
         let path = dir.join("ragged.mul");
         std::fs::write(&path, [0u8; BLOCK_BYTES + 1]).unwrap();
 
         let result = Map::load(&path, None::<(&Path, &Path)>);
         assert!(matches!(result, Err(MapError::NotABlockMap { .. })));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn a_map_with_no_statics_loads_as_bare_ground() {
-        let dir = std::env::temp_dir().join("openshard-map-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ScratchDir::new();
         let path = dir.join("tiny.mul");
         // A whole facet's worth of blocks would be 90MB; use Tokuno's shape.
         let blocks = ((1448 / BLOCK_SIZE) * (1448 / BLOCK_SIZE)) as usize;
@@ -592,6 +622,5 @@ mod tests {
         assert_eq!((map.width(), map.height()), (1448, 1448));
         assert_eq!(map.facet_name(), "Tokuno");
         assert_eq!(map.static_count(), 0);
-        let _ = std::fs::remove_file(&path);
     }
 }

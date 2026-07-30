@@ -80,7 +80,15 @@ pub(crate) const GREET_FONT: Font = Font::DEFAULT;
 
 /// Have an NPC say something out loud, in the muted grey and font the client draws
 /// townsfolk chatter in. The one door every townsperson's speech goes through, so
-/// the hue and the font are decided once.
+/// the hue and the font are decided once — the greeters, the vendor's answers
+/// (`vendor::vendor_says`) and a guard's sentence (`guards::execute`) all come
+/// through here. The latter two called `openshard_chat::speak` directly for a
+/// while, with arguments that happened to match; that is the shape this door
+/// exists to prevent, because it drifts without anything failing.
+///
+/// A caller that wants a *different* hue is not a townsperson speaking and should
+/// not be routed through here — the private "the bank says" line uses [`notify`],
+/// and a script's `Speak` names its own hue.
 pub(crate) fn say(state: &mut WorldState, npc: EntityId, line: &str) {
     openshard_chat::speak(state, npc, TalkMode::Regular, GREET_HUE, GREET_FONT, line);
 }

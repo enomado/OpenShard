@@ -553,13 +553,17 @@ shared class-B type and its second decoder-rewrites-a-value finding.
   The `[gameplay]`-config question stays open and is now cheap: three named
   defaults are three config fields, and the tick would override the constants
   rather than replace a scattered literal.
-- **`npc::say` is documented as "the one door every townsperson's speech goes
-  through, so the hue and the font are decided once" — and two callers walk past
-  it.** `guards::execute` and `vendor::vendor_says` build the
-  `openshard_chat::speak` call themselves with `crate::GREET_HUE` and
-  `crate::GREET_FONT`. Harmless while the arguments agree; the comment promises an
-  invariant the code does not enforce, which is the shape that decays. Either route
-  both through `say` or drop the claim from its doc.
+- **`npc::say` promised "the one door every townsperson's speech goes through" and
+  two callers walked past it — closed by routing them through.**
+  `guards::execute` and `vendor::vendor_says` built the `openshard_chat::speak`
+  call themselves with `crate::GREET_HUE` and `crate::GREET_FONT`. The arguments
+  agreed, so nothing was wrong yet; a doc that promises an invariant the code does
+  not enforce is the shape that decays, and the `notify` bug above is what that
+  decay looks like when it arrives. Both call `say` now, the two calls collapsed to
+  one line each, and `say`'s doc names its three callers plus the cases that are
+  *supposed* to stay outside it (a private system line uses `notify`; a script's
+  `Speak` names its own hue). `quests::progress` still calls `speak` directly with
+  its own `NPC_HUE` — a different crate, and per-crate names were the decision.
 
 ## Amendments forced by N4 (`containers.rs`)
 

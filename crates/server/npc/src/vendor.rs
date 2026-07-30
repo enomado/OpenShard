@@ -14,7 +14,6 @@ use openshard_movement::Terrain;
 use openshard_protocol::containers::{ContainerContents, encode_open_container};
 use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::TalkMode;
 use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
 use openshard_protocol::wire::Layer;
 use openshard_state::components::{
@@ -591,14 +590,7 @@ pub fn buy_keyword(state: &mut WorldState, connection: ConnectionId, actor: Enti
 /// line to a single screen. The customer's answer should look like the
 /// shopkeeper talking, not the shard.
 fn vendor_says(state: &mut WorldState, vendor: EntityId, text: &str) {
-    openshard_chat::speak(
-        state,
-        vendor,
-        TalkMode::Regular,
-        crate::GREET_HUE,
-        crate::GREET_FONT,
-        text,
-    );
+    crate::say(state, vendor, text);
 }
 
 /// The serial of the container `mobile` wears at `layer`, if any.
