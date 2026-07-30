@@ -13,17 +13,18 @@ pub(crate) fn dispatch_world_packet(
     world: &mut World,
     packet: ClientPacket,
     id: ConnectionId,
-    saved: &HashMap<(String, String), CharacterRecord>,
+    roster: &Roster,
     access: AccessLevel,
 ) -> bool {
     match packet {
         ClientPacket::CharacterPlay(play) => {
             let account = session.login.account().cloned().unwrap_or_default();
+            let name = CharacterName(play.name);
             // A stored character enters on its saved serial, spot and look; one
-            // the database has never seen — a config-only character on a fresh
-            // shard — enters fresh at the start.
-            let key = (account.normalized(), play.name.to_lowercase());
-            let record = saved.get(&key);
+            // the roster has never heard of — a config-only character on a fresh
+            // shard, or one created this run and not yet saved — enters fresh at
+            // the start.
+            let record = roster.get(&account, &name);
             let facet = record.map_or(0, |record| record.facet);
             let (serial, position, appearance, sheet) = match record {
                 Some(record) => (
@@ -54,7 +55,10 @@ pub(crate) fn dispatch_world_packet(
                 ),
                 None => (None, None, None, None),
             };
-            session.in_world = true;
+            // The connection's own note of what it is playing, taken as the
+            // `Enter` is queued. It is what tells another connection on this
+            // account that the character is in use — see `Sessions::is_playing`.
+            session.enter_world(account.clone(), name.clone());
             // Tell the gateway framer this client's version now, before any
             // in-world packet whose length depends on it (the drop packet). The
             // game connection never stated its version; this is the auth-key-linked
@@ -65,7 +69,7 @@ pub(crate) fn dispatch_world_packet(
                 connection: id,
                 version: session.login.version(),
                 account,
-                name: CharacterName(play.name),
+                name,
                 serial,
                 position,
                 facet,
@@ -76,7 +80,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::Walk(request) => {
-            if !session.in_world {
+            if !session.in_world() {
                 debug!(%id, "0x02 before entering the world");
                 return true;
             }
@@ -90,13 +94,13 @@ pub(crate) fn dispatch_world_packet(
             // "Log Out" on the paperdoll. The client tells the server it is
             // leaving and then waits to be told it may — see `world::LogoutAck`.
             // Queued like everything else, so the answer comes out of a tick.
-            if session.in_world {
+            if session.in_world() {
                 world.queue(Command::LogoutRequest { connection: id });
             }
             true
         }
         ClientPacket::StatusQuery(query) => {
-            if session.in_world {
+            if session.in_world() {
                 match query.kind {
                     StatusQueryKind::Skills => {
                         world.queue(Command::RequestSkills { connection: id });
@@ -113,7 +117,7 @@ pub(crate) fn dispatch_world_packet(
             // not gump replies — the paperdoll is drawn client-side and has no
             // server layout to answer. Without this the Quest button does nothing
             // at all, with nothing anywhere to say why.
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             match command.subcommand {
@@ -129,7 +133,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::GumpResponse(response) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::GumpResponse {
@@ -139,7 +143,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::TargetResponse(response) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::TargetResponse {
@@ -149,7 +153,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::PickUpItem(pickup) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::PickUpItem {
@@ -160,7 +164,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::DropItem(drop) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::DropItem {
@@ -172,7 +176,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::SecureTrade(action) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             match action {
@@ -197,7 +201,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::DoubleClick(click) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::DoubleClick {
@@ -208,7 +212,7 @@ pub(crate) fn dispatch_world_packet(
         }
         ClientPacket::Buy(reply) => {
             // A vendor purchase, answered out of the tick like everything else.
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::Buy {
@@ -219,7 +223,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::Sell(reply) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::Sell {
@@ -230,7 +234,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::Look(look) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::SingleClick {
@@ -242,7 +246,7 @@ pub(crate) fn dispatch_world_packet(
         ClientPacket::PropertyQuery(query) => {
             // The AoS tooltip batch query: a client hovering wants these objects'
             // property lists. Answered out of the tick like every other reply.
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             debug!(%id, count = query.serials.len(), "0xD6 tooltip query");
@@ -253,7 +257,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::Equip(equip) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::EquipItem {
@@ -265,7 +269,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::WarMode(request) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::WarMode {
@@ -275,7 +279,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::Attack(request) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::Attack {
@@ -285,7 +289,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::Talk(talk) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::Say {
@@ -300,7 +304,7 @@ pub(crate) fn dispatch_world_packet(
         ClientPacket::UnicodeTalk(talk) => {
             // What a modern client actually sends when you type. Same `Say` as the
             // ASCII 0x03 once the words are out.
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::Say {
@@ -315,7 +319,7 @@ pub(crate) fn dispatch_world_packet(
         ClientPacket::Extended(request) => {
             // `0xBF` is a whole family of extended commands; `ExtendedRequest`
             // has already picked the one subcommand this packet carries.
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             match request {
@@ -357,7 +361,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::UseSkill(request) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::UseSkillButton {
@@ -367,7 +371,7 @@ pub(crate) fn dispatch_world_packet(
             true
         }
         ClientPacket::SkillLock(request) => {
-            if !session.in_world {
+            if !session.in_world() {
                 return true;
             }
             world.queue(Command::SetSkillLock {
@@ -510,7 +514,7 @@ pub(crate) fn create_character(
         None => (0, None),
     };
 
-    session.in_world = true;
+    session.enter_world(account.clone(), name.clone());
     let access = login.accounts.access_level(&account);
     world.queue(Command::Enter {
         connection: id,
@@ -569,15 +573,28 @@ pub(crate) fn create_character(
 /// a refused delete — bad slot, or a character being played — keeps the
 /// connection and answers with `0x85`, and a good one resends the list with
 /// `0x86`.
+///
+/// # Why the whole session table and not one session
+///
+/// The refusal this owes the client is "that character is being played", and
+/// the connection asking is never the one playing it — it is sitting on the
+/// character screen. It is a *second* connection on the same account, so the
+/// question can only be answered by reading across all of them. Taking the
+/// table by `&` rather than one session by `&mut` is also what makes that
+/// possible at all; see [`Sessions::is_playing`] for what this replaced and the
+/// hole it had.
 pub(crate) fn delete_character(
-    session: &mut Session,
+    sessions: &Sessions,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
-    saved: &mut HashMap<(String, String), CharacterRecord>,
+    roster: &mut Roster,
     delete: DeleteCharacter,
     id: ConnectionId,
 ) -> bool {
     let slot = delete.slot;
+    let session = sessions
+        .get(id)
+        .expect("world_handle_network looks the session up before routing a packet to here");
     let Some(account) = session.login.account().cloned() else {
         warn!(%id, "delete-character before a game login");
         return false;
@@ -595,21 +612,19 @@ pub(crate) fn delete_character(
         return true;
     };
     let name = entry.name;
-    let key = (account.normalized(), name.normalized());
 
-    // A character being played cannot be deleted out from under its session. The
-    // serial to check comes from the saved record; a character with no saved row
-    // has never entered the world and so cannot be online.
-    if let Some(record) = saved.get(&key) {
-        if world.is_online(record.serial) {
-            let _ = session.send_packet(
-                ServerPacket::DeleteReject(DeleteReject {
-                    result: DeleteResult::CharBeingPlayed,
-                })
-                .encode(session.login.version()),
-            );
-            return true;
-        }
+    // A character being played cannot be deleted out from under its session.
+    // Asked of the connections and not of the world: the world knows a serial,
+    // and the only way to a serial from here is the roster — which a character
+    // created during this run is not in until it logs out.
+    if sessions.is_playing(&account, &name) {
+        let _ = session.send_packet(
+            ServerPacket::DeleteReject(DeleteReject {
+                result: DeleteResult::CharBeingPlayed,
+            })
+            .encode(session.login.version()),
+        );
+        return true;
     }
 
     // Drop it from the authoritative in-memory list. A failure here is a bad slot.
@@ -624,10 +639,10 @@ pub(crate) fn delete_character(
         return true;
     }
 
-    // Forget the saved row so a re-login this run does not restore it, and tell
-    // the world to forget the store row and inventory on the next save. The
+    // Forget the roster entry so a re-login this run does not restore it, and
+    // tell the world to forget the store row and inventory on the next save. The
     // serial stays reserved — a packet in flight may still name it.
-    if let Some(record) = saved.remove(&key) {
+    if let Some(record) = roster.forget(&account, &name) {
         world.queue(Command::DeleteCharacter {
             serial: record.serial,
         });
@@ -647,6 +662,93 @@ pub(crate) fn delete_character(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{admin, at_character_screen, login_server, lord_british};
+
+    #[test]
+    fn a_character_being_played_cannot_be_deleted_from_another_connection() {
+        // The hole this closes. The check used to read `World::is_online(serial)`,
+        // and the only serial available came from the roster — which a
+        // character created during this run does not appear in until it logs out.
+        // So for a fresh character the check did not run at all: the character
+        // left the account's list while its entity kept playing, and
+        // `Command::DeleteCharacter` was never queued either, because there was no
+        // record to remove. The roster is empty here on purpose — that is the
+        // case.
+        let now = Instant::now();
+        let mut login = login_server();
+        let mut world = World::new((1363, 1600));
+        let mut roster = Roster::new();
+
+        let mut sessions = Sessions::new();
+        let (mut playing, _playing_wire) = at_character_screen(&mut login, now);
+        playing.enter_world(admin(), lord_british());
+        sessions.open(ConnectionId::from_raw(1), playing);
+
+        // A second connection on the same account, sitting on the character
+        // screen. This is the only way the situation arises at all.
+        let screen = ConnectionId::from_raw(2);
+        let (session, mut wire) = at_character_screen(&mut login, now);
+        sessions.open(screen, session);
+
+        assert!(
+            delete_character(
+                &sessions,
+                &mut login,
+                &mut world,
+                &mut roster,
+                DeleteCharacter { slot: 0 },
+                screen,
+            ),
+            "a refused delete keeps the connection"
+        );
+
+        // Decompressed, because the fixture is a real game socket and everything
+        // that leaves one is Huffman-compressed — see `Session::send_packet`.
+        let reply = huffman::decompress(&wire.try_recv().expect("the client was answered"))
+            .expect("a valid Huffman stream");
+        assert_eq!(
+            reply,
+            vec![0x85, DeleteResult::CharBeingPlayed as u8],
+            "0x85, and for the right reason"
+        );
+        assert_eq!(
+            login.accounts.characters(&admin()).len(),
+            1,
+            "and the character is still on the account"
+        );
+    }
+
+    #[test]
+    fn a_character_nobody_is_playing_is_deleted() {
+        // The other direction, so the check above cannot pass by refusing
+        // everything: the same connection, the same slot, with nobody in world.
+        let now = Instant::now();
+        let mut login = login_server();
+        let mut world = World::new((1363, 1600));
+        let mut roster = Roster::new();
+
+        let screen = ConnectionId::from_raw(1);
+        let mut sessions = Sessions::new();
+        let (session, mut wire) = at_character_screen(&mut login, now);
+        sessions.open(screen, session);
+
+        assert!(delete_character(
+            &sessions,
+            &mut login,
+            &mut world,
+            &mut roster,
+            DeleteCharacter { slot: 0 },
+            screen,
+        ));
+
+        let reply = huffman::decompress(&wire.try_recv().expect("the client was answered"))
+            .expect("a valid Huffman stream");
+        assert_eq!(reply[0], 0x86, "the select screen is redrawn from the new list");
+        assert!(
+            login.accounts.characters(&admin()).is_empty(),
+            "and the character is gone"
+        );
+    }
 
     #[test]
     fn a_facet_zero_shard_offers_the_classic_towns() {

@@ -90,6 +90,45 @@ machine each one is a deterministic test with no ports and no sleeps.
 world code inside a network task, on whatever thread Tokio picked, whenever bytes
 arrived. The channel is where async stops and the tick begins.
 
+### Still to do: the character screen is one conversation, split across two files
+
+The design this works toward is settled and written down — see "Sessions and the
+character registry" in [architecture.md](architecture.md). Done so far:
+`LoginSession` carries the account and the socket kind in its state rather than
+in fields kept in step by hand; `Sessions` answers who is playing what; `Roster`
+replaced a bare `HashMap<(String, String), CharacterRecord>` threaded through
+five functions. What is left:
+
+- [ ] **`charscreen.rs`.** Create (`0x00`/`0xF8`), delete (`0x83`) and select
+      (`0x5D`) are one conversation and belong in one module. Select is in
+      `dispatch.rs` today only because it arrives as a `ClientPacket`, not
+      because it is about the world; it reads the roster exactly as the other two
+      do. What stays in `dispatch.rs` afterwards is the pure mapping of an
+      in-world packet to a `Command`.
+- [ ] **Nothing on the character screen takes `&mut World`.** Those three return
+      the `Command` for the caller to queue instead of queueing it themselves.
+      They already only ever produce one; the type should say so. This is the
+      same rule the tick already enforces for network tasks, applied one level
+      up: login's half of the shard can ask the world for something, and cannot
+      write to it.
+- [ ] **`run_shard` shrinks.** The seven `restore_*` functions are boot, and
+      belong in `boot.rs` beside `load_world` and `open_store`. `world_tick`
+      takes `&mut LoginServer` for one line — `keys.expire()`, which is memory
+      upkeep for abandoned relay keys and wants its own `select!` arm on a timer,
+      not a place in the tick.
+
+Two smaller things noticed on the way through, neither blocking:
+
+- `dispatch_world_packet` opens with `session.login.account().cloned()
+  .unwrap_or_default()`, so a `0x5D` with no game login behind it builds an
+  `Enter` for the empty account rather than being refused. Harmless today because
+  the roster cannot match an empty account, but it is a default standing in for
+  absence — exactly what the style canon says not to do.
+- `Command::Enter` carries a `CharacterSheet` built out of four
+  `openshard-persistence` record types. The tick's input vocabulary should not be
+  shaped by the database's row format; it is also the single reason `Command`
+  cannot move below `openshard-world` should that ever be wanted.
+
 ## 3. World — a client walks in Britannia
 
 - [x] `Direction` / `Facing` — steps ported verbatim from Sphere's `sm_Moves`

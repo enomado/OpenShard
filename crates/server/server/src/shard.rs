@@ -154,8 +154,8 @@ async fn restore_characters(
     store: &dyn Store,
     world: &mut World,
     mut accounts: DevAccounts,
-) -> (DevAccounts, HashMap<(String, String), CharacterRecord>) {
-    let mut saved = HashMap::new();
+) -> (DevAccounts, Roster) {
+    let mut roster = Roster::new();
     match store.characters().await {
         Ok(characters) => {
             for record in characters {
@@ -167,15 +167,15 @@ async fn restore_characters(
                 if !listed {
                     accounts = accounts.with_character(&record.account, &record.name);
                 }
-                saved.insert((record.account.normalized(), record.name.normalized()), record);
+                roster.remember(record);
             }
-            if !saved.is_empty() {
-                info!(characters = saved.len(), "restored the world from the database");
+            if !roster.is_empty() {
+                info!(characters = roster.len(), "restored the world from the database");
             }
         }
         Err(error) => error!(%error, "could not read saved characters; starting with none"),
     }
-    (accounts, saved)
+    (accounts, roster)
 }
 
 /// Bring back saved items: the world reserves their serials, drops the loose
@@ -328,15 +328,15 @@ fn build_login_server(
 /// is not.
 fn world_tick(
     world: &mut World,
-    sessions: &HashMap<ConnectionId, Session>,
+    sessions: &Sessions,
     saves: &SnapshotTx,
-    saved: &mut HashMap<(String, String), CharacterRecord>,
+    roster: &mut Roster,
     scripts: &mut Option<Scripts>,
     login_server: &mut LoginServer<DevAccounts>,
 ) {
     world.tick(Instant::now());
     for out in world.drain_outbound() {
-        if let Some(session) = sessions.get(&out.connection) {
+        if let Some(session) = sessions.get(out.connection) {
             // A connection reaches the world only after its game
             // login, so this is always a game connection and every
             // packet leaves compressed. `send_packet` gates on the
@@ -354,8 +354,7 @@ fn world_tick(
     // was at boot. The store gets the same record via the snapshot
     // above; this is the copy a re-login can read before that lands.
     for record in world.drain_departed() {
-        let key = (record.account.normalized(), record.name.normalized());
-        saved.insert(key, record);
+        roster.remember(record);
     }
     // Feed the script this tick's events and queue its commands for
     // the next one. After the drains, so a command a script emits is
@@ -394,7 +393,7 @@ pub(crate) async fn run_shard(
     // items, and so on — see each function's doc for why. This all borrows the
     // store; the save task takes ownership after, so it has to come last.
     let accounts = load_accounts(store.as_ref(), config).await;
-    let (accounts, mut saved) = restore_characters(store.as_ref(), &mut world, accounts).await;
+    let (accounts, mut roster) = restore_characters(store.as_ref(), &mut world, accounts).await;
     restore_items(store.as_ref(), &mut world).await;
     restore_mobiles(store.as_ref(), &mut world).await;
     restore_decorations(store.as_ref(), &mut world).await;
@@ -413,7 +412,7 @@ pub(crate) async fn run_shard(
     // built and restored, before the first tick, so its cursors start clean.
     let mut scripts = Scripts::load(&config.scripting.main, &world);
 
-    let mut sessions: HashMap<ConnectionId, Session> = HashMap::new();
+    let mut sessions = Sessions::new();
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
     // A tick that ran late must not try to catch up by running several in a row:
     // that turns a hiccup into a stall, and a fixed timestep into a variable one.
@@ -427,7 +426,7 @@ pub(crate) async fn run_shard(
             biased;
 
             _ = ticker.tick() => {
-                world_tick(&mut world, &sessions, &saves, &mut saved, &mut scripts, &mut login_server);
+                world_tick(&mut world, &sessions, &saves, &mut roster, &mut scripts, &mut login_server);
             }
 
             // Before `events`: a store that is failing is worth hearing about
@@ -449,7 +448,7 @@ pub(crate) async fn run_shard(
                     error!("the gateway stopped; saving the world");
                     break;
                 };
-                world_handle_network(&mut sessions, &mut login_server, &mut world, advertised, &mut saved, event);
+                world_handle_network(&mut sessions, &mut login_server, &mut world, advertised, &mut roster, event);
             }
         }
     }
@@ -475,21 +474,6 @@ pub(crate) async fn run_shard(
     info!("world saved; shutting down");
 }
 
-/// Drop a connection whose handler decided it should close.
-///
-/// One name for the four call sites in `world_handle_network` that all mean
-/// "this handler said stop" — the reason was already logged where that was
-/// decided, so there is nothing left to do here but the removal itself.
-///
-/// Deliberately takes no `bool`: every call site already reads as `if !ok {
-/// sessions_handle(...) }`, and a version that took the bool and decided
-/// internally would have to borrow `sessions` on the `true` path too, which
-/// conflicts with the `&mut Session` borrowed from the same map that the
-/// caller is still using there.
-fn sessions_handle(sessions: &mut HashMap<ConnectionId, Session>, id: ConnectionId) {
-    sessions.remove(&id);
-}
-
 /// Whether the relay is about to send this client somewhere it cannot get back
 /// from.
 ///
@@ -513,16 +497,19 @@ pub(crate) fn relay_is_unreachable(client: SocketAddr, advertised: SocketAddrV4)
     advertised.ip().is_loopback() && !client.ip().is_loopback()
 }
 
-/// Route a decoded login packet to whichever of the three things it can mean:
-/// character creation, character deletion, or an ordinary login-state
-/// transition. All three arrive as `Packet::Login` from `parse_packet`, and
-/// all three need both `login` and `world` in reach, which is why this
-/// crosses the login/world line instead of living in `dispatch_world_packet`.
+/// Route a decoded login packet to either of the two things it can mean here:
+/// character creation, or an ordinary login-state transition. Both arrive as
+/// `Packet::Login` from `parse_packet`, and creation needs both `login` and
+/// `world` in reach, which is why this crosses the login/world line instead of
+/// living in `dispatch_world_packet`.
+///
+/// Deletion is the third `Packet::Login` case and is routed past this function,
+/// because it needs the whole session table rather than this one session — see
+/// [`delete_character`].
 fn handle_login_packet(
     session: &mut Session,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
-    saved: &mut HashMap<(String, String), CharacterRecord>,
     packet: LoginStagePacket,
     id: ConnectionId,
 ) -> bool {
@@ -530,22 +517,14 @@ fn handle_login_packet(
         // Character creation crosses the login/world line: it writes the new
         // character onto the account and then enters the world with it.
         LoginStagePacket::CreateCharacter(create) => create_character(session, login, world, create, id),
-        // Character deletion crosses the same line: it drops the character
-        // from the account list and forgets its saved row.
-        LoginStagePacket::DeleteCharacter(delete) => {
-            delete_character(session, login, world, saved, delete, id)
-        }
         login_packet => {
-            let response = login.handle(&mut session.login, login_packet, Instant::now());
             // The game login is the seam Sphere calls CONNECT_GAME: from here
             // on, this connection's every server->client packet is
-            // Huffman-compressed — starting with the reply `handle` just
-            // built. `login` recognized the `0x91` while decoding the packet
-            // in `parse_packet`; this reads that fact back instead of peeking
-            // the id byte a second time.
-            if session.login.is_game_login() {
-                session.game = true;
-            }
+            // Huffman-compressed — starting with the reply `handle` just built,
+            // which is why `apply` follows the call rather than the state
+            // machine sending anything itself. Nothing is copied out to say so:
+            // `Session::send_packet` reads the state machine.
+            let response = login.handle(&mut session.login, login_packet, Instant::now());
             session.apply(response, id)
         }
     }
@@ -559,7 +538,7 @@ fn handle_world_packet(
     session: &mut Session,
     login: &LoginServer<DevAccounts>,
     world: &mut World,
-    saved: &HashMap<(String, String), CharacterRecord>,
+    roster: &Roster,
     packet: ClientPacket,
     id: ConnectionId,
 ) -> bool {
@@ -567,15 +546,15 @@ fn handle_world_packet(
         .login
         .account()
         .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
-    dispatch_world_packet(session, world, packet, id, saved, access)
+    dispatch_world_packet(session, world, packet, id, roster, access)
 }
 
 pub(crate) fn world_handle_network(
-    sessions: &mut HashMap<ConnectionId, Session>,
+    sessions: &mut Sessions,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
     advertised: SocketAddrV4,
-    saved: &mut HashMap<(String, String), CharacterRecord>,
+    roster: &mut Roster,
     event: ServerEvent,
 ) {
     match event {
@@ -596,41 +575,48 @@ pub(crate) fn world_handle_network(
                      Set server.advertise to the address this client can reach."
                 );
             }
-            sessions.insert(
-                id,
-                Session {
-                    login: LoginSession::new(),
-                    in_world: false,
-                    game: false,
-                    outbox,
-                    control,
-                },
-            );
+            sessions.open(id, Session::new(outbox, control));
         }
 
         ServerEvent::Received { id, event } => {
-            let Some(session) = sessions.get_mut(&id) else {
+            // Read what decoding needs and let the borrow go, rather than
+            // holding the session across the routing below. `0x83` is routed
+            // with the whole table in hand — see `delete_character` — and a
+            // `&mut Session` taken here would still be alive at that point.
+            let Some(version) = sessions.get(id).map(|session| session.login.version()) else {
                 // Disconnected arrived first. Possible: the gateway's tasks and
                 // this loop are not synchronised.
                 return;
             };
+            // Every arm below looked the session up a line ago and nothing
+            // between here and there can remove it: this loop is the only thing
+            // that touches the table, and it is not concurrent with itself.
+            const PRESENT: &str = "the session was looked up at the top of this arm";
             match event {
-                Event::Seeded(seed) => session.login.on_seed(seed),
-                Event::Packet(packet) => match packet.parse_packet(session.login.version()) {
+                Event::Seeded(seed) => sessions.get_mut(id).expect(PRESENT).login.on_seed(seed),
+                Event::Packet(packet) => match packet.parse_packet(version) {
                     // Ok: hand the decoded packet to whichever side it belongs
-                    // to. Both handlers return the same "keep the connection?"
+                    // to. Every handler returns the same "keep the connection?"
                     // bool, so there is one place that acts on it.
                     Ok(packet) => {
                         let keep = match packet {
+                            // Deletion reads across every session, so it takes
+                            // the table and is routed here rather than through
+                            // `handle_login_packet`.
+                            Packet::Login(LoginStagePacket::DeleteCharacter(delete)) => {
+                                delete_character(sessions, login, world, roster, delete, id)
+                            }
                             Packet::Login(login_packet) => {
-                                handle_login_packet(session, login, world, saved, login_packet, id)
+                                let session = sessions.get_mut(id).expect(PRESENT);
+                                handle_login_packet(session, login, world, login_packet, id)
                             }
                             Packet::World(world_packet) => {
-                                handle_world_packet(session, login, world, saved, world_packet, id)
+                                let session = sessions.get_mut(id).expect(PRESENT);
+                                handle_world_packet(session, login, world, roster, world_packet, id)
                             }
                         };
                         if !keep {
-                            sessions_handle(sessions, id);
+                            sessions.close(id);
                         }
                     }
                     // Err: every case here only logs and drops. Nothing decoded,
@@ -650,7 +636,7 @@ pub(crate) fn world_handle_network(
                                 warn!(%id, ?error, "malformed packet");
                             }
                         }
-                        sessions_handle(sessions, id);
+                        sessions.close(id);
                     }
                 },
             }
@@ -665,7 +651,7 @@ pub(crate) fn world_handle_network(
             // serial, and tearing them down from here would be a write to the
             // world from outside the tick.
             world.queue(Command::Disconnect { connection: id });
-            sessions.remove(&id);
+            sessions.close(id);
         }
     }
 }

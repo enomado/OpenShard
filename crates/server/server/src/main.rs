@@ -37,7 +37,7 @@ use openshard_persistence::{
 use openshard_protocol::client_packet::ClientPacket;
 use openshard_protocol::encoded::EncodedCommand;
 use openshard_protocol::extended::ExtendedRequest;
-use openshard_protocol::identity::CharacterName;
+use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{
     CharacterListUpdate, ClientLoginDecodeError, DeleteCharacter, DeleteReject, DeleteResult, LoginDenied,
     LoginStagePacket, StartLocation,
@@ -61,12 +61,16 @@ use scripting::Scripts;
 
 mod boot;
 mod dispatch;
+mod roster;
 mod session;
 mod shard;
+#[cfg(test)]
+mod testing;
 
 use boot::{load_config, load_world, open_store};
 use dispatch::{create_character, delete_character, dispatch_world_packet, start_cities};
-use session::Session;
+use roster::Roster;
+use session::{Session, Sessions};
 use shard::run_shard;
 
 /// Where the config lives, relative to the working directory.

@@ -60,19 +60,57 @@ pub enum Response {
 }
 
 /// Where a login has got to.
+///
+/// # The fork is the point
+///
+/// A client dials twice, and the two sockets are different conversations: the
+/// login socket does `0x80`/`0xA0` and hands out a key, the game socket does
+/// `0x91` and everything after. Which one this is cannot be known until the
+/// first packet arrives, and once it is known it never changes — so it is a
+/// branch of this enum rather than a flag beside it. Everything that used to be
+/// a field the caller had to keep in step (whose account it is, whether the
+/// socket is compressed) is a payload or a variant here instead, because a state
+/// machine with facts kept outside it is a state machine that can disagree with
+/// itself.
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum LoginSessionState {
-    /// Nothing yet. Expecting 0x80 (login server) or 0x91 (game server).
+    /// Nothing yet. Expecting 0x80 (this is the login socket) or 0x91 (the game
+    /// socket).
     Fresh,
-    /// The account checked out and the shard list went back. Expecting 0xA0.
+    /// Login socket: the account checked out and the shard list went back.
+    /// Expecting 0xA0.
     ShardListSent {
-        /// Who is logging in.
+        /// Who is logging in. Read back by the relay, which binds the auth key
+        /// to it, and by nothing else — see [`LoginSession::account`] for why
+        /// this is deliberately not the account the rest of the shard sees.
         account: AccountName,
     },
-    /// The character list went back. The login crate's job is done.
-    CharacterListSent,
-    /// The conversation is over.
-    Finished,
+    /// Login socket: refused, or relayed to the game server. Either way this
+    /// socket has nothing left to say.
+    LoginDone,
+    /// Game socket: a `0x91` arrived. See [`GameState`].
+    Game(GameState),
+}
+
+/// Where a *game* socket has got to.
+///
+/// Every variant means the same thing about the wire: from the moment the `0x91`
+/// was read, every server-to-client packet on this socket is Huffman-compressed
+/// — refusals included. That is Sphere's `CONNECT_GAME`, which it sets during
+/// the crypt handshake, before the password is so much as looked at.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum GameState {
+    /// The `0x91` was refused: a bad or expired key, a key belonging to somebody
+    /// else, or a bad password. Compressed, and going nowhere.
+    Refused,
+    /// The character list went back. The login crate's job is done — character
+    /// select, creation and deletion all happen on this socket afterwards, and
+    /// every one of them needs to know whose account it is, which is why the
+    /// account rides here rather than in a field of its own.
+    CharacterListSent {
+        /// Whose account this socket is authenticated to play on.
+        account: AccountName,
+    },
 }
 
 /// One client's progress through login.
@@ -89,24 +127,11 @@ pub struct LoginSession {
     /// Defaults to the oldest possible client, which is the conservative
     /// choice: every feature gate is "since version X", so an unknown client
     /// gets the plainest dialect rather than packets it cannot parse.
+    ///
+    /// A field and not part of [`LoginSessionState`] because it is the other
+    /// axis: what the client *is*, not where the conversation has got to. It is
+    /// learned once, from the seed or a `0xBD`, and holds for every state.
     version: ClientVersion,
-    /// The account, once a game login has proved it. `None` until then.
-    ///
-    /// The character-creation packet (`0x00`/`0xF8`) arrives later on this same
-    /// connection and says which character to make but not on whose account; the
-    /// game login is where that is known, so it is kept here.
-    account: Option<AccountName>,
-    /// Whether a `0x91` game login has been seen on this connection, valid or
-    /// not.
-    ///
-    /// Sphere flips a game socket to Huffman-compressed the moment it reads
-    /// `CONNECT_GAME`, during the crypt handshake and before the password is
-    /// even checked — so a refused login's reply goes out compressed too. The
-    /// caller (the `server` crate, which owns the actual compression flag on
-    /// its own `Session`) reads this once `handle` returns instead of peeking
-    /// the packet's id byte itself, which would just be [`LoginStagePacket`]'s
-    /// decode redone by hand.
-    game_login: bool,
 }
 
 impl Default for LoginSession {
@@ -121,8 +146,6 @@ impl LoginSession {
         Self {
             state: LoginSessionState::Fresh,
             version: ClientVersion::OLDEST,
-            account: None,
-            game_login: false,
         }
     }
 
@@ -131,25 +154,43 @@ impl LoginSession {
         self.version
     }
 
-    /// The account this session authenticated, or `None` before a game login.
+    /// Whose account this connection may play a character on, or `None` if it
+    /// may not play one at all.
     ///
-    /// Character creation needs it: the packet names the character, not the
-    /// account it belongs to.
+    /// Character creation, deletion and select all need it: those packets name a
+    /// character but not the account it belongs to.
+    ///
+    /// Deliberately *only* the game socket's account, even though the login
+    /// socket verifies one too. What this answers is "whose character may this
+    /// connection play", and only a game login answers it — a `0x5D` arriving on
+    /// a login socket that got as far as the shard list must find nothing here.
     pub fn account(&self) -> Option<&AccountName> {
-        self.account.as_ref()
+        match &self.state {
+            LoginSessionState::Game(GameState::CharacterListSent { account }) => Some(account),
+            LoginSessionState::Fresh
+            | LoginSessionState::ShardListSent { .. }
+            | LoginSessionState::LoginDone
+            | LoginSessionState::Game(GameState::Refused) => None,
+        }
     }
 
-    /// Whether a `0x91` game login has been seen on this connection, valid or
-    /// not — see [`Self`]'s `game_login` field for why "seen" and not "valid".
+    /// Whether this is a game socket: a `0x91` was read on it, valid or not.
+    ///
+    /// "Read", not "accepted" — see [`GameState`]. The caller compresses on this,
+    /// and reads it back off the state machine rather than peeking the packet's
+    /// id byte itself, which would be [`LoginStagePacket`]'s decode redone by
+    /// hand.
     pub const fn is_game_login(&self) -> bool {
-        self.game_login
+        matches!(self.state, LoginSessionState::Game(_))
     }
 
-    /// Whether the conversation has run to its end.
-    pub fn is_finished(&self) -> bool {
+    /// Whether the conversation has run to its end — this crate has nothing more
+    /// to say on this socket, whether it ended in a relay, a refusal, or a
+    /// character list.
+    pub const fn is_finished(&self) -> bool {
         matches!(
             self.state,
-            LoginSessionState::Finished | LoginSessionState::CharacterListSent
+            LoginSessionState::LoginDone | LoginSessionState::Game(_)
         )
     }
 
@@ -316,7 +357,7 @@ impl<A: Accounts> LoginServer<A> {
                     Response::SendThenClose(
                         ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
                     ),
-                    LoginSessionState::Finished,
+                    LoginSessionState::LoginDone,
                 );
             }
         };
@@ -359,26 +400,25 @@ impl<A: Accounts> LoginServer<A> {
                 })
                 .encode(session.version),
             ),
-            LoginSessionState::Finished,
+            LoginSessionState::LoginDone,
         ))
     }
 
-    /// Handle `0x91` from [`LoginSessionState::Fresh`]. Unlike the other two
-    /// handlers this still mutates `session` directly for `version`,
-    /// `account` and `game_login`: those aren't state-machine state, they're
-    /// facts the session accumulates along the way and character creation (or
-    /// the caller's compression flag) needs later on this same connection.
+    /// Handle `0x91` from [`LoginSessionState::Fresh`]. Every path out of here
+    /// returns a [`LoginSessionState::Game`], refusals included: reading the
+    /// `0x91` is what makes this a game socket, and a game socket is compressed
+    /// from that moment whatever the key and password turn out to be. That used
+    /// to be a `game_login` flag set on the first line and hoped for; it is a
+    /// property of the returned state now, so it cannot be forgotten on a path.
+    ///
+    /// `session` is still `&mut` for `version` alone — the dialect this socket
+    /// adopts from the key, which is the other axis and not state-machine state.
     fn on_game_login(
         &mut self,
         session: &mut LoginSession,
         login: GameServerLogin,
         now: Instant,
     ) -> (Response, LoginSessionState) {
-        // Set regardless of what follows: a game socket is compressed from the
-        // moment `CONNECT_GAME` arrives, not only once the key and password
-        // check out — see the field's doc comment.
-        session.game_login = true;
-
         // Sphere skips these four bytes entirely and re-verifies the password.
         // We check them: it costs nothing and it means the game port cannot be
         // reached without going through the login server first, which closes
@@ -393,7 +433,7 @@ impl<A: Accounts> LoginServer<A> {
                     })
                     .encode(session.version),
                 ),
-                LoginSessionState::Finished,
+                LoginSessionState::Game(GameState::Refused),
             );
         };
 
@@ -418,7 +458,7 @@ impl<A: Accounts> LoginServer<A> {
                     })
                     .encode(session.version),
                 ),
-                LoginSessionState::Finished,
+                LoginSessionState::Game(GameState::Refused),
             );
         }
 
@@ -430,14 +470,10 @@ impl<A: Accounts> LoginServer<A> {
                     Response::SendThenClose(
                         ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
                     ),
-                    LoginSessionState::Finished,
+                    LoginSessionState::Game(GameState::Refused),
                 );
             }
         };
-
-        // The game connection is now authenticated. Remember whose it is: a
-        // later 0x00/0xF8 will create a character and needs the account.
-        session.account = Some(account.clone());
 
         let characters = self.accounts.characters(&account);
         debug!(
@@ -471,7 +507,12 @@ impl<A: Accounts> LoginServer<A> {
             bytes.extend_from_slice(&character_list);
             Response::Send(bytes)
         };
-        (response, LoginSessionState::CharacterListSent)
+        // The account rides into the state: a later 0x00/0xF8/0x83/0x5D on this
+        // same socket names a character but not whose it is.
+        (
+            response,
+            LoginSessionState::Game(GameState::CharacterListSent { account }),
+        )
     }
 }
 
@@ -726,6 +767,72 @@ mod tests {
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "a right password with a wrong key is still refused"
         );
+    }
+
+    #[test]
+    fn a_refused_game_login_is_still_a_game_socket() {
+        // Sphere flips CONNECT_GAME during the crypt handshake, before the
+        // password is so much as looked at, so the *refusal* goes out compressed
+        // too. Send those two bytes raw and ClassicUO Huffman-decodes them into
+        // garbage and shows the player nothing at all.
+        //
+        // This was a `game_login` flag set on the handler's first line and relied
+        // on by four early returns. It is the shape of the returned state now —
+        // every path out of `on_game_login` is a `Game(..)` — so a new refusal
+        // cannot forget it. All three refusals, because each is its own return.
+        let mut server = server();
+        let now = Instant::now();
+
+        let forged = GameServerLogin {
+            auth_key: AuthKey(0xDEAD_BEEF),
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("hunter2".to_owned()),
+        };
+        let mut session = modern_session();
+        let _ = server.handle(&mut session, pkt(&forged.encode()), now);
+        assert!(session.is_game_login(), "a bad key is still a game socket");
+        assert_eq!(session.account(), None, "but nothing to play as");
+
+        let key = relay_key(&mut server, now);
+        let wrong_account = GameServerLogin {
+            auth_key: key,
+            account: RawAccountName("banned".to_owned()),
+            password: RawPlaintextPassword("x".to_owned()),
+        };
+        let mut session = modern_session();
+        let _ = server.handle(&mut session, pkt(&wrong_account.encode()), now);
+        assert!(
+            session.is_game_login(),
+            "somebody else's key is still a game socket"
+        );
+
+        let key = relay_key(&mut server, now);
+        let wrong_password = GameServerLogin {
+            auth_key: key,
+            account: RawAccountName("admin".to_owned()),
+            password: RawPlaintextPassword("wrong".to_owned()),
+        };
+        let mut session = modern_session();
+        let _ = server.handle(&mut session, pkt(&wrong_password.encode()), now);
+        assert!(session.is_game_login(), "a bad password is still a game socket");
+    }
+
+    #[test]
+    fn the_login_socket_never_offers_an_account_to_play_on() {
+        // `0x80` verifies an account too, and it is kept — in `ShardListSent`,
+        // where the relay reads it to bind the key. But `account` answers a
+        // narrower question: whose character may this connection play. A `0x5D`
+        // arriving on the login socket must find nothing, or a client could skip
+        // the game login and enter the world over the socket that never proved it
+        // held a key.
+        let mut server = server();
+        let mut session = modern_session();
+        let Response::Send(_) = server.handle(&mut session, pkt(&login("admin", "hunter2")), Instant::now())
+        else {
+            panic!("expected the shard list");
+        };
+        assert_eq!(session.account(), None, "verified, but not on the game socket");
+        assert!(!session.is_game_login(), "and not compressed either");
     }
 
     #[test]
