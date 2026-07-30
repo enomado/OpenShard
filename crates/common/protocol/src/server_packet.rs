@@ -1101,7 +1101,7 @@ mod tests {
             starts: vec![crate::login::StartLocation {
                 area: "Britain".to_owned(),
                 name: "Castle Britannia".to_owned(),
-                position: (1475, 1770, 20),
+                position: crate::world::Point::new(1475, 1770, 20),
                 map: crate::world::MapId(0),
                 description_cliloc: crate::wire::ClilocId(1075072),
             }],
@@ -1115,7 +1115,10 @@ mod tests {
         assert_eq!(decoded.characters.len(), crate::login::MIN_CHARACTER_SLOTS);
         assert_eq!(decoded.characters[0].name, "Lord British");
         assert_eq!(decoded.starts[0].name, "Castle Britannia");
-        assert_eq!(decoded.starts[0].position, (1475, 1770, 20));
+        assert_eq!(
+            decoded.starts[0].position,
+            crate::world::Point::new(1475, 1770, 20)
+        );
         assert_eq!(
             ServerPacket::CharacterList(decoded).encode(version()),
             bytes,

@@ -47,7 +47,7 @@ use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength, decode_packet};
 use crate::version::ClientVersion;
 use crate::wire::{AuthKey, ClilocId, RawCharacterSlot};
-use crate::world::{CreateCharacter, MapId};
+use crate::world::{CreateCharacter, MapId, Point};
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
 pub const ACCOUNT_NAME_LENGTH: usize = 30;
@@ -550,8 +550,11 @@ pub struct StartLocation {
     pub area: String,
     /// The specific spot, e.g. "Castle Britannia".
     pub name: String,
-    /// Where the character appears.
-    pub position: (i32, i32, i32),
+    /// Where the character appears. The wire widens each coordinate to a full
+    /// dword here — unlike every other position on the wire, which is
+    /// [`Point`]'s own `u16`/`u16`/`i8` — but the value named is the same map
+    /// coordinate, so decode narrows it back down.
+    pub position: Point,
     /// Which map.
     pub map: MapId,
     /// Cliloc id for the description. Ignored by clients before 7.0.13.0.
@@ -738,9 +741,9 @@ impl EncodePacket for CharacterList {
                 // everything after it.
                 out.fixed_string(&start.area, 32);
                 out.fixed_string(&start.name, 32);
-                out.i32(start.position.0);
-                out.i32(start.position.1);
-                out.i32(start.position.2);
+                out.i32(i32::from(start.position.x));
+                out.i32(i32::from(start.position.y));
+                out.i32(i32::from(start.position.z));
                 // Both fields are dwords on the wire and the client reads them
                 // signed; `u32` writes the same four big-endian bytes for every
                 // value either type can hold, so the frame is unchanged.
@@ -801,7 +804,7 @@ impl DecodePacket for CharacterList {
             reader.skip(1)?; // the index, which is the position in this list
             let area = reader.fixed_string(32)?;
             let name = reader.fixed_string(32)?;
-            let position = (reader.i32()?, reader.i32()?, reader.i32()?);
+            let position = Point::new(reader.i32()? as u16, reader.i32()? as u16, reader.i32()? as i8);
             let map = MapId(reader.u32()? as u8);
             let description_cliloc = ClilocId(reader.u32()?);
             reader.skip(4)?; // the trailing zero dword
@@ -1642,7 +1645,7 @@ mod tests {
         let starts = vec![StartLocation {
             area: "Britain".to_owned(),
             name: "Castle Britannia".to_owned(),
-            position: (1475, 1774, 0),
+            position: Point::new(1475, 1774, 0),
             map: MapId(0),
             description_cliloc: ClilocId(1_075_072),
         }];

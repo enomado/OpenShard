@@ -148,12 +148,20 @@ number is zero — or that every remaining one is on an explicit allowlist with 
 reason. "No violations found" from a detector that examined nothing has been
 green here before; a count cannot be.
 
-The allowlist so far, each entry argued where it was decided:
+The allowlist so far, each entry argued where it was decided. It is exhaustive
+as of N8 — `crates/common/protocol/tests/bare_integer_fields.rs` scans the
+crate and fails if a bare integer field appears anywhere in `src/` that is not
+one of these rows, or if a row here no longer matches anything in `src/` (see
+[N8's amendments](#amendments-forced-by-n8-the-sweep) for how the check
+itself works and why a text scan rather than a syntax tree). The test's own
+`ALLOWLIST` constant is the enforced copy; this table is the narrative for it
+and the two are kept in step by hand.
 
 | field | why it stays a bare integer |
 |---|---|
 | `world::Point::{x, y, z}` | components of one geometric quantity — [N1 amendment 2](#amendments-forced-by-n1-the-rest-of-worldrs) |
 | `world::MapSize::{width, height}` | same |
+| `gump::GumpPoint::{x, y}` | the same argument in gump-space pixels, signed for the layout language's negative offsets — [N8 amendment 1](#amendments-forced-by-n8-the-sweep) |
 | `mobile::Vitals::{current, max}` | components of one bar — [N2 amendment 2](#amendments-forced-by-n2-mobilers) |
 | `mobile::MobileStatus::{strength, dexterity, intelligence, gold, armor, weight, max_weight, stat_cap, followers, followers_max}` | the status bar's quantities — [N2 amendment 3](#amendments-forced-by-n2-mobilers) |
 | `containers::ContainedItem::amount` | a stack size: a quantity, by the `MobileStatus` argument — [N4 amendment 8](#amendments-forced-by-n4-containersrs) |
@@ -162,6 +170,19 @@ The allowlist so far, each entry argued where it was decided:
 | `vendor::{Purchase, Sale, SellLine}::amount` | the same stack size, inbound and out — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
 | `login::ShardEntry::{percent_full, timezone}` | quantities, by the `MobileStatus` argument — [N6 amendment 8](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
 | `version::ClientVersion::{major, minor, revision, patch}` | components of one version, and not a packet struct — [N6 amendment 7](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
+| `feedback::Animation::{action, frame_count, repeat_count, delay}` | a body-specific animation index whose domain (`openshard_state::Action`) lives above `protocol`, plus quantities — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `feedback::NewAnimation::{animation_type, action, delay}` | same, the `0xE2` numbering — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `feedback::GraphicalEffect::{speed, duration}` | quantities, a per-effect literal at every call site — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `feedback::HuedEffect::render_mode` | no non-test code constructs one, so there is no caller to classify against — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `skill::SkillEntry::{id, value, base, cap}` | `openshard_state::Skill` lives above `protocol`, plus quantities — the `feedback.rs` argument again — [N7 amendment 11](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `spellbook::SpellbookContent::offset` | nothing branches on the byte while no second spell school is wired up — [N7 amendment 8](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `spellbook::SpellbookContent::content` | a membership bitmask over spell ids; which ids exist is Community Pack content, the `feedback.rs` argument once more — [N8 amendment 2](#amendments-forced-by-n8-the-sweep) |
+| `properties::TooltipRevision::hash` | server-computed, client-only reader; none of N3's four classes fit — a fifth shape, documented rather than forced — [N7 amendment 6](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `gump::GumpResponse::text_entries` | a `Vec<(u16, String)>`; which text-field id a pack drew is the pack script's business, above the engine — [N5 amendment 10](#amendments-forced-by-n5-gumprs) |
+| `error::WrongPacket::{expected, found}` | diagnostic fields on a typed error (the id the dispatcher wanted, and the packet's own header id) — not client-supplied wire data — [N8 amendment 3](#amendments-forced-by-n8-the-sweep) |
+| `gump::InvalidSwitchId::id` | the rejected value, carried on the error for its `Display` impl — [N8 amendment 3](#amendments-forced-by-n8-the-sweep) |
+| `context::InvalidContextMenuIndex::tag` | same | 
+| `wire::InvalidCharacterSlot::slot` | same |
 
 `containers::ContainedItem::{x, y}` came *off* this list in N5: they are one
 `GumpPoint` now, as [N4 amendment 6](#amendments-forced-by-n4-containersrs)
@@ -1011,6 +1032,78 @@ backlog had already named.
     (`offset`, amendment 8); **`encoded.rs`** 2 before, 0 after; **`casting.rs`**
     1 before, 0 after.
 
+## Amendments forced by N8 (the sweep)
+
+The last stage was supposed to be counting and documenting, not finding new
+fields — and mostly was. The counter itself is what found the exceptions.
+
+1. **`login::StartLocation::position` was the tuple N6's own backlog named,
+   and it is `world::Point` now.** The wire still writes three full
+   dwords — unlike every other position on the wire, which is `Point`'s own
+   `u16`/`u16`/`i8` — so encode widens with `i32::from` and decode narrows
+   back with `as`, the same shape `PlayerStart`'s `0x1B` already uses for its
+   `z`. This is server → client data (N1's direction rule), so there is
+   nothing to validate: the narrowing is a wire-width fact, not a hostile
+   value, and every value this shard ever writes here (nine literal cities,
+   one fallback) fits comfortably. Three sites got shorter for it —
+   `dispatch::start_cities`'s `city()` helper takes `Point`'s own field types
+   now instead of `i32` triples, and `dispatch::create_character` stopped
+   rebuilding a `Point` from three casts because `city.position` already is
+   one — the class-A "wrapping deletes code" pattern one more time.
+2. **The counter is a text scan, not a syntax tree, because nothing in this
+   workspace parses Rust today.** `syn`, `walkdir` and an `xtask`-style binary
+   are all absent from every `Cargo.toml` in the workspace, and every
+   existing self-check in this crate (`feature.rs`'s
+   `all_lists_every_feature_exactly_once`, `direction.rs`'s
+   `every_byte_the_client_can_send_names_a_direction`) asserts over program
+   data already in memory, not over source text. Pulling in a parser for one
+   test would be the heavier and less-precedented choice. So
+   `tests/bare_integer_fields.rs` reads `src/*.rs` as strings and looks for
+   lines starting with `pub name:` — which a struct field satisfies and a
+   method, an associated const, or a tuple struct's own definition (no colon
+   on that line at all) do not, so none of those needs a separate exclusion
+   rule.
+3. **The scan matches the *type expression*, not the field's own type — which
+   is what closes both of N7's blind spots with one rule instead of two.** A
+   tuple (`(i32, i32, i32)`), a `Vec` of one (`Vec<u32>`) and a `Vec` of a
+   tuple containing one (`gump::GumpResponse::text_entries: Vec<(u16,
+   String)>`) all contain the token `u16`/`i32` somewhere in their text, so
+   the same "does this type name a bare integer anywhere" check catches all
+   three without a second regex for tuples and a third for collections. A
+   type that names no bare integer at all — `Point`, `Vec<RawSerial>`,
+   `Vec<CharacterEntry>` — never matches, which is what keeps the newtypes
+   the sweep already wrote off the list.
+4. **Running the scan surfaced four fields no earlier stage had reasoned
+   about, because they are not packet fields at all.** `error::WrongPacket`'s
+   `expected`/`found`, `gump::InvalidSwitchId::id`,
+   `context::InvalidContextMenuIndex::tag` and `wire::InvalidCharacterSlot::slot`
+   are diagnostic data on typed errors (N7's own rule) — the value a
+   `validate` call rejected, carried so its `Display` impl can say what was
+   wrong. None of N3's four classes is written for this shape: it is not
+   wire data at all, inbound or outbound, so direction (N1) does not apply to
+   it either. They are allowlisted rather than forced into a class that does
+   not fit, the same call N7 amendment 6 made for `TooltipRevision::hash`.
+5. **`gump::GumpPoint::{x, y}` and `spellbook::SpellbookContent::content` were
+   real gaps, not new shapes.** `GumpPoint` is `Point`'s own argument
+   (N1/N2's geometric-component case) and should have joined the allowlist
+   when N5 amendment 6 introduced the type; it is there now. `content` is the
+   64-bit spell-membership bitmask `SpellbookContent::offset` already sits
+   next to — N7 amendment 8 reasoned about `offset` and silently dropped
+   `content` from the same paragraph. Same argument extends to it: which bit
+   means which spell is a Community Pack table this crate does not hold, the
+   `feedback.rs` module doc's argument for `action`/`animation_type` again.
+6. **The check is bidirectional on purpose.** It fails on a bare field with no
+   allowlist entry, which is the violation N10 was written to catch — and
+   also fails on an allowlist entry with no matching field left in `src/`,
+   which catches the mirror mistake: a field gets a real type in some later
+   change and whoever did it forgets the now-stale allowlist line. A one-way
+   check would let the allowlist grow forever and never shrink.
+7. **`docs/style.md` gained a short section**, pointing here rather than
+   restating N3's table: the newtype rules it already had (no `Deref`, open
+   with `.0`, typed errors) apply to `Raw*` types without change, and
+   repeating the four-class table in two documents is the kind of copy this
+   repository's own `CLAUDE.md` warns goes stale silently.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -1098,4 +1191,4 @@ resolved silently in one module is a pattern the next module contradicts.
 | N5 | done — `vendor.rs` 14 → 5 allowlisted, `context.rs` 6 → 0, `gump.rs` 9 → 0 | |
 | N6 | done — `login.rs` 8 → 2 allowlisted, `seed.rs` 1 → 0, `version.rs` 4 → 4 allowlisted | |
 | N7 | done — `feedback.rs` 10 → 10 allowlisted, `skill.rs` 6 → 4 allowlisted, `combat.rs` 2 → 0, `properties.rs` 2 → 1 allowlisted, `spellbook.rs` 3 → 1 allowlisted, `encoded.rs` 2 → 0, `casting.rs` 1 → 0 | |
-| N8 | not started | |
+| N8 | done — `login.rs`'s `StartLocation::position` tuple became `Point`; the repo-level coverage check landed with a full allowlist; `docs/style.md` gained a short section | |

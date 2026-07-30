@@ -414,11 +414,11 @@ pub(crate) fn dispatch_world_packet(
 /// The description cliloc is left 0: a client older than 7.0.13.0 ignores the
 /// field, and a newer one shows the city and inn names either way.
 pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocation> {
-    fn city(area: &str, name: &str, x: i32, y: i32, z: i32) -> StartLocation {
+    fn city(area: &str, name: &str, x: u16, y: u16, z: i8) -> StartLocation {
         StartLocation {
             area: area.to_owned(),
             name: name.to_owned(),
-            position: (x, y, z),
+            position: Point::new(x, y, z),
             map: MapId(0),
             description_cliloc: ClilocId(0),
         }
@@ -443,7 +443,7 @@ pub(crate) fn start_cities(facets: &[u8], start: (u16, u16)) -> Vec<StartLocatio
         cities.push(StartLocation {
             area: "Britannia".to_owned(),
             name: "Britain".to_owned(),
-            position: (i32::from(start.0), i32::from(start.1), 0),
+            position: Point::new(start.0, start.1, 0),
             map: MapId(facets.first().copied().unwrap_or(0)),
             description_cliloc: ClilocId(0),
         });
@@ -503,14 +503,7 @@ pub(crate) fn create_character(
     // valid pick names a real city; only a client sending an out-of-range index
     // falls back to the default facet and a fresh spawn.
     let (facet, start) = match login.starts.get(create.start_location.0 as usize) {
-        Some(city) => (
-            Facet(city.map.0),
-            Some(Point::new(
-                city.position.0 as u16,
-                city.position.1 as u16,
-                city.position.2 as i8,
-            )),
-        ),
+        Some(city) => (Facet(city.map.0), Some(city.position)),
         None => (Facet(0), None),
     };
 
@@ -793,7 +786,7 @@ mod tests {
         for city in &cities {
             assert_eq!(city.map, MapId(0), "every classic city is on Felucca");
             assert!(
-                city.position.0 > 0 && city.position.1 > 0,
+                city.position.x > 0 && city.position.y > 0,
                 "a real spot, not the origin"
             );
         }
@@ -807,7 +800,7 @@ mod tests {
         // on a facet it actually loaded, not facet 0 it did not.
         let cities = start_cities(&[1], (1363, 1600));
         assert_eq!(cities.len(), 1, "never empty");
-        assert_eq!(cities[0].position, (1363, 1600, 0));
+        assert_eq!(cities[0].position, Point::new(1363, 1600, 0));
         assert_eq!(cities[0].map, MapId(1), "on a loaded facet");
     }
 
