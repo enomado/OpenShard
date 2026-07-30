@@ -69,7 +69,8 @@ Arrows are dependencies; they only ever point down.
 | `login` | `Accounts`, `AuthKeys`, and the sans-io `LoginServer`. |
 | `movement` | The walk handshake, the sequence rules, the pace limiter, and A* (`find_path`). `Terrain` is a trait it does not implement. |
 | `config` | TOML, validated at load. |
-| `server` | The binary. Glue only: `boot` loads config/store/world, `shard` owns the accept loop and shutdown, `dispatch` turns packets into commands, `session` is per-connection state. |
+| `server` | The shard: glue only — `boot` loads config/store/world, `shard` owns the accept loop and shutdown, `dispatch` turns packets into commands, `session` is per-connection state. A library with a four-line binary on top, so a test can *start a shard* by calling `run_shard` instead of building one out of process. |
+| `client/net` | The client's side of the wire: framing, decompression, the login conversation as a sans-io state machine, and a `WorldView` of what the server has shown. The mirror of `gateway` + `login`, and it depends on neither. See [`client.md`](client.md). |
 | `world` | The tick, the client's file formats, `MapTerrain`, and the persistence journal. Owns `WorldState` and drives it. Orchestration, not rules — see the `tick/` layout below. |
 
 **The gameplay systems.** Each is a set of `fn(&mut WorldState)` in its own
@@ -95,6 +96,21 @@ rules.
 **Stubs** — declared so the dependency graph is visible.
 
 `housing`, `guilds`, `plugins`, `metrics`.
+
+**`crates/e2e/*` — tests, and the exception that proves the direction rule.**
+
+`server/*` and `client/*` never depend on each other: the wire is the only thing
+they agree on, and that is what keeps the protocol crate honest. But "a client
+can log in to a shard" needs both in one process, and hanging it off either side
+would make that side depend on the other — a dev-dependency is still a
+dependency, and it is the direction, not the profile, that the rule is about.
+
+So the seam tests live outside both, in crates that ship no code and that
+nothing depends on. Only what cannot be tested on one side belongs there: the
+framing, the login machine and the tick all have better tests of their own —
+pure state machines, no ports, no timing. What `e2e` is for is that two correct
+ends actually agree, and it earned its place on the first run by catching a
+client that assumed one compressed block was one packet.
 
 ## The shape of a file
 

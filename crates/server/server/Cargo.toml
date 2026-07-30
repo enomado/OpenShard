@@ -11,6 +11,10 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "openshard_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "openshard"
 path = "src/main.rs"

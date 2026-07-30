@@ -52,12 +52,19 @@ Nothing else can start. Four pieces:
    Not all at once — the login set first (`0x82 0xA8 0x8C 0xA9 0x1B 0x55 0x11
    0x78 0x1A 0x20 0x22 0x21 0xBF`), the rest as a milestone needs them.
 
-3. **Incremental Huffman.** A game connection compresses *every packet
+3. **Incremental Huffman.** A game connection compresses *every write
    independently, terminator and all* (see `Session::send_packet`), so a client
-   can decode one packet at a time — but only if the decoder can say "this many
-   input bytes produced this packet, and the rest is the next one". That is a
-   `decompress_prefix` returning the payload and the bytes consumed;
-   `decompress` becomes the one-shot case of it.
+   needs a decoder that can say "this many input bytes produced this block, and
+   the rest is the next one". That is a `decompress_prefix` returning the
+   payload and the bytes consumed; `decompress` becomes the one-shot case of it.
+
+   **A block is not a packet, and assuming it is passes every unit test.** The
+   login server answers a `0x91` with the feature mask and the character list in
+   one buffer, which is compressed as one 1,115-byte block carrying two packets.
+   Decompression fills a byte stream and framing splits *that* — two layers,
+   kept apart, the way ClassicUO does it. This cost nothing to fix and would
+   have cost a day to find without the end-to-end test below, which is what
+   found it.
 
 4. **Round-trip tests.** Until now an encoder could only be checked against
    hand-written bytes or against itself. With both halves present, every packet
@@ -89,9 +96,20 @@ believed on its own.
   the position and everything drawn after it.
 
 Done when an integration test drives the real server through the whole
-conversation with this crate — `tests/login_flow.rs` today builds those bytes by
-hand and should stop — and when the binary walks a character around a live
-`cargo run -p openshard-server`.
+conversation with this crate, and when the binary walks a character around a
+live `cargo run -p openshard-server`.
+
+That test lives in **`crates/e2e`**, a group of its own beside `common`,
+`server` and `client`. It needs both ends in one process, and putting it on
+either side would make that side depend on the other — the rule those two live
+by. So it sits outside both, ships no code of its own, and nothing depends on
+it. It is also what turned `crates/server/server` into a library with a
+four-line binary: a test that wants a shard should call one, not build one.
+
+Only what cannot be tested on one side belongs there. Framing, the login machine
+and the tick all have better tests of their own; what is left for `e2e` is that
+two correct ends actually agree — which is exactly what caught the compression
+mistake above, on the first run.
 
 ## M2 — `crates/common/uofiles`: the data files
 

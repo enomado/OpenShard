@@ -45,20 +45,6 @@ pub enum ConnectionError {
     Huffman(HuffmanError),
     /// A packet decoded to a body that was not what its id promised.
     Decode(ServerDecodeError),
-    /// One compressed block held more than the one packet it should.
-    ///
-    /// The shard compresses every packet independently, so a decompressed block
-    /// is exactly one packet. More than that means the sender does not
-    /// compress the way this decoder assumes, and reading on would produce
-    /// packets that look plausible and are not.
-    Desynchronised {
-        /// The id of the packet at the front of the block.
-        id: u8,
-        /// How long the block decompressed to.
-        block: usize,
-        /// How long the packet at its front claims to be.
-        packet: usize,
-    },
     /// Bytes are piling up that should have framed and did not.
     ///
     /// Unreachable unless framing has a bug: a variable packet cannot claim
@@ -94,11 +80,6 @@ impl std::fmt::Display for ConnectionError {
             Self::Frame(error) => error.fmt(f),
             Self::Huffman(error) => error.fmt(f),
             Self::Decode(error) => error.fmt(f),
-            Self::Desynchronised { id, block, packet } => write!(
-                f,
-                "a compressed block of {block} bytes held a 0x{id:02X} of {packet}: \
-                 the sender does not compress packet by packet"
-            ),
             Self::Overflow { buffered } => {
                 write!(f, "{buffered} bytes buffered and none of them frame")
             }
@@ -159,6 +140,13 @@ pub struct Connection {
     version: ClientVersion,
     /// Bytes received and not yet turned into a packet.
     inbox: Vec<u8>,
+    /// Decompressed bytes waiting to be framed.
+    ///
+    /// Empty on a [`Stream::Plain`] connection, where the inbox already is the
+    /// packet stream. On a compressed one it is the seam between the two
+    /// layers: a block that decompressed to two and a half packets leaves the
+    /// half here for the next block to complete.
+    decoded: Vec<u8>,
 }
 
 impl Connection {
@@ -174,6 +162,7 @@ impl Connection {
             stream,
             version,
             inbox: Vec::new(),
+            decoded: Vec::new(),
         }
     }
 
@@ -219,32 +208,36 @@ impl Connection {
         }
     }
 
+    /// Decompress until there is a whole packet, then frame it.
+    ///
+    /// # A compressed block is not a packet
+    ///
+    /// It is tempting to assume one, because the shard compresses each *write*
+    /// with its own terminator. But a write is not a packet: the login server
+    /// answers a `0x91` with the feature mask and the character list in one
+    /// buffer, and that whole buffer is compressed together — 1,115 bytes
+    /// carrying two packets under one terminator.
+    ///
+    /// So the two layers are kept apart, which is what ClassicUO does as well:
+    /// decompression fills a plain byte stream, and framing splits *that*. The
+    /// alternative — insisting a block be exactly one packet — passes every
+    /// unit test written against a compressor and fails on the first real
+    /// character list.
     fn poll_compressed(&mut self) -> Result<Option<Event>, ConnectionError> {
-        let Some((packet, consumed)) = huffman::decompress_prefix(&self.inbox)? else {
-            return Ok(None);
-        };
-        self.inbox.drain(..consumed);
-
-        // The decompressed block must be exactly one packet. Framing it is how
-        // that is checked rather than assumed: a block that frames short means
-        // the sender batches packets into one compressed run, and every packet
-        // after the first would be read out of the middle of a buffer nobody
-        // split.
-        let id = *packet
-            .first()
-            .expect("a compressed block decoded to nothing, which the terminator makes impossible");
-        match frame_server_packet(&packet, self.version)? {
-            Frame::Complete(length) if length == packet.len() => self.interpret(packet).map(Some),
-            Frame::Complete(length) => Err(ConnectionError::Desynchronised {
-                id,
-                block: packet.len(),
-                packet: length,
-            }),
-            Frame::Incomplete { needed } => Err(ConnectionError::Desynchronised {
-                id,
-                block: packet.len(),
-                packet: needed,
-            }),
+        loop {
+            match frame_server_packet(&self.decoded, self.version)? {
+                Frame::Complete(length) => {
+                    let packet: Vec<u8> = self.decoded.drain(..length).collect();
+                    return self.interpret(packet).map(Some);
+                }
+                Frame::Incomplete { .. } => {
+                    let Some((block, consumed)) = huffman::decompress_prefix(&self.inbox)? else {
+                        return Ok(None);
+                    };
+                    self.inbox.drain(..consumed);
+                    self.decoded.extend_from_slice(&block);
+                }
+            }
         }
     }
 
@@ -382,19 +375,42 @@ mod tests {
     }
 
     #[test]
-    fn a_batched_compressed_block_is_refused() {
-        // If a server compressed two packets into one run, the block would
-        // decompress to more than one packet. Reading only the first and
-        // discarding the rest would silently drop packets; this says so.
+    fn one_compressed_block_can_hold_several_packets() {
+        // What the shard actually does, and what this got wrong first time
+        // round: a *write* is compressed with one terminator, and a write can
+        // be several packets — the login server answers a 0x91 with the feature
+        // mask and the character list in one buffer. A client that insisted a
+        // block was one packet passed its own tests and died on the first real
+        // character list.
         let mut both = denied().encode(version());
         both.extend(ServerPacket::LoginComplete(LoginComplete).encode(version()));
         let wire = huffman::compress(&both);
 
         let mut connection = Connection::new(Stream::Compressed, version());
         connection.receive(&wire);
-        assert!(matches!(
-            connection.poll(),
-            Err(ConnectionError::Desynchronised { id: 0x82, .. })
-        ));
+
+        assert_eq!(connection.poll().unwrap(), Some(Event::Packet(denied())));
+        assert_eq!(
+            connection.poll().unwrap(),
+            Some(Event::Packet(ServerPacket::LoginComplete(LoginComplete)))
+        );
+        assert_eq!(connection.poll().unwrap(), None);
+    }
+
+    #[test]
+    fn a_packet_split_across_two_compressed_blocks_is_reassembled() {
+        // The other half of the same fact: if a write can hold two packets, it
+        // can also hold one and a half. The tail waits in the decompressed
+        // buffer for the block that finishes it.
+        let packet = denied().encode(version());
+        let first = huffman::compress(&packet[..1]);
+        let second = huffman::compress(&packet[1..]);
+
+        let mut connection = Connection::new(Stream::Compressed, version());
+        connection.receive(&first);
+        assert_eq!(connection.poll().unwrap(), None, "half a packet is not one");
+
+        connection.receive(&second);
+        assert_eq!(connection.poll().unwrap(), Some(Event::Packet(denied())));
     }
 }

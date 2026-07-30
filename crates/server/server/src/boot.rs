@@ -6,7 +6,7 @@ use super::*;
 /// means the first thing a new operator sees is the file they need to edit, with
 /// the `advertise` warning in it, instead of a shard that works on their laptop
 /// and nowhere else for reasons nobody wrote down.
-pub(crate) fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
     if !Path::new(path).exists() {
         std::fs::write(path, DEFAULT_TOML)?;
         info!(path, "no config found; wrote the default");
@@ -30,7 +30,7 @@ pub(crate) fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Erro
 /// Opening the database can fail, and that is fatal: a shard told to persist that
 /// cannot is not a shard anyone wants started in memory by surprise, losing
 /// everything at the next stop.
-pub(crate) async fn open_store(config: &Config) -> Result<Arc<dyn Store>, Box<dyn std::error::Error>> {
+pub async fn open_store(config: &Config) -> Result<Arc<dyn Store>, Box<dyn std::error::Error>> {
     let target = config.persistence.database.trim();
     if target.is_empty() {
         warn!(
@@ -201,7 +201,7 @@ fn configured_world(config: &Config) -> World {
 /// Blocking, and on purpose: this reads over a hundred megabytes and takes a
 /// moment, and there is no sense accepting a client before the world it will
 /// walk in exists.
-pub(crate) fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> {
+pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> {
     let start = (config.world.start.x, config.world.start.y);
     let dir = config.world.client_files.trim();
     if dir.is_empty() {

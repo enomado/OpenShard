@@ -372,12 +372,7 @@ fn world_tick(
 /// single-threaded — a deterministic tick is the whole point — and login is a
 /// state machine that does no work worth parallelising. Async lives in the
 /// gateway's tasks, on the far side of the channel.
-pub(crate) async fn run_shard(
-    mut events: ServerEventRx,
-    config: &Config,
-    mut world: World,
-    store: Arc<dyn Store>,
-) {
+pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: World, store: Arc<dyn Store>) {
     // `Config::validate` (run by `Config::load`, which every `Config` reaching
     // here has been through) refuses an IPv6 `server.advertise`, so this is
     // always `Some` in practice.

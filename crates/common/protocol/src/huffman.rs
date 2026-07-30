@@ -166,16 +166,21 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>, HuffmanError> {
 ///
 /// # Why a client needs this and the server does not
 ///
-/// A game connection compresses **every packet independently, terminator and
+/// A game connection compresses **every write independently, terminator and
 /// all** — see `Session::send_packet`, which follows Sphere's `CNetworkOutput`.
-/// The compressor pads the last byte with zeros, so each packet occupies a whole
+/// The compressor pads the last byte with zeros, so each write occupies a whole
 /// number of bytes and the next one starts on a byte boundary.
 ///
 /// That is what makes returning a byte count correct: the padding bits after a
-/// terminator belong to the packet that just ended and are discarded. A server
+/// terminator belong to the write that just ended and are discarded. A server
 /// that compressed the socket as one continuous stream would make this wrong —
-/// there the trailing bits would be the *start* of the next packet — so this is
-/// a property of how the shard sends, not of Huffman.
+/// there the trailing bits would be the *start* of what follows — so this is a
+/// property of how the shard sends, not of Huffman.
+///
+/// **A block is not a packet.** One write can carry several — the login server
+/// answers a `0x91` with the feature mask and the character list together — and
+/// can equally carry one and a half. A caller decompresses into a byte stream
+/// and frames *that*; see `openshard_client_net::connection`.
 ///
 /// `Ok(None)` means the terminator has not arrived yet: read more from the
 /// socket and ask again, the same shape as
