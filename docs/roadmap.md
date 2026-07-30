@@ -207,17 +207,51 @@ five functions. What is left:
       upkeep for abandoned relay keys and wants its own `select!` arm on a timer,
       not a place in the tick.
 
-Two smaller things noticed on the way through, neither blocking:
+One smaller thing noticed on the way through, not blocking:
 
-- `dispatch_world_packet` opens with `session.login.account().cloned()
-  .unwrap_or_default()`, so a `0x5D` with no game login behind it builds an
-  `Enter` for the empty account rather than being refused. Harmless today because
-  the roster cannot match an empty account, but it is a default standing in for
-  absence — exactly what the style canon says not to do.
 - `Command::Enter` carries a `CharacterSheet` built out of four
   `openshard-persistence` record types. The tick's input vocabulary should not be
   shaped by the database's row format; it is also the single reason `Command`
   cannot move below `openshard-world` should that ever be wanted.
+
+### A connection's state is kept in two tables that must agree
+
+Read while asking why `world_handle_network` has to hold `Sessions`, `LoginServer`,
+`World` and `Roster` at once. None of these is a bug on a working shard today; all
+of them are the same seam being unnamed.
+
+- **Presence is a bool, and it is set optimistically.** `Session::playing` is set
+  as `Command::Enter` is *queued* (`server/src/dispatch.rs`, `create_character`
+  and the `CharacterPlay` arm), and `World::enter` has three early returns that
+  refuse silently — already in the world, a saved serial that will not bind, an
+  exhausted mobile serial pool (`world/src/tick/enter.rs`). After any of them the
+  session says it is playing, the world has no entity, and every world packet the
+  client sends is queued into a tick that drops it on a `players.get` miss. The
+  client is told nothing and sits on "logging into shard". `Option<PlayedCharacter>`
+  cannot express *asked to enter but not yet in* — the state that exists between
+  the queue and the tick — so an explicit phase would close both this and the
+  "set once and never cleared" note on the field itself.
+- **`in_world()` is a second copy of `players.contains_key`.** Thirty arms of
+  `dispatch_world_packet` open with the same `if !session.in_world()` guard
+  against the copy rather than against the world.
+- **The world cannot answer a connection that has no entity.**
+  `WorldState::send_packet` resolves the client version through
+  `players → Client`, so a connection on the character screen is unreachable from
+  inside a tick, silently (`state/src/runtime.rs`). This is the structural reason
+  the character screen cannot become world commands as planned above: the version
+  has to live on the connection, not on the entity.
+- **argon2 runs on the tick's task.** `world_handle_network` shares its `select!`
+  with the ticker, and the `0x80` path reaches `password::verify` —
+  `Argon2::default()` is 19 MiB and two passes, tens of milliseconds against a
+  50 ms `TICK_INTERVAL`. One login stalls the simulation for everyone. Cheap to
+  fix once login is a hand-off rather than a call inside the loop (verify on a
+  blocking task, deliver the result as an event).
+- **Per-connection world state is seven maps and a hand-written teardown.**
+  `held`, `open_containers`, `open_quest_gumps`, `open_craft_gumps`,
+  `pending_targets`, `last_status`, `last_light`, `last_music` are all keyed by
+  connection or by the player entity, and `World::disconnect` clears each one by
+  name. Adding the eighth and forgetting the line is a leak nothing catches. One
+  record per connection makes the teardown a single `remove`.
 
 ## 3. World — a client walks in Britannia
 
