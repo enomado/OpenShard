@@ -619,8 +619,10 @@ pub enum Command {
     UseSkillButton {
         /// Which connection.
         connection: ConnectionId,
-        /// Which skill, by id.
-        skill: u8,
+        /// Which skill, by id, exactly as sent — unchecked until
+        /// `openshard_skills::use_skill_button` looks it up; the queue is a
+        /// delivery, not a checkpoint.
+        skill: openshard_protocol::wire::RawSkillId,
     },
     /// A client moved one of the status bar's stat arrows (`0xBF` `0x1A`).
     SetStatLock {
@@ -636,8 +638,10 @@ pub enum Command {
     SetSkillLock {
         /// Which connection.
         connection: ConnectionId,
-        /// Which skill, by id.
-        skill: u8,
+        /// Which skill, by id, exactly as sent — unchecked until
+        /// `World::set_skill_lock` looks it up; the queue is a delivery, not a
+        /// checkpoint.
+        skill: openshard_protocol::wire::RawSkillId,
         /// The new lock state.
         lock: openshard_protocol::skill::SkillLock,
     },
@@ -703,7 +707,7 @@ pub enum Command {
         /// Which connection asked.
         connection: ConnectionId,
         /// The objects whose tooltips are wanted, by serial.
-        serials: Vec<u32>,
+        serials: Vec<RawSerial>,
     },
     /// A client asked to open an object's context menu (`0xBF` `0x13`).
     ContextMenuRequest {

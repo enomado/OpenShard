@@ -180,3 +180,17 @@ impl std::error::Error for InvalidCharacterSlot {}
 /// never read — the server already knows the real address from the socket.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 pub struct RawClientIp(pub u32);
+
+/// A skill id exactly as a client packet carried it, not yet checked against
+/// `openshard_state::Skill`'s known ids.
+///
+/// No promotion method here, and none is coming: the domain type,
+/// `openshard_state::Skill`, lives in a server crate above `protocol` (its
+/// meaning is gameplay content, not wire shape), so the check that turns this
+/// into one is `Skill::from_id`, called at whichever seam has the domain in
+/// hand — the same licence `RawSerial::validate` documents for `Serial::new`.
+/// Named here rather than in `world.rs`, where the pilot first needed it,
+/// because `skill.rs` is its second user — N4's "two or more modules"
+/// counting rule. See `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawSkillId(pub u8);

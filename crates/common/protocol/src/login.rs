@@ -170,6 +170,25 @@ impl DenyReason {
             | Self::ShardFull => 0x04,
         }
     }
+
+    /// Read a wire code back, as a client must.
+    ///
+    /// Not the inverse of [`wire_code`](Self::wire_code) and cannot be: that
+    /// function is deliberately many-to-one, so what comes back is the one
+    /// reason of each group the client can actually distinguish. A client that
+    /// wants the real reason has to be told it some other way — there is no
+    /// wire form for it.
+    #[must_use]
+    pub const fn from_wire_code(code: u8) -> Option<Self> {
+        match code {
+            0x00 => Some(Self::NoAccount),
+            0x01 => Some(Self::InUse),
+            0x02 => Some(Self::Blocked),
+            0x03 => Some(Self::BadPassword),
+            0x04 => Some(Self::Other),
+            _ => None,
+        }
+    }
 }
 
 /// `0x82` — refuse a login. 2 bytes.
@@ -185,6 +204,20 @@ impl EncodePacket for LoginDenied {
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u8(self.reason.wire_code());
+    }
+}
+
+impl DecodePacket for LoginDenied {
+    const ID: u8 = 0x82;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let code = reader.u8()?;
+        DenyReason::from_wire_code(code)
+            .map(|reason| Self { reason })
+            .ok_or(DecodeError::UnknownValue {
+                field: "0x82 deny code",
+                value: u32::from(code),
+            })
     }
 }
 
@@ -269,6 +302,44 @@ impl EncodePacket for ShardList {
                 out.bytes(&octets);
             }
         }
+    }
+}
+
+impl DecodePacket for ShardList {
+    const ID: u8 = 0xA8;
+
+    /// The reverse of the encoder, byte order included — and the byte order is
+    /// the whole difficulty. A client reading these octets in the wrong order
+    /// dials a plausible address and simply never arrives; see the type's docs
+    /// for why the reversal is right and why Sphere's comments say otherwise.
+    ///
+    /// The index each entry carries is not kept: it is the position in the list
+    /// plus one, and a `0xA0` answers with that position — so keeping it would
+    /// be storing the index of a `Vec` inside the `Vec`.
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
+        let reversed_ip = version.supports(Feature::ReversedShardIp);
+        reader.skip(1)?; // system info flag, 0xFF
+        let count = reader.u16()? as usize;
+        let mut shards = Vec::with_capacity(count.min(MAX_SHARDS));
+        for _ in 0..count {
+            reader.skip(2)?; // the one-based index, which is the position
+            let name = reader.fixed_string(SHARD_NAME_LENGTH)?;
+            let percent_full = reader.u8()?;
+            let timezone = reader.u8()?;
+            let octets = reader.bytes(4)?;
+            let address = if reversed_ip {
+                Ipv4Addr::new(octets[3], octets[2], octets[1], octets[0])
+            } else {
+                Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3])
+            };
+            shards.push(ShardEntry {
+                name,
+                percent_full,
+                timezone,
+                address,
+            });
+        }
+        Ok(Self { shards })
     }
 }
 
@@ -407,6 +478,22 @@ impl EncodePacket for Relay {
         out.bytes(&self.endpoint.ip().octets());
         out.u16(self.endpoint.port());
         out.u32(self.auth_key.0);
+    }
+}
+
+impl DecodePacket for Relay {
+    const ID: u8 = 0x8C;
+
+    /// Octets in order, on every version — the opposite of [`ShardList`], in
+    /// the same conversation, about the same address.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let octets = reader.bytes(4)?;
+        let address = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+        let port = reader.u16()?;
+        Ok(Self {
+            endpoint: SocketAddrV4::new(address, port),
+            auth_key: AuthKey(reader.u32()?),
+        })
     }
 }
 
@@ -669,6 +756,70 @@ impl EncodePacket for CharacterList {
         if version.supports(Feature::CharacterListFlags) {
             out.u32(self.flags.0);
         }
+    }
+}
+
+impl DecodePacket for CharacterList {
+    const ID: u8 = 0xA9;
+
+    /// # Only the modern form
+    ///
+    /// Before 7.0.13.0 ([`Feature::ExtraStartInfo`]) a starting city is a name
+    /// and an area and nothing else — no position, no map, no cliloc. There is
+    /// no honest [`StartLocation`] to build from that, and filling the missing
+    /// fields with zeros would hand a caller three coordinates that look chosen.
+    /// So the old form says it is not decoded; a client this engine ships with
+    /// never sees it, and one that did would want to know.
+    ///
+    /// # Empty slots come back as empty slots
+    ///
+    /// The list is padded to [`MIN_CHARACTER_SLOTS`] on the way out, so what
+    /// arrives is five slots however many characters exist. Decoding gives back
+    /// exactly what is on the wire, empty names included — this is a record of
+    /// what the server said, and "slot three is empty" is something it said.
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
+        if !version.supports(Feature::ExtraStartInfo) {
+            return Err(DecodeError::Unsupported {
+                packet: <Self as DecodePacket>::ID,
+                form: "the pre-7.0.13.0 start list, which carries no coordinates",
+            });
+        }
+
+        let slots = reader.u8()? as usize;
+        let mut characters = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            let name = reader.fixed_string(CHARACTER_NAME_LENGTH)?;
+            reader.skip(PASSWORD_LENGTH)?; // the vestigial password field
+            characters.push(CharacterEntry {
+                name: CharacterName(name),
+            });
+        }
+
+        let start_count = reader.u8()? as usize;
+        let mut starts = Vec::with_capacity(start_count);
+        for _ in 0..start_count {
+            reader.skip(1)?; // the index, which is the position in this list
+            let area = reader.fixed_string(32)?;
+            let name = reader.fixed_string(32)?;
+            let position = (reader.i32()?, reader.i32()?, reader.i32()?);
+            let map = MapId(reader.u32()? as u8);
+            let description_cliloc = ClilocId(reader.u32()?);
+            reader.skip(4)?; // the trailing zero dword
+            starts.push(StartLocation {
+                area,
+                name,
+                position,
+                map,
+                description_cliloc,
+            });
+        }
+
+        let flags = CharacterListFlags(reader.u32()?);
+        Ok(Self {
+            characters,
+            starts,
+            flags,
+        })
     }
 }
 

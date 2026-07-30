@@ -907,6 +907,110 @@ sitting in adjacent fields of a server struct rather than in a packet at all.
   value is chosen. Harmless today because the only caller passes `0`; worth a
   named constructor the day an operator's shard actually reports fullness.
 
+## Amendments forced by N7 (`feedback.rs`, `skill.rs`, `combat.rs`, `properties.rs`, `spellbook.rs`, `encoded.rs`, `casting.rs`)
+
+The tail, and the smallest modules in the sweep, but two of the seven turned up
+the two shapes N3's four classes cannot answer alone — a value the *server*
+computes and only the *client* reads back, and a third instance of the
+decoder-destroys-the-byte finding — plus the collection blind spot N6's own
+backlog had already named.
+
+1. **`feedback.rs` needed no code change**, `version.rs`'s outcome again: its
+   own module doc already argued `action`/`animation_type`/the frame counts
+   stay bare, and the reason generalises past this file — the domain type
+   (`openshard_state::Action`) lives in a server crate above `protocol` and
+   cannot be held here. `speed`/`duration` are quantities (every caller passes
+   a per-effect literal, nothing branches on either), and `HuedEffect::
+   render_mode` is untouched for a third reason: no non-test code in this
+   workspace constructs a `HuedEffect`, so there is no caller to classify
+   against. All three reasons are recorded in the module doc rather than only
+   here, so the next reader finds them beside the fields.
+2. **`RawSkillId` moved from `world.rs` to `wire.rs`**, N4's plain counting
+   rule: `skill.rs` is its second user and, unlike `RawLayer`'s twin (a
+   validated `Layer` that lives in this crate), `RawSkillId`'s twin —
+   `openshard_state::Skill` — lives in a server crate above `protocol` and has
+   no crate-local pairing to follow instead.
+3. **`SkillLockRequest::skill` and `UseSkillRequest::skill` were bare `u8`s,
+   not even a `Raw` type, until this stage** — the sweep's own blind spot: a
+   field can look done because a neighbouring module already named
+   `RawSkillId`, when the packet actually holding client input never adopted
+   it. Both are `RawSkillId` now, with the promotion pilot amendment 1's
+   licence extended one step: `openshard_state::Skill::from_id` is the check,
+   called at the seam that owns the domain, and `RawSkillId` itself carries no
+   promotion method because that type cannot live in `protocol`.
+4. **A hostile skill id has needed no game-balance number, unlike the pilot's
+   three deferrals — and one of the two checks was missing entirely.**
+   `SkillLockRequest::skill` reached `Skills::set_lock`, a bare `HashMap`
+   insert, with nothing on the path checking it against the table; `World::
+   set_skill_lock` now refuses (and logs) an id `Skill::from_id` does not
+   know, with N9's pair — decodes cleanly, refused at promotion — living in
+   `crates/common/protocol/src/skill.rs` for the decode half and in
+   `openshard_world`'s test suite for the seam. `UseSkillRequest::skill` was
+   already checked, one hop further down (`skill::info` in `skills::
+   use_skill_button`, predating this stage) — wrapping it only made the check
+   visible, per N3's whole argument.
+5. **`combat.rs`'s `HealthBar` gained no new type: it reused `mobile::Vitals`.**
+   `max`/`current` are exactly the current/max pair N2 amendment 2 named the
+   shape for, and every constructor already built both at once. The wire order
+   (max, then current) is the encoder's business and unaffected by the fold.
+6. **`properties.rs`'s `TooltipRevision::hash` is a class N3's table cannot
+   name**: not client input (B/C do not apply), not a value with an existing
+   type (A does not apply), and class D's shape runs backwards here — D is
+   "the client claims it, the server never reads it"; here the *server*
+   computes it (`PropertyList::add_hash`) and the *client* is the only reader.
+   Left as a documented bare `u32` rather than forced into a class that does
+   not fit, with the doc comment naming the gap so a real fifth class is a
+   deliberate choice if one is ever added, not a drift.
+7. **The collection blind spot N6's own backlog predicted, one stage later.**
+   `PropertyQueryRequest::serials` was a bare `Vec<u32>` — invisible to N10's
+   counter for exactly the reason the N6 backlog gave for `StartLocation::
+   position`'s tuple: the counter looks for `pub name: int` and neither a
+   tuple nor a `Vec<int>` matches. It is `Vec<RawSerial>` now, and the seam
+   that reads it (`World::query_properties`) already had the right shape —
+   `Serial::new(serial)` per element — so this was a rename, not new logic.
+   **N8's counter needs both holes closed, tuple and collection, or it will
+   report a number lower than the truth.**
+8. **`spellbook.rs`'s `serial` and `graphic` are class A, and `offset` stays
+   bare by the same test N3 amendment 1 used for `TalkMode`'s named variants:**
+   something must already branch on the byte before a name pays for itself,
+   and nothing does — every call site sends the literal `1` (Magery), because
+   no second spell school is wired up. The day one is, `offset` is a real
+   class-B candidate; today a name would be a guess with one value ever
+   observed.
+9. **`encoded.rs` split one struct into three types, the `TalkMode` shape
+   applied to a subcommand word for the first time in this sweep.**
+   `EncodedCommand::serial` is class D — never read, the same shape as
+   `gump.rs`'s `RawGumpKey` (an id, not this file's business, addressed from
+   the connection instead) — and got a named `RawEncodedSerial` rather than
+   staying a bare `u32`, because N4's rule is that class D gets a type and no
+   second step, not that it gets nothing. `subcommand` is `RawEncodedSubcommand`
+   → `EncodedSubcommand { SetAbility, GuildGumpRequest, QuestGumpRequest,
+   Other(u16) }`, total, and the three `pub const u16`s `EncodedCommand` used
+   to carry are gone with the match that used to compare against them by
+   number — N11, no compatibility shims, one commit.
+10. **`casting.rs` is this stage's `StatLockRequest`/`0xAD` finding a third
+    time, and the sharpest of the three.** `CastSpellRequest::decode_body`
+    folded the wire's one-based spell id with `saturating_sub(1)` *while
+    decoding*, so a client-sent `0` (never legitimate — the wire numbers
+    spells from one) and a client-sent `1` (a real spell: Magery's first,
+    confirmed present in `magic::info(0)`) both became the stored zero-based
+    `0`. Nothing downstream could tell a hostile zero from the first spell in
+    the book. The fold is now `RawSpellId::interpret`, class B and total —
+    every `u16` has an answer, `0 => None`, `n => Some(n - 1)` — run at the
+    network seam (`dispatch.rs`) because a total interpretation cannot refuse
+    a connection, `docs/protocol_newtypes.md`'s N4 containers amendment 2
+    licence again. Whether the resulting number names a spell in the table is
+    unchanged: `magic::info`'s job, downstream, fallible.
+11. **Bare-integer field count: `feedback.rs` 10 before, 10 after** (all
+    allowlisted, amendment 1); **`skill.rs` 6 before, 4 after** (`SkillEntry`'s
+    `id`/`value`/`base`/`cap`, allowlisted for the same two reasons as
+    `feedback.rs` — domain above `protocol`, and quantities); **`combat.rs`** 2
+    before, 0 after (folded into `Vitals`, itself already on the allowlist);
+    **`properties.rs`** 2 before (plus the invisible `Vec<u32>`, amendment 7),
+    1 after (`hash`, amendment 6); **`spellbook.rs`** 3 before, 1 after
+    (`offset`, amendment 8); **`encoded.rs`** 2 before, 0 after; **`casting.rs`**
+    1 before, 0 after.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -937,8 +1041,10 @@ request (`main` is protected).
   sweep exists to remove turned up outside a packet: two capability masks, one
   `u32`, adjacent fields of a server struct.
 - **N7 — `feedback.rs`, `skill.rs`, `combat.rs`, `properties.rs`,
-  `spellbook.rs`, `encoded.rs`, `casting.rs`.** The tail, one commit if it
-  stays mechanical.
+  `spellbook.rs`, `encoded.rs`, `casting.rs`.** The tail. Stayed mechanical
+  enough for one commit, but turned up a third decoder-destroys-the-byte
+  finding (`casting.rs`) and the collection blind spot N6's backlog predicted
+  (`properties.rs`).
 - **N8 — the sweep.** The counting check from N10, the allowlist with reasons,
   and a pass over `docs/style.md` if the four classes deserve a line in the
   canon.
@@ -991,5 +1097,5 @@ resolved silently in one module is a pattern the next module contradicts.
 | N4 | done — `containers.rs` 9 → 3, `items.rs` 16 → 3, all allowlisted | |
 | N5 | done — `vendor.rs` 14 → 5 allowlisted, `context.rs` 6 → 0, `gump.rs` 9 → 0 | |
 | N6 | done — `login.rs` 8 → 2 allowlisted, `seed.rs` 1 → 0, `version.rs` 4 → 4 allowlisted | |
-| N7 | not started | |
+| N7 | done — `feedback.rs` 10 → 10 allowlisted, `skill.rs` 6 → 4 allowlisted, `combat.rs` 2 → 0, `properties.rs` 2 → 1 allowlisted, `spellbook.rs` 3 → 1 allowlisted, `encoded.rs` 2 → 0, `casting.rs` 1 → 0 | |
 | N8 | not started | |

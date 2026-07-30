@@ -35,7 +35,7 @@ use openshard_persistence::{
     AccountRecord, CharacterRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store,
 };
 use openshard_protocol::client_packet::ClientPacket;
-use openshard_protocol::encoded::EncodedCommand;
+use openshard_protocol::encoded::EncodedSubcommand;
 use openshard_protocol::extended::ExtendedRequest;
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{

@@ -16,9 +16,8 @@ use crate::error::DecodeError;
 /// `0xBF` subcommand `0x1C` — a spellbook (or macro) asking to cast a spell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CastSpellRequest {
-    /// Which spell, zero-based. The wire carries it one-based (so `1` is the first
-    /// spell); this is already decremented, matching how a script names spells.
-    pub spell: u16,
+    /// Which spell, exactly as the wire named it. See [`RawSpellId::interpret`].
+    pub spell: RawSpellId,
 }
 
 impl CastSpellRequest {
@@ -35,10 +34,41 @@ impl CastSpellRequest {
         if reader.u16()? == 1 {
             let _spellbook = reader.u32()?;
         }
-        let one_based = reader.u16()?;
-        Ok(Self {
-            spell: one_based.saturating_sub(1),
-        })
+        let spell = RawSpellId(reader.u16()?);
+        Ok(Self { spell })
+    }
+}
+
+/// A spell id exactly as a `0xBF 0x1C` carried it: one-based on the wire, so
+/// `1` is the first spell and `0` is not a spell at all — no legitimate
+/// client ever sends it.
+///
+/// `decode_body` used to fold this with `saturating_sub(1)` *while decoding*,
+/// which made the wire's `0` (garbage) and its `1` (a real spell — Magery's
+/// first) indistinguishable once stored: both became zero-based `0`. That is
+/// the same shape as `StatLockRequest`'s and `0xAD`'s findings — "wherever a
+/// decoder normalises, the raw byte is being destroyed" — so the fold moved
+/// out of `decode_body` and into [`interpret`](Self::interpret), which keeps
+/// the two apart. See `docs/protocol_newtypes.md`, "Amendments forced by N7".
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawSpellId(pub u16);
+
+impl RawSpellId {
+    /// The zero-based spell number this names, or `None` for the wire's `0`.
+    ///
+    /// Total: every `u16` has an answer, so this may run right at the network
+    /// seam rather than waiting for a tick system to have the domain in hand
+    /// (`docs/protocol_newtypes.md`'s N4 containers amendment 2 licence for a
+    /// packet-level `interpret`). Whether the *number* names a spell in the
+    /// table is a different, fallible question — `openshard_magic::info`'s,
+    /// at whatever seam already asks it.
+    #[inline]
+    #[must_use]
+    pub const fn interpret(self) -> Option<u16> {
+        match self.0 {
+            0 => None,
+            n => Some(n - 1),
+        }
     }
 }
 
@@ -65,11 +95,22 @@ mod tests {
     }
 
     #[test]
-    fn a_spellbook_cast_names_its_spell_zero_based() {
-        // The client sends the sixth spell as 6; the engine sees 5.
+    fn a_spellbook_cast_names_its_spell_one_based_on_the_wire() {
+        // The client sends the sixth spell as 6; interpret() is what turns
+        // that into 5.
         let packet = cast_packet(Some(0x4000_0001), 6);
         let request = ExtendedRequest::decode(&packet).unwrap();
-        assert_eq!(request, ExtendedRequest::Cast(CastSpellRequest { spell: 5 }));
+        assert_eq!(
+            request,
+            ExtendedRequest::Cast(CastSpellRequest { spell: RawSpellId(6) })
+        );
+        assert_eq!(
+            match request {
+                ExtendedRequest::Cast(cast) => cast.spell.interpret(),
+                _ => None,
+            },
+            Some(5)
+        );
     }
 
     #[test]
@@ -78,8 +119,25 @@ mod tests {
         let request = ExtendedRequest::decode(&packet).unwrap();
         assert_eq!(
             request,
-            ExtendedRequest::Cast(CastSpellRequest { spell: 0 }),
-            "the first spell, zero-based"
+            ExtendedRequest::Cast(CastSpellRequest { spell: RawSpellId(1) }),
+            "the first spell, one-based on the wire"
         );
+    }
+
+    #[test]
+    fn a_hostile_zero_decodes_cleanly_but_interprets_to_no_spell() {
+        // N9's pair, adapted for a total interpretation rather than a
+        // Result: the wire's 0 is never a legitimate one-based spell id, and
+        // it must not decode to the same thing as the real first spell (the
+        // wire's 1) once interpreted — the bug `decode_body`'s old
+        // `saturating_sub(1)` had.
+        let packet = cast_packet(None, 0);
+        let request = ExtendedRequest::decode(&packet).unwrap();
+        assert_eq!(
+            request,
+            ExtendedRequest::Cast(CastSpellRequest { spell: RawSpellId(0) })
+        );
+        assert_eq!(RawSpellId(0).interpret(), None);
+        assert_eq!(RawSpellId(1).interpret(), Some(0), "distinct from the wire's 0");
     }
 }

@@ -94,8 +94,8 @@ pub(crate) fn open_spellbook(
     state.send_packet(
         connection,
         &ServerPacket::SpellbookContent(SpellbookContent {
-            serial: book_serial.raw(),
-            graphic: SPELLBOOK_GRAPHIC,
+            serial: book_serial,
+            graphic: openshard_protocol::wire::Graphic(SPELLBOOK_GRAPHIC),
             offset: 1,
             content: mask,
         }),

@@ -12,6 +12,7 @@
 use super::tests::{START, enter, enter_as, packets_for, spawn_mobile_at, world};
 use super::*;
 use openshard_protocol::serial::RawSerial;
+use openshard_protocol::wire::RawSkillId;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::Skill;
 use openshard_state::components::{
@@ -65,7 +66,7 @@ fn use_skill_on(
     };
     world.queue(Command::UseSkillButton {
         connection,
-        skill: skill.id(),
+        skill: RawSkillId(skill.id()),
     });
     world.tick(now);
     let _ = packets_for(world, connection);
@@ -396,7 +397,7 @@ fn meditation_enters_a_trance_and_a_step_breaks_it() {
 
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::Meditation.id(),
+        skill: RawSkillId(Skill::Meditation.id()),
     });
     world.tick(now);
     assert!(
@@ -453,7 +454,7 @@ fn meditation_wants_free_hands() {
 
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::Meditation.id(),
+        skill: RawSkillId(Skill::Meditation.id()),
     });
     world.tick(now);
     assert!(!world.state.registry.has::<Meditating>(entity));
@@ -526,7 +527,7 @@ fn spirit_speak_lets_the_living_hear_the_dead_without_seeing_them() {
     assert!(!world.state.can_hear_mobile(listener, ghost), "not yet");
     world.queue(Command::UseSkillButton {
         connection: living,
-        skill: Skill::SpiritSpeak.id(),
+        skill: RawSkillId(Skill::SpiritSpeak.id()),
     });
     world.tick(now);
     assert!(
@@ -847,7 +848,7 @@ fn remove_trap_refuses_before_it_raises_a_cursor() {
     let entity = world.state.players[&player];
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::RemoveTrap.id(),
+        skill: RawSkillId(Skill::RemoveTrap.id()),
     });
     world.tick(now);
     assert!(
@@ -876,7 +877,7 @@ fn hiding_takes_you_off_every_screen_and_a_word_puts_you_back() {
 
     world.queue(Command::UseSkillButton {
         connection: hider,
-        skill: Skill::Hiding.id(),
+        skill: RawSkillId(Skill::Hiding.id()),
     });
     world.tick(now);
     assert!(
@@ -923,7 +924,7 @@ fn stealth_buys_a_few_quiet_steps_and_no_more() {
 
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::Stealth.id(),
+        skill: RawSkillId(Skill::Stealth.id()),
     });
     world.tick(now);
     assert_eq!(
@@ -973,7 +974,7 @@ fn detecting_hidden_strips_a_worse_hider_and_not_a_better_one() {
 
     world.queue(Command::UseSkillButton {
         connection: seeker,
-        skill: Skill::DetectHidden.id(),
+        skill: RawSkillId(Skill::DetectHidden.id()),
     });
     world.tick(now);
     assert!(
@@ -1053,7 +1054,7 @@ fn a_bard_with_no_instrument_gets_no_cursor() {
     world.tick(now);
     world.queue(Command::UseSkillButton {
         connection: bard,
-        skill: Skill::Provocation.id(),
+        skill: RawSkillId(Skill::Provocation.id()),
     });
     world.tick(now);
     assert!(!world.state.pending_targets.contains_key(&entity));
@@ -1484,7 +1485,7 @@ fn animal_lore_reads_a_pet_and_refuses_a_wild_thing_to_a_novice() {
     let _ = packets_for(&mut world, looker);
     world.queue(Command::UseSkillButton {
         connection: looker,
-        skill: Skill::AnimalLore.id(),
+        skill: RawSkillId(Skill::AnimalLore.id()),
     });
     world.tick(now);
     let _ = packets_for(&mut world, looker);

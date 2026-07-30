@@ -30,7 +30,7 @@ use crate::mobile::{Notoriety, StatusFlags};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::Serial;
 use crate::version::ClientVersion;
-use crate::wire::{Graphic, Hue, RawCharacterSlot, RawClientIp, RawGraphic, RawHue};
+use crate::wire::{Graphic, Hue, RawCharacterSlot, RawClientIp, RawGraphic, RawHue, RawSkillId};
 
 /// Where something is.
 ///
@@ -139,12 +139,6 @@ pub enum Race {
     /// Since Stygian Abyss.
     Gargoyle,
 }
-
-/// A skill id exactly as a create-character packet carried it, not yet
-/// checked against `openshard_state::Skill`'s known ids. No promotion method
-/// yet — see `docs/protocol_newtypes.md`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub struct RawSkillId(pub u8);
 
 /// A starting skill value exactly as sent — the client's own whole points,
 /// not yet checked against the shard's starting-skill rule. No promotion
@@ -512,6 +506,46 @@ impl EncodePacket for PlayerStart {
     }
 }
 
+impl DecodePacket for PlayerStart {
+    const ID: u8 = 0x1B;
+
+    /// The client's side of the first packet of the game proper.
+    ///
+    /// The z field is the trap: two bytes wide, and only the low one is read,
+    /// as a *signed* byte. Reading the pair as an `i16` puts a dungeon floor at
+    /// 65,526 instead of -10 — the mirror of the note on the encoder.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x1B player serial",
+            value: raw,
+        })?;
+        reader.skip(4)?;
+        let body = Graphic(reader.u16()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        reader.skip(1)?; // the high half of z, which the client never reads
+        let z = reader.u8()? as i8;
+        let facing = Facing::from_bits(reader.u8()?);
+        reader.skip(1)?;
+        reader.skip(4)?; // 0xFFFFFFFF
+        reader.skip(4)?;
+        let map = MapSize {
+            width: reader.u16()?,
+            height: reader.u16()?,
+        };
+        // The six trailing zeros are not read: nothing follows them in the
+        // packet, and a frame that ended early is already a codec error.
+        Ok(Self {
+            serial,
+            body,
+            position: Point::new(x, y, z),
+            facing,
+            map,
+        })
+    }
+}
+
 // -- 0x20 player update ---------------------------------------------------
 
 /// `0x20` — move or redraw the player's own body. 19 bytes.
@@ -715,6 +749,15 @@ impl EncodePacket for LoginComplete {
     const LENGTH: PacketLength = PacketLength::Fixed(1);
 
     fn encode_body(&self, _out: &mut PacketWriter, _version: ClientVersion) {}
+}
+
+impl DecodePacket for LoginComplete {
+    const ID: u8 = 0x55;
+
+    /// One byte, all of it the id: the packet *is* the signal.
+    fn decode_body(_reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
 }
 
 /// How dark the world is drawn: `0` is blinding daylight and `0x1F` is pitch

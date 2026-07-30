@@ -1562,7 +1562,7 @@ impl WorldState {
         let send_version =
             self.gameplay.tooltip_mode == TooltipMode::SendVersion && version.supports(Feature::TooltipHash);
         if send_version {
-            let serial = self.registry.serial_of(entity)?.raw();
+            let serial = self.registry.serial_of(entity)?;
             Some(ServerPacket::TooltipRevision(TooltipRevision { serial, hash }).encode(version))
         } else {
             Some(full)
@@ -1579,7 +1579,7 @@ impl WorldState {
     /// `Item.AddNameProperty`.
     #[must_use]
     pub fn object_properties(&self, entity: EntityId) -> Option<(Vec<u8>, u32)> {
-        let serial = self.registry.serial_of(entity)?.raw();
+        let serial = self.registry.serial_of(entity)?;
         let mut list = PropertyList::new(serial);
         if let Some(Name(name)) = self.registry.get::<Name>(entity) {
             // The earned name — a fame title once the mobile is famous enough for an

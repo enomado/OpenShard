@@ -8,16 +8,26 @@
 
 use super::*;
 use openshard_protocol::skill::{SkillEntry, SkillLock, SkillUpdate, SkillsFull, skill_count};
+use openshard_protocol::wire::RawSkillId;
 use openshard_skills::SkillChanged;
-use openshard_state::StatLock;
 use openshard_state::components::{Skills, StatLocks};
+use openshard_state::{Skill, StatLock};
 
 impl World {
     /// A client moved a skill's up/down/lock arrow: store it. ServUO's
     /// `SetLockNoRelay` — the client already redrew its own arrow, so nothing is
     /// sent back.
-    pub(super) fn set_skill_lock(&mut self, connection: ConnectionId, skill: u8, lock: SkillLock) {
+    ///
+    /// `skill` crossed the command queue unchecked (N3's "the queue is a
+    /// delivery, not a checkpoint"); this is the seam that owns the skill
+    /// list, so this is where an id past the table is refused rather than
+    /// handed to `Skills::set_lock`, which would have accepted any byte.
+    pub(super) fn set_skill_lock(&mut self, connection: ConnectionId, skill: RawSkillId, lock: SkillLock) {
         let Some(&player) = self.state.players.get(&connection) else {
+            return;
+        };
+        let Some(named) = Skill::from_id(skill.0) else {
+            debug!(skill = skill.0, "skill lock named an id past the table");
             return;
         };
         let mut skills = self
@@ -26,7 +36,7 @@ impl World {
             .get::<Skills>(player)
             .cloned()
             .unwrap_or_default();
-        skills.set_lock(skill, lock);
+        skills.set_lock(named.id(), lock);
         self.state.registry.insert(player, skills);
     }
 
