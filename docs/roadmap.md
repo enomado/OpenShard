@@ -2317,6 +2317,37 @@ started.
   looted items, writable books, the localized text on the signs the converter
   already places, and rate limiting beyond the walk-pace bucket.
 
+### Backlog from the data-table sweep
+
+The craft, body-type, mount, skill and NPC-name tables moved out of Rust source
+and into `data/*.json` behind a `build.rs` (17,784 lines of source became 5,222
+of data; the rule is now in [`architecture.md`](architecture.md#a-big-table-is-data-and-lives-in-datajson)).
+Found while doing it, none started:
+
+- **The recipe invariants are tested, not enforced.** `defs/mod.rs` asserts that
+  every recipe names a group that exists and leads with its system's own skill —
+  both are properties of the *data*, and both are now checkable in
+  `crafting/build.rs`, where a bad row would fail the build instead of a test
+  run. The reason they cannot move today is that the group count and the main
+  skill live in `SYSTEMS`, which is hand-written Rust the build script does not
+  read. Either the five headers join the data, or the script learns them.
+- **`Text::Cliloc(0)` is a null.** The craft tables spell "no text" as cliloc
+  zero — `generate.cjs` emits it for a missing `TextDefinition` — which is
+  exactly the default-as-absent this project's style forbids: it reads like a
+  number somebody chose. `Option<Text>` says what is meant. Same question for
+  `CraftSystemDef::needs_message`, which is `ClilocId(0)` on four of five.
+- **`Recipe::amount` has a column and no data.** Every one of the 485 rows is 1;
+  the field exists for the stacking recipes (arrows, bolts, boards) that ServUO
+  expresses as `SetUseAllRes` plus an addon interaction, which is on the
+  crafting backlog above. Worth checking against `DefBowFletching` when that
+  table lands, rather than carrying a column nothing sets.
+- **Two files are still over the 2k line.** `world/src/tick/tests.rs` is 12,688
+  — by a wide margin the largest file in the repository, and the split mechanics
+  in `architecture.md` are written for exactly this; `state/src/runtime.rs` is
+  2,059. `state/src/components.rs` came down to ~2,300 and is the next
+  candidate: it holds every component in the crate and splits by subject
+  cleanly.
+
 ### Deferred / not yet ported (the Felucca converter)
 
 The one-shot converter (`OpenShard-Community-Pack/tools/convert-servuo.cjs`) lays

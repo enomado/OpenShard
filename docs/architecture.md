@@ -141,6 +141,45 @@ The `tick/` layout, as the worked example: `command.rs` (the `Command` enum),
 `speech.rs`, `staff.rs`, and the test files. `tick.rs` itself keeps the `World` struct,
 the command router and the tick — orchestration, ~750 lines.
 
+### A big table is data, and lives in `data/*.json`
+
+The other way a file gets long is not logic at all. Five files of craft recipes
+were 16,106 lines; a body-type table was 469 lines inside a 2,782-line
+`components.rs`; 250 NPC names were most of `names.rs`. None of it is code —
+it is ported reference data (ServUO's `Def*.cs`, `Data/bodyTable.cfg`,
+`SkillInfo.Table`) that happens to be spelled in Rust syntax, and it drowns the
+few hundred lines around it that a person actually reads.
+
+**A table of more than a hundred rows belongs in `crates/<group>/<crate>/data/`
+as JSON, with a `build.rs` that emits the `const` before the crate compiles.**
+The three that exist — `crafting`, `state`, `npc` — are the pattern:
+
+- **The generated tables stay `const`.** Two of `state`'s are binary-searched on
+  the tick path. Nothing is parsed or allocated at startup, and a caller still
+  reads `&'static [Recipe]`; the file it comes from is the only thing that
+  changed.
+- **Errors move from runtime to build time.** `deny_unknown_fields` on every
+  row makes a misspelt key a build failure, and a `Skill::` variant that does
+  not exist will not compile. What a runtime load would report on the first
+  craft of the day, this reports before the crate builds.
+- **Invariants the data must satisfy are the script's job, not the data's.**
+  `build.rs` sorts `BODY_TYPES` and `MOUNTS` by id, because `body_type` binary-
+  searches them and a table sorted by hand decays the first time somebody
+  appends a row. The same script asserts there is no duplicate id — the case a
+  binary search would answer arbitrarily.
+- **Prose stays in the source.** The doc comments for the generated items live
+  in `build.rs`, not in the JSON: a data file is a poor place to explain why
+  ServUO's `StatTotal` sums the *undivided* scales.
+- **Converting is verified by round-tripping.** Both existing conversions were
+  dumped out of the compiled tables rather than parsed out of the source text,
+  and the regenerated `const`s dump back to byte-identical JSON.
+
+What is *not* worth moving: `state`'s `WEAPONS` and `ARMOR`, `magic`'s `MAGERY`,
+`harvest`'s `ORES`. Each is already one row per line with a constructor function
+and the item named in a trailing comment, and that alignment is the readable
+part — JSON would lose it and save nothing. The line is roughly a hundred rows,
+or the point where the comments stop carrying meaning.
+
 ### Where code goes
 
 - A gameplay **rule** → a domain crate, as `fn(&mut WorldState)`.
@@ -155,6 +194,8 @@ Named so a review can point at them:
 
 - **The god file** — a tick that absorbs every new feature inline. Rules go in
   domain crates; the tick sequences them.
+- **The table in the source file** — a few hundred rows of ported reference data
+  spelled as Rust literals, drowning the code around it. It goes in `data/`.
 - **Gameplay in `state`** — `WorldState` is data plus the shared drawing
   substrate. The moment it grows a rule, every system depends on that rule.
 - **Circular crate dependencies** — if two crates need each other, one of them

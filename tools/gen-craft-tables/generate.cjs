@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 //
-// Turn ServUO's craft tables into Rust.
+// Turn ServUO's craft tables into this engine's recipe data.
 //
 // A one-shot build tool, not an engine feature: it runs once, its output is
-// committed under `crates/server/crafting/src/defs/`, and from then on those files are
-// edited as ordinary source. The same bargain the Community Pack's
+// committed under `crates/server/crafting/data/` as `*.json`, and from then on
+// those files are edited as ordinary data. The same bargain the Community Pack's
 // `convert-servuo.cjs` makes, and the roadmap's own instruction for the recipes.
+//
+// The JSON is what `crates/server/crafting/build.rs` turns into `const` tables
+// before the crate compiles — so nothing downstream of here knows this ran, and
+// re-running it against a newer ServUO shows a diff of what changed rather than
+// a rewritten wall of Rust.
 //
 //   node tools/gen-craft-tables/generate.cjs [path-to-servuo] [--dry]
 //
@@ -26,7 +31,7 @@ const SERVUO = process.argv[2] && !process.argv[2].startsWith('--')
   ? process.argv[2]
   : path.join(process.env.HOME, 'Git', 'ServUO');
 const DRY = process.argv.includes('--dry');
-const OUT = path.join(__dirname, '..', '..', 'crates', 'server', 'crafting', 'src', 'defs');
+const OUT = path.join(__dirname, '..', '..', 'crates', 'server', 'crafting', 'data');
 
 // The expansions this shard can be set to. `[gameplay] expansion` tops out at
 // ML, so anything gated above it names content the engine does not have.
@@ -576,103 +581,96 @@ const SKILL_RENAMES = {
   Poisoning: 'Poisoning',
 };
 
-function rustText(value) {
-  if (!value) return 'Text::Cliloc(0)';
-  if (value.cliloc !== undefined) return `Text::Cliloc(${value.cliloc})`;
-  return `Text::Str(${JSON.stringify(value.str)})`;
+// A `TextDefinition` as the data file writes it: a bare number is a cliloc, a
+// quoted string is the literal arm.
+function jsonText(value) {
+  if (!value) return '0';
+  if (value.cliloc !== undefined) return String(value.cliloc);
+  return JSON.stringify(value.str);
 }
 
-function rustNeeds(needs) {
+// Only the requirements that are actually set — the key is absent on 484 of the
+// 485 rows, which is the whole reason the data file is readable.
+function jsonNeeds(needs) {
   const set = Object.keys(needs).filter((k) => needs[k]);
-  if (set.length === 0) return 'Needs::none()';
-  const fields = set.map((k) => `${k}: true`).join(', ');
-  return `Needs { ${fields}, ..Needs::none() }`;
+  if (set.length === 0) return null;
+  return `{ ${set.map((k) => `"${k}": true`).join(', ')} }`;
 }
 
+// The trade's `data/*.json`, in exactly the shape `crates/server/crafting/build.rs`
+// deserialises — and in exactly the layout the committed files already have, so
+// re-running this against a newer ServUO shows a diff of what *changed* rather
+// than a diff of the whole table.
+//
+// Every field the build script defaults is left out when it holds the default.
+// `deny_unknown_fields` on the far side means a key misspelt here fails the
+// build rather than being ignored.
 function emit(parsed) {
-  const { spec, groups, recipes, subRes } = parsed;
-  const skills = new Set();
-  for (const recipe of recipes) for (const s of recipe.skills) skills.add(s.skill);
-
+  const { groups, recipes, subRes } = parsed;
   const out = [];
-  out.push(`//! ${spec.file}'s recipes, as core data.`);
-  out.push('//!');
-  out.push('//! Generated once from ServUO by `tools/gen-craft-tables`, and ordinary source');
-  out.push('//! from then on: edit it, do not regenerate it. Skills are in tenths.');
-  out.push('');
-  out.push('use openshard_protocol::wire::{Graphic, Hue};');
-  out.push('use openshard_state::Skill;');
-  out.push('');
-  const axis = subRes && subRes.entries.length;
-  out.push(`use crate::recipe::{CraftRes, CraftSkillReq, Recipe${axis ? ', SubRes, SubResAxis' : ''}};`);
-  out.push('use crate::system::{Needs, Text};');
-  out.push('');
-  out.push(`/// The gump's left-hand column.`);
-  out.push('pub const GROUPS: &[Text] = &[');
-  for (const group of groups) out.push(`    ${rustText(group)},`);
-  out.push('];');
-  out.push('');
-
-  // Each recipe's slices have to be named constants: a `&'static [T]` cannot be
-  // built inline inside another const initialiser.
-  recipes.forEach((recipe, i) => {
-    out.push(`const SKILLS_${i}: &[CraftSkillReq] = &[`);
-    for (const s of recipe.skills) {
-      const variant = SKILL_RENAMES[s.skill] || s.skill;
-      out.push(`    CraftSkillReq { skill: Skill::${variant}, min: ${s.min}, max: ${s.max} },`);
-    }
-    out.push('];');
-    if (recipe.resources.length) {
-      out.push(`const RES_${i}: &[CraftRes] = &[`);
-      for (const r of recipe.resources) {
-        out.push(
-          `    CraftRes { graphic: Graphic(${hex(r.graphic)}), hue: Hue(${hex(r.hue)}), amount: ${r.amount}, ` +
-          `name: ${rustText(r.name)}, message: ${rustText(r.message)}, from_axis: ${!!r.fromAxis} },`,
-        );
-      }
-      out.push('];');
-    }
-  });
-  out.push('');
-  out.push('/// Everything this trade can make.');
-  out.push('pub const RECIPES: &[Recipe] = &[');
-  recipes.forEach((recipe, i) => {
-    out.push('    Recipe {');
-    out.push(`        graphic: Graphic(${hex(recipe.graphic)}),`);
-    out.push(`        name: ${rustText(recipe.name)},`);
-    out.push(`        group: ${recipe.group},`);
-    out.push(`        skills: SKILLS_${i},`);
-    out.push(`        resources: ${recipe.resources.length ? `RES_${i}` : '&[]'},`);
-    out.push(`        amount: 1,`);
-    out.push(`        hue: Hue(${hex(recipe.hue)}),`);
-    out.push(`        use_all_res: ${recipe.useAllRes},`);
-    out.push(`        min_skill_offset: ${recipe.minSkillOffset},`);
-    out.push(`        markable: ${recipe.markable},`);
-    out.push(`        never_exceptional: ${recipe.neverExceptional},`);
-    out.push(`        always_exceptional: ${recipe.alwaysExceptional},`);
-    out.push(`        needs: ${rustNeeds(recipe.needs)},`);
-    out.push('    },');
-  });
-  out.push('];');
-  out.push('');
+  out.push('{');
+  out.push(`  "groups": [${groups.map(jsonText).join(', ')}],`);
 
   if (subRes && subRes.entries.length) {
-    out.push('/// The material this trade is worked in.');
-    out.push('pub const SUB_RES: SubResAxis = SubResAxis {');
-    out.push(`    graphic: ${hex(subRes.graphic)},`);
-    out.push(`    name: ${rustText(subRes.name)},`);
-    out.push('    entries: &[');
-    for (const entry of subRes.entries) {
-      out.push(
-        `        SubRes { hue: Hue(${hex(entry.hue)}), name: ${rustText(entry.name)}, ` +
-        `req_skill: ${entry.reqSkill}, message: ${rustText(entry.message)} },`,
-      );
-    }
-    out.push('    ],');
-    out.push('};');
-    out.push('');
+    out.push('  "sub_res": {');
+    out.push(`    "graphic": "${hex(subRes.graphic)}",`);
+    out.push(`    "name": ${jsonText(subRes.name)},`);
+    out.push('    "entries": [');
+    const entries = subRes.entries.map(
+      (e) =>
+        `      { "hue": "${hex(e.hue)}", "name": ${jsonText(e.name)}, ` +
+        `"req_skill": ${e.reqSkill}, "message": ${jsonText(e.message)} }`,
+    );
+    out.push(entries.join(',\n'));
+    out.push('    ]');
+    out.push('  },');
   }
-  return out.join('\n');
+
+  out.push('  "recipes": [');
+  const rows = recipes.map((recipe) => {
+    const row = [];
+    row.push('    {');
+    row.push(`      "graphic": "${hex(recipe.graphic)}",`);
+    row.push(`      "name": ${jsonText(recipe.name)},`);
+    row.push(`      "group": ${recipe.group},`);
+    // `amount` is 1 for everything this tool produces; the field exists for the
+    // rows a shard edits by hand afterwards.
+    if (recipe.hue) row.push(`      "hue": "${hex(recipe.hue)}",`);
+    if (recipe.useAllRes) row.push('      "use_all_res": true,');
+    if (recipe.minSkillOffset) row.push(`      "min_skill_offset": ${recipe.minSkillOffset},`);
+    if (recipe.markable) row.push('      "markable": true,');
+    if (recipe.neverExceptional) row.push('      "never_exceptional": true,');
+    if (recipe.alwaysExceptional) row.push('      "always_exceptional": true,');
+    const needs = jsonNeeds(recipe.needs);
+    if (needs) row.push(`      "needs": ${needs},`);
+
+    const skills = recipe.skills.map((s) => {
+      const variant = SKILL_RENAMES[s.skill] || s.skill;
+      return `{ "skill": "${variant}", "min": ${s.min}, "max": ${s.max} }`;
+    });
+    row.push(`      "skills": [${skills.join(', ')}],`);
+
+    if (recipe.resources.length) {
+      const lines = recipe.resources.map((r) => {
+        const parts = [`"graphic": "${hex(r.graphic)}"`];
+        if (r.hue) parts.push(`"hue": "${hex(r.hue)}"`);
+        parts.push(`"amount": ${r.amount}`);
+        parts.push(`"name": ${jsonText(r.name)}`);
+        parts.push(`"message": ${jsonText(r.message)}`);
+        if (r.fromAxis) parts.push('"from_axis": true');
+        return `        { ${parts.join(', ')} }`;
+      });
+      row.push(`      "resources": [\n${lines.join(',\n')}\n      ]`);
+    } else {
+      row.push('      "resources": []');
+    }
+    row.push('    }');
+    return row.join('\n');
+  });
+  out.push(rows.join(',\n'));
+  out.push('  ]');
+  out.push('}');
+  return `${out.join('\n')}\n`;
 }
 
 function hex(value) {
@@ -689,11 +687,11 @@ function main() {
 
   for (const spec of SYSTEMS) {
     const parsed = parseSystem(spec);
-    const rust = emit(parsed);
-    const file = path.join(OUT, `${spec.module}.rs`);
+    const table = emit(parsed);
+    const file = path.join(OUT, `${spec.module}.json`);
     if (!DRY) {
       fs.mkdirSync(OUT, { recursive: true });
-      fs.writeFileSync(file, rust);
+      fs.writeFileSync(file, table);
     }
     const axis = parsed.subRes ? `${parsed.subRes.entries.length} materials` : 'no axis';
     console.log(
