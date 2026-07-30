@@ -478,10 +478,7 @@ impl World {
             self.notify_self(traveller, "You are too busy to do that.");
             return;
         }
-        if self
-            .connection_of(traveller)
-            .is_some_and(|connection| self.state.held_of(connection).is_some())
-        {
+        if self.state.row_of(traveller).is_some_and(|row| row.held.is_some()) {
             self.notify_self(traveller, "You cannot teleport while dragging an object.");
             return;
         }

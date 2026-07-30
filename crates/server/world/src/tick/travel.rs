@@ -65,10 +65,7 @@ impl World {
             return Some("You are too encumbered to move.");
         }
         // Something on the cursor is in neither world once you leave.
-        if self
-            .connection_of(caster)
-            .is_some_and(|connection| self.state.held_of(connection).is_some())
-        {
+        if self.state.row_of(caster).is_some_and(|row| row.held.is_some()) {
             return Some("You cannot teleport while dragging an object.");
         }
         None

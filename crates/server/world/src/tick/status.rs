@@ -180,8 +180,8 @@ impl World {
             .get::<Stats>(entity)
             .map_or(DEFAULT_HITPOINTS, |stats| stats.strength);
         let carried = self
-            .connection_of(entity)
-            .and_then(|connection| self.state.connection(connection))
+            .state
+            .row_of(entity)
             .and_then(|row| row.last_status.as_ref())
             .map_or_else(
                 || items::total_weight(&self.state, entity, BODY_WEIGHT),

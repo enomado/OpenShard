@@ -125,24 +125,14 @@ pub fn carried_with(state: &WorldState, contents: &Contents, mobile: EntityId) -
     for item in worn {
         gather(state, contents, item, &mut out, &mut visited);
     }
-    if let Some(held) = held_by(state, mobile) {
-        gather(state, contents, held, &mut out, &mut visited);
+    // What is on the cursor, if this mobile is a player mid-drag. A held item is
+    // in limbo — off the sector grid, off every screen but the picker's — so it is
+    // on no layer and in no container, and the only record of it is the drag
+    // itself, which lives on the connection's row.
+    if let Some(held) = state.row_of(mobile).and_then(|row| row.held) {
+        gather(state, contents, held.entity, &mut out, &mut visited);
     }
     out
-}
-
-/// What a mobile has on its cursor, if it is a player mid-drag.
-///
-/// A held item is in limbo — off the sector grid, off every screen but the
-/// picker's — so it is on no layer and in no container, and the only record of it
-/// is the drag itself.
-fn held_by(state: &WorldState, mobile: EntityId) -> Option<EntityId> {
-    let connection = state
-        .players
-        .iter()
-        .find(|(_, &player)| player == mobile)
-        .map(|(&connection, _)| connection)?;
-    state.held_of(connection).map(|held| held.entity)
 }
 
 /// The same for a single mobile, indexing the world itself. For one-off reads;

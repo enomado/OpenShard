@@ -45,11 +45,29 @@ impl World {
         }
     }
 
-    /// The facet a mobile is on, or the default if it carries none.
+    /// Put a character into the world for a connection that asked to play it.
     ///
-    /// Always a facet the world actually has: [`enter`](Self::enter) clamps an
-    /// unloaded facet to the default before it ever reaches a `Facet` component,
+    /// Either the connection ends the call in the world, or it is told it did
+    /// not: an entry that fails without a [`PlayerRefused`] would leave the
+    /// binary's phase on `Entering` — the name of the gap between the queued
+    /// command and the tick that applies it — with nothing that ever moves it on,
+    /// and the client waiting on "logging into shard" forever.
+    ///
+    /// That obligation is why the work is in [`try_enter`](Self::try_enter) and
+    /// this is a wrapper. A failure path there is a `return Err(reason)`, and the
+    /// refusal is emitted in one place for all of them, so a fourth one added
+    /// later cannot forget to say so. It used to be checkable only by reading
+    /// every early return.
     pub(super) fn enter(&mut self, entering: Entering) {
+        let connection = entering.connection;
+        if let Err(reason) = self.try_enter(entering) {
+            self.refuse_entry(connection, reason);
+        }
+    }
+
+    /// The entry itself. See [`enter`](Self::enter) for why it returns a
+    /// [`RefusedEntry`] rather than emitting one.
+    fn try_enter(&mut self, entering: Entering) -> Result<(), RefusedEntry> {
         let Entering {
             connection,
             version,
@@ -60,8 +78,7 @@ impl World {
         } = entering;
         if self.state.players.contains_key(&connection) {
             warn!(%connection, "already in the world");
-            self.refuse_entry(connection, RefusedEntry::AlreadyInWorld);
-            return;
+            return Err(RefusedEntry::AlreadyInWorld);
         }
 
         // Split the two arrivals into what the rest of this function reads. The
@@ -127,8 +144,7 @@ impl World {
                 if let Err(error) = self.state.registry.bind_serial(entity, saved) {
                     warn!(%connection, ?error, "could not restore the saved serial");
                     self.state.registry.despawn(entity);
-                    self.refuse_entry(connection, RefusedEntry::SerialInUse);
-                    return;
+                    return Err(RefusedEntry::SerialInUse);
                 }
                 (entity, saved)
             }
@@ -136,8 +152,7 @@ impl World {
                 Ok(pair) => pair,
                 Err(_) => {
                     warn!(%connection, "the mobile serial pool is exhausted");
-                    self.refuse_entry(connection, RefusedEntry::NoSerialsLeft);
-                    return;
+                    return Err(RefusedEntry::NoSerialsLeft);
                 }
             },
         };
@@ -528,6 +543,7 @@ impl World {
         if logged_out_dead {
             self.enter_ghost_state(entity, serial, false);
         }
+        Ok(())
     }
 
     /// Send a player its own `0x11` status — the paperdoll numbers, and the only
@@ -546,15 +562,6 @@ impl World {
             .send_packet(connection, &ServerPacket::MobileStatus(status));
     }
 
-    /// The connection a mobile is played over, if it is a connected player.
-    pub(super) fn connection_of(&self, entity: EntityId) -> Option<ConnectionId> {
-        self.state
-            .players
-            .iter()
-            .find(|(_, &e)| e == entity)
-            .map(|(&connection, _)| connection)
-    }
-
     /// Redraw a mobile's own status bar (`0x11`), if it is a connected player.
     ///
     /// Str/dex/int and the maxima do not move in ordinary play, so nothing
@@ -564,7 +571,7 @@ impl World {
         let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
-        if let Some(connection) = self.connection_of(entity) {
+        if let Some(connection) = self.state.connection_of(entity) {
             self.send_status(connection, entity);
         }
     }

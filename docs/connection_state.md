@@ -375,12 +375,17 @@ will read it.
   whatever it had. Every link is real and none is written down in one place;
   there is no test that walks it end to end, because it needs a real gateway —
   which is what `crates/e2e` is for.
-- **`Entering` has no timeout.** A session stays there until the world says
-  `PlayerEntered` or `PlayerRefused`, and today every exit from `World::enter`
-  emits exactly one of the two — by construction, and only checkable by reading
-  the function. A test that asserts "every early return from `enter` emits a
-  refusal" would pin it; a fourth failure path added without one would strand a
-  client in a phase nothing ever moves.
+- ~~**`Entering` has no timeout.**~~ Half fixed. A session still stays there until
+  the world says `PlayerEntered` or `PlayerRefused` — there is no clock — but the
+  world can no longer fail to say one of them. `World::enter` is a wrapper around
+  `try_enter(…) -> Result<(), RefusedEntry>`: a failure path is a `return
+  Err(reason)` and the refusal is emitted in the one place all of them come back
+  to, so the fourth failure path cannot be added without one. It used to be true
+  by construction and checkable only by reading every early return.
+  Guarded by `an_entry_that_does_not_happen_says_so` in `world/src/tick/tests.rs`,
+  which was checked against the wrapper swallowing the error. What is left is the
+  clock: a `PlayerEntered` that the shard loop never *reads* — a phase sync that
+  stops draining — would still strand the session, and nothing bounds the wait.
 - **A logout leaves the phase on `Playing`.** `Command::LogoutRequest` answers
   the ack and stops; the character is not let go of until the socket closes and
   `Disconnect` runs. So between the ack and the client hanging up, in-world
@@ -474,13 +479,17 @@ will read it.
   and never true of it. Logging out with a craft window open leaves an entry keyed
   by an entity that no longer exists, until the id is reused. S7b is the fix.
 
-- **`connection_of` is a scan, and it is the third copy.** `world/src/tick/enter.rs`
-  finds a mobile's connection by walking `state.players` looking for the entity —
-  when `Client { connection }` on the entity answers it in one lookup, which is
-  what `WorldState::client_of` does. `items/src/weight.rs` has a fourth copy of the
-  same walk. Both are the S1 finding again: a duplicate helper is invisible to the
-  grep that would prove it is a duplicate, and this pair is also O(players) where
-  the original is O(1).
+- ~~**`connection_of` is a scan, and it is the third copy.**~~ Fixed. Both walks of
+  `state.players` are gone: `WorldState::connection_of` is the named lookup beside
+  `row_of` and `client_of`, and three of the four call sites did not want the
+  connection at all — they went on to read its row, which is `row_of` in one call.
+  `items/src/weight.rs`'s `held_by` went the same way and stopped existing.
+
+  The finding it repeated is still worth the words. A duplicate helper is
+  invisible to the grep that would prove it is a duplicate, and it is *also* how a
+  complexity regression gets in: the two scans were O(players) where the lookup
+  they duplicated is O(1), on paths that run per status refresh and per weight
+  read.
 
 ## To verify with a real client
 
@@ -520,6 +529,15 @@ will read it.
   packet translation. It is handed to the world at boot as configuration, which is
   right; where it is *written* is not, and it is the kind of thing the Community
   Pack should own.
+
+- **A doc comment outlived the function it described.** `World::enter` carried
+  four lines about "the facet a mobile is on, or the default if it carries none",
+  which is `WorldState::facet_of` — moved out to the state crate long ago, its doc
+  left behind to become the first thing anybody reads about world entry. The
+  sentence even ends in a comma. Nothing catches this: `missing_docs` sees a
+  documented item, and rustdoc renders it. Replaced with `enter`'s own, which now
+  states the obligation the wrapper exists for. Worth watching for wherever a
+  helper has been lifted out of a file: the doc does not move itself.
 
 ## Status
 

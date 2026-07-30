@@ -10942,6 +10942,32 @@ fn a_command_queued_during_a_tick_waits_for_the_next_one() {
 }
 
 #[test]
+fn an_entry_that_does_not_happen_says_so() {
+    // The obligation `World::enter` is a wrapper for. A connection that asked to
+    // enter and did not is left in the binary's `Entering` phase, and only a
+    // `PlayerRefused` moves it out of one — so an entry that fails quietly does
+    // not fail quietly at all: it hangs the client on "logging into shard" with
+    // nothing on the shard to say why.
+    //
+    // Entering twice on the same connection is the reachable one of the three
+    // refusals; the other two need an exhausted serial pool or a serial the
+    // registry already holds. What this pins is the wiring — that a `return Err`
+    // in `try_enter` becomes an event — not the arithmetic of any one reason.
+    let mut world = world();
+    let now = Instant::now();
+    let connection = enter(&mut world, now);
+
+    let mut refused: Cursor<PlayerRefused> = world.bus().cursor();
+    enter_as(&mut world, connection, now);
+
+    let refusals: Vec<_> = world.bus().read(&mut refused).collect();
+    assert_eq!(refusals.len(), 1, "the second entry is refused, and out loud");
+    assert_eq!(refusals[0].connection, connection);
+    assert_eq!(refusals[0].reason, RefusedEntry::AlreadyInWorld);
+    assert_eq!(world.player_count(), 1, "and the first one is untouched");
+}
+
+#[test]
 fn an_empty_tick_is_cheap_and_harmless() {
     let mut world = world();
     let now = Instant::now();

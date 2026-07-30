@@ -1997,6 +1997,25 @@ impl WorldState {
         self.connections.get_mut(&connection)
     }
 
+    /// The connection `entity` is played over, if it is a connected player.
+    ///
+    /// For the caller that needs the *name* of the connection rather than what is
+    /// on its row — one that sends a packet, or hands the id to something that
+    /// keys by it. A caller that goes on to read the row wants
+    /// [`row_of`](Self::row_of) instead, and one that also needs the client
+    /// version wants [`client_of`](Self::client_of): both are this lookup with the
+    /// second half already done.
+    ///
+    /// One lookup, and the reason to reach for it is that the obvious alternative
+    /// is not: [`players`](Self::players) is keyed by connection, so answering
+    /// this from it means walking every player on the shard to find the one entry
+    /// that matches.
+    #[must_use]
+    pub fn connection_of(&self, entity: EntityId) -> Option<ConnectionId> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        Some(connection)
+    }
+
     /// Put a targeting cursor up for `entity`, remembering what the click is for.
     ///
     /// Nothing happens for a mobile with no client, which is the invariant every
