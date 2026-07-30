@@ -136,6 +136,8 @@ pub struct StoredCharacter {
     pub facet: Facet,
     /// Where on it, its own z included.
     pub position: Point,
+    /// Which way it was facing, and whether it was running.
+    pub facing: Facing,
     /// How it looked.
     pub appearance: Appearance,
     /// Its stats, skills, effects and quest log.
@@ -157,6 +159,7 @@ impl StoredCharacter {
             serial: Serial::new(record.serial)?,
             facet: Facet(record.facet),
             position: Point::new(record.x, record.y, record.z),
+            facing: Facing::from_bits(record.facing),
             appearance: Appearance {
                 body: openshard_protocol::wire::Graphic(record.body),
                 hue: openshard_protocol::wire::Hue(record.hue),

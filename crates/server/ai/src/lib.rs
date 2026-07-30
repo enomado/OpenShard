@@ -20,8 +20,8 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
 use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position, RangedAttack,
-    Scripted,
+    Aggression, Brain, ChasePath, Client, Combat, Facet, Heading, Hitpoints, Pet, PetOrder, Position,
+    RangedAttack, Scripted,
 };
 use openshard_state::sectors::{distance, in_range};
 
@@ -70,7 +70,7 @@ pub fn step_toward(state: &WorldState, facet: u8, from: Point, to: Point, throug
     // The live terrain, not the bare map: a route must not thread a placed
     // crate the step would then refuse. A door-opener plans through doors and
     // opens them on arrival.
-    let planner = state.facet_state(facet).planning_terrain(through_doors);
+    let planner = state.facet_state(Facet(facet)).planning_terrain(through_doors);
     if let Some(path) = find_path(&planner, from, to, PATH_BUDGET) {
         return path.first().map(|d| d.to_bits());
     }
@@ -109,10 +109,10 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
     // Keep after a target that is still alive and in sight — close in if out of
     // reach, and leave the hitting to `swings`.
     if let Some(target_serial) = state.registry.get::<Combat>(creature).and_then(|c| c.target) {
-        if let Some(target_pos) = foe_in_sight(state, target_serial, pos, facet, chase_limit(sight)) {
+        if let Some(target_pos) = foe_in_sight(state, target_serial, pos, facet.0, chase_limit(sight)) {
             if should_flee(state, creature, brain) {
                 state.registry.remove::<ChasePath>(creature);
-                return flee_step(state, creature, facet, pos, target_pos);
+                return flee_step(state, creature, facet.0, pos, target_pos);
             }
             // A ranged fighter kites: back off from a foe at its heels, stand
             // and shoot inside its reach (the volley system does the firing),
@@ -121,7 +121,7 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
                 let gap = distance(pos, target_pos);
                 if gap <= KITE_GAP {
                     state.registry.remove::<ChasePath>(creature);
-                    return kite_step(state, facet, pos, target_pos);
+                    return kite_step(state, facet.0, pos, target_pos);
                 }
                 let clear = state
                     .facet_state(facet)
@@ -136,7 +136,7 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
                 state.registry.remove::<ChasePath>(creature);
                 return None;
             }
-            return chase_step(state, creature, facet, pos, target_pos, brain);
+            return chase_step(state, creature, facet.0, pos, target_pos, brain);
         }
         combat::clear_target(state, creature);
         state.registry.remove::<ChasePath>(creature);
@@ -145,7 +145,7 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
     // Nothing to fight: look for prey — only a creature that starts fights
     // hunts; the defensive and the passive wait to be wronged — or wander.
     if sight > 0 && brain.aggression == Aggression::Aggressive {
-        if let Some(prey) = nearest_player_in_sight(state, creature, pos, facet, sight) {
+        if let Some(prey) = nearest_player_in_sight(state, creature, pos, facet.0, sight) {
             let next_swing = state.ticks + combat::swing_speed(state, creature);
             state.registry.insert(
                 creature,
@@ -200,7 +200,7 @@ fn foe_in_sight(state: &WorldState, target: Serial, from: Point, facet: u8, rang
         .registry
         .get::<Hitpoints>(entity)
         .is_some_and(|h| h.current > 0);
-    (alive && state.facet_of(entity) == facet && in_range(from, pos, range)).then_some(pos)
+    (alive && state.facet_of(entity) == Facet(facet) && in_range(from, pos, range)).then_some(pos)
 }
 
 /// Whether a step in `dir` from `from` will *move* — a mobile not yet facing
@@ -219,7 +219,7 @@ fn probe(state: &WorldState, facet: u8, from: Point, dir: Direction) -> (bool, O
     let Some(target) = step_from(from, dir) else {
         return (false, None);
     };
-    let live = state.facet_state(facet).live_terrain();
+    let live = state.facet_state(Facet(facet)).live_terrain();
     if live.can_step(from, target).is_some() {
         return (true, None);
     }
@@ -289,7 +289,9 @@ fn chase_step(
     // Blocked: plan a route around. A door-opener plans through doors and
     // opens them on arrival.
     let planned = {
-        let planner = state.facet_state(facet).planning_terrain(brain.opens_doors);
+        let planner = state
+            .facet_state(Facet(facet))
+            .planning_terrain(brain.opens_doors);
         find_path(&planner, from, to, PATH_BUDGET)
     };
     match planned {
@@ -354,7 +356,7 @@ fn nearest_player_in_sight(
     facet: u8,
     sight: u8,
 ) -> Option<Serial> {
-    let facet_state = state.facet_state(facet);
+    let facet_state = state.facet_state(Facet(facet));
     let live = facet_state.live_terrain();
     let sectors = &facet_state.sectors;
     let mut best: Option<(u32, Serial)> = None;
@@ -511,7 +513,7 @@ pub fn pet_beat(state: &mut WorldState, pet: EntityId) -> Option<u8> {
             if openshard_state::in_range(at, target_at, 1) {
                 return None;
             }
-            step_toward(state, facet, at, target_at, true)
+            step_toward(state, facet.0, at, target_at, true)
         }
         PetOrder::Guard | PetOrder::Follow | PetOrder::Come => {
             let &Position(owner_at) = state.registry.get::<Position>(owner)?;
@@ -523,7 +525,7 @@ pub fn pet_beat(state: &mut WorldState, pet: EntityId) -> Option<u8> {
                 // than pathing across the map, the same give-up the chase has.
                 return None;
             }
-            step_toward(state, facet, at, owner_at, true)
+            step_toward(state, facet.0, at, owner_at, true)
         }
     }
 }

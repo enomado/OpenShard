@@ -24,26 +24,35 @@ impl World {
         // has no look and no sheet — and they are local now: a *stored* character
         // cannot reach here half-unpacked, because `StoredCharacter` has no way to
         // say it.
-        let (requested_facet, saved_serial, saved_position, appearance, sheet) = match character {
+        let (requested_facet, saved_serial, saved_position, saved_facing, appearance, sheet) = match character
+        {
             Character::Stored(stored) => (
                 stored.facet,
                 Some(stored.serial),
                 Some(stored.position),
+                Some(stored.facing),
                 Some(stored.appearance),
                 Some(stored.sheet),
             ),
-            Character::Fresh(fresh) => (fresh.facet, None, fresh.start, fresh.appearance, fresh.sheet),
+            Character::Fresh(fresh) => (
+                fresh.facet,
+                None,
+                fresh.start,
+                None,
+                fresh.appearance,
+                fresh.sheet,
+            ),
         };
 
         // A character can only stand on a facet the shard loaded. An unloaded one
         // — a save from a shard that had more facets, say — falls back to the
         // default rather than leaving the character nowhere.
         //
-        // `.0` because the facet tables are still keyed by the raw byte; the
-        // newtype stops at this line rather than at the codec, and carrying it
-        // further is its own change.
-        let facet = if self.state.facets.contains_key(&requested_facet.0) {
-            requested_facet.0
+        // The `Facet` is carried the whole way now: `WorldState::facets` is keyed
+        // by it, so nothing between here and the component is a bare byte. Only the
+        // `warn!` opens it, because a tracing field wants something printable.
+        let facet = if self.state.facets.contains_key(&requested_facet) {
+            requested_facet
         } else {
             warn!(%connection, facet = requested_facet.0, "unloaded facet; falling back to the default");
             self.state.default_facet
@@ -74,14 +83,19 @@ impl World {
         // A loaded character spawns exactly where it was saved, its own z
         // included; a fresh one takes the world's configured start on its facet.
         let position = saved_position.unwrap_or_else(|| self.state.start_position(facet));
-        let facing = Facing::walking(Direction::South);
+        // A stored character faces the way it logged out; a fresh one has never
+        // faced anywhere, so it takes the same south the client's own creation
+        // screen shows it standing.
+        let facing = saved_facing.unwrap_or_else(|| Facing::walking(Direction::South));
         // A created or loaded character brings its body and hue; without one it
-        // falls back to the default. `.0` because `Body` is still a pair of raw
-        // `u16`s — the same one-line stop as the facet above.
+        // falls back to the default. `Body` and `Appearance` now hold the same wire
+        // `Graphic`/`Hue`, so this is a move rather than an unwrap-and-rewrap: the
+        // only place the numbers are opened is the encoder that puts them on the
+        // wire.
         let look = appearance.unwrap_or_else(Appearance::default_human);
         let body = Body {
-            id: look.body.0,
-            hue: look.hue.0,
+            id: look.body,
+            hue: look.hue,
         };
 
         self.state.registry.insert(entity, Position(position));
@@ -89,7 +103,7 @@ impl World {
         self.state.registry.insert(entity, body);
         self.state.registry.insert(entity, Name(name.0.clone()));
         self.state.registry.insert(entity, Account(account));
-        self.state.registry.insert(entity, Facet(facet));
+        self.state.registry.insert(entity, facet);
         // The account's authority, re-derived each login and never saved with the
         // character — so it is what the GM command gate reads.
         self.state.registry.insert(entity, Access(access));
@@ -219,12 +233,20 @@ impl World {
                     intelligence: openshard_state::StatLock::from_bits(locks.intelligence),
                 },
             );
+            // An age of zero is not "rose zero ticks ago" — it is
+            // `StatLockRecord::default()`'s sentinel for "never gained", the same
+            // one `claim_stat_timer` reads a missing component as. Feeding it
+            // through `now - age` like a real age would land on `now` itself: a
+            // stat that has never risen would read as having just risen, and a
+            // brand-new character would carry a full cooldown into its first
+            // login. Zero must restore to zero, not to now.
+            let restore_gain = |age: u64| if age == 0 { 0 } else { now.saturating_sub(age) };
             self.state.registry.insert(
                 entity,
                 openshard_state::components::LastStatGain {
-                    strength: now.saturating_sub(locks.strength_age),
-                    dexterity: now.saturating_sub(locks.dexterity_age),
-                    intelligence: now.saturating_sub(locks.intelligence_age),
+                    strength: restore_gain(locks.strength_age),
+                    dexterity: restore_gain(locks.dexterity_age),
+                    intelligence: restore_gain(locks.intelligence_age),
                 },
             );
             Self::apply_effects(&mut self.state.registry, entity, &sheet.effects, now);
@@ -330,7 +352,7 @@ impl World {
             connection,
             &ServerPacket::PlayerStart(PlayerStart {
                 serial: serial.raw(),
-                body: body.id,
+                body: body.id.0,
                 position,
                 facing,
                 map_width,
@@ -338,7 +360,7 @@ impl World {
             }),
         );
         self.state
-            .send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
+            .send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet.0 }));
         // AoS SupportedFeatures, sent *again* at world entry — this is the copy
         // ServUO's `DoLogin` sends right after the login confirm, and the one
         // ClassicUO reads to turn on in-world object tooltips and context menus.
@@ -367,8 +389,8 @@ impl World {
             connection,
             &ServerPacket::PlayerUpdate(PlayerUpdate {
                 serial: serial.raw(),
-                body: body.id,
-                hue: body.hue,
+                body: body.id.0,
+                hue: body.hue.0,
                 flags: 0,
                 position,
                 facing,

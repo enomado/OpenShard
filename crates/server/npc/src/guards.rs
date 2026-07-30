@@ -28,7 +28,7 @@ use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
 use openshard_protocol::world::Point;
 use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Client, CriminalUntil, DamageType, Ghost, Guard, Hitpoints, Murders, Position, Staff,
+    Aggression, Client, CriminalUntil, DamageType, Facet, Ghost, Guard, Hitpoints, Murders, Position, Staff,
 };
 use openshard_state::sectors::in_range;
 
@@ -83,10 +83,10 @@ pub fn guard_keywords(state: &mut WorldState, connection: ConnectionId, actor: E
         return;
     };
     let facet = state.facet_of(actor);
-    if !guarded_here(state, facet, at) {
+    if !guarded_here(state, facet.0, at) {
         return;
     }
-    if !call_guards(state, at, facet) {
+    if !call_guards(state, at, facet.0) {
         notify(state, connection, "The guards find no one to punish here.");
     }
 }
@@ -112,7 +112,7 @@ pub fn hunt_with_guards(state: &mut WorldState, target: EntityId) -> bool {
         return false;
     };
     let facet = state.facet_of(target);
-    if !guarded_here(state, facet, at) || !is_candidate(state, target) {
+    if !guarded_here(state, facet.0, at) || !is_candidate(state, target) {
         return false;
     }
     make_guard(state, target);
@@ -124,7 +124,7 @@ pub fn hunt_with_guards(state: &mut WorldState, target: EntityId) -> bool {
 fn guarded_here(state: &WorldState, facet: u8, at: Point) -> bool {
     state.gameplay.guards
         && state
-            .region_at(facet, at)
+            .region_at(Facet(facet), at)
             .is_some_and(|region| region.flags.guarded)
 }
 
@@ -170,7 +170,7 @@ fn is_candidate(state: &WorldState, mobile: EntityId) -> bool {
 fn nearest_candidate(state: &WorldState, at: Point, facet: u8) -> Option<EntityId> {
     state
         .facets
-        .get(&facet)?
+        .get(&Facet(facet))?
         .sectors
         .nearby(at, CALL_RANGE)
         .filter(|&(entity, _)| is_candidate(state, entity))
@@ -209,7 +209,7 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             ranged_kind: 0,
             wander: false,
             position: at,
-            facet,
+            facet: facet.0,
             name: Some(name),
             // A guard is not a townsperson: it appears, speaks its one line, deals
             // its blow and is gone. No trade, so no generated dress (its body

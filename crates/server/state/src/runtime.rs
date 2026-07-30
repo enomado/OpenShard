@@ -433,7 +433,7 @@ pub enum Origin {
         /// Where it lay.
         position: Point,
         /// On which facet.
-        facet: u8,
+        facet: Facet,
     },
     /// It was inside a container.
     Container(Contained),
@@ -524,10 +524,10 @@ pub struct WorldState {
     pub bus: EventBus,
     /// The loaded facets, each with its own ground and interest grid, keyed by
     /// facet number. There is always at least the default one.
-    pub facets: BTreeMap<u8, FacetState>,
+    pub facets: BTreeMap<Facet, FacetState>,
     /// The facet a new character spawns on, and the one anything asking for a
     /// facet it does not have falls back to.
-    pub default_facet: u8,
+    pub default_facet: Facet,
     /// Which entity a connection is driving.
     pub players: HashMap<ConnectionId, EntityId>,
     /// What each player's client currently has on screen.
@@ -754,21 +754,22 @@ impl WorldState {
     /// Which facet an entity is on: its [`Facet`] component, or the world default
     /// so callers can index [`facets`](Self::facets) with the result.
     #[must_use]
-    pub fn facet_of(&self, entity: EntityId) -> u8 {
+    pub fn facet_of(&self, entity: EntityId) -> Facet {
         self.registry
             .get::<Facet>(entity)
-            .map_or(self.default_facet, |facet| facet.0)
+            .copied()
+            .unwrap_or(self.default_facet)
     }
 
     /// The state of a facet the world is known to have.
     #[must_use]
-    pub fn facet_state(&self, facet: u8) -> &FacetState {
+    pub fn facet_state(&self, facet: Facet) -> &FacetState {
         &self.facets[&facet]
     }
 
     /// The same, mutably. Panics only on a facet no entity should carry —
     /// `facet_of` and `enter` keep every live entity on a loaded facet.
-    pub fn facet_state_mut(&mut self, facet: u8) -> &mut FacetState {
+    pub fn facet_state_mut(&mut self, facet: Facet) -> &mut FacetState {
         self.facets
             .get_mut(&facet)
             .expect("an entity's facet is always loaded")
@@ -776,7 +777,7 @@ impl WorldState {
 
     /// The region a point on `facet` falls in, if any.
     #[must_use]
-    pub fn region_at(&self, facet: u8, point: Point) -> Option<&Region> {
+    pub fn region_at(&self, facet: Facet, point: Point) -> Option<&Region> {
         self.facets.get(&facet)?.regions.at(point)
     }
 
@@ -796,7 +797,7 @@ impl WorldState {
     /// single step — every one is more than a two-unit climb — with nothing in
     /// the log to explain it.
     #[must_use]
-    pub fn start_position(&self, facet: u8) -> Point {
+    pub fn start_position(&self, facet: Facet) -> Point {
         let (x, y) = self.start;
         let z = self
             .facets
@@ -812,7 +813,7 @@ impl WorldState {
     /// the sector grid, and stops at the first hit. The primitive level-of-detail
     /// gates a creature's AI on — a creature no player is near need not think.
     #[must_use]
-    pub fn any_player_near(&self, centre: Point, range: u32, facet: u8) -> bool {
+    pub fn any_player_near(&self, centre: Point, range: u32, facet: Facet) -> bool {
         self.players.values().any(|&entity| {
             self.facet_of(entity) == facet
                 && self
@@ -998,7 +999,7 @@ impl WorldState {
         let graphic = self
             .registry
             .get::<Body>(source)
-            .map(|body| body.id)
+            .map(|body| body.id.0)
             .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
             .unwrap_or(NO_GRAPHIC);
         let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
@@ -1030,7 +1031,7 @@ impl WorldState {
         let graphic = self
             .registry
             .get::<Body>(source)
-            .map(|body| body.id)
+            .map(|body| body.id.0)
             .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
             .unwrap_or(NO_GRAPHIC);
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
@@ -1124,7 +1125,7 @@ impl WorldState {
         let humanoid = self
             .registry
             .get::<Body>(mobile)
-            .is_some_and(|body| body_opens_doors(body.id));
+            .is_some_and(|body| body_opens_doors(body.id.0));
         // Built once each; the per-recipient choice is only which to send.
         let new_packet = ServerPacket::NewAnimation(NewAnimation {
             serial,
@@ -1268,7 +1269,7 @@ impl WorldState {
     /// else, and every `nearby` query on the facet it left keeps handing back
     /// someone who is not there. So the order below is ServUO's `Mobile.Map`
     /// setter, and each step says what it is for.
-    pub fn move_to(&mut self, entity: EntityId, facet: u8, to: Point) {
+    pub fn move_to(&mut self, entity: EntityId, facet: Facet, to: Point) {
         let from = self.facet_of(entity);
         // Never strand someone on a facet the shard did not load; a mobile there
         // would have no ground, no neighbours and no way back.
@@ -1301,7 +1302,7 @@ impl WorldState {
             // Out of the old grid. `teleport` never had to do this, which is why
             // the removal is easy to leave out and costly to leave out.
             self.facet_state_mut(from).sectors.remove(entity);
-            self.registry.insert(entity, Facet(facet));
+            self.registry.insert(entity, facet);
             // The remembered region indexes the *old* facet's list, so keeping it
             // would compare a Felucca id against an Ilshenar one.
             self.registry.remove::<InRegion>(entity);
@@ -1328,7 +1329,8 @@ impl WorldState {
                 // Which map to draw, then where on it and how big it is. No
                 // `0x1B`: that is the "entering the world" packet, and neither
                 // reference re-sends it mid-session.
-                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
+                // `.0` because the facet number is what goes on the wire here.
+                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet.0 }));
                 self.send(connection, encode_server_change(to, width as u16, height as u16));
             }
         }
@@ -1342,8 +1344,8 @@ impl WorldState {
                     connection,
                     &ServerPacket::PlayerUpdate(PlayerUpdate {
                         serial,
-                        body: body.id,
-                        hue: body.hue,
+                        body: body.id.0,
+                        hue: body.hue.0,
                         flags: 0,
                         position: to,
                         facing,
@@ -1435,7 +1437,7 @@ impl WorldState {
     /// it, and take it off the screens of those who cannot.
     ///
     /// Reached by walking the players, not the sector index — see the caller.
-    fn refresh_watchers(&mut self, entity: EntityId, centre: Point, facet: u8) {
+    fn refresh_watchers(&mut self, entity: EntityId, centre: Point, facet: Facet) {
         let players: Vec<EntityId> = self.players.values().copied().collect();
         for player in players {
             if player == entity {
@@ -1835,10 +1837,10 @@ impl WorldState {
         let body = *self.registry.get::<Body>(entity)?;
         Some(MobileIncoming {
             serial: serial.raw(),
-            body: body.id,
+            body: body.id.0,
             position,
             facing,
-            hue: body.hue,
+            hue: body.hue.0,
             flags: 0,
             notoriety: self.notoriety_of(entity),
             equipment: self.equipment_of(serial),
@@ -1911,10 +1913,10 @@ impl WorldState {
         let body = *self.registry.get::<Body>(entity)?;
         Some(MobileMove {
             serial: serial.raw(),
-            body: body.id,
+            body: body.id.0,
             position,
             facing,
-            hue: body.hue,
+            hue: body.hue.0,
             flags: 0,
             notoriety: self.notoriety_of(entity),
         })

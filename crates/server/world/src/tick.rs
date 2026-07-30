@@ -222,7 +222,7 @@ impl World {
         // with no map loaded — the same no-map mode the shard has always had.
         let mut facets = BTreeMap::new();
         facets.insert(
-            DEFAULT_FACET,
+            Facet(DEFAULT_FACET),
             FacetState {
                 terrain: None,
                 width: FACET_WITHOUT_A_MAP.0,
@@ -238,7 +238,7 @@ impl World {
                 registry: Registry::new(),
                 bus: EventBus::new(),
                 facets,
-                default_facet: DEFAULT_FACET,
+                default_facet: Facet(DEFAULT_FACET),
                 players: HashMap::new(),
                 seen: HashMap::new(),
                 held: HashMap::new(),
@@ -353,7 +353,7 @@ impl World {
     /// Give the default facet a map.
     pub fn with_terrain(self, terrain: MapTerrain) -> Self {
         let facet = self.state.default_facet;
-        self.with_facet(facet, terrain)
+        self.with_facet(facet.0, terrain)
     }
 
     /// Load `terrain` as facet `facet`, its interest grid sized to the map.
@@ -363,7 +363,7 @@ impl World {
         // Boxed as `dyn Terrain`: the state crate holds the abstraction, and the
         // world supplies the concrete map here.
         self.state.facets.insert(
-            facet,
+            Facet(facet),
             FacetState {
                 terrain: Some(Box::new(terrain) as Box<dyn Terrain + Send + Sync>),
                 width,

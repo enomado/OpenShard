@@ -18,7 +18,14 @@ pub(crate) fn dispatch_world_packet(
 ) -> bool {
     match packet {
         ClientPacket::CharacterPlay(play) => {
-            let account = session.login.account().cloned().unwrap_or_default();
+            // Same guard as `create_character`/`delete_character`: no game login
+            // behind this connection means no account to enter with, and a
+            // default would enter the character on an account that never
+            // authenticated it.
+            let Some(account) = session.login.account().cloned() else {
+                warn!(%id, "character-play before a game login");
+                return false;
+            };
             let name = CharacterName(play.name);
             // A stored character enters on its saved serial, spot and look; one
             // the roster has never heard of — a config-only character on a fresh

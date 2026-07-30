@@ -35,7 +35,7 @@
 //! forgotten.
 
 use openshard_entities::EntityId;
-use openshard_state::components::{Brain, Npc, Position};
+use openshard_state::components::{Brain, Facet, Npc, Position};
 
 use super::World;
 
@@ -46,7 +46,7 @@ impl World {
             // Nothing dozes, so nothing needs waking.
             return;
         }
-        let mut crossed: Vec<(EntityId, u8)> = Vec::new();
+        let mut crossed: Vec<(EntityId, Facet)> = Vec::new();
         for &player in self.state.players.values() {
             let Some(&Position(at)) = self.state.registry.get::<Position>(player) else {
                 continue;
@@ -55,7 +55,8 @@ impl World {
             let sector = self.state.facet_state(facet).sectors.sector_of(at);
             // A player with no remembered sector has just arrived — logged in,
             // been resurrected, been teleported — and that is a crossing too.
-            if self.player_sectors.insert(player, (facet, sector)) != Some((facet, sector)) {
+            // `.0` because `player_sectors` remembers the pair as raw numbers.
+            if self.player_sectors.insert(player, (facet.0, sector)) != Some((facet.0, sector)) {
                 crossed.push((player, facet));
             }
         }

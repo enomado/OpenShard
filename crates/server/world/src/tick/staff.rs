@@ -88,7 +88,7 @@ impl World {
                 let facet = self.state.facet_of(actor);
                 if let Some(target) = skills::resolve_harvest_target(
                     &self.state,
-                    facet,
+                    facet.0,
                     response.location,
                     response.graphic.map_or(0, |graphic| graphic.0),
                 ) {

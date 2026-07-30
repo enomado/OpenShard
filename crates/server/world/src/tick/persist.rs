@@ -255,7 +255,7 @@ impl World {
             }
             let facet = self.state.facet_of(item);
             let location = ItemLocation::Ground {
-                facet,
+                facet: facet.0,
                 x: at.x,
                 y: at.y,
                 z: at.z,
@@ -458,9 +458,9 @@ impl World {
             let npc = registry.get::<Npc>(entity).copied();
             records.push(MobileRecord {
                 serial: serial.raw(),
-                body: body.id,
-                hue: body.hue,
-                facet: self.state.facet_of(entity),
+                body: body.id.0,
+                hue: body.hue.0,
+                facet: self.state.facet_of(entity).0,
                 x: at.x,
                 y: at.y,
                 z: at.z,
@@ -549,7 +549,7 @@ impl World {
                 serial: serial.raw(),
                 graphic: id,
                 hue,
-                facet: self.state.facet_of(entity),
+                facet: self.state.facet_of(entity).0,
                 x: at.x,
                 y: at.y,
                 z: at.z,
@@ -742,8 +742,8 @@ impl World {
             serial: serial.raw(),
             account: account.0.clone(),
             name: CharacterName(name.0.clone()),
-            body: body.id,
-            hue: body.hue,
+            body: body.id.0,
+            hue: body.hue.0,
             facet,
             x: position.x,
             y: position.y,
@@ -893,8 +893,8 @@ impl World {
         let Some(serial) = Serial::new(record.serial) else {
             return;
         };
-        let facet = if self.state.facets.contains_key(&facet) {
-            facet
+        let facet = if self.state.facets.contains_key(&Facet(facet)) {
+            Facet(facet)
         } else {
             self.state.default_facet
         };
@@ -912,7 +912,7 @@ impl World {
             },
         );
         self.state.registry.insert(entity, Position(position));
-        self.state.registry.insert(entity, Facet(facet));
+        self.state.registry.insert(entity, facet);
         if record.amount > 1 {
             self.state.registry.insert(entity, Amount(record.amount));
         }
@@ -1110,8 +1110,8 @@ impl World {
                 self.state.registry.despawn(entity);
                 continue;
             }
-            let facet = if self.state.facets.contains_key(&record.facet) {
-                record.facet
+            let facet = if self.state.facets.contains_key(&Facet(record.facet)) {
+                Facet(record.facet)
             } else {
                 self.state.default_facet
             };
@@ -1139,13 +1139,13 @@ impl World {
             registry.insert(
                 entity,
                 Body {
-                    id: record.body,
-                    hue: record.hue,
+                    id: openshard_protocol::wire::Graphic(record.body),
+                    hue: openshard_protocol::wire::Hue(record.hue),
                 },
             );
             registry.insert(entity, Position(position));
             registry.insert(entity, Heading(facing));
-            registry.insert(entity, Facet(facet));
+            registry.insert(entity, facet);
             registry.insert(
                 entity,
                 Hitpoints {
@@ -1337,8 +1337,8 @@ impl World {
                 self.state.registry.despawn(entity);
                 continue;
             }
-            let facet = if self.state.facets.contains_key(&record.facet) {
-                record.facet
+            let facet = if self.state.facets.contains_key(&Facet(record.facet)) {
+                Facet(record.facet)
             } else {
                 self.state.default_facet
             };
@@ -1351,7 +1351,7 @@ impl World {
                 },
             );
             self.state.registry.insert(entity, Position(position));
-            self.state.registry.insert(entity, Facet(facet));
+            self.state.registry.insert(entity, facet);
             self.state.registry.insert(entity, Decoration);
             // The lock, on either kind: a door that was locked at the save comes back
             // locked, or a shard's set-piece unbars itself at every reboot.
@@ -1432,8 +1432,14 @@ impl World {
             return;
         };
         let facet = self.state.facet_of(rider);
-        self.state.registry.insert(mount, Body { id: body, hue });
-        self.state.registry.insert(mount, Facet(facet));
+        self.state.registry.insert(
+            mount,
+            Body {
+                id: openshard_protocol::wire::Graphic(body),
+                hue: openshard_protocol::wire::Hue(hue),
+            },
+        );
+        self.state.registry.insert(mount, facet);
         self.state.registry.insert(mount, Ridden { rider });
         self.state.registry.insert(rider, Riding { mount, item });
     }

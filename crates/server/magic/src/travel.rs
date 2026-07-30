@@ -23,7 +23,7 @@
 use openshard_entities::EntityId;
 use openshard_protocol::world::Point;
 use openshard_state::WorldState;
-use openshard_state::components::{Position, RuneMark};
+use openshard_state::components::{Facet, Position, RuneMark};
 
 /// What a mobile is trying to do, and at which end.
 ///
@@ -82,7 +82,7 @@ pub fn may_travel(state: &WorldState, mobile: EntityId, kind: TravelKind, facet:
     if state.is_staff(mobile) {
         return true;
     }
-    state.region_at(facet, at).is_none_or(|region| {
+    state.region_at(Facet(facet), at).is_none_or(|region| {
         // `no_teleport` bars every kind at either end — a jail is a jail.
         // `no_recall` bars all but leaving.
         !region.flags.no_teleport && !(kind.barred_by_no_recall() && region.flags.no_recall)
@@ -96,7 +96,7 @@ pub fn standing_at(state: &WorldState, mobile: EntityId) -> Option<(u8, Point)> 
     state
         .registry
         .get::<Position>(mobile)
-        .map(|at| (state.facet_of(mobile), at.0))
+        .map(|at| (state.facet_of(mobile).0, at.0))
 }
 
 /// Where a marked rune points, if it is marked at all.
@@ -118,7 +118,7 @@ pub fn destination_of(state: &WorldState, rune: EntityId) -> Option<(u8, Point)>
 /// rune nobody can find twice.
 #[must_use]
 pub fn describe(state: &WorldState, facet: u8, at: Point) -> String {
-    state.region_at(facet, at).map_or_else(
+    state.region_at(Facet(facet), at).map_or_else(
         || format!("{}, {} (facet {facet})", at.x, at.y),
         |region| region.name.clone(),
     )

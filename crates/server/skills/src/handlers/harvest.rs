@@ -21,7 +21,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
 use openshard_protocol::world::Point;
-use openshard_state::components::{Client, Harvesting, Position, Tool};
+use openshard_state::components::{Client, Facet, Harvesting, Position, Tool};
 use openshard_state::harvest::{
     Bank, HarvestAction, HarvestDef, HarvestKind, HarvestResource, TileSource, definition_for, tool_data,
 };
@@ -311,7 +311,7 @@ fn deliver(
     // Felucca pays double, and only up to what the bank can actually give — a
     // half-empty vein hands over what is in it rather than going negative.
     let facet = state.facet_of(harvester);
-    let wanted = if facet == FELUCCA {
+    let wanted = if facet == Facet(FELUCCA) {
         def.consumed_felucca
     } else {
         def.consumed
@@ -370,7 +370,7 @@ fn pay_out(
     ) else {
         return false;
     };
-    openshard_items::spawn_item(state, resource.graphic, resource.hue, amount, true, at, facet).is_some()
+    openshard_items::spawn_item(state, resource.graphic, resource.hue, amount, true, at, facet.0).is_some()
 }
 
 /// Spend a swing off the tool, and say so if it broke.
@@ -414,7 +414,7 @@ fn with_bank<T>(
         .get_mut(&facet)
         .expect("an entity's facet is always loaded")
         .banks;
-    act(banks.get(def, at.x, at.y, facet, now, rng), rng)
+    act(banks.get(def, at.x, at.y, facet.0, now, rng), rng)
 }
 
 /// Which vein the bank under a spot holds.
@@ -548,7 +548,7 @@ pub fn resolve_harvest_target(
     at: Point,
     graphic: u16,
 ) -> Option<HarvestTarget> {
-    let terrain = state.facets.get(&facet)?.live_terrain();
+    let terrain = state.facets.get(&Facet(facet))?.live_terrain();
     if graphic == 0 {
         return Some(HarvestTarget {
             at,

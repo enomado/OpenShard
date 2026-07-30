@@ -270,12 +270,12 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
     let entity = world.state.players[&connection];
     assert!(world.registry().has::<Ghost>(entity), "re-enters a ghost");
     assert_eq!(
-        world.registry().get::<Body>(entity).map(|b| b.id),
+        world.registry().get::<Body>(entity).map(|b| b.id.0),
         Some(0x0192),
         "in the ghost body"
     );
     assert_eq!(
-        world.registry().get::<Ghost>(entity).map(|g| g.body.id),
+        world.registry().get::<Ghost>(entity).map(|g| g.body.id.0),
         Some(0x0190),
         "remembering the living body to resurrect back to"
     );

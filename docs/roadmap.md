@@ -120,28 +120,34 @@ The remaining step is the one this makes worth doing:
       inside a tick, and `openshard-login` exists to be sans-io. This is also the
       shape UO itself has — an account is global, a character belongs to a shard.
 
-Found while doing it, none of them blockers:
+Found while doing the above, none of them blockers — all fixed:
 
-- **A player's saved `facing` is written and never read.** `record.facing` is
-  saved, and `enter` sets `Facing::walking(Direction::South)` unconditionally — so
-  every character relogs facing south. NPCs do get theirs back
-  (`Facing::from_bits(record.facing)` in `restore_mobiles`), which is what makes
-  the omission easy to miss.
-- **A zero stat age means two different things.** On save, `strength_age` is
-  `now - last_gain`, and a character that never gained is saved with a large age
-  that restores to zero — correct. But a *new* character carries
-  `StatLockRecord::default()`, whose zero ages restore as `now - 0 = now`: it
-  reads as "rose this instant" and imposes a full `stat_gain_ticks` cooldown at
-  every login. The two readers of `LastStatGain` treat an absent component as
-  zero, so the fix is probably to keep it absent when every age is zero.
+- ~~**A player's saved `facing` is written and never read.**~~ Fixed:
+  `StoredCharacter` now carries `facing` (`StoredCharacter::from_record` reads
+  `record.facing` the same way `restore_mobiles` already did), and `enter` restores
+  it instead of hardcoding `Facing::walking(Direction::South)` — that default is
+  now only for a genuinely fresh character, which never faced anywhere before.
+- ~~**A zero stat age means two different things.**~~ Fixed: `enter` no longer
+  feeds a zero age through `now - age`, which landed on `now` itself and read as
+  "rose this instant". An age of zero now restores to a `LastStatGain` stamp of
+  zero — "never gained" — for exactly that stat, whether the character is brand
+  new or an old save whose age happened to be zero.
 - **Belongings already live in the world**, in `pending_inventories` keyed by
   serial, filled by `restore_items` at boot and by logout. So a `StoredCharacter`
   that carried its own items would duplicate what the world holds, not simplify
   it — another argument for the roster moving in rather than the items moving out.
-- **The newtypes stop one line short.** `Facet` and `Appearance` are carried to
-  `enter` and unwrapped there, because `WorldState::facets` is still keyed by a
-  raw `u8` and `Body` is still a pair of raw `u16`. Both want the wire newtypes
-  (`Graphic`, `Hue`) carried through.
+- ~~**The newtypes stop one line short.**~~ Fixed: `WorldState::facets` is keyed
+  by `Facet` and `Body` holds `Graphic`/`Hue`, both throughout `crates/server/state`
+  — the seam, not every crate's own internal `facet: u8`/`u16` currency, which
+  stays raw and converts at the point it crosses into `WorldState` (a packet
+  encoder, a SQL record and a `deno_core` op are boundaries in exactly the same
+  sense). `enter` carries the facet and the look unopened now; only a `warn!`
+  field still spells out `.0`, because a tracing field wants something printable.
+- ~~`dispatch_world_packet` opens with `account().cloned().unwrap_or_default()`.~~
+  Fixed: it now drops the connection on no account, the same
+  `let Some(account) = … else { return false }` guard `create_character` and
+  `delete_character` already use — a `CharacterPlay` this early is a client that
+  never completed a game login, not a default account to invent.
 
 ### Still to do: the character screen is one conversation, split across two files
 

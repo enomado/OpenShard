@@ -76,7 +76,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         // eventual drop still name it — so only the leftover is a new object.
         let total = amount_of(state, item);
         if amount > 0 && amount < total && state.registry.has::<Stackable>(item) {
-            spawn_leftover(state, item, total - amount, item_pos, facet);
+            spawn_leftover(state, item, total - amount, item_pos, facet.0);
             set_stack_amount(state, item, amount);
         }
         // Off the sector grid, off every screen but the picker's — whose own
@@ -207,7 +207,7 @@ pub fn drop_item(
     }
 
     state.held.remove(&connection);
-    place_on_ground(state, held.entity, position, state.facet_of(player));
+    place_on_ground(state, held.entity, position, state.facet_of(player).0);
     debug!(serial, "dropped on the ground");
 }
 
@@ -451,7 +451,7 @@ pub fn bounce(state: &mut WorldState, connection: ConnectionId, held: HeldItem, 
 pub fn restore(state: &mut WorldState, held: HeldItem) {
     match held.origin {
         Origin::Ground { position, facet } => {
-            place_on_ground(state, held.entity, position, facet);
+            place_on_ground(state, held.entity, position, facet.0);
         }
         Origin::Container(contained) => {
             state.registry.insert(held.entity, contained);

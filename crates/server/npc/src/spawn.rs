@@ -139,8 +139,11 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         equipment,
         skills,
     } = spec;
-    let facet = if state.facets.contains_key(&facet) {
-        facet
+    // Wrapped here and carried as a `Facet` from this line down: the spec's number
+    // came out of a pack, and the world's facet table is keyed by the component
+    // type rather than by a bare byte.
+    let facet = if state.facets.contains_key(&Facet(facet)) {
+        Facet(facet)
     } else {
         warn!(facet, "unloaded facet; spawning the mobile on the default");
         state.default_facet
@@ -191,10 +194,16 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     };
     let hits = hits.max(1);
     let facing = Facing::walking(Direction::South);
-    state.registry.insert(entity, Body { id: body, hue });
+    state.registry.insert(
+        entity,
+        Body {
+            id: openshard_protocol::wire::Graphic(body),
+            hue: openshard_protocol::wire::Hue(hue),
+        },
+    );
     state.registry.insert(entity, Position(position));
     state.registry.insert(entity, Heading(facing));
-    state.registry.insert(entity, Facet(facet));
+    state.registry.insert(entity, facet);
     state.registry.insert(
         entity,
         Hitpoints {

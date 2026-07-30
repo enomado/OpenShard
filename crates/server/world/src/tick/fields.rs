@@ -60,7 +60,7 @@ impl World {
                 continue; // off the world edge
             }
             let pos = Point::new(x as u16, y as u16, target.z);
-            self.spawn_field_tile(graphic, pos, facet, field);
+            self.spawn_field_tile(graphic, pos, facet.0, field);
         }
     }
 
@@ -78,9 +78,12 @@ impl World {
         self.state.registry.insert(entity, Position(pos));
         self.state.registry.insert(entity, Facet(facet));
         self.state.registry.insert(entity, field);
-        self.state.facet_state_mut(facet).sectors.insert(entity, pos);
+        self.state
+            .facet_state_mut(Facet(facet))
+            .sectors
+            .insert(entity, pos);
         if field.blocks {
-            self.state.facet_state_mut(facet).obstructions.block(
+            self.state.facet_state_mut(Facet(facet)).obstructions.block(
                 pos.x,
                 pos.y,
                 entity,

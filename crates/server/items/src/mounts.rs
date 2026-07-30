@@ -26,7 +26,7 @@ pub fn try_mount(state: &mut WorldState, player: EntityId, target: EntityId, tar
     let Some(&Body { id: body, hue }) = state.registry.get::<Body>(target) else {
         return false;
     };
-    let Some(mount_graphic) = mount_item_for(body) else {
+    let Some(mount_graphic) = mount_item_for(body.0) else {
         return false;
     };
     if state.registry.has::<Client>(target)
@@ -52,11 +52,14 @@ pub fn try_mount(state: &mut WorldState, player: EntityId, target: EntityId, tar
     let Ok((item, _)) = state.registry.spawn_with_serial(SerialKind::Item) else {
         return false;
     };
+    // The saddle takes the creature's own colour, so a dyed horse still looks
+    // dyed once ridden. `.0` because the item `Graphic` component is a pair of
+    // raw `u16`s where `Body` is a wire `Graphic`/`Hue`.
     state.registry.insert(
         item,
         Graphic {
             id: mount_graphic,
-            hue,
+            hue: hue.0,
         },
     );
     state.registry.insert(
@@ -133,7 +136,7 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
         }
     }
     state.registry.insert(mount, Position(landing));
-    state.registry.insert(mount, Facet(facet));
+    state.registry.insert(mount, facet);
 
     // Reconstitute what the ride (or a save) stripped. The horse faces the way
     // its rider faces — and without a `Heading` the `0x78` encoder refuses to

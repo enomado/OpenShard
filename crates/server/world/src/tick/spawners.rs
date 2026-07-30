@@ -48,7 +48,7 @@ impl World {
                     0,
                 );
                 let reach = lod_radius + u32::from(area.width.max(area.height));
-                if !self.state.any_player_near(centre, reach, area.facet) {
+                if !self.state.any_player_near(centre, reach, Facet(area.facet)) {
                     continue;
                 }
             }
@@ -68,7 +68,7 @@ impl World {
             // where there is no map.
             let z = self
                 .state
-                .facet_state(facet)
+                .facet_state(Facet(facet))
                 .terrain
                 .as_ref()
                 .and_then(|terrain| terrain.ground_z(x, y))

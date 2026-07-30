@@ -65,7 +65,7 @@ pub(super) fn taming(state: &mut WorldState, tamer: EntityId, target: EntityId) 
         .registry
         .get::<Tamable>(target)
         .copied()
-        .or_else(|| openshard_state::tame::tamable(body))
+        .or_else(|| openshard_state::tame::tamable(body.0))
     else {
         state.private_overhead_cliloc(tamer, target, NOT_TAMABLE, "");
         return None;

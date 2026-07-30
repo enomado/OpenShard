@@ -18,7 +18,7 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::world::PlayMusic;
 use openshard_state::Region;
-use openshard_state::components::{Client, InRegion, Position};
+use openshard_state::components::{Client, Facet, InRegion, Position};
 use tracing::{info, warn};
 
 use super::World;
@@ -45,20 +45,20 @@ impl World {
     /// next tick's pass treat everyone as freshly arrived, which is exactly what
     /// they are.
     pub(super) fn register_regions(&mut self, facet: u8, regions: Vec<openshard_state::Region>) {
-        if !self.state.facets.contains_key(&facet) {
+        if !self.state.facets.contains_key(&Facet(facet)) {
             warn!(facet, "regions for a facet this shard has not loaded");
             return;
         }
         let count = regions.len();
-        self.state.facet_state_mut(facet).regions.set(regions);
+        self.state.facet_state_mut(Facet(facet)).regions.set(regions);
         self.forget_remembered_regions();
         info!(facet, count, "regions registered");
     }
 
     /// Forget a facet's regions.
     pub(super) fn clear_regions(&mut self, facet: u8) {
-        if self.state.facets.contains_key(&facet) {
-            self.state.facet_state_mut(facet).regions.clear();
+        if self.state.facets.contains_key(&Facet(facet)) {
+            self.state.facet_state_mut(Facet(facet)).regions.clear();
             self.forget_remembered_regions();
         }
     }
@@ -67,7 +67,7 @@ impl World {
     /// beside [`sectors`](World::sectors).
     #[must_use]
     pub fn region_at(&self, facet: u8, point: openshard_protocol::world::Point) -> Option<&Region> {
-        self.state.region_at(facet, point)
+        self.state.region_at(Facet(facet), point)
     }
 
     /// Every facet's regions as saveable records.
@@ -83,7 +83,8 @@ impl World {
                     .regions
                     .iter()
                     .map(move |region| openshard_persistence::RegionRecord {
-                        facet,
+                        // `.0` at the record seam: a saved facet is a SQL column.
+                        facet: facet.0,
                         id: region.id,
                         name: region.name.clone(),
                         priority: region.priority,
@@ -144,7 +145,7 @@ impl World {
                 });
         }
         for (facet, mut regions) in by_facet {
-            if !self.state.facets.contains_key(&facet) {
+            if !self.state.facets.contains_key(&Facet(facet)) {
                 warn!(facet, "saved regions for a facet this shard has not loaded");
                 continue;
             }
@@ -152,7 +153,7 @@ impl World {
             // is what keeps an id meaning the same thing after a restart.
             regions.sort_by_key(|region| region.id);
             let count = regions.len();
-            self.state.facet_state_mut(facet).regions.set(regions);
+            self.state.facet_state_mut(Facet(facet)).regions.set(regions);
             info!(facet, count, "regions restored");
         }
     }
@@ -219,7 +220,7 @@ impl World {
                 // The facet is half the comparison: the same id on two facets is
                 // two different places, so a traveller has crossed even when the
                 // number has not changed.
-                if known && from == to && seen.is_some_and(|seen| seen.facet == facet) {
+                if known && from == to && seen.is_some_and(|seen| seen.facet == facet.0) {
                     return None;
                 }
                 if !known && to.is_none() {
@@ -228,7 +229,7 @@ impl World {
                 Some(Crossing {
                     entity,
                     serial: self.state.registry.serial_of(entity)?,
-                    facet,
+                    facet: facet.0,
                     from,
                     to,
                     name: region.map(|r| r.name.clone()).unwrap_or_default(),

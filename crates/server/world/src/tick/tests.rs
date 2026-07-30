@@ -2154,12 +2154,12 @@ fn a_player_who_dies_becomes_a_ghost() {
         "and it is a ghost now"
     );
     assert_eq!(
-        world.registry().get::<Body>(player_entity).map(|b| b.id),
+        world.registry().get::<Body>(player_entity).map(|b| b.id.0),
         Some(0x0192),
         "wearing the male ghost body"
     );
     assert_eq!(
-        world.registry().get::<Ghost>(player_entity).map(|g| g.body.id),
+        world.registry().get::<Ghost>(player_entity).map(|g| g.body.id.0),
         Some(0x0190),
         "with its living body remembered for resurrection"
     );
@@ -2284,7 +2284,7 @@ fn resurrection_brings_a_ghost_back() {
         "no longer a ghost"
     );
     assert_eq!(
-        world.registry().get::<Body>(player_entity).map(|b| b.id),
+        world.registry().get::<Body>(player_entity).map(|b| b.id.0),
         Some(0x0190),
         "the living body is back"
     );
@@ -2506,7 +2506,7 @@ fn a_creature_dies_with_its_own_voice() {
         .state
         .registry
         .query::<Body>()
-        .find(|(entity, body)| body.id == ORC_BODY && !world.state.registry.has::<Client>(*entity))
+        .find(|(entity, body)| body.id.0 == ORC_BODY && !world.state.registry.has::<Client>(*entity))
         .and_then(|(entity, _)| world.state.registry.serial_of(entity))
         .expect("the orc spawned")
         .raw();
@@ -4819,7 +4819,11 @@ fn wall_of_stone_blocks_the_way_then_clears() {
     world.lay_field(caster, FieldKind::Stone, spot);
 
     assert!(
-        world.state.facet_state(0).obstructions.is_blocked(spot.x, spot.y),
+        world
+            .state
+            .facet_state(Facet(0))
+            .obstructions
+            .is_blocked(spot.x, spot.y),
         "the wall blocks its centre tile"
     );
 
@@ -4839,7 +4843,11 @@ fn wall_of_stone_blocks_the_way_then_clears() {
         "the tiles are gone"
     );
     assert!(
-        !world.state.facet_state(0).obstructions.is_blocked(spot.x, spot.y),
+        !world
+            .state
+            .facet_state(Facet(0))
+            .obstructions
+            .is_blocked(spot.x, spot.y),
         "and the way is free again"
     );
 }
@@ -5819,7 +5827,10 @@ fn a_ghost_cannot_use_a_skill_at_all() {
     world.state.registry.insert(
         entity,
         openshard_state::Ghost {
-            body: Body { id: 0x0190, hue: 0 },
+            body: Body {
+                id: openshard_protocol::wire::Graphic(0x0190),
+                hue: openshard_protocol::wire::Hue(0),
+            },
         },
     );
     let _ = packets_for(&mut world, player);
@@ -7130,7 +7141,7 @@ fn generate_britain_doors(world: &mut World, now: Instant) {
 fn doors_are_generated_between_static_frames() {
     let now = Instant::now();
     let mut world = world();
-    world.state.facet_state_mut(0).terrain = Some(Box::new(FrameTerrain { walled: false }));
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(FrameTerrain { walled: false }));
 
     generate_britain_doors(&mut world, now);
 
@@ -7166,7 +7177,7 @@ fn doors_are_generated_between_static_frames() {
 fn no_door_is_generated_into_a_wall() {
     let now = Instant::now();
     let mut world = world();
-    world.state.facet_state_mut(0).terrain = Some(Box::new(FrameTerrain { walled: true }));
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(FrameTerrain { walled: true }));
 
     generate_britain_doors(&mut world, now);
 
@@ -7550,8 +7561,8 @@ fn a_created_character_enters_with_its_chosen_body() {
 
     let entity = world.state.players[&connection];
     let body = world.registry().get::<Body>(entity).copied().unwrap();
-    assert_eq!(body.id, 0x025E, "the elf-female body the client chose");
-    assert_eq!(body.hue, 0x0430);
+    assert_eq!(body.id.0, 0x025E, "the elf-female body the client chose");
+    assert_eq!(body.hue.0, 0x0430);
 
     // And 0x1B tells the client the same body.
     let start = packets_for(&mut world, connection)
@@ -7573,8 +7584,8 @@ fn a_played_character_keeps_the_default_body() {
     let connection = enter(&mut world, Instant::now());
     let entity = world.state.players[&connection];
     let body = world.registry().get::<Body>(entity).copied().unwrap();
-    assert_eq!(body.id, BODY_HUMAN_MALE);
-    assert_eq!(body.hue, DEFAULT_HUE);
+    assert_eq!(body.id.0, BODY_HUMAN_MALE);
+    assert_eq!(body.hue.0, DEFAULT_HUE);
 }
 
 #[test]
@@ -7651,6 +7662,7 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
             serial: Serial::new(char_serial).unwrap(),
             facet: Facet(0),
             position: Point::new(1500, 1000, 0),
+            facing: Facing::walking(Direction::South),
             appearance: Appearance::default_human(),
             sheet: CharacterSheet::starting(),
         }),
@@ -7751,6 +7763,7 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
             serial: Serial::new(char_serial).unwrap(),
             facet: Facet(0),
             position: Point::new(1500, 1000, 0),
+            facing: Facing::walking(Direction::South),
             appearance: Appearance::default_human(),
             sheet: CharacterSheet::starting(),
         }),
@@ -7812,6 +7825,7 @@ fn a_relogin_in_the_same_run_keeps_the_inventory() {
             serial: Serial::new(char_serial).unwrap(),
             facet: Facet(0),
             position: Point::new(1500, 1000, 0),
+            facing: Facing::walking(Direction::South),
             appearance: Appearance::default_human(),
             sheet: CharacterSheet::starting(),
         }),
@@ -8183,7 +8197,7 @@ fn decoration_and_door_state_survive_a_restart() {
     assert!(
         shard
             .state
-            .facet_state(0)
+            .facet_state(Facet(0))
             .obstructions
             .blocker_at(shut_at.x, shut_at.y)
             .is_some(),
@@ -8193,7 +8207,7 @@ fn decoration_and_door_state_survive_a_restart() {
     assert!(
         shard
             .state
-            .facet_state(0)
+            .facet_state(Facet(0))
             .obstructions
             .blocker_at(open_pos.x, open_pos.y)
             .is_none(),
@@ -8438,11 +8452,11 @@ fn a_townsperson_is_dressed_and_named_by_the_core() {
 
     let body = world.registry().get::<Body>(smith).expect("a body");
     assert!(
-        body.id == 0x0190 || body.id == 0x0191,
+        body.id.0 == 0x0190 || body.id.0 == 0x0191,
         "a human body, either gender: {:#06x}",
-        body.id
+        body.id.0
     );
-    assert_ne!(body.hue, 0, "a rolled skin hue, not the flat default");
+    assert_ne!(body.hue.0, 0, "a rolled skin hue, not the flat default");
 
     let worn: Vec<u8> = world
         .registry()
@@ -8824,7 +8838,7 @@ fn a_non_human_townsperson_keeps_its_own_body() {
         .next_back()
         .expect("a townsperson");
     assert_eq!(
-        world.registry().get::<Body>(dryad).map(|b| b.id),
+        world.registry().get::<Body>(dryad).map(|b| b.id.0),
         Some(266),
         "the pack's body stands"
     );
@@ -9558,7 +9572,7 @@ impl Terrain for NamedTerrain {
 fn single_clicking_an_item_draws_its_tiledata_name() {
     let now = Instant::now();
     let mut world = world();
-    world.state.facet_state_mut(0).terrain = Some(Box::new(NamedTerrain {
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(NamedTerrain {
         graphic: GOLD,
         name: "gold coins".to_owned(),
     }));
@@ -9657,7 +9671,7 @@ impl Terrain for RaisedFloorTerrain {
 fn a_spawn_stands_on_the_floor_not_under_it() {
     let now = Instant::now();
     let mut world = world();
-    world.state.facet_state_mut(0).terrain = Some(Box::new(RaisedFloorTerrain));
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(RaisedFloorTerrain));
     // Placed at z=0 (as the pack does), the shop floor is at z=7.
     world.queue(Command::SpawnMobile {
         body: 0x0190,
@@ -9964,7 +9978,7 @@ fn a_vendor_behind_a_wall_will_not_sell() {
     let connection = enter(&mut world, now);
     // Adjacent, but with a wall between: line of sight is never clear.
     let vendor = spawn_stocked_vendor(&mut world, Point::new(START.0 + 1, START.1, 0), now);
-    world.state.facet_state_mut(0).terrain = Some(Box::new(BlindTerrain));
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(BlindTerrain));
     let _ = packets_for(&mut world, connection);
 
     world.queue(Command::DoubleClick {
@@ -10034,6 +10048,7 @@ fn a_loaded_character_returns_on_its_saved_serial_and_spot() {
             serial: Serial::new(0x0000_0202).unwrap(),
             facet: Facet(0),
             position: Point::new(1500, 1000, -5),
+            facing: Facing::walking(Direction::South),
             appearance: Appearance {
                 body: openshard_protocol::wire::Graphic(0x0191),
                 hue: openshard_protocol::wire::Hue(0x83EA),
@@ -10082,7 +10097,7 @@ pub(super) fn add_empty_facet(world: &mut World, facet: u8) {
 /// shape of Britannia, and what the client is told about that is a rule.
 pub(super) fn add_empty_facet_sized(world: &mut World, facet: u8, width: u32, height: u32) {
     world.state.facets.insert(
-        facet,
+        Facet(facet),
         FacetState {
             terrain: None,
             width,
@@ -10687,7 +10702,7 @@ fn fence_around(world: &mut World, center: Point) {
                 continue;
             }
             let crate_entity = world.state.registry.spawn();
-            world.state.facet_state_mut(0).obstructions.block(
+            world.state.facet_state_mut(Facet(0)).obstructions.block(
                 (i32::from(center.x) + dx) as u16,
                 (i32::from(center.y) + dy) as u16,
                 crate_entity,
@@ -10746,7 +10761,7 @@ fn a_chase_rounds_a_wall_of_crates() {
     // A five-tile wall between quarry and creature, open at both ends.
     for dx in -2i32..=2 {
         let crate_entity = world.state.registry.spawn();
-        world.state.facet_state_mut(0).obstructions.block(
+        world.state.facet_state_mut(Facet(0)).obstructions.block(
             (i32::from(player_at.x) + dx) as u16,
             player_at.y + 2,
             crate_entity,
@@ -11027,7 +11042,7 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, u32) {
         .state
         .registry
         .query::<Body>()
-        .find(|(_, body)| body.id == 0x00C8)
+        .find(|(_, body)| body.id.0 == 0x00C8)
         .map(|(entity, _)| entity)
         .expect("a horse");
     let serial = world.registry().serial_of(horse).unwrap().raw();
@@ -11217,6 +11232,7 @@ fn a_mounted_character_logs_back_in_still_mounted() {
             serial: Serial::new(char_serial).unwrap(),
             facet: Facet(0),
             position: Point::new(START.0, START.1, 0),
+            facing: Facing::walking(Direction::South),
             appearance: Appearance::default_human(),
             sheet: CharacterSheet::starting(),
         }),
@@ -11816,7 +11832,7 @@ fn no_volley_passes_a_shut_door() {
                 continue; // the north gap stays open for the door
             }
             let crate_entity = world.state.registry.spawn();
-            world.state.facet_state_mut(0).obstructions.block(
+            world.state.facet_state_mut(Facet(0)).obstructions.block(
                 (i32::from(den.x) + dx) as u16,
                 (i32::from(den.y) + dy) as u16,
                 crate_entity,

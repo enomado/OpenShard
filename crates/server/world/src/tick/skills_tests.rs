@@ -515,7 +515,10 @@ fn spirit_speak_lets_the_living_hear_the_dead_without_seeing_them() {
     world.state.registry.insert(
         ghost,
         openshard_state::components::Ghost {
-            body: Body { id: 0x0190, hue: 0 },
+            body: Body {
+                id: openshard_protocol::wire::Graphic(0x0190),
+                hue: openshard_protocol::wire::Hue(0),
+            },
         },
     );
 
@@ -1288,7 +1291,7 @@ fn taming_makes_a_creature_yours_and_it_follows() {
     // *already* close enough (the follow gap), which is why it is moved first.
     let far = Point::new(START.0 + 7, START.1, 0);
     world.state.registry.insert(entity, Position(far));
-    world.state.facet_state_mut(0).sectors.insert(entity, far);
+    world.state.facet_state_mut(Facet(0)).sectors.insert(entity, far);
     let before = world.state.registry.get::<Position>(entity).unwrap().0;
     for _ in 0..200 {
         world.tick(now);
@@ -1385,7 +1388,7 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> u
         .state
         .registry
         .query::<Body>()
-        .filter(|(entity, b)| b.id == body && !world.state.registry.has::<Client>(*entity))
+        .filter(|(entity, b)| b.id.0 == body && !world.state.registry.has::<Client>(*entity))
         .filter_map(|(entity, _)| world.state.registry.serial_of(entity))
         .map(openshard_protocol::serial::Serial::raw)
         .next_back()

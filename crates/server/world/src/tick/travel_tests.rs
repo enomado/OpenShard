@@ -41,25 +41,25 @@ fn a_traveller_leaves_the_old_facets_sector_grid() {
     let traveller = world.state.players[&connection];
 
     assert!(
-        world.state.facet_state(0).sectors.position_of(traveller) == Some(arrival()),
+        world.state.facet_state(Facet(0)).sectors.position_of(traveller) == Some(arrival()),
         "it starts on facet 0's grid"
     );
 
-    world.state.move_to(traveller, 1, arrival());
+    world.state.move_to(traveller, Facet(1), arrival());
 
     assert_eq!(
-        world.state.facet_state(0).sectors.position_of(traveller),
+        world.state.facet_state(Facet(0)).sectors.position_of(traveller),
         None,
         "and is gone from it"
     );
     assert_eq!(
-        world.state.facet_state(1).sectors.position_of(traveller),
+        world.state.facet_state(Facet(1)).sectors.position_of(traveller),
         Some(arrival()),
         "and on the new one"
     );
     assert_eq!(
         world.state.facet_of(traveller),
-        1,
+        Facet(1),
         "and the world agrees which facet it is on"
     );
 }
@@ -82,7 +82,7 @@ fn a_watcher_on_the_old_facet_is_told_to_forget_the_traveller() {
     );
     let _ = packets_for(&mut world, watcher_connection);
 
-    world.state.move_to(traveller, 1, arrival());
+    world.state.move_to(traveller, Facet(1), arrival());
 
     assert!(
         !world.state.seen[&watcher].contains(&traveller),
@@ -113,7 +113,7 @@ fn a_traveller_forgets_everything_on_the_old_facets_screen() {
     );
     let _ = packets_for(&mut world, traveller_connection);
 
-    world.state.move_to(traveller, 1, arrival());
+    world.state.move_to(traveller, Facet(1), arrival());
 
     assert!(
         world.state.seen[&traveller].is_empty(),
@@ -139,7 +139,7 @@ fn a_facet_change_sends_the_new_facets_map_dimensions() {
     let traveller = world.state.players[&connection];
     let _ = packets_for(&mut world, connection);
 
-    world.state.move_to(traveller, 1, arrival());
+    world.state.move_to(traveller, Facet(1), arrival());
     let sent = packets_for(&mut world, connection);
 
     let map_change = sent
@@ -234,7 +234,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
     );
     let mut crossings = world.state.bus.cursor::<crate::events::RegionChanged>();
 
-    world.state.move_to(traveller, 1, arrival());
+    world.state.move_to(traveller, Facet(1), arrival());
     world.tick(now);
 
     let names: Vec<String> = world
@@ -276,7 +276,7 @@ fn a_facet_change_resets_the_walk_sequence() {
     let walker = world.registry().get::<Movement>(traveller).unwrap().0;
     assert!(!walker.sequence.is_fresh(), "it has taken a step");
 
-    world.state.move_to(traveller, 1, arrival());
+    world.state.move_to(traveller, Facet(1), arrival());
 
     let walker = world.registry().get::<Movement>(traveller).unwrap().0;
     assert!(
@@ -298,11 +298,15 @@ fn a_facet_the_shard_never_loaded_is_refused() {
     let connection = enter(&mut world, now);
     let traveller = world.state.players[&connection];
 
-    world.state.move_to(traveller, 9, Point::new(100, 100, 0));
+    world.state.move_to(traveller, Facet(9), Point::new(100, 100, 0));
 
-    assert_eq!(world.state.facet_of(traveller), 0, "it did not go anywhere");
     assert_eq!(
-        world.state.facet_state(0).sectors.position_of(traveller),
+        world.state.facet_of(traveller),
+        Facet(0),
+        "it did not go anywhere"
+    );
+    assert_eq!(
+        world.state.facet_state(Facet(0)).sectors.position_of(traveller),
         Some(arrival()),
         "and is still on the grid it started on"
     );
@@ -566,13 +570,13 @@ fn a_rune_marked_on_another_facet_is_a_walk_unless_the_shard_says_otherwise() {
     );
 
     cast_at(&mut world, connection, RECALL, rune_serial, now);
-    assert_eq!(world.state.facet_of(caster), 0, "refused, by default");
+    assert_eq!(world.state.facet_of(caster), Facet(0), "refused, by default");
 
     world.state.gameplay.cross_facet_travel = true;
     cast_at(&mut world, connection, RECALL, rune_serial, now);
     assert_eq!(
         world.state.facet_of(caster),
-        1,
+        Facet(1),
         "and allowed when the shard says so"
     );
 }
@@ -724,7 +728,7 @@ fn a_gate_closes_on_its_own_and_leaves_nothing_behind() {
 
     assert!(world.registry().get::<Moongate>(gate).is_none(), "it closed");
     assert_eq!(
-        world.state.facet_state(0).sectors.position_of(gate),
+        world.state.facet_state(Facet(0)).sectors.position_of(gate),
         None,
         "and left nothing on the sector grid to walk into"
     );
@@ -825,7 +829,7 @@ fn a_city_moongate_does_not_seal_the_tile_it_stands_on() {
     assert!(
         !world
             .state
-            .facet_state(britain.facet)
+            .facet_state(Facet(britain.facet))
             .obstructions
             .is_blocked(britain.at.x, britain.at.y),
         "nothing bars the tile"

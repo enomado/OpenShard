@@ -49,7 +49,7 @@ impl Terrain for Shop {
 
 /// Stand the player in a shop with these statics under foot.
 fn shop(world: &mut World, statics: &[(u16, i8)]) {
-    world.state.facet_state_mut(0).terrain = Some(Box::new(Shop(statics.to_vec())));
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Shop(statics.to_vec())));
 }
 
 /// Put an item in the player's pack, through the door a vendor's shelf uses.
