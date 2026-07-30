@@ -186,9 +186,11 @@ pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
     steps
 }
 
-/// The muted grey and font the client draws townsfolk chatter in — `npc`'s, so an
-/// escortable's voice matches every other NPC's.
-const NPC_HUE: Hue = Hue(0x03B2);
+/// The muted grey and font the client draws townsfolk chatter in — the shared
+/// [`Hue::NPC_SPEECH`], so an escortable's voice matches every other NPC's. This
+/// crate cannot reach `npc`'s own constant (neither depends on the other), which
+/// is why the name lives in `protocol` where both can see it.
+const NPC_HUE: Hue = Hue::NPC_SPEECH;
 /// The font a townsperson speaks in.
 const NPC_FONT: Font = Font::DEFAULT;
 

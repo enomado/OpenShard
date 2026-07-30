@@ -31,7 +31,7 @@ pub const COMMAND_PREFIX: char = '.';
 
 /// The hue and font a command reply is drawn in — a muted grey, the client's
 /// usual system-message colour, so it reads as the server talking, not a mobile.
-const SYSTEM_HUE: Hue = Hue(0x03B2);
+const SYSTEM_HUE: Hue = Hue::SYSTEM;
 const SYSTEM_FONT: Font = Font::DEFAULT;
 
 /// Run a staff command for `actor`, already checked to hold the authority. `rest`

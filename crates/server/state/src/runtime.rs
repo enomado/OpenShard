@@ -56,7 +56,7 @@ const STOP_MEDITATING: u32 = 500_134;
 
 /// The hue and font a private system line is drawn in — the client's usual muted
 /// grey, so it reads as the server talking rather than as a mobile speaking.
-const SYSTEM_HUE: Hue = Hue(0x03B2);
+const SYSTEM_HUE: Hue = Hue::SYSTEM;
 const SYSTEM_FONT: Font = Font::DEFAULT;
 
 /// Ticks in one second — the reciprocal of the world's 50ms tick interval. The

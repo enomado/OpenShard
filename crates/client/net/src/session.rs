@@ -319,7 +319,7 @@ mod tests {
 
     use openshard_protocol::identity::CharacterName;
     use openshard_protocol::login::{
-        CharacterEntry, CharacterListFlags, LoginDenied, Relay, ShardEntry, StartLocation,
+        CharacterEntry, CharacterListFlags, LoginDenied, PercentFull, Relay, ShardEntry, StartLocation,
     };
     use openshard_protocol::serial::Serial;
     use openshard_protocol::wire::{ClilocId, Graphic};
@@ -344,7 +344,7 @@ mod tests {
         ServerPacket::ShardList(ShardList {
             shards: vec![ShardEntry {
                 name: "OpenShard".to_owned(),
-                percent_full: 0,
+                percent_full: PercentFull::EMPTY,
                 timezone: 5,
                 address: Ipv4Addr::LOCALHOST,
             }],

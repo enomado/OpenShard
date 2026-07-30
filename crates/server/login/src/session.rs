@@ -7,7 +7,7 @@ use std::time::Instant;
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
     AccountLogin, CharacterList, CharacterListFlags, ClientVersionReport, DenyReason, GameServerLogin,
-    LoginDenied, LoginStagePacket, Relay, SelectShard, ShardEntry, ShardList, StartLocation,
+    LoginDenied, LoginStagePacket, PercentFull, Relay, SelectShard, ShardEntry, ShardList, StartLocation,
     SupportedFeatures, encode_supported_features,
 };
 use openshard_protocol::server_packet::ServerPacket;
@@ -222,7 +222,7 @@ impl<A: Accounts> LoginServer<A> {
             keys: AuthKeys::new(),
             shards: vec![ShardEntry {
                 name: shard_name.to_owned(),
-                percent_full: 0,
+                percent_full: PercentFull::EMPTY,
                 timezone: 0,
                 address: *game_address.ip(),
             }],

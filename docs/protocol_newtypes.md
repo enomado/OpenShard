@@ -510,12 +510,56 @@ shared class-B type and its second decoder-rewrites-a-value finding.
   message id. Worth doing with the `SoundId` table sweep, which has the same
   shape and the same blocker — both want the numbers to come out of config
   already typed, which drags serde into `protocol`.
-- **`0x03B2` is written out five times**: `gm::SYSTEM_HUE`, `npc::GREET_HUE`,
+- ~~**`0x03B2` is written out five times**: `gm::SYSTEM_HUE`, `npc::GREET_HUE`,
   `quests::progress::NPC_HUE`, `runtime::SYSTEM_HUE`,
   `tick::defaults::TEXT_HUE`. They are all "the client's muted grey", all four
   crates deep, and they are now five `Hue` constants rather than five `u16`s —
   which makes the duplication visible but not gone. Where a shard-wide default
-  hue *lives* is a `[gameplay]`-config question this stage did not open.
+  hue *lives* is a `[gameplay]`-config question this stage did not open.~~
+
+  **Fixed: the number lives once, the meanings stay three.** The five sites are
+  not one concept. Two are the shard talking (`runtime::SYSTEM_HUE`, a private
+  system line; `gm::SYSTEM_HUE`, a staff command's reply) — no serial, no
+  graphic, the name field literally `"System"`. Two are a *mobile* talking
+  (`npc::GREET_HUE`, `quests::progress::NPC_HUE`) — over the NPC's head, heard by
+  everyone in earshot. The fifth is neither: `tick::defaults::TEXT_HUE` colours an
+  **item's** single-click name label, the branch a mobile takes
+  `Notoriety::name_hue` for instead. Both references write `0x3B2` out separately
+  for each of these (ServUO's `AsciiMessage` fallback, its `Item.OnSingleClick`,
+  its `Notoriety.Hues[3]`; Sphere's `HUE_TEXT_DEF`), which is the tell: they
+  coincide because the client's palette has one grey that reads as "not a person
+  talking", not because they are the same rule. Collapsing them to a single
+  constant would have made "recolour system messages" silently recolour every
+  shopkeeper.
+
+  So `protocol::wire` gained a **private** `Hue::MUTED_GREY` — the only place the
+  literal is written — and three public names off it: `Hue::SYSTEM`,
+  `Hue::NPC_SPEECH`, `Hue::LABEL`. The five constants stay where they are as the
+  local names their crates read best, each now defined as one of the three;
+  `protocol` is the home because it already owns `Hue` and already carries this
+  kind of client-palette knowledge in `Notoriety::name_hue`. That table keeps its
+  own literal on purpose: it is one unit of ported ServUO numbers, and breaking a
+  single arm out of it to point at `MUTED_GREY` would make the table harder to
+  audit than the duplication costs.
+
+  **Splitting the names immediately caught a bug the coincidence was hiding.**
+  `npc::notify` (`crates/server/npc/src/lib.rs`) sends a *private system line* —
+  no serial, `name: "System"` — and was drawing it in `GREET_HUE`, the townsfolk
+  chatter colour. Identical bytes today, so nothing was visibly wrong; the moment
+  a shard recoloured NPC speech the banker's "the bank says" would have followed
+  it. It now names `Hue::SYSTEM`. This is the argument for one-value-many-names
+  over one-value-one-name, made by the refactor itself.
+
+  The `[gameplay]`-config question stays open and is now cheap: three named
+  defaults are three config fields, and the tick would override the constants
+  rather than replace a scattered literal.
+- **`npc::say` is documented as "the one door every townsperson's speech goes
+  through, so the hue and the font are decided once" — and two callers walk past
+  it.** `guards::execute` and `vendor::vendor_says` build the
+  `openshard_chat::speak` call themselves with `crate::GREET_HUE` and
+  `crate::GREET_FONT`. Harmless while the arguments agree; the comment promises an
+  invariant the code does not enforce, which is the shape that decays. Either route
+  both through `say` or drop the claim from its doc.
 
 ## Amendments forced by N4 (`containers.rs`)
 
@@ -827,7 +871,13 @@ every number in it is one the server chose — which makes this the module where
 - **`ButtonId::CLOSE_BOX` and `ButtonId::UNUSED` are the same value with
   different meanings**, and a third would be one too many; if one appears, the
   type wants to be an enum with a `Reply(u32)` arm rather than a newtype with
-  named zeroes.
+  named zeroes. *Still two, re-checked:* every use in the workspace is either a
+  close box (`crafting`, `quests`, `gates`, `travel`, `admin`, `animal`) or a
+  page button's ignored id (`crafting`, `animal`), and the only reader of the
+  value is `RawButtonId::interpret`, which splits `0` off once. The condition
+  has not fired, so the type is unchanged; what was missing was that only
+  `UNUSED` documented the collision, so `CLOSE_BOX` now names the other half and
+  the trigger, and a reader landing on either constant meets both.
 - **`Command::ShowGump::serial` and its siblings are still bare `u32`s from the
   script bridge.** Roughly a dozen script-raised commands name a mobile that
   way and each re-does `Serial::new` in the tick. That is one sweep of its own,
@@ -923,10 +973,22 @@ sitting in adjacent fields of a server struct rather than in a packet at all.
 - **N10's counting check must count tuple fields too**, or it will report zero
   while the line above is still there. The same hole hides any
   `pub thing: (u16, u16)` a later packet adds.
-- **`ShardEntry::percent_full` is clamped in the encoder** (`.min(100)`), which
-  is a client rule enforced at the last possible moment rather than where the
-  value is chosen. Harmless today because the only caller passes `0`; worth a
-  named constructor the day an operator's shard actually reports fullness.
+- ~~**`ShardEntry::percent_full` is clamped in the encoder** (`.min(100)`)~~ —
+  fixed. The field is a `PercentFull` with a private byte,
+  `PercentFull::clamped` and `raw()`, plus `EMPTY`/`FULL`, so the encoder writes
+  `shard.percent_full.raw()` with nothing left to repair. Clamped rather than
+  refused, and the doc comment says why: every source of the number is a
+  quantity meant to saturate at "full", where `RawShardIndex` refuses because a
+  wrong index names a *different shard*. The decoder clamps too — a client
+  reads this list from a server it has not met — so no `ShardEntry` in the
+  process can hold a value the client would draw as garbage, in either
+  direction. Two tests: one on the type at `0/99/100/101/250`, naming `100` as
+  legal so a future clamp cannot quietly become a rescale, and one on the wire
+  in both directions. Amendment 8 above allowlisted this field alongside
+  `timezone`; that half of the amendment no longer holds, and the difference is
+  that `100` is a rule the *client* imposes while a timezone has no range at
+  all. `timezone` stays bare, and the allowlist in
+  `tests/bare_integer_fields.rs` records the split.
 
 ## Amendments forced by N7 (`feedback.rs`, `skill.rs`, `combat.rs`, `properties.rs`, `spellbook.rs`, `encoded.rs`, `casting.rs`)
 

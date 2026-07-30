@@ -227,21 +227,61 @@ impl DecodePacket for LoginDenied {
 
 // -- 0xA8 shard list ------------------------------------------------------
 
+/// How full a shard is, as a percentage the client will render: 0 to 100.
+///
+/// The client draws anything above 100 as garbage, so 100 is a *protocol*
+/// ceiling and not a matter of taste — which is why this is a type with a
+/// private field rather than a `u8` the encoder repairs on its way out. The
+/// encoder used to hold the byte down with `.min(100)`, applying the client's
+/// rule at the last possible moment instead of where the number is chosen;
+/// with the invariant on the type there is nothing left for the encoder to
+/// check, and an operator reporting real fullness cannot route around it.
+///
+/// Clamped rather than refused, because every source of the number — an
+/// operator's config, a population count over a cap that may itself have
+/// changed — is a quantity that is *meant* to saturate at "full", and refusing
+/// would mean a shard vanishing from the list over a rounding error. That is
+/// the opposite trade from [`RawShardIndex::validate`], where a wrong number
+/// names a different shard.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct PercentFull(u8);
+
+impl PercentFull {
+    /// Nobody on: the value a shard advertises until it counts its players.
+    pub const EMPTY: Self = Self(0);
+
+    /// The largest value the client renders as a percentage.
+    pub const FULL: Self = Self(100);
+
+    /// This many percent, held to the client's ceiling.
+    #[must_use]
+    pub const fn clamped(percent: u8) -> Self {
+        Self(if percent > 100 { 100 } else { percent })
+    }
+
+    /// The byte to write, already inside the client's range by construction.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+
 /// One shard in the 0xA8 list.
 ///
-/// # Why its two bytes stay bare integers
+/// # Why `timezone` stays a bare integer
 ///
-/// `percent_full` and `timezone` are the case N2 amendment 3 settled for the
-/// status bar's numbers: quantities, not ids. They are compared and clamped —
-/// the encoder holds one to 100 — never confused for each other at any call
-/// site, because the only place either is written is a struct literal that
-/// names it. See the allowlist in `docs/protocol_newtypes.md`.
+/// It is the case N2 amendment 3 settled for the status bar's numbers: a
+/// quantity, not an id, with no protocol rule about its range and only one
+/// place it is ever written — a struct literal that names it. See the
+/// allowlist in `docs/protocol_newtypes.md`. `percent_full` looked like the
+/// same case and is not: 100 is a ceiling the *client* imposes, so the rule
+/// lives in [`PercentFull`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ShardEntry {
     /// Shard name. Truncated to 32 bytes on the wire.
     pub name: String,
-    /// How full, 0–100. The client renders anything above 100 as garbage.
-    pub percent_full: u8,
+    /// How full, 0–100.
+    pub percent_full: PercentFull,
     /// Timezone, as the client's own oddity: hours west of GMT.
     pub timezone: u8,
     /// Where to reach it.
@@ -296,7 +336,7 @@ impl EncodePacket for ShardList {
             // the list from one here and subtracts on the way back.
             out.u16((index + 1) as u16);
             out.fixed_string(&shard.name, SHARD_NAME_LENGTH);
-            out.u8(shard.percent_full.min(100));
+            out.u8(shard.percent_full.raw());
             out.u8(shard.timezone);
 
             let octets = shard.address.octets();
@@ -328,7 +368,11 @@ impl DecodePacket for ShardList {
         for _ in 0..count {
             reader.skip(2)?; // the one-based index, which is the position
             let name = reader.fixed_string(SHARD_NAME_LENGTH)?;
-            let percent_full = reader.u8()?;
+            // A shard list is only ever decoded by a client, and a hostile or
+            // buggy server can put anything in this byte. Clamping here rather
+            // than refusing keeps the entry — the shard is still reachable —
+            // and is the same rule the encoder no longer has to apply.
+            let percent_full = PercentFull::clamped(reader.u8()?);
             let timezone = reader.u8()?;
             let octets = reader.bytes(4)?;
             let address = if reversed_ip {
@@ -1146,7 +1190,7 @@ mod tests {
     fn shard(name: &str, address: [u8; 4]) -> ShardEntry {
         ShardEntry {
             name: name.to_owned(),
-            percent_full: 10,
+            percent_full: PercentFull::clamped(10),
             timezone: 5,
             address: Ipv4Addr::from(address),
         }
@@ -1455,12 +1499,49 @@ mod tests {
         );
     }
 
+    /// The client renders anything above 100 as garbage, so no `ShardEntry`
+    /// can be built holding such a value — the ceiling is applied where the
+    /// number is chosen, not repaired on the way out. `100` and everything
+    /// below it survives untouched: a clamp that also moved legal values would
+    /// be a rescale, and the operator's number would stop meaning what it says.
     #[test]
-    fn shard_list_clamps_a_nonsense_fullness() {
+    fn percent_full_cannot_hold_a_value_the_client_would_draw_as_garbage() {
+        assert_eq!(PercentFull::clamped(0).raw(), 0);
+        assert_eq!(PercentFull::clamped(99).raw(), 99);
+        assert_eq!(PercentFull::clamped(100).raw(), 100, "100 is legal, not clamped");
+        assert_eq!(
+            PercentFull::clamped(101).raw(),
+            100,
+            "one over is the first clamp"
+        );
+        assert_eq!(PercentFull::clamped(250).raw(), 100);
+        assert_eq!(PercentFull::EMPTY.raw(), 0);
+        assert_eq!(PercentFull::FULL.raw(), 100);
+    }
+
+    /// And the wire agrees: a nonsense number cannot reach the client through
+    /// the encoder, and one arriving *from* a server cannot leave the decoder.
+    #[test]
+    fn shard_list_carries_only_a_renderable_fullness() {
         let mut entry = shard("Britannia", [10, 0, 0, 1]);
-        entry.percent_full = 250;
+        entry.percent_full = PercentFull::clamped(250);
         let bytes = encode_packet(&ShardList { shards: vec![entry] }, ClientVersion::TOL);
         assert_eq!(bytes[40], 100, "the client renders >100 as garbage");
+
+        // Through `ServerPacket::decode`, which is the client's own route in:
+        // `decode_packet` reads the *client* length table and 0xA8 is not in it.
+        let mut forged = bytes.clone();
+        forged[40] = 250;
+        let Ok(Some(crate::server_packet::ServerPacket::ShardList(decoded))) =
+            crate::server_packet::ServerPacket::decode(&forged, ClientVersion::TOL)
+        else {
+            panic!("a shard list must decode as one");
+        };
+        assert_eq!(
+            decoded.shards[0].percent_full,
+            PercentFull::FULL,
+            "a server's nonsense byte is clamped, not carried into the client"
+        );
     }
 
     #[test]

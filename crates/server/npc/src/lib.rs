@@ -72,8 +72,9 @@ const BANK_RANGE: u32 = 12;
 /// The gold-coin graphic — `items`', so a banker counts the same coin the status
 /// bar weighs and a corpse drops.
 pub(crate) use openshard_items::GOLD_GRAPHIC;
-/// The muted grey the client draws townsfolk chatter in.
-pub(crate) const GREET_HUE: Hue = Hue(0x03B2);
+/// The muted grey the client draws townsfolk chatter in — [`Hue::NPC_SPEECH`],
+/// shared with every other crate that gives an NPC a voice.
+pub(crate) const GREET_HUE: Hue = Hue::NPC_SPEECH;
 /// The font a greeting is spoken in.
 pub(crate) const GREET_FONT: Font = Font::DEFAULT;
 
@@ -132,7 +133,11 @@ pub(crate) fn notify(state: &mut WorldState, connection: ConnectionId, text: &st
         serial: None, // the system talking, not the banker
         graphic: None,
         mode: TalkMode::Regular,
-        hue: GREET_HUE,
+        // The system's hue, not [`GREET_HUE`]: this line carries no serial and
+        // names itself "System", so it is the shard talking and not the banker.
+        // It read `GREET_HUE` while the two names shared a value, which is the
+        // confusion splitting them was for.
+        hue: Hue::SYSTEM,
         font: GREET_FONT,
         name: "System".to_owned(),
         text: text.to_owned(),

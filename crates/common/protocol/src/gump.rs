@@ -60,6 +60,13 @@ impl ButtonId {
     /// A layout may deliberately hand this to a button of its own — the quest
     /// window's `X` does — and then the two are the same answer by
     /// construction, which is what ServUO's `Buttons.Close = 0` means too.
+    ///
+    /// [`UNUSED`](Self::UNUSED) is this same `0` saying something else, and the
+    /// two are the only meanings the value carries. A *third* would be one too
+    /// many: at that point the type wants to be an enum with a `Reply(u32)` arm
+    /// rather than a newtype with named zeroes, because three names for one
+    /// value is a discriminant nobody wrote down. See
+    /// `docs/protocol_newtypes.md` N5.
     pub const CLOSE_BOX: Self = Self(0);
 
     /// What a [`GumpButton::Page`] button puts in the id field: nothing.

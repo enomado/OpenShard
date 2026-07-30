@@ -28,6 +28,41 @@ pub struct Hue(pub u16);
 impl Hue {
     /// No tint: the art's own colours.
     pub const NONE: Self = Self(0);
+
+    /// The client's muted grey, and the only place the number is written.
+    ///
+    /// Three unrelated things are drawn in it — server feedback, townsfolk
+    /// chatter, an object's name label — and both references write `0x3B2` out
+    /// separately for each (ServUO's `AsciiMessage` fallback, its
+    /// `Item.OnSingleClick`, its `Notoriety.Hues[3]`; Sphere's `HUE_TEXT_DEF`).
+    /// They coincide because the client's palette has one grey that reads as
+    /// "not a person talking", not because they are the same rule. So the
+    /// *value* lives here once and each *meaning* gets its own name below: a
+    /// shard that recolours its system messages must not silently recolour
+    /// every shopkeeper too.
+    ///
+    /// Private on purpose. Nothing outside this impl should name the grey — it
+    /// should name what it is drawing.
+    const MUTED_GREY: Self = Self(0x03B2);
+
+    /// The hue the server talks in: a private system line, a staff command's
+    /// reply, a shard-wide announcement. Sent under the system serial with no
+    /// graphic, so it reads as feedback rather than as somebody speaking.
+    pub const SYSTEM: Self = Self::MUTED_GREY;
+
+    /// The hue an NPC's own voice is spoken in — a banker's answer, a vendor's
+    /// line, a guard's warning, an escortable's thanks. Over the NPC's head and
+    /// heard by everyone nearby, which is what separates it from
+    /// [`SYSTEM`](Self::SYSTEM): one is the shard talking, this is a mobile.
+    pub const NPC_SPEECH: Self = Self::MUTED_GREY;
+
+    /// The hue an object's single-click name label comes back in, paired with
+    /// [`TalkMode::Label`](crate::speech::TalkMode::Label).
+    ///
+    /// For *items* only. A mobile's name label is coloured by its standing
+    /// instead — see [`Notoriety::name_hue`](crate::mobile::Notoriety::name_hue),
+    /// whose neutral entry lands on the same grey by way of a different table.
+    pub const LABEL: Self = Self::MUTED_GREY;
 }
 
 /// An index into the client's sound files.

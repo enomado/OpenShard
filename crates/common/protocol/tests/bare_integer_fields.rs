@@ -92,12 +92,14 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ("vendor.rs", "amount", "Sale: same stack size"),
     // -- login's own quantities, and a type that is not a packet struct -----
     // N6 amendments 7/8
+    // `percent_full` was on this list and is not any more: 100 is a ceiling
+    // the client imposes, so it became `PercentFull` with the clamp in its
+    // constructor. `timezone` has no such rule and stays.
     (
         "login.rs",
-        "percent_full",
+        "timezone",
         "ShardEntry: a quantity, the MobileStatus argument",
     ),
-    ("login.rs", "timezone", "ShardEntry: same"),
     (
         "version.rs",
         "major",

@@ -684,7 +684,7 @@ mod tests {
             ServerPacket::ShardList(ShardList {
                 shards: vec![crate::login::ShardEntry {
                     name: "Britannia".to_owned(),
-                    percent_full: 10,
+                    percent_full: crate::login::PercentFull::clamped(10),
                     timezone: 5,
                     address: std::net::Ipv4Addr::new(127, 0, 0, 1),
                 }],
@@ -1054,7 +1054,7 @@ mod tests {
             ServerPacket::ShardList(ShardList {
                 shards: vec![crate::login::ShardEntry {
                     name: "OpenShard".to_owned(),
-                    percent_full: 12,
+                    percent_full: crate::login::PercentFull::clamped(12),
                     timezone: 5,
                     address: std::net::Ipv4Addr::new(192, 168, 11, 6),
                 }],
@@ -1297,7 +1297,7 @@ mod tests {
         let list = ServerPacket::ShardList(ShardList {
             shards: vec![crate::login::ShardEntry {
                 name: "OpenShard".to_owned(),
-                percent_full: 0,
+                percent_full: crate::login::PercentFull::EMPTY,
                 timezone: 0,
                 address,
             }],
