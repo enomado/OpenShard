@@ -178,6 +178,22 @@ async fn restore_characters(store: &dyn Store, world: &mut World, mut accounts: 
     accounts
 }
 
+/// Put the config's `[[accounts]] characters` on the world's lists.
+///
+/// The other half of who exists, beside the store's rows. A configured character
+/// that has never been played has nothing saved anywhere — no serial, no
+/// position — so all this records is that it exists; entering it spawns a fresh
+/// one at the start city. Called after [`restore_characters`], so a name the
+/// store also has keeps the row that describes it rather than being re-added as
+/// undescribed.
+fn seed_configured_characters(config: &Config, world: &mut World) {
+    for account in &config.accounts {
+        for character in &account.characters {
+            world.enrol_character(&account.name, character);
+        }
+    }
+}
+
 /// Bring back saved items: the world reserves their serials, drops the loose
 /// ground clutter back where it lay, and files each character's carried
 /// inventory to re-equip when it logs in. Called after `restore_characters`,
@@ -386,6 +402,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
     // store; the save task takes ownership after, so it has to come last.
     let accounts = load_accounts(store.as_ref(), config).await;
     let accounts = restore_characters(store.as_ref(), &mut world, accounts).await;
+    seed_configured_characters(config, &mut world);
     restore_items(store.as_ref(), &mut world).await;
     restore_mobiles(store.as_ref(), &mut world).await;
     restore_decorations(store.as_ref(), &mut world).await;

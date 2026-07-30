@@ -143,6 +143,14 @@ impl World {
         self.state.registry.insert(entity, Heading(facing));
         self.state.registry.insert(entity, body);
         self.state.registry.insert(entity, Name(name.0.clone()));
+        // A character in the world exists, whatever the roster had heard about it
+        // before. That is not a formality: a character created this run enters
+        // once and is not described anywhere until it logs out, so without this
+        // the list the character screen draws would be missing the character the
+        // player is playing. Idempotent — the common case is a name already
+        // enrolled by boot — and it deliberately records nothing about *where*
+        // the character is; the logout does that.
+        self.roster.enrol(&account, &name);
         self.state.registry.insert(entity, Account(account));
         self.state.registry.insert(entity, facet);
         // The account's authority, re-derived each login and never saved with the

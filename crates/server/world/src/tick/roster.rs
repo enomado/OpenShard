@@ -1,29 +1,31 @@
 use super::*;
+use openshard_protocol::login::CharacterEntry;
 
-/// A character's place in the roster: the account and the character name, both
-/// case-folded.
+/// One character on an account: that it exists, and where it was when it was
+/// last seen.
 ///
-/// A type rather than the `(String, String)` it replaces, because that pair was
-/// built by hand at four call sites and each one had to remember to fold the
-/// case itself — one of them folding a raw string off the wire rather than a
-/// [`CharacterName`], which is the same thing right up until it isn't. Built
-/// only by [`RosterKey::new`], so there is one place the rule lives.
-#[derive(PartialEq, Eq, Hash, Debug)]
-struct RosterKey {
-    account: String,
-    character: String,
+/// The two are deliberately not the same fact, and the `Option` is what says so.
+/// A character *exists* from the moment it is created; it has a
+/// [`CharacterRecord`] only once something has written one — a logout, or a boot
+/// that read one out of the store. Between those two moments the character is on
+/// the list, is offered by `0xA9`, can be picked and can be deleted, and there is
+/// nothing anywhere describing it. That state used to be spelled "absent from the
+/// roster", which is the same shape of lie `Option<PlayedCharacter>` told about
+/// presence — see `docs/connection_state.md` — and it cost a brand-new character
+/// being deleted out from under the connection playing it.
+///
+/// `None` is *absent*, not unknown: nothing has been recorded, and the character
+/// enters fresh. See [`World::enter`](crate::World::enter), which reads exactly
+/// that.
+struct Enrolled {
+    /// The name as it was created, case and all. What `0xA9` shows the player.
+    name: CharacterName,
+    /// Where this character was when it was last seen, or `None` if nothing has
+    /// ever recorded it.
+    saved: Option<CharacterRecord>,
 }
 
-impl RosterKey {
-    fn new(account: &AccountName, character: &CharacterName) -> Self {
-        Self {
-            account: account.normalized(),
-            character: character.normalized(),
-        }
-    }
-}
-
-/// Where every stored character was when it was last seen.
+/// Which characters each account has, in slot order, and where each of them was.
 ///
 /// # Why the world keeps this at all
 ///
@@ -43,16 +45,20 @@ impl RosterKey {
 /// the roster could be stale for exactly as long as the shard loop took to drain,
 /// and nothing said so. Now the writer and the reader are the same value.
 ///
-/// # It is not the account's character list
+/// # It is the account's character list
 ///
-/// That lives on `Accounts`, outside the world entirely, and it is the authority
-/// on which characters *exist*. This is the authority on *where they were* —
-/// serial, spot, look, sheet — and a character can be on the list with nothing
-/// here at all: one created during this run has never logged out, so nothing has
-/// been recorded about it yet. Code that treats "no record" as "no character" is
-/// how a brand-new character got deleted out from under the connection playing
-/// it; see `Sessions::is_playing` in the shard binary.
-pub(super) struct Roster(HashMap<RosterKey, CharacterRecord>);
+/// Since S5 it is, and that is the change: this used to hold only the characters
+/// something had *saved*, while which characters *existed* lived on `Accounts` in
+/// the login crate, outside the world. Two lists that had to agree, with the
+/// world's half unable to see the other — the arrangement this whole plan exists
+/// to delete. A character is on this list from the moment it is created, whether
+/// or not anything has described it yet; see [`Enrolled`].
+///
+/// The order within an account is the slot order the client indexes: `0x83`
+/// names a character by its position in the list `0xA9` last sent, so the two
+/// have to be built from the same sequence. Deleting shifts the rest down, which
+/// is what the `0x86` resend that follows expects.
+pub(super) struct Roster(HashMap<String, Vec<Enrolled>>);
 
 impl Roster {
     /// An empty roster — a shard whose store has not been read yet.
@@ -60,35 +66,115 @@ impl Roster {
         Self(HashMap::new())
     }
 
+    /// Put a character on an account's list, if it is not on it already.
+    ///
+    /// The idempotence is the point: this is called from three places that cannot
+    /// see each other — the boot that reads the store, the config seeding beside
+    /// it, and entering the world with a character created this run — and any two
+    /// of them may name the same character. Adding it twice would make `0x5D`
+    /// ambiguous, since it echoes the name and not the slot.
+    ///
+    /// Nothing is recorded about *where* the character is; that arrives with the
+    /// first [`remember`](Self::remember).
+    pub(super) fn enrol(&mut self, account: &AccountName, name: &CharacterName) {
+        let characters = self.0.entry(account.normalized()).or_default();
+        if characters
+            .iter()
+            .any(|entry| entry.name.normalized() == name.normalized())
+        {
+            return;
+        }
+        characters.push(Enrolled {
+            name: name.clone(),
+            saved: None,
+        });
+    }
+
     /// File a character's state, replacing whatever was known about it.
     ///
-    /// The key comes off the record rather than from the caller, so a record
-    /// cannot be filed under the wrong name.
+    /// Enrols the character if it is not on the list yet: a logout is a
+    /// description of a character that certainly exists, so a record arriving for
+    /// a name nothing enrolled is the enrolment being late, not the record being
+    /// wrong. The account and name come off the record rather than from the
+    /// caller, so a record cannot be filed under the wrong name.
     pub(super) fn remember(&mut self, record: CharacterRecord) {
-        self.0
-            .insert(RosterKey::new(&record.account, &record.name), record);
+        self.enrol(&record.account, &record.name);
+        let characters = self
+            .0
+            .get_mut(&record.account.normalized())
+            .expect("enrol just created this account's list");
+        let entry = characters
+            .iter_mut()
+            .find(|entry| entry.name.normalized() == record.name.normalized())
+            .expect("enrol just put this character on the list");
+        entry.saved = Some(record);
     }
 
-    /// Where this character was last seen, or `None` if nothing ever recorded it.
-    pub(super) fn get(&self, account: &AccountName, character: &CharacterName) -> Option<&CharacterRecord> {
-        self.0.get(&RosterKey::new(account, character))
-    }
-
-    /// Drop what was known about a character — it has been deleted.
+    /// Where this character was last seen, or `None` if it does not exist or
+    /// nothing has ever recorded it.
     ///
-    /// Hands the record back, because the caller needs the serial off it to
-    /// forget the store row and the inventory waiting under it.
+    /// The two are not told apart here because the one caller — entering the
+    /// world — does the same thing either way: a character with nothing on file
+    /// starts fresh. Whether it exists at all is [`characters`](Self::characters).
+    pub(super) fn get(&self, account: &AccountName, character: &CharacterName) -> Option<&CharacterRecord> {
+        self.0
+            .get(&account.normalized())?
+            .iter()
+            .find(|entry| entry.name.normalized() == character.normalized())?
+            .saved
+            .as_ref()
+    }
+
+    /// Take a character off its account's list — it has been deleted.
+    ///
+    /// Hands back what was saved about it, because the caller needs the serial
+    /// off that record to forget the store row and the inventory waiting under
+    /// it. `None` covers both "no such character" and "nothing was ever recorded
+    /// about it", and the caller has nothing to clean up in either case — but the
+    /// entry is gone from the list either way, which is the half that used to be
+    /// missed: a character created this run and never logged out had no record,
+    /// so the early return took the *list* removal with it.
     pub(super) fn forget(
         &mut self,
         account: &AccountName,
         character: &CharacterName,
     ) -> Option<CharacterRecord> {
-        self.0.remove(&RosterKey::new(account, character))
+        let characters = self.0.get_mut(&account.normalized())?;
+        let at = characters
+            .iter()
+            .position(|entry| entry.name.normalized() == character.normalized())?;
+        characters.remove(at).saved
     }
 
-    /// How many characters are on file, for the boot log.
-    pub(super) fn len(&self) -> usize {
-        self.0.len()
+    /// An account's characters in slot order, for the `0xA9` list.
+    ///
+    /// Empty for an account with none; the encoder pads the list out to the
+    /// slots the client draws.
+    pub(super) fn characters(&self, account: &AccountName) -> Vec<CharacterEntry> {
+        self.0
+            .get(&account.normalized())
+            .map(|characters| {
+                characters
+                    .iter()
+                    .map(|entry| CharacterEntry {
+                        name: entry.name.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// How many characters have a saved record, for the boot log.
+    ///
+    /// Not how many exist: what the log is reporting is how much of the world
+    /// came back out of the database, and a character that exists with nothing
+    /// recorded came from config, not from a store the boot read.
+    pub(super) fn saved(&self) -> usize {
+        self.0
+            .values()
+            .flatten()
+            .filter(|entry| entry.saved.is_some())
+            .count()
     }
 }
 
@@ -131,8 +217,8 @@ mod tests {
     #[test]
     fn a_character_is_found_however_the_client_spells_it() {
         // The client sends the name back as the player typed it, and the account
-        // name came off a `0x91` field. Both halves are folded, which is the
-        // whole reason the key is a type: four call sites used to fold by hand.
+        // name came off a `0x91` field. Both halves are folded, which is what
+        // makes a lookup with either spelling the same lookup.
         let mut roster = Roster::new();
         roster.remember(record("Admin", "Lord British", 7));
 
@@ -158,7 +244,7 @@ mod tests {
         roster.remember(record("alice", "Dupre", 1));
         roster.remember(record("bob", "Dupre", 2));
 
-        assert_eq!(roster.len(), 2);
+        assert_eq!(roster.saved(), 2);
         assert_eq!(
             roster
                 .get(&AccountName::new("bob"), &CharacterName::new("Dupre"))
@@ -174,6 +260,97 @@ mod tests {
 
         let dropped = roster.forget(&AccountName::new("ADMIN"), &CharacterName::new("LORD BRITISH"));
         assert_eq!(dropped.map(|record| record.serial), Some(7));
-        assert_eq!(roster.len(), 0);
+        assert_eq!(roster.saved(), 0);
+        assert!(
+            roster.characters(&AccountName::new("admin")).is_empty(),
+            "and it is off the list, not merely undescribed"
+        );
+    }
+
+    #[test]
+    fn a_character_exists_before_anything_has_described_it() {
+        // The distinction this type was rebuilt for. A character created this run
+        // has never logged out, so nothing has written a record — and it is still
+        // on the list, still offered by 0xA9, still deletable. Treating "no
+        // record" as "no character" is how one got deleted out from under the
+        // connection playing it.
+        let mut roster = Roster::new();
+        roster.enrol(&AccountName::new("admin"), &CharacterName::new("Dupre"));
+
+        assert_eq!(
+            roster.characters(&AccountName::new("admin")),
+            vec![CharacterEntry {
+                name: CharacterName::new("Dupre")
+            }],
+            "it is on the list"
+        );
+        assert!(
+            roster
+                .get(&AccountName::new("admin"), &CharacterName::new("Dupre"))
+                .is_none(),
+            "with nothing recorded about it"
+        );
+        assert_eq!(roster.saved(), 0, "and the boot log counts none");
+    }
+
+    #[test]
+    fn a_character_with_nothing_recorded_is_still_deleted() {
+        // The half the old early return dropped: `forget` found no record, so it
+        // returned before taking the character off the list at all.
+        let mut roster = Roster::new();
+        roster.enrol(&AccountName::new("admin"), &CharacterName::new("Dupre"));
+
+        assert!(
+            roster
+                .forget(&AccountName::new("admin"), &CharacterName::new("Dupre"))
+                .is_none(),
+            "there is nothing saved to hand back"
+        );
+        assert!(
+            roster.characters(&AccountName::new("admin")).is_empty(),
+            "but the character is gone"
+        );
+    }
+
+    #[test]
+    fn enrolling_twice_leaves_one_character() {
+        // Boot does it twice on purpose: the store's rows and the config's names
+        // are read by two functions that cannot see each other. A duplicate would
+        // make `0x5D` ambiguous, because it echoes the name and not the slot.
+        let mut roster = Roster::new();
+        roster.enrol(&AccountName::new("admin"), &CharacterName::new("Lord British"));
+        roster.remember(record("admin", "Lord British", 7));
+        roster.enrol(&AccountName::new("admin"), &CharacterName::new("lord british"));
+
+        assert_eq!(roster.characters(&AccountName::new("admin")).len(), 1);
+        assert_eq!(
+            roster
+                .get(&AccountName::new("admin"), &CharacterName::new("Lord British"))
+                .map(|record| record.serial),
+            Some(7),
+            "and the late enrolment did not wipe what was known"
+        );
+    }
+
+    #[test]
+    fn the_list_keeps_the_order_the_client_indexes() {
+        // `0x83` names a character by its position in the list `0xA9` last sent,
+        // and deleting shifts the rest down — which is what the `0x86` resend
+        // that follows draws.
+        let mut roster = Roster::new();
+        for name in ["Alpha", "Beta", "Gamma"] {
+            roster.enrol(&AccountName::new("admin"), &CharacterName::new(name));
+        }
+        let names = |roster: &Roster| {
+            roster
+                .characters(&AccountName::new("admin"))
+                .into_iter()
+                .map(|entry| entry.name.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&roster), ["Alpha", "Beta", "Gamma"]);
+
+        roster.forget(&AccountName::new("admin"), &CharacterName::new("Beta"));
+        assert_eq!(names(&roster), ["Alpha", "Gamma"], "the rest shift down");
     }
 }

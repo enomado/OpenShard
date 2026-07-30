@@ -873,10 +873,12 @@ impl World {
     /// once, before anyone connects and before [`restore_items`], which files
     /// inventories under these serials.
     ///
-    /// Nothing here says the character *exists* — that is the account's list,
-    /// which lives outside the world entirely and is login's to keep. A row here
-    /// with no entry there is a character somebody deleted from an account the
-    /// config no longer seeds; it is inert, and the next save sweeps it.
+    /// A row also says the character *exists*, and since S5 of
+    /// `docs/connection_state.md` this is where that is recorded — the account's
+    /// list is the roster's, not the login crate's. So this is the whole of what
+    /// the store knows about who may be played, and the config's
+    /// `[[accounts]] characters` is folded in beside it by
+    /// [`enrol_character`](World::enrol_character) afterwards.
     ///
     /// [`restore_items`]: World::restore_items
     pub fn restore_characters(&mut self, records: Vec<CharacterRecord>) {

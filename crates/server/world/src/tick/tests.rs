@@ -10440,6 +10440,96 @@ fn a_deleted_character_is_no_longer_on_file_under_its_name() {
 }
 
 #[test]
+fn a_character_is_on_its_account_list_from_the_moment_it_enters() {
+    // S5's half of the roster: it says which characters *exist*, not only where
+    // the saved ones were. A character created this run enters once and nothing
+    // describes it until it logs out, so a list built from the saved records
+    // alone would be missing the very character being played — which is the list
+    // `0xA9` draws and `0x83` indexes.
+    let now = Instant::now();
+    let mut world = world();
+    let admin = AccountName("admin".to_owned());
+    assert!(
+        world.characters(&admin).is_empty(),
+        "a world nobody has entered has nobody on file"
+    );
+
+    enter(&mut world, now);
+    assert_eq!(
+        world
+            .characters(&admin)
+            .into_iter()
+            .map(|entry| entry.name.0)
+            .collect::<Vec<_>>(),
+        ["Lord British"],
+        "the character being played is on the list before it has ever been saved"
+    );
+}
+
+#[test]
+fn entering_a_character_boot_already_knew_does_not_list_it_twice() {
+    // The idempotence `enter` relies on. Boot enrols every stored row, and then
+    // the same character is played — two writers naming one character. A
+    // duplicate would make `0x5D` ambiguous, because it echoes the name and not
+    // the slot, and it would show the player two identical rows to pick from.
+    let now = Instant::now();
+    let mut world = world();
+    on_file(
+        &mut world,
+        0x0000_0202,
+        Point::new(1500, 1000, -5),
+        Appearance::default_human(),
+    );
+    let admin = AccountName("admin".to_owned());
+    assert_eq!(world.characters(&admin).len(), 1, "boot put it on the list");
+
+    world.queue(Command::Enter(Entering {
+        connection: connection(),
+        version: ClientVersion::TOL,
+        account: admin.clone(),
+        name: CharacterName("Lord British".to_owned()),
+        access: AccessLevel::Player,
+        character: Character::Saved,
+    }));
+    world.tick(now);
+
+    assert_eq!(world.characters(&admin).len(), 1, "and playing it kept one");
+    assert_eq!(
+        world
+            .registry()
+            .serial_of(world.state.players[&connection()])
+            .unwrap()
+            .raw(),
+        0x0000_0202,
+        "on the serial the stored row carried, so the enrolment did not overwrite it"
+    );
+}
+
+#[test]
+fn a_deleted_character_leaves_the_list_even_with_nothing_saved() {
+    // The case the old `forget` dropped on the floor: a character created this
+    // run has no record, so the early return took the *list* removal with it and
+    // the character came back on the next `0xA9`. Deleting is the one operation
+    // where "no record" must not mean "nothing to do".
+    let now = Instant::now();
+    let mut world = world();
+    let admin = AccountName("admin".to_owned());
+    enter(&mut world, now);
+    assert_eq!(world.characters(&admin).len(), 1);
+
+    world.queue(Command::DeleteCharacter {
+        account: admin.clone(),
+        name: CharacterName("lord british".to_owned()),
+    });
+    world.tick(now);
+
+    assert!(
+        world.characters(&admin).is_empty(),
+        "it is off the account's list, however the client spelled the name"
+    );
+}
+
+#[test]
 fn a_saved_character_remembers_whose_it_is() {
     // The other half: `record_of` fills the account from the entity, so a
     // saved character can be tied back to its owner on load. A blank account

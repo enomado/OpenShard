@@ -456,17 +456,35 @@ impl World {
 
     /// How many stored characters the world has on file, for the boot log.
     pub fn stored_characters(&self) -> usize {
-        self.roster.len()
+        self.roster.saved()
     }
 
-    /// Delete a character's saved state.
+    /// Put a character on an account's list without recording anything about it.
     ///
-    /// The shard has already dropped it from the account's in-memory list — that
-    /// list is login's, and the world never sees it — so what is left is the
-    /// world's own three copies: the roster row a re-login would read, the store
-    /// row, and the inventory waiting under its serial. A character the roster
-    /// has never heard of is a no-op: it was created this run and never logged
-    /// out, so there is nothing saved anywhere to forget.
+    /// For the config-seeded characters at boot: `[[accounts]] characters` names
+    /// characters that exist and that nothing has ever saved, which is exactly
+    /// what the roster's `None` record means. Call after
+    /// [`restore_characters`](Self::restore_characters), so a name the store also
+    /// has keeps the row that describes it — the enrolment is idempotent and the
+    /// order only decides which call is the no-op.
+    pub fn enrol_character(&mut self, account: &AccountName, name: &CharacterName) {
+        self.roster.enrol(account, name);
+    }
+
+    /// An account's characters, in the slot order the `0xA9` list shows and
+    /// `0x83` indexes.
+    pub fn characters(&self, account: &AccountName) -> Vec<openshard_protocol::login::CharacterEntry> {
+        self.roster.characters(account)
+    }
+
+    /// Delete a character.
+    ///
+    /// Everything the world has under that name goes: its place on the account's
+    /// list, the record a re-login would read, the store row, and the inventory
+    /// waiting under its serial. A character with nothing recorded — created this
+    /// run and never logged out — leaves the list all the same; there is simply
+    /// nothing saved anywhere to clean up after it, which is what the early
+    /// return below skips.
     ///
     /// The serial is *not* unbound — a packet in flight may still name it — so
     /// `reserve_serial` keeps it out of circulation for the rest of the run.
