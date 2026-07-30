@@ -171,6 +171,20 @@ pub(crate) fn character_list_flags_of(config: &Config) -> CharacterListFlags {
     flags
 }
 
+/// What the character screen offers, from the config.
+///
+/// The cities are filtered to the facets this shard loaded, so every one offered
+/// is a place a player can actually be put. The two masks are the same tooltip
+/// and context-menu settings read once more — one setting, three consumers, and
+/// they must agree or a modern client is told to expect tooltips it never gets.
+pub(crate) fn character_screen_of(config: &Config) -> CharacterScreen {
+    CharacterScreen {
+        starts: crate::start_cities(&config.world.facets, (config.world.start.x, config.world.start.y)),
+        flags: character_list_flags_of(config),
+        features: supported_features_of(config),
+    }
+}
+
 /// The world the config asks for, before a map or a save is laid over it.
 ///
 /// Both of [`load_world`]'s paths — with a map and without — come through here, so
@@ -180,6 +194,7 @@ pub(crate) fn character_list_flags_of(config: &Config) -> CharacterListFlags {
 fn configured_world(config: &Config) -> World {
     let world = World::new((config.world.start.x, config.world.start.y))
         .with_gameplay(gameplay_of(config))
+        .with_character_screen(character_screen_of(config))
         .with_save_seconds(config.persistence.save_seconds);
     // Only when the operator pinned one. There is no `u64` that means "no seed", so
     // an absent `world.seed` has to leave the world's own default in place rather

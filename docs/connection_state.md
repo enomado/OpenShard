@@ -45,7 +45,8 @@ Five things follow from the split, and each is a reason on its own:
    from inside a tick, and unreachable *silently*. This is the structural reason
    the character screen cannot become world commands as
    [`roadmap.md` §2](roadmap.md) plans: the version has to live on the
-   connection, not on the entity.
+   connection, not on the entity. *(S1 moved it there; S5 is what it was moved
+   for, and the row carries the account and access level too.)*
 4. **The login crate already made this argument about itself.**
    `LoginSession`'s own doc: *"a state machine with facts kept outside it is a
    state machine that can disagree with itself"* — which is what `playing` is.
@@ -60,9 +61,9 @@ everything after it is the world's, character screen included.
 | | owner today | owner after |
 |---|---|---|
 | credentials, auth keys, `0x80`/`0xA0`/`0x8C` | `openshard-login` | unchanged |
-| a character *exists* | `login.accounts` | the world, with the roster |
-| a character is *present* | `Sessions::playing` (binary) | the world, as a phase |
-| client version | `Client` on the entity | the connection record |
+| a character *exists* | `login.accounts` | the world, with the roster ✅ S5 |
+| a character is *present* | `Sessions::playing` (binary) | the world, as a phase ✅ S5 — asked of the entity, and the binary's phase no longer names a character |
+| client version | `Client` on the entity | the connection record ✅ S1 |
 | the socket, and whether it is compressed | `Session` (binary) | unchanged — it is transport |
 
 The login crate ends its life at `Authenticated { account, version, access }` and
@@ -205,10 +206,45 @@ follows.
       one the logout wrote, so a roster the world failed to fill would put the
       character back at the start city with default stats rather than pass.
 
-- [ ] **S5. The character screen is world commands.** `0xA9`, `0x00`/`0xF8`,
-      `0x83`, `0x5D` become commands answered out of a tick.
-      `create_character`/`delete_character` leave the binary. The login crate
-      ends at `Authenticated`.
+- [x] **S5. The character screen is world commands.** Done, in two commits.
+
+      *The roster is the account's list.* It held a record per character
+      something had *saved*, while which characters *existed* lived on `Accounts`
+      in the login crate — two lists that had to agree, with the world's half
+      unable to see the other. Now it is per account, in the slot order `0xA9`
+      shows and `0x83` indexes, and each entry carries `Option<CharacterRecord>`:
+      `None` is a character that exists and that nothing has described yet, which
+      is the state the old shape could not spell. `enter` enrols what it enters,
+      and `forget` takes the entry off the list whether or not a record came with
+      it — the early return that skipped the cleanup used to take the removal with
+      it. Boot fills both halves: `restore_characters` for the store's rows,
+      `seed_configured_characters` for `[[accounts]] characters`.
+
+      *The screen moved.* `world/src/tick/screen.rs` answers `0xA9` on
+      `Command::Authenticated`, and `0x00`/`0xF8`, `0x83` and `0x5D` are commands
+      — `CreateCharacter`, `DeleteCharacter { connection, slot }`,
+      `PlayCharacter`. The connection's row carries the account and the access
+      level, so no character-screen packet has to name whose account it is. Name
+      validation moved with creation; `Accounts` lost `characters`,
+      `create_character` and `delete_character`, and `LoginServer` lost `starts`,
+      `character_list_flags` and `supported_features` — they are the world's
+      `CharacterScreen`, handed over at boot the way `Gameplay` is. The login
+      crate now ends at `Response::Idle`.
+
+      Three things fell out rather than being built. `0x83` indexes the list
+      `0xA9` was built from, out of one value in one process, so the two agree by
+      construction instead of by two lists happening to be in the same order.
+      `0x5D`'s echoed name is checked against the account's list rather than
+      trusted. And `WorldPhase` lost its payload: it carried the account and name
+      for one question — "is anybody playing this character" — which the world now
+      answers off the entity that *is* the fact. `Sessions::is_playing` is gone
+      with it.
+
+      Guarded by `world/src/tick/screen.rs`'s own tests — the list comes out of
+      the tick, a duplicate/empty/sixth name is refused and keeps the connection,
+      a played character cannot be deleted from a second connection on the same
+      account, an unplayed one is and the screen is redrawn, and a `0x5D` naming a
+      character the account does not have enters nothing.
 
 - [ ] **S6. The binary is glue again.** The `select!` loop, the transport, and
       boot. `restore_*` into `boot.rs`, `keys.expire` into its own `select!` arm,
@@ -219,7 +255,7 @@ follows.
       `pending_targets`, `last_status`, `last_light`, `last_music`. Teardown
       becomes one `remove`, and forgetting a field stops being possible.
 
-## Backlog, found while doing S1, S2, S3 and S4
+## Backlog, found while doing S1 through S5
 
 None is a blocker; each is written down where the next step through this area
 will read it.
@@ -313,8 +349,36 @@ will read it.
   off a phase that lives in the world would put a channel round-trip between the
   socket and the question "is this stream compressed".
 
+- **The character screen answers a tick late, and nobody has watched a real
+  client do it.** `0xA9` used to go back inside the same call that read the
+  `0x91`; it now waits for the next tick, up to 50 ms. The client is already
+  waiting at that point and this should be invisible — but it is exactly the kind
+  of thing that is fine in theory and a hang in practice, and it is the first item
+  under "to verify with a real client" below.
+
+- **A creation that enters the world does so without the gate ever opening.**
+  `0x00` does not move the phase — a refused creation must keep the connection on
+  the screen, and moving it optimistically would strand it in `Entering` with no
+  character behind it — so the phase goes `Outside → Playing` on the
+  `PlayerEntered`. In the window between the two, an in-world packet from that
+  connection is dropped by the gate. No client sends one there (it is waiting for
+  the `0x1B`), but the window is real and unnamed. The honest fix is a phase the
+  world moves *into* on a creation as well, which is the same shape as the
+  unnamed `LoggingOut` below.
+
+- **`DeleteResult` says less than the world knows.** A slot naming no character
+  and a slot outside the list both come back as `CharNotExist`, because that is
+  what the protocol has. Fine — but the *log* now collapses them too, and the two
+  mean different things about the client.
+
+- **`start_cities` is content in the binary.** It is a list of nine towns with
+  coordinates, filtered by facet, living in `server/src/dispatch.rs` next to the
+  packet translation. It is handed to the world at boot as configuration, which is
+  right; where it is *written* is not, and it is the kind of thing the Community
+  Pack should own.
+
 ## Status
 
-S1 through S4 landed; S5 is next. Findings are recorded in
+S1 through S5 landed; S6 is next. Findings are recorded in
 [`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
 that must agree".

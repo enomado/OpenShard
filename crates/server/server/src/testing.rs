@@ -33,12 +33,13 @@ pub(crate) fn lord_british() -> CharacterName {
     CharacterName::new("Lord British")
 }
 
-/// A login server holding [`admin`] with [`lord_british`] on it.
+/// A login server holding [`admin`]. Its characters are not here — which
+/// characters an account has is the world's roster since S5 of
+/// `docs/connection_state.md`, and an account store that still answered would be
+/// the second list this whole plan deletes.
 pub(crate) fn login_server() -> LoginServer<DevAccounts> {
     LoginServer::new(
-        DevAccounts::new()
-            .with_account(&admin(), &PlaintextPassword::new("hunter2"))
-            .with_character(&admin(), &lord_british()),
+        DevAccounts::new().with_account(&admin(), &PlaintextPassword::new("hunter2")),
         "OpenShard",
         single_shard(Ipv4Addr::LOCALHOST, 2593),
     )
@@ -87,9 +88,11 @@ pub(crate) fn at_character_screen(login: &mut LoginServer<DevAccounts>, now: Ins
         account: RawAccountName::new("admin"),
         password: RawPlaintextPassword::new("hunter2"),
     };
-    let Response::Send(_) = login.handle(&mut session.login, pkt(&game_login.encode()), now) else {
-        panic!("expected the character list");
-    };
+    assert_eq!(
+        login.handle(&mut session.login, pkt(&game_login.encode()), now),
+        Response::Idle,
+        "the login crate ends here: the character list comes out of a tick"
+    );
     assert_eq!(
         session.login.account(),
         Some(&admin()),

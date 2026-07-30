@@ -100,6 +100,7 @@ mod motion;
 mod persist;
 mod regions;
 mod roster;
+pub mod screen;
 mod skills_wire;
 mod spawners;
 mod speech;
@@ -145,6 +146,10 @@ pub struct World {
     /// store cannot answer that — its copy is written by a task nobody waits for,
     /// which a fast re-login can beat. See [`Roster`].
     roster: Roster,
+    /// What the character screen offers beside the characters: the starting
+    /// cities, and the two client-capability masks. Configuration, handed over at
+    /// boot — see [`CharacterScreen`](screen::CharacterScreen).
+    screen: screen::CharacterScreen,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     entered: Cursor<PlayerEntered>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
@@ -269,6 +274,7 @@ impl World {
             save_every: SAVE_EVERY_TICKS,
             saves: Vec::new(),
             roster: Roster::new(),
+            screen: screen::CharacterScreen::default(),
             entered: Cursor::default(),
             moved: Cursor::default(),
             gated: Cursor::default(),
@@ -319,6 +325,19 @@ impl World {
     #[must_use]
     pub const fn with_gameplay(mut self, gameplay: Gameplay) -> Self {
         self.state.gameplay = gameplay;
+        self
+    }
+
+    /// Set what the character screen offers: the starting cities, and the two
+    /// client-capability masks the `0xA9` and `0xB9` carry.
+    ///
+    /// The server builds these from `[gameplay]` and `[world] facets`; a test
+    /// takes the default, which offers no city — nothing in a test creates a
+    /// character through the screen, and a city list that came from nowhere would
+    /// be a fixture pretending to be configuration.
+    #[must_use]
+    pub fn with_character_screen(mut self, screen: screen::CharacterScreen) -> Self {
+        self.screen = screen;
         self
     }
 
@@ -409,11 +428,11 @@ impl World {
 
     /// The wire serial of everyone connected. For a benchmark that wants to walk
     /// them; a shard addresses players by connection, not by serial.
-    pub fn player_serials(&self) -> Vec<u32> {
+    pub fn player_serials(&self) -> Vec<Serial> {
         self.state
             .players
             .values()
-            .filter_map(|&entity| self.state.registry.serial_of(entity).map(Serial::raw))
+            .filter_map(|&entity| self.state.registry.serial_of(entity))
             .collect()
     }
 
@@ -605,7 +624,7 @@ impl World {
         let now = self.state.ticks;
         for entity in magic::expire_buffs(&mut self.state, now) {
             if let Some(serial) = self.state.registry.serial_of(entity) {
-                self.refresh_status_of(serial.raw());
+                self.refresh_status_of(serial);
             }
         }
         // Lift the behaviour buffs whose time is up. Night Sight restores the
@@ -613,7 +632,7 @@ impl World {
         for (entity, kind) in magic::expire_behaviour_buffs(&mut self.state, now) {
             if kind == openshard_state::effect::NIGHT_SIGHT {
                 if let Some(serial) = self.state.registry.serial_of(entity) {
-                    self.send_light(serial.raw(), LIGHT_DAY);
+                    self.send_light(serial, LIGHT_DAY);
                 }
             }
         }
@@ -722,7 +741,14 @@ impl World {
 
     fn apply(&mut self, command: Command, now: Instant) {
         match command {
-            Command::Authenticated { connection, version } => self.attach(connection, version),
+            Command::Authenticated {
+                connection,
+                version,
+                account,
+                access,
+            } => self.authenticated(connection, version, account, access),
+            Command::CreateCharacter { connection, create } => self.create_character(connection, create),
+            Command::PlayCharacter { connection, name } => self.play_character(connection, name),
             Command::Enter(entering) => self.enter(entering),
             Command::Walk { connection, request } => self.walk(connection, request, now),
             Command::RequestStatus { connection } => {
@@ -848,7 +874,7 @@ impl World {
                 serial,
                 amount,
                 DamageType::from_u8(damage_type),
-                openshard_protocol::serial::Serial::new(by),
+                by,
             ),
             Command::CastSpell {
                 serial,
@@ -926,7 +952,7 @@ impl World {
                 text,
             } => self.say(connection, mode, hue, font, text),
             Command::Speak { serial, hue, text } => {
-                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+                if let Some(entity) = self.state.registry.entity_of(serial) {
                     chat::speak(
                         &mut self.state,
                         entity,
@@ -1081,7 +1107,7 @@ impl World {
                 container,
             } => items::cancel_by_container(&mut self.state, connection, container),
             Command::Disconnect { connection } => self.disconnect(connection),
-            Command::DeleteCharacter { account, name } => self.delete_character(&account, &name),
+            Command::DeleteCharacter { connection, slot } => self.delete_character_at(connection, slot),
             Command::Control { serial } => self.control(serial),
             Command::ShowGump {
                 serial,
@@ -1106,26 +1132,22 @@ impl World {
                 debug!(count, "quest definitions registered");
             }
             Command::BindQuestGiver { serial, keys } => {
-                if let Some(serial) = Serial::new(serial) {
-                    quests::bind_giver(&mut self.state, serial, keys);
-                }
+                quests::bind_giver(&mut self.state, serial, keys);
             }
             Command::MakeEscortable { serial, destination } => {
-                if let Some(serial) = Serial::new(serial) {
-                    quests::make_escortable(&mut self.state, serial, destination);
-                }
+                quests::make_escortable(&mut self.state, serial, destination);
             }
             Command::QuestLogRequest { connection } => {
                 quests::open_log(&mut self.state, connection);
             }
             Command::CloseGump { serial, gump_id } => self.close_gump(serial, gump_id),
             Command::Message { serial, text } => {
-                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+                if let Some(entity) = self.state.registry.entity_of(serial) {
                     self.state.system_message(entity, &text);
                 }
             }
             Command::PlaySound { serial, sound } => {
-                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+                if let Some(entity) = self.state.registry.entity_of(serial) {
                     self.state.play_sound_to(entity, sound);
                 }
             }
@@ -1153,9 +1175,7 @@ impl World {
                 stackable,
             } => self.add_loot(container, graphic, hue, amount, stackable),
             Command::ConsumeItem { serial, amount } => {
-                if let Some(serial) = Serial::new(serial) {
-                    items::consume(&mut self.state, serial, amount);
-                }
+                items::consume(&mut self.state, serial, amount);
             }
             Command::Buy {
                 connection,
@@ -1245,7 +1265,7 @@ impl World {
             };
             if let Some(dir) = step {
                 if let Some(serial) = self.state.registry.serial_of(creature) {
-                    self.step(serial.raw(), dir);
+                    self.step(serial, dir);
                 }
             }
             // A hunter re-beats at its own pace (or the shard's); idle life
@@ -1294,8 +1314,8 @@ impl World {
 
     /// Hand a mobile's brain to the script: it stops thinking on its own and its
     /// `onTick` drives it instead. See [`Command::Control`].
-    fn control(&mut self, serial: u32) {
-        if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+    fn control(&mut self, serial: Serial) {
+        if let Some(entity) = self.state.registry.entity_of(serial) {
             self.state.registry.insert(entity, Scripted);
         }
     }
@@ -1303,18 +1323,15 @@ impl World {
     /// Send a pack-built gump to a mobile's client — the pack-facing counterpart
     /// of the admin menu's own `GumpDisplay`. Silent if the serial names
     /// no mobile, or it has no client to draw on.
-    fn show_gump(&mut self, serial: u32, gump_id: GumpId, at: GumpPoint, layout: &str, lines: &[String]) {
-        let Some(object) = Serial::new(serial) else {
-            return;
-        };
-        let Some(entity) = self.state.registry.entity_of(object) else {
+    fn show_gump(&mut self, serial: Serial, gump_id: GumpId, at: GumpPoint, layout: &str, lines: &[String]) {
+        let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
         let packet = ServerPacket::GumpDisplay(GumpDisplay {
-            serial: GumpKey::on(object),
+            serial: GumpKey::on(serial),
             gump_id,
             at,
             layout: layout.to_owned(),
@@ -1325,8 +1342,8 @@ impl World {
 
     /// Close an open dialog on a player's client. Silent if the serial names no
     /// mobile, or it has no client to close anything on.
-    fn close_gump(&mut self, serial: u32, gump_id: GumpId) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    fn close_gump(&mut self, serial: Serial, gump_id: GumpId) {
+        let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
@@ -1342,11 +1359,8 @@ impl World {
     /// Drop an item into a player's backpack — a quest reward. Merges onto a like
     /// pile when `stackable` (gold), else a discrete piece. Silent if the serial
     /// names no mobile or it wears no backpack.
-    fn give_item(&mut self, serial: u32, graphic: Graphic, hue: Hue, amount: u16, stackable: bool) {
-        let Some(mobile) = Serial::new(serial) else {
-            return;
-        };
-        items::give_to_backpack(&mut self.state, mobile, graphic, hue, amount, stackable);
+    fn give_item(&mut self, serial: Serial, graphic: Graphic, hue: Hue, amount: u16, stackable: bool) {
+        items::give_to_backpack(&mut self.state, serial, graphic, hue, amount, stackable);
     }
 
     /// Take up to `amount` of a graphic from a player's backpack — all-or-nothing,
@@ -1354,13 +1368,10 @@ impl World {
     /// result with an [`ItemsTaken`](crate::ItemsTaken) event the pack reads next
     /// tick. Nothing (and `taken: 0`) if the serial names no mobile or it wears no
     /// backpack.
-    fn take_item(&mut self, serial: u32, graphic: Graphic, amount: u16) {
-        let Some(player) = Serial::new(serial) else {
-            return;
-        };
-        let taken = items::take_from_backpack(&mut self.state, player, graphic, amount);
+    fn take_item(&mut self, serial: Serial, graphic: Graphic, amount: u16) {
+        let taken = items::take_from_backpack(&mut self.state, serial, graphic, amount);
         self.state.bus.send(openshard_items::ItemsTaken {
-            player,
+            player: serial,
             graphic,
             taken,
         });

@@ -2,19 +2,6 @@ use openshard_events::Cursor;
 
 use super::*;
 
-/// Which character a connection is playing.
-///
-/// Kept beside the connection rather than asked of the world, because the
-/// question it exists to answer is one the world cannot answer well: whether
-/// *some other* connection is playing a given character. See
-/// [`Sessions::is_playing`].
-pub(crate) struct PlayedCharacter {
-    /// Whose account it is.
-    account: AccountName,
-    /// The character's name, as the account lists it.
-    name: CharacterName,
-}
-
 /// Where a connection stands with respect to the world.
 ///
 /// # Why this is not a bool, and not the world's
@@ -33,6 +20,15 @@ pub(crate) struct PlayedCharacter {
 /// projection of the world's fact and never a second copy of it: nothing but a
 /// world event moves it past [`Entering`](Self::Entering). See
 /// `docs/connection_state.md`, D4.
+///
+/// # It names no character
+///
+/// It used to carry the account and name, for one question — "is anybody playing
+/// this character", which character deletion has to refuse on. Since S5 deletion
+/// is a world command and the world answers that itself, off the entity that *is*
+/// the fact rather than off a projection of it. What is left here is the one
+/// thing this side genuinely needs to know synchronously: whether a packet may be
+/// queued.
 pub(crate) enum WorldPhase {
     /// Not in the world: still logging in, or on the character screen. Which of
     /// those it is, is `LoginSession`'s to say and is deliberately not repeated
@@ -44,10 +40,10 @@ pub(crate) enum WorldPhase {
     /// queue is ordered, so anything arriving now is applied *after* the `Enter`
     /// it follows. This is the one-tick gap between asking and arriving, and
     /// naming it is the whole point of the enum.
-    Entering(PlayedCharacter),
+    Entering,
     /// The world says this connection is driving a character — a `PlayerEntered`
     /// arrived for it.
-    Playing(PlayedCharacter),
+    Playing,
     /// It was in the world and is not any more: a logout, or an entry the world
     /// refused. Terminal — a connection never comes back from here to the
     /// character screen, because a `0xD1` is answered with an ack and the client
@@ -56,23 +52,13 @@ pub(crate) enum WorldPhase {
 }
 
 impl WorldPhase {
-    /// The character this connection stands for, whether or not the world has
-    /// confirmed it yet.
-    ///
-    /// Both states count, and that is deliberate: the question this answers is
-    /// "may somebody delete this character", and a character whose `Enter` is
-    /// still in the queue must be as undeletable as one already standing in
-    /// Britain.
-    fn character(&self) -> Option<&PlayedCharacter> {
-        match self {
-            Self::Entering(played) | Self::Playing(played) => Some(played),
-            Self::Outside | Self::Left => None,
-        }
-    }
-
     /// Whether a packet meant for the world may be queued from this connection.
+    ///
+    /// Both in-between states count, and that is deliberate: a command queued
+    /// while the `Enter` is still in the queue applies after it, because the queue
+    /// is ordered.
     fn may_act(&self) -> bool {
-        self.character().is_some()
+        matches!(self, Self::Entering | Self::Playing)
     }
 }
 
@@ -114,22 +100,26 @@ impl Session {
     /// `Command::Enter` that would put it there is queued.
     ///
     /// Only ever `Outside → Entering`. A second `0x5D` on a connection that is
-    /// already in the world is a client contradicting itself, and honouring it
-    /// here would overwrite the character the world knows this socket by; the
-    /// world refuses the duplicate `Enter` too (`RefusedEntry::AlreadyInWorld`).
-    pub(crate) fn enter_world(&mut self, account: AccountName, name: CharacterName) {
+    /// already in the world is a client contradicting itself; the world refuses
+    /// the duplicate `Enter` too (`RefusedEntry::AlreadyInWorld`).
+    pub(crate) fn enter_world(&mut self) {
         if matches!(self.phase, WorldPhase::Outside) {
-            self.phase = WorldPhase::Entering(PlayedCharacter { account, name });
+            self.phase = WorldPhase::Entering;
         }
     }
 
     /// The world confirmed this connection is in — a `PlayerEntered`.
     ///
-    /// Only `Entering → Playing`: an arrival for a connection this side never
-    /// sent an `Enter` for is not something to invent a character from.
+    /// `Outside` counts as well as `Entering`, and that is not laxity: a
+    /// character *created* on the screen enters without this side ever asking to,
+    /// because the request the client sent was "create", and whether it became an
+    /// entry was the world's to decide. The world is the authority on this
+    /// transition either way — see D4 — so what it says happened, happened. Only
+    /// `Left` is terminal: a connection the world has let go of does not come
+    /// back.
     pub(crate) fn entered_world(&mut self) {
-        if let WorldPhase::Entering(played) = std::mem::replace(&mut self.phase, WorldPhase::Left) {
-            self.phase = WorldPhase::Playing(played);
+        if !matches!(self.phase, WorldPhase::Left) {
+            self.phase = WorldPhase::Playing;
         }
     }
 
@@ -137,18 +127,6 @@ impl Session {
     /// it refused.
     pub(crate) fn left_world(&mut self) {
         self.phase = WorldPhase::Left;
-    }
-
-    /// Whether this connection is playing exactly this character.
-    ///
-    /// Both halves are compared case-folded, the way every other account and
-    /// character key in the shard is built — the client sends the name back as
-    /// it was typed, and "Lord British" and "lord british" are one character.
-    fn is_playing(&self, account: &AccountName, name: &CharacterName) -> bool {
-        self.phase.character().is_some_and(|played| {
-            played.account.normalized() == account.normalized()
-                && played.name.normalized() == name.normalized()
-        })
     }
 
     /// Act on a login response. Returns `false` if the connection should go.
@@ -197,11 +175,12 @@ impl Session {
 
 /// Every connection the shard loop is holding, by id.
 ///
-/// A table with one query on top of it — [`Sessions::is_playing`] — and that
-/// query is why this is a type rather than the bare `HashMap` it replaces.
-/// "Is anybody playing this character?" reads across *all* the connections, so
-/// it cannot live on a `&mut Session` borrowed out of the map, and leaving it
-/// to the caller to hand-roll the scan is how it ends up written twice.
+/// A type rather than the bare `HashMap` because opening and closing a
+/// connection are named operations with a rule each — `close` drops the outbox,
+/// which is what actually shuts the socket — and because the table is where a
+/// query across all connections would go if one comes back. The one that used to
+/// live here, "is anybody playing this character?", is the world's since S5: it
+/// is answered off the entity rather than off this side's projection of it.
 pub(crate) struct Sessions(HashMap<ConnectionId, Session>);
 
 impl Sessions {
@@ -233,27 +212,6 @@ impl Sessions {
 
     pub(crate) fn get_mut(&mut self, id: ConnectionId) -> Option<&mut Session> {
         self.0.get_mut(&id)
-    }
-
-    /// Whether any connection is playing this character right now.
-    ///
-    /// # Why this and not the world
-    ///
-    /// Character deletion (`0x83`) has to refuse a character somebody is
-    /// playing, and the connection asking is never that somebody — it is on the
-    /// character screen. It is a *second* connection on the same account, which
-    /// is the only way the situation arises at all.
-    ///
-    /// This used to be `World::is_online(serial)`, and it had a hole: the caller
-    /// could only produce a serial by looking the character up in the saved-record
-    /// map, and a character created during this run has no saved record until it
-    /// logs out. So for a brand-new character the check did not run — the
-    /// character was dropped from the account while its entity kept playing, and
-    /// the world was never even told to forget it, because there was no record to
-    /// remove. Asked of the sessions, the question needs no serial and no saved
-    /// row: a connection knows what it is playing from the moment it asks to.
-    pub(crate) fn is_playing(&self, account: &AccountName, name: &CharacterName) -> bool {
-        self.0.values().any(|session| session.is_playing(account, name))
     }
 }
 
@@ -327,6 +285,8 @@ mod tests {
     use openshard_gateway::{OutboxRx, outbox_channel, version_channel};
     use openshard_protocol::version::ClientVersion;
 
+    use openshard_world::{Character, Entering};
+
     use super::*;
     use crate::testing::{admin, at_character_screen, login_server, lord_british};
 
@@ -367,30 +327,6 @@ mod tests {
     }
 
     #[test]
-    fn a_played_character_is_found_from_another_connection() {
-        // What deletion asks. The connection that would delete is not the one
-        // playing, so the answer has to come from the table and not from the
-        // asking session.
-        let playing = ConnectionId::from_raw(1);
-        let screen = ConnectionId::from_raw(2);
-
-        let mut sessions = Sessions::new();
-        let (mut in_world, _wire) = fresh();
-        in_world.enter_world(AccountName::new("admin"), CharacterName::new("Lord British"));
-        sessions.open(playing, in_world);
-        let (at_screen, _screen_wire) = fresh();
-        sessions.open(screen, at_screen);
-
-        assert!(sessions.is_playing(&AccountName::new("admin"), &CharacterName::new("Lord British")));
-        // Case-folded on both halves: the client sends the name back as typed.
-        assert!(sessions.is_playing(&AccountName::new("ADMIN"), &CharacterName::new("lord british")));
-        // And a character nobody picked is not in play, nor is one on another
-        // account that happens to share the name.
-        assert!(!sessions.is_playing(&AccountName::new("admin"), &CharacterName::new("Dupre")));
-        assert!(!sessions.is_playing(&AccountName::new("other"), &CharacterName::new("Lord British")));
-    }
-
-    #[test]
     fn a_connection_on_the_character_screen_is_not_in_the_world() {
         let (session, _wire) = at_character_screen(&mut login_server(), Instant::now());
         assert!(!session.in_world(), "logged in, but nothing has been picked yet");
@@ -425,11 +361,11 @@ mod tests {
         let (session, _wire) = fresh();
         sessions.open(id, session);
 
-        sessions.get_mut(id).unwrap().enter_world(admin(), lord_british());
+        sessions.get_mut(id).unwrap().enter_world();
         let session = sessions.get(id).unwrap();
         assert!(session.in_world(), "commands may be queued across the gap");
         assert!(
-            matches!(session.phase, WorldPhase::Entering(_)),
+            matches!(session.phase, WorldPhase::Entering),
             "but the world has not run yet"
         );
 
@@ -440,7 +376,7 @@ mod tests {
             "an entry that worked closes nothing"
         );
         assert!(
-            matches!(sessions.get(id).unwrap().phase, WorldPhase::Playing(_)),
+            matches!(sessions.get(id).unwrap().phase, WorldPhase::Playing),
             "and now the world has said so"
         );
     }
@@ -461,7 +397,7 @@ mod tests {
         let (session, _wire) = fresh();
         sessions.open(id, session);
 
-        sessions.get_mut(id).unwrap().enter_world(admin(), lord_british());
+        sessions.get_mut(id).unwrap().enter_world();
         world.queue(entering(id));
         world.tick(now);
         phases.apply(&world, &mut sessions);
@@ -480,10 +416,12 @@ mod tests {
     }
 
     #[test]
-    fn a_character_the_world_let_go_of_is_no_longer_being_played() {
-        // The other end of the same lie: `playing` was "set once and never
-        // cleared", so a logged-out character stayed undeletable for as long as
-        // its socket lingered. `PlayerLeft` is what clears it now.
+    fn a_character_the_world_let_go_of_leaves_the_phase_behind() {
+        // The other end of the lie `playing: Option<..>` told: it was set once
+        // and never cleared, so a logged-out character stayed undeletable for as
+        // long as its socket lingered. `PlayerLeft` is what clears it now — and
+        // what a delete asks is the world's own question since S5, so this side
+        // only has to stop claiming the connection may act.
         let now = Instant::now();
         let mut world = World::new((1363, 1600));
         let mut phases = PhaseSync::new(&world);
@@ -492,18 +430,43 @@ mod tests {
         let (session, _wire) = fresh();
         sessions.open(id, session);
 
-        sessions.get_mut(id).unwrap().enter_world(admin(), lord_british());
+        sessions.get_mut(id).unwrap().enter_world();
         world.queue(entering(id));
         world.tick(now);
         phases.apply(&world, &mut sessions);
-        assert!(sessions.is_playing(&admin(), &lord_british()));
+        assert!(sessions.get(id).unwrap().in_world());
 
         world.queue(Command::Disconnect { connection: id });
         world.tick(now);
         phases.apply(&world, &mut sessions);
         assert!(
-            !sessions.is_playing(&admin(), &lord_british()),
-            "the world let the character go, so nothing is playing it"
+            !sessions.get(id).unwrap().in_world(),
+            "the world let the character go, so nothing may be queued for it"
+        );
+    }
+
+    #[test]
+    fn a_character_created_on_the_screen_reaches_playing_without_being_asked_for() {
+        // The transition creation needs. A `0x00` is not "let me in" — whether it
+        // became an entry was the world's to decide, and this side deliberately
+        // does not guess by moving the phase itself: a creation the world refuses
+        // keeps the connection on the screen, and a phase moved optimistically
+        // would strand it in `Entering` with no character behind it.
+        let now = Instant::now();
+        let mut world = World::new((1363, 1600));
+        let mut phases = PhaseSync::new(&world);
+        let mut sessions = Sessions::new();
+        let id = ConnectionId::from_raw(1);
+        let (session, _wire) = fresh();
+        sessions.open(id, session);
+        assert!(!sessions.get(id).unwrap().in_world(), "nothing was asked for");
+
+        world.queue(entering(id));
+        world.tick(now);
+        phases.apply(&world, &mut sessions);
+        assert!(
+            matches!(sessions.get(id).unwrap().phase, WorldPhase::Playing),
+            "the world says it is in, so it is in"
         );
     }
 }

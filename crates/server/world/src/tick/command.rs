@@ -1,5 +1,6 @@
 use super::*;
-use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::identity::RawCharacterName;
+use openshard_protocol::wire::{Graphic, Hue, RawCharacterSlot};
 
 /// How a character looks: its body graphic and hue. Chosen on the creation
 /// screen, or restored from the save.
@@ -304,18 +305,59 @@ pub enum Command {
     /// The hand-off, and the first the world hears of a connection: the login
     /// conversation before this point is not the world's business — accounts,
     /// passwords and the relay key are not simulation — and everything after it
-    /// is. Until this arrives the world cannot address the connection at all,
-    /// which is why the character screen is still answered outside the tick. See
-    /// `docs/connection_state.md`.
+    /// is. See `docs/connection_state.md`.
+    ///
+    /// Since S5 this is also what *answers* the login: applying it writes the
+    /// connection's row and sends the `0xA9` character list (with the `0xB9`
+    /// feature mask ahead of it, when the shard advertises one). The login crate
+    /// ends here — it has no character list to send, because which characters
+    /// exist is the roster's and the roster is the world's.
     ///
     /// The version rides along because the game socket never states it: it was
     /// read from the *login* socket's seed and carried across on the auth key,
-    /// and this is the only path by which it reaches the world.
+    /// and this is the only path by which it reaches the world. The account and
+    /// the access level ride along for the same reason — they are what the login
+    /// conversation established, and every character-screen packet after this one
+    /// names a character without naming whose it is.
     Authenticated {
         /// Which connection.
         connection: ConnectionId,
         /// What its client claims to be.
         version: ClientVersion,
+        /// Whose account it authenticated as.
+        account: AccountName,
+        /// The staff authority that account plays with.
+        access: AccessLevel,
+    },
+    /// A client asked to create a character (`0x00`/`0xF8`) and play it.
+    ///
+    /// Both halves, because the client asks for both: the packet that names the
+    /// character also picks its stats, skills, look and starting city, and a
+    /// client that sent it is already waiting to be in the world. The world
+    /// validates the name against the account's list, refuses with an `0x82` the
+    /// client can render — a full account, an empty or duplicate name — and
+    /// otherwise enrols it and enters it, all inside one tick.
+    ///
+    /// The account is not on the command: it is on the connection's row, put
+    /// there by [`Authenticated`](Self::Authenticated). A creation that named its
+    /// own account would be a client telling the shard whose character to make.
+    CreateCharacter {
+        /// Which connection.
+        connection: ConnectionId,
+        /// What the client filled in on the creation screen.
+        create: openshard_protocol::world::CreateCharacter,
+    },
+    /// A client picked a character off the list and wants to play it (`0x5D`).
+    ///
+    /// The name is the *raw* one the client echoed back, and it is validated
+    /// against the account's list rather than trusted: a `0x5D` naming a
+    /// character the account does not have is refused instead of entering a
+    /// character nobody created.
+    PlayCharacter {
+        /// Which connection.
+        connection: ConnectionId,
+        /// The name the client echoed off the list it was sent.
+        name: RawCharacterName,
     },
     /// A client picked a character. One field, because [`Entering`] is what the
     /// world's own `enter` takes: the command used to spell out the same seven
@@ -431,8 +473,8 @@ pub enum Command {
     /// stays put, and the next `Step` moves it — because the clients watching
     /// animate the turn and the move the same way whoever ordered it.
     Step {
-        /// Which mobile, by wire serial.
-        serial: u32,
+        /// Which mobile.
+        serial: Serial,
         /// Which way: the low three bits of a facing byte (0 N, clockwise).
         direction: u8,
     },
@@ -534,28 +576,28 @@ pub enum Command {
     },
     /// Deal damage to a mobile — a script or another mobile's blow.
     Damage {
-        /// Whom, by wire serial.
-        serial: u32,
+        /// Whom.
+        serial: Serial,
         /// How much, before armour.
         amount: u16,
         /// What kind, as a wire byte (0 physical, 1 fire, …). The target's
         /// resistance to that kind takes its cut.
         damage_type: u8,
-        /// Who dealt it, by wire serial, or zero for unattributed damage — the
-        /// caster a script blames a spell's damage on, so killing a blue with it
-        /// is a murder the same as a sword.
-        by: u32,
+        /// Who dealt it, or `None` for unattributed damage — the caster a script
+        /// blames a spell's damage on, so killing a blue with it is a murder the
+        /// same as a sword.
+        by: Option<Serial>,
     },
     /// Cast a spell: pay mana, roll the casting skill, and say what happened with
     /// a [`SpellCast`](openshard_magic::SpellCast). The spell's *effect* is a
     /// script's — this is only the mana-and-skill gate every spell passes.
     CastSpell {
-        /// The caster's serial.
-        serial: u32,
+        /// The caster.
+        serial: Serial,
         /// Which spell, by id.
         spell: u16,
-        /// The target's serial, or zero for a spell that needs none.
-        target: u32,
+        /// The target, or `None` for a spell that needs none.
+        target: Option<Serial>,
         /// The mana it costs.
         mana: u16,
         /// The lower edge of the skill band it is cast against, in tenths: below
@@ -565,9 +607,9 @@ pub enum Command {
         max_skill: i32,
         /// The skill it rolls (Magery, and its id is the caller's to name).
         skill: u8,
-        /// The container to draw reagents from, or zero for a spell that needs
+        /// The container to draw reagents from, or `None` for a spell that needs
         /// none. The caster's pack, in the usual case.
-        pack: u32,
+        pack: Option<Serial>,
         /// The reagents the spell consumes, as `(graphic, count)`. All must be in
         /// the pack or the spell fizzles, spending nothing.
         reagents: Vec<(Graphic, u16)>,
@@ -576,15 +618,15 @@ pub enum Command {
     /// the maximum and never past it.
     Heal {
         /// Whom.
-        serial: u32,
+        serial: Serial,
         /// By how much.
         amount: u16,
     },
     /// Set a mobile's stats — a script building a character or a monster.
     /// Strength and intelligence re-cap hit points and mana as they change.
     SetStats {
-        /// Whose, by wire serial.
-        serial: u32,
+        /// Whose.
+        serial: Serial,
         /// Strength.
         strength: u16,
         /// Dexterity.
@@ -595,8 +637,8 @@ pub enum Command {
     /// Set a mobile's skill value — a script configuring a character. `value` is
     /// in tenths, capped at that skill's own ceiling.
     SetSkill {
-        /// Whose, by wire serial.
-        serial: u32,
+        /// Whose.
+        serial: Serial,
         /// Which skill, by id.
         skill: u8,
         /// The value in tenths.
@@ -604,8 +646,8 @@ pub enum Command {
     },
     /// Override a weapon item's speed and damage — the pack's magic sword.
     SetWeapon {
-        /// The weapon item, by wire serial.
-        serial: u32,
+        /// The weapon item.
+        serial: Serial,
         /// Swing-speed base (higher swings faster).
         speed: u16,
         /// Minimum damage before resistance.
@@ -621,8 +663,8 @@ pub enum Command {
     /// stocks bottles and calls this on them; the Poisoning skill does the rest.
     /// `charges` of zero removes any poison instead.
     SetPoison {
-        /// The item, by wire serial.
-        serial: u32,
+        /// The item.
+        serial: Serial,
         /// The poison level, 0 (lesser) .. 4 (lethal).
         level: u8,
         /// Doses. One for a bottle; zero clears the poison.
@@ -637,8 +679,8 @@ pub enum Command {
     /// them the skill sits decides both the odds and how much is learned. Both
     /// edges are in tenths, like the skill, and may be negative.
     UseSkill {
-        /// Whose, by wire serial.
-        serial: u32,
+        /// Whose.
+        serial: Serial,
         /// Which skill, by id.
         skill: u8,
         /// The lower edge of the band, in tenths.
@@ -713,8 +755,8 @@ pub enum Command {
     },
     /// A mobile speaks by decree — a script's NPC, or a keyword answer.
     Speak {
-        /// Who, by wire serial.
-        serial: u32,
+        /// Who.
+        serial: Serial,
         /// The colour.
         hue: Hue,
         /// The words.
@@ -810,8 +852,9 @@ pub enum Command {
         /// Which connection.
         connection: ConnectionId,
         /// The escrow container the window is drawn on, as the client names it.
-        /// Checked against the trades this side remembers opening.
-        container: u32,
+        /// Checked against the trades this side remembers opening — the queue is
+        /// a delivery and not a checkpoint.
+        container: RawSerial,
         /// Whether the checkbox is now ticked. Cancelling is
         /// [`TradeCancel`](Self::TradeCancel).
         accepted: bool,
@@ -820,41 +863,50 @@ pub enum Command {
     TradeCancel {
         /// Which connection.
         connection: ConnectionId,
-        /// The escrow container the window is drawn on.
-        container: u32,
+        /// The escrow container the window is drawn on, as the client names it.
+        container: RawSerial,
     },
     /// A connection went away.
     Disconnect {
         /// Which connection.
         connection: ConnectionId,
     },
-    /// A character was deleted from the character-select screen (`0x83`). The
-    /// shard has already dropped it from the account's list; this tells the
-    /// world to forget its roster row, its store row and its saved inventory, so
-    /// the deletion reaches the store on the next save. The serial stays
-    /// reserved — a packet still in flight may name it — so nothing is unbound.
+    /// Delete a character from the character-select screen (`0x83`).
     ///
-    /// Named by account and character rather than by serial: since S4 the roster
-    /// is the world's, and the serial is on the row the world itself holds. The
-    /// shard has no serial to send — a character created this run and never
-    /// logged out has never had one recorded anywhere the shard can see.
+    /// Everything the world has under that name goes: its place on the account's
+    /// list, the record a re-login would read, the store row, and the saved
+    /// inventory — so the deletion reaches the store on the next save. The serial
+    /// stays reserved, since a packet still in flight may name it.
+    ///
+    /// # By slot, and why that is safe now
+    ///
+    /// The slot indexes the list the client was last sent, so it is only as good
+    /// as the two ends agreeing on what that list was. They agree by construction
+    /// since S5: `0xA9` is built from the roster and so is this lookup, out of one
+    /// value in one process. It used to index the login crate's copy while the
+    /// client had been shown — potentially — another order entirely.
+    ///
+    /// The account is not on the command; it is on the connection's row. So is
+    /// the answer the client gets: a refusal (`0x85`) when the slot names no
+    /// character or somebody is playing it, and the redrawn list (`0x86`)
+    /// otherwise.
     DeleteCharacter {
-        /// Whose account it was on.
-        account: AccountName,
-        /// The deleted character's name.
-        name: CharacterName,
+        /// Which connection asked.
+        connection: ConnectionId,
+        /// Which slot of the list it was last sent.
+        slot: RawCharacterSlot,
     },
     /// Hand a mobile's brain to the script: the built-in `ai` stops driving it and
     /// its `onTick` takes over. A script controls a creature it spawned.
     Control {
-        /// The mobile, by wire serial.
-        serial: u32,
+        /// The mobile.
+        serial: Serial,
     },
     /// Show a gump to a mobile's client — a pack-built dialog (a quest offer). The
     /// reply comes back as a [`GumpAnswered`](crate::events::GumpAnswered) event.
     ShowGump {
-        /// Who sees it, by wire serial.
-        serial: u32,
+        /// Who sees it.
+        serial: Serial,
         /// The gump id the reply is keyed on. A [`GumpId`] and not a raw one:
         /// the pack chose it, and the script bridge is where its JSON number
         /// became a type — the same seam `Command::Speak` crosses.
@@ -885,15 +937,15 @@ pub enum Command {
     /// Mark an NPC as offering a set of quests, and save that with it. From a
     /// script.
     BindQuestGiver {
-        /// Which NPC, by wire serial.
-        serial: u32,
+        /// Which NPC.
+        serial: Serial,
         /// Which quests, by key. Empty un-binds it.
         keys: Vec<String>,
     },
     /// Mark an NPC as escortable, and save that with it. From a script.
     MakeEscortable {
-        /// Which NPC, by wire serial.
-        serial: u32,
+        /// Which NPC.
+        serial: Serial,
         /// The region it wants to reach; empty lets the quest decide.
         destination: String,
     },
@@ -906,30 +958,30 @@ pub enum Command {
     /// Close an open gump on a player's client — the dialog a page chain is
     /// replacing. From a script.
     CloseGump {
-        /// Whose client, by wire serial.
-        serial: u32,
+        /// Whose client.
+        serial: Serial,
         /// Which dialog, by the id it was opened under.
         gump_id: openshard_protocol::gump::GumpId,
     },
     /// Send a player a private system line. From a script.
     Message {
-        /// Who reads it, by wire serial.
-        serial: u32,
+        /// Who reads it.
+        serial: Serial,
         /// The words.
         text: String,
     },
     /// Play a sound for one player. From a script.
     PlaySound {
-        /// Who hears it, by wire serial.
-        serial: u32,
+        /// Who hears it.
+        serial: Serial,
         /// The sound id. The script bridge is where the raw JSON number becomes
         /// this type — the same seam `Command::Speak` crosses for its `Hue`.
         sound: openshard_protocol::wire::SoundId,
     },
     /// Put an item into a player's backpack — a quest reward. From a script.
     GiveItem {
-        /// Whose backpack, by wire serial.
-        serial: u32,
+        /// Whose backpack.
+        serial: Serial,
         /// The item graphic.
         graphic: Graphic,
         /// Its hue, or 0.
@@ -943,8 +995,8 @@ pub enum Command {
     /// collect turn-in. All-or-nothing; reports back with an
     /// [`ItemsTaken`](crate::ItemsTaken) event. From a script.
     TakeItem {
-        /// Whose backpack, by wire serial.
-        serial: u32,
+        /// Whose backpack.
+        serial: Serial,
         /// The item graphic to take.
         graphic: Graphic,
         /// How many to take.
@@ -960,16 +1012,16 @@ pub enum Command {
     },
     /// Fill a vendor's stock crate with priced goods. From a script.
     StockVendor {
-        /// The vendor mobile's wire serial.
-        serial: u32,
+        /// The vendor mobile.
+        serial: Serial,
         /// The goods, priced and labelled.
         stock: Vec<npc::StockLine>,
     },
     /// Put an item into a container — a pack filling a corpse with loot off a
     /// [`CorpseCreated`](crate::events::CorpseCreated) event. From a script.
     AddLoot {
-        /// The container's wire serial — a corpse, a chest.
-        container: u32,
+        /// The container — a corpse, a chest.
+        container: Serial,
         /// The item graphic.
         graphic: Graphic,
         /// Its hue, or 0.
@@ -983,8 +1035,8 @@ pub enum Command {
     /// Remove an item by serial, wherever it lives — a used item vanishing (a
     /// drunk potion, a read-once scroll). From a script.
     ConsumeItem {
-        /// The item's wire serial.
-        serial: u32,
+        /// The item.
+        serial: Serial,
         /// How many to take: 0 (or the whole stack) removes the item; a smaller
         /// amount decrements a stackable pile.
         amount: u16,

@@ -71,6 +71,10 @@ pub enum RefusedEntry {
     SerialInUse,
     /// There are no mobile serials left to give a new character.
     NoSerialsLeft,
+    /// The `0x5D` named a character this account does not have. A client that
+    /// picked off the list it was sent cannot produce this, so it is either a
+    /// client that lost the plot or one that made the name up.
+    NoSuchCharacter,
 }
 
 // `ItemSpawned` moved to `openshard-items` with the item system that emits it.

@@ -18,10 +18,17 @@ impl World {
     /// socket issued.
     ///
     /// [`WorldState::send_packet`]: openshard_state::WorldState::send_packet
-    pub(super) fn attach(&mut self, connection: ConnectionId, version: ClientVersion) {
-        self.state
-            .connections
-            .insert(connection, openshard_state::connection::Connection::new(version));
+    pub(super) fn attach(
+        &mut self,
+        connection: ConnectionId,
+        version: ClientVersion,
+        account: AccountName,
+        access: AccessLevel,
+    ) {
+        self.state.connections.insert(
+            connection,
+            openshard_state::connection::Connection::new(version, account, access),
+        );
     }
 
     /// The facet a mobile is on, or the default if it carries none.
@@ -151,7 +158,7 @@ impl World {
         // enrolled by boot — and it deliberately records nothing about *where*
         // the character is; the logout does that.
         self.roster.enrol(&account, &name);
-        self.state.registry.insert(entity, Account(account));
+        self.state.registry.insert(entity, Account(account.clone()));
         self.state.registry.insert(entity, facet);
         // The account's authority, re-derived each login and never saved with the
         // character — so it is what the GM command gate reads.
@@ -324,7 +331,7 @@ impl World {
         // A character can reach the world without a hand-off — every test that
         // queues an `Enter` of its own does — so the session row is written here
         // too. See `attach`.
-        self.attach(connection, version);
+        self.attach(connection, version, account, access);
         // The AoS feature gates for this connection, at debug — tooltips and
         // context menus are version-gated, so this is where to look if a modern
         // client unexpectedly shows no hover names.
@@ -539,8 +546,8 @@ impl World {
     /// Str/dex/int and the maxima do not move in ordinary play, so nothing
     /// re-sends the status but this — a stat buff landing, or wearing off. An NPC,
     /// or a player between sessions, is a no-op.
-    pub(super) fn refresh_status_of(&mut self, serial: u32) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    pub(super) fn refresh_status_of(&mut self, serial: Serial) {
+        let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
         if let Some(connection) = self.connection_of(entity) {

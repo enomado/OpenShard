@@ -6,12 +6,11 @@ use std::time::Instant;
 
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::login::{
-    AccountLogin, CharacterList, CharacterListFlags, ClientVersionReport, DenyReason, GameServerLogin,
-    LoginDenied, LoginStagePacket, PercentFull, Relay, SelectShard, ShardEntry, ShardList, StartLocation,
-    SupportedFeatures, encode_supported_features,
+    AccountLogin, ClientVersionReport, DenyReason, GameServerLogin, LoginDenied, LoginStagePacket,
+    PercentFull, Relay, SelectShard, ShardEntry, ShardList,
 };
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::{feature::Feature, seed::Seed, version::ClientVersion};
+use openshard_protocol::{seed::Seed, version::ClientVersion};
 use tracing::{debug, warn};
 
 use crate::accounts::Accounts;
@@ -203,15 +202,6 @@ pub struct LoginServer<A: Accounts> {
     pub shards: Vec<ShardEntry>,
     /// Where to send a client after it picks a shard.
     pub game_address: SocketAddrV4,
-    /// The starting cities offered at character creation.
-    pub starts: Vec<StartLocation>,
-    /// The client-capability mask for the 0xA9 list.
-    pub character_list_flags: CharacterListFlags,
-    /// The AoS `0xB9` SupportedFeatures mask sent before the character list. Zero
-    /// means "do not advertise" — no `0xB9` is sent, and a modern client stays on
-    /// the classic single-click name path. The `server` crate sets the AoS bits
-    /// from the `[gameplay]` tooltip/context-menu config.
-    pub supported_features: SupportedFeatures,
 }
 
 impl<A: Accounts> LoginServer<A> {
@@ -227,9 +217,6 @@ impl<A: Accounts> LoginServer<A> {
                 address: *game_address.ip(),
             }],
             game_address,
-            starts: Vec::new(),
-            character_list_flags: CharacterListFlags::NONE,
-            supported_features: SupportedFeatures::NONE,
         }
     }
 
@@ -465,42 +452,20 @@ impl<A: Accounts> LoginServer<A> {
             }
         };
 
-        let characters = self.accounts.characters(&account);
-        debug!(
-            %account,
-            count = characters.len(),
-            "sending character list"
-        );
-        let character_list = ServerPacket::CharacterList(CharacterList {
-            characters,
-            starts: self.starts.clone(),
-            flags: self.character_list_flags,
-        })
-        .encode(session.version);
-        // AoS SupportedFeatures (0xB9) rides just ahead of the character list when
-        // the shard advertises any — the client reads self-framing packets in
-        // order, so one buffer carries both. Zero means "classic": no 0xB9, and a
-        // modern client falls back to single-click names. The four-byte mask is
-        // for clients new enough to read it.
-        let response = if self.supported_features == SupportedFeatures::NONE {
-            debug!("0xB9 SupportedFeatures not advertised (tooltips/context menus off)");
-            Response::Send(character_list)
-        } else {
-            let extended = session.version.supports(Feature::ExtraFeatureMask);
-            debug!(
-                flags = format!("0x{:X}", self.supported_features.0),
-                extended,
-                version = %session.version,
-                "sending 0xB9 SupportedFeatures before the character list"
-            );
-            let mut bytes = encode_supported_features(self.supported_features, extended);
-            bytes.extend_from_slice(&character_list);
-            Response::Send(bytes)
-        };
-        // The account rides into the state: a later 0x00/0xF8/0x83/0x5D on this
-        // same socket names a character but not whose it is.
+        debug!(%account, "game login accepted; the world takes it from here");
+        // And this crate is done. The `0xA9` character list that used to go back
+        // from here is the world's since S5 of `docs/connection_state.md`: which
+        // characters exist is the roster's, a character being *played* is a fact
+        // only the world holds, and answering from here meant a second list that
+        // had to agree with the world's and could not see it. The caller notices
+        // this transition and queues `Command::Authenticated`, and the list goes
+        // out of the tick that applies it — one tick later, at most, on a client
+        // that is already waiting.
+        //
+        // The account rides into the state all the same: it is what the caller
+        // reads to say whose connection this is.
         (
-            response,
+            Response::Idle,
             LoginSessionState::Game(GameState::CharacterListSent { account }),
         )
     }
@@ -517,7 +482,7 @@ mod tests {
     use crate::accounts::DevAccounts;
     use openshard_protocol::feature::Feature;
     use openshard_protocol::identity::{
-        AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
+        AccountName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
     };
     use openshard_protocol::login::RawShardIndex;
     use openshard_protocol::seed::RawSeedValue;
@@ -526,7 +491,6 @@ mod tests {
     fn server() -> LoginServer<DevAccounts> {
         let accounts = DevAccounts::new()
             .with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"))
-            .with_character(&AccountName::new("admin"), &CharacterName::new("Lord British"))
             .with_account(&AccountName::new("banned"), &PlaintextPassword::new("x"))
             .blocked(&AccountName::new("banned"));
         LoginServer::new(
@@ -611,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn the_happy_path_reaches_a_character_list() {
+    fn the_happy_path_hands_the_connection_over() {
         let mut server = server();
         let now = Instant::now();
 
@@ -636,17 +600,25 @@ mod tests {
         let key = AuthKey(u32::from_be_bytes([relay[7], relay[8], relay[9], relay[10]]));
 
         // Game connection: a new session, as a real client would reconnect.
+        // Nothing goes back from here — the character list is the world's since
+        // S5 of `docs/connection_state.md`, and the caller queues
+        // `Command::Authenticated` off exactly the transition asserted below.
         let mut session = modern_session();
         let game_login = GameServerLogin {
             auth_key: key,
             account: RawAccountName("admin".to_owned()),
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
-        let Response::Send(characters) = server.handle(&mut session, pkt(&game_login.encode()), now) else {
-            panic!("expected the character list");
-        };
-        assert_eq!(characters[0], 0xA9);
-        assert_eq!(&characters[4..16], b"Lord British");
+        assert_eq!(
+            server.handle(&mut session, pkt(&game_login.encode()), now),
+            Response::Idle,
+            "this crate has nothing left to say on an accepted game login"
+        );
+        assert_eq!(
+            session.account().map(|a| a.0.as_str()),
+            Some("admin"),
+            "and the connection is authenticated, which is what the caller acts on"
+        );
         assert!(session.is_finished());
     }
 
@@ -870,10 +842,11 @@ mod tests {
             account: RawAccountName("admin".to_owned()),
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
-        assert!(matches!(
+        assert_eq!(
             server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
-            Response::Send(_)
-        ));
+            Response::Idle,
+            "the first redemption is accepted"
+        );
         assert_eq!(
             server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
@@ -968,7 +941,9 @@ mod tests {
         // nothing like a version problem.
         //
         // The key is the only thing linking the two connections, so the version
-        // rides on the key.
+        // rides on the key. The list itself is the world's to encode now, and the
+        // version reaches it on `Command::Authenticated` — read off this session,
+        // which is why this still has to be right here.
         let mut server = server();
         let now = Instant::now();
 
@@ -991,24 +966,12 @@ mod tests {
             "the game socket carries no version of its own"
         );
 
-        let Response::Send(list) = server.handle(&mut second, pkt(&game_login(key, "admin")), now) else {
-            panic!("expected the character list");
-        };
+        let _ = server.handle(&mut second, pkt(&game_login(key, "admin")), now);
         assert_eq!(
             second.version(),
             ClientVersion::TOL,
             "the key must carry the dialect across the gap"
         );
-
-        // And the list is in the modern shape, which is the thing the client
-        // actually chokes on: five padded slots and a trailing flags dword.
-        let modern = ServerPacket::CharacterList(CharacterList {
-            characters: server.accounts.characters(&AccountName::new("admin")),
-            starts: server.starts.clone(),
-            flags: server.character_list_flags,
-        })
-        .encode(ClientVersion::TOL);
-        assert_eq!(list, modern, "the client must get its own dialect");
     }
 
     #[test]
@@ -1029,9 +992,7 @@ mod tests {
         let key = relay_key_from(&mut server, &mut first, now);
 
         let mut second = LoginSession::new();
-        let Response::Send(_) = server.handle(&mut second, pkt(&game_login(key, "admin")), now) else {
-            panic!("expected the character list");
-        };
+        let _ = server.handle(&mut second, pkt(&game_login(key, "admin")), now);
         assert_eq!(second.version(), ClientVersion::new(2, 0, 0, 0));
     }
 

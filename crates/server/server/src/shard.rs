@@ -127,12 +127,10 @@ async fn load_accounts(store: &dyn Store, config: &Config) -> DevAccounts {
                 warn!(%account.name, %error, "could not persist a configured account");
             }
         }
-        // Characters and access come from config every boot regardless: access is
-        // deliberately not persisted (re-derived each login), and config
-        // characters are folded in beside the stored ones below, deduped.
-        for character in &account.characters {
-            accounts = accounts.with_character(&account.name, character);
-        }
+        // Access comes from config every boot regardless: it is deliberately not
+        // persisted, but re-derived at each login. The account's *characters* are
+        // not the accounts' business at all any more — they go to the world's
+        // roster, in `seed_configured_characters`.
         // An unparseable access level is logged and left a player — authority is
         // never granted by a typo.
         match account.access.0.parse::<AccessLevel>() {
@@ -148,23 +146,14 @@ async fn load_accounts(store: &dyn Store, config: &Config) -> DevAccounts {
 
 /// Bring the world's characters back from the database.
 ///
-/// Two halves, on the two sides of the login/world line this whole file is
-/// drawn along. The rows go to the world — it reserves their serials and keeps
-/// their positions, so playing one restores it where it was — and the *names* go
-/// to the accounts, so a character the store knows about shows up on the list to
-/// be picked even if no config line mentions it.
-async fn restore_characters(store: &dyn Store, world: &mut World, mut accounts: DevAccounts) -> DevAccounts {
+/// All of it goes to the world and none of it to the accounts: a stored row says
+/// both that the character exists and where it was, and since S5 of
+/// `docs/connection_state.md` the roster is what holds each. The accounts keep
+/// credentials and authority — what a login is about — and nothing that a
+/// character screen would read.
+async fn restore_characters(store: &dyn Store, world: &mut World) {
     match store.characters().await {
         Ok(characters) => {
-            for record in &characters {
-                let listed = accounts
-                    .characters(&record.account)
-                    .iter()
-                    .any(|entry| entry.name.0.eq_ignore_ascii_case(&record.name.0));
-                if !listed {
-                    accounts = accounts.with_character(&record.account, &record.name);
-                }
-            }
             world.restore_characters(characters);
             if world.stored_characters() > 0 {
                 info!(
@@ -175,7 +164,6 @@ async fn restore_characters(store: &dyn Store, world: &mut World, mut accounts: 
         }
         Err(error) => error!(%error, "could not read saved characters; starting with none"),
     }
-    accounts
 }
 
 /// Put the config's `[[accounts]] characters` on the world's lists.
@@ -313,26 +301,6 @@ async fn restore_world(store: &dyn Store, world: World, pinned_seed: Option<u64>
     }
 }
 
-/// Build the login server: the character-creation screen needs somewhere to
-/// start (without it the client refuses to create at all — "No city found.
-/// Something wrong with the received cities." — because the list it was sent
-/// is empty), and the AoS (0xB9) and character-list (0xA9) flags that tell a
-/// modern client to turn on tooltips and context menus rather than staying on
-/// single-click names.
-fn build_login_server(
-    config: &Config,
-    accounts: DevAccounts,
-    advertised: SocketAddrV4,
-) -> LoginServer<DevAccounts> {
-    let mut login = LoginServer::new(accounts, &config.server.name, advertised);
-    // The list is filtered to the facets this shard loaded, so every city
-    // offered is one a player can actually be placed in.
-    login.starts = start_cities(&config.world.facets, (config.world.start.x, config.world.start.y));
-    login.supported_features = crate::boot::supported_features_of(config);
-    login.character_list_flags = crate::boot::character_list_flags_of(config);
-    login
-}
-
 /// Run one tick: advance the world, flush its outbound packets, hand off its
 /// snapshots, pump the gameplay script, and reclaim expired login keys.
 ///
@@ -401,7 +369,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
     // items, and so on — see each function's doc for why. This all borrows the
     // store; the save task takes ownership after, so it has to come last.
     let accounts = load_accounts(store.as_ref(), config).await;
-    let accounts = restore_characters(store.as_ref(), &mut world, accounts).await;
+    restore_characters(store.as_ref(), &mut world).await;
     seed_configured_characters(config, &mut world);
     restore_items(store.as_ref(), &mut world).await;
     restore_mobiles(store.as_ref(), &mut world).await;
@@ -410,8 +378,10 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
     restore_regions(store.as_ref(), &mut world).await;
     world = restore_world(store.as_ref(), world, config.world.seed).await;
 
-    // this dont need to be here
-    let mut login_server = build_login_server(config, accounts, advertised);
+    // The login server is credentials, keys and the relay, and nothing else: the
+    // starting cities and the two capability masks went to the world with the
+    // character screen they configure.
+    let mut login_server = LoginServer::new(accounts, &config.server.name, advertised);
 
     // Kept, not detached: shutdown hands it a final snapshot, closes the channel,
     // and awaits this task so every queued write lands before the process exits.
@@ -517,15 +487,21 @@ pub(crate) fn relay_is_unreachable(client: SocketAddr, advertised: SocketAddrV4)
     advertised.ip().is_loopback() && !client.ip().is_loopback()
 }
 
-/// Route a decoded login packet to either of the two things it can mean here:
-/// character creation, or an ordinary login-state transition. Both arrive as
-/// `Packet::Login` from `parse_packet`, and creation needs both `login` and
-/// `world` in reach, which is why this crosses the login/world line instead of
-/// living in `dispatch_world_packet`.
+/// Route a decoded login packet: the character screen's two, and everything the
+/// login state machine still owns.
 ///
-/// Deletion is the third `Packet::Login` case and is routed past this function,
-/// because it needs the whole session table rather than this one session — see
-/// [`delete_character`].
+/// # The screen is not this crate's any more
+///
+/// Creating and deleting a character are world commands since S5 of
+/// `docs/connection_state.md` — the world owns which characters exist, which of
+/// them is being played, and where each one was — so both arms here are a
+/// translation and nothing else, exactly like `dispatch_world_packet`. Neither
+/// touches `login`, and neither answers the client: the reply comes out of the
+/// tick that applies the command, which is what keeps the two ends in one order.
+///
+/// What is left of the login conversation is what is genuinely not simulation:
+/// credentials, argon2, the auth key and the relay. It ends at
+/// [`Command::Authenticated`], below.
 fn handle_login_packet(
     session: &mut Session,
     login: &mut LoginServer<DevAccounts>,
@@ -534,9 +510,26 @@ fn handle_login_packet(
     id: ConnectionId,
 ) -> bool {
     match packet {
-        // Character creation crosses the login/world line: it writes the new
-        // character onto the account and then enters the world with it.
-        LoginStagePacket::CreateCharacter(create) => create_character(session, login, world, create, id),
+        LoginStagePacket::CreateCharacter(create) => {
+            world.queue(Command::CreateCharacter {
+                connection: id,
+                create,
+            });
+            // No `enter_world` here, deliberately. A `0x00` is not "let me in":
+            // the world may refuse the name, and a refused creation keeps the
+            // connection on the creation screen to try again. Moving the phase now
+            // would strand it in `Entering` with no character behind it. The
+            // `PlayerEntered` that follows a creation that worked is what moves it
+            // — see `Session::entered_world`.
+            true
+        }
+        LoginStagePacket::DeleteCharacter(delete) => {
+            world.queue(Command::DeleteCharacter {
+                connection: id,
+                slot: delete.slot,
+            });
+            true
+        }
         login_packet => {
             // The game login is the seam Sphere calls CONNECT_GAME: from here
             // on, this connection's every server->client packet is
@@ -551,10 +544,16 @@ fn handle_login_packet(
             // back out of `CharacterListSent` — so comparing the account across
             // the call is enough to catch it exactly once, with no flag here to
             // fall out of step with the state machine that owns the fact.
-            if !authenticated && session.login.account().is_some() {
+            if let (false, Some(account)) = (authenticated, session.login.account()) {
+                // The account's authority is re-derived at every login and never
+                // saved with a character, so this is where it is looked up: the
+                // last moment the accounts and the connection are both in reach.
+                let access = login.accounts.access_level(account);
                 world.queue(Command::Authenticated {
                     connection: id,
                     version: session.login.version(),
+                    account: account.clone(),
+                    access,
                 });
             }
             session.apply(response, id)
@@ -579,21 +578,32 @@ fn handle_login_packet(
 /// The connection is what a reader needs; which packet it was, the client knows.
 fn handle_world_packet(
     session: &mut Session,
-    login: &LoginServer<DevAccounts>,
     world: &mut World,
     packet: ClientPacket,
     id: ConnectionId,
 ) -> bool {
     // `0x5D` is the one packet a connection outside the world may send, and it
-    // is what puts it inside. It also needs the account's authority, looked up
-    // here because this is where the accounts are in reach.
+    // is what puts it inside. Everything it needs beyond the name — whose account
+    // this is, what authority it plays with, which client it is — is on the
+    // connection's row in the world, put there at the hand-off.
     let packet = match packet {
         ClientPacket::CharacterPlay(play) => {
-            let access = session
-                .login
-                .account()
-                .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
-            return play_character(session, world, play, id, access);
+            // The phase moves here rather than on the `PlayerEntered` that
+            // follows: this *is* a request to enter, and everything the client
+            // sends next must be queued behind the entry rather than dropped by
+            // the gate below. See `WorldPhase::Entering`.
+            session.enter_world();
+            // Tell the gateway framer this client's version now, before any
+            // in-world packet whose length depends on it (the drop packet). The
+            // game connection never stated its version; this is the
+            // auth-key-linked one the login carried across. Character select is
+            // the last quiet moment before world traffic starts.
+            let _ = session.control.send(session.login.version());
+            world.queue(Command::PlayCharacter {
+                connection: id,
+                name: play.name,
+            });
+            return true;
         }
         packet => packet,
     };
@@ -657,20 +667,13 @@ pub(crate) fn world_handle_network(
                     // to. Every handler returns the same "keep the connection?"
                     // bool, so there is one place that acts on it.
                     Ok(packet) => {
+                        let session = sessions.get_mut(id).expect(PRESENT);
                         let keep = match packet {
-                            // Deletion reads across every session, so it takes
-                            // the table and is routed here rather than through
-                            // `handle_login_packet`.
-                            Packet::Login(LoginStagePacket::DeleteCharacter(delete)) => {
-                                delete_character(sessions, login, world, delete, id)
-                            }
                             Packet::Login(login_packet) => {
-                                let session = sessions.get_mut(id).expect(PRESENT);
                                 handle_login_packet(session, login, world, login_packet, id)
                             }
                             Packet::World(world_packet) => {
-                                let session = sessions.get_mut(id).expect(PRESENT);
-                                handle_world_packet(session, login, world, world_packet, id)
+                                handle_world_packet(session, world, world_packet, id)
                             }
                         };
                         if !keep {
@@ -721,8 +724,10 @@ mod tests {
     use openshard_protocol::wire::{RawCharacterSlot, RawClientIp};
     use openshard_protocol::world::{RawFastwalkKey, RawStepSequence, WalkRequest};
 
+    use openshard_protocol::world::CharacterPlay;
+
     use super::*;
-    use crate::testing::{admin, at_character_screen, login_server, lord_british};
+    use crate::testing::{at_character_screen, login_server, lord_british};
 
     fn client(address: &str) -> SocketAddr {
         address.parse().expect("a client address")
@@ -795,7 +800,7 @@ mod tests {
         let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
 
         assert!(
-            handle_world_packet(&mut session, &login, &mut world, a_step(), id),
+            handle_world_packet(&mut session, &mut world, a_step(), id),
             "a packet that is merely early is not a reason to close"
         );
         assert_eq!(world.queued(), 0, "and it did not become work");
@@ -810,15 +815,9 @@ mod tests {
         let mut world = World::new((1363, 1600));
         let id = ConnectionId::from_raw(1);
         let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
-        session.enter_world(admin(), lord_british());
+        session.enter_world();
 
-        assert!(handle_world_packet(
-            &mut session,
-            &login,
-            &mut world,
-            a_step(),
-            id
-        ));
+        assert!(handle_world_packet(&mut session, &mut world, a_step(), id));
         assert_eq!(world.queued(), 1, "the step is queued for the next tick");
     }
 
@@ -836,7 +835,6 @@ mod tests {
 
         assert!(handle_world_packet(
             &mut session,
-            &login,
             &mut world,
             picking_lord_british(),
             id

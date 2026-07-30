@@ -3,14 +3,8 @@
 use std::collections::HashMap;
 
 use openshard_protocol::access::AccessLevel;
-use openshard_protocol::identity::{
-    AccountName, CharacterName, PlaintextPassword, RawAccountName, RawCharacterName, RawPlaintextPassword,
-};
-use openshard_protocol::login::{
-    ACCOUNT_NAME_LENGTH, CHARACTER_NAME_LENGTH, CharacterEntry, DenyReason, MIN_CHARACTER_SLOTS,
-    PASSWORD_LENGTH,
-};
-use openshard_protocol::wire::RawCharacterSlot;
+use openshard_protocol::identity::{AccountName, PlaintextPassword, RawAccountName, RawPlaintextPassword};
+use openshard_protocol::login::{ACCOUNT_NAME_LENGTH, DenyReason, PASSWORD_LENGTH};
 
 use crate::password;
 
@@ -53,55 +47,6 @@ pub trait Accounts {
         password: &RawPlaintextPassword,
     ) -> Result<AccountName, DenyReason>;
 
-    /// The characters on an account, in slot order.
-    ///
-    /// Empty for an account with none; the 0xA9 encoder pads the list out.
-    fn characters(&self, account: &AccountName) -> Vec<CharacterEntry>;
-
-    /// Create a character in the first free slot and return its slot index
-    /// together with the [`CharacterName`] the raw name validated to.
-    ///
-    /// The client sends this as `0x00`/`0xF8` on the game connection, after it
-    /// is already authenticated, so the account is expected to exist. Failure
-    /// modes map to the codes the client can render: a full account is
-    /// [`DenyReason::TooManyCharacters`], and an empty, overlong or duplicate
-    /// name is [`DenyReason::BadCharacter`].
-    ///
-    /// Returning the validated name (not just the slot) matters: this is the
-    /// only place a [`RawCharacterName`] becomes a real `CharacterName` (see
-    /// `openshard_protocol::identity`'s module docs), so a caller that needs
-    /// the character's name after creation — to enter it into the world —
-    /// takes it from here instead of re-deriving it from the raw input.
-    ///
-    /// Takes `&mut self` because it writes: a real store persists here, and the
-    /// dev store keeps it in memory for the life of the process, which is enough
-    /// for a freshly created character to show up in the list on reconnect.
-    ///
-    /// Unlike the rest of this trait, `account` and `name` are concrete types,
-    /// not `impl Into<...>`: this call is the raw-to-validated seam itself, so
-    /// the caller names `RawCharacterName` explicitly at the call site instead
-    /// of letting a blanket `Into` paper over it.
-    fn create_character(
-        &mut self,
-        account: AccountName,
-        name: RawCharacterName,
-    ) -> Result<(u32, CharacterName), DenyReason>;
-
-    /// Delete the character in a slot and return its name.
-    ///
-    /// The client sends this as `0x83` on the game connection. Slots are
-    /// positional: removing one shifts the later slots down, which is exactly
-    /// what the `0x86` resend that follows expects. An out-of-range or empty slot
-    /// is [`DenyReason::BadCharacter`] — the caller maps it to the client's
-    /// delete-reject code. Whether the character may be deleted *at all* (it is
-    /// not being played, it is old enough) is the caller's to check: this store
-    /// does not know who is in the world.
-    fn delete_character(
-        &mut self,
-        account: &AccountName,
-        slot: RawCharacterSlot,
-    ) -> Result<CharacterName, DenyReason>;
-
     /// The authority the account's characters play with — what staff commands
     /// they may run. Defaults to [`AccessLevel::Player`] so a store that has no
     /// notion of staff grants none, which is the safe direction to be wrong in.
@@ -120,8 +65,6 @@ pub struct DevAccount {
     pub credential: String,
     /// Whether logins are refused.
     pub blocked: bool,
-    /// The characters on this account.
-    pub characters: Vec<CharacterEntry>,
     /// The authority this account's characters play with.
     pub access: AccessLevel,
 }
@@ -168,7 +111,6 @@ impl DevAccounts {
             DevAccount {
                 credential: credential.to_owned(),
                 blocked: false,
-                characters: Vec::new(),
                 access: AccessLevel::Player,
             },
         );
@@ -185,14 +127,6 @@ impl DevAccounts {
     pub fn with_access(mut self, account: &AccountName, access: AccessLevel) -> Self {
         if let Some(entry) = self.accounts.get_mut(&account.normalized()) {
             entry.access = access;
-        }
-        self
-    }
-
-    /// Add a character to an existing account. Ignored if there is no account.
-    pub fn with_character(mut self, account: &AccountName, name: &CharacterName) -> Self {
-        if let Some(entry) = self.accounts.get_mut(&account.normalized()) {
-            entry.characters.push(CharacterEntry { name: name.clone() });
         }
         self
     }
@@ -239,72 +173,10 @@ impl Accounts for DevAccounts {
         Ok(AccountName(account.0.clone()))
     }
 
-    fn characters(&self, account: &AccountName) -> Vec<CharacterEntry> {
-        self.accounts
-            .get(&account.normalized())
-            .map(|entry| entry.characters.clone())
-            .unwrap_or_default()
-    }
-
     fn access_level(&self, account: &AccountName) -> AccessLevel {
         self.accounts
             .get(&account.normalized())
             .map_or(AccessLevel::Player, |entry| entry.access)
-    }
-
-    fn create_character(
-        &mut self,
-        account: AccountName,
-        name: RawCharacterName,
-    ) -> Result<(u32, CharacterName), DenyReason> {
-        // The name is trimmed because the client pads its 30-byte field, and a
-        // name that is only spaces is not a name. Width is the wire field's.
-        let trimmed = name.0.trim();
-        if trimmed.is_empty() || name.0.len() > CHARACTER_NAME_LENGTH {
-            return Err(DenyReason::BadCharacter);
-        }
-
-        let Some(entry) = self.accounts.get_mut(&account.normalized()) else {
-            return Err(DenyReason::NoAccount);
-        };
-        // The 0xA9 list shows exactly five slots, so a sixth character would be
-        // created and then be invisible. Refuse it where the client can hear why.
-        if entry.characters.len() >= MIN_CHARACTER_SLOTS {
-            return Err(DenyReason::TooManyCharacters);
-        }
-        // Two characters with one name make 0x5D ambiguous — it echoes the name,
-        // not the slot — so a duplicate is refused rather than quietly shadowed.
-        if entry
-            .characters
-            .iter()
-            .any(|character| character.name.0.eq_ignore_ascii_case(trimmed))
-        {
-            return Err(DenyReason::BadCharacter);
-        }
-
-        let slot = entry.characters.len() as u32;
-        let character = CharacterName(trimmed.to_owned());
-        entry.characters.push(CharacterEntry {
-            name: character.clone(),
-        });
-        Ok((slot, character))
-    }
-
-    fn delete_character(
-        &mut self,
-        account: &AccountName,
-        slot: RawCharacterSlot,
-    ) -> Result<CharacterName, DenyReason> {
-        let Some(entry) = self.accounts.get_mut(&account.normalized()) else {
-            return Err(DenyReason::NoAccount);
-        };
-        // Promoted here and not by the caller: this list is the store's, and a
-        // slot checked against anyone else's would be a check about the wrong
-        // thing. The client's number stays raw right up to the list it indexes.
-        let slot = slot
-            .validate(entry.characters.len())
-            .map_err(|_| DenyReason::BadCharacter)?;
-        Ok(entry.characters.remove(slot.0 as usize).name)
     }
 }
 
@@ -315,7 +187,6 @@ mod tests {
     fn store() -> DevAccounts {
         DevAccounts::new()
             .with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"))
-            .with_character(&AccountName::new("admin"), &CharacterName::new("Lord British"))
             .with_account(&AccountName::new("banned"), &PlaintextPassword::new("x"))
             .blocked(&AccountName::new("banned"))
     }
@@ -430,23 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn characters_come_back_in_order() {
-        let store = DevAccounts::new()
-            .with_account(&AccountName::new("a"), &PlaintextPassword::new("p"))
-            .with_character(&AccountName::new("a"), &CharacterName::new("First"))
-            .with_character(&AccountName::new("a"), &CharacterName::new("Second"));
-        let characters = store.characters(&AccountName::new("a"));
-        assert_eq!(characters.len(), 2);
-        assert_eq!(characters[0].name, "First");
-        assert_eq!(characters[1].name, "Second");
-    }
-
-    #[test]
-    fn an_unknown_account_has_no_characters() {
-        assert_eq!(store().characters(&AccountName::new("nobody")), vec![]);
-    }
-
-    #[test]
     fn access_defaults_to_player_and_is_grantable() {
         let store = DevAccounts::new()
             .with_account(&AccountName::new("admin"), &PlaintextPassword::new("p"))
@@ -469,122 +323,6 @@ mod tests {
             store.access_level(&AccountName::new("nobody")),
             AccessLevel::Player,
             "unknown is a player, not an error"
-        );
-    }
-
-    #[test]
-    fn create_character_fills_the_first_free_slot() {
-        let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
-        assert_eq!(
-            store.create_character(AccountName::new("a"), RawCharacterName::new("First")),
-            Ok((0, CharacterName::new("First")))
-        );
-        assert_eq!(
-            store.create_character(AccountName::new("a"), RawCharacterName::new("Second")),
-            Ok((1, CharacterName::new("Second")))
-        );
-        let characters = store.characters(&AccountName::new("a"));
-        assert_eq!(characters.len(), 2);
-        assert_eq!(characters[0].name, "First");
-        assert_eq!(characters[1].name, "Second");
-    }
-
-    #[test]
-    fn create_character_survives_to_the_next_read() {
-        // The dev store keeps it in memory, which is enough for the new
-        // character to be in the list when the client reconnects to play it.
-        let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
-        let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("Newbie"));
-        assert_eq!(store.characters(&AccountName::new("a"))[0].name, "Newbie");
-    }
-
-    #[test]
-    fn create_character_refuses_a_sixth_character() {
-        let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
-        for index in 0..MIN_CHARACTER_SLOTS {
-            assert!(
-                store
-                    .create_character(AccountName::new("a"), RawCharacterName::new(&format!("C{index}")))
-                    .is_ok()
-            );
-        }
-        assert_eq!(
-            store.create_character(AccountName::new("a"), RawCharacterName::new("TooMany")),
-            Err(DenyReason::TooManyCharacters)
-        );
-    }
-
-    #[test]
-    fn create_character_refuses_an_empty_or_overlong_name() {
-        let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
-        assert_eq!(
-            store.create_character(AccountName::new("a"), RawCharacterName::new("   ")),
-            Err(DenyReason::BadCharacter)
-        );
-        assert_eq!(
-            store.create_character(AccountName::new("a"), RawCharacterName::new("")),
-            Err(DenyReason::BadCharacter)
-        );
-        let long = "x".repeat(CHARACTER_NAME_LENGTH + 1);
-        assert_eq!(
-            store.create_character(AccountName::new("a"), RawCharacterName::new(&long)),
-            Err(DenyReason::BadCharacter)
-        );
-    }
-
-    #[test]
-    fn create_character_refuses_a_duplicate_name() {
-        let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
-        assert!(
-            store
-                .create_character(AccountName::new("a"), RawCharacterName::new("Twin"))
-                .is_ok()
-        );
-        assert_eq!(
-            store.create_character(AccountName::new("a"), RawCharacterName::new("twin")),
-            Err(DenyReason::BadCharacter),
-            "case-insensitively, since the client does not preserve case"
-        );
-    }
-
-    #[test]
-    fn create_character_refuses_an_unknown_account() {
-        let mut store = DevAccounts::new();
-        assert_eq!(
-            store.create_character(AccountName::new("nobody"), RawCharacterName::new("X")),
-            Err(DenyReason::NoAccount)
-        );
-    }
-
-    #[test]
-    fn delete_character_removes_the_slot_and_shifts_the_rest() {
-        let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
-        let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("First"));
-        let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("Second"));
-        let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("Third"));
-        assert_eq!(
-            store.delete_character(&AccountName::new("a"), RawCharacterSlot(1)),
-            Ok(CharacterName::new("Second"))
-        );
-        let names: Vec<_> = store
-            .characters(&AccountName::new("a"))
-            .into_iter()
-            .map(|c| c.name)
-            .collect();
-        assert_eq!(names, vec!["First", "Third"], "later slots shift down");
-    }
-
-    #[test]
-    fn delete_character_refuses_an_empty_or_out_of_range_slot() {
-        let mut store = DevAccounts::new().with_account(&AccountName::new("a"), &PlaintextPassword::new("p"));
-        let _ = store.create_character(AccountName::new("a"), RawCharacterName::new("Only"));
-        assert_eq!(
-            store.delete_character(&AccountName::new("a"), RawCharacterSlot(1)),
-            Err(DenyReason::BadCharacter)
-        );
-        assert_eq!(
-            store.delete_character(&AccountName::new("nobody"), RawCharacterSlot(0)),
-            Err(DenyReason::NoAccount)
         );
     }
 

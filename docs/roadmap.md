@@ -170,6 +170,24 @@ The remaining step is the one this makes worth doing:
       character *list*: `0xA9` becoming a `Command` answered out of a tick, the way
       `RequestStatus` is answered with a status, is S5.
 
+- [x] **The character screen belongs in the world too.** Done — S5 of
+      [connection_state.md](connection_state.md). The roster stopped being "where
+      the saved characters were" and became the account's list, which is the fact
+      the login crate's `Accounts` used to hold: a character exists from the moment
+      it is created, and carries a record only once something has written one. With
+      that, `0xA9`, `0x00`/`0xF8`, `0x83` and `0x5D` are all answered out of a tick,
+      and `Accounts` is down to credentials, blocking and access — the things a
+      *login* is about. `LoginServer` lost its starting cities and its two
+      capability masks to the world's `CharacterScreen`, and its game-login handler
+      now returns `Response::Idle`: the crate ends where the world begins.
+
+      Two hazards closed themselves on the way. `0x83`'s slot indexes the list
+      `0xA9` was built from — one value, one process — instead of two lists that
+      merely happened to be ordered alike; and "is this character being played",
+      which has now been asked three ways (a serial the caller had to look up, a
+      scan of the shard's session table, and this), is asked of the entity that is
+      the fact.
+
 Found while doing the above, none of them blockers — all fixed:
 
 - ~~**A player's saved `facing` is written and never read.**~~ Fixed:

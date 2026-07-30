@@ -1,4 +1,4 @@
-use super::tests::{START, enter, enter_as, walk};
+use super::tests::{START, delete_slot, enter, enter_as, walk};
 use super::*;
 use openshard_gateway::ConnectionId;
 use openshard_movement::WALK_INTERVAL;
@@ -71,13 +71,10 @@ fn deleting_a_character_forgets_its_row_on_the_next_save() {
     world.tick(now + WALK_INTERVAL);
     let _ = world.drain_saves().count();
 
-    // By name, through the command: the serial is on the roster row the world
-    // holds, and the shard has none to send. See `docs/connection_state.md`, S4.
-    world.queue(Command::DeleteCharacter {
-        account: AccountName("admin".to_owned()),
-        name: CharacterName("Lord British".to_owned()),
-    });
-    world.tick(now + WALK_INTERVAL * 2);
+    // By slot, through the command: the slot indexes the list the screen was
+    // sent, which the world built out of the same roster this looks the character
+    // up in. See `docs/connection_state.md`, S5.
+    delete_slot(&mut world, 0, now + WALK_INTERVAL * 2);
     let snapshot = only_snapshot(&mut world).expect("a deletion is a change worth saving");
     assert!(
         snapshot.removed.contains(&serial),
@@ -211,14 +208,14 @@ fn a_dead_players_save_is_flagged_but_keeps_the_living_body() {
     let now = Instant::now();
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
-    let serial = world.registry().serial_of(entity).unwrap().raw();
+    let serial = world.registry().serial_of(entity).unwrap();
     let _ = only_snapshot(&mut world); // drop the enter's save
 
     world.queue(Command::Damage {
         serial,
         amount: 500,
         damage_type: 0,
-        by: 0,
+        by: None,
     });
     world.tick(now);
 
@@ -226,7 +223,7 @@ fn a_dead_players_save_is_flagged_but_keeps_the_living_body() {
     let record = snapshot
         .characters
         .iter()
-        .find(|c| c.serial == serial)
+        .find(|c| c.serial == serial.raw())
         .expect("the ghost is in the save");
     assert!(record.dead, "saved as dead");
     assert_eq!(
