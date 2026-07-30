@@ -232,7 +232,8 @@ One smaller thing noticed on the way through, not blocking:
 
 Read while asking why `world_handle_network` has to hold `Sessions`, `LoginServer`,
 `World` and `Roster` at once. None of these is a bug on a working shard today; all
-of them are the same seam being unnamed.
+of them are the same seam being unnamed. The plan that acts on them, including the
+steps above, is [`connection_state.md`](connection_state.md).
 
 - **Presence is a bool, and it is set optimistically.** `Session::playing` is set
   as `Command::Enter` is *queued* (`server/src/dispatch.rs`, `create_character`

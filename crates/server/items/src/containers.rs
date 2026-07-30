@@ -81,7 +81,7 @@ pub(crate) fn open_spellbook(
     if !in_reach(state, book, player) {
         return;
     }
-    let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
+    let Some(version) = state.version_of(connection) else {
         return;
     };
     let mask = state.registry.get::<Spellbook>(book).map_or(0, |b| b.0);
@@ -157,7 +157,7 @@ pub(crate) fn open_container(
         return;
     }
 
-    let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
+    let Some(version) = state.version_of(connection) else {
         return;
     };
     let contents = contents_of(state, container_serial);
@@ -626,12 +626,7 @@ pub(crate) fn tell_watchers_updated_except(
         if Some(connection) == except {
             continue;
         }
-        let version = state
-            .players
-            .get(&connection)
-            .and_then(|&player| state.registry.get::<Client>(player))
-            .map(|client| client.version);
-        if let Some(version) = version {
+        if let Some(version) = state.version_of(connection) {
             state.send(connection, encode_add_to_container(record, container, version));
         }
     }

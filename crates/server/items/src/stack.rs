@@ -119,7 +119,7 @@ pub fn set_stack_amount(state: &mut WorldState, item: EntityId, amount: u16) {
 /// amount changed and the `seen` set would otherwise suppress the redraw.
 pub fn redraw_ground_item(state: &mut WorldState, item: EntityId) {
     for watcher in state.watchers_of(item) {
-        let Some(&Client { connection, version }) = state.registry.get::<Client>(watcher) else {
+        let Some((connection, version)) = state.client_of(watcher) else {
             continue;
         };
         if let Some(packet) = state.draw_packet(item, version) {

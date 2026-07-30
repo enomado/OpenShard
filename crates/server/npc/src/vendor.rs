@@ -17,7 +17,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
 use openshard_protocol::wire::Layer;
 use openshard_state::components::{
-    Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord, Vendor,
+    Amount, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord, Vendor,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{TooltipMode, WorldState};
@@ -251,7 +251,7 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: Seria
     if !crate::speech::check_vendor_access(state, vendor, player) {
         return true;
     }
-    let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
+    let Some(version) = state.version_of(connection) else {
         return false;
     };
     // Before the shelf is read, refill it if its hour is up — ServUO checks the

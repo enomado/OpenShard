@@ -1,6 +1,28 @@
 use super::*;
 
 impl World {
+    /// Take a connection over from the login conversation.
+    ///
+    /// The world's whole knowledge of a client that is playing nothing yet. It is
+    /// what makes the connection addressable — [`WorldState::send_packet`] frames
+    /// a packet for the version recorded here — so everything the character screen
+    /// will need to answer starts with this row existing.
+    ///
+    /// Called twice on a real shard, and that is deliberate rather than tolerated:
+    /// once for `Command::Authenticated`, and again from [`enter`](Self::enter),
+    /// which carries the same version on its own command and would otherwise have
+    /// to trust that the hand-off happened. Every test that queues an `Enter`
+    /// without one does exactly that. One writer, two callers; the value written
+    /// is the same one both times, because both read it off the auth key the login
+    /// socket issued.
+    ///
+    /// [`WorldState::send_packet`]: openshard_state::WorldState::send_packet
+    pub(super) fn attach(&mut self, connection: ConnectionId, version: ClientVersion) {
+        self.state
+            .sessions
+            .insert(connection, openshard_state::session::Session::new(version));
+    }
+
     /// The facet a mobile is on, or the default if it carries none.
     ///
     /// Always a facet the world actually has: [`enter`](Self::enter) clamps an
@@ -270,8 +292,12 @@ impl World {
         self.state
             .registry
             .insert(entity, Movement(Walker::new(position, facing)));
-        self.state.registry.insert(entity, Client { connection, version });
+        self.state.registry.insert(entity, Client { connection });
         self.state.players.insert(connection, entity);
+        // A character can reach the world without a hand-off — every test that
+        // queues an `Enter` of its own does — so the session row is written here
+        // too. See `attach`.
+        self.attach(connection, version);
         // The AoS feature gates for this connection, at debug — tooltips and
         // context menus are version-gated, so this is where to look if a modern
         // client unexpectedly shows no hover names.

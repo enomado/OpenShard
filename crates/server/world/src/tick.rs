@@ -242,6 +242,7 @@ impl World {
                 facets,
                 default_facet: Facet(DEFAULT_FACET),
                 players: HashMap::new(),
+                sessions: HashMap::new(),
                 seen: HashMap::new(),
                 held: HashMap::new(),
                 start,
@@ -691,6 +692,7 @@ impl World {
 
     fn apply(&mut self, command: Command, now: Instant) {
         match command {
+            Command::Authenticated { connection, version } => self.attach(connection, version),
             Command::Enter(entering) => self.enter(entering),
             Command::Walk { connection, request } => self.walk(connection, request, now),
             Command::RequestStatus { connection } => {
@@ -1335,6 +1337,11 @@ impl World {
     }
 
     fn disconnect(&mut self, connection: ConnectionId) {
+        // The world's own row for this client goes first: it is what made the
+        // connection addressable, and there is nothing left to say to a socket
+        // that is gone. Unconditional, because a connection that never picked a
+        // character has one of these and nothing else below.
+        self.state.sessions.remove(&connection);
         // A client that logs out mid-drag would otherwise leave its item nowhere —
         // off the ground and out of any container, on a cursor that is gone. Put
         // it back where it was.

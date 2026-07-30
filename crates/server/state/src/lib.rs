@@ -47,6 +47,7 @@ pub mod region;
 pub mod rng;
 pub mod runtime;
 pub mod sectors;
+pub mod session;
 pub mod skill;
 pub mod tame;
 pub mod title;

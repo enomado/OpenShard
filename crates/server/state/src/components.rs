@@ -22,7 +22,7 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::Layer;
 use openshard_protocol::world::Point;
-use openshard_protocol::{access::AccessLevel, direction::Facing, version::ClientVersion};
+use openshard_protocol::{access::AccessLevel, direction::Facing};
 
 /// Where a mobile or item is.
 ///
@@ -384,14 +384,16 @@ pub struct Staff;
 
 /// Marks an entity as driven by a person rather than by the server.
 ///
-/// Carries the connection so the world can answer it, and the version so
-/// encoders can ask what this particular client understands.
+/// Carries the connection so the world can answer it — and nothing else. What
+/// the client *is* lives on the connection's own row
+/// ([`session::Session`](crate::session::Session)), not here: a version held on
+/// the entity is a version that does not exist until a character does, which is
+/// what made a connection on the character screen unaddressable. Ask
+/// [`WorldState::version_of`](crate::WorldState::version_of) with the connection.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Client {
     /// Which connection.
     pub connection: ConnectionId,
-    /// What it claims to be. Every feature gate reads this.
-    pub version: ClientVersion,
 }
 
 /// A mobile's three stats: strength, dexterity, intelligence.
@@ -2690,7 +2692,6 @@ mod tests {
             player,
             Client {
                 connection: ConnectionId::from_raw(1),
-                version: ClientVersion::TOL,
             },
         );
 

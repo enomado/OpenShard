@@ -519,7 +519,19 @@ fn handle_login_packet(
             // which is why `apply` follows the call rather than the state
             // machine sending anything itself. Nothing is copied out to say so:
             // `Session::send_packet` reads the state machine.
+            let authenticated = session.login.account().is_some();
             let response = login.handle(&mut session.login, login_packet, Instant::now());
+            // And it is the seam the *world* takes the connection over at. The
+            // transition is one-way and happens once — `LoginSession` has no path
+            // back out of `CharacterListSent` — so comparing the account across
+            // the call is enough to catch it exactly once, with no flag here to
+            // fall out of step with the state machine that owns the fact.
+            if !authenticated && session.login.account().is_some() {
+                world.queue(Command::Authenticated {
+                    connection: id,
+                    version: session.login.version(),
+                });
+            }
             session.apply(response, id)
         }
     }

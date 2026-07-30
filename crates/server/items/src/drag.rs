@@ -255,10 +255,9 @@ pub fn drop_into_container(
         },
     );
     // Tell the client, whose gump is open, that the item is now inside.
-    if let (Some(&Client { version, .. }), Some(record)) = (
-        state.registry.get::<Client>(player),
-        contained_record(state, held.entity),
-    ) {
+    if let (Some(version), Some(record)) =
+        (state.version_of(connection), contained_record(state, held.entity))
+    {
         state.send(
             connection,
             encode_add_to_container(record, container_serial, version),

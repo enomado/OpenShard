@@ -281,6 +281,24 @@ pub struct DecorContainer {
 /// Something for the world to do, from outside the world.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Command {
+    /// A client finished its game login, and the world takes the connection over.
+    ///
+    /// The hand-off, and the first the world hears of a connection: the login
+    /// conversation before this point is not the world's business — accounts,
+    /// passwords and the relay key are not simulation — and everything after it
+    /// is. Until this arrives the world cannot address the connection at all,
+    /// which is why the character screen is still answered outside the tick. See
+    /// `docs/connection_state.md`.
+    ///
+    /// The version rides along because the game socket never states it: it was
+    /// read from the *login* socket's seed and carried across on the auth key,
+    /// and this is the only path by which it reaches the world.
+    Authenticated {
+        /// Which connection.
+        connection: ConnectionId,
+        /// What its client claims to be.
+        version: ClientVersion,
+    },
     /// A client picked a character. One field, because [`Entering`] is what the
     /// world's own `enter` takes: the command used to spell out the same seven
     /// values that a private struct next to `enter` then spelled out again to

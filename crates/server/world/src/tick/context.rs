@@ -42,7 +42,7 @@ impl World {
         if !self.state.gameplay.context_menus {
             return;
         }
-        let Some(version) = self.client_version(connection) else {
+        let Some(version) = self.state.version_of(connection) else {
             return;
         };
         // The new (0x02) popup format only; older clients want the 0x01 layout,
@@ -154,11 +154,5 @@ impl World {
         } else {
             Vec::new()
         }
-    }
-
-    /// The client version on a connection, if it is a player in the world.
-    fn client_version(&self, connection: ConnectionId) -> Option<ClientVersion> {
-        let entity = self.state.players.get(&connection).copied()?;
-        self.state.registry.get::<Client>(entity).map(|c| c.version)
     }
 }

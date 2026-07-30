@@ -47,6 +47,7 @@ use crate::quest::QuestDefs;
 use crate::region::{Region, Regions};
 use crate::rng::Rng;
 use crate::sectors::{Sectors, VIEW_RANGE};
+use crate::session::Session;
 
 /// A character's height above the ground when the facet has no map to ask.
 const Z_WITHOUT_A_MAP: i8 = 0;
@@ -534,6 +535,13 @@ pub struct WorldState {
     pub default_facet: Facet,
     /// Which entity a connection is driving.
     pub players: HashMap<ConnectionId, EntityId>,
+    /// Every connection the world is holding, playing a character or not.
+    ///
+    /// Wider than [`players`](Self::players) on purpose: a connection exists from
+    /// the moment the login conversation hands it over, which is before it has
+    /// picked a character and after it has left one behind. See
+    /// [`Session`](crate::session::Session) for why that has to be expressible.
+    pub sessions: HashMap<ConnectionId, Session>,
     /// What each player's client currently has on screen.
     ///
     /// The server has to remember, because the client never says. There is no
@@ -868,7 +876,7 @@ impl WorldState {
         let Some(serial) = self.registry.serial_of(entity) else {
             return;
         };
-        if let Some(&Client { connection, version }) = self.registry.get::<Client>(entity) {
+        if let Some((connection, version)) = self.client_of(entity) {
             let exact = ServerPacket::Health(HealthBar::exact(serial, max, current));
             self.outbox.push(Outbound {
                 connection,
@@ -877,7 +885,7 @@ impl WorldState {
         }
         let scaled = ServerPacket::Health(HealthBar::scaled(serial, max, current));
         for watcher in self.watchers_of(entity) {
-            if let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) {
+            if let Some((connection, version)) = self.client_of(watcher) {
                 self.outbox.push(Outbound {
                     connection,
                     packet: scaled.encode(version),
@@ -1487,7 +1495,7 @@ impl WorldState {
             return;
         };
         for watcher in self.watchers_of(entity) {
-            let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) else {
+            let Some((connection, version)) = self.client_of(watcher) else {
                 continue;
             };
             self.outbox.push(Outbound {
@@ -1501,7 +1509,7 @@ impl WorldState {
     pub fn show(&mut self, watcher: EntityId, other: EntityId) {
         // Only players have screens. An NPC "seeing" someone is an AI question,
         // and it does not belong in the packet path.
-        let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) else {
+        let Some((connection, version)) = self.client_of(watcher) else {
             return;
         };
         if self.seen.get(&watcher).is_some_and(|seen| seen.contains(&other)) {
@@ -1950,14 +1958,33 @@ impl WorldState {
 
     /// The client version negotiated on `connection`.
     ///
-    /// `None` for a connection with no player in the world. That is not a stopgap
-    /// for "don't know yet": every in-world packet is addressed to a mobile, and a
-    /// connection without one has nothing such a packet could tell it — it left,
-    /// or it has not entered.
+    /// `None` for a connection the world has never been handed — one still in the
+    /// login conversation, or one already gone. That is absence and not ignorance:
+    /// a connection the world holds always knows what its client is, because the
+    /// version arrives with the hand-off (`Command::Authenticated`) and never
+    /// changes afterwards.
+    ///
+    /// Read off the session row rather than off the player's
+    /// [`Client`](crate::components::Client) component, which is what made a
+    /// connection with no character unaddressable — see
+    /// [`session`](crate::session).
     #[must_use]
     pub fn version_of(&self, connection: ConnectionId) -> Option<ClientVersion> {
-        let &player = self.players.get(&connection)?;
-        self.registry.get::<Client>(player).map(|client| client.version)
+        self.sessions.get(&connection).map(|session| session.version)
+    }
+
+    /// Who to answer for `entity`, and in which dialect: its connection and that
+    /// connection's client version, or `None` if it has no client at all.
+    ///
+    /// The two halves used to sit together on the [`Client`] component and are
+    /// now one lookup apiece — the entity says which connection, the connection
+    /// says which client. This is the pair every packet path needs, so it is one
+    /// call and not two: a caller that reached for `Client { connection }` and
+    /// then guessed a version would be back to the bug that split them.
+    #[must_use]
+    pub fn client_of(&self, entity: EntityId) -> Option<(ConnectionId, ClientVersion)> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        Some((connection, self.version_of(connection)?))
     }
 
     /// Queue `packet` for a connection, framed for the version that connection
@@ -1965,7 +1992,8 @@ impl WorldState {
     ///
     /// The seam every server-to-client packet should go through: the caller names
     /// *what* to say and this decides *how* to say it to this particular client.
-    /// A connection with no player is skipped — see [`version_of`](Self::version_of).
+    /// A connection the world does not hold is skipped — see
+    /// [`version_of`](Self::version_of).
     /// Encoding for a guessed version instead is how a client silently drops a
     /// packet it cannot parse, which is the failure mode that is hardest to see.
     pub fn send_packet(&mut self, connection: ConnectionId, packet: &ServerPacket) {
@@ -2016,8 +2044,7 @@ impl WorldState {
         };
         sectors
             .nearby(centre, VIEW_RANGE)
-            .filter_map(|(entity, _)| self.registry.get::<Client>(entity))
-            .map(|client| (client.connection, client.version))
+            .filter_map(|(entity, _)| self.client_of(entity))
             .collect()
     }
 

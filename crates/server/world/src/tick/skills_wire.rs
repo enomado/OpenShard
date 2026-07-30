@@ -125,7 +125,7 @@ impl World {
     /// Send a player its whole skill list, to fill the window — on login, the
     /// way ServUO sends `SkillUpdate` on world entry.
     pub(super) fn send_skills(&mut self, connection: ConnectionId, entity: EntityId) {
-        let Some(&Client { version, .. }) = self.state.registry.get::<Client>(entity) else {
+        let Some(version) = self.state.version_of(connection) else {
             return;
         };
         let entries = self.skill_entries(entity, version);

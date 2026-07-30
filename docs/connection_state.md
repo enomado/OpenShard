@@ -1,0 +1,190 @@
+# The connection state machine: one owner per phase
+
+Living plan for a multi-session refactor of what a *connection* is. It is the
+sequel to the design already written down in
+[`architecture.md` → "Sessions and the character registry"](architecture.md), and
+it does the one thing that design left unresolved: it says **where the
+connection's state lives**, rather than which of its questions each existing
+table answers.
+
+As with [`protocol_newtypes.md`](protocol_newtypes.md): when reality contradicts
+a decision here, change this file in the same commit that changes the code.
+
+## Why
+
+A connection's state is kept in two tables that have to agree, and nothing
+checks that they do.
+
+| | `server/src/session.rs` | `openshard-state` |
+|---|---|---|
+| which socket, which client version | `Session::login` | `Client { version }` on the entity |
+| is it playing, and what | `Session::playing` | `WorldState::players` |
+| what it is dragging, watching, has open | — | `held`, `open_containers`, `open_quest_gumps`, `open_craft_gumps`, `pending_targets`, `last_status`, `last_light`, `last_music` |
+
+Five things follow from the split, and each is a reason on its own:
+
+1. **Presence is a bool, and it is set optimistically.** `Session::playing` is
+   set as `Command::Enter` is *queued* (`server/src/dispatch.rs`), and
+   `World::enter` refuses silently in three places — already in the world, a
+   saved serial that will not bind, an exhausted mobile serial pool
+   (`world/src/tick/enter.rs`). After any of them the session says it is playing,
+   the world has no entity, and every world packet the client sends is queued
+   into a tick that drops it on a `players.get` miss. The client is told nothing
+   and waits on "logging into shard". `Option<PlayedCharacter>` cannot spell
+   *asked to enter, not yet in* — the state that genuinely exists between the
+   queue and the tick — so the lie is not a slip, it is the only thing the type
+   can say.
+2. **`in_world()` is a second copy of `players.contains_key`.** Thirty arms of
+   `dispatch_world_packet` open by consulting the copy rather than the world.
+3. **The world cannot answer a connection that has no entity.**
+   `WorldState::send_packet` resolves the client version through
+   `players → Client`, so a connection on the character screen is unreachable
+   from inside a tick, and unreachable *silently*. This is the structural reason
+   the character screen cannot become world commands as
+   [`roadmap.md` §2](roadmap.md) plans: the version has to live on the
+   connection, not on the entity.
+4. **The login crate already made this argument about itself.**
+   `LoginSession`'s own doc: *"a state machine with facts kept outside it is a
+   state machine that can disagree with itself"* — which is what `playing` is.
+5. **Teardown is hand-written.** `World::disconnect` clears eight maps by name.
+   The ninth one added without a line there leaks, and nothing catches it.
+
+## The shape this works toward
+
+The seam is **authentication**. Everything before it is the login conversation;
+everything after it is the world's, character screen included.
+
+| | owner today | owner after |
+|---|---|---|
+| credentials, auth keys, `0x80`/`0xA0`/`0x8C` | `openshard-login` | unchanged |
+| a character *exists* | `login.accounts` | the world, with the roster |
+| a character is *present* | `Sessions::playing` (binary) | the world, as a phase |
+| client version | `Client` on the entity | the connection record |
+| the socket, and whether it is compressed | `Session` (binary) | unchanged — it is transport |
+
+The login crate ends its life at `Authenticated { account, version, access }` and
+hands the connection over with one command. From there the connection is a row in
+the world with a phase:
+
+```text
+   Authenticated ──> Entering ──> Playing { entity } ──> LoggingOut
+        │                │
+        │                └─ Command::Enter queued, the tick has not applied it
+        └─ character screen: list, create, select, delete
+```
+
+## Decisions
+
+Numbered so a later session can argue with one without reopening all of them.
+
+**D1. Login does not move into the world.** Accounts, argon2, auth keys, the
+`0x8C` relay and the shard list are not simulation. `Argon2::default()` is 19 MiB
+and two passes against a 50 ms `TICK_INTERVAL`; a password check inside a tick
+stalls the whole shard for one client's benefit. What moves is everything *after*
+the `0x91`.
+
+**D2. The connection record lives in `WorldState`, keyed by `ConnectionId`.**
+Named `Session` there, because it is the thing this refactor is moving. The
+binary's `Session`/`Sessions` become `Socket`/`Sockets` in the same step that
+takes the phase away from them — what stays behind is a pipe, not a session, and
+two types called `Session` in one workspace is how a reader loses track of which
+one is authoritative.
+
+**D3. The phase is an enum, and `Entering` is a state of its own.** It is the
+distinction `Option<PlayedCharacter>` could not carry, and the one that makes
+point 1 above unspellable rather than merely fixed.
+
+**D4. `Entering → Playing` is driven by the world, not by the caller.**
+`PlayerEntered`/`PlayerLeft` gain a `connection` field (the world knows it) and
+the phase moves when the tick says so. A refusal inside `World::enter` stops
+being silent in the same change: the connection is told, instead of waiting.
+
+Commands queued while `Entering` are still queued, not dropped — the queue is
+ordered, so they apply after the `Enter` that precedes them. This is why the
+phase must exist rather than the gate simply being moved later.
+
+**D5. The character screen becomes world commands only after the roster moves
+in.** Ordering, not preference: until the world owns the saved records it cannot
+answer `0x5D`, and until the connection record exists it cannot answer anybody
+who has no entity. See [`roadmap.md` §2, "The roster belongs in the
+world"](roadmap.md).
+
+**D6. This does not reopen the decision in `architecture.md`.** That decision —
+create, select and delete stay out of `openshard-login` — was about not dragging
+`openshard-persistence` (and with it bundled SQLite and `tokio-postgres`) into a
+crate whose whole value is that it has neither. Moving them *into the world*,
+which already depends on persistence, is the other direction and the objection
+does not apply. What it does retire is "all three live in the binary": they live
+in the binary today because the world could not be asked, and D2 is what changes
+that.
+
+**D7. No new crate.** The state goes into `openshard-state` beside the rest of
+the runtime; the rules go into `openshard-world`. A `crates/server/session` crate
+was considered and rejected: it would sit between login and world with a
+dependency on both, which is the same seam this file is trying to delete, only
+with a `Cargo.toml` around it.
+
+## Steps
+
+Each is a pull request. The first three are worth doing whether or not the rest
+follows.
+
+- [x] **S1. The world can address a connection that has no entity.** Done.
+      `WorldState::sessions: HashMap<ConnectionId, Session>` carries the client
+      version and `version_of` reads it; the binary sends
+      `Command::Authenticated { connection, version }` at the one-way transition
+      into `LoginSession`'s game state, `World::attach` writes the row and
+      `World::disconnect` removes it. `Client` is down to its connection —
+      `WorldState::client_of` returns the (connection, version) pair every packet
+      path wanted, and `tick/context.rs` lost a second private copy of
+      `version_of` that had been written beside it.
+      Guarded by `a_connection_can_be_answered_before_it_has_a_character` and
+      `a_disconnect_forgets_the_connection_itself` in `world/src/tick/tests.rs`.
+
+- [ ] **S2. The phase replaces the bool.** `Authenticated → Entering → Playing →
+      LoggingOut` on the world's session row. `Session::playing` and `in_world()`
+      leave the binary; `Session`/`Sessions` there become `Socket`/`Sockets`.
+      `PlayerEntered`/`PlayerLeft` carry the connection and move the phase.
+      *Done when:* a test makes `World::enter` refuse and the connection is told,
+      rather than left in a phase that claims it is playing.
+
+- [ ] **S3. One gate instead of thirty.** `dispatch_world_packet` matches the
+      phase once on the way in and returns `Option<Command>` instead of taking
+      `&mut World` — the rule `roadmap.md` §2 already asks for on the character
+      screen, applied to the whole dispatcher.
+
+- [ ] **S4. The roster moves into the world.** Already planned — see
+      [`roadmap.md` §2](roadmap.md). Collapses `Roster`, `departed` and
+      `pending_inventories`; "exists" and "is played" become two states of one
+      record; `is_playing` is answered by `(account, name)` rather than by a
+      serial nobody has yet.
+
+- [ ] **S5. The character screen is world commands.** `0xA9`, `0x00`/`0xF8`,
+      `0x83`, `0x5D` become commands answered out of a tick.
+      `create_character`/`delete_character` leave the binary. The login crate
+      ends at `Authenticated`.
+
+- [ ] **S6. The binary is glue again.** The `select!` loop, the transport, and
+      boot. `restore_*` into `boot.rs`, `keys.expire` into its own `select!` arm,
+      argon2 onto a blocking task.
+
+- [ ] **S7. The rest of the per-connection state joins the row.** `held`,
+      `open_containers`, `open_quest_gumps`, `open_craft_gumps`,
+      `pending_targets`, `last_status`, `last_light`, `last_music`. Teardown
+      becomes one `remove`, and forgetting a field stops being possible.
+
+## To verify with a real client
+
+- **S5 delays `0xA9` by up to one tick** (50 ms). It answers `0x91`
+  synchronously today. The client is already waiting at that point, but this is
+  the kind of thing that is fine in theory and a hang in practice.
+- **Compression must not follow the phase.** A game socket is Huffman-compressed
+  from the moment its `0x91` is read, refusal included; the flag stays in the
+  binary's transport and is set once, irreversibly, at the hand-off. Reading it
+  off a phase that lives in the world would put a channel round-trip between the
+  socket and the question "is this stream compressed".
+
+## Status
+
+S1 landed; S2 is next. Findings are recorded in [`roadmap.md` §2](roadmap.md)
+under "A connection's state is kept in two tables that must agree".

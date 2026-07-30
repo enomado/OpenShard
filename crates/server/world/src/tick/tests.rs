@@ -813,6 +813,62 @@ fn double_clicking_yourself_opens_the_paperdoll() {
 }
 
 #[test]
+fn a_connection_can_be_answered_before_it_has_a_character() {
+    // The thing that was in the way of answering the character screen out of a
+    // tick. `send_packet` frames a packet for the connection's client version,
+    // and that version used to live on the *player's* `Client` component — so a
+    // connection that had not picked a character yet resolved to no version, and
+    // every packet addressed to it was dropped without a word. There is no
+    // character here on purpose: the hand-off is all that has happened.
+    let mut world = world();
+    let connection = connection();
+
+    world.queue(Command::Authenticated {
+        connection,
+        version: ClientVersion::TOL,
+    });
+    world.tick(Instant::now());
+
+    assert_eq!(
+        world.state.version_of(connection),
+        Some(ClientVersion::TOL),
+        "the world knows what this client is with no entity to hang it on"
+    );
+    world
+        .state
+        .send_packet(connection, &ServerPacket::LogoutAck(LogoutAck));
+    assert_eq!(
+        packets_for(&mut world, connection).len(),
+        1,
+        "and a packet addressed to it actually leaves"
+    );
+}
+
+#[test]
+fn a_disconnect_forgets_the_connection_itself() {
+    // The row is the connection's, not the character's, so it has to go when the
+    // socket does. A `ConnectionId` is reused — the gateway hands out fresh ones
+    // per accept, but nothing here may assume it — and a row left behind would
+    // give the next client on that id a version it never negotiated, which is
+    // exactly the silent wrong-dialect encode the version gate exists to prevent.
+    let now = Instant::now();
+    let mut world = world();
+    // Entered without a hand-off, the way every test does it: `enter` attaches
+    // the session itself, so the version is on the connection either way.
+    let connection = enter(&mut world, now);
+    assert_eq!(world.state.version_of(connection), Some(ClientVersion::TOL));
+
+    world.queue(Command::Disconnect { connection });
+    world.tick(now);
+
+    assert_eq!(
+        world.state.version_of(connection),
+        None,
+        "the world holds nothing for a socket that is gone"
+    );
+}
+
+#[test]
 fn logging_out_despawns_the_backpack() {
     // Equipment is not persisted yet, so it must not outlive its wearer as an
     // orphan equipped on a serial about to be reused.
