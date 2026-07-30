@@ -35,6 +35,7 @@ use openshard_persistence::{
     CharacterRecord, DecorationRecord, DoorState, Inventory, ItemLocation, ItemRecord, Journal, MobileRecord,
     SCHEMA_VERSION, Snapshot,
 };
+use openshard_protocol::containers::UseRequest;
 use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
 use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
 use openshard_protocol::identity::{AccountName, CharacterName};
@@ -904,22 +905,31 @@ impl World {
                     );
                 }
             }
-            Command::DoubleClick { connection, serial } => {
-                debug!(
-                    serial = format!("0x{serial:08X}"),
-                    paperdoll = serial & 0x8000_0000 != 0,
-                    "double-click"
-                );
-                // Bit 31 is the client's *paperdoll request* — the login-time
-                // paperdoll open, the paperdoll macro — and it is only that:
-                // ServUO's `UseReq` routes it straight to `OnPaperdollRequest`,
-                // never to `Use`. A raw double-click carries the bare serial.
-                // Stripping the bit and treating both alike was the bug where
-                // relogging mounted dismounted you a breath later: the client's
-                // paperdoll-open read as a self-double-click.
-                if serial & 0x8000_0000 != 0 {
-                    items::paperdoll_request(&mut self.state, connection, serial & 0x7FFF_FFFF);
-                } else {
+            // Bit 31 is the client's *paperdoll request* — the login-time
+            // paperdoll open, the paperdoll macro — and it is only that:
+            // ServUO's `UseReq` routes it straight to `OnPaperdollRequest`,
+            // never to `Use`. Treating both alike was the bug where relogging
+            // mounted dismounted you a breath later: the client's paperdoll-open
+            // read as a self-double-click. `DoubleClick::interpret` is what
+            // takes the two apart, and it did so before this command was queued.
+            Command::DoubleClick {
+                connection,
+                request: UseRequest::Paperdoll(raw),
+            } => {
+                debug!(serial = format!("0x{:08X}", raw.0), "paperdoll request");
+                if let Some(serial) = raw.validate() {
+                    items::paperdoll_request(&mut self.state, connection, serial);
+                }
+            }
+            Command::DoubleClick {
+                connection,
+                request: UseRequest::Use(raw),
+            } => {
+                debug!(serial = format!("0x{:08X}", raw.0), "double-click");
+                // A click on nothing is silence: `0`, `0xFFFFFFFF` and anything
+                // past the item pool address no object, and the client is owed
+                // no answer for asking.
+                if let Some(serial) = raw.validate() {
                     // Every double-clicked mobile reaches the rules layered over
                     // it, whatever the engine itself then does with the click.
                     // This used to fire only where the click fell through to the
@@ -933,7 +943,7 @@ impl World {
                     // quest giver is a vendor and both have to work.
                     if let (Some(&player), Some(target)) = (
                         self.state.players.get(&connection),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         quests::talk_to(&mut self.state, player, target);
                     }
@@ -942,7 +952,7 @@ impl World {
                     // does not bar the lid.
                     if let (Some(&player), Some(target)) = (
                         self.state.players.get(&connection),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         self.spring_trap(player, target);
                     }
@@ -952,7 +962,7 @@ impl World {
                     // peek keeps the gump shut, and every peek costs karma.
                     let snoop_refused = match (
                         self.state.players.get(&connection).copied(),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         (Some(player), Some(target))
                             if self.state.registry.has::<Container>(target)
@@ -969,7 +979,7 @@ impl World {
                     // both would reach the pack as a bare `ItemUsed`.
                     let engine_window = match (
                         self.state.players.get(&connection).copied(),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         (Some(player), Some(target)) => {
                             // A runebook is checked beside the gate for the same
@@ -995,7 +1005,7 @@ impl World {
                         // customise in the pack, in that order.
                         if let (Some(&player), Some(item)) = (
                             self.state.players.get(&connection),
-                            Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                            self.state.registry.entity_of(serial),
                         ) {
                             self.use_item_skill(player, item);
                         }

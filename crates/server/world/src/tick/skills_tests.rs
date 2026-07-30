@@ -11,6 +11,7 @@
 
 use super::tests::{START, enter, enter_as, packets_for, spawn_mobile_at, world};
 use super::*;
+use openshard_protocol::serial::RawSerial;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::Skill;
 use openshard_state::components::{
@@ -794,7 +795,7 @@ fn a_trapped_chest_goes_off_when_it_is_opened_and_remove_trap_takes_it_off() {
 
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: chest_serial,
+        request: UseRequest::Use(RawSerial(chest_serial)),
     });
     world.tick(now);
     let hurt = world
@@ -1147,7 +1148,7 @@ fn a_bandage_takes_time_and_then_mends() {
     // Double-click the bandage, then point it at yourself.
     world.queue(Command::DoubleClick {
         connection: healer,
-        serial: bandage,
+        request: UseRequest::Use(RawSerial(bandage)),
     });
     world.tick(now);
     assert!(
@@ -1223,7 +1224,7 @@ fn a_lockpick_opens_a_lock_it_is_good_enough_for() {
 
     world.queue(Command::DoubleClick {
         connection: thief,
-        serial: pick,
+        request: UseRequest::Use(RawSerial(pick)),
     });
     world.tick(now);
     let said = answer_cursor(&mut world, thief, chest_serial, now);

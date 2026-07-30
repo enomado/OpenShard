@@ -256,7 +256,10 @@ pub fn drop_into_container(
         state.registry.get::<Client>(player),
         contained_record(state, held.entity),
     ) {
-        state.send(connection, encode_add_to_container(record, container, version));
+        state.send(
+            connection,
+            encode_add_to_container(record, container_serial, version),
+        );
     }
     // And everyone else looking into the same container, which is what makes an
     // offer visible across a trade window.

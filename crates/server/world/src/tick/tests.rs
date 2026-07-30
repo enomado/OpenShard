@@ -7,6 +7,7 @@ use openshard_movement::WALK_INTERVAL;
 use openshard_protocol::items::DROP_TO_GROUND;
 use openshard_protocol::mobile::Remove;
 use openshard_protocol::packet::encode_packet;
+use openshard_protocol::serial::RawSerial;
 use openshard_protocol::skill::SkillLock;
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
@@ -575,7 +576,7 @@ fn double_clicking_a_container_opens_it() {
 
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: container,
+        request: UseRequest::Use(RawSerial(container)),
     });
     world.tick(now);
 
@@ -628,7 +629,7 @@ fn double_clicking_a_plain_item_fires_the_use_trigger() {
     let mut used: Cursor<crate::ItemUsed> = world.bus().cursor();
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: item,
+        request: UseRequest::Use(RawSerial(item)),
     });
     world.tick(now);
 
@@ -653,7 +654,7 @@ fn the_use_trigger_respects_reach() {
     let mut used: Cursor<crate::ItemUsed> = world.bus().cursor();
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: item,
+        request: UseRequest::Use(RawSerial(item)),
     });
     world.tick(now);
 
@@ -716,7 +717,7 @@ fn double_clicking_your_own_backpack_opens_it() {
 
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: pack,
+        request: UseRequest::Use(RawSerial(pack)),
     });
     world.tick(now);
 
@@ -785,11 +786,13 @@ fn double_clicking_yourself_opens_the_paperdoll() {
 
     // Bit 31 is the client's paperdoll *request* (the login-time open, the
     // paperdoll macro) — ServUO's `UseReq` routes it straight to the paperdoll
-    // and nothing else. A raw self-double-click (no bit) opens it too, through
-    // the ordinary use rule, when the player is on foot.
+    // and nothing else. `DoubleClick::interpret` is what reads the bit, so what
+    // reaches the queue is already the one request or the other. A raw
+    // self-double-click (no bit) opens the paperdoll too, through the ordinary
+    // use rule, when the player is on foot.
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: serial | 0x8000_0000,
+        request: UseRequest::Paperdoll(RawSerial(serial)),
     });
     world.tick(now);
     assert!(
@@ -799,7 +802,7 @@ fn double_clicking_yourself_opens_the_paperdoll() {
 
     world.queue(Command::DoubleClick {
         connection: player,
-        serial,
+        request: UseRequest::Use(RawSerial(serial)),
     });
     world.tick(now);
     assert!(
@@ -898,7 +901,7 @@ fn an_opened_container_lists_what_was_put_in_it() {
 
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: container,
+        request: UseRequest::Use(RawSerial(container)),
     });
     world.tick(now);
 
@@ -1203,7 +1206,7 @@ fn consuming_a_contained_item_removes_it_from_the_open_gump() {
     world.tick(now);
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: container,
+        request: UseRequest::Use(RawSerial(container)),
     });
     world.tick(now);
     let _ = packets_for(&mut world, player);
@@ -1840,7 +1843,7 @@ fn gold_in_open_container(
     world.tick(now);
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: container,
+        request: UseRequest::Use(RawSerial(container)),
     });
     world.tick(now);
     (container, gold)
@@ -6273,7 +6276,7 @@ fn consuming_a_reagent_redraws_an_open_pack() {
     // Open it, then clear what has been sent so far.
     world.queue(Command::DoubleClick {
         connection: player,
-        serial: pack,
+        request: UseRequest::Use(RawSerial(pack)),
     });
     world.tick(now);
     let _ = packets_for(&mut world, player);
@@ -7056,7 +7059,7 @@ fn a_door_opens_and_closes_on_double_click() {
     // the hinge offset.
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial,
+        request: UseRequest::Use(RawSerial(serial)),
     });
     world.tick(now);
     assert_eq!(
@@ -7078,7 +7081,7 @@ fn a_door_opens_and_closes_on_double_click() {
     // Double-clicking again shuts it and returns it to its frame.
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial,
+        request: UseRequest::Use(RawSerial(serial)),
     });
     world.tick(now);
     assert_eq!(world.registry().get::<Graphic>(door).unwrap().id, 0x0675);
@@ -7111,7 +7114,7 @@ fn an_open_door_swings_shut_on_its_own() {
 
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial,
+        request: UseRequest::Use(RawSerial(serial)),
     });
     world.tick(now);
     assert!(world.registry().get::<Door>(door).unwrap().is_open);
@@ -7242,7 +7245,7 @@ fn a_decoration_container_opens_on_double_click() {
 
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial,
+        request: UseRequest::Use(RawSerial(serial)),
     });
     world.tick(now);
     assert!(
@@ -8705,7 +8708,7 @@ fn a_locked_door_refuses_a_player_and_an_npc_alike() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: door_serial,
+        request: UseRequest::Use(RawSerial(door_serial)),
     });
     world.tick(now);
     assert!(
@@ -9124,7 +9127,7 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection,
-        serial: keeper_serial,
+        request: UseRequest::Use(RawSerial(keeper_serial)),
     });
     world.tick(now);
     assert!(
@@ -9142,7 +9145,7 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection,
-        serial: keeper_serial,
+        request: UseRequest::Use(RawSerial(keeper_serial)),
     });
     world.tick(now);
     let packets = packets_for(&mut world, connection);
@@ -9228,7 +9231,7 @@ fn a_shop_that_keeps_hours_is_shut_after_them() {
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection,
-        serial: keeper_serial,
+        request: UseRequest::Use(RawSerial(keeper_serial)),
     });
     world.tick(now);
     assert!(
@@ -9245,7 +9248,7 @@ fn a_shop_that_keeps_hours_is_shut_after_them() {
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection,
-        serial: keeper_serial,
+        request: UseRequest::Use(RawSerial(keeper_serial)),
     });
     world.tick(now);
     let packets = packets_for(&mut world, connection);
@@ -9271,7 +9274,7 @@ fn a_shard_with_no_schedule_never_closes() {
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection,
-        serial: keeper_serial,
+        request: UseRequest::Use(RawSerial(keeper_serial)),
     });
     world.tick(now);
     assert!(
@@ -9987,7 +9990,7 @@ fn a_vendor_at_the_counter_sells() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: vendor,
+        request: UseRequest::Use(RawSerial(vendor)),
     });
     world.tick(now);
 
@@ -10009,7 +10012,7 @@ fn a_vendor_behind_a_wall_will_not_sell() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: vendor,
+        request: UseRequest::Use(RawSerial(vendor)),
     });
     world.tick(now);
 
@@ -10030,7 +10033,7 @@ fn a_vendor_across_the_street_is_out_of_reach() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: vendor,
+        request: UseRequest::Use(RawSerial(vendor)),
     });
     world.tick(now);
 
@@ -10565,7 +10568,7 @@ fn an_opened_door_lets_a_step_through_and_blocks_again_when_it_shuts() {
     // Open, the doorway is a doorway again.
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: door_serial,
+        request: UseRequest::Use(RawSerial(door_serial)),
     });
     world.tick(now);
     world.queue(Command::Step {
@@ -10667,7 +10670,7 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
     // Open the door and the next beat notices.
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: door_serial,
+        request: UseRequest::Use(RawSerial(door_serial)),
     });
     world.tick(now);
     for _ in 0..(AI_THINK_TICKS + 1) {
@@ -10822,7 +10825,7 @@ fn a_human_chaser_opens_the_door_in_its_way() {
     // Open the door first so the creature can see and acquire its prey.
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: door_serial,
+        request: UseRequest::Use(RawSerial(door_serial)),
     });
     world.tick(now);
     let creature = spawn_brained(&mut world, 0x0190, Point::new(START.0, START.1 + 3, 0), 8, now);
@@ -10847,7 +10850,7 @@ fn a_human_chaser_opens_the_door_in_its_way() {
     // Slam the door in its face: a human body opens it rather than giving up.
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: door_serial,
+        request: UseRequest::Use(RawSerial(door_serial)),
     });
     world.tick(now);
     assert!(!world.registry().get::<Door>(door).unwrap().is_open);
@@ -11085,7 +11088,7 @@ fn a_horse_is_mounted_and_dismounted_by_double_click() {
 
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: horse_serial,
+        request: UseRequest::Use(RawSerial(horse_serial)),
     });
     world.tick(now);
     let riding = world
@@ -11116,7 +11119,7 @@ fn a_horse_is_mounted_and_dismounted_by_double_click() {
     let player_serial = world.registry().serial_of(player).unwrap().raw();
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: player_serial,
+        request: UseRequest::Use(RawSerial(player_serial)),
     });
     world.tick(now);
     assert!(world.registry().get::<Riding>(player).is_none());
@@ -11145,6 +11148,9 @@ fn a_paperdoll_request_leaves_the_rider_mounted() {
     // serial carries bit 31 — a paperdoll *request*, not a use. ServUO's `UseReq`
     // routes it straight to the paperdoll; treating it as a raw self-double-click
     // is what used to throw the rider off a breath after logging in mounted.
+    // The bit itself is read by `DoubleClick::interpret` (tested in
+    // `openshard_protocol::containers`); what this holds is the half that
+    // matters here — the two requests take different paths through the tick.
     let now = Instant::now();
     let mut world = world();
     let gm = enter_gm(&mut world, now);
@@ -11152,7 +11158,7 @@ fn a_paperdoll_request_leaves_the_rider_mounted() {
     let (_horse, horse_serial) = spawn_horse(&mut world, Point::new(START.0 + 1, START.1, 0), now);
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: horse_serial,
+        request: UseRequest::Use(RawSerial(horse_serial)),
     });
     world.tick(now);
     assert!(world.registry().get::<Riding>(player).is_some(), "mounted");
@@ -11161,7 +11167,7 @@ fn a_paperdoll_request_leaves_the_rider_mounted() {
     let player_serial = world.registry().serial_of(player).unwrap().raw();
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: player_serial | 0x8000_0000,
+        request: UseRequest::Paperdoll(RawSerial(player_serial)),
     });
     world.tick(now);
     assert!(
@@ -11182,7 +11188,7 @@ fn a_ridden_horse_does_not_wander_and_the_ride_survives_logout() {
     let (horse, horse_serial) = spawn_horse(&mut world, Point::new(START.0 + 1, START.1, 0), now);
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: horse_serial,
+        request: UseRequest::Use(RawSerial(horse_serial)),
     });
     world.tick(now);
     assert!(world.registry().get::<Position>(horse).is_none());
@@ -11220,7 +11226,7 @@ fn a_mounted_character_logs_back_in_still_mounted() {
     let (_horse, horse_serial) = spawn_horse(&mut world, Point::new(START.0 + 1, START.1, 0), now);
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: horse_serial,
+        request: UseRequest::Use(RawSerial(horse_serial)),
     });
     world.tick(now);
     let mount_graphic = {
@@ -11288,7 +11294,7 @@ fn a_mounted_character_logs_back_in_still_mounted() {
     let player_serial = world.registry().serial_of(player).unwrap().raw();
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: player_serial,
+        request: UseRequest::Use(RawSerial(player_serial)),
     });
     world.tick(now);
     assert!(
@@ -11324,7 +11330,7 @@ fn a_dismounted_horse_stays_beside_the_rider_through_its_beats() {
     let (horse, horse_serial) = spawn_horse(&mut world, Point::new(START.0 + 1, START.1, 0), now);
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: horse_serial,
+        request: UseRequest::Use(RawSerial(horse_serial)),
     });
     world.tick(now);
     assert!(world.registry().get::<Riding>(player).is_some(), "mounted");
@@ -11337,7 +11343,7 @@ fn a_dismounted_horse_stays_beside_the_rider_through_its_beats() {
     let player_serial = world.registry().serial_of(player).unwrap().raw();
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: player_serial,
+        request: UseRequest::Use(RawSerial(player_serial)),
     });
     world.tick(now);
     let _ = packets_for(&mut world, gm);
@@ -11435,7 +11441,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: vendor_serial,
+        request: UseRequest::Use(RawSerial(vendor_serial)),
     });
     world.tick(now);
     assert!(
@@ -11706,7 +11712,7 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
     // Opening the shop before the hour is up finds it still empty.
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: vendor_serial,
+        request: UseRequest::Use(RawSerial(vendor_serial)),
     });
     world.tick(now);
     assert_eq!(
@@ -11723,7 +11729,7 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
     world.state.ticks += npc::RESTOCK_TICKS;
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: vendor_serial,
+        request: UseRequest::Use(RawSerial(vendor_serial)),
     });
     world.tick(now);
     let restocked: Vec<_> = world
@@ -11871,7 +11877,7 @@ fn no_volley_passes_a_shut_door() {
     let (_door, door_serial) = place_door(&mut world, Point::new(den.x, den.y - 1, 0), now);
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: door_serial,
+        request: UseRequest::Use(RawSerial(door_serial)),
     });
     world.tick(now);
     let archer = spawn_archer_bodied(&mut world, 0x00D1, den, now);
@@ -11890,7 +11896,7 @@ fn no_volley_passes_a_shut_door() {
     );
     world.queue(Command::DoubleClick {
         connection: gm,
-        serial: door_serial,
+        request: UseRequest::Use(RawSerial(door_serial)),
     });
     world.tick(later);
     let before = world.registry().get::<Hitpoints>(player).unwrap().current;
@@ -12169,7 +12175,7 @@ fn double_clicking_an_npc_fires_mobile_used_and_still_opens_the_paperdoll() {
 
     world.queue(Command::DoubleClick {
         connection: conn,
-        serial: npc,
+        request: UseRequest::Use(RawSerial(npc)),
     });
     world.tick(now);
 

@@ -803,7 +803,9 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
 mod tests {
     use super::*;
     use openshard_gateway::ConnectionId;
+    use openshard_protocol::containers::UseRequest;
     use openshard_protocol::identity::{AccountName, CharacterName};
+    use openshard_protocol::serial::RawSerial;
     use openshard_protocol::speech::{RawFont, RawTalkMode};
     use openshard_protocol::wire::RawHue;
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
@@ -969,7 +971,7 @@ mod tests {
             .expect("the script spawned a container");
         world.queue(Command::DoubleClick {
             connection: ConnectionId::from_raw(1),
-            serial: container,
+            request: UseRequest::Use(RawSerial(container)),
         });
         world.tick(now);
 

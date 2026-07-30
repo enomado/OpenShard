@@ -63,11 +63,8 @@ pub struct ItemsTaken {
 /// that decision: the shop still opens, the paperdoll still opens, and the rules
 /// layered over the mobile hear the click either way. Skips a self-click (opening
 /// your own paperdoll is not "using an NPC") and anything that is not a mobile.
-pub fn mobile_used(state: &mut WorldState, connection: ConnectionId, serial: u32) {
+pub fn mobile_used(state: &mut WorldState, connection: ConnectionId, target_serial: Serial) {
     let Some(&player) = state.players.get(&connection) else {
-        return;
-    };
-    let Some(target_serial) = Serial::new(serial) else {
         return;
     };
     let Some(target) = state.registry.entity_of(target_serial) else {

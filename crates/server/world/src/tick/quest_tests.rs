@@ -8,6 +8,7 @@
 
 use super::tests::{START, enter, packets_for, spawn_mobile_at, world};
 use super::*;
+use openshard_protocol::serial::RawSerial;
 use openshard_quests::{QUEST_GUMP, QUEST_RESIGN_GUMP};
 use openshard_state::components::{Amount, Contained, Graphic, QuestGiver, QuestLog, Stackable};
 use openshard_state::quest::{ObjectiveDef, ObjectiveKind, QuestDef, RewardDef, RewardKind};
@@ -128,7 +129,7 @@ fn a_double_clicked_giver_offers_its_quest() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
 
@@ -152,7 +153,7 @@ fn accepting_puts_the_quest_in_the_log() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     // Button 4 is Accept — ServUO's `Buttons.AcceptQuest`.
@@ -175,7 +176,7 @@ fn refusing_starts_nothing() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 2); // Refuse
@@ -227,7 +228,7 @@ fn a_slain_body_advances_only_the_killers_objective() {
     let giver = place_giver(&mut world, &["rat_cull"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -255,7 +256,7 @@ fn an_unattributed_death_advances_nothing() {
     let giver = place_giver(&mut world, &["rat_cull"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -286,7 +287,7 @@ fn obtain_progress_is_found_by_the_diffing_pass_not_announced() {
     let giver = place_giver(&mut world, &["silk_gather"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -323,7 +324,7 @@ fn a_turn_in_takes_the_items_and_pays() {
     let giver = place_giver(&mut world, &["silk_gather"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -339,7 +340,7 @@ fn a_turn_in_takes_the_items_and_pays() {
     // reward.
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 8); // Complete
@@ -392,7 +393,7 @@ fn a_player_one_item_short_loses_nothing_and_is_paid_nothing() {
     let giver = place_giver(&mut world, &["two_part"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -412,7 +413,7 @@ fn a_player_one_item_short_loses_nothing_and_is_paid_nothing() {
     }
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 8);
@@ -440,7 +441,7 @@ fn resigning_needs_the_yes_radio() {
     let giver = place_giver(&mut world, &["rat_cull"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -486,7 +487,7 @@ fn a_done_once_quest_is_never_offered_again() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -504,7 +505,7 @@ fn a_done_once_quest_is_never_offered_again() {
     world.tick(now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 8);
@@ -516,7 +517,7 @@ fn a_done_once_quest_is_never_offered_again() {
     // And it may not be taken again.
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -540,7 +541,7 @@ fn a_completed_quest_reaches_the_pack() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -556,7 +557,7 @@ fn a_completed_quest_reaches_the_pack() {
     world.tick(now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 8);
@@ -625,7 +626,7 @@ fn a_quest_giver_is_still_a_giver_after_a_restart() {
 
     shard.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     shard.tick(now);
     assert!(
@@ -731,7 +732,7 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
     let giver = place_giver(&mut world, &["rat_cull"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -801,7 +802,7 @@ fn double_clicking_an_escortable_offers_rather_than_starts_following() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
 
@@ -834,7 +835,7 @@ fn resigning_an_escort_stops_it_following() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -925,7 +926,7 @@ fn an_escort_names_its_destination_in_the_offer_and_the_log() {
     // The offer's objectives page names it.
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     let _ = packets_for(&mut world, connection);
@@ -939,7 +940,7 @@ fn an_escort_names_its_destination_in_the_offer_and_the_log() {
     // And so does the log, after accepting.
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -975,7 +976,7 @@ fn a_traveller_with_nowhere_to_go_offers_nothing() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     assert!(!drew_a_gump(&mut world, connection), "no destination, no offer");
@@ -998,7 +999,7 @@ fn re_binding_an_escortable_keeps_the_escort_it_is_on() {
     world.tick(now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -1096,7 +1097,7 @@ fn an_escort_pays_on_reaching_its_destination() {
     world.tick(now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4); // Accept
@@ -1136,7 +1137,7 @@ fn a_delivery_completes_on_talking_to_its_destination() {
 
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -1145,7 +1146,7 @@ fn a_delivery_completes_on_talking_to_its_destination() {
     // Talking to the destination without the goods does nothing.
     world.queue(Command::DoubleClick {
         connection,
-        serial: destination,
+        request: UseRequest::Use(RawSerial(destination)),
     });
     world.tick(now);
     assert_eq!(
@@ -1160,7 +1161,7 @@ fn a_delivery_completes_on_talking_to_its_destination() {
     put_silk(&mut world, backpack, 2);
     world.queue(Command::DoubleClick {
         connection,
-        serial: destination,
+        request: UseRequest::Use(RawSerial(destination)),
     });
     world.tick(now);
 
@@ -1232,7 +1233,7 @@ fn an_escorted_traveller_walks_after_its_escorter() {
     world.tick(now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -1281,7 +1282,7 @@ fn a_timed_objective_fails_when_its_seconds_run_out() {
     let giver = place_giver(&mut world, &["rat_cull"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -1333,7 +1334,7 @@ fn an_any_of_these_quest_completes_on_one_objective() {
     let giver = place_giver(&mut world, &["either"], now);
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 4);
@@ -1352,7 +1353,7 @@ fn an_any_of_these_quest_completes_on_one_objective() {
     // The rat alone is enough; the silk was never touched.
     world.queue(Command::DoubleClick {
         connection,
-        serial: giver,
+        request: UseRequest::Use(RawSerial(giver)),
     });
     world.tick(now);
     press(&mut world, connection, QUEST_GUMP, 8); // Complete

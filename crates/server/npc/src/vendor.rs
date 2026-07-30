@@ -40,7 +40,7 @@ const STOCK_GRAPHIC: u16 = 0x0E3F;
 const STOCK_GUMP: u16 = 0x003E;
 
 /// The vendor buy gump the client opens over the stock container.
-const SHOP_GUMP: u16 = 0x0030;
+const SHOP_GUMP: openshard_protocol::wire::Graphic = openshard_protocol::wire::Graphic(0x0030);
 
 /// How near a customer must stand to trade — a few tiles, so a shopper reaches
 /// the counter but cannot buy from across the street. Trade also needs line of
@@ -226,23 +226,23 @@ fn restock_if_due(state: &mut WorldState, vendor: EntityId, stock_serial: Serial
 /// Open the shop on a double-click, if the clicked mobile is a vendor in
 /// range. Returns whether it was — the caller falls through to the ordinary
 /// double-click when it was not.
-pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) -> bool {
+pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: Serial) -> bool {
     let Some(&player) = state.players.get(&connection) else {
         return false;
     };
-    let Some(vendor) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(vendor) = state.registry.entity_of(serial) else {
         return false;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
         debug!(
-            serial,
+            %serial,
             is_vendor = state.registry.has::<Vendor>(vendor),
             "open_shop: not a stocked vendor"
         );
         return false;
     };
     if !in_trade_range(state, player, vendor) {
-        debug!(serial, "open_shop: out of trade range");
+        debug!(%serial, "open_shop: out of trade range");
         return false;
     }
     // Whether this customer may trade at all — ServUO checks it here, in `VendorBuy`,
@@ -264,13 +264,13 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     let lines: Vec<BuyLine> = contents
         .iter()
         .map(|item| {
-            let entity = Serial::new(item.serial).and_then(|s| state.registry.entity_of(s));
+            let entity = state.registry.entity_of(item.serial);
             let price = entity
                 .and_then(|e| state.registry.get::<Price>(e))
                 .map_or(1, |p| p.0);
             let name = entity
                 .and_then(|e| state.registry.get::<Name>(e))
-                .map_or_else(|| format!("item {:#06x}", item.graphic), |n| n.0.clone());
+                .map_or_else(|| format!("item {:#06x}", item.graphic.0), |n| n.0.clone());
             BuyLine { price, name }
         })
         .collect();
@@ -307,7 +307,7 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     state.send_packet(
         connection,
         &ServerPacket::ContainerContents(ContainerContents {
-            container: stock_serial.raw(),
+            container: stock_serial,
             items: contents.clone(),
         }),
     );
@@ -325,12 +325,12 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     // and the client requests the list itself.
     if state.gameplay.tooltip_mode != TooltipMode::Off {
         for item in &contents {
-            if let Some(entity) = Serial::new(item.serial).and_then(|s| state.registry.entity_of(s)) {
+            if let Some(entity) = state.registry.entity_of(item.serial) {
                 state.send_property_list(connection, entity);
             }
         }
     }
-    debug!(serial, items = lines.len(), "open_shop: sent buy gump");
+    debug!(%serial, items = lines.len(), "open_shop: sent buy gump");
     true
 }
 
@@ -578,7 +578,7 @@ pub fn buy_keyword(state: &mut WorldState, connection: ConnectionId, actor: Enti
     let Some(vendor_serial) = state.registry.serial_of(vendor) else {
         return false;
     };
-    open_shop(state, connection, vendor_serial.raw())
+    open_shop(state, connection, vendor_serial)
 }
 
 /// The vendor's own voice: a conversational line drawn over its head for

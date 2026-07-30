@@ -13,6 +13,7 @@
 use super::tests::{START, enter, packets_for, world};
 use super::*;
 use openshard_movement::Terrain;
+use openshard_protocol::serial::RawSerial;
 use openshard_state::components::{Contained, CraftedBy, Crafting, Quality, Tool};
 use openshard_state::harvest::ORE_GRAPHIC;
 use openshard_state::{CraftGumpContext, CraftGumpPage, Skill};
@@ -430,14 +431,20 @@ fn ore_becomes_ingots_at_a_forge_and_nowhere_else() {
     world.tick(now);
 
     let serial = world.state.registry.serial_of(ore).unwrap().raw();
-    world.queue(Command::DoubleClick { connection, serial });
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial)),
+    });
     now += TICK_INTERVAL;
     world.tick(now);
     assert_eq!(carried(&world, connection, INGOT, 0), 0, "no forge, no ingots");
     assert_eq!(carried(&world, connection, ORE_GRAPHIC, 0), 10);
 
     shop(&mut world, &[(FORGE, 0)]);
-    world.queue(Command::DoubleClick { connection, serial });
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial)),
+    });
     now += TICK_INTERVAL;
     world.tick(now);
     assert_eq!(
@@ -462,7 +469,10 @@ fn the_metal_a_pile_of_ore_is_survives_the_forge() {
     world.tick(now);
 
     let serial = world.state.registry.serial_of(ore).unwrap().raw();
-    world.queue(Command::DoubleClick { connection, serial });
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial)),
+    });
     now += TICK_INTERVAL;
     world.tick(now);
 
@@ -607,7 +617,10 @@ fn double_clicking_the_tongs_is_what_opens_the_window() {
     let _ = packets_for(&mut world, connection);
 
     let serial = world.state.registry.serial_of(tongs).unwrap().raw();
-    world.queue(Command::DoubleClick { connection, serial });
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial)),
+    });
     now += TICK_INTERVAL;
     world.tick(now);
 

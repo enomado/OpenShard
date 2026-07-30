@@ -527,7 +527,7 @@ mod tests {
                 hue: 0x0021,
             }),
             ServerPacket::ContainerContents(crate::containers::ContainerContents {
-                container: 0x4000_0001,
+                container: crate::serial::Serial::new(0x4000_0001).unwrap(),
                 items: Vec::new(),
             }),
             ServerPacket::BuyList(crate::vendor::BuyList {

@@ -47,7 +47,10 @@ impl World {
         if !version.supports(Feature::NewContextMenu) {
             return;
         }
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+        let Some(object) = Serial::new(serial) else {
+            return;
+        };
+        let Some(entity) = self.state.registry.entity_of(object) else {
             return;
         };
         let entries = self.context_entries(entity);
@@ -79,7 +82,10 @@ impl World {
         let Some(actor) = self.state.players.get(&connection).copied() else {
             return;
         };
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+        let Some(object) = Serial::new(serial) else {
+            return;
+        };
+        let Some(entity) = self.state.registry.entity_of(object) else {
             return;
         };
         let entries = self.context_entries(entity);
@@ -88,13 +94,13 @@ impl World {
         };
         match action {
             ContextAction::Paperdoll => {
-                items::paperdoll_request(&mut self.state, connection, serial);
+                items::paperdoll_request(&mut self.state, connection, object);
             }
             ContextAction::Open => {
-                items::double_click(&mut self.state, connection, serial);
+                items::double_click(&mut self.state, connection, object);
             }
             ContextAction::Buy => {
-                npc::open_shop(&mut self.state, connection, serial);
+                npc::open_shop(&mut self.state, connection, object);
             }
             ContextAction::Sell => {
                 npc::offer_sell_list(&mut self.state, connection, actor);

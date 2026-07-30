@@ -684,8 +684,11 @@ pub enum Command {
     DoubleClick {
         /// Which connection.
         connection: ConnectionId,
-        /// The object's serial.
-        serial: u32,
+        /// What was asked for: a use, or a paperdoll. The serial inside it is
+        /// still the client's — the queue is a delivery, not a checkpoint, so
+        /// [`RawSerial::validate`](openshard_protocol::serial::RawSerial::validate)
+        /// runs where the command is acted on.
+        request: UseRequest,
     },
     /// A client single-clicked something and wants its name (`0x09`).
     SingleClick {

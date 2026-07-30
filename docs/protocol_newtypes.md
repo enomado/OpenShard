@@ -156,6 +156,8 @@ The allowlist so far, each entry argued where it was decided:
 | `world::MapSize::{width, height}` | same |
 | `mobile::Vitals::{current, max}` | components of one bar — [N2 amendment 2](#amendments-forced-by-n2-mobilers) |
 | `mobile::MobileStatus::{strength, dexterity, intelligence, gold, armor, weight, max_weight, stat_cap, followers, followers_max}` | the status bar's quantities — [N2 amendment 3](#amendments-forced-by-n2-mobilers) |
+| `containers::ContainedItem::{x, y}` | the item's place in the gump: a pair whose type is `gump.rs`'s to name, in N5 — [N4 amendment 6](#amendments-forced-by-n4-containersrs) |
+| `containers::ContainedItem::amount` | a stack size: a quantity, by the `MobileStatus` argument — [N4 amendment 8](#amendments-forced-by-n4-containersrs) |
 
 **N11. No compatibility shims.** Same as D9: a stage wraps a group of fields
 **and** updates every call site in the same commit.
@@ -485,6 +487,70 @@ shared class-B type and its second decoder-rewrites-a-value finding.
   crates deep, and they are now five `Hue` constants rather than five `u16`s —
   which makes the duplication visible but not gone. Where a shard-wide default
   hue *lives* is a `[gameplay]`-config question this stage did not open.
+
+## Amendments forced by N4 (`containers.rs`)
+
+The stage's two packets are a two-line inbound `0x06` and an outbound item
+record sent three ways, and between them they raised the sweep's first
+*component* question — how far up a validated type travels once the packet
+below it has one — and its first packet whose inbound field is not a value at
+all but a flag riding on one.
+
+1. **A `0x06`'s serial is a serial *and* a flag, and the split is the packet's,
+   not the tick's.** Bit 31 is the client's paperdoll request — ServUO's
+   `UseReq` routes it straight to `OnPaperdollRequest` and never to `Use`, and
+   treating both alike is the bug where relogging mounted dismounted you a
+   breath later. That knowledge lived in `tick.rs` as `serial & 0x8000_0000`,
+   which is a rule in the file [architecture.md](architecture.md) says holds no
+   rules. It is now `DoubleClick::interpret -> UseRequest`, class B and total:
+   every one of the 2³² values is a paperdoll request or a use, and **both arms
+   carry a [`RawSerial`]**, because stripping a flag bit does not make what is
+   left address anything. The validation stays where N2 puts it, at the seam.
+2. **A packet-level `interpret` may run at the network seam; a `validate` still
+   may not.** `dispatch.rs` calls `interpret` and queues a `Command::DoubleClick
+   { request: UseRequest }`. This does not contradict N3 amendment 9's "the
+   queue is a delivery, not a checkpoint": a total interpretation cannot refuse
+   anything, so running it early costs nothing and cannot drop a client's
+   request on Tokio's thread. What crossed the queue is still raw, and
+   `RawSerial::validate` runs in the tick.
+3. **Wrapping deleted three guards.** `items::double_click`,
+   `items::paperdoll_request`, `items::mobile_used` and `npc::open_shop` each
+   opened with `Serial::new(serial)` and each now takes a `Serial`; the tick's
+   arm validates **once** where it used to re-derive the same `Option` five
+   times over. N2's amendment 1 result, in the other direction: there the
+   outbound types deleted `.raw()` calls, here the inbound one deleted repeated
+   checks.
+4. **A validated type stops where the packet is built, and the component below
+   it keeps its bare integer — for now.** `ContainedItem` gained `Serial`,
+   `Graphic`, `Hue` and `GridSlot`, but `openshard_state::Contained.grid`,
+   `Container.gump` and `components::Graphic`'s `id`/`hue` are all still bare.
+   This is N3 amendment 7's `localized_message` decision applied to components
+   rather than to a table: `Contained.grid` alone reaches the persistence
+   record, both stores' SQL and a dozen test fixtures, and converting it is a
+   sweep with its own shape — the newtype starts where the packet is built and
+   nothing above unwraps one. Recorded rather than done. The exception the doc
+   already promised, `Equipped.layer`, is N4's `items.rs` half and is decided
+   there.
+5. **`GridSlot` is a named byte, not an index type.** Same argument as `Layer`
+   (N2 amendment 7): the grid's size is the client's, this engine has never had
+   a reason to learn it, and a range check would be a guess. What the type buys
+   is that the three `u16`s beside it on the record can no longer be handed to
+   it.
+6. **`x`/`y` on a container record stay bare, and the reason is a stage
+   boundary.** They are the item's column and row in the gump — a pair, read
+   and written together, which by N1 amendment 3 and N2 amendment 2 asks to
+   become one named type. It is not made here: a gump coordinate is exactly
+   what `gump.rs` carries, that module is N5's, and a `GumpPoint` invented in
+   this stage is a name the next stage would have to either adopt or contradict.
+   On N10's allowlist with that reason, and in N5's backlog.
+7. **Two magic gump ids became constants.** `0xFFFF` — what makes a `0x24` draw
+   a book rather than a bag — is `containers::BOOK_GUMP`, beside the packet
+   whose behaviour it changes; `npc`'s `SHOP_GUMP` was already named and is now
+   a `Graphic`.
+8. **Bare-integer field count in `containers.rs`: 9 before, 3 after** (N10), the
+   three being amendment 6's `x`/`y` and the stack `amount`, which is a
+   quantity by N2 amendment 3's argument — added to, split and compared, with
+   its rules in `items` far above `protocol`.
 
 ## Stages
 

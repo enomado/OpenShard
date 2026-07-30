@@ -181,9 +181,12 @@ pub(crate) fn dispatch_world_packet(
             if !session.in_world() {
                 return true;
             }
+            // The paperdoll bit comes off here, where the packet is read: it is
+            // framing the client owns, and `interpret` is total, so nothing
+            // downstream has to know which bit it was.
             world.queue(Command::DoubleClick {
                 connection: id,
-                serial: click.serial,
+                request: click.interpret(),
             });
             true
         }

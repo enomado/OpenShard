@@ -15,6 +15,7 @@
 use super::tests::{START, enter, packets_for, world};
 use super::*;
 use openshard_movement::Terrain;
+use openshard_protocol::serial::RawSerial;
 use openshard_state::Skill;
 use openshard_state::components::{Contained, Harvesting, Tool};
 use openshard_state::harvest::{HarvestKind, LOG_GRAPHIC, ORE_GRAPHIC, SAND_GRAPHIC, TileSource, definition};
@@ -119,7 +120,7 @@ fn swing_at(
     let tool_serial = world.state.registry.serial_of(tool).unwrap().raw();
     world.queue(Command::DoubleClick {
         connection,
-        serial: tool_serial,
+        request: UseRequest::Use(RawSerial(tool_serial)),
     });
     world.tick(now);
     let cursor_id = {

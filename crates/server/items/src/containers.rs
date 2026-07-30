@@ -6,11 +6,8 @@ use super::*;
 /// paperdoll. Any other item is handed to the pack as an [`ItemUsed`] trigger,
 /// keyed by graphic — the engine has no default "use" for a bare item, so a
 /// shard gives it one; without a pack the double-click is simply silent.
-pub fn double_click(state: &mut WorldState, connection: ConnectionId, serial: u32) {
+pub fn double_click(state: &mut WorldState, connection: ConnectionId, target_serial: Serial) {
     let Some(&player) = state.players.get(&connection) else {
-        return;
-    };
-    let Some(target_serial) = Serial::new(serial) else {
         return;
     };
     let Some(target) = state.registry.entity_of(target_serial) else {
@@ -59,11 +56,8 @@ pub fn double_click(state: &mut WorldState, connection: ConnectionId, serial: u3
 /// `OnPaperdollRequest`, never to `Use`: it opens the paperdoll and does nothing
 /// else — above all it does not dismount a mounted rider, which is exactly what
 /// treating it as a raw self-double-click used to do.
-pub fn paperdoll_request(state: &mut WorldState, connection: ConnectionId, serial: u32) {
+pub fn paperdoll_request(state: &mut WorldState, connection: ConnectionId, target_serial: Serial) {
     let Some(&player) = state.players.get(&connection) else {
-        return;
-    };
-    let Some(target_serial) = Serial::new(serial) else {
         return;
     };
     let Some(target) = state.registry.entity_of(target_serial) else {
@@ -93,8 +87,8 @@ pub(crate) fn open_spellbook(
     let mask = state.registry.get::<Spellbook>(book).map_or(0, |b| b.0);
     state.send(
         connection,
-        // The gump `0xFFFF` is what tells the client this container is a book.
-        encode_open_container(book_serial.raw(), 0xFFFF, version),
+        // `BOOK_GUMP` is what tells the client this container is a book.
+        encode_open_container(book_serial, BOOK_GUMP, version),
     );
     // Magery spells start at offset 1; the mask's bit `n` is spell `n`.
     state.send_packet(
@@ -169,12 +163,12 @@ pub(crate) fn open_container(
     let contents = contents_of(state, container_serial);
     state.send(
         connection,
-        encode_open_container(container_serial.raw(), gump, version),
+        encode_open_container(container_serial, openshard_protocol::wire::Graphic(gump), version),
     );
     state.send_packet(
         connection,
         &ServerPacket::ContainerContents(ContainerContents {
-            container: container_serial.raw(),
+            container: container_serial,
             items: contents.clone(),
         }),
     );
@@ -638,10 +632,7 @@ pub(crate) fn tell_watchers_updated_except(
             .and_then(|&player| state.registry.get::<Client>(player))
             .map(|client| client.version);
         if let Some(version) = version {
-            state.send(
-                connection,
-                encode_add_to_container(record, container.raw(), version),
-            );
+            state.send(connection, encode_add_to_container(record, container, version));
         }
     }
 }
@@ -653,12 +644,12 @@ pub fn contained_record(state: &WorldState, entity: EntityId) -> Option<Containe
     let Graphic { id, hue } = *state.registry.get::<Graphic>(entity)?;
     let amount = state.registry.get::<Amount>(entity).map_or(1, |a| a.0);
     Some(ContainedItem {
-        serial: serial.raw(),
-        graphic: id,
+        serial,
+        graphic: openshard_protocol::wire::Graphic(id),
         amount,
         x,
         y,
-        grid,
-        hue,
+        grid: GridSlot(grid),
+        hue: Hue(hue),
     })
 }

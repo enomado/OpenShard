@@ -715,4 +715,5 @@ fn stock_line_serial(world: &World, vendor_serial: u32) -> u32 {
         .first()
         .expect("the crate holds a line")
         .serial
+        .raw()
 }
