@@ -236,31 +236,35 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
     let mut world = eager();
     let now = Instant::now();
     let connection = ConnectionId::from_raw(7);
-    world.queue(Command::Enter {
+    world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Revenant".to_owned()),
-        serial: None,
-        position: None,
-        facet: 0,
-        appearance: Some(Appearance { body: 0x0190, hue: 0 }),
-        sheet: Some(CharacterSheet {
-            strength: 100,
-            dexterity: 100,
-            intelligence: 100,
-            skills: Vec::new(),
-            effects: Vec::new(),
-            stat_locks: Default::default(),
-            dead: true,
-            fame: 0,
-            karma: 0,
-            murders: 0,
-            quests: Vec::new(),
-            done_quests: Vec::new(),
-        }),
         access: AccessLevel::Player,
-    });
+        character: Character::Fresh(FreshCharacter {
+            facet: Facet(0),
+            start: None,
+            appearance: Some(Appearance {
+                body: openshard_protocol::wire::Graphic(0x0190),
+                hue: openshard_protocol::wire::Hue::NONE,
+            }),
+            sheet: Some(CharacterSheet {
+                strength: 100,
+                dexterity: 100,
+                intelligence: 100,
+                skills: Vec::new(),
+                effects: Vec::new(),
+                stat_locks: Default::default(),
+                dead: true,
+                fame: 0,
+                karma: 0,
+                murders: 0,
+                quests: Vec::new(),
+                done_quests: Vec::new(),
+            }),
+        }),
+    }));
     world.tick(now);
 
     let entity = world.state.players[&connection];

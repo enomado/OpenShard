@@ -90,6 +90,59 @@ machine each one is a deterministic test with no ports and no sleeps.
 world code inside a network task, on whatever thread Tokio picked, whenever bytes
 arrived. The channel is where async stops and the tick begins.
 
+### Entering the world says which character, once
+
+`Command::Enter` carried seven fields, four of them `Option`s that were only ever
+all present or all absent together: the saved serial, the saved spot, the look and
+the sheet. Four correlated `Option`s are four chances to build a state that cannot
+happen — a saved serial with no saved position puts a character every packet ever
+sent refers to back at the start city — and nothing could check it. Every caller
+had to unpack a row correctly instead.
+
+It now carries one `Entering`, whose `character` is a two-variant `Character`:
+`Fresh(FreshCharacter)` has a facet, an optional start and an optional look and
+sheet; `Stored(StoredCharacter)` has all five and no `Option` at all, so a
+half-restored character cannot be spelled. `StoredCharacter::from_record` is the
+one place a `CharacterRecord` is unpacked, and the relogin tests call it rather
+than keeping their own copy of the unpacking. The private `struct Entering` beside
+`World::enter` — a field-for-field copy of the command's own payload — is gone.
+
+The remaining step is the one this makes worth doing:
+
+- [ ] **The roster belongs in the world.** Characters are the only saved thing
+      whose `restore_*` hands data back to the caller instead of into `World`, and
+      the only one that asks the world for a favour (`reserve_serial`) rather than
+      giving it something. Moving it in deletes `departed`, `pending_inventories`
+      and the roster's place in `run_shard`'s signature; the character list becomes
+      a `Command` answered with a `0xA9`, exactly as `RequestStatus` is answered
+      with a status, and "exists" and "is being played" become two states of one
+      record rather than two tables. Accounts stay outside: argon2 must not run
+      inside a tick, and `openshard-login` exists to be sans-io. This is also the
+      shape UO itself has — an account is global, a character belongs to a shard.
+
+Found while doing it, none of them blockers:
+
+- **A player's saved `facing` is written and never read.** `record.facing` is
+  saved, and `enter` sets `Facing::walking(Direction::South)` unconditionally — so
+  every character relogs facing south. NPCs do get theirs back
+  (`Facing::from_bits(record.facing)` in `restore_mobiles`), which is what makes
+  the omission easy to miss.
+- **A zero stat age means two different things.** On save, `strength_age` is
+  `now - last_gain`, and a character that never gained is saved with a large age
+  that restores to zero — correct. But a *new* character carries
+  `StatLockRecord::default()`, whose zero ages restore as `now - 0 = now`: it
+  reads as "rose this instant" and imposes a full `stat_gain_ticks` cooldown at
+  every login. The two readers of `LastStatGain` treat an absent component as
+  zero, so the fix is probably to keep it absent when every age is zero.
+- **Belongings already live in the world**, in `pending_inventories` keyed by
+  serial, filled by `restore_items` at boot and by logout. So a `StoredCharacter`
+  that carried its own items would duplicate what the world holds, not simplify
+  it — another argument for the roster moving in rather than the items moving out.
+- **The newtypes stop one line short.** `Facet` and `Appearance` are carried to
+  `enter` and unwrapped there, because `WorldState::facets` is still keyed by a
+  raw `u8` and `Body` is still a pair of raw `u16`. Both want the wire newtypes
+  (`Graphic`, `Hue`) carried through.
+
 ### Still to do: the character screen is one conversation, split across two files
 
 The design this works toward is settled and written down — see "Sessions and the

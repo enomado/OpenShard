@@ -107,25 +107,12 @@ mod traps;
 mod travel;
 mod wake;
 
-pub use command::{Appearance, CharacterSheet, Command, DecorContainer, DecorDoor};
+pub use command::{
+    Appearance, Character, CharacterSheet, Command, DecorContainer, DecorDoor, Entering, FreshCharacter,
+    StoredCharacter,
+};
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
-
-/// Everything [`World::enter`] needs: who is entering, and as what. A plain
-/// bundle so the one function that puts a character in the world takes one
-/// argument instead of seven.
-struct Entering {
-    connection: ConnectionId,
-    version: ClientVersion,
-    account: AccountName,
-    name: CharacterName,
-    serial: Option<u32>,
-    position: Option<Point>,
-    facet: u8,
-    appearance: Option<Appearance>,
-    sheet: Option<CharacterSheet>,
-    access: AccessLevel,
-}
 
 // `Outbound`, `FacetState`, `HeldItem` and `Origin` are the world's runtime
 // state, moved down into `openshard-state` with `WorldState` so the systems can
@@ -702,29 +689,7 @@ impl World {
 
     fn apply(&mut self, command: Command, now: Instant) {
         match command {
-            Command::Enter {
-                connection,
-                version,
-                account,
-                name,
-                serial,
-                position,
-                facet,
-                appearance,
-                sheet,
-                access,
-            } => self.enter(Entering {
-                connection,
-                version,
-                account,
-                name,
-                serial,
-                position,
-                facet,
-                appearance,
-                sheet,
-                access,
-            }),
+            Command::Enter(entering) => self.enter(entering),
             Command::Walk { connection, request } => self.walk(connection, request, now),
             Command::RequestStatus { connection } => {
                 if let Some(&entity) = self.state.players.get(&connection) {

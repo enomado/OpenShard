@@ -23,38 +23,12 @@ pub(crate) fn dispatch_world_packet(
             // A stored character enters on its saved serial, spot and look; one
             // the roster has never heard of — a config-only character on a fresh
             // shard, or one created this run and not yet saved — enters fresh at
-            // the start.
-            let record = roster.get(&account, &name);
-            let facet = record.map_or(0, |record| record.facet);
-            let (serial, position, appearance, sheet) = match record {
-                Some(record) => (
-                    Some(record.serial),
-                    Some(Point::new(record.x, record.y, record.z)),
-                    Some(Appearance {
-                        body: record.body,
-                        hue: record.hue,
-                    }),
-                    Some(CharacterSheet {
-                        strength: record.strength,
-                        dexterity: record.dexterity,
-                        intelligence: record.intelligence,
-                        skills: record
-                            .skills
-                            .iter()
-                            .map(|s| (s.id, s.value, SkillLock::from_bits(s.lock), s.cap))
-                            .collect(),
-                        stat_locks: record.stat_locks,
-                        effects: record.effects.clone(),
-                        dead: record.dead,
-                        fame: record.fame,
-                        karma: record.karma,
-                        murders: record.murders,
-                        quests: record.quests.clone(),
-                        done_quests: record.done_quests.clone(),
-                    }),
-                ),
-                None => (None, None, None, None),
-            };
+            // the start. Unpacking the row is `StoredCharacter::from_record`'s
+            // job, not this one's.
+            let character = roster
+                .get(&account, &name)
+                .and_then(StoredCharacter::from_record)
+                .map_or_else(|| Character::fresh(Facet(0)), Character::Stored);
             // The connection's own note of what it is playing, taken as the
             // `Enter` is queued. It is what tells another connection on this
             // account that the character is in use — see `Sessions::is_playing`.
@@ -65,18 +39,14 @@ pub(crate) fn dispatch_world_packet(
             // one the login carried across. Character select is the last quiet
             // moment before world traffic starts.
             let _ = session.control.send(session.login.version());
-            world.queue(Command::Enter {
+            world.queue(Command::Enter(Entering {
                 connection: id,
                 version: session.login.version(),
                 account,
                 name,
-                serial,
-                position,
-                facet,
-                appearance,
-                sheet,
                 access,
-            });
+                character,
+            }));
             true
         }
         ClientPacket::Walk(request) => {
@@ -502,34 +472,29 @@ pub(crate) fn create_character(
     // very list `start_cities` built and the character-list packet offered, so a
     // valid pick names a real city; only a client sending an out-of-range index
     // falls back to the default facet and a fresh spawn.
-    let (facet, position) = match login.starts.get(create.start_location as usize) {
+    let (facet, start) = match login.starts.get(create.start_location as usize) {
         Some(city) => (
-            city.map as u8,
+            Facet(city.map as u8),
             Some(Point::new(
                 city.position.0 as u16,
                 city.position.1 as u16,
                 city.position.2 as i8,
             )),
         ),
-        None => (0, None),
+        None => (Facet(0), None),
     };
 
     session.enter_world(account.clone(), name.clone());
     let access = login.accounts.access_level(&account);
-    world.queue(Command::Enter {
-        connection: id,
-        version: session.login.version(),
-        account,
-        name,
-        // A brand-new character: a fresh serial, spawned in the chosen city. The
-        // tick will journal it, so it is in the database — and in the character
-        // list — by the next time the player logs in.
-        serial: None,
-        position,
+    // A brand-new character: a fresh serial, spawned in the chosen city. The tick
+    // will journal it, so it is in the database — and in the character list — by
+    // the next time the player logs in.
+    let character = Character::Fresh(FreshCharacter {
         facet,
+        start,
         appearance: Some(Appearance {
-            body: create.body(),
-            hue: create.skin_hue,
+            body: Graphic(create.body()),
+            hue: Hue(create.skin_hue),
         }),
         // The stats and skills the player chose on the creation screen. The
         // client sends whole points; skills are stored in tenths, so a chosen 50
@@ -558,8 +523,15 @@ pub(crate) fn create_character(
             quests: Vec::new(),
             done_quests: Vec::new(),
         }),
-        access,
     });
+    world.queue(Command::Enter(Entering {
+        connection: id,
+        version: session.login.version(),
+        account,
+        name,
+        access,
+        character,
+    }));
     true
 }
 

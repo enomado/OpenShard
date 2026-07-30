@@ -68,6 +68,9 @@ pub use openshard_state::{ObjectiveDef, ObjectiveKind, QuestDef, RewardDef, Rewa
 pub use openshard_state::{Region, RegionFlags, RegionRect};
 pub use openshard_state::{SECTOR_SIZE, Sectors, VIEW_RANGE, distance, in_range, sectors};
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
-pub use tick::{Appearance, CharacterSheet, Command, DecorContainer, DecorDoor, TICK_INTERVAL, World};
+pub use tick::{
+    Appearance, Character, CharacterSheet, Command, DecorContainer, DecorDoor, Entering, FreshCharacter,
+    StoredCharacter, TICK_INTERVAL, World,
+};
 pub use tiledata::{LandTile, StaticTile, TileData, TileDataError, TileDataFormat, TileFlags};
 pub use uop::UopError;

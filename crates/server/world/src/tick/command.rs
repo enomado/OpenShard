@@ -1,22 +1,34 @@
 use super::*;
 
-/// How a freshly created character looks: its body graphic and hue.
-///
-/// [`Command::Enter`] carries this when the client just made the character and
-/// chose it. Playing an existing one carries `None`, and the world falls back to
-/// its default body until persistence can supply the stored appearance.
+/// How a character looks: its body graphic and hue. Chosen on the creation
+/// screen, or restored from the save.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Appearance {
-    /// The body graphic id.
-    pub body: u16,
+    /// The body graphic id. Spelled out rather than imported: the glob above
+    /// already carries `openshard_state::components::Graphic`, which is the
+    /// *component* an item is drawn by, and the two must not be confused.
+    pub body: openshard_protocol::wire::Graphic,
     /// The skin hue.
-    pub hue: u16,
+    pub hue: openshard_protocol::wire::Hue,
 }
 
-/// A character's stats and skills, carried on [`Command::Enter`] — chosen at
-/// creation for a new character, or restored from the save for a played one.
-/// `None` (a bare test enter, or a character from before these were stored) takes
-/// the world's flat defaults and no skills.
+impl Appearance {
+    /// What a character with no chosen and no saved look is drawn as: the human
+    /// male body in the client's default skin.
+    ///
+    /// The same fallback `enter` used to inline, named so the two places that
+    /// need it — the fallback itself and a character built without a creation
+    /// screen — cannot drift apart.
+    pub fn default_human() -> Self {
+        Self {
+            body: openshard_protocol::wire::Graphic(BODY_HUMAN_MALE),
+            hue: openshard_protocol::wire::Hue(DEFAULT_HUE),
+        }
+    }
+}
+
+/// A character's stats and skills — chosen at creation for a new character, or
+/// restored from the save for a played one.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CharacterSheet {
     /// Strength.
@@ -52,6 +64,180 @@ pub struct CharacterSheet {
     pub quests: Vec<openshard_persistence::QuestRecord>,
     /// Quests already finished, with the wait before each may be taken again.
     pub done_quests: Vec<openshard_persistence::DoneQuestRecord>,
+}
+
+impl CharacterSheet {
+    /// The sheet a character with no chosen and no saved numbers enters on: the
+    /// world's flat hundreds, no skills, nothing trained and nothing owed.
+    ///
+    /// These are the same defaults `enter` used to reach for when the sheet was
+    /// absent; naming them here is what let the saved side of [`StoredCharacter`]
+    /// stop being optional.
+    pub fn starting() -> Self {
+        Self {
+            strength: DEFAULT_HITPOINTS,
+            dexterity: DEFAULT_DEXTERITY,
+            intelligence: DEFAULT_MANA,
+            skills: Vec::new(),
+            stat_locks: openshard_persistence::StatLockRecord::default(),
+            effects: Vec::new(),
+            dead: false,
+            fame: 0,
+            karma: 0,
+            murders: 0,
+            quests: Vec::new(),
+            done_quests: Vec::new(),
+        }
+    }
+}
+
+/// A character entering the world for the first time: made on the creation
+/// screen a moment ago, or a name the config seeded that the database has never
+/// seen.
+///
+/// Both fields are honestly optional, and independently so: a config-seeded name
+/// has neither a chosen city nor a chosen look, a creation has both, and a
+/// creation whose city index the client sent out of range has the look but not
+/// the city.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FreshCharacter {
+    /// Which facet to spawn on.
+    pub facet: Facet,
+    /// Where on it. Absent takes the world's configured start for the facet.
+    pub start: Option<Point>,
+    /// The look chosen on the creation screen. Absent for a character that
+    /// reached the world without one, which takes the world's default body.
+    pub appearance: Option<Appearance>,
+    /// The stats and skills chosen there. Absent likewise, and then the world's
+    /// flat defaults and no skills apply.
+    pub sheet: Option<CharacterSheet>,
+}
+
+/// A character coming back from the save, exactly as it left.
+///
+/// # Why nothing here is optional
+///
+/// This replaced four `Option`s on [`Command::Enter`] that were only ever all
+/// present or all absent together — the serial, the spot, the look and the
+/// sheet. Four correlated `Option`s are four chances to build a state that
+/// cannot happen: a saved serial with no saved position would put a character
+/// that everything in the database refers to back at the shard's start city.
+/// Nothing checked, because there was nothing to check against; the caller
+/// simply had to unpack the record correctly every time, in every place that
+/// unpacked one. Now the type says it, and [`from_record`](Self::from_record) is
+/// the one place that does the unpacking.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StoredCharacter {
+    /// The wire serial it was saved under. It comes back on this one and no
+    /// other: it is what every packet ever sent about this character said, and
+    /// what its containers' contents point at.
+    pub serial: Serial,
+    /// Which facet it stood on.
+    pub facet: Facet,
+    /// Where on it, its own z included.
+    pub position: Point,
+    /// How it looked.
+    pub appearance: Appearance,
+    /// Its stats, skills, effects and quest log.
+    pub sheet: CharacterSheet,
+}
+
+impl StoredCharacter {
+    /// Read a saved character out of its database row.
+    ///
+    /// The one place a [`CharacterRecord`](openshard_persistence::CharacterRecord)
+    /// becomes something the world will accept, so the row format is unpacked
+    /// once instead of at every call site that plays a character.
+    ///
+    /// `None` when the row's serial is not a valid one (a zero, or a corrupt
+    /// row): there is no character to restore, and the caller enters the name
+    /// fresh rather than binding a serial that means nothing.
+    pub fn from_record(record: &openshard_persistence::CharacterRecord) -> Option<Self> {
+        Some(Self {
+            serial: Serial::new(record.serial)?,
+            facet: Facet(record.facet),
+            position: Point::new(record.x, record.y, record.z),
+            appearance: Appearance {
+                body: openshard_protocol::wire::Graphic(record.body),
+                hue: openshard_protocol::wire::Hue(record.hue),
+            },
+            sheet: CharacterSheet {
+                strength: record.strength,
+                dexterity: record.dexterity,
+                intelligence: record.intelligence,
+                skills: record
+                    .skills
+                    .iter()
+                    .map(|skill| {
+                        (
+                            skill.id,
+                            skill.value,
+                            openshard_protocol::skill::SkillLock::from_bits(skill.lock),
+                            skill.cap,
+                        )
+                    })
+                    .collect(),
+                stat_locks: record.stat_locks,
+                effects: record.effects.clone(),
+                dead: record.dead,
+                fame: record.fame,
+                karma: record.karma,
+                murders: record.murders,
+                quests: record.quests.clone(),
+                done_quests: record.done_quests.clone(),
+            },
+        })
+    }
+}
+
+/// Which of the two a client is entering as.
+///
+/// The distinction the four `Option`s used to encode between them, and the only
+/// one the world needs: a stored character binds its saved serial and stands
+/// where it stood, a fresh one takes a serial from the pool and the start city.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Character {
+    /// Never saved: created just now, or seeded by config.
+    Fresh(FreshCharacter),
+    /// Restored from the database.
+    Stored(StoredCharacter),
+}
+
+impl Character {
+    /// A character with nothing chosen and nothing saved — the world's default
+    /// body, its flat default stats, no skills, and the start city of `facet`.
+    ///
+    /// What a config-seeded name enters as on its first ever login, before there
+    /// is a row for it anywhere.
+    pub fn fresh(facet: Facet) -> Self {
+        Self::Fresh(FreshCharacter {
+            facet,
+            start: None,
+            appearance: None,
+            sheet: None,
+        })
+    }
+}
+
+/// Everything [`World::enter`](crate::World) needs: who is connecting, on whose
+/// account, and as which character.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Entering {
+    /// Which connection.
+    pub connection: ConnectionId,
+    /// What the client claims to be. The game socket never says, so this is the
+    /// version the login socket carried across on the auth key.
+    pub version: ClientVersion,
+    /// The account the character belongs to. Saved with it, so a load knows
+    /// whose it is.
+    pub account: AccountName,
+    /// The character's name.
+    pub name: CharacterName,
+    /// The staff authority the account plays with. Re-derived from the account
+    /// each login, never saved with the character.
+    pub access: AccessLevel,
+    /// Whether it has been here before, and what it brings.
+    pub character: Character,
 }
 
 /// One door in a [`Command::Decorate`] batch. The closed/open graphics and the
@@ -92,41 +278,11 @@ pub struct DecorContainer {
 /// Something for the world to do, from outside the world.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Command {
-    /// A client picked a character.
-    Enter {
-        /// Which connection.
-        connection: ConnectionId,
-        /// What the client claims to be.
-        version: ClientVersion,
-        /// The account the character belongs to. Saved with the character so a
-        /// load knows whose it is.
-        account: AccountName,
-        /// The character's name.
-        name: CharacterName,
-        /// The saved wire serial, when a stored character is being played. `None`
-        /// creates a fresh one — a character being made for the first time. A
-        /// played character must come back with the serial it was saved under,
-        /// because that serial is what every packet ever sent about it referred to.
-        serial: Option<u32>,
-        /// Where to spawn, when a stored character is loaded at its saved spot.
-        /// `None` uses the world's configured start — a newly created character,
-        /// or a played one from before positions were stored.
-        position: Option<Point>,
-        /// Which facet to spawn on: a stored character's saved one, or the
-        /// world's default for a new character. An unloaded facet falls back to
-        /// the default.
-        facet: u8,
-        /// How the character looks: chosen at creation, or restored from the save.
-        /// `None` falls back to the default body.
-        appearance: Option<Appearance>,
-        /// The character's stats and skills, from creation or the save. `None`
-        /// takes the world's defaults.
-        sheet: Option<CharacterSheet>,
-        /// The staff authority the account plays with — what privileged commands
-        /// its characters may run. Re-derived from the account each login, never
-        /// saved with the character.
-        access: AccessLevel,
-    },
+    /// A client picked a character. One field, because [`Entering`] is what the
+    /// world's own `enter` takes: the command used to spell out the same seven
+    /// values that a private struct next to `enter` then spelled out again to
+    /// receive them.
+    Enter(Entering),
     /// A client asked to take a step.
     Walk {
         /// Which connection.
