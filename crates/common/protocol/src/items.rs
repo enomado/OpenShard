@@ -99,6 +99,55 @@ impl EncodePacket for WorldItem {
     }
 }
 
+impl DecodePacket for WorldItem {
+    const ID: u8 = 0x1A;
+
+    /// The two stolen bits this engine never sets on the way out —
+    /// "a direction/light byte follows" on `x`, "a flags byte follows" on `y` —
+    /// are refused rather than silently skipped: nothing here models what they
+    /// would introduce, and reading past them as if they were the next field
+    /// would produce a wrong value instead of an honest error.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw_serial = reader.u32()?;
+        let stacked = raw_serial & 0x8000_0000 != 0;
+        let serial = Serial::new(raw_serial & 0x7FFF_FFFF).ok_or(DecodeError::UnknownValue {
+            field: "0x1A world item serial",
+            value: raw_serial,
+        })?;
+        let graphic = Graphic(reader.u16()?);
+        let amount = if stacked { reader.u16()? } else { 1 };
+
+        let raw_x = reader.u16()?;
+        if raw_x & 0x8000 != 0 {
+            return Err(DecodeError::Unsupported {
+                packet: <Self as DecodePacket>::ID,
+                form: "a direction/light byte after x, which this engine never sends",
+            });
+        }
+
+        let raw_y = reader.u16()?;
+        if raw_y & 0x4000 != 0 {
+            return Err(DecodeError::Unsupported {
+                packet: <Self as DecodePacket>::ID,
+                form: "a flags byte after y, which this engine never sends",
+            });
+        }
+        let hued = raw_y & 0x8000 != 0;
+        let y = raw_y & 0x3FFF;
+
+        let z = reader.u8()? as i8;
+        let hue = if hued { Hue(reader.u16()?) } else { Hue::NONE };
+
+        Ok(Self {
+            serial,
+            graphic,
+            amount,
+            position: Point::new(raw_x, y, z),
+            hue,
+        })
+    }
+}
+
 /// `0x07` — the client asks to pick an item up. 7 bytes.
 ///
 /// The item goes onto the client's cursor, dragged, until a `0x08` puts it down.

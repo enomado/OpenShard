@@ -169,10 +169,14 @@ Each is a seam the work made visible. None blocks the next milestone.
   Correct, and worth naming: it means "one compressed block" and "one packet"
   are different things on this wire, and any future reader — a proxy, a packet
   logger, a second client — has to keep the two layers apart.
-- **`ServerPacket::decode` covers the login set only.** Everything else arrives
-  as `Undecoded`, which is honest but means a `WorldView` cannot yet hold
-  anyone but the player. `0x20`, `0x11`, `0x77`, `0x78`, `0x1A` and `0x1D` are
-  the next six, and they are what M1a needs.
+- ~~**`ServerPacket::decode` covers the login set only.**~~ Fixed: `0x20`,
+  `0x11`, `0x77`, `0x78`, `0x1A` and `0x1D` all decode now. `WorldView` folds
+  five of them in — a client's own body, every other mobile, every ground
+  item, and what `0x1D` takes back off screen. `MobileStatus` (`0x11`) decodes
+  too but stays out of `WorldView`: it is paperdoll data, not a position, and
+  belongs with whatever eventually models the status bar. Its `max_weight` is
+  honestly lossy below status type 5 — the wire never carries it that old, so
+  decoding gets `0` back rather than a guess at a real value.
 - **`CharacterList` decodes only the post-7.0.13.0 form.** The older start list
   carries no coordinates, so there is no honest `StartLocation` to build; the
   decoder says so rather than inventing zeros. If this engine ever wants to be

@@ -178,7 +178,7 @@ impl ServerPacket {
             Self::DeleteReject(_) => DeleteReject::ID,
             Self::CharacterListUpdate(_) => CharacterListUpdate::ID,
             Self::PlayerStart(_) => <PlayerStart as EncodePacket>::ID,
-            Self::PlayerUpdate(_) => PlayerUpdate::ID,
+            Self::PlayerUpdate(_) => <PlayerUpdate as EncodePacket>::ID,
             Self::DeathStatus(_) => DeathStatus::ID,
             Self::WalkAck(_) => WalkAck::ID,
             Self::WalkReject(_) => WalkReject::ID,
@@ -188,13 +188,13 @@ impl ServerPacket {
             Self::SeasonChange(_) => SeasonChange::ID,
             Self::LogoutAck(_) => LogoutAck::ID,
             Self::MapChange(_) => MapChange::ID,
-            Self::Remove(_) => Remove::ID,
+            Self::Remove(_) => <Remove as EncodePacket>::ID,
             Self::OpenPaperdoll(_) => OpenPaperdoll::ID,
-            Self::MobileStatus(_) => MobileStatus::ID,
-            Self::MobileMove(_) => MobileMove::ID,
-            Self::MobileIncoming(_) => MobileIncoming::ID,
+            Self::MobileStatus(_) => <MobileStatus as EncodePacket>::ID,
+            Self::MobileMove(_) => <MobileMove as EncodePacket>::ID,
+            Self::MobileIncoming(_) => <MobileIncoming as EncodePacket>::ID,
             Self::StatLocks(_) => StatLocks::ID,
-            Self::WorldItem(_) => WorldItem::ID,
+            Self::WorldItem(_) => <WorldItem as EncodePacket>::ID,
             Self::DragCancel(_) => DragCancel::ID,
             Self::EquipUpdate(_) => EquipUpdate::ID,
             Self::ContainerContents(_) => ContainerContents::ID,
@@ -393,6 +393,24 @@ impl ServerPacket {
             <LoginComplete as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::LoginComplete)
                 .map_err(ServerDecodeError::LoginComplete)?,
+            <Remove as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::Remove)
+                .map_err(ServerDecodeError::Remove)?,
+            <PlayerUpdate as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::PlayerUpdate)
+                .map_err(ServerDecodeError::PlayerUpdate)?,
+            <MobileStatus as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::MobileStatus)
+                .map_err(ServerDecodeError::MobileStatus)?,
+            <MobileMove as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::MobileMove)
+                .map_err(ServerDecodeError::MobileMove)?,
+            <MobileIncoming as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::MobileIncoming)
+                .map_err(ServerDecodeError::MobileIncoming)?,
+            <WorldItem as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::WorldItem)
+                .map_err(ServerDecodeError::WorldItem)?,
             _ => return Ok(None),
         };
         Ok(Some(decoded))
@@ -419,6 +437,18 @@ pub enum ServerDecodeError {
     PlayerStart(DecodeError),
     /// `0x55` did not decode.
     LoginComplete(DecodeError),
+    /// `0x1D` did not decode.
+    Remove(DecodeError),
+    /// `0x20` did not decode.
+    PlayerUpdate(DecodeError),
+    /// `0x11` did not decode.
+    MobileStatus(DecodeError),
+    /// `0x77` did not decode.
+    MobileMove(DecodeError),
+    /// `0x78` did not decode.
+    MobileIncoming(DecodeError),
+    /// `0x1A` did not decode.
+    WorldItem(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -430,6 +460,12 @@ impl fmt::Display for ServerDecodeError {
             Self::CharacterList(error) => ("0xA9 character list", error),
             Self::PlayerStart(error) => ("0x1B player start", error),
             Self::LoginComplete(error) => ("0x55 login complete", error),
+            Self::Remove(error) => ("0x1D remove", error),
+            Self::PlayerUpdate(error) => ("0x20 player update", error),
+            Self::MobileStatus(error) => ("0x11 mobile status", error),
+            Self::MobileMove(error) => ("0x77 mobile move", error),
+            Self::MobileIncoming(error) => ("0x78 mobile incoming", error),
+            Self::WorldItem(error) => ("0x1A world item", error),
         };
         write!(f, "{name}: {error}")
     }
@@ -1026,6 +1062,165 @@ mod tests {
                 "{packet:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_packets_that_populate_a_world_view_round_trip() {
+        // 0x1D, 0x20, 0x11, 0x77, 0x78 and 0x1A: what M1a needs so a client can
+        // hold anyone but the player. `version()` here is TOL — a status kind
+        // of 6 and the new mobile-incoming layout — so every field the struct
+        // models actually rides the wire; see the separate tests below for the
+        // two lossy shapes (an old status kind, the old equipment layout).
+        let serial = Serial::new(0x0000_002A).unwrap();
+
+        let packets = [
+            ServerPacket::Remove(Remove { serial }),
+            ServerPacket::PlayerUpdate(PlayerUpdate {
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+            }),
+            ServerPacket::MobileStatus(MobileStatus {
+                serial,
+                name: "Lord British".to_owned(),
+                hits: crate::mobile::Vitals {
+                    current: 100,
+                    max: 100,
+                },
+                female: false,
+                strength: 100,
+                dexterity: 90,
+                intelligence: 80,
+                stamina: crate::mobile::Vitals { current: 90, max: 90 },
+                mana: crate::mobile::Vitals { current: 80, max: 80 },
+                gold: 1234,
+                armor: 0,
+                weight: 14,
+                max_weight: 390,
+                stat_cap: 225,
+                followers: 0,
+                followers_max: 5,
+            }),
+            ServerPacket::MobileMove(MobileMove {
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
+                notoriety: crate::mobile::Notoriety::Murderer,
+            }),
+            ServerPacket::MobileIncoming(MobileIncoming {
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
+                notoriety: crate::mobile::Notoriety::Innocent,
+                equipment: vec![crate::mobile::Equipment {
+                    serial: Serial::new(0x4000_0001).unwrap(),
+                    graphic: crate::wire::Graphic(0x1517),
+                    layer: crate::wire::Layer(0x05),
+                    hue: crate::wire::Hue(0x0021),
+                }],
+            }),
+            ServerPacket::WorldItem(crate::items::WorldItem {
+                serial: Serial::new(0x4000_00AB).unwrap(),
+                graphic: crate::wire::Graphic(0x0EED),
+                amount: 500,
+                position: crate::world::Point::new(1000, 2000, -5),
+                hue: crate::wire::Hue(0x0021),
+            }),
+        ];
+
+        for packet in packets {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(packet.clone())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_client_gets_the_hue_flagged_equipment_layout_back() {
+        // Before 7.0.33.1 an item's hue rides on a stolen bit in the graphic
+        // rather than a fixed field; the decoder must read the same layout it
+        // was handed, not the one `version()` elsewhere in this module implies.
+        let old = ClientVersion::new(7, 0, 33, 0);
+        let packet = ServerPacket::MobileIncoming(MobileIncoming {
+            serial: Serial::new(0x0000_0002).unwrap(),
+            body: crate::wire::Graphic(0x0190),
+            position: crate::world::Point::new(1475, 1774, -5),
+            facing: crate::direction::Facing::walking(crate::direction::Direction::South),
+            hue: crate::wire::Hue(0x83EA),
+            flags: crate::mobile::StatusFlags::NONE,
+            notoriety: crate::mobile::Notoriety::Innocent,
+            equipment: vec![
+                crate::mobile::Equipment {
+                    serial: Serial::new(0x4000_0001).unwrap(),
+                    graphic: crate::wire::Graphic(0x1517),
+                    layer: crate::wire::Layer(0x05),
+                    hue: crate::wire::Hue(0x0021),
+                },
+                crate::mobile::Equipment {
+                    serial: Serial::new(0x4000_0002).unwrap(),
+                    graphic: crate::wire::Graphic(0x1F03),
+                    layer: crate::wire::Layer(0x0D),
+                    hue: crate::wire::Hue::NONE,
+                },
+            ],
+        });
+
+        let bytes = packet.encode(old);
+        assert_eq!(ServerPacket::decode(&bytes, old), Ok(Some(packet)));
+    }
+
+    #[test]
+    fn a_pre_aos_status_has_no_max_weight_on_the_wire() {
+        // Below status type 5 the client is never told a max weight at all —
+        // decoding gets 0 back, not the value the server happened to hold, and
+        // that is the honest shape of the packet rather than a decoder gap.
+        let ancient = ClientVersion::new(3, 0, 8, 10);
+        let sent = MobileStatus {
+            serial: Serial::new(0x0001_2345).unwrap(),
+            name: "Lord British".to_owned(),
+            hits: crate::mobile::Vitals {
+                current: 100,
+                max: 100,
+            },
+            female: false,
+            strength: 100,
+            dexterity: 90,
+            intelligence: 80,
+            stamina: crate::mobile::Vitals { current: 90, max: 90 },
+            mana: crate::mobile::Vitals { current: 80, max: 80 },
+            gold: 1234,
+            armor: 0,
+            weight: 14,
+            max_weight: 390,
+            stat_cap: 225,
+            followers: 0,
+            followers_max: 5,
+        };
+
+        let bytes = ServerPacket::MobileStatus(sent.clone()).encode(ancient);
+        let Ok(Some(ServerPacket::MobileStatus(decoded))) = ServerPacket::decode(&bytes, ancient) else {
+            panic!("expected a mobile status");
+        };
+        assert_eq!(decoded.max_weight, 0, "type 3 never carries this field");
+        assert_eq!(
+            decoded,
+            MobileStatus {
+                max_weight: 0,
+                ..sent
+            }
+        );
     }
 
     #[test]

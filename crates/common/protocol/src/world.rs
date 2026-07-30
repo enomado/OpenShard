@@ -586,6 +586,35 @@ impl EncodePacket for PlayerUpdate {
     }
 }
 
+impl DecodePacket for PlayerUpdate {
+    const ID: u8 = 0x20;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x20 player update serial",
+            value: raw,
+        })?;
+        let body = Graphic(reader.u16()?);
+        reader.skip(1)?;
+        let hue = Hue(reader.u16()?);
+        let flags = StatusFlags(reader.u8()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        reader.skip(2)?;
+        let facing = Facing::from_bits(reader.u8()?);
+        let z = reader.u8()? as i8;
+        Ok(Self {
+            serial,
+            body,
+            hue,
+            flags,
+            position: Point::new(x, y, z),
+            facing,
+        })
+    }
+}
+
 // -- 0x2C death status ----------------------------------------------------
 
 /// `0x2C` — tell a client its own character just died, or came back. 2 bytes.

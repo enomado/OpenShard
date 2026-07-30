@@ -270,6 +270,19 @@ impl EncodePacket for Remove {
     }
 }
 
+impl DecodePacket for Remove {
+    const ID: u8 = 0x1D;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x1D remove serial",
+            value: raw,
+        })?;
+        Ok(Self { serial })
+    }
+}
+
 /// What a `0x88` paperdoll's flag byte says about the mobile and the beholder.
 ///
 /// Two bits are known and the rest are the client's business, so this is a byte
@@ -453,6 +466,90 @@ impl EncodePacket for MobileStatus {
     }
 }
 
+impl DecodePacket for MobileStatus {
+    const ID: u8 = 0x11;
+
+    /// `kind` is read from the wire, not re-derived from `version`: it is what
+    /// says how much of the body follows, and a decoder that recomputed it from
+    /// the connection's own version would read the wrong number of trailing
+    /// bytes the moment the two disagree.
+    ///
+    /// Below type 5 the wire never carries `max_weight` at all — a client that
+    /// old is simply never told it, so `0` here is not a guess at a real value,
+    /// it is what "the server didn't say" looks like for this one field.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x11 mobile status serial",
+            value: raw,
+        })?;
+        let name = reader.fixed_string(30)?;
+        let hits = Vitals {
+            current: reader.u16()?,
+            max: reader.u16()?,
+        };
+        let _renamable = reader.bool()?;
+        let kind = reader.u8()?;
+
+        let female = reader.bool()?;
+        let strength = reader.u16()?;
+        let dexterity = reader.u16()?;
+        let intelligence = reader.u16()?;
+        let stamina = Vitals {
+            current: reader.u16()?,
+            max: reader.u16()?,
+        };
+        let mana = Vitals {
+            current: reader.u16()?,
+            max: reader.u16()?,
+        };
+        let gold = reader.u32()?;
+        let armor = reader.u16()?;
+        let weight = reader.u16()?;
+
+        let max_weight = if kind >= 5 {
+            let max_weight = reader.u16()?;
+            reader.skip(1)?; // race id + 1, not modelled
+            max_weight
+        } else {
+            0
+        };
+
+        let stat_cap = reader.u16()?;
+        let followers = reader.u8()?;
+        let followers_max = reader.u8()?;
+
+        if kind >= 4 {
+            // Resistances, luck, weapon damage, tithing: zeroed placeholders on
+            // the way out, so there is nothing here worth keeping on the way in.
+            reader.skip(5 * 2 + 2 + 2 + 4)?;
+        }
+        if kind >= 6 {
+            // The AoS extended-status block: 15 zeroed shorts.
+            reader.skip(15 * 2)?;
+        }
+
+        Ok(Self {
+            serial,
+            name,
+            hits,
+            female,
+            strength,
+            dexterity,
+            intelligence,
+            stamina,
+            mana,
+            gold,
+            armor,
+            weight,
+            max_weight,
+            stat_cap,
+            followers,
+            followers_max,
+        })
+    }
+}
+
 /// `0x77` — move a mobile the client already knows about. 17 bytes.
 ///
 /// Sphere's comment is worth keeping: this cannot move the client's *own*
@@ -490,6 +587,35 @@ impl EncodePacket for MobileMove {
         out.u16(self.hue.0);
         out.u8(self.flags.0);
         out.u8(self.notoriety.for_client(version));
+    }
+}
+
+impl DecodePacket for MobileMove {
+    const ID: u8 = 0x77;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x77 mobile move serial",
+            value: raw,
+        })?;
+        let body = Graphic(reader.u16()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        let z = reader.u8()? as i8;
+        let facing = Facing::from_bits(reader.u8()?);
+        let hue = Hue(reader.u16()?);
+        let flags = StatusFlags(reader.u8()?);
+        let notoriety = Notoriety::from_bits(reader.u8()?);
+        Ok(Self {
+            serial,
+            body,
+            position: Point::new(x, y, z),
+            facing,
+            hue,
+            flags,
+            notoriety,
+        })
     }
 }
 
@@ -565,6 +691,65 @@ impl EncodePacket for MobileIncoming {
         // A zero serial ends the list. Not a length — the client reads items
         // until it sees this.
         out.u32(0);
+    }
+}
+
+impl DecodePacket for MobileIncoming {
+    const ID: u8 = 0x78;
+
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x78 mobile incoming serial",
+            value: raw,
+        })?;
+        let body = Graphic(reader.u16()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        let z = reader.u8()? as i8;
+        let facing = Facing::from_bits(reader.u8()?);
+        let hue = Hue(reader.u16()?);
+        let flags = StatusFlags(reader.u8()?);
+        let notoriety = Notoriety::from_bits(reader.u8()?);
+
+        let new_layout = version.supports(Feature::NewMobileIncoming);
+        let mut equipment = Vec::new();
+        loop {
+            let item_raw = reader.u32()?;
+            if item_raw == 0 {
+                break;
+            }
+            let item_serial = Serial::new(item_raw).ok_or(DecodeError::UnknownValue {
+                field: "0x78 mobile incoming equipment serial",
+                value: item_raw,
+            })?;
+            let (graphic, layer, item_hue) = if new_layout {
+                (Graphic(reader.u16()?), Layer(reader.u8()?), Hue(reader.u16()?))
+            } else {
+                let raw_graphic = reader.u16()?;
+                let hued = raw_graphic & 0x8000 != 0;
+                let layer = Layer(reader.u8()?);
+                let item_hue = if hued { Hue(reader.u16()?) } else { Hue::NONE };
+                (Graphic(raw_graphic & 0x7FFF), layer, item_hue)
+            };
+            equipment.push(Equipment {
+                serial: item_serial,
+                graphic,
+                layer,
+                hue: item_hue,
+            });
+        }
+
+        Ok(Self {
+            serial,
+            body,
+            position: Point::new(x, y, z),
+            facing,
+            hue,
+            flags,
+            notoriety,
+            equipment,
+        })
     }
 }
 

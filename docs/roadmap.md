@@ -2368,9 +2368,12 @@ missing for each, are in [`docs/client.md`](client.md).
 - [x] M1 — `crates/client/net`: sans-io connection, login state machine,
       `WorldView`, and `crates/e2e` proving a client reaches the world against
       the real shard
-- [ ] M1a — walking: `0x02` with its sequence and fastwalk key, `0x22`/`0x21`,
-      and the decoders that fill a `WorldView` (`0x20`, `0x11`, `0x77`, `0x78`,
-      `0x1A`, `0x1D`)
+- [ ] M1a — walking
+  - [x] The decoders that fill a `WorldView`: `0x20`, `0x11`, `0x77`, `0x78`,
+        `0x1A`, `0x1D`. `WorldView` now holds every other mobile and every
+        ground item, not just the player; `0x11` decodes but is not folded in
+        — see `docs/client.md`.
+  - [ ] `0x02` with its sequence and fastwalk key, `0x22`/`0x21`
 - [ ] M2 — `crates/common/uofiles`: move the format readers out of `world`, add
       the ones a renderer needs
 - [ ] M3 — the first picture
