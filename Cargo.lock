@@ -1418,6 +1418,9 @@ version = "0.0.1"
 [[package]]
 name = "openshard-protocol"
 version = "0.0.1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "openshard-quests"

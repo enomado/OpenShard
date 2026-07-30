@@ -508,8 +508,12 @@ shared class-B type and its second decoder-rewrites-a-value finding.
 
 - **The cliloc-table sweep** (amendment 7): ~190 call sites pass a bare `u32`
   message id. Worth doing with the `SoundId` table sweep, which has the same
-  shape and the same blocker — both want the numbers to come out of config
-  already typed, which drags serde into `protocol`.
+  shape. Both want the number to come out of a content table already typed —
+  **decided:** `protocol` takes the dependency. `ClilocId` and `SoundId` are
+  `Deserialize`/`Serialize` now (`#[serde(transparent)]`, `wire.rs`), so a
+  content loader can read either straight into the newtype instead of every
+  call site wrapping a bare number by hand. The sweep across the ~190 call
+  sites itself is still open.
 - ~~**`0x03B2` is written out five times**: `gm::SYSTEM_HUE`, `npc::GREET_HUE`,
   `quests::progress::NPC_HUE`, `runtime::SYSTEM_HUE`,
   `tick::defaults::TEXT_HUE`. They are all "the client's muted grey", all four

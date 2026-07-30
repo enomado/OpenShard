@@ -16,6 +16,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// An art id: what the client draws. Tiles, items, effect sprites and gump art
 /// all index the same `art.mul`, so they share one type.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -66,7 +68,13 @@ impl Hue {
 }
 
 /// An index into the client's sound files.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+///
+/// `Deserialize`/`Serialize` so a sound id can be read straight out of a
+/// content table (gameplay data, not protocol data) instead of arriving as a
+/// bare `u16` that a script or config loader has to wrap by hand at every one
+/// of its call sites.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct SoundId(pub u16);
 
 /// The id a targeting cursor request carries and its response echoes back.
@@ -94,7 +102,13 @@ pub struct AuthKey(pub u32);
 /// that first needed it because five carry one: `0xC1` and `0xCC` speech,
 /// `0x14`'s context-menu entries, `0xD6`'s property lists, and the start-city
 /// descriptions in a `0xA9`. Same reason [`Layer`] is here.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+///
+/// `Deserialize`/`Serialize` for the same reason as [`SoundId`]: a message id
+/// is gameplay content (which line the pack wants shown), so it should arrive
+/// out of a content table already typed rather than as a bare `u32` that every
+/// one of its ~190 call sites wraps by hand.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct ClilocId(pub u32);
 
 /// Where a worn item sits on a mobile: the hand, the head, the mount slot.
