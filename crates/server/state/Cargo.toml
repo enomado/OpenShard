@@ -17,3 +17,9 @@ openshard-events.workspace = true
 openshard-gateway.workspace = true
 openshard-movement.workspace = true
 openshard-protocol.workspace = true
+
+# `build.rs` only: the body-type, mount and skill tables are `data/*.json` and
+# become `const`s before the crate compiles. Nothing here is linked into the shard.
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
