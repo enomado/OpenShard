@@ -121,12 +121,21 @@ instead punches pinholes through the ground, which look exactly like dark
 texture: the first renderer to do it covered 97.7% of a viewport instead of
 100%, and the missing 2.3% was invisible on a screenshot.
 
-**Ground is not drawn as a flat diamond where the terrain steps.** The client
-stretches a land tile onto the heights of its four corners and takes the texture
-for a sloped one from `texmaps.mul`; flat 44×44 diamonds drawn at each tile's own
-`z` pull apart along a slope and leave seams. Level ground tiles exactly — the
-sea covers a viewport to the pixel — so this is visible only where the ground
-moves, which is why it is worth writing down rather than rediscovering.
+**A land cell's `z` is the height of one corner, not of the tile.** It belongs to
+the corner the tile shares with its neighbours to the north — the top of the
+diamond on screen — and the other three corners are read from the cells at
+`(x+1, y)`, `(x, y+1)` and `(x+1, y+1)`. The client stretches the tile over those
+four points, so adjacent tiles are built from *the same* vertices and a gap
+between them cannot occur. Drawing each tile as a flat 44×44 diamond at its own
+`z` instead is not merely an approximation: neighbours pull apart along every
+slope, and a screen of Britain loses 2.3% of its pixels to seams while the sea
+still covers 100%, so a level-ground test says nothing about it.
+
+**A sloped tile's texture comes from `texmaps.mul`, not from `art`.** The 44×44
+land sprite is what the client draws when the four corners share a height; on a
+slope it binds a square texture from `texmaps.mul` and maps it corner to corner,
+because stretching the art diamond onto a steep quad smears it. Two shapes and
+two texture sources, chosen per tile.
 
 **No client files are in this repository and none ever will be.** They are
 copyrighted and they are not ours to redistribute. `world.client_files` points

@@ -171,10 +171,14 @@ fn a_lone_sprite_matches_the_art_it_came_from() {
     let atlas = LandAtlas::build(&art, [graphic]).expect("one graphic fits");
     let region = atlas.region(graphic).expect("just packed");
 
-    // Drawn at the origin, so viewport coordinates are the sprite's own.
+    // Level, and centred so its bounding square starts at the viewport's origin:
+    // viewport coordinates are then the sprite's own. A tile whose four corners
+    // share a height is drawn as the art's square, which is what makes this
+    // comparison texel for texel possible at all — see `ground.wgsl`.
     let quads = [GroundQuad {
-        x: 0.0,
-        y: 0.0,
+        x: f32::from(LAND_TILE_SIZE) / 2.0,
+        y: f32::from(LAND_TILE_SIZE) / 2.0,
+        corners: [0.0; 4],
         region,
     }];
     let side = u32::from(LAND_TILE_SIZE);
@@ -272,18 +276,20 @@ fn level_ground_covers_every_pixel() {
     );
 }
 
-/// A screen of Britain: every visible tile is drawn, and the hillsides are not.
+/// A screen of Britain: hilly ground covers the viewport as completely as the
+/// sea does.
 ///
-/// The second half of that sentence is a limitation, stated so it cannot be
-/// mistaken for a bug in the parts above it. Real terrain steps in `z`, and flat
-/// 44x44 diamonds drawn at different heights pull apart along a slope: the
-/// client stretches ground onto the four corner heights instead, and takes the
-/// texture for a sloped tile from `texmaps.mul`, which nothing here reads yet.
-/// So this test asserts what *is* under this crate's control — that no visible
-/// tile is silently dropped — and pins the gap rather than tolerating it
-/// invisibly. It fails, on purpose, once stretched ground lands.
+/// This is the assertion stretched ground exists for. Flat 44x44 diamonds drawn
+/// at different heights pull apart along a slope and leave a lattice of seams —
+/// which is what this test used to pin, at 97.7% of the viewport. A tile
+/// stretched over its four corner heights cannot do that: neighbours are built
+/// from *the same* corners, so the mesh is watertight by construction rather
+/// than by the projection's arithmetic coming out even.
+///
+/// Real terrain is also the only place the two shapes meet, so this covers the
+/// join between them: a flat tile beside a sloped one, and no gap at the seam.
 #[test]
-fn broken_terrain_drops_no_tile_but_does_leave_seams() {
+fn hilly_ground_covers_every_pixel() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
@@ -304,17 +310,21 @@ fn broken_terrain_drops_no_tile_but_does_leave_seams() {
         .count();
     assert_eq!(quads.len(), cells, "a visible tile was dropped");
 
+    // The premise: this camera has to be looking at a hillside, or the test is
+    // the level-ground one again under another name and would stay green
+    // through the loss of everything it is here to protect.
+    let sloped = quads
+        .iter()
+        .filter(|quad| quad.corners.iter().any(|z| *z != quad.corners[0]))
+        .count();
+    assert!(sloped > 100, "only {sloped} of {} quads slope", quads.len());
+
     let frame = render(&device, &queue, &atlas, &quads, camera.width, camera.height);
     let total = (camera.width * camera.height) as usize;
-    let drawn = frame.drawn();
-    assert!(
-        drawn * 100 / total >= 95,
-        "only {drawn} of {total} pixels were drawn: that is more than slopes explain",
-    );
-    assert!(
-        drawn < total,
-        "hilly ground covered the viewport completely: if ground is now stretched \
-         onto its corner heights, this test has done its job and should be replaced",
+    assert_eq!(
+        frame.drawn(),
+        total,
+        "hilly ground left holes: the corner heights do not meet",
     );
 }
 

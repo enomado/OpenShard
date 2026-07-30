@@ -155,6 +155,19 @@ run: `visible_tiles` was widened for `z` in only one direction, which loses a
 band of ground wherever the terrain goes negative, and the atlas treated a black
 pixel as a transparent one. Neither would have been visible on a screenshot.
 
+**Ground is stretched over its four corner heights**, which is the difference
+between terrain and a mosaic of flat diamonds. A land cell stores one height and
+it belongs to the diamond's *top* corner; the other three are the neighbours'.
+Two tiles therefore do not merely abut, they are built from the same vertices,
+and a seam between them is not expressible — which is why hilly Britain now
+covers every one of its 393,216 pixels too, where flat diamonds left 2.3% of the
+viewport in gaps. A tile whose four corners agree keeps the old path exactly: it
+is drawn as the art's own square with the diamond cut out by alpha, so the
+texel-for-texel comparison still holds where it can. The choice between the two
+shapes is made in the shader from the heights themselves, so it cannot disagree
+with them. What is still approximate is the *texture* on a slope — see the
+backlog.
+
 Deliberately not done here: **hue**. Ground carries no hue — `LandCell` has a
 graphic and a height and nothing else — so the hue table has no consumer until
 statics arrive, and building the plumbing for it now would be building it
@@ -252,14 +265,19 @@ own understanding had written.
 
 ## Backlog, found while drawing the ground
 
-- **Ground is drawn flat, so hillsides have seams.** A tile is one 44×44 diamond
-  at its own `z`, and neighbours at different heights pull apart: a screen of
-  Britain covers 97–98% of its pixels, the sea covers 100%. The client stretches
-  ground onto its four corner heights and textures a sloped tile from
-  `texmaps.mul`, which no reader here touches yet. That is the next piece of M3
-  and it needs a new reader, not just a shader.
-  `broken_terrain_drops_no_tile_but_does_leave_seams` fails on purpose once this
-  lands.
+- **A sloped tile is textured with the stretched land sprite, not `texmaps.mul`.**
+  The geometry is right — ground is stretched over its four corner heights, and
+  Britain now covers every pixel — but the texture on a slope is the 44×44 art
+  diamond pulled onto that shape, which smears on anything steep. The client
+  takes a square texture from `texmaps.mul` instead and maps it corner to corner.
+  That reader does not exist: a new format, its own index, its own tests against
+  the real files. Nothing about the geometry has to move for it; only where the
+  sloped path gets its texture coordinates and which texture it binds.
+- **A `tiledata` flag may force a tile flat.** The client can be told to ignore a
+  tile's four corners and draw it as the plain sprite. `ground.wgsl` decides
+  purely from the heights being equal, which is right for terrain and possibly
+  wrong for whatever that flag marks. Read it out of the file before believing
+  its name — `findings.md` on tiledata flags.
 - **Void land tiles are drawn as black diamonds.** Under a building the map's
   ground is a "nothing here" graphic that the real client covers with statics.
   Until statics are drawn this leaves black holes in the picture, which is

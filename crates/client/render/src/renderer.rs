@@ -6,7 +6,7 @@
 //! application, and a test has no surface at all.
 
 use crate::atlas::LandAtlas;
-use crate::camera::{TILE_HEIGHT, TILE_WIDTH};
+use crate::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use crate::ground::GroundQuad;
 
 /// What an untouched pixel is left as.
@@ -22,8 +22,9 @@ pub const CLEAR: wgpu::Color = wgpu::Color {
     a: 0.0,
 };
 
-/// Bytes of the uniform block: two `vec2<f32>`.
-const UNIFORM_BYTES: u64 = 16;
+/// Bytes of the uniform block: two `vec2<f32>`, a height step, and the padding
+/// a uniform block's size is rounded up to.
+const UNIFORM_BYTES: u64 = 32;
 
 /// The unit quad, as a triangle strip: (0,0) (1,0) (0,1) (1,1).
 const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -227,6 +228,11 @@ impl GroundRenderer {
                                 offset: 8,
                                 shader_location: 2,
                             },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 24,
+                                shader_location: 3,
+                            },
                         ],
                     }),
                 ],
@@ -301,6 +307,8 @@ impl GroundRenderer {
             target.height as f32,
             TILE_WIDTH as f32,
             TILE_HEIGHT as f32,
+            Z_STEP as f32,
+            0.0,
         ] {
             uniform_bytes.extend_from_slice(&value.to_le_bytes());
         }
