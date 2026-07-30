@@ -38,7 +38,7 @@ use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
 use crate::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart, PlayerUpdate,
-    Season, WalkAck, WalkReject,
+    SeasonChange, WalkAck, WalkReject,
 };
 
 /// A packet the server sends to a client.
@@ -95,7 +95,7 @@ pub enum ServerPacket {
     /// `0x6D` — play a music track.
     PlayMusic(PlayMusic),
     /// `0xBC` — which season the client draws.
-    Season(Season),
+    SeasonChange(SeasonChange),
     /// `0xD1` — a logout is granted.
     LogoutAck(LogoutAck),
     /// `0xBF` subcommand `0x08` — which map the client should draw.
@@ -178,7 +178,7 @@ impl ServerPacket {
             Self::LoginComplete(_) => LoginComplete::ID,
             Self::LightLevel(_) => LightLevel::ID,
             Self::PlayMusic(_) => PlayMusic::ID,
-            Self::Season(_) => Season::ID,
+            Self::SeasonChange(_) => SeasonChange::ID,
             Self::LogoutAck(_) => LogoutAck::ID,
             Self::MapChange(_) => MapChange::ID,
             Self::Remove(_) => Remove::ID,
@@ -233,7 +233,7 @@ impl ServerPacket {
             Self::LoginComplete(_) => LoginComplete::LENGTH,
             Self::LightLevel(_) => LightLevel::LENGTH,
             Self::PlayMusic(_) => PlayMusic::LENGTH,
-            Self::Season(_) => Season::LENGTH,
+            Self::SeasonChange(_) => SeasonChange::LENGTH,
             Self::LogoutAck(_) => LogoutAck::LENGTH,
             Self::MapChange(_) => MapChange::LENGTH,
             Self::Remove(_) => Remove::LENGTH,
@@ -298,7 +298,7 @@ impl ServerPacket {
             Self::LoginComplete(packet) => packet.encode_body(out, version),
             Self::LightLevel(packet) => packet.encode_body(out, version),
             Self::PlayMusic(packet) => packet.encode_body(out, version),
-            Self::Season(packet) => packet.encode_body(out, version),
+            Self::SeasonChange(packet) => packet.encode_body(out, version),
             Self::LogoutAck(packet) => packet.encode_body(out, version),
             Self::MapChange(packet) => packet.encode_body(out, version),
             Self::Remove(packet) => packet.encode_body(out, version),
@@ -420,40 +420,45 @@ mod tests {
                 }],
             }),
             ServerPacket::PlayerStart(PlayerStart {
-                serial: 0x0000_002A,
-                body: 0x0190,
+                serial,
+                body: crate::wire::Graphic(0x0190),
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
-                map_width: crate::world::DEFAULT_MAP_WIDTH,
-                map_height: crate::world::DEFAULT_MAP_HEIGHT,
+                map: crate::world::MapSize::BRITANNIA,
             }),
             ServerPacket::PlayerUpdate(PlayerUpdate {
-                serial: 0x0000_002A,
-                body: 0x0190,
-                hue: 0x83EA,
-                flags: 0,
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
             }),
             ServerPacket::DeathStatus(DeathStatus { dead: true }),
             ServerPacket::WalkAck(WalkAck {
-                sequence: 1,
-                notoriety: 0x01,
+                sequence: crate::world::StepSequence(1),
+                notoriety: crate::mobile::Notoriety::Innocent,
             }),
             ServerPacket::WalkReject(WalkReject {
-                sequence: 1,
+                sequence: crate::world::StepSequence(1),
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
             }),
             ServerPacket::LoginComplete(LoginComplete),
-            ServerPacket::LightLevel(LightLevel { level: 0 }),
-            ServerPacket::PlayMusic(PlayMusic { track: 11 }),
-            ServerPacket::Season(Season {
-                season: 0,
+            ServerPacket::LightLevel(LightLevel {
+                level: crate::world::Light(0),
+            }),
+            ServerPacket::PlayMusic(PlayMusic {
+                track: crate::world::MusicId(11),
+            }),
+            ServerPacket::SeasonChange(SeasonChange {
+                season: crate::world::Season::Spring,
                 play_sound: false,
             }),
             ServerPacket::LogoutAck(LogoutAck),
-            ServerPacket::MapChange(MapChange { map: 0 }),
+            ServerPacket::MapChange(MapChange {
+                map: crate::world::MapId(0),
+            }),
             ServerPacket::Remove(Remove { serial: 0x0000_002A }),
             ServerPacket::OpenPaperdoll(OpenPaperdoll {
                 serial: 0x0000_002A,
@@ -487,7 +492,7 @@ mod tests {
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
                 hue: 0x83EA,
-                flags: 0,
+                flags: crate::mobile::StatusFlags::NONE,
                 notoriety: crate::mobile::Notoriety::Innocent,
             }),
             ServerPacket::MobileIncoming(MobileIncoming {
@@ -496,7 +501,7 @@ mod tests {
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
                 hue: 0x83EA,
-                flags: 0,
+                flags: crate::mobile::StatusFlags::NONE,
                 notoriety: crate::mobile::Notoriety::Innocent,
                 equipment: Vec::new(),
             }),

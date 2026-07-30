@@ -39,8 +39,6 @@ pub(super) const DEFAULT_FACET: u8 = 0;
 /// the world reads the flat default through [`WorldState::start_position`].
 #[cfg(test)]
 pub(super) const Z_WITHOUT_A_MAP: i8 = 0;
-/// Notoriety 0x01 is "innocent" — the blue health bar.
-pub(super) const NOTORIETY_INNOCENT: u8 = 0x01;
 /// The facet size used when there is no map. Big enough for anywhere a test
 /// puts something; the grid is a `Vec` of empty buckets and costs nothing.
 pub(super) const FACET_WITHOUT_A_MAP: (u32, u32) = (7168, 4096);

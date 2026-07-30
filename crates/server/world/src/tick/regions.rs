@@ -16,7 +16,7 @@
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::world::PlayMusic;
+use openshard_protocol::world::{MusicId, PlayMusic};
 use openshard_state::Region;
 use openshard_state::components::{Client, Facet, InRegion, Position};
 use tracing::{info, warn};
@@ -259,8 +259,12 @@ impl World {
             return;
         }
         self.last_music.insert(connection, track);
-        self.state
-            .send_packet(connection, &ServerPacket::PlayMusic(PlayMusic { track }));
+        self.state.send_packet(
+            connection,
+            &ServerPacket::PlayMusic(PlayMusic {
+                track: MusicId(track),
+            }),
+        );
     }
 
     /// Forget a departed connection's music, so a reconnect hears its region

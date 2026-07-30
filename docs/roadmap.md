@@ -29,6 +29,37 @@ The codec deliberately has no dependencies — not even `bytes`. Keeping the
 foundation crates dependency-free is what lets them build in environments where
 crates.io is unreachable.
 
+### Backlog from the newtype sweep (`docs/protocol_newtypes.md`, stage N1)
+
+Found while wrapping `world.rs`'s remaining bare integers. None of these blocks
+a stage; each is a seam the sweep made visible rather than one it created.
+
+- **Two types for one facet byte.** `openshard_state::components::Facet(pub u8)`
+  and the wire's new `world::MapId(pub u8)` are the same number, converted at
+  every seam (`MapId(facet.0)`, twice today). One layer should own it — most
+  likely `protocol`, the way `Serial` is owned there and borrowed by
+  `entities` — but the decision touches every `Facet` in `state` and is not a
+  packet-encoding change, so it is its own piece of work.
+- **A region's light level is never bounded.** `region.light: Option<u8>`
+  travels from region data and from scripting (`scripting/src/engine/ops.rs`)
+  into `0x4F` without ever meeting the `0..=0x1F` the client actually reads;
+  `world::Light` deliberately does not clamp, because the client does. Benign
+  today — a `200` renders as "as dark as it gets" — but it means a shard that
+  typos a light value gets no complaint from anything.
+- **The tick keeps light and music as bare numbers.** `last_light:
+  HashMap<_, u8>`, `last_music: HashMap<_, u16>`, and the `LIGHT_*` constants
+  are wrapped into `Light`/`MusicId` only at the packet seam. Carrying the
+  newtypes inward is a separate, server-side sweep; the protocol crate's own
+  count is clean without it.
+- **`gameplay.season` is still a `u8` in config and in `WorldState`,**
+  converted with `Season::from_bits` at world entry. Config validates the range
+  at startup, so nothing is unchecked — but the enum now exists and the mirror
+  does not have to stay a byte.
+- **`mobile::OpenPaperdoll::flags` is a bare `u8`** with two named constants
+  (`PAPERDOLL_WARMODE`, `PAPERDOLL_CAN_LIFT`) and no type holding them. Stage N2
+  owns `mobile.rs`; noted so it is not mistaken for done when `StatusFlags`
+  lands beside it.
+
 ### Login encryption is deliberately deferred
 
 Sphere ships `sphereCrypt.ini`: a per-client-version key table for the login

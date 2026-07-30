@@ -148,6 +148,13 @@ number is zero — or that every remaining one is on an explicit allowlist with 
 reason. "No violations found" from a detector that examined nothing has been
 green here before; a count cannot be.
 
+The allowlist so far, each entry argued where it was decided:
+
+| field | why it stays a bare integer |
+|---|---|
+| `world::Point::{x, y, z}` | components of one geometric quantity — [N1 amendment 2](#amendments-forced-by-n1-the-rest-of-worldrs) |
+| `world::MapSize::{width, height}` | same |
+
 **N11. No compatibility shims.** Same as D9: a stage wraps a group of fields
 **and** updates every call site in the same commit.
 
@@ -232,6 +239,71 @@ guessed at.
    `SkillChoice`, 2 on `CharacterPlay`) all gained a named type. The remaining
    20 belong to packets N1 (the rest of `world.rs`) has not touched yet.
 
+## Amendments forced by N1 (the rest of `world.rs`)
+
+N1 is entirely class A, B and D: the module's remaining packets are the outbound
+entry sequence plus `0x02`, and the one inbound packet's two fields are an echo
+and a value nobody reads. No class C field appeared, so N9's test pair is not
+owed by this stage — what it added instead is a test per class-B promotion that
+the promotion is *total*.
+
+1. **Class B can be degenerate, and the walk sequence is.** `RawStepSequence::
+   interpret` returns a structurally identical `StepSequence`; every one of the
+   256 bytes maps to itself. That is not ceremony to be optimised away: the
+   sequence is an **echo tag** — the client owns the number, the server sends it
+   back so an ack can be matched to the step that asked for it — so the type
+   pair records provenance, which is the only thing that differs between the two
+   ends. There *is* a rule (a fresh connection must open at zero, a wrap skips
+   it), it lives in `openshard_movement::WalkSequence::accept`, and it refuses
+   the **step**, not the value: a `0x21` names the very sequence it is
+   rejecting, so the reject echoes a byte the rule declined. N5's gump and
+   button ids are the mirror image — server-chosen, echoed *by the client* — and
+   are class C ("is this one I offered"), not this.
+2. **N10 gains an allowlist, and its first entries are geometric.** `Point`'s
+   `x`/`y`/`z` and `MapSize`'s `width`/`height` stay bare integers *by
+   decision*: the struct is the named type, nothing reaches a component except
+   through it, and the components are the one thing that is genuinely a number —
+   they get added to, compared and clamped, in movement, sectors, pathfinding
+   and line of sight. Wrapping them buys no confusion that the enclosing type
+   does not already prevent, and costs a `.0` on every arithmetic site in the
+   server. Reason recorded here so N8's counter can assert five, not zero, for
+   this file.
+3. **`map_width`/`map_height` became one `MapSize`.** Both call sites read the
+   two together and both packets carry both halves; a client told a width
+   without its height draws the edge of the world in the wrong place. The old
+   `DEFAULT_MAP_WIDTH`/`DEFAULT_MAP_HEIGHT` pair became `MapSize::BRITANNIA`,
+   which is what they always meant.
+4. **A packet was renamed to free a name for its value: `Season` →
+   `SeasonChange`.** The five seasons are a real domain — the client draws
+   exactly five and nothing else — so `Season` had to become the enum, and the
+   packet took ServUO's own name for it, which its doc comment already cited.
+   The `ServerPacket` variant moved with it. `Season::from_bits` is total, with
+   the same "fall back to what the client can always draw" argument as
+   `Notoriety::from_bits`; `openshard_config` still refuses a sixth season at
+   startup, so the fallback is for scripts and foreign saves, not for config.
+5. **The stage reached into `mobile.rs` for one shared type: `StatusFlags`.** It
+   was `pub type StatusFlags = u8`, an alias — which passes a bare-integer count
+   while being exactly the invisibility N3 exists to remove — and `PlayerUpdate`
+   needed it. It is now a newtype with a `NONE` constant, and it stayed in
+   `mobile.rs` rather than moving to `wire.rs`: N4's `wire.rs` rule is written
+   for `Raw*` types, and a *validated* type lives where its rule lives, which for
+   a mobile's status bits is with the mobile packets. Same argument kept
+   `Notoriety` where it is while `WalkAck` began using it.
+6. **`WalkAck::notoriety` now goes out through `Notoriety::for_client`,** as
+   `0x77` and `0x78` already did. Bytes are unchanged for every value this shard
+   currently sends (`Innocent`, `0x01`); what changed is that a yellow bar can no
+   longer reach a pre-4.0.0 client, which would have drawn the player's own
+   health bar as nothing at all. `NOTORIETY_INNOCENT`, the loose `u8` constant in
+   `tick/defaults.rs`, is gone.
+7. **One real bug fell out of `Serial`.** `WorldState::teleport` built its
+   `0x20` with `serial_of(entity).map_or(0, |s| s.raw())` — zero is not a
+   serial, it is the wire's word for "no object", and `Serial::new` refuses it.
+   The serial now joins the body and the facing in the `if let`, so a client
+   whose entity has no serial gets no packet instead of a nonsense one.
+8. **Bare-integer field count in `world.rs`: 20 before, 5 after** (N10), the
+   five being the allowlisted geometric components in amendment 2. `mobile.rs`
+   is unchanged at 37 — the `StatusFlags` alias was not one of them.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -303,7 +375,7 @@ resolved silently in one module is a pattern the next module contradicts.
 | Stage | State | Commit |
 | --- | --- | --- |
 | pilot | types landed, promotions deferred (see amendments) | |
-| N1 | not started | |
+| N1 | done — `world.rs` 20 bare int fields → 5 allowlisted | |
 | N2 | not started | |
 | N3 | not started | |
 | N4 | not started | |

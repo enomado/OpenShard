@@ -23,7 +23,7 @@ impl World {
                     self.state.send_packet(
                         connection,
                         &ServerPacket::WalkReject(WalkReject {
-                            sequence: request.sequence,
+                            sequence: request.sequence.interpret(),
                             position: walker.position,
                             facing: walker.facing,
                         }),
@@ -41,7 +41,7 @@ impl World {
                 self.state.send_packet(
                     connection,
                     &ServerPacket::WalkReject(WalkReject {
-                        sequence: request.sequence,
+                        sequence: request.sequence.interpret(),
                         position: walker.position,
                         facing: walker.facing,
                     }),
@@ -67,7 +67,7 @@ impl World {
 
         let facet = self.state.facet_of(entity);
         let was = walker.position;
-        let out_of_sequence = walker.sequence.is_fresh() && request.sequence != 0;
+        let out_of_sequence = walker.sequence.is_fresh() && request.sequence != RawStepSequence(0);
         // A horse is the fastest a player legitimately moves, and the pace budget has
         // to know: charging a mounted runner the on-foot rate spends credit twice as
         // fast as it earns and rubber-bands a long gallop.
@@ -103,8 +103,8 @@ impl World {
                 self.state.send_packet(
                     connection,
                     &ServerPacket::WalkAck(WalkAck {
-                        sequence: request.sequence,
-                        notoriety: NOTORIETY_INNOCENT,
+                        sequence: request.sequence.interpret(),
+                        notoriety: Notoriety::Innocent,
                     }),
                 );
                 self.state.bus.send(MobileMoved {
@@ -121,8 +121,8 @@ impl World {
                 self.state.send_packet(
                     connection,
                     &ServerPacket::WalkAck(WalkAck {
-                        sequence: request.sequence,
-                        notoriety: NOTORIETY_INNOCENT,
+                        sequence: request.sequence.interpret(),
+                        notoriety: Notoriety::Innocent,
                     }),
                 );
                 self.state.bus.send(MobileTurned {
@@ -149,7 +149,7 @@ impl World {
                 self.state.send_packet(
                     connection,
                     &ServerPacket::WalkReject(WalkReject {
-                        sequence: request.sequence,
+                        sequence: request.sequence.interpret(),
                         position: walker.position,
                         facing: walker.facing,
                     }),

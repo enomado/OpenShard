@@ -14,9 +14,17 @@ use crate::world::Point;
 
 /// Status flags on a mobile: poisoned, invisible, in war mode.
 ///
-/// Not modelled further yet — nothing sets them. A `u8` that says so is more
-/// honest than an enum with one variant.
-pub type StatusFlags = u8;
+/// The bits are not modelled yet — nothing sets them, and an enum with one
+/// variant would be a guess about what the rest mean. A newtype over the byte
+/// says exactly that much and no more, while still keeping the field out of the
+/// pool of interchangeable `u8`s a packet struct is otherwise made of.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct StatusFlags(pub u8);
+
+impl StatusFlags {
+    /// Nothing set: not poisoned, not hidden, not in war mode.
+    pub const NONE: Self = Self(0);
+}
 
 /// How the client colours a mobile's health bar.
 ///
@@ -377,7 +385,7 @@ impl EncodePacket for MobileMove {
         out.u8(self.position.z as u8);
         out.u8(self.facing.to_bits());
         out.u16(self.hue);
-        out.u8(self.flags);
+        out.u8(self.flags.0);
         out.u8(self.notoriety.for_client(version));
     }
 }
@@ -430,7 +438,7 @@ impl EncodePacket for MobileIncoming {
         out.u8(self.position.z as u8);
         out.u8(self.facing.to_bits());
         out.u16(self.hue);
-        out.u8(self.flags);
+        out.u8(self.flags.0);
         out.u8(self.notoriety.for_client(version));
 
         for item in &self.equipment {
@@ -635,7 +643,7 @@ mod tests {
             position: Point::new(1475, 1774, -5),
             facing: facing(),
             hue: 0x83EA,
-            flags: 0,
+            flags: StatusFlags::NONE,
             notoriety: Notoriety::Innocent,
             equipment: Vec::new(),
         }
@@ -667,7 +675,7 @@ mod tests {
                 position: Point::new(1475, 1774, -5),
                 facing: facing(),
                 hue: 0x83EA,
-                flags: 0,
+                flags: StatusFlags::NONE,
                 notoriety: Notoriety::Innocent,
             },
             ClientVersion::TOL,

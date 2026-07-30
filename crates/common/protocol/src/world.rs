@@ -26,14 +26,25 @@ use crate::direction::Facing;
 use crate::error::{DecodeError, WrongPacket};
 use crate::identity::RawCharacterName;
 use crate::login::CHARACTER_NAME_LENGTH;
+use crate::mobile::{Notoriety, StatusFlags};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::Serial;
 use crate::version::ClientVersion;
-use crate::wire::{RawCharacterSlot, RawClientIp, RawGraphic, RawHue};
+use crate::wire::{Graphic, Hue, RawCharacterSlot, RawClientIp, RawGraphic, RawHue};
 
 /// Where something is.
 ///
 /// `z` is signed and one byte: UO's world is 256 units tall and the client has
 /// no way to express more.
+///
+/// # Why its three fields stay bare integers
+///
+/// `Point` is itself the named type, and its components are the one thing a
+/// coordinate is made of: numbers that get added to and compared. Wrapping each
+/// axis would buy nothing — nothing reaches an `x` except through a `Point`, so
+/// there is no call site at which it could be mistaken for a hue — and would
+/// cost a `.0` on every step, every sector lookup and every line of sight in the
+/// server. See the allowlist in `docs/protocol_newtypes.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Point {
     /// East-west tile.
@@ -433,6 +444,29 @@ impl CreateCharacter {
 
 // -- 0x1B start -----------------------------------------------------------
 
+/// How big a facet is, in tiles.
+///
+/// The two numbers always travel together — both packets that carry a map size
+/// carry both halves, and a client told a width without the matching height
+/// draws the edge of the world in the wrong place — so they are one value rather
+/// than two fields something has to keep in step. Its own components stay bare
+/// integers for the same reason [`Point`]'s do.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct MapSize {
+    /// Width in tiles.
+    pub width: u16,
+    /// Height in tiles.
+    pub height: u16,
+}
+
+impl MapSize {
+    /// Britannia's, which is what Sphere sends when it has nothing better.
+    pub const BRITANNIA: Self = Self {
+        width: 0x1800,
+        height: 0x1000,
+    };
+}
+
 /// `0x1B` — put a body in the world. 37 bytes.
 ///
 /// The first packet of the game proper. Until the client has this it has no
@@ -440,32 +474,26 @@ impl CreateCharacter {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayerStart {
     /// The player's serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// The body graphic.
-    pub body: u16,
+    pub body: Graphic,
     /// Where.
     pub position: Point,
     /// Which way, and whether running.
     pub facing: Facing,
-    /// Map width in tiles.
-    pub map_width: u16,
-    /// Map height in tiles.
-    pub map_height: u16,
+    /// How big the facet this character is on is — not Britannia's, unless it
+    /// is on Britannia.
+    pub map: MapSize,
 }
-
-/// The map size Sphere sends when it has nothing better: Britannia's.
-pub const DEFAULT_MAP_WIDTH: u16 = 0x1800;
-/// The map size Sphere sends when it has nothing better: Britannia's.
-pub const DEFAULT_MAP_HEIGHT: u16 = 0x1000;
 
 impl EncodePacket for PlayerStart {
     const ID: u8 = 0x1B;
     const LENGTH: PacketLength = PacketLength::Fixed(37);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
         out.zeros(4);
-        out.u16(self.body);
+        out.u16(self.body.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         // The z field is two bytes wide but only the low one is read, as a
@@ -478,8 +506,8 @@ impl EncodePacket for PlayerStart {
         out.zeros(1);
         out.u32(0xFFFF_FFFF);
         out.zeros(4);
-        out.u16(self.map_width);
-        out.u16(self.map_height);
+        out.u16(self.map.width);
+        out.u16(self.map.height);
         out.zeros(6);
     }
 }
@@ -493,13 +521,13 @@ impl EncodePacket for PlayerStart {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayerUpdate {
     /// The player's serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// The body graphic.
-    pub body: u16,
+    pub body: Graphic,
     /// The body hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// Status flags: poisoned, invisible, warmode.
-    pub flags: u8,
+    pub flags: StatusFlags,
     /// Where.
     pub position: Point,
     /// Which way, and whether running.
@@ -511,11 +539,11 @@ impl EncodePacket for PlayerUpdate {
     const LENGTH: PacketLength = PacketLength::Fixed(19);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
-        out.u16(self.body);
+        out.u32(self.serial.raw());
+        out.u16(self.body.0);
         out.zeros(1);
-        out.u16(self.hue);
-        out.u8(self.flags);
+        out.u16(self.hue.0);
+        out.u8(self.flags.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         out.zeros(2);
@@ -550,19 +578,55 @@ impl EncodePacket for DeathStatus {
 
 // -- 0x02 walk request ----------------------------------------------------
 
+/// The sequence byte of a `0x02` walk request, exactly as the client sent it.
+///
+/// See [`RawStepSequence::interpret`] for why the promotion is total and why the
+/// rule about sequences does not live in it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawStepSequence(pub u8);
+
+/// The sequence byte a `0x22` ack or `0x21` reject carries back.
+///
+/// Always a number the client chose: the server never invents one, it echoes
+/// the request's. The type exists to say that the byte reached an outbound
+/// packet through the seam rather than out of nowhere.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct StepSequence(pub u8);
+
+impl RawStepSequence {
+    /// Total: every one of the 256 bytes is a legal tag.
+    ///
+    /// The sequence is an *echo* — the client owns the number, the server sends
+    /// it back so the client can match an ack to the step that asked for it —
+    /// so there is no domain to fall outside of and this promotion changes
+    /// nothing but provenance. There *is* a rule about sequences (a fresh
+    /// connection must open at zero, and a wrap skips it), but it refuses the
+    /// **step**, not the value, and lives with the walk state machine in
+    /// `openshard_movement::WalkSequence::accept`. Reflecting a byte a rule
+    /// declined to accept is correct: a `0x21` names the step it is rejecting.
+    pub const fn interpret(self) -> StepSequence {
+        StepSequence(self.0)
+    }
+}
+
+/// The fastwalk key a `0x02` carries, exactly as sent. Never read.
+///
+/// Dead weight on the wire. It was a 1999 attempt to stop speed hacks, was
+/// broken immediately, and Sphere stopped reading it; this shard throttles by
+/// pace (`openshard_movement::Pace`) instead. The type is the record of that
+/// decision — it has no promotion because nothing is ever going to want one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawFastwalkKey(pub u32);
+
 /// `0x02` — the client asks to take one step. 7 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WalkRequest {
     /// Which way, and whether running.
     pub facing: Facing,
     /// The client's sequence number for this step. See `openshard-movement`.
-    pub sequence: u8,
-    /// The fastwalk key.
-    ///
-    /// Dead weight. It was a 1999 attempt to stop speed hacks, was broken
-    /// immediately, and Sphere stopped reading it. Kept here only because the
-    /// four bytes are on the wire.
-    pub fastwalk_key: u32,
+    pub sequence: RawStepSequence,
+    /// The fastwalk key. Never read — see [`RawFastwalkKey`].
+    pub fastwalk_key: RawFastwalkKey,
 }
 
 impl DecodePacket for WalkRequest {
@@ -571,8 +635,8 @@ impl DecodePacket for WalkRequest {
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             facing: Facing::from_bits(reader.u8()?),
-            sequence: reader.u8()?,
-            fastwalk_key: reader.u32()?,
+            sequence: RawStepSequence(reader.u8()?),
+            fastwalk_key: RawFastwalkKey(reader.u32()?),
         })
     }
 }
@@ -584,8 +648,8 @@ impl WalkRequest {
         let mut writer = PacketWriter::with_capacity(7);
         writer.u8(Self::ID);
         writer.u8(self.facing.to_bits());
-        writer.u8(self.sequence);
-        writer.u32(self.fastwalk_key);
+        writer.u8(self.sequence.0);
+        writer.u32(self.fastwalk_key.0);
         writer.into_bytes()
     }
 }
@@ -596,18 +660,21 @@ impl WalkRequest {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WalkAck {
     /// The sequence number being acknowledged.
-    pub sequence: u8,
+    pub sequence: StepSequence,
     /// Colours the player's own health bar.
-    pub notoriety: u8,
+    pub notoriety: Notoriety,
 }
 
 impl EncodePacket for WalkAck {
     const ID: u8 = 0x22;
     const LENGTH: PacketLength = PacketLength::Fixed(3);
 
-    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.sequence);
-        out.u8(self.notoriety);
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        out.u8(self.sequence.0);
+        // Through `for_client` for the same reason `0x77` and `0x78` are: a
+        // client older than 4.0.0 draws no bar at all for a yellow one, and the
+        // player's own bar going missing reads as the client being broken.
+        out.u8(self.notoriety.for_client(version));
     }
 }
 
@@ -617,7 +684,7 @@ impl EncodePacket for WalkAck {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WalkReject {
     /// The sequence number being refused.
-    pub sequence: u8,
+    pub sequence: StepSequence,
     /// Where the client really is.
     pub position: Point,
     /// Which way it is really facing.
@@ -629,7 +696,7 @@ impl EncodePacket for WalkReject {
     const LENGTH: PacketLength = PacketLength::Fixed(8);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.sequence);
+        out.u8(self.sequence.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         out.u8(self.facing.to_bits());
@@ -650,14 +717,22 @@ impl EncodePacket for LoginComplete {
     fn encode_body(&self, _out: &mut PacketWriter, _version: ClientVersion) {}
 }
 
-/// `0x4F` — overall light level. 2 bytes.
+/// How dark the world is drawn: `0` is blinding daylight and `0x1F` is pitch
+/// dark.
 ///
-/// 0 is blinding daylight and 0x1F is pitch dark. Backwards from what the name
-/// suggests, and the client clamps rather than complaining.
+/// Backwards from what the word suggests, which is exactly why it is a type: a
+/// bare `u8` here reads as brightness to everyone who has not been told. Values
+/// above `0x1F` are not refused — the client clamps them itself, and a shard
+/// whose region data says `200` gets the dark it asked for rather than a
+/// dropped packet.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct Light(pub u8);
+
+/// `0x4F` — overall light level. 2 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LightLevel {
-    /// 0 (blinding daylight) to 0x1F (pitch dark).
-    pub level: u8,
+    /// How dark, in the client's own backwards scale. See [`Light`].
+    pub level: Light,
 }
 
 impl EncodePacket for LightLevel {
@@ -665,7 +740,7 @@ impl EncodePacket for LightLevel {
     const LENGTH: PacketLength = PacketLength::Fixed(2);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.level);
+        out.u8(self.level.0);
     }
 }
 
@@ -680,38 +755,86 @@ impl EncodePacket for LightLevel {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayMusic {
     /// Indexes the client's own music list.
-    pub track: u16,
+    pub track: MusicId,
 }
+
+/// An index into the client's own music list — ServUO's `MusicName` order.
+///
+/// Not a filename and not a graphic: the tracks live in the client's files and
+/// the server only ever names one by number.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct MusicId(pub u16);
 
 impl EncodePacket for PlayMusic {
     const ID: u8 = 0x6D;
     const LENGTH: PacketLength = PacketLength::Fixed(3);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u16(self.track);
+        out.u16(self.track.0);
+    }
+}
+
+/// Which season the client draws its trees and ground in.
+///
+/// Five, and the client knows no others — a sixth byte draws nothing at all,
+/// which is why `openshard_config` refuses one at startup rather than letting a
+/// shard find out at world entry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Season {
+    Spring,
+    Summer,
+    Fall,
+    Winter,
+    /// The blighted look Felucca's dungeons use.
+    Desolation,
+}
+
+impl Season {
+    /// The wire byte.
+    pub const fn to_bits(self) -> u8 {
+        match self {
+            Self::Spring => 0,
+            Self::Summer => 1,
+            Self::Fall => 2,
+            Self::Winter => 3,
+            Self::Desolation => 4,
+        }
+    }
+
+    /// Read a season from its byte. Total, the way [`Notoriety::from_bits`] is:
+    /// anything the client cannot draw falls back to spring rather than leaving
+    /// the world in whatever it was last told.
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => Self::Summer,
+            2 => Self::Fall,
+            3 => Self::Winter,
+            4 => Self::Desolation,
+            _ => Self::Spring,
+        }
     }
 }
 
 /// `0xBC` — which season the client draws. 3 bytes.
 ///
-/// `0` spring, `1` summer, `2` fall, `3` winter, `4` desolation. The second byte
-/// asks the client to play the season's own sound as it changes; sending it on
-/// world entry with the sound off avoids announcing a change that is really just
-/// a login. Ported from ServUO's `SeasonChange`.
+/// The second byte asks the client to play the season's own sound as it
+/// changes; sending it on world entry with the sound off avoids announcing a
+/// change that is really just a login. Ported from ServUO's `SeasonChange`,
+/// whose name this takes so that [`Season`] can be the season itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Season {
-    /// `0` spring, `1` summer, `2` fall, `3` winter, `4` desolation.
-    pub season: u8,
+pub struct SeasonChange {
+    /// Which season.
+    pub season: Season,
     /// Whether to play the season's own change sound.
     pub play_sound: bool,
 }
 
-impl EncodePacket for Season {
+impl EncodePacket for SeasonChange {
     const ID: u8 = 0xBC;
     const LENGTH: PacketLength = PacketLength::Fixed(3);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.season);
+        out.u8(self.season.to_bits());
         out.bool(self.play_sound);
     }
 }
@@ -764,8 +887,18 @@ impl EncodePacket for LogoutAck {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapChange {
     /// Which map (facet) to draw.
-    pub map: u8,
+    pub map: MapId,
 }
+
+/// Which of the client's maps — its facets — to draw: `0` Felucca, `1` Trammel,
+/// `2` Ilshenar, and so on up through whatever the shard's own files hold.
+///
+/// The number indexes the client's `map*.mul`/`map*.uop` files, so its meaning
+/// is fixed by what the player installed and not by anything the server decides.
+/// The server's own notion of a facet (`openshard_state::components::Facet`)
+/// wraps the same byte a layer up.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct MapId(pub u8);
 
 impl EncodePacket for MapChange {
     const ID: u8 = 0xBF;
@@ -774,7 +907,7 @@ impl EncodePacket for MapChange {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u16(6); // this subcommand's own, constant length
         out.u16(0x08);
-        out.u8(self.map);
+        out.u8(self.map.0);
     }
 }
 
@@ -794,7 +927,7 @@ impl EncodePacket for MapChange {
 ///
 /// The three zeroed fields after `z` are unused in every client that reads it.
 #[must_use]
-pub fn encode_server_change(at: Point, width: u16, height: u16) -> Vec<u8> {
+pub fn encode_server_change(at: Point, size: MapSize) -> Vec<u8> {
     let mut writer = PacketWriter::with_capacity(16);
     writer.u8(0x76);
     writer.u16(at.x);
@@ -803,8 +936,8 @@ pub fn encode_server_change(at: Point, width: u16, height: u16) -> Vec<u8> {
     // and a zero-extended one puts the player 65,000 tiles in the air.
     writer.u16(i16::from(at.z) as u16);
     writer.zeros(5);
-    writer.u16(width);
-    writer.u16(height);
+    writer.u16(size.width);
+    writer.u16(size.height);
     debug_assert_eq!(writer.len(), 16);
     writer.into_bytes()
 }
@@ -976,15 +1109,19 @@ mod tests {
         ));
     }
 
+    /// A serial every test in here can use: valid, and in the mobile pool.
+    fn serial() -> Serial {
+        Serial::new(0x0000_0001).unwrap()
+    }
+
     #[test]
     fn player_start_matches_its_declared_length() {
         let start = PlayerStart {
-            serial: 0x0000_0001,
-            body: 0x0190,
+            serial: serial(),
+            body: Graphic(0x0190),
             position: Point::new(1475, 1774, 0),
             facing: facing(),
-            map_width: DEFAULT_MAP_WIDTH,
-            map_height: DEFAULT_MAP_HEIGHT,
+            map: MapSize::BRITANNIA,
         };
         let bytes = encode_packet(&start, version());
         assert_eq!(bytes.len(), 37, "Sphere's PacketPlayerStart length");
@@ -1003,12 +1140,11 @@ mod tests {
         // byte. Writing z as a big-endian i16 would put -10 on the wire as
         // 0xFFF6, and the client would take 0xFF — a height of -1.
         let start = PlayerStart {
-            serial: 1,
-            body: 0x0190,
+            serial: serial(),
+            body: Graphic(0x0190),
             position: Point::new(100, 100, -10),
             facing: facing(),
-            map_width: DEFAULT_MAP_WIDTH,
-            map_height: DEFAULT_MAP_HEIGHT,
+            map: MapSize::BRITANNIA,
         };
         let bytes = encode_packet(&start, version());
         assert_eq!(bytes[15], 0x00, "the high byte is padding, not sign");
@@ -1018,10 +1154,10 @@ mod tests {
     #[test]
     fn player_update_matches_its_declared_length() {
         let update = PlayerUpdate {
-            serial: 1,
-            body: 0x0190,
-            hue: 0x83EA,
-            flags: 0,
+            serial: serial(),
+            body: Graphic(0x0190),
+            hue: Hue(0x83EA),
+            flags: StatusFlags::NONE,
             position: Point::new(1475, 1774, -5),
             facing: facing(),
         };
@@ -1045,8 +1181,8 @@ mod tests {
     fn walk_request_round_trips_at_the_declared_length() {
         let request = WalkRequest {
             facing: facing(),
-            sequence: 42,
-            fastwalk_key: 0xDEAD_BEEF,
+            sequence: RawStepSequence(42),
+            fastwalk_key: RawFastwalkKey(0xDEAD_BEEF),
         };
         let bytes = request.encode();
         assert_eq!(
@@ -1061,8 +1197,8 @@ mod tests {
     fn walk_request_keeps_the_running_bit_out_of_the_direction() {
         let bytes = WalkRequest {
             facing: Facing::running(Direction::North),
-            sequence: 0,
-            fastwalk_key: 0,
+            sequence: RawStepSequence(0),
+            fastwalk_key: RawFastwalkKey(0),
         }
         .encode();
         assert_eq!(bytes[1], 0x80, "north, running");
@@ -1077,8 +1213,8 @@ mod tests {
         assert_eq!(
             encode_packet(
                 &WalkAck {
-                    sequence: 7,
-                    notoriety: 0x01
+                    sequence: StepSequence(7),
+                    notoriety: Notoriety::Innocent,
                 },
                 version()
             ),
@@ -1087,7 +1223,7 @@ mod tests {
 
         let reject = encode_packet(
             &WalkReject {
-                sequence: 7,
+                sequence: StepSequence(7),
                 position: Point::new(1475, 1774, -5),
                 facing: facing(),
             },
@@ -1105,21 +1241,29 @@ mod tests {
     #[test]
     fn the_small_entry_packets_are_the_right_shape() {
         assert_eq!(encode_packet(&LoginComplete, version()), vec![0x55]);
-        assert_eq!(encode_packet(&LightLevel { level: 0 }, version()), vec![0x4F, 0]);
+        assert_eq!(
+            encode_packet(&LightLevel { level: Light(0) }, version()),
+            vec![0x4F, 0]
+        );
         // Music and season: three bytes each, the track big-endian. Both
         // references write exactly this.
         assert_eq!(
-            encode_packet(&PlayMusic { track: 11 }, version()),
+            encode_packet(&PlayMusic { track: MusicId(11) }, version()),
             vec![0x6D, 0x00, 11]
         );
         assert_eq!(
-            encode_packet(&PlayMusic { track: 0x0102 }, version()),
+            encode_packet(
+                &PlayMusic {
+                    track: MusicId(0x0102)
+                },
+                version()
+            ),
             vec![0x6D, 0x01, 0x02]
         );
         assert_eq!(
             encode_packet(
-                &Season {
-                    season: 3,
+                &SeasonChange {
+                    season: Season::Winter,
                     play_sound: true
                 },
                 version()
@@ -1128,8 +1272,8 @@ mod tests {
         );
         assert_eq!(
             encode_packet(
-                &Season {
-                    season: 0,
+                &SeasonChange {
+                    season: Season::Spring,
                     play_sound: false
                 },
                 version()
@@ -1147,7 +1291,7 @@ mod tests {
         // 0xBF is variable-length on the client's own table, but this
         // subcommand's own body never varies, so it declares its own length at
         // offset 1 the same way every other fixed packet does.
-        let map = encode_packet(&MapChange { map: 1 }, version());
+        let map = encode_packet(&MapChange { map: MapId(1) }, version());
         assert_eq!(map.len(), 6);
         assert_eq!(map[0], 0xBF);
         assert_eq!(u16::from_be_bytes([map[1], map[2]]), 6, "declares its length");
@@ -1162,7 +1306,13 @@ mod tests {
     /// it is worth pinning rather than trusting a reading of either.
     #[test]
     fn the_server_change_says_where_and_how_big() {
-        let packet = encode_server_change(Point::new(1495, 1629, -20), 2304, 1600);
+        let packet = encode_server_change(
+            Point::new(1495, 1629, -20),
+            MapSize {
+                width: 2304,
+                height: 1600,
+            },
+        );
 
         assert_eq!(packet.len(), 16, "fixed at sixteen bytes");
         assert_eq!(packet[0], 0x76);
@@ -1185,25 +1335,81 @@ mod tests {
     #[test]
     fn a_point_at_the_edges_of_its_fields_encodes() {
         // z is the one that can go negative, and the map is 24 bits wide in
-        // neither axis — u16 is the whole range the client has.
+        // neither axis — u16 is the whole range the client has. The serial is
+        // the top of the item pool rather than `u32::MAX`, because `Serial`
+        // refuses `0xFFFFFFFF`: that value means "nothing", not "the last
+        // object".
+        let highest = Serial::new(crate::serial::ITEM_MAX).unwrap();
         let start = PlayerStart {
-            serial: u32::MAX,
-            body: u16::MAX,
+            serial: highest,
+            body: Graphic(u16::MAX),
             position: Point::new(u16::MAX, u16::MAX, i8::MIN),
             facing: Facing::walking(Direction::NorthWest),
-            map_width: u16::MAX,
-            map_height: u16::MAX,
+            map: MapSize {
+                width: u16::MAX,
+                height: u16::MAX,
+            },
         };
         assert_eq!(encode_packet(&start, version()).len(), 37);
 
         let update = PlayerUpdate {
-            serial: u32::MAX,
-            body: u16::MAX,
-            hue: u16::MAX,
-            flags: u8::MAX,
+            serial: highest,
+            body: Graphic(u16::MAX),
+            hue: Hue(u16::MAX),
+            flags: StatusFlags(u8::MAX),
             position: Point::new(u16::MAX, u16::MAX, i8::MAX),
             facing: Facing::walking(Direction::NorthWest),
         };
         assert_eq!(encode_packet(&update, version()).len(), 19);
+    }
+
+    #[test]
+    fn every_sequence_byte_survives_interpretation() {
+        // Class B, and total: the walk sequence has no out-of-domain value to
+        // refuse, so the promotion must be defined — and unchanged — for all
+        // 256. A gap here would be a step the server silently renumbered, and
+        // the client matches its ack by that number.
+        for byte in 0..=u8::MAX {
+            assert_eq!(RawStepSequence(byte).interpret(), StepSequence(byte), "{byte}");
+        }
+    }
+
+    #[test]
+    fn a_walk_ack_downgrades_a_yellow_bar_for_an_old_client() {
+        // The player's own health bar goes through `for_client` for the same
+        // reason another mobile's does: a client below 4.0.0 draws nothing at
+        // all for 0x07, and a missing bar on your own character reads as the
+        // client being broken rather than as a server sending a colour it
+        // cannot draw.
+        let ack = WalkAck {
+            sequence: StepSequence(3),
+            notoriety: Notoriety::Invulnerable,
+        };
+        let ancient = ClientVersion::new(3, 0, 0, 0);
+        assert_eq!(encode_packet(&ack, ancient), vec![0x22, 3, 0x01], "blue instead");
+        assert_eq!(
+            encode_packet(&ack, version()),
+            vec![0x22, 3, 0x07],
+            "a modern client gets the yellow it can draw"
+        );
+    }
+
+    #[test]
+    fn the_seasons_are_the_clients_own_five() {
+        for (season, bits) in [
+            (Season::Spring, 0),
+            (Season::Summer, 1),
+            (Season::Fall, 2),
+            (Season::Winter, 3),
+            (Season::Desolation, 4),
+        ] {
+            assert_eq!(season.to_bits(), bits, "{season:?}");
+            assert_eq!(Season::from_bits(bits), season);
+        }
+        // Total, and the fallback is the one the client can always draw. A
+        // shard config cannot reach here — `openshard_config` refuses a sixth
+        // season at startup — but a script or a save from another shard can.
+        assert_eq!(Season::from_bits(5), Season::Spring);
+        assert_eq!(Season::from_bits(u8::MAX), Season::Spring);
     }
 }

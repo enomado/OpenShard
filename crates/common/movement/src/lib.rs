@@ -8,15 +8,15 @@
 //! ```
 //! use std::time::Instant;
 //! use openshard_movement::{OpenWorld, Walk, Walker};
-//! use openshard_protocol::world::{Point, WalkRequest};
+//! use openshard_protocol::world::{Point, RawFastwalkKey, RawStepSequence, WalkRequest};
 //! use openshard_protocol::direction::{Direction, Facing};
 //!
 //! let mut walker = Walker::new(Point::new(100, 100, 0), Facing::walking(Direction::North));
 //!
 //! let step = WalkRequest {
 //!     facing: Facing::walking(Direction::North),
-//!     sequence: 0,
-//!     fastwalk_key: 0,
+//!     sequence: RawStepSequence(0),
+//!     fastwalk_key: RawFastwalkKey(0),
 //! };
 //! assert!(matches!(walker.request(step, &OpenWorld, Instant::now(), false), Walk::Moved { .. }));
 //! ```

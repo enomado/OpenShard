@@ -21,13 +21,13 @@ use openshard_movement::Terrain;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
 use openshard_protocol::items::WorldItem;
-use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriety, Remove};
+use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriety, Remove, StatusFlags};
 use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{LocalizedMessage, NO_GRAPHIC, SYSTEM_SERIAL, SpokenMessage};
 use openshard_protocol::wire::SoundId;
-use openshard_protocol::world::{MapChange, PlayerUpdate, Point, encode_server_change};
+use openshard_protocol::world::{MapChange, MapId, MapSize, PlayerUpdate, Point, encode_server_change};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
@@ -1322,31 +1322,42 @@ impl WorldState {
 
         if from != facet {
             if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
-                let (width, height) = {
+                let size = {
                     let state = self.facet_state(facet);
-                    (state.width, state.height)
+                    MapSize {
+                        width: state.width as u16,
+                        height: state.height as u16,
+                    }
                 };
                 // Which map to draw, then where on it and how big it is. No
                 // `0x1B`: that is the "entering the world" packet, and neither
                 // reference re-sends it mid-session.
-                // `.0` because the facet number is what goes on the wire here.
-                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet.0 }));
-                self.send(connection, encode_server_change(to, width as u16, height as u16));
+                // `.0` because the wire's own facet type is `MapId`, and this
+                // is where the server's `Facet` crosses into it.
+                self.send_packet(
+                    connection,
+                    &ServerPacket::MapChange(MapChange { map: MapId(facet.0) }),
+                );
+                self.send(connection, encode_server_change(to, size));
             }
         }
 
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
-            let serial = self.registry.serial_of(entity).map_or(0, |s| s.raw());
-            let body = self.registry.get::<Body>(entity);
+            // The serial joins the body and the facing in the `if let`: a
+            // `0x20` addressed to nothing is not worth sending, and the old
+            // `map_or(0, …)` sent one — zero is not a serial, it is the wire's
+            // word for "no object".
+            let serial = self.registry.serial_of(entity);
+            let body = self.registry.get::<Body>(entity).copied();
             let facing = self.registry.get::<Heading>(entity).map(|h| h.0);
-            if let (Some(body), Some(facing)) = (body, facing) {
+            if let (Some(serial), Some(body), Some(facing)) = (serial, body, facing) {
                 self.send_packet(
                     connection,
                     &ServerPacket::PlayerUpdate(PlayerUpdate {
                         serial,
-                        body: body.id.0,
-                        hue: body.hue.0,
-                        flags: 0,
+                        body: body.id,
+                        hue: body.hue,
+                        flags: StatusFlags::NONE,
                         position: to,
                         facing,
                     }),
@@ -1841,7 +1852,7 @@ impl WorldState {
             position,
             facing,
             hue: body.hue.0,
-            flags: 0,
+            flags: StatusFlags::NONE,
             notoriety: self.notoriety_of(entity),
             equipment: self.equipment_of(serial),
         })
@@ -1917,7 +1928,7 @@ impl WorldState {
             position,
             facing,
             hue: body.hue.0,
-            flags: 0,
+            flags: StatusFlags::NONE,
             notoriety: self.notoriety_of(entity),
         })
     }

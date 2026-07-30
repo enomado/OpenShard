@@ -26,7 +26,7 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::world::LightLevel;
+use openshard_protocol::world::{Light, LightLevel};
 use openshard_state::components::Position;
 
 use super::World;
@@ -135,8 +135,10 @@ impl World {
             .collect();
         for (connection, level) in changed {
             self.last_light.insert(connection, level);
-            self.state
-                .send_packet(connection, &ServerPacket::LightLevel(LightLevel { level }));
+            self.state.send_packet(
+                connection,
+                &ServerPacket::LightLevel(LightLevel { level: Light(level) }),
+            );
         }
     }
 

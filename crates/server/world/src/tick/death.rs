@@ -192,10 +192,10 @@ impl World {
             self.state.send_packet(
                 connection,
                 &ServerPacket::PlayerUpdate(PlayerUpdate {
-                    serial: serial.raw(),
-                    body: body.id.0,
-                    hue: body.hue.0,
-                    flags: 0,
+                    serial,
+                    body: body.id,
+                    hue: body.hue,
+                    flags: StatusFlags::NONE,
                     position: at,
                     facing,
                 }),

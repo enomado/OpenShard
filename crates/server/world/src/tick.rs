@@ -39,13 +39,13 @@ use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
 use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{AOS_FEATURE_FLAGS, encode_supported_features};
-use openshard_protocol::mobile::{LABEL_MODE, MobileStatus, Notoriety, StatLockBits};
+use openshard_protocol::mobile::{LABEL_MODE, MobileStatus, Notoriety, StatLockBits, StatusFlags};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::SpokenMessage;
 use openshard_protocol::world::{
-    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point, Season,
-    WalkAck, WalkReject, WalkRequest,
+    DeathStatus, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapId, MapSize, PlayerStart,
+    PlayerUpdate, Point, RawStepSequence, Season, SeasonChange, WalkAck, WalkReject, WalkRequest,
 };
 use openshard_protocol::{
     access::AccessLevel,

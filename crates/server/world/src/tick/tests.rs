@@ -98,10 +98,12 @@ pub(super) fn teleport(world: &mut World, connection: ConnectionId, point: Point
 }
 
 pub(super) fn walk(sequence: u8, direction: Direction) -> WalkRequest {
+    use openshard_protocol::world::RawFastwalkKey;
+
     WalkRequest {
         facing: Facing::walking(direction),
-        sequence,
-        fastwalk_key: 0,
+        sequence: RawStepSequence(sequence),
+        fastwalk_key: RawFastwalkKey(0),
     }
 }
 
@@ -10211,7 +10213,7 @@ fn walking_emits_an_event_and_acks() {
     world.tick(now);
 
     let sent: Vec<Vec<u8>> = world.drain_outbound().map(|out| out.packet).collect();
-    assert_eq!(sent, vec![vec![0x22, 0, NOTORIETY_INNOCENT]]);
+    assert_eq!(sent, vec![vec![0x22, 0, Notoriety::Innocent.to_bits()]]);
 
     let moved: Vec<_> = world.bus().read(&mut moves).copied().collect();
     assert_eq!(moved.len(), 1);

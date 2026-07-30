@@ -260,7 +260,12 @@ impl Walker {
         now: Instant,
         mounted: bool,
     ) -> Walk {
-        if self.sequence.accept(request.sequence).is_err() {
+        // The one place the request's sequence byte is *read* rather than
+        // echoed, and the check it goes through: `.0` here because this is that
+        // seam. What comes back out on a `0x22`/`0x21` is the same byte,
+        // interpreted rather than validated — see
+        // `openshard_protocol::world::RawStepSequence::interpret`.
+        if self.sequence.accept(request.sequence.0).is_err() {
             self.sequence.reset();
             return Walk::Refused;
         }
@@ -340,6 +345,8 @@ pub fn step_from(position: Point, direction: Direction) -> Option<Point> {
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::world::{RawFastwalkKey, RawStepSequence};
+
     use super::*;
 
     #[test]
@@ -358,8 +365,8 @@ mod tests {
     fn request(direction: Direction, sequence: u8) -> WalkRequest {
         WalkRequest {
             facing: Facing::walking(direction),
-            sequence,
-            fastwalk_key: 0,
+            sequence: RawStepSequence(sequence),
+            fastwalk_key: RawFastwalkKey(0),
         }
     }
 
@@ -431,8 +438,8 @@ mod tests {
         let outcome = walker.request(
             WalkRequest {
                 facing: Facing::running(Direction::North),
-                sequence: 0,
-                fastwalk_key: 0,
+                sequence: RawStepSequence(0),
+                fastwalk_key: RawFastwalkKey(0),
             },
             &OpenWorld,
             now(),

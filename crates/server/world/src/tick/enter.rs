@@ -344,23 +344,27 @@ impl World {
         // The facets are not all the same shape — Ilshenar is 2304×1600 and
         // Tokuno 1448×1448 — and a client told the world is 7168×4096 when it is
         // not draws the edge of it wherever it likes.
-        let (map_width, map_height) = {
+        let map = {
             let state = self.state.facet_state(facet);
-            (state.width as u16, state.height as u16)
+            MapSize {
+                width: state.width as u16,
+                height: state.height as u16,
+            }
         };
         self.state.send_packet(
             connection,
             &ServerPacket::PlayerStart(PlayerStart {
-                serial: serial.raw(),
-                body: body.id.0,
+                serial,
+                body: body.id,
                 position,
                 facing,
-                map_width,
-                map_height,
+                map,
             }),
         );
-        self.state
-            .send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet.0 }));
+        self.state.send_packet(
+            connection,
+            &ServerPacket::MapChange(MapChange { map: MapId(facet.0) }),
+        );
         // AoS SupportedFeatures, sent *again* at world entry — this is the copy
         // ServUO's `DoLogin` sends right after the login confirm, and the one
         // ClassicUO reads to turn on in-world object tooltips and context menus.
@@ -380,18 +384,20 @@ impl World {
         // is told where the player stands.
         self.state.send_packet(
             connection,
-            &ServerPacket::Season(Season {
-                season: self.state.gameplay.season,
+            &ServerPacket::SeasonChange(SeasonChange {
+                // The config's byte, which `openshard_config` has already
+                // refused to let past four.
+                season: Season::from_bits(self.state.gameplay.season),
                 play_sound: false,
             }),
         );
         self.state.send_packet(
             connection,
             &ServerPacket::PlayerUpdate(PlayerUpdate {
-                serial: serial.raw(),
-                body: body.id.0,
-                hue: body.hue.0,
-                flags: 0,
+                serial,
+                body: body.id,
+                hue: body.hue,
+                flags: StatusFlags::NONE,
                 position,
                 facing,
             }),
@@ -401,8 +407,10 @@ impl World {
         // rule computes it, here and on every tick after; remembering it here is
         // what stops the refresh pass sending it a second time immediately.
         let level = self.initial_light(connection);
-        self.state
-            .send_packet(connection, &ServerPacket::LightLevel(LightLevel { level }));
+        self.state.send_packet(
+            connection,
+            &ServerPacket::LightLevel(LightLevel { level: Light(level) }),
+        );
         // The status bar, stamina and all. Without it the client believes it has
         // zero stamina and refuses to run — see `MobileStatus`. Sent before the
         // login-complete that starts the client drawing, so the numbers are there
