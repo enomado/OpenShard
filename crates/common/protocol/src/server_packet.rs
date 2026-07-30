@@ -531,18 +531,18 @@ mod tests {
                 items: Vec::new(),
             }),
             ServerPacket::BuyList(crate::vendor::BuyList {
-                container: 0x4000_0010,
+                container: crate::serial::Serial::new(0x4000_0010).unwrap(),
                 lines: vec![crate::vendor::BuyLine {
                     price: 3,
                     name: "black pearl".to_owned(),
                 }],
             }),
             ServerPacket::SellList(crate::vendor::SellList {
-                vendor: 0x0000_0BBB,
+                vendor: crate::serial::Serial::new(0x0000_0BBB).unwrap(),
                 lines: vec![crate::vendor::SellLine {
-                    serial: 0x4000_0033,
-                    graphic: 0x0F7A,
-                    hue: 0,
+                    serial: crate::serial::Serial::new(0x4000_0033).unwrap(),
+                    graphic: crate::wire::Graphic(0x0F7A),
+                    hue: crate::wire::Hue::NONE,
                     amount: 20,
                     price: 2,
                     name: "black pearl".to_owned(),

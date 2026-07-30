@@ -11460,9 +11460,9 @@ fn a_shop_sells_goods_and_buys_them_back() {
     // Three pearls at four coins: twelve gold change hands.
     world.queue(Command::Buy {
         connection: gm,
-        vendor: vendor_serial,
+        vendor: RawSerial(vendor_serial),
         purchases: vec![openshard_protocol::vendor::Purchase {
-            serial: stock_serial,
+            serial: RawSerial(stock_serial),
             amount: 3,
         }],
     });
@@ -11494,9 +11494,9 @@ fn a_shop_sells_goods_and_buys_them_back() {
         .expect("pearls in the pack");
     world.queue(Command::Sell {
         connection: gm,
-        vendor: vendor_serial,
+        vendor: RawSerial(vendor_serial),
         sales: vec![openshard_protocol::vendor::Sale {
-            serial: pearls,
+            serial: RawSerial(pearls),
             amount: 2,
         }],
     });
@@ -11515,9 +11515,9 @@ fn a_shop_sells_goods_and_buys_them_back() {
     // A pauper is refused: the vendor keeps its goods when gold runs short.
     world.queue(Command::Buy {
         connection: gm,
-        vendor: vendor_serial,
+        vendor: RawSerial(vendor_serial),
         purchases: vec![openshard_protocol::vendor::Purchase {
-            serial: stock_serial,
+            serial: RawSerial(stock_serial),
             amount: 47,
         }],
     });

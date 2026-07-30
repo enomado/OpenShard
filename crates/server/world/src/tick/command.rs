@@ -943,8 +943,10 @@ pub enum Command {
     Buy {
         /// Which connection.
         connection: ConnectionId,
-        /// The vendor mobile's wire serial.
-        vendor: u32,
+        /// The vendor mobile, as the client named it — checked in
+        /// `openshard_npc::vendor::buy`, which is the seam. The queue is a
+        /// delivery and not a checkpoint; see `docs/protocol_newtypes.md`.
+        vendor: openshard_protocol::serial::RawSerial,
         /// What it took, by stock serial and amount.
         purchases: Vec<openshard_protocol::vendor::Purchase>,
     },
@@ -952,8 +954,9 @@ pub enum Command {
     Sell {
         /// Which connection.
         connection: ConnectionId,
-        /// The vendor mobile's wire serial.
-        vendor: u32,
+        /// The vendor mobile, as the client named it — checked in
+        /// `openshard_npc::vendor::sell`.
+        vendor: openshard_protocol::serial::RawSerial,
         /// What it let go, by item serial and amount.
         sales: Vec<openshard_protocol::vendor::Sale>,
     },

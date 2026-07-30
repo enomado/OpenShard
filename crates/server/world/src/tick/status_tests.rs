@@ -9,6 +9,7 @@
 use super::tests::{START, enter, enter_gm, packets_for, world};
 use super::*;
 use openshard_protocol::packet::EncodePacket;
+use openshard_protocol::serial::RawSerial;
 use openshard_state::components::{Amount, Contained, Equipped, Graphic, Stackable};
 
 /// The gold graphic, and the backpack layer a character wears one on.
@@ -637,9 +638,9 @@ fn a_vendor_takes_the_bank_when_the_pack_is_short() {
 
     world.queue(Command::Buy {
         connection,
-        vendor,
+        vendor: RawSerial(vendor),
         purchases: vec![openshard_protocol::vendor::Purchase {
-            serial: stock,
+            serial: RawSerial(stock),
             amount: 10, // 10 × 4 gold
         }],
     });
@@ -675,9 +676,9 @@ fn with_bank_payment_off_a_banked_fortune_buys_nothing() {
 
     world.queue(Command::Buy {
         connection,
-        vendor,
+        vendor: RawSerial(vendor),
         purchases: vec![openshard_protocol::vendor::Purchase {
-            serial: stock,
+            serial: RawSerial(stock),
             amount: 10,
         }],
     });

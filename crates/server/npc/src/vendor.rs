@@ -12,7 +12,7 @@ use openshard_gateway::ConnectionId;
 use openshard_items as items;
 use openshard_movement::Terrain;
 use openshard_protocol::containers::{ContainerContents, encode_open_container};
-use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::TalkMode;
 use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
@@ -315,7 +315,7 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: Seria
     state.send_packet(
         connection,
         &ServerPacket::BuyList(BuyList {
-            container: stock_serial.raw(),
+            container: stock_serial,
             lines: lines.clone(),
         }),
     );
@@ -337,11 +337,11 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: Seria
 
 /// Settle a purchase: check the gold, take it, hand the goods over. See
 /// `Command::Buy`.
-pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32, list: &[Purchase]) {
+pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: RawSerial, list: &[Purchase]) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(vendor) = Serial::new(vendor_serial).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(vendor) = vendor_serial.validate().and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
@@ -362,7 +362,11 @@ pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32,
     let mut total: u32 = 0;
     let mut basket: Vec<(EntityId, u16, u16, u16, u32)> = Vec::new();
     for purchase in list {
-        let Some(item) = Serial::new(purchase.serial).and_then(|s| state.registry.entity_of(s)) else {
+        let Some(item) = purchase
+            .serial
+            .validate()
+            .and_then(|s| state.registry.entity_of(s))
+        else {
             continue;
         };
         let held_in = state.registry.get::<Contained>(item).map(|c| c.container);
@@ -459,9 +463,9 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
                 .get::<Name>(entity)
                 .map_or_else(|| format!("item {id:#06x}"), |n| n.0.clone());
             Some(SellLine {
-                serial: serial.raw(),
-                graphic: id,
-                hue,
+                serial,
+                graphic: openshard_protocol::wire::Graphic(id),
+                hue: openshard_protocol::wire::Hue(hue),
                 amount,
                 price,
                 name,
@@ -475,7 +479,7 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
     state.send_packet(
         connection,
         &ServerPacket::SellList(SellList {
-            vendor: vendor_serial.raw(),
+            vendor: vendor_serial,
             lines,
         }),
     );
@@ -483,11 +487,11 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
 }
 
 /// Settle a sale: goods out of the pack, gold in. See `Command::Sell`.
-pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32, list: &[Sale]) {
+pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: RawSerial, list: &[Sale]) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(vendor) = Serial::new(vendor_serial).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(vendor) = vendor_serial.validate().and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
@@ -506,7 +510,7 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32
 
     let mut earned: u32 = 0;
     for sale in list {
-        let Some(item) = Serial::new(sale.serial).and_then(|s| state.registry.entity_of(s)) else {
+        let Some(item) = sale.serial.validate().and_then(|s| state.registry.entity_of(s)) else {
             continue;
         };
         if state.registry.get::<Contained>(item).map(|c| c.container) != Some(backpack) {
