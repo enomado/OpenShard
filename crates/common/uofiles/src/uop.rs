@@ -59,14 +59,18 @@ pub enum UopError {
     },
     /// An entry is zlib-compressed and this reader cannot inflate it.
     ///
-    /// Map UOPs from the client are stored uncompressed, so this has never
-    /// fired. It is an error rather than a silent skip because a missing chunk
-    /// of map is a hole in the world.
+    /// The map and art containers store their entries uncompressed, so nothing
+    /// this crate reads has ever hit this. `gumpartLegacyMUL.uop` is a different
+    /// matter — every one of its 5,556 entries is deflated — so whoever reads
+    /// gumps first is the one who brings an inflater.
+    ///
+    /// An error rather than a silent skip: a chunk this reader cannot produce is
+    /// a hole in the world, not an absence.
     Compressed {
         /// Which file.
         path: PathBuf,
-        /// Which entry.
-        index: usize,
+        /// The name the entry was looked up under.
+        name: String,
     },
     /// A file the caller asked for is not in the container.
     MissingEntry {
@@ -85,9 +89,9 @@ impl fmt::Display for UopError {
             Self::Malformed { path, detail } => {
                 write!(f, "{} is malformed: {detail}", path.display())
             }
-            Self::Compressed { path, index } => write!(
+            Self::Compressed { path, name } => write!(
                 f,
-                "{} entry {index} is zlib-compressed; this reader only handles stored entries",
+                "{} stores {name} zlib-compressed; this reader only handles stored entries",
                 path.display()
             ),
             Self::MissingEntry { path, index } => write!(
@@ -108,6 +112,98 @@ impl std::error::Error for UopError {
     }
 }
 
+/// An open UOP container, addressable by the names its entries were hashed
+/// from.
+///
+/// # Why a name and not an index
+///
+/// A container's entries carry no index and no name — only a 64-bit hash of the
+/// path the client would have used. So there is no such thing as "entry 7": there
+/// is only "the entry whose name hashes to the same thing as
+/// `build/artlegacymul/00000007.tga`". Callers build that string, because only
+/// the caller knows the pattern its own file uses.
+///
+/// # The whole file is held in memory
+///
+/// A map container is 90MB and the art container is 155MB, and both are read
+/// whole. That is the same bargain the rest of this crate makes — see [`Map`] —
+/// and it is fine for a shard, which reads the map once and never opens the art.
+/// A renderer holding every sprite sheet resident is a different question, and
+/// the place to answer it is here, once something is actually drawing.
+///
+/// [`Map`]: crate::map::Map
+pub struct Uop {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    entries: HashMap<u64, Entry>,
+    file_count: usize,
+}
+
+impl fmt::Debug for Uop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Uop")
+            .field("path", &self.path)
+            .field("file_count", &self.file_count)
+            .field("entries", &self.entries.len())
+            .finish()
+    }
+}
+
+impl Uop {
+    /// Read a container and index its entries by name hash.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, UopError> {
+        let path = path.as_ref().to_owned();
+        let bytes = std::fs::read(&path).map_err(|source| UopError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        let header = Header::parse(&bytes).ok_or_else(|| UopError::NotUop { path: path.clone() })?;
+        let entries = header.entries(&bytes, &path)?;
+        Ok(Self {
+            path,
+            bytes,
+            entries,
+            file_count: header.file_count,
+        })
+    }
+
+    /// How many files the container's header claims.
+    ///
+    /// Not the same as how many entries resolve: `art` reserves 0x4000 land
+    /// slots and ships about a quarter of them, so a name that is absent is a
+    /// tile that does not exist, not a broken file.
+    pub const fn file_count(&self) -> usize {
+        self.file_count
+    }
+
+    /// The bytes stored under `name`, or `None` if the container has no such
+    /// entry.
+    ///
+    /// `Ok(None)` and `Err` say different things on purpose. A missing entry is
+    /// ordinary — most art indices are empty. A *compressed* entry is not
+    /// something to skip: it is data this reader cannot produce, and silently
+    /// returning "nothing here" would draw a hole where a wall is.
+    pub fn entry(&self, name: &str) -> Result<Option<&[u8]>, UopError> {
+        let Some(entry) = self.entries.get(&hash_file_name(name.as_bytes())) else {
+            return Ok(None);
+        };
+        if entry.compression != 0 {
+            return Err(UopError::Compressed {
+                path: self.path.clone(),
+                name: name.to_owned(),
+            });
+        }
+        let start = entry.data_offset + entry.header_length;
+        self.bytes
+            .get(start..start + entry.compressed_length)
+            .map(Some)
+            .ok_or_else(|| UopError::Malformed {
+                path: self.path.clone(),
+                detail: format!("the entry for {name} runs past the end of the file"),
+            })
+    }
+}
+
 /// Read a UOP container and concatenate its entries in index order.
 ///
 /// `path_pattern` is the name the client would have given file `i` — for a map,
@@ -119,42 +215,27 @@ impl std::error::Error for UopError {
 /// The obvious shortcut is to sort entries by their data offset and skip the
 /// hashing entirely. That is **wrong**: a map container's entries need not be
 /// written in index order, and concatenating them by offset produces a map that
-/// parses cleanly and is scrambled. The hash is not optional.
+/// parses cleanly and is scrambled. On a shipped `map0LegacyMUL.uop` index 0
+/// lives at byte 17,699,812 and index 1 at byte 512 — see
+/// `tests::a_real_containers_entries_are_not_in_offset_order`. The hash is not
+/// optional.
+///
+/// Unlike [`Uop::entry`], a missing index is an error here: the caller is
+/// building one continuous file out of the pieces, and a gap in it is a hole in
+/// the world.
 pub fn read_concatenated(
     path: impl AsRef<Path>,
     path_pattern: &dyn Fn(usize) -> String,
 ) -> Result<Vec<u8>, UopError> {
-    let path = path.as_ref();
-    let bytes = std::fs::read(path).map_err(|source| UopError::Read {
-        path: path.to_owned(),
-        source,
-    })?;
-
-    let header = Header::parse(&bytes).ok_or_else(|| UopError::NotUop {
-        path: path.to_owned(),
-    })?;
-    let entries = header.entries(&bytes, path)?;
+    let uop = Uop::open(path)?;
 
     let mut out = Vec::new();
-    for index in 0..header.file_count {
-        let hash = hash_file_name(path_pattern(index).as_bytes());
-        let entry = entries.get(&hash).ok_or_else(|| UopError::MissingEntry {
-            path: path.to_owned(),
+    for index in 0..uop.file_count {
+        let name = path_pattern(index);
+        let chunk = uop.entry(&name)?.ok_or_else(|| UopError::MissingEntry {
+            path: uop.path.clone(),
             index,
         })?;
-        if entry.compression != 0 {
-            return Err(UopError::Compressed {
-                path: path.to_owned(),
-                index,
-            });
-        }
-        let start = entry.data_offset + entry.header_length;
-        let chunk = bytes
-            .get(start..start + entry.compressed_length)
-            .ok_or_else(|| UopError::Malformed {
-                path: path.to_owned(),
-                detail: format!("entry {index} runs past the end of the file"),
-            })?;
         out.extend_from_slice(chunk);
     }
     Ok(out)

@@ -186,9 +186,27 @@ own understanding had written.
   stride. It is deliberately not special-cased: the junk lands entirely above bit
   32 and every flag movement reads is below it, so tile 0 cannot come out
   walkable, water, or a floor — which is what the test asserts instead.
-- **The remaining M2 readers are still missing.** `hues`, `art`, `gumpart`,
-  `anim`, `unifont`, `cliloc`, `multi`, `texmaps`, `light`, `radarcol`, `sound`,
-  `verdata`. The first picture needs the first two and nothing else.
+- ~~**`hues` and `art` are missing.**~~ Written. `hues.mul` is 3,000 ramps of 32
+  colours; `artLegacyMUL.uop` holds the land diamonds and the run-length encoded
+  statics in one index space. What is still missing: `gumpart`, `anim`,
+  `unifont`, `cliloc`, `multi`, `texmaps`, `light`, `radarcol`, `sound`,
+  `verdata`. The first picture no longer needs any of them.
+- **Gump art is deflated and nothing here can inflate it.** Every one of
+  `gumpartLegacyMUL.uop`'s 5,556 entries has compression flag 3, where the map
+  and art containers have none. `UopError::Compressed` says so rather than
+  skipping. Whoever writes the gump reader — M4 — is the one who brings an
+  inflater into the workspace, and it is worth deciding then whether that is a
+  dependency or forty lines of stored-block DEFLATE.
+- **`.mul` art is not read, only the UOP.** A modern install ships no
+  `art.mul`/`artidx.mul` at all, so there is nothing here to test a `.mul` path
+  against. The index is the same twelve-byte entry `staidx` uses, so it is an
+  hour's work — but an hour spent writing something nobody can run, and the
+  engine claims to support old clients, so this needs an old install rather than
+  confidence.
+- **A container is read whole into memory.** `Uop::open` holds all 155MB of the
+  art. Harmless for a shard, which never opens it, and not obviously right for a
+  renderer holding several containers at once. The place to fix it is
+  `Uop::open`, once something actually draws.
 
 ## Backlog, found while building M0, M1 and M1a
 

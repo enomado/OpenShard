@@ -15,6 +15,9 @@
 //!
 //! The install these numbers were taken from is client 7.0.116.0.
 
+use openshard_protocol::wire::{Graphic, Hue};
+use openshard_uofiles::art::Art;
+use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{LAND_TILE_COUNT, TileData, TileDataFormat};
 
@@ -338,5 +341,233 @@ fn the_corner_of_felucca_is_ocean_and_britain_is_not() {
     assert!(
         !data.land(britain.tile).flags.is_water(),
         "the middle of Britain came out as water, so the blocks are misplaced"
+    );
+}
+
+// The art and the palettes. Everything above reads a file the server needs;
+// everything below reads one only a renderer does.
+
+#[test]
+fn the_shipped_hues_are_three_thousand_ramps() {
+    // The count is not in the file — it is the length divided by the group
+    // size — so this is that division against a real hues.mul.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let hues = Hues::load(dir.join("hues.mul")).expect("a client ships a readable hues.mul");
+    assert_eq!(hues.count(), 3000);
+
+    // The one-based index, at both ends of the table.
+    assert!(hues.get(Hue::NONE).is_none(), "Hue(0) is no tint, not row zero");
+    assert!(hues.get(Hue(1)).is_some(), "the first hue is Hue(1)");
+    assert!(
+        hues.get(Hue(3000)).is_some(),
+        "the last hue is Hue(3000), not Hue(2999)"
+    );
+    assert!(hues.get(Hue(3001)).is_none());
+}
+
+#[test]
+fn a_real_hue_ramp_runs_dark_to_light_in_one_channel() {
+    // A hue is a gradient, and the file stores it darkest first. If the entry
+    // stride were wrong the 32 colours would be a slice across several hues —
+    // still 32 colours, still plausible on their own, and not a ramp.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let hues = Hues::load(dir.join("hues.mul")).unwrap();
+    let blue = hues.get(Hue(2)).expect("hue 2 is shipped");
+
+    let mut climbed = 0;
+    for pair in blue.colors.windows(2) {
+        assert!(
+            pair[1].blue() >= pair[0].blue(),
+            "the ramp goes backwards: {:?} then {:?}",
+            pair[0],
+            pair[1]
+        );
+        if pair[1].blue() > pair[0].blue() {
+            climbed += 1;
+        }
+    }
+    // A ramp of one flat colour would satisfy every assertion above.
+    assert!(climbed > 10, "only {climbed} steps of the ramp actually climb");
+    assert!(blue.colors[31].blue() > blue.colors[0].blue());
+
+    // And it is blue: a channel order read backwards would make this the red
+    // ramp and nothing else in the file would complain.
+    assert_eq!(blue.colors[31].red(), 0);
+    assert_eq!(blue.colors[31].green(), 0);
+}
+
+#[test]
+fn land_art_is_a_diamond_with_empty_corners() {
+    // The shape is the format. Row 0 draws two pixels in the middle and the
+    // middle row draws all 44 — a reader that laid the same bytes out as a
+    // rectangle would fill the corners and lose the widest rows.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).expect("a client ships artLegacyMUL.uop");
+    let grass = art
+        .land(Graphic(3))
+        .unwrap()
+        .expect("land tile 3 is grass and every client has it");
+
+    assert_eq!((grass.width(), grass.height()), (44, 44));
+
+    // The corners are outside the diamond and are never written.
+    for (x, y) in [(0u16, 0u16), (43, 0), (0, 43), (43, 43), (20, 0), (23, 0)] {
+        assert!(
+            grass.pixel(x, y).unwrap().is_transparent(),
+            "({x},{y}) is outside the diamond and should not be drawn"
+        );
+    }
+    // The two pixels row 0 does draw, and the full width at the waist.
+    assert!(!grass.pixel(21, 0).unwrap().is_transparent());
+    assert!(!grass.pixel(22, 0).unwrap().is_transparent());
+    assert!(!grass.pixel(0, 21).unwrap().is_transparent());
+    assert!(!grass.pixel(43, 21).unwrap().is_transparent());
+}
+
+#[test]
+fn land_art_reads_to_the_end_of_the_diamond_and_not_into_the_padding() {
+    // Every land entry is 2,048 bytes and the picture is 2,024 of them. Starting
+    // 24 bytes late — the obvious way to be wrong about which end the padding is
+    // on — leaves the last row unwritten, and an unwritten row is transparent
+    // rather than an error. The bottom point of the diamond is where that shows.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).unwrap();
+    let grass = art.land(Graphic(3)).unwrap().unwrap();
+
+    assert!(!grass.pixel(21, 43).unwrap().is_transparent(), "the bottom point");
+    assert!(!grass.pixel(22, 43).unwrap().is_transparent(), "the bottom point");
+
+    // And the tile is painted rather than mostly empty: the diamond is 1,012
+    // pixels and grass fills nearly all of them. A handful genuinely are colour
+    // zero, so this is a floor and not an equality.
+    let drawn = grass.pixels().iter().filter(|p| !p.is_transparent()).count();
+    assert!(
+        drawn > 1000,
+        "only {drawn} of the diamond's 1012 pixels are painted"
+    );
+}
+
+#[test]
+fn the_channel_order_is_what_a_shipped_grass_tile_says() {
+    // Nothing in any file says which five bits are red. Reversed, every value
+    // still decodes to a colour and the world comes out in a different palette —
+    // which reads as a stylistic choice, not a bug. Grass settles it: whatever
+    // else it is, it is greener than it is blue.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).unwrap();
+    let grass = art.land(Graphic(3)).unwrap().unwrap();
+
+    let mut sampled = 0;
+    let (mut red, mut green, mut blue) = (0u32, 0u32, 0u32);
+    for pixel in grass.pixels().iter().filter(|p| !p.is_transparent()) {
+        red += u32::from(pixel.red());
+        green += u32::from(pixel.green());
+        blue += u32::from(pixel.blue());
+        sampled += 1;
+    }
+    assert!(sampled > 1000, "only {sampled} pixels were sampled");
+    assert!(green > red, "grass: green {green} should beat red {red}");
+    assert!(green > blue, "grass: green {green} should beat blue {blue}");
+}
+
+#[test]
+fn every_land_tile_the_client_ships_decodes() {
+    // Totality over the real index space. A land slot is either a tile or it is
+    // absent — about a quarter are filled — and neither may be an error or a
+    // panic, because this is what a renderer walks to draw a screen.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).unwrap();
+
+    let mut present = 0;
+    for id in 0..0x4000u16 {
+        if art
+            .land(Graphic(id))
+            .unwrap_or_else(|e| panic!("land {id:#06X}: {e}"))
+            .is_some()
+        {
+            present += 1;
+        }
+    }
+    // 4,244 on 7.0.116.0. A floor rather than the number, so a client of another
+    // age still runs the sweep — but high enough that a container that resolved
+    // nothing would fail instead of passing quietly.
+    assert!(present > 3000, "only {present} land tiles decoded");
+}
+
+#[test]
+fn every_static_sprite_below_the_land_boundary_decodes() {
+    // The run-length decoder against sixteen thousand real sprites, which is the
+    // only way to find out whether its bounds checks are right about anything.
+    // Every failure mode it guards — a row index past the data, a run longer
+    // than its row, a sprite shorter than its header — is a shape a hand-written
+    // fixture only has because someone thought to write it.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).unwrap();
+
+    let mut present = 0;
+    let mut painted = 0;
+    for id in 0..0x4000u16 {
+        let Some(image) = art
+            .static_art(Graphic(id))
+            .unwrap_or_else(|e| panic!("static {id:#06X}: {e}"))
+        else {
+            continue;
+        };
+        present += 1;
+        assert!(image.width() > 0 && image.height() > 0);
+        assert_eq!(
+            image.pixels().len(),
+            image.width() as usize * image.height() as usize,
+            "static {id:#06X} is not the buffer its own size implies"
+        );
+        if image.pixels().iter().any(|p| !p.is_transparent()) {
+            painted += 1;
+        }
+    }
+    assert!(present > 15_000, "only {present} static sprites decoded");
+    // A decoder that produced correctly sized, entirely empty buffers would pass
+    // everything above.
+    assert!(
+        painted > 15_000,
+        "only {painted} of {present} sprites drew anything"
+    );
+}
+
+#[test]
+fn a_static_sprite_is_the_size_its_own_header_claims() {
+    // The crate tiledata already vouches for, so the same graphic is checked
+    // through two different files: tiledata says it is three units tall and
+    // immovable, and the art says how many pixels that is.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).unwrap();
+    let crate_art = art
+        .static_art(Graphic(0x0E3D))
+        .unwrap()
+        .expect("0x0E3D is a crate and every client has it");
+
+    assert_eq!((crate_art.width(), crate_art.height()), (44, 60));
+    assert_eq!(crate_art.pixels().len(), 44 * 60);
+
+    let drawn = crate_art.pixels().iter().filter(|p| !p.is_transparent()).count();
+    assert!(drawn > 500, "a crate is a solid object, not {drawn} pixels");
+    assert!(
+        drawn < 44 * 60,
+        "a sprite that fills its whole box is not run-length encoded"
     );
 }
