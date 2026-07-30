@@ -387,6 +387,105 @@ inbound packets and one question the class table does not answer.
     twelve being amendments 2 and 3's allowlisted quantities. `wire.rs` and
     `serial.rs` gained a type each and no bare fields.
 
+## Amendments forced by N3 (`speech.rs`)
+
+The module the plan called five packets is really one *header* sent five times —
+mode, hue, font, and (outbound) a speaker — so the stage is where N1's direction
+rule met the same field going both ways. It produced the sweep's first genuinely
+shared class-B type and its second decoder-rewrites-a-value finding.
+
+1. **`TalkMode` is an enum with a leftover arm, where `Layer` and `StatusFlags`
+   are named bytes.** N2 amendment 7 argued a byte with a name beats an enum
+   when the unnamed values would be a guess, and the modes look like that case —
+   ServUO's `MessageType` has a dozen this engine has never sent. The difference
+   is that something already *branches* on this byte: `speech_range` has always
+   asked "whisper, yell, or neither", and the answer decides who hears it. A
+   named byte cannot be matched exhaustively, so the branch stays a `_ =>` with
+   no compiler behind it. Five variants are named — the ones this repo's own doc
+   comments already name — and `Other(u8)` carries the rest, which is exactly
+   what N3's class-B row prescribes. Nothing was guessed: `Other` is the record
+   that the meaning is unknown, not a claim it has none.
+2. **Three modules had each named the same domain, and none of them knew.**
+   `mobile::LABEL_MODE`, `chat::TALKMODE_WHISPER` and `chat::TALKMODE_YELL` were
+   loose `pub const u8`s in two crates, and `chat::DEFAULT_FONT` a third — the
+   `PaperdollFlags` situation of N2 amendment 8, spread across a crate boundary.
+   They are `TalkMode::Label`/`Whisper`/`Yell` and `Font::DEFAULT` now. A domain
+   named in three places is a domain with no type; that a bare `u8` *travels*
+   between crates is what let it happen.
+3. **`0xAD`'s decoder rewrote the mode byte, and this is the second time.**
+   `decode_body` stored `mode & !0xC0` — the keyword bits gone before anything
+   downstream could see them, so the `0x00` a client sent and the `0xC0` it did
+   not were indistinguishable, exactly `StatLockRequest`'s finding (N2 amendment
+   5). The distinction here is sharper than that one, because the bits *are*
+   framing: the decoder legitimately reads them to know which of two text shapes
+   follows. So the read stayed (`RawTalkMode::has_keywords`, private, framing
+   only) and the *fold* moved to `RawTalkMode::interpret`. Two findings of the
+   same shape in two stages says this is a pattern to look for and not an
+   accident: **wherever a decoder normalises, the raw byte is being destroyed.**
+4. **A packet can have its own sentinel, and speech's is not the wire's usual
+   one.** `serial`/`graphic` became `Option<Serial>`/`Option<Graphic>`, but the
+   absent case encodes as `0xFFFF_FFFF`/`0xFFFF` — ServUO's `Serial.MinusOne` —
+   and **not** as `serial::raw_or_none`'s `0`. Reusing the shared helper would
+   have compiled, changed the bytes, and told the client the words came from an
+   object it does not have; it would draw them nowhere. So `speech.rs` keeps a
+   private `serial_or_system`/`graphic_or_none` pair beside its own constants.
+   The lesson for later stages: `Option<Serial>` names the *shape* of a field,
+   never the value it goes out as — check the packet's own sentinel every time.
+5. **The same `map_or(0, …)` bug as N1 amendment 7, fixed the other way.** Both
+   `private_overhead_cliloc` and `private_overhead_text` built their serial with
+   `serial_of(source).map_or(0, |s| s.raw())`, and zero is not a serial. `0x20`'s
+   fix was to send no packet; these send the line as a *system* message instead,
+   because the text is feedback the watcher asked for (Item Identification saying
+   what an item turned out to be) and a line drawn in the corner beats no line at
+   all. Which way a nonsense serial degrades is the packet's question, not a rule
+   the sweep can settle once.
+6. **`ClilocId` went to `wire.rs` and `Font` stayed in `speech.rs`,** both by
+   N4's counting rule as N2 amendment 7 read it for validated types: five modules
+   carry a cliloc (`speech`, `context`, `properties`, `gump`, `login`) and one
+   carries a font. Only `speech.rs`'s cliloc field was converted — the other four
+   are their own stages' work, exactly as `Layer` landed in `wire.rs` for
+   `mobile.rs` and left `items.rs` for N4.
+7. **`WorldState::localized_message` keeps a bare `u32`, citing `play_sound`.**
+   Carrying `ClilocId` up through it would have touched ~190 call sites across
+   `skills`, `crafting`, `items` and `world`, every one a ported ServUO message
+   *number* out of a table. `play_sound` already made and documented this
+   decision for `SoundId` (`runtime.rs`), and the reasoning transfers whole: the
+   newtype starts where the packet is built, nothing above unwraps one, and
+   converting the tables is its own sweep. Recorded rather than done, so the next
+   reader finds a decision and not an oversight.
+8. **Class C appeared, and its promotions are the pilot's deferral again.** A
+   client's `hue` and `font` are checked against sets that are content — which
+   hues this shard allows, which faces the client has — and neither exists in the
+   repo. They arrive as `RawHue`/`RawFont` and are unwrapped at
+   `World::say` with the comment naming them unchecked, exactly as pilot
+   amendment 1 established. N9's test pair is owed by whichever stage writes
+   those checks, not by this one. `mode` is class B and *does* promote, so its
+   totality test is here.
+9. **The raw types reached the world's `Command` enum for the first time.**
+   `Command::Say` carries `RawTalkMode`/`RawHue`/`RawFont` from `dispatch.rs`
+   through the queue to `World::say`, which is the seam — the command queue is
+   not a checkpoint, it is a delivery, and pretending otherwise would have put
+   the promotion on whatever thread Tokio picked. `Command::Speak`, which a
+   script raises, takes a validated `Hue`: the script bridge is a serialization
+   seam like SQL or the wire, and that is where the JSON number becomes a type.
+10. **Bare-integer field count in `speech.rs`: 22 before, 0 after** (N10) —
+    nothing on the allowlist, the first module in the sweep to reach zero.
+    `wire.rs` gained `ClilocId` and `mobile.rs` lost `LABEL_MODE`; neither file's
+    count moved.
+
+### Backlog from this stage
+
+- **The cliloc-table sweep** (amendment 7): ~190 call sites pass a bare `u32`
+  message id. Worth doing with the `SoundId` table sweep, which has the same
+  shape and the same blocker — both want the numbers to come out of config
+  already typed, which drags serde into `protocol`.
+- **`0x03B2` is written out five times**: `gm::SYSTEM_HUE`, `npc::GREET_HUE`,
+  `quests::progress::NPC_HUE`, `runtime::SYSTEM_HUE`,
+  `tick::defaults::TEXT_HUE`. They are all "the client's muted grey", all four
+  crates deep, and they are now five `Hue` constants rather than five `u16`s —
+  which makes the duplication visible but not gone. Where a shard-wide default
+  hue *lives* is a `[gameplay]`-config question this stage did not open.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -405,7 +504,9 @@ request (`main` is protected).
   proves the direction rule saves work rather than doubling it. It also lands
   `RawSerial` in `serial.rs` and `Layer` in `wire.rs`, both of which every later
   stage uses.
-- **N3 — `speech.rs`.**
+- **N3 — `speech.rs`.** One header sent five times, in both directions. Lands
+  `TalkMode`/`RawTalkMode` and `Font`/`RawFont` in `speech.rs` and `ClilocId` in
+  `wire.rs`; the four later stages that carry a cliloc use the last one.
 - **N4 — `items.rs`, `containers.rs`.**
 - **N5 — `vendor.rs`, `gump.rs`, `context.rs`.** Gump ids and button ids are the
   interesting inbound case: a `0xB1` response echoes ids the *server* chose, so
@@ -462,7 +563,7 @@ resolved silently in one module is a pattern the next module contradicts.
 | pilot | types landed, promotions deferred (see amendments) | |
 | N1 | done — `world.rs` 20 bare int fields → 5 allowlisted | |
 | N2 | done — `mobile.rs` 37 bare int fields → 12 allowlisted | |
-| N3 | not started | |
+| N3 | done — `speech.rs` 22 bare int fields → 0 | |
 | N4 | not started | |
 | N5 | not started | |
 | N6 | not started | |

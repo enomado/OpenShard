@@ -21,7 +21,7 @@ pub(super) const DEFAULT_HUE: u16 = 0x83EA;
 /// The colour overhead text takes when nothing else chose one — grey `0x03B2`,
 /// the default both references use for an object's single-click name (ServUO's
 /// `AsciiMessage` hue fallback, Sphere's `HUE_TEXT_DEF`).
-pub(super) const TEXT_HUE: u16 = 0x03B2;
+pub(super) const TEXT_HUE: Hue = Hue(0x03B2);
 /// Full daylight. The scale runs backwards: 0 is brightest, 0x1F pitch dark.
 pub(super) const LIGHT_DAY: u8 = 0;
 /// Full night — ServUO's `LightCycle.NightLevel`. Dark enough to want a lantern,

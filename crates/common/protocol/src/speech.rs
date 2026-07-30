@@ -12,10 +12,118 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::Serial;
 use crate::version::ClientVersion;
+use crate::wire::{ClilocId, Graphic, Hue, RawHue};
 
 /// The name field in a `0x1C` is a fixed thirty bytes.
 const NAME_LENGTH: usize = 30;
+
+/// How a line is said: the mode byte every speech packet carries, in both
+/// directions.
+///
+/// The client's own domain — ServUO's `MessageType`, Sphere's `TALKMODE_TYPE` —
+/// and it decides three things at once: how far the words carry, what the client
+/// draws them as, and whether they go in the journal. Only the modes this engine
+/// has a use for are named; everything else the client can send arrives as
+/// [`Other`](Self::Other) rather than as a guess about what the number means.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TalkMode {
+    /// Ordinary speech, heard across the screen. The client's `0`.
+    Regular,
+    /// An emote — the client wraps it in asterisks. ServUO's `MessageType.Emote`.
+    Emote,
+    /// A name label drawn over an object rather than words spoken by it: what a
+    /// single click answers with. ServUO's `MessageType.Label`.
+    Label,
+    /// A whisper, heard only right beside the speaker.
+    Whisper,
+    /// A yell, carried two screens off.
+    Yell,
+    /// A mode this engine has no rule for, carried through as the byte it was.
+    ///
+    /// As [`RawTalkMode::interpret`] produces it, never one of the named modes
+    /// and never carrying the keyword bits — which is what makes `interpret`
+    /// followed by [`to_wire`](Self::to_wire) the identity on the mode itself.
+    Other(u8),
+}
+
+impl TalkMode {
+    /// The byte to put on the wire.
+    #[must_use]
+    pub const fn to_wire(self) -> u8 {
+        match self {
+            Self::Regular => 0,
+            Self::Emote => 2,
+            Self::Label => 6,
+            Self::Whisper => 8,
+            Self::Yell => 9,
+            Self::Other(mode) => mode,
+        }
+    }
+}
+
+/// The two top bits of a `0xAD` mode byte, which say the text is preceded by a
+/// block of recognised keyword ids rather than being plain — ServUO's
+/// `MessageType.Encoded`. They are framing, not a mode, and
+/// [`RawTalkMode::interpret`] drops them.
+const KEYWORD_BITS: u8 = 0xC0;
+
+/// The mode byte exactly as a client packet carried it, keyword bits and all.
+///
+/// Kept unfolded through decoding on purpose: a decoder that rewrites a value
+/// destroys the only evidence of what the client actually sent, so a log line
+/// about a nonsense mode becomes impossible to write. See
+/// `docs/protocol_newtypes.md` — the same finding as `0xBF 0x1A`'s stat lock.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawTalkMode(pub u8);
+
+impl RawTalkMode {
+    /// What the byte means. Total: every one of the 256 values is a mode, and
+    /// the ones this engine has no rule for stay bytes inside
+    /// [`TalkMode::Other`].
+    #[must_use]
+    pub const fn interpret(self) -> TalkMode {
+        match self.0 & !KEYWORD_BITS {
+            0 => TalkMode::Regular,
+            2 => TalkMode::Emote,
+            6 => TalkMode::Label,
+            8 => TalkMode::Whisper,
+            9 => TalkMode::Yell,
+            other => TalkMode::Other(other),
+        }
+    }
+
+    /// True if the text after the header is preceded by a keyword block. Framing,
+    /// which is why `decode_body` may read this and nothing else may.
+    const fn has_keywords(self) -> bool {
+        self.0 & KEYWORD_BITS != 0
+    }
+}
+
+/// Which of the client's built-in fonts text is drawn in.
+///
+/// An index into `fonts.mul`, the client's alone: the numbers name typefaces the
+/// client ships, and the server only ever picks one or repeats the one a player
+/// chose. A number with a name, not an enum, for [`Layer`](crate::wire::Layer)'s
+/// reason — the faces this engine has never sent would be a guess.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct Font(pub u16);
+
+impl Font {
+    /// The middling face the client renders speech in when the source names
+    /// none. What every stock shard sends.
+    pub const DEFAULT: Self = Self(3);
+}
+
+/// A font choice exactly as a client packet carried it — not yet checked against
+/// the faces this client actually has.
+///
+/// Same status as [`RawHue`](crate::wire::RawHue): the set is the client's files,
+/// which `protocol` does not read, so the check that turns this into a real
+/// [`Font`] lives above and does not exist yet. See `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawFont(pub u16);
 
 /// `0x03` — the client says something. Variable length.
 ///
@@ -24,12 +132,12 @@ const NAME_LENGTH: usize = 30;
 /// so the reply can echo it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TalkRequest {
-    /// How it is said (0 normal, 2 emote, 8 whisper, 9 yell, …).
-    pub mode: u8,
+    /// How it is said.
+    pub mode: RawTalkMode,
     /// The colour the client chose.
-    pub hue: u16,
+    pub hue: RawHue,
     /// The font the client chose.
-    pub font: u16,
+    pub font: RawFont,
     /// What was said.
     pub text: String,
 }
@@ -38,9 +146,9 @@ impl DecodePacket for TalkRequest {
     const ID: u8 = 0x03;
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
-        let mode = reader.u8()?;
-        let hue = reader.u16()?;
-        let font = reader.u16()?;
+        let mode = RawTalkMode(reader.u8()?);
+        let hue = RawHue(reader.u16()?);
+        let font = RawFont(reader.u16()?);
         let text = reader.null_terminated_string()?;
         Ok(Self {
             mode,
@@ -69,12 +177,13 @@ impl DecodePacket for TalkRequest {
 ///   read the ASCII.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct UnicodeTalkRequest {
-    /// How it is said, with the keyword bits already stripped.
-    pub mode: u8,
+    /// How it is said, keyword bits and all — [`RawTalkMode::interpret`] drops
+    /// them, so the byte the client sent survives to whoever wants to log it.
+    pub mode: RawTalkMode,
     /// The colour the client chose.
-    pub hue: u16,
+    pub hue: RawHue,
     /// The font the client chose.
-    pub font: u16,
+    pub font: RawFont,
     /// What was said.
     pub text: String,
 }
@@ -83,12 +192,12 @@ impl DecodePacket for UnicodeTalkRequest {
     const ID: u8 = 0xAD;
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
-        let mode = reader.u8()?;
-        let hue = reader.u16()?;
-        let font = reader.u16()?;
+        let mode = RawTalkMode(reader.u8()?);
+        let hue = RawHue(reader.u16()?);
+        let font = RawFont(reader.u16()?);
         let _language = reader.bytes(4)?; // e.g. "ENU\0"
 
-        if mode & 0xC0 != 0 {
+        if mode.has_keywords() {
             // Keyword-encoded: a count of trigger ids, then that many packed into
             // a bit-field, then the text as ASCII. The count word is the start of
             // the field, so the whole field is `to_skip` bytes counting from it.
@@ -98,7 +207,7 @@ impl DecodePacket for UnicodeTalkRequest {
             reader.skip(to_skip.saturating_sub(2))?; // the count word is 2 of them
             let text = reader.null_terminated_string()?;
             Ok(Self {
-                mode: mode & !0xC0,
+                mode,
                 hue,
                 font,
                 text,
@@ -130,22 +239,21 @@ fn utf16_be_to_string(bytes: &[u8]) -> String {
 
 /// `0x1C` — draw speech over a source and put it in the journal. Variable length.
 ///
-/// Ported from Sphere's `PacketMessageASCII`. A `serial` of `0xFFFFFFFF` and a
-/// `graphic` of `0xFFFF` are "the system talking", not a mobile; a real speaker
-/// sends its own serial, its body graphic, and its name in the fixed thirty-byte
-/// field.
+/// Ported from Sphere's `PacketMessageASCII`. A speaker of `None` is "the system
+/// talking", not a mobile; a real speaker sends its own serial, its body graphic,
+/// and its name in the fixed thirty-byte field.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SpokenMessage {
-    /// The speaker, or [`SYSTEM_SERIAL`].
-    pub serial: u32,
-    /// The speaker's body graphic, or [`NO_GRAPHIC`].
-    pub graphic: u16,
-    /// How it is said (0 normal, 2 emote, 8 whisper, 9 yell, [`LABEL_MODE`](crate::mobile::LABEL_MODE), …).
-    pub mode: u8,
+    /// The speaker, or `None` for the system.
+    pub serial: Option<Serial>,
+    /// The speaker's body graphic, or `None` for no mobile behind it.
+    pub graphic: Option<Graphic>,
+    /// How it is said.
+    pub mode: TalkMode,
     /// The colour to draw it in.
-    pub hue: u16,
+    pub hue: Hue,
     /// The font to draw it in.
-    pub font: u16,
+    pub font: Font,
     /// The speaker's name, clamped to thirty bytes.
     pub name: String,
     /// What was said.
@@ -157,11 +265,11 @@ impl EncodePacket for SpokenMessage {
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
-        out.u16(self.graphic);
-        out.u8(self.mode);
-        out.u16(self.hue);
-        out.u16(self.font);
+        out.u32(serial_or_system(self.serial));
+        out.u16(graphic_or_none(self.graphic));
+        out.u8(self.mode.to_wire());
+        out.u16(self.hue.0);
+        out.u16(self.font.0);
         out.fixed_string(&self.name, NAME_LENGTH);
         out.null_terminated_string(&self.text);
     }
@@ -181,18 +289,18 @@ impl EncodePacket for SpokenMessage {
 /// an empty line and says nothing about why.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LocalizedMessage {
-    /// The speaker, or [`SYSTEM_SERIAL`].
-    pub serial: u32,
-    /// The speaker's body graphic, or [`NO_GRAPHIC`].
-    pub graphic: u16,
+    /// The speaker, or `None` for the system.
+    pub serial: Option<Serial>,
+    /// The speaker's body graphic, or `None` for no mobile behind it.
+    pub graphic: Option<Graphic>,
     /// How it is said.
-    pub mode: u8,
+    pub mode: TalkMode,
     /// The colour to draw it in.
-    pub hue: u16,
+    pub hue: Hue,
     /// The font to draw it in.
-    pub font: u16,
+    pub font: Font,
     /// The cliloc the client looks up and draws.
-    pub cliloc: u32,
+    pub cliloc: ClilocId,
     /// The speaker's name, clamped to thirty bytes.
     pub name: String,
     /// The `\t`-separated substitutions for the cliloc's `~1_val~` slots.
@@ -204,12 +312,12 @@ impl EncodePacket for LocalizedMessage {
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
-        out.u16(self.graphic);
-        out.u8(self.mode);
-        out.u16(self.hue);
-        out.u16(self.font);
-        out.u32(self.cliloc);
+        out.u32(serial_or_system(self.serial));
+        out.u16(graphic_or_none(self.graphic));
+        out.u8(self.mode.to_wire());
+        out.u16(self.hue.0);
+        out.u16(self.font.0);
+        out.u32(self.cliloc.0);
         out.fixed_string(&self.name, NAME_LENGTH);
         for unit in self.arguments.encode_utf16() {
             out.u16(unit.swap_bytes()); // little-endian, unlike 0xAE below
@@ -234,16 +342,16 @@ const DEFAULT_LANGUAGE: &str = "ENU";
 /// whose players type accented names needs it and the ASCII path is not enough.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct UnicodeMessage {
-    /// The speaker, or [`SYSTEM_SERIAL`].
-    pub serial: u32,
-    /// The speaker's body graphic, or [`NO_GRAPHIC`].
-    pub graphic: u16,
+    /// The speaker, or `None` for the system.
+    pub serial: Option<Serial>,
+    /// The speaker's body graphic, or `None` for no mobile behind it.
+    pub graphic: Option<Graphic>,
     /// How it is said.
-    pub mode: u8,
+    pub mode: TalkMode,
     /// The colour to draw it in.
-    pub hue: u16,
+    pub hue: Hue,
     /// The font to draw it in.
-    pub font: u16,
+    pub font: Font,
     /// The four-byte language tag, e.g. `"ENU"`. See [`DEFAULT_LANGUAGE_TAG`].
     pub language: String,
     /// The speaker's name, clamped to thirty bytes.
@@ -257,11 +365,11 @@ impl EncodePacket for UnicodeMessage {
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
-        out.u16(self.graphic);
-        out.u8(self.mode);
-        out.u16(self.hue);
-        out.u16(self.font);
+        out.u32(serial_or_system(self.serial));
+        out.u16(graphic_or_none(self.graphic));
+        out.u8(self.mode.to_wire());
+        out.u16(self.hue.0);
+        out.u16(self.font.0);
         out.fixed_string(&self.language, LANGUAGE_LENGTH);
         out.fixed_string(&self.name, NAME_LENGTH);
         out.null_terminated_string_utf16(&self.text);
@@ -272,11 +380,33 @@ impl EncodePacket for UnicodeMessage {
 /// source named none. Exposed so the world need not restate the fallback.
 pub const DEFAULT_LANGUAGE_TAG: &str = DEFAULT_LANGUAGE;
 
-/// The serial and graphic that mark a `0x1C` as coming from the system rather
-/// than a mobile.
-pub const SYSTEM_SERIAL: u32 = 0xFFFF_FFFF;
-/// The graphic that marks a `0x1C` as having no mobile behind it.
-pub const NO_GRAPHIC: u16 = 0xFFFF;
+/// The serial that marks a message as coming from the system rather than a
+/// mobile — ServUO's `Serial.MinusOne`, Sphere's `UID_CLEAR`.
+///
+/// Not [`NO_SERIAL`](crate::serial::NO_SERIAL)'s zero, which is what every
+/// *object reference* field writes for "nothing": these packets have their own
+/// sentinel and the client reads them differently — a `0` here names an object
+/// the client does not have, and the words are drawn nowhere.
+const SYSTEM_SERIAL: u32 = 0xFFFF_FFFF;
+
+/// The graphic that marks a message as having no mobile behind it.
+const NO_GRAPHIC: u16 = 0xFFFF;
+
+/// The wire value of `serial`, or [`SYSTEM_SERIAL`] for the system talking.
+const fn serial_or_system(serial: Option<Serial>) -> u32 {
+    match serial {
+        Some(serial) => serial.raw(),
+        None => SYSTEM_SERIAL,
+    }
+}
+
+/// The wire value of `graphic`, or [`NO_GRAPHIC`] for no mobile behind it.
+const fn graphic_or_none(graphic: Option<Graphic>) -> u16 {
+    match graphic {
+        Some(graphic) => graphic.0,
+        None => NO_GRAPHIC,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -292,12 +422,12 @@ mod tests {
         // 1042764 is "~1_NAME~ seems to belong to someone else." — one slot.
         let packet = encode_packet(
             &LocalizedMessage {
-                serial: 0xFFFF_FFFF,
-                graphic: 0xFFFF,
-                mode: 0,
-                hue: 0x03B2,
-                font: 3,
-                cliloc: 1_042_764,
+                serial: None,
+                graphic: None,
+                mode: TalkMode::Regular,
+                hue: Hue(0x03B2),
+                font: Font(3),
+                cliloc: ClilocId(1_042_764),
                 name: "System".to_owned(),
                 arguments: "Iolo".to_owned(),
             },
@@ -339,9 +469,9 @@ mod tests {
         bytes.extend_from_slice(b"hi\0");
 
         let talk: TalkRequest = decode_packet(&bytes, version()).unwrap();
-        assert_eq!(talk.mode, 0);
-        assert_eq!(talk.hue, 0x0384);
-        assert_eq!(talk.font, 3);
+        assert_eq!(talk.mode, RawTalkMode(0));
+        assert_eq!(talk.hue, RawHue(0x0384));
+        assert_eq!(talk.font, RawFont(3));
         assert_eq!(talk.text, "hi");
     }
 
@@ -361,9 +491,9 @@ mod tests {
         bytes.extend_from_slice(&body);
 
         let talk: UnicodeTalkRequest = decode_packet(&bytes, version()).unwrap();
-        assert_eq!(talk.mode, 0);
-        assert_eq!(talk.hue, 0x0384);
-        assert_eq!(talk.font, 3);
+        assert_eq!(talk.mode, RawTalkMode(0));
+        assert_eq!(talk.hue, RawHue(0x0384));
+        assert_eq!(talk.font, RawFont(3));
         assert_eq!(talk.text, "hi");
     }
 
@@ -385,7 +515,16 @@ mod tests {
         bytes.extend_from_slice(&body);
 
         let talk: UnicodeTalkRequest = decode_packet(&bytes, version()).unwrap();
-        assert_eq!(talk.mode, 0, "the keyword bits are stripped");
+        assert_eq!(
+            talk.mode,
+            RawTalkMode(0xC0),
+            "decoding reads the keyword bits for the framing and leaves the byte alone"
+        );
+        assert_eq!(
+            talk.mode.interpret(),
+            TalkMode::Regular,
+            "interpretation is where they are dropped"
+        );
         assert_eq!(talk.text, "hello");
     }
 
@@ -393,11 +532,11 @@ mod tests {
     fn a_message_lays_out_its_header_and_pads_the_name() {
         let packet = encode_packet(
             &SpokenMessage {
-                serial: 0x0000_0002,
-                graphic: 0x0190,
-                mode: 0,
-                hue: 0x0384,
-                font: 3,
+                serial: Serial::new(0x0000_0002),
+                graphic: Some(Graphic(0x0190)),
+                mode: TalkMode::Regular,
+                hue: Hue(0x0384),
+                font: Font(3),
                 name: "British".to_owned(),
                 text: "hail".to_owned(),
             },
@@ -423,11 +562,11 @@ mod tests {
         // Portuguese "olá" comes back with the accented letter intact.
         let packet = encode_packet(
             &UnicodeMessage {
-                serial: 0x0000_0002,
-                graphic: 0x0190,
-                mode: 0,
-                hue: 0x0384,
-                font: 3,
+                serial: Serial::new(0x0000_0002),
+                graphic: Some(Graphic(0x0190)),
+                mode: TalkMode::Regular,
+                hue: Hue(0x0384),
+                font: Font(3),
                 language: "PTB".to_owned(),
                 name: "Cidadão".to_owned(),
                 text: "olá".to_owned(),
@@ -458,11 +597,11 @@ mod tests {
     fn a_system_message_has_no_mobile_behind_it() {
         let packet = encode_packet(
             &SpokenMessage {
-                serial: SYSTEM_SERIAL,
-                graphic: NO_GRAPHIC,
-                mode: 0,
-                hue: 0,
-                font: 3,
+                serial: None,
+                graphic: None,
+                mode: TalkMode::Regular,
+                hue: Hue::NONE,
+                font: Font::DEFAULT,
                 name: "System".to_owned(),
                 text: "welcome".to_owned(),
             },
@@ -473,5 +612,39 @@ mod tests {
             SYSTEM_SERIAL
         );
         assert_eq!(u16::from_be_bytes([packet[7], packet[8]]), NO_GRAPHIC);
+    }
+
+    #[test]
+    fn every_mode_byte_interprets_and_survives_the_round_trip() {
+        // Class B is total by construction — there is no byte a client can send
+        // that has no meaning here — and the leftover arm keeps the byte, so a
+        // mode this engine has no rule for still goes back out as itself.
+        for byte in 0..=u8::MAX {
+            let mode = RawTalkMode(byte).interpret();
+            assert_eq!(
+                mode.to_wire(),
+                byte & !KEYWORD_BITS,
+                "0x{byte:02X} round-trips, less the framing bits"
+            );
+        }
+    }
+
+    #[test]
+    fn the_keyword_bits_are_framing_and_not_part_of_the_mode() {
+        // `0xC8` is a whisper with the keyword block set: the same mode as `0x08`,
+        // told apart only by what follows the header.
+        assert_eq!(RawTalkMode(0xC8).interpret(), TalkMode::Whisper);
+        assert_eq!(RawTalkMode(0x08).interpret(), TalkMode::Whisper);
+        assert!(RawTalkMode(0xC8).has_keywords());
+        assert!(!RawTalkMode(0x08).has_keywords());
+    }
+
+    #[test]
+    fn an_unnamed_mode_stays_the_byte_it_was() {
+        // ServUO's `MessageType.Spell` is 10 and this engine has no rule for it;
+        // the point of the leftover arm is that it neither becomes `Regular` nor
+        // disappears.
+        assert_eq!(RawTalkMode(10).interpret(), TalkMode::Other(10));
+        assert_eq!(TalkMode::Other(10).to_wire(), 10);
     }
 }

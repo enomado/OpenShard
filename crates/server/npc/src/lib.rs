@@ -31,7 +31,8 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{SYSTEM_SERIAL, SpokenMessage};
+use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
+use openshard_protocol::wire::Hue;
 use openshard_state::WorldState;
 use openshard_state::components::{Banker, Position};
 use openshard_state::sectors::in_range;
@@ -72,15 +73,15 @@ const BANK_RANGE: u32 = 12;
 /// bar weighs and a corpse drops.
 pub(crate) use openshard_items::GOLD_GRAPHIC;
 /// The muted grey the client draws townsfolk chatter in.
-pub(crate) const GREET_HUE: u16 = 0x03B2;
+pub(crate) const GREET_HUE: Hue = Hue(0x03B2);
 /// The font a greeting is spoken in.
-pub(crate) const GREET_FONT: u16 = 3;
+pub(crate) const GREET_FONT: Font = Font::DEFAULT;
 
 /// Have an NPC say something out loud, in the muted grey and font the client draws
 /// townsfolk chatter in. The one door every townsperson's speech goes through, so
 /// the hue and the font are decided once.
 pub(crate) fn say(state: &mut WorldState, npc: EntityId, line: &str) {
-    openshard_chat::speak(state, npc, 0, GREET_HUE, GREET_FONT, line);
+    openshard_chat::speak(state, npc, TalkMode::Regular, GREET_HUE, GREET_FONT, line);
 }
 
 /// Answer a banker's keywords for a speaking player, if one is in reach. "bank"
@@ -128,9 +129,9 @@ use openshard_items::banked_gold as bank_gold;
 /// the "the bank says" reply a keyword earns.
 pub(crate) fn notify(state: &mut WorldState, connection: ConnectionId, text: &str) {
     let packet = ServerPacket::SpokenMessage(SpokenMessage {
-        serial: SYSTEM_SERIAL,
-        graphic: 0xFFFF,
-        mode: 0,
+        serial: None, // the system talking, not the banker
+        graphic: None,
+        mode: TalkMode::Regular,
         hue: GREET_HUE,
         font: GREET_FONT,
         name: "System".to_owned(),

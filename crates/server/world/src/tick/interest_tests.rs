@@ -285,9 +285,9 @@ fn the_living_do_not_hear_the_dead() {
 
     world.queue(Command::Say {
         connection: ALICE,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "can anyone hear me".to_owned(),
     });
     world.tick(now);

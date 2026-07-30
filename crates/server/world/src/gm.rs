@@ -14,9 +14,10 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::SpokenMessage;
+use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::wire::CursorId;
+use openshard_protocol::wire::Hue;
 use openshard_protocol::world::Point;
 use openshard_state::components::{
     Client, Equipped, Facet, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats,
@@ -32,8 +33,8 @@ pub const COMMAND_PREFIX: char = '.';
 
 /// The hue and font a command reply is drawn in — a muted grey, the client's
 /// usual system-message colour, so it reads as the server talking, not a mobile.
-const SYSTEM_HUE: u16 = 0x03B2;
-const SYSTEM_FONT: u16 = 3;
+const SYSTEM_HUE: Hue = Hue(0x03B2);
+const SYSTEM_FONT: Font = Font::DEFAULT;
 
 /// Run a staff command for `actor`, already checked to hold the authority. `rest`
 /// is the speech with the leading [`COMMAND_PREFIX`] removed.
@@ -236,9 +237,9 @@ fn save_world(state: &mut WorldState, actor: EntityId) {
     let connections: Vec<_> = state.players.keys().copied().collect();
     for connection in connections {
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
-            serial: u32::MAX,
-            graphic: 0xFFFF,
-            mode: 0,
+            serial: None, // the system talking, not a mobile
+            graphic: None,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             name: "System".to_owned(),

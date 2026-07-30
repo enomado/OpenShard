@@ -49,6 +49,17 @@ pub struct CursorId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct AuthKey(pub u32);
 
+/// A number in the client's own `cliloc.enu`: a line of text the client already
+/// has a translation for, so a message costs four bytes instead of a string.
+///
+/// Always the server's choice — the client only ever looks one up and draws it —
+/// so there is no `Raw` counterpart. It lives here rather than beside the packet
+/// that first needed it because five carry one: `0xC1` and `0xCC` speech,
+/// `0x14`'s context-menu entries, `0xD6`'s property lists, and the start-city
+/// descriptions in a `0xA9`. Same reason [`Layer`] is here.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct ClilocId(pub u32);
+
 /// Where a worn item sits on a mobile: the hand, the head, the mount slot.
 ///
 /// The numbers are the client's — it decides which sprite a layer draws over

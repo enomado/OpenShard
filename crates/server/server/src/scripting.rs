@@ -14,6 +14,7 @@
 //! script speaks — is the price of that decoupling, and it is cheap.
 
 use openshard_events::Cursor;
+use openshard_protocol::wire::Hue;
 use openshard_scripting::{Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine};
 use openshard_world::events::{
     AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileSpawned, PlayerEntered, PlayerLeft,
@@ -461,7 +462,13 @@ fn into_world(command: ScriptCommand) -> Command {
             min_skill,
             max_skill,
         },
-        ScriptCommand::Speak { serial, hue, text } => Command::Speak { serial, hue, text },
+        // The script boundary is a serialization seam like the wire or SQL: a JSON
+        // number becomes the newtype here and stays one from here in.
+        ScriptCommand::Speak { serial, hue, text } => Command::Speak {
+            serial,
+            hue: Hue(hue),
+            text,
+        },
         ScriptCommand::Control { serial } => Command::Control { serial },
         ScriptCommand::StockVendor { serial, stock } => Command::StockVendor {
             serial,
@@ -797,6 +804,8 @@ mod tests {
     use super::*;
     use openshard_gateway::ConnectionId;
     use openshard_protocol::identity::{AccountName, CharacterName};
+    use openshard_protocol::speech::{RawFont, RawTalkMode};
+    use openshard_protocol::wire::RawHue;
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
     use openshard_world::components::Facet;
     use openshard_world::{Character, Entering, Position};
@@ -1329,9 +1338,9 @@ mod tests {
 
         world.queue(Command::Say {
             connection,
-            mode: 0,
-            hue: 0,
-            font: 3,
+            mode: RawTalkMode(0),
+            hue: RawHue(0),
+            font: RawFont(3),
             text: "ping".to_owned(),
         });
         world.tick(now); // the player says it, MobileSpoke emitted

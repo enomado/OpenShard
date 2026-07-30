@@ -894,9 +894,9 @@ fn hiding_takes_you_off_every_screen_and_a_word_puts_you_back() {
 
     world.queue(Command::Say {
         connection: hider,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "here I am".to_owned(),
     });
     world.tick(now);
@@ -1332,9 +1332,9 @@ fn a_pet_hears_all_stay_and_stops() {
 
     world.queue(Command::Say {
         connection: owner,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "all stay".to_owned(),
     });
     world.tick(now);

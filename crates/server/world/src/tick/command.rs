@@ -656,15 +656,18 @@ pub enum Command {
         target: Option<openshard_protocol::serial::Serial>,
     },
     /// A client said something (`0x03`).
+    ///
+    /// Everything the client chose arrives unchecked — the promotion is
+    /// `World::say`'s, which is the seam that acts on it.
     Say {
         /// Which connection.
         connection: ConnectionId,
-        /// How it is said (mode byte).
-        mode: u8,
-        /// The colour.
-        hue: u16,
-        /// The font.
-        font: u16,
+        /// How it is said, as the client sent it.
+        mode: RawTalkMode,
+        /// The colour the client chose.
+        hue: RawHue,
+        /// The font the client chose.
+        font: RawFont,
         /// The words.
         text: String,
     },
@@ -673,7 +676,7 @@ pub enum Command {
         /// Who, by wire serial.
         serial: u32,
         /// The colour.
-        hue: u16,
+        hue: Hue,
         /// The words.
         text: String,
     },

@@ -247,9 +247,9 @@ fn calling_the_guards_kills_a_criminal_in_a_guarded_town() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards!".to_owned(),
     });
     world.tick(now);
@@ -287,9 +287,9 @@ fn the_guards_do_not_touch_the_innocent() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);
@@ -322,9 +322,9 @@ fn the_guards_are_not_called_outside_a_guarded_region() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);
@@ -364,9 +364,9 @@ fn staff_are_never_guard_candidates() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);
@@ -440,9 +440,9 @@ fn a_guard_earns_no_murder_count_and_leaves_when_it_is_done() {
     );
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);

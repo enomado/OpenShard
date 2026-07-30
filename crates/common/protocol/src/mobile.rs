@@ -98,14 +98,14 @@ impl Notoriety {
     /// label comes back in, matching the health bar. ServUO's `Notoriety.Hues`,
     /// indexed by the same wire byte: blue innocent, green friend, grey
     /// neutral/criminal, orange enemy, red murderer, yellow invulnerable.
-    pub const fn name_hue(self) -> u16 {
+    pub const fn name_hue(self) -> Hue {
         match self {
-            Self::Innocent => 0x0059,
-            Self::Friend => 0x003F,
-            Self::Neutral | Self::Criminal => 0x03B2,
-            Self::Enemy => 0x0090,
-            Self::Murderer => 0x0022,
-            Self::Invulnerable => 0x0035,
+            Self::Innocent => Hue(0x0059),
+            Self::Friend => Hue(0x003F),
+            Self::Neutral | Self::Criminal => Hue(0x03B2),
+            Self::Enemy => Hue(0x0090),
+            Self::Murderer => Hue(0x0022),
+            Self::Invulnerable => Hue(0x0035),
         }
     }
 }
@@ -237,10 +237,6 @@ impl DecodePacket for StatusQuery {
         Ok(Self { kind })
     }
 }
-
-/// The `0x1C` message mode that draws text as a name label over an object rather
-/// than as spoken words — ServUO's `MessageType.Label`.
-pub const LABEL_MODE: u8 = 6;
 
 /// One piece of equipment on a mobile, as the client draws it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -789,9 +785,9 @@ mod tests {
     fn a_name_hue_matches_the_health_bar_colour() {
         // Blue innocent, yellow invulnerable — the same colours the bar uses, from
         // ServUO's Notoriety.Hues.
-        assert_eq!(Notoriety::Innocent.name_hue(), 0x0059);
-        assert_eq!(Notoriety::Invulnerable.name_hue(), 0x0035);
-        assert_eq!(Notoriety::Murderer.name_hue(), 0x0022);
+        assert_eq!(Notoriety::Innocent.name_hue(), Hue(0x0059));
+        assert_eq!(Notoriety::Invulnerable.name_hue(), Hue(0x0035));
+        assert_eq!(Notoriety::Murderer.name_hue(), Hue(0x0022));
     }
 
     fn facing() -> Facing {

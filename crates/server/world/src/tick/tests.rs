@@ -1,5 +1,5 @@
 use super::*;
-use openshard_chat::{MobileSpoke, TALKMODE_WHISPER, TALKMODE_YELL};
+use openshard_chat::MobileSpoke;
 use openshard_combat::{MobileDamaged, MobileDied, WRESTLING_SPEED, swing_ticks};
 use openshard_events::Cursor;
 use openshard_magic::SpellCast;
@@ -2299,9 +2299,9 @@ fn resurrection_brings_a_ghost_back() {
     // `.res` spoken by the (GM) ghost raises it.
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: ".res".to_owned(),
     });
     world.tick(now);
@@ -6591,9 +6591,9 @@ fn speech_reaches_nearby_players_and_the_speaker() {
 
     world.queue(Command::Say {
         connection: speaker,
-        mode: 0,
-        hue: 0x0384,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0x0384),
+        font: RawFont(3),
         text: "hail".to_owned(),
     });
     world.tick(now);
@@ -6623,9 +6623,9 @@ fn speech_does_not_carry_out_of_earshot() {
 
     world.queue(Command::Say {
         connection: speaker,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "hail".to_owned(),
     });
     world.tick(now);
@@ -6649,9 +6649,9 @@ fn a_whisper_carries_only_to_those_right_beside() {
 
     world.queue(Command::Say {
         connection: speaker,
-        mode: TALKMODE_WHISPER,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(TalkMode::Whisper.to_wire()),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "psst".to_owned(),
     });
     world.tick(now);
@@ -6676,9 +6676,9 @@ fn a_yell_carries_past_normal_earshot() {
     // Said normally, it does not reach.
     world.queue(Command::Say {
         connection: speaker,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "here".to_owned(),
     });
     world.tick(now);
@@ -6690,9 +6690,9 @@ fn a_yell_carries_past_normal_earshot() {
     // Yelled, it does.
     world.queue(Command::Say {
         connection: speaker,
-        mode: TALKMODE_YELL,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(TalkMode::Yell.to_wire()),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "here".to_owned(),
     });
     world.tick(now);
@@ -6715,9 +6715,9 @@ fn all_speech_goes_out_as_unicode() {
     for text in ["hail", "olá"] {
         world.queue(Command::Say {
             connection: speaker,
-            mode: 0,
-            hue: 0,
-            font: 3,
+            mode: RawTalkMode(0),
+            hue: RawHue(0),
+            font: RawFont(3),
             text: text.to_owned(),
         });
         world.tick(now);
@@ -6743,9 +6743,9 @@ fn speaking_puts_the_words_on_the_bus() {
 
     world.queue(Command::Say {
         connection: speaker,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "hello world".to_owned(),
     });
     world.tick(now);
@@ -6758,9 +6758,9 @@ fn speaking_puts_the_words_on_the_bus() {
 fn gm_say(world: &mut World, connection: ConnectionId, text: &str, now: Instant) {
     world.queue(Command::Say {
         connection,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: text.to_owned(),
     });
     world.tick(now);
@@ -7457,7 +7457,7 @@ fn a_creature_can_be_made_to_speak() {
 
     world.queue(Command::Speak {
         serial: mob,
-        hue: 0,
+        hue: Hue(0),
         text: "grrr".to_owned(),
     });
     world.tick(now);
@@ -8343,9 +8343,9 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
 fn say(world: &mut World, connection: ConnectionId, text: &str, now: Instant) {
     world.queue(Command::Say {
         connection,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: text.to_owned(),
     });
     world.tick(now);
@@ -11569,9 +11569,9 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
     // in a crowded bank opened whichever shop happened to be nearest.
     world.queue(Command::Say {
         connection: gm,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "i wonder what to buy".to_owned(),
     });
     world.tick(now);
@@ -11585,9 +11585,9 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
     // Naming the shopkeeper does open it, exactly as a double-click would.
     world.queue(Command::Say {
         connection: gm,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "Mirabel buy".to_owned(),
     });
     world.tick(now);
@@ -11601,9 +11601,9 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
     // And so does ServUO's unqualified keyword, which needs no name.
     world.queue(Command::Say {
         connection: gm,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "vendor buy".to_owned(),
     });
     world.tick(now);
@@ -11618,9 +11618,9 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
     // ordinary speech (0xAE from the vendor), not a private system line (0x1C).
     world.queue(Command::Say {
         connection: gm,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "vendor sell".to_owned(),
     });
     world.tick(now);

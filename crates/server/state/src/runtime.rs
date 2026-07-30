@@ -25,11 +25,11 @@ use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriet
 use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{LocalizedMessage, NO_GRAPHIC, SYSTEM_SERIAL, SpokenMessage};
+use openshard_protocol::speech::{Font, LocalizedMessage, SpokenMessage, TalkMode};
 // `Graphic` is also a component name in this crate — an item's tiledata id and
 // hue together — so the wire's one-field newtype is imported under the name the
 // packet field has.
-use openshard_protocol::wire::{Graphic as WireGraphic, Hue, Layer, SoundId};
+use openshard_protocol::wire::{ClilocId, Graphic as WireGraphic, Hue, Layer, SoundId};
 use openshard_protocol::world::{MapChange, MapId, MapSize, PlayerUpdate, Point, encode_server_change};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
@@ -54,8 +54,8 @@ const STOP_MEDITATING: u32 = 500_134;
 
 /// The hue and font a private system line is drawn in — the client's usual muted
 /// grey, so it reads as the server talking rather than as a mobile speaking.
-const SYSTEM_HUE: u16 = 0x03B2;
-const SYSTEM_FONT: u16 = 3;
+const SYSTEM_HUE: Hue = Hue(0x03B2);
+const SYSTEM_FONT: Font = Font::DEFAULT;
 
 /// Ticks in one second — the reciprocal of the world's 50ms tick interval. The
 /// world defines the interval; this is the whole-number rate config uses to turn
@@ -947,9 +947,9 @@ impl WorldState {
             return;
         };
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
-            serial: SYSTEM_SERIAL,
-            graphic: NO_GRAPHIC,
-            mode: 0, // regular mode
+            serial: None, // the system talking, not a mobile
+            graphic: None,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             name: "System".to_owned(),
@@ -965,17 +965,24 @@ impl WorldState {
     /// reads it in their own language, and the shard ships no English. `arguments`
     /// fills the cliloc's `~1_val~` slots, tab-separated, and is usually empty.
     /// A mobile with no client hears nothing, like [`system_message`](Self::system_message).
+    ///
+    /// `cliloc` is still a bare number here and not a [`ClilocId`], for the reason
+    /// [`play_sound`](Self::play_sound) gives: the *tables* — every ported ServUO
+    /// message id in `skills`, `crafting` and `items` — are raw numbers, and the
+    /// newtype starts where the packet is built. Converting those tables is its
+    /// own sweep; nothing here unwraps a `ClilocId`, which is the rule that
+    /// matters.
     pub fn localized_message(&mut self, mobile: EntityId, cliloc: u32, arguments: &str) {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
         let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
-            serial: SYSTEM_SERIAL,
-            graphic: NO_GRAPHIC,
-            mode: 0, // regular mode
+            serial: None, // the system talking, not a mobile
+            graphic: None,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
-            cliloc,
+            cliloc: ClilocId(cliloc),
             name: "System".to_owned(),
             arguments: arguments.to_owned(),
         });
@@ -998,20 +1005,23 @@ impl WorldState {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
             return;
         };
-        let serial = self.registry.serial_of(source).map_or(0, |s| s.raw());
+        // A source with neither a serial nor a graphic falls back to the system's
+        // sentinels, which is what the line degrades to: the watcher still reads
+        // it, drawn as the server talking rather than over a thing that has no
+        // wire identity to draw it over.
+        let serial = self.registry.serial_of(source);
         let graphic = self
             .registry
             .get::<Body>(source)
-            .map(|body| body.id.0)
-            .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
-            .unwrap_or(NO_GRAPHIC);
+            .map(|body| body.id)
+            .or_else(|| self.registry.get::<Graphic>(source).map(|g| WireGraphic(g.id)));
         let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
             serial,
             graphic,
-            mode: 0, // regular mode
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
-            cliloc,
+            cliloc: ClilocId(cliloc),
             name: String::new(),
             arguments: arguments.to_owned(),
         });
@@ -1030,17 +1040,18 @@ impl WorldState {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
             return;
         };
-        let serial = self.registry.serial_of(source).map_or(0, |s| s.raw());
+        // Degrades to a system line for a source with no wire identity, exactly as
+        // [`private_overhead_cliloc`](Self::private_overhead_cliloc) does.
+        let serial = self.registry.serial_of(source);
         let graphic = self
             .registry
             .get::<Body>(source)
-            .map(|body| body.id.0)
-            .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
-            .unwrap_or(NO_GRAPHIC);
+            .map(|body| body.id)
+            .or_else(|| self.registry.get::<Graphic>(source).map(|g| WireGraphic(g.id)));
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
             serial,
             graphic,
-            mode: 0,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             name: String::new(),

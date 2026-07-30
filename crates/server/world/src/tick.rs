@@ -39,12 +39,11 @@ use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
 use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{AOS_FEATURE_FLAGS, encode_supported_features};
-use openshard_protocol::mobile::{
-    LABEL_MODE, MobileStatus, Notoriety, Stat, StatLockBits, StatusFlags, Vitals,
-};
+use openshard_protocol::mobile::{MobileStatus, Notoriety, Stat, StatLockBits, StatusFlags, Vitals};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::SpokenMessage;
+use openshard_protocol::speech::{Font, RawFont, RawTalkMode, SpokenMessage, TalkMode};
+use openshard_protocol::wire::{Hue, RawHue};
 use openshard_protocol::world::{
     DeathStatus, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapId, MapSize, PlayerStart,
     PlayerUpdate, Point, RawStepSequence, Season, SeasonChange, WalkAck, WalkReject, WalkRequest,
@@ -895,7 +894,14 @@ impl World {
             } => self.say(connection, mode, hue, font, text),
             Command::Speak { serial, hue, text } => {
                 if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
-                    chat::speak(&mut self.state, entity, 0, hue, chat::DEFAULT_FONT, &text);
+                    chat::speak(
+                        &mut self.state,
+                        entity,
+                        TalkMode::Regular,
+                        hue,
+                        Font::DEFAULT,
+                        &text,
+                    );
                 }
             }
             Command::DoubleClick { connection, serial } => {

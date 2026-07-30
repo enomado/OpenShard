@@ -21,6 +21,8 @@ use openshard_combat::MobileDied;
 use openshard_entities::EntityId;
 use openshard_items::Contents;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::speech::{Font, TalkMode};
+use openshard_protocol::wire::Hue;
 use openshard_state::components::{Escortable, QuestLog};
 use openshard_state::quest::ObjectiveKind;
 use openshard_state::{QuestSection, TICKS_PER_SECOND, WorldState};
@@ -186,9 +188,9 @@ pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
 
 /// The muted grey and font the client draws townsfolk chatter in — `npc`'s, so an
 /// escortable's voice matches every other NPC's.
-const NPC_HUE: u16 = 0x03B2;
+const NPC_HUE: Hue = Hue(0x03B2);
 /// The font a townsperson speaks in.
-const NPC_FONT: u16 = 3;
+const NPC_FONT: Font = Font::DEFAULT;
 
 /// Have an escortable say something out loud, over its own head.
 ///
@@ -198,7 +200,7 @@ const NPC_FONT: u16 = 3;
 /// player, which reads as the interface talking rather than the NPC.
 pub(crate) fn escortable_says(state: &mut WorldState, npc: Option<EntityId>, text: &str) {
     if let Some(npc) = npc {
-        openshard_chat::speak(state, npc, 0, NPC_HUE, NPC_FONT, text);
+        openshard_chat::speak(state, npc, TalkMode::Regular, NPC_HUE, NPC_FONT, text);
     }
 }
 
