@@ -9866,7 +9866,7 @@ fn a_context_menu_on_a_container_offers_open() {
 
     world.queue(Command::ContextMenuRequest {
         connection,
-        serial: container,
+        serial: RawSerial(container),
     });
     world.tick(now);
 
@@ -9890,8 +9890,8 @@ fn selecting_open_on_a_container_opens_it() {
 
     world.queue(Command::ContextMenuSelect {
         connection,
-        serial: container,
-        index: 0,
+        serial: RawSerial(container),
+        index: openshard_protocol::context::RawContextMenuIndex(0),
     });
     world.tick(now);
 
@@ -9913,7 +9913,7 @@ fn context_menus_off_sends_no_popup() {
 
     world.queue(Command::ContextMenuRequest {
         connection,
-        serial: container,
+        serial: RawSerial(container),
     });
     world.tick(now);
 

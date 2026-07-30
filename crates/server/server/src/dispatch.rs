@@ -315,7 +315,7 @@ pub(crate) fn dispatch_world_packet(
                     });
                 }
                 ExtendedRequest::ContextMenuRequest(request) => {
-                    debug!(%id, serial = request.serial, "0xBF context-menu request");
+                    debug!(%id, serial = request.serial.0, "0xBF context-menu request");
                     world.queue(Command::ContextMenuRequest {
                         connection: id,
                         serial: request.serial,

@@ -709,17 +709,19 @@ pub enum Command {
     ContextMenuRequest {
         /// Which connection asked.
         connection: ConnectionId,
-        /// The object, by serial.
-        serial: u32,
+        /// The object, as the client named it.
+        serial: RawSerial,
     },
     /// A client picked a context-menu entry (`0xBF` `0x15`).
     ContextMenuSelect {
         /// Which connection asked.
         connection: ConnectionId,
-        /// The object the menu was opened on.
-        serial: u32,
-        /// The chosen entry, by its tag (its position in the list).
-        index: u16,
+        /// The object the menu was opened on, as the client named it.
+        serial: RawSerial,
+        /// The chosen entry, by the tag the menu gave it. Checked against the
+        /// entries the object offers in the tick, not here: the queue is a
+        /// delivery, not a checkpoint.
+        index: openshard_protocol::context::RawContextMenuIndex,
     },
     /// A client asked to wear the item on its cursor (`0x13`).
     EquipItem {

@@ -600,10 +600,10 @@ mod tests {
                 text: "olá".to_owned(),
             }),
             ServerPacket::ContextMenu(crate::context::ContextMenu {
-                serial: 0x0000_00AB,
+                serial: crate::serial::Serial::new(0x0000_00AB).unwrap(),
                 entries: vec![crate::context::ContextMenuEntry {
-                    cliloc: 3_000_362,
-                    flags: 0,
+                    cliloc: crate::wire::ClilocId(3_000_362),
+                    flags: crate::context::ContextMenuFlags::NONE,
                 }],
             }),
             ServerPacket::SpellbookContent(crate::spellbook::SpellbookContent {

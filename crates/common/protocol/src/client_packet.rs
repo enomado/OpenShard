@@ -323,7 +323,7 @@ mod tests {
     fn an_extended_command_round_trips_by_subcommand() {
         let packet = encode_packet(
             &crate::context::ContextMenu {
-                serial: 1,
+                serial: crate::serial::Serial::new(1).unwrap(),
                 entries: Vec::new(),
             },
             version(),

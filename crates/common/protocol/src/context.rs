@@ -14,16 +14,93 @@
 //! `Event_AOSPopupMenuSelect`. The tag the client sends back is the entry's
 //! position in the list, so the world can map it to an action by index.
 
+use std::fmt;
+
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::packet::{EncodePacket, PacketLength};
+use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
+use crate::wire::ClilocId;
+
+/// Which entry of a context menu was picked: its position in the list the
+/// server sent, counted from zero.
+///
+/// The client never invents one — it echoes the tag the `0x14` gave the row —
+/// so an entry index only ever exists because a menu offered it. That is what
+/// [`RawContextMenuIndex::validate`] establishes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct ContextMenuIndex(pub u16);
+
+/// A menu entry's tag exactly as the client's `0xBF 0x15` echoed it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawContextMenuIndex(pub u16);
+
+impl RawContextMenuIndex {
+    /// The entry this names, when the menu that was drawn had `offered` of
+    /// them.
+    ///
+    /// This is the check `docs/protocol_newtypes.md` N5 calls "is this one I
+    /// offered": the tags are the rows numbered from zero, so their count is
+    /// the whole domain. A tag past the end is a menu this side never drew —
+    /// a stale click on a window whose object has changed, or a crafted
+    /// packet — and is refused rather than clamped, since clamping would run
+    /// *some* entry's action instead of none.
+    ///
+    /// A `Result` and not an `Option`, unlike `RawSerial::validate`: there is
+    /// no wire value here that means "no entry", so every rejection is worth a
+    /// log line and the error carries what to log.
+    pub const fn validate(self, offered: usize) -> Result<ContextMenuIndex, InvalidContextMenuIndex> {
+        if (self.0 as usize) < offered {
+            Ok(ContextMenuIndex(self.0))
+        } else {
+            Err(InvalidContextMenuIndex { tag: self.0, offered })
+        }
+    }
+}
+
+/// A `0xBF 0x15` naming an entry the menu it answers does not have.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct InvalidContextMenuIndex {
+    /// The tag the client sent.
+    pub tag: u16,
+    /// How many entries the menu actually offered.
+    pub offered: usize,
+}
+
+impl fmt::Display for InvalidContextMenuIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "context menu entry {} was picked from a menu of {}",
+            self.tag, self.offered
+        )
+    }
+}
+
+impl std::error::Error for InvalidContextMenuIndex {}
+
+/// What a context-menu entry may be beyond a plain, enabled line: greyed out,
+/// coloured, drawn in the AoS style.
+///
+/// A named byte pair rather than an enum, for [`crate::wire::Layer`]'s reason:
+/// ServUO's `CMEFlags` has a dozen bits this engine has never set, and naming
+/// the ones it does not send would be a guess. `0` is every entry this shard
+/// draws today.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct ContextMenuFlags(pub u16);
+
+impl ContextMenuFlags {
+    /// A plain, enabled entry — what ServUO's `DisplayContextMenu` sends for
+    /// every row this engine offers.
+    pub const NONE: Self = Self(0);
+}
 
 /// `0xBF` subcommand `0x13` — the client asking for an object's context menu.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ContextMenuRequest {
-    /// The object whose menu is wanted, by serial.
-    pub serial: u32,
+    /// The object whose menu is wanted, as the client named it.
+    pub serial: RawSerial,
 }
 
 impl ContextMenuRequest {
@@ -35,7 +112,7 @@ impl ContextMenuRequest {
     /// Read the body, `reader` already past the id, length and subcommand.
     pub(crate) fn decode_body(reader: &mut PacketReader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
-            serial: reader.u32()?,
+            serial: RawSerial(reader.u32()?),
         })
     }
 }
@@ -43,10 +120,10 @@ impl ContextMenuRequest {
 /// `0xBF` subcommand `0x15` — the client reporting which entry the player picked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ContextMenuSelect {
-    /// The object the menu was opened on.
-    pub serial: u32,
+    /// The object the menu was opened on, as the client named it.
+    pub serial: RawSerial,
     /// Which entry, by the tag the menu gave it — its position in the list.
-    pub index: u16,
+    pub index: RawContextMenuIndex,
 }
 
 impl ContextMenuSelect {
@@ -57,8 +134,8 @@ impl ContextMenuSelect {
     /// Read the body, `reader` already past the id, length and subcommand.
     pub(crate) fn decode_body(reader: &mut PacketReader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
-            serial: reader.u32()?,
-            index: reader.u16()?,
+            serial: RawSerial(reader.u32()?),
+            index: RawContextMenuIndex(reader.u16()?),
         })
     }
 }
@@ -68,9 +145,9 @@ impl ContextMenuSelect {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ContextMenuEntry {
     /// The cliloc the client looks up and shows.
-    pub cliloc: u32,
-    /// `0` for a plain enabled entry.
-    pub flags: u16,
+    pub cliloc: ClilocId,
+    /// [`ContextMenuFlags::NONE`] for a plain enabled entry.
+    pub flags: ContextMenuFlags,
 }
 
 /// `0xBF` subcommand `0x14` — draw a context menu on an object. Variable length.
@@ -88,7 +165,7 @@ pub struct ContextMenuEntry {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ContextMenu {
     /// The object the menu was opened on.
-    pub serial: u32,
+    pub serial: Serial,
     /// The entries to show, in the order the client tags them from zero.
     pub entries: Vec<ContextMenuEntry>,
 }
@@ -100,12 +177,12 @@ impl EncodePacket for ContextMenu {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u16(0x14); // subcommand: display popup
         out.u16(0x02); // the new format
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
         out.u8(self.entries.len() as u8);
         for (index, entry) in self.entries.iter().enumerate() {
-            out.u32(entry.cliloc);
+            out.u32(entry.cliloc.0);
             out.u16(index as u16); // the tag the client returns on select
-            out.u16(entry.flags);
+            out.u16(entry.flags.0);
         }
     }
 }
@@ -126,7 +203,9 @@ mod tests {
         let request = ExtendedRequest::decode(&bytes).unwrap();
         assert_eq!(
             request,
-            ExtendedRequest::ContextMenuRequest(ContextMenuRequest { serial: 0x0000_1234 })
+            ExtendedRequest::ContextMenuRequest(ContextMenuRequest {
+                serial: RawSerial(0x0000_1234)
+            })
         );
     }
 
@@ -143,8 +222,8 @@ mod tests {
         assert_eq!(
             select,
             ExtendedRequest::ContextMenuSelect(ContextMenuSelect {
-                serial: 0x0000_5678,
-                index: 2,
+                serial: RawSerial(0x0000_5678),
+                index: RawContextMenuIndex(2),
             })
         );
     }
@@ -153,15 +232,15 @@ mod tests {
     fn a_menu_tags_each_entry_with_its_position() {
         let packet = crate::packet::encode_packet(
             &ContextMenu {
-                serial: 0x0000_00AB,
+                serial: Serial::new(0x0000_00AB).unwrap(),
                 entries: vec![
                     ContextMenuEntry {
-                        cliloc: 3_000_362,
-                        flags: 0,
+                        cliloc: ClilocId(3_000_362),
+                        flags: ContextMenuFlags::NONE,
                     },
                     ContextMenuEntry {
-                        cliloc: 6_103,
-                        flags: 0,
+                        cliloc: ClilocId(6_103),
+                        flags: ContextMenuFlags::NONE,
                     },
                 ],
             },
@@ -179,5 +258,49 @@ mod tests {
         assert_eq!(&packet[18..20], &0u16.to_be_bytes(), "enabled");
         // Second entry's tag is 1.
         assert_eq!(&packet[24..26], &1u16.to_be_bytes());
+    }
+
+    #[test]
+    fn an_entry_no_menu_offered_decodes_cleanly_and_is_refused() {
+        // N9's pair. A `0x15` naming entry 7 of a two-entry menu is a window
+        // this side never drew; it must not be a decode error, because that
+        // would drop the connection over a value that is only a lie, and it
+        // must not run entry 1 either.
+        let mut bytes = vec![0xBF, 0, 0];
+        bytes.extend_from_slice(&ContextMenuSelect::SUBCOMMAND.to_be_bytes());
+        bytes.extend_from_slice(&0x0000_5678u32.to_be_bytes());
+        bytes.extend_from_slice(&7u16.to_be_bytes());
+        let len = u16::try_from(bytes.len()).unwrap();
+        bytes[1..3].copy_from_slice(&len.to_be_bytes());
+
+        let ExtendedRequest::ContextMenuSelect(select) = ExtendedRequest::decode(&bytes).unwrap() else {
+            panic!("a 0x15 decodes as a select");
+        };
+        assert_eq!(select.index, RawContextMenuIndex(7), "the tag arrives intact");
+        assert_eq!(
+            select.index.validate(2),
+            Err(InvalidContextMenuIndex { tag: 7, offered: 2 }),
+            "and names nothing the menu offered"
+        );
+    }
+
+    #[test]
+    fn every_entry_a_menu_drew_promotes() {
+        // The other half of the pair: the tags a menu of two hands out are
+        // exactly 0 and 1, and both survive the check.
+        assert_eq!(
+            RawContextMenuIndex(0).validate(2),
+            Ok(ContextMenuIndex(0)),
+            "the first row"
+        );
+        assert_eq!(
+            RawContextMenuIndex(1).validate(2),
+            Ok(ContextMenuIndex(1)),
+            "the last row"
+        );
+        assert!(
+            RawContextMenuIndex(0).validate(0).is_err(),
+            "an object with no menu offers no entry, not entry zero"
+        );
     }
 }

@@ -1,4 +1,7 @@
 use super::*;
+use openshard_protocol::context::{ContextMenuFlags, RawContextMenuIndex};
+use openshard_protocol::serial::RawSerial;
+use openshard_protocol::wire::ClilocId;
 
 /// The cliloc numbers for the default context-menu entries. These are the
 /// **`3006xxx`** context-menu range that lives in a modern `cliloc.enu` (verified
@@ -6,13 +9,13 @@ use super::*;
 /// `3006104` "Sell", `3000362` "Open". ServUO's `ContextMenuEntry` stores the
 /// short `6xxx` form and the value is resolved `+3000000`; a modern client has
 /// only the full form, so sending `6123` shows "megacliloc: missing 6123".
-const CLILOC_PAPERDOLL: u32 = 3_006_123;
-const CLILOC_OPEN: u32 = 3_000_362;
-const CLILOC_BUY: u32 = 3_006_103;
-const CLILOC_SELL: u32 = 3_006_104;
+const CLILOC_PAPERDOLL: ClilocId = ClilocId(3_006_123);
+const CLILOC_OPEN: ClilocId = ClilocId(3_000_362);
+const CLILOC_BUY: ClilocId = ClilocId(3_006_103);
+const CLILOC_SELL: ClilocId = ClilocId(3_006_104);
 /// `3006168` "Quest Log" — the same entry ServUO offers on a player's own menu,
 /// and a way into the log for a client whose paperdoll draws no Quest button.
-const CLILOC_QUEST_LOG: u32 = 3_006_168;
+const CLILOC_QUEST_LOG: ClilocId = ClilocId(3_006_168);
 
 /// What a chosen context-menu entry does. Every one routes to a handler a
 /// double-click already reaches — the menu decides *what*, the existing rule does
@@ -35,7 +38,7 @@ impl World {
     /// Answer a context-menu request (`0xBF` `0x13`): send the clicked object's
     /// default entries. Off when the shard serves no context menus, or the client
     /// is too old for the new popup format. An object with no entries gets none.
-    pub(super) fn context_menu_request(&mut self, connection: ConnectionId, serial: u32) {
+    pub(super) fn context_menu_request(&mut self, connection: ConnectionId, serial: RawSerial) {
         if !self.state.gameplay.context_menus {
             return;
         }
@@ -47,7 +50,7 @@ impl World {
         if !version.supports(Feature::NewContextMenu) {
             return;
         }
-        let Some(object) = Serial::new(serial) else {
+        let Some(object) = serial.validate() else {
             return;
         };
         let Some(entity) = self.state.registry.entity_of(object) else {
@@ -61,11 +64,11 @@ impl World {
             .iter()
             .map(|(cliloc, _)| ContextMenuEntry {
                 cliloc: *cliloc,
-                flags: 0,
+                flags: ContextMenuFlags::NONE,
             })
             .collect();
         let packet = ServerPacket::ContextMenu(ContextMenu {
-            serial,
+            serial: object,
             entries: wire,
         });
         self.state.send_packet(connection, &packet);
@@ -75,23 +78,38 @@ impl World {
     /// and run the one at `index`. Rebuilding rather than remembering keeps this
     /// stateless — the entries are a pure function of the object, so a replay picks
     /// the same one.
-    pub(super) fn context_menu_select(&mut self, connection: ConnectionId, serial: u32, index: u16) {
+    pub(super) fn context_menu_select(
+        &mut self,
+        connection: ConnectionId,
+        serial: RawSerial,
+        index: RawContextMenuIndex,
+    ) {
         if !self.state.gameplay.context_menus {
             return;
         }
         let Some(actor) = self.state.players.get(&connection).copied() else {
             return;
         };
-        let Some(object) = Serial::new(serial) else {
+        let Some(object) = serial.validate() else {
             return;
         };
         let Some(entity) = self.state.registry.entity_of(object) else {
             return;
         };
         let entries = self.context_entries(entity);
-        let Some(&(_, action)) = entries.get(usize::from(index)) else {
-            return;
+        // "Is this one I offered": the tags are the rows numbered from zero, so
+        // the list the object has *now* is the whole domain. Rebuilt rather than
+        // remembered, which is what makes the answer a pure function of the
+        // object — and what makes a menu that shrank between the draw and the
+        // click refuse rather than run the wrong row.
+        let index = match index.validate(entries.len()) {
+            Ok(index) => index,
+            Err(err) => {
+                debug!(%err, %object, "context menu select refused");
+                return;
+            }
         };
+        let (_, action) = entries[usize::from(index.0)];
         match action {
             ContextAction::Paperdoll => {
                 items::paperdoll_request(&mut self.state, connection, object);
@@ -114,7 +132,7 @@ impl World {
     /// The default menu for an object — a container opens, a vendor buys and
     /// sells, any other mobile shows a paperdoll, everything else has no menu.
     /// Order is the tag order the client reports back on select.
-    fn context_entries(&self, entity: EntityId) -> Vec<(u32, ContextAction)> {
+    fn context_entries(&self, entity: EntityId) -> Vec<(ClilocId, ContextAction)> {
         if self.state.registry.has::<Container>(entity) {
             vec![(CLILOC_OPEN, ContextAction::Open)]
         } else if self.state.registry.has::<Vendor>(entity) {
