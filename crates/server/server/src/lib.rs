@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use openshard_config::{Config, DEFAULT_TOML};
 use openshard_gateway::{
