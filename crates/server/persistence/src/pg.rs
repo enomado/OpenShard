@@ -903,8 +903,8 @@ mod tests {
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
             serial,
-            account: "admin".into(),
-            name: "Alpha".into(),
+            account: AccountName::new("admin"),
+            name: CharacterName::new("Alpha"),
             body: 0x0190,
             hue: 0,
             facet: 0,
@@ -1055,7 +1055,7 @@ mod tests {
         };
         store
             .put_account(&AccountRecord {
-                name: "admin".into(),
+                name: AccountName::new("admin"),
                 credential: "secret".into(),
             })
             .await
@@ -1063,7 +1063,7 @@ mod tests {
         // And an upsert on the same name updates rather than duplicating.
         store
             .put_account(&AccountRecord {
-                name: "admin".into(),
+                name: AccountName::new("admin"),
                 credential: "changed".into(),
             })
             .await
@@ -1120,7 +1120,7 @@ mod tests {
             .expect("save");
         store
             .put_account(&AccountRecord {
-                name: "admin".into(),
+                name: AccountName::new("admin"),
                 credential: "x".into(),
             })
             .await

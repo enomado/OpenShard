@@ -90,12 +90,7 @@ impl AuthKeys {
     /// themselves at the game port as a session that had already been
     /// verified — the account name and password are re-sent in `0x91`, so this
     /// is not the only gate, but it should not be a free one either.
-    pub fn issue(
-        &mut self,
-        account: impl Into<AccountName>,
-        version: ClientVersion,
-        now: Instant,
-    ) -> AuthKey {
+    pub fn issue(&mut self, account: &AccountName, version: ClientVersion, now: Instant) -> AuthKey {
         // Never hand out 0: the client sends 0 when it has no key, so a real key
         // of 0 would make "no key" and "this key" indistinguishable.
         let key = loop {
@@ -107,7 +102,7 @@ impl AuthKeys {
         self.issued.insert(
             key,
             PendingLogin {
-                account: account.into(),
+                account: account.clone(),
                 version,
                 issued_at: now,
             },
@@ -179,7 +174,7 @@ mod tests {
     fn a_key_round_trips() {
         let mut keys = AuthKeys::new();
         let now = Instant::now();
-        let key = keys.issue("admin", ClientVersion::TOL, now);
+        let key = keys.issue(&AccountName::new("admin"), ClientVersion::TOL, now);
 
         let pending = keys.redeem(key, now).unwrap();
         assert_eq!(pending.account, "admin");
@@ -190,7 +185,7 @@ mod tests {
         // Two clients with the same key means one of them was listening.
         let mut keys = AuthKeys::new();
         let now = Instant::now();
-        let key = keys.issue("admin", ClientVersion::TOL, now);
+        let key = keys.issue(&AccountName::new("admin"), ClientVersion::TOL, now);
 
         assert!(keys.redeem(key, now).is_some());
         assert_eq!(keys.redeem(key, now), None, "a key must not be reusable");
@@ -207,7 +202,7 @@ mod tests {
     fn a_key_expires() {
         let mut keys = AuthKeys::with_ttl(Duration::from_secs(30));
         let issued = Instant::now();
-        let key = keys.issue("admin", ClientVersion::TOL, issued);
+        let key = keys.issue(&AccountName::new("admin"), ClientVersion::TOL, issued);
 
         let just_in_time = issued + Duration::from_secs(30);
         assert!(
@@ -215,7 +210,7 @@ mod tests {
             "the boundary is inclusive"
         );
 
-        let key = keys.issue("admin", ClientVersion::TOL, issued);
+        let key = keys.issue(&AccountName::new("admin"), ClientVersion::TOL, issued);
         let too_late = issued + Duration::from_secs(31);
         assert_eq!(keys.redeem(key, too_late), None);
     }
@@ -226,7 +221,7 @@ mod tests {
         // an attacker gets unlimited attempts at a key they half-know.
         let mut keys = AuthKeys::with_ttl(Duration::from_secs(1));
         let issued = Instant::now();
-        let key = keys.issue("admin", ClientVersion::TOL, issued);
+        let key = keys.issue(&AccountName::new("admin"), ClientVersion::TOL, issued);
 
         assert_eq!(keys.redeem(key, issued + Duration::from_secs(5)), None);
         assert!(keys.is_empty(), "the expired key is gone, not retryable");
@@ -239,7 +234,7 @@ mod tests {
         let mut keys = AuthKeys::with_ttl(Duration::from_secs(30));
         let issued = Instant::now();
         for _ in 0..100 {
-            keys.issue("admin", ClientVersion::TOL, issued);
+            keys.issue(&AccountName::new("admin"), ClientVersion::TOL, issued);
         }
         assert_eq!(keys.len(), 100);
 
@@ -256,7 +251,10 @@ mod tests {
         let mut keys = AuthKeys::new();
         let now = Instant::now();
         for _ in 0..1000 {
-            assert_ne!(keys.issue("admin", ClientVersion::TOL, now), AuthKey(0));
+            assert_ne!(
+                keys.issue(&AccountName::new("admin"), ClientVersion::TOL, now),
+                AuthKey(0)
+            );
         }
     }
 
@@ -268,7 +266,7 @@ mod tests {
         let mut keys = AuthKeys::new();
         let now = Instant::now();
         let issued: Vec<AuthKey> = (0..64)
-            .map(|_| keys.issue("admin", ClientVersion::TOL, now))
+            .map(|_| keys.issue(&AccountName::new("admin"), ClientVersion::TOL, now))
             .collect();
 
         assert_eq!(keys.len(), 64, "keys must be distinct");
@@ -280,8 +278,8 @@ mod tests {
     fn keys_from_different_accounts_do_not_mix() {
         let mut keys = AuthKeys::new();
         let now = Instant::now();
-        let a = keys.issue("alice", ClientVersion::TOL, now);
-        let b = keys.issue("bob", ClientVersion::TOL, now);
+        let a = keys.issue(&AccountName::new("alice"), ClientVersion::TOL, now);
+        let b = keys.issue(&AccountName::new("bob"), ClientVersion::TOL, now);
 
         assert_eq!(keys.redeem(a, now).unwrap().account, "alice");
         assert_eq!(keys.redeem(b, now).unwrap().account, "bob");
