@@ -9,6 +9,7 @@
 //! turn-in path start disagreeing about what a backpack is.
 
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// The paperdoll layer a backpack is worn on. ServUO's `Layer.Backpack`.
 pub const BACKPACK_LAYER: Layer = Layer(0x15);
@@ -41,8 +42,8 @@ pub fn backpack_of(state: &WorldState, mobile: Serial) -> Option<Serial> {
 pub fn give_to_backpack(
     state: &mut WorldState,
     mobile: Serial,
-    graphic: u16,
-    hue: u16,
+    graphic: Graphic,
+    hue: Hue,
     amount: u16,
     stackable: bool,
 ) -> bool {
@@ -67,7 +68,7 @@ pub fn give_to_backpack(
 ///
 /// Piles are drawn down oldest first, which is only the registry's order — no
 /// rule depends on which identical pile is emptied.
-pub fn take_from_backpack(state: &mut WorldState, mobile: Serial, graphic: u16, amount: u16) -> u16 {
+pub fn take_from_backpack(state: &mut WorldState, mobile: Serial, graphic: Graphic, amount: u16) -> u16 {
     take_from_backpack_of_hue(state, mobile, graphic, None, amount)
 }
 
@@ -81,8 +82,8 @@ pub fn take_from_backpack(state: &mut WorldState, mobile: Serial, graphic: u16, 
 pub fn take_from_backpack_of_hue(
     state: &mut WorldState,
     mobile: Serial,
-    graphic: u16,
-    hue: Option<u16>,
+    graphic: Graphic,
+    hue: Option<Hue>,
     amount: u16,
 ) -> u16 {
     let Some(backpack) = backpack_of(state, mobile) else {
@@ -95,7 +96,7 @@ pub fn take_from_backpack_of_hue(
             held.container == backpack
                 && state
                     .registry
-                    .get::<Graphic>(*item)
+                    .get::<Drawn>(*item)
                     .is_some_and(|g| g.id == graphic && hue.is_none_or(|want| g.hue == want))
         })
         .filter_map(|(item, _)| {
@@ -133,7 +134,7 @@ pub fn take_from_backpack_of_hue(
 /// and use [`carried_amount_with`] instead — otherwise it is a full column scan
 /// per question.
 #[must_use]
-pub fn carried_amount(state: &WorldState, mobile: Serial, graphic: u16) -> u32 {
+pub fn carried_amount(state: &WorldState, mobile: Serial, graphic: Graphic) -> u32 {
     carried_amount_with(state, &crate::contents_index(state), mobile, graphic)
 }
 
@@ -141,7 +142,7 @@ pub fn carried_amount(state: &WorldState, mobile: Serial, graphic: u16) -> u32 {
 /// [`take_from_backpack_of_hue`], and what a craft's "have you enough metal"
 /// check asks before it takes anything.
 #[must_use]
-pub fn carried_amount_of_hue(state: &WorldState, mobile: Serial, graphic: u16, hue: Option<u16>) -> u32 {
+pub fn carried_amount_of_hue(state: &WorldState, mobile: Serial, graphic: Graphic, hue: Option<Hue>) -> u32 {
     let Some(backpack) = backpack_of(state, mobile) else {
         return 0;
     };
@@ -152,7 +153,7 @@ pub fn carried_amount_of_hue(state: &WorldState, mobile: Serial, graphic: u16, h
         .filter(|item| {
             state
                 .registry
-                .get::<Graphic>(**item)
+                .get::<Drawn>(**item)
                 .is_some_and(|g| g.id == graphic && hue.is_none_or(|want| g.hue == want))
         })
         .map(|item| u32::from(crate::amount_of(state, *item)))
@@ -165,7 +166,7 @@ pub fn carried_amount_with(
     state: &WorldState,
     contents: &crate::Contents,
     mobile: Serial,
-    graphic: u16,
+    graphic: Graphic,
 ) -> u32 {
     let Some(backpack) = backpack_of(state, mobile) else {
         return 0;
@@ -177,7 +178,7 @@ pub fn carried_amount_with(
         .filter(|item| {
             state
                 .registry
-                .get::<Graphic>(**item)
+                .get::<Drawn>(**item)
                 .is_some_and(|g| g.id == graphic)
         })
         .map(|item| u32::from(crate::amount_of(state, *item)))

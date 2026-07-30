@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::Hue;
 
 /// How long a door stays open before it swings shut on its own, in ticks —
 /// roughly the classic client's self-closing delay.
@@ -169,7 +170,13 @@ pub(crate) fn set_door(state: &mut WorldState, door: EntityId, serial: Serial, o
         state.forget(watcher, door, serial);
     }
     let facet = state.facet_of(door);
-    state.registry.insert(door, Graphic { id: graphic, hue: 0 });
+    state.registry.insert(
+        door,
+        Drawn {
+            id: graphic,
+            hue: Hue(0),
+        },
+    );
     state.registry.insert(door, Position(moved));
     state.registry.insert(
         door,

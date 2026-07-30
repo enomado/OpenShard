@@ -55,7 +55,7 @@ pub use openshard_state::Outbound;
 pub use openshard_state::components;
 pub use openshard_state::{
     Account, Amount, Body, Brain, Client, Combat, Contained, Container, CriminalUntil, DamageType, Decays,
-    Equipped, Graphic, Heading, Hitpoints, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, Position,
+    Drawn, Equipped, Heading, Hitpoints, Mana, MeleeDamage, Movement, MurderDecay, Murders, Name, Position,
     Resistance, Scripted, Skills, Stackable, Stats, SwingSpeed,
 };
 pub use openshard_state::{CastStyle, Gameplay, StatLock, TooltipMode};

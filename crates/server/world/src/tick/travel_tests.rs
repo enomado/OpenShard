@@ -348,13 +348,31 @@ fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, u32) {
 
     let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
     for reagent in [BLACK_PEARL, BLOOD_MOSS, MANDRAKE_ROOT, SULFUROUS_ASH] {
-        openshard_items::give(&mut world.state, backpack, reagent, 0, 50);
+        openshard_items::give(
+            &mut world.state,
+            backpack,
+            openshard_protocol::wire::Graphic(reagent),
+            openshard_protocol::wire::Hue(0),
+            50,
+        );
     }
-    if let Some(book) = openshard_items::give(&mut world.state, backpack, SPELLBOOK_GRAPHIC, 0, 1) {
+    if let Some(book) = openshard_items::give(
+        &mut world.state,
+        backpack,
+        SPELLBOOK_GRAPHIC,
+        openshard_protocol::wire::Hue(0),
+        1,
+    ) {
         world.state.registry.insert(book, Spellbook::full());
     }
-    let rune = openshard_items::place_one(&mut world.state, backpack, RECALL_RUNE_GRAPHIC, 0, 1)
-        .expect("a rune in the pack");
+    let rune = openshard_items::place_one(
+        &mut world.state,
+        backpack,
+        RECALL_RUNE_GRAPHIC,
+        openshard_protocol::wire::Hue(0),
+        1,
+    )
+    .expect("a rune in the pack");
     let rune_serial = world.state.registry.serial_of(rune).unwrap().raw();
     let _ = packets_for(&mut world, connection);
     (world, connection, caster, rune_serial)
@@ -860,7 +878,7 @@ fn a_city_moongate_survives_a_restart_with_its_meaning_intact() {
         .iter()
         .filter_map(|snapshot| snapshot.decorations.as_ref())
         .flatten()
-        .filter(|record| record.graphic == openshard_state::components::MOONGATE_GRAPHIC)
+        .filter(|record| record.graphic == openshard_state::components::MOONGATE_GRAPHIC.0)
         .collect();
     assert_eq!(
         decorations.len(),
@@ -898,7 +916,7 @@ fn give_runebook(world: &mut World, connection: ConnectionId) -> EntityId {
         &mut world.state,
         backpack,
         openshard_state::components::RUNEBOOK_GRAPHIC,
-        0,
+        openshard_protocol::wire::Hue(0),
         1,
     )
     .expect("a runebook")
@@ -985,7 +1003,14 @@ fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
     world.state.registry.insert(book, owned);
 
     let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
-    let scrolls = openshard_items::give(&mut world.state, backpack, RECALL_SCROLL, 0, 3).expect("scrolls");
+    let scrolls = openshard_items::give(
+        &mut world.state,
+        backpack,
+        openshard_protocol::wire::Graphic(RECALL_SCROLL),
+        openshard_protocol::wire::Hue(0),
+        3,
+    )
+    .expect("scrolls");
     let scroll_serial = world.state.registry.serial_of(scrolls).unwrap().raw();
 
     openshard_items::pick_up(&mut world.state, connection, RawSerial(scroll_serial), 3);

@@ -128,6 +128,7 @@ pub fn system(id: SystemId) -> Option<&'static CraftSystemDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openshard_protocol::wire::{Graphic, Hue};
 
     #[test]
     fn every_trade_has_exactly_one_system() {
@@ -148,7 +149,7 @@ mod tests {
         // with nothing at all, which is what every one of these was before this
         // slice.
         for graphic in 0..=u16::MAX {
-            let Some(tool) = openshard_state::craft::craft_tool(graphic) else {
+            let Some(tool) = openshard_state::craft::craft_tool(Graphic(graphic)) else {
                 continue;
             };
             assert!(
@@ -170,7 +171,7 @@ mod tests {
                     usize::from(recipe.group) < def.groups.len(),
                     "{:?} recipe {:#06X} is in group {}",
                     def.skill,
-                    recipe.graphic,
+                    recipe.graphic.0,
                     recipe.group
                 );
             }
@@ -188,7 +189,7 @@ mod tests {
                     recipe.skills.iter().any(|want| want.skill == def.skill),
                     "{:?} recipe {:#06X} never names {:?}",
                     def.skill,
-                    recipe.graphic,
+                    recipe.graphic.0,
                     def.skill
                 );
             }
@@ -203,7 +204,7 @@ mod tests {
         for def in SYSTEMS {
             let Some(axis) = def.sub_res else { continue };
             assert!(!axis.entries.is_empty());
-            assert_eq!(axis.entries[0].hue, 0, "{:?}'s plain grade", def.skill);
+            assert_eq!(axis.entries[0].hue, Hue(0), "{:?}'s plain grade", def.skill);
             let uses_axis = def
                 .recipes
                 .iter()
@@ -217,7 +218,7 @@ mod tests {
                         res.graphic == axis.graphic,
                         "{:?} recipe {:#06X}",
                         def.skill,
-                        recipe.graphic
+                        recipe.graphic.0
                     );
                 }
             }

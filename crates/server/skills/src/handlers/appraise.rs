@@ -10,9 +10,9 @@
 //! turns a weapon row into a swing, and this turns the same row into a sentence.
 
 use openshard_entities::EntityId;
-use openshard_protocol::wire::{ClilocId, Layer};
+use openshard_protocol::wire::{ClilocId, Graphic, Layer};
 use openshard_state::armor::armor_data;
-use openshard_state::components::{Body, Graphic, Name, PoisonCharges, Price};
+use openshard_state::components::{Body, Drawn, Name, PoisonCharges, Price};
 use openshard_state::weapon::{LAYER_TWO_HANDED, WeaponKind, by_era, weapon_data, weapon_layer};
 use openshard_state::{Skill, WorldState};
 
@@ -61,7 +61,7 @@ const ITEM_ID_VALUE: ClilocId = ClilocId(1_041_351);
 /// does — the same line Taste Identification gives, and the reason a weapon master
 /// does not have to lick a sword to know.
 pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityId) {
-    let Some(&Graphic { id: graphic, .. }) = state.registry.get::<Graphic>(target) else {
+    let Some(&Drawn { id: graphic, .. }) = state.registry.get::<Drawn>(target) else {
         // A mobile, not a thing you can weigh in your hands.
         state.localized_message(actor, NEITHER, "");
         return;
@@ -167,7 +167,7 @@ pub(super) fn item_name(state: &WorldState, near: EntityId, item: EntityId) -> O
     if let Some(name) = state.registry.get::<Name>(item) {
         return Some(name.0.clone());
     }
-    let graphic = state.registry.get::<Graphic>(item)?.id;
+    let graphic = state.registry.get::<Drawn>(item)?.id;
     let facet = state.facet_of(near);
     state
         .facets
@@ -183,7 +183,7 @@ pub(super) fn item_name(state: &WorldState, near: EntityId, item: EntityId) -> O
 /// The wrap from `Terrain::item_layer`'s byte to a [`Layer`] happens here: the
 /// terrain trait lives in `openshard_movement`, below `protocol`, and reads the
 /// byte out of `tiledata.mul` — see `docs/protocol_newtypes.md` N4.
-fn tiledata_layer(state: &WorldState, near: EntityId, graphic: u16) -> Layer {
+fn tiledata_layer(state: &WorldState, near: EntityId, graphic: Graphic) -> Layer {
     let facet = state.facet_of(near);
     state
         .facets

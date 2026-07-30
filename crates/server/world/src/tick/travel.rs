@@ -15,7 +15,7 @@ use openshard_protocol::gump::{
     GumpPoint,
 };
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::wire::SoundId;
+use openshard_protocol::wire::{Graphic, SoundId};
 use openshard_state::components::{
     Combat, Contained, CriminalUntil, Equipped, Position, RECALL_RUNE_GRAPHIC, RuneMark, Runebook,
     RunebookEntry,
@@ -86,7 +86,7 @@ impl World {
         if self
             .state
             .registry
-            .get::<Graphic>(rune)
+            .get::<Drawn>(rune)
             .is_none_or(|graphic| graphic.id != RECALL_RUNE_GRAPHIC)
         {
             self.notify_self(caster, "You cannot mark that.");
@@ -558,7 +558,7 @@ impl World {
         let Some(serial) = self.state.registry.serial_of(player) else {
             return;
         };
-        let reagents: Vec<(u16, u16)> = if self.state.gameplay.reagents {
+        let reagents: Vec<(Graphic, u16)> = if self.state.gameplay.reagents {
             info.reagents.iter().map(|&graphic| (graphic, 1)).collect()
         } else {
             Vec::new()

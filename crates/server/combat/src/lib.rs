@@ -20,7 +20,7 @@ use openshard_protocol::feedback::{EffectKind, GraphicalEffect};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
+use openshard_protocol::wire::{Graphic, SoundId};
 use openshard_protocol::world::Point;
 use openshard_state::components::{
     BehaviourBuffs, Body, Client, Combat, CriminalUntil, DamageType, Equipped, Frozen, Ghost, Guard,
@@ -50,14 +50,14 @@ pub const SWING_DAMAGE: u16 = 5;
 /// The human unarmed thwack — ServUO's `Fists.HitSound`, the fallback for a body
 /// with no creature sound of its own (a player, a townsperson). A creature makes
 /// its own attack sound instead; see [`attack_sound`].
-pub const MELEE_HIT_SOUND: u16 = 0x0137;
+pub const MELEE_HIT_SOUND: SoundId = SoundId(0x0137);
 /// The whistle of a blow that finds only air — a swing that missed. Coarse (one
 /// swish for every weapon, not ServUO's per-weapon `DefMissSound`), but a miss is
 /// no longer silent, so the client reads the whiff.
 pub const MELEE_MISS_SOUND: u16 = 0x0238;
 /// The twang of a bow — ServUO's `BaseRanged.DefHitSound`, the fallback for a
 /// humanoid archer; a creature that shoots uses its own sound.
-pub const RANGED_HIT_SOUND: u16 = 0x0234;
+pub const RANGED_HIT_SOUND: SoundId = SoundId(0x0234);
 
 /// How many stones over its carry cap a mobile may be before it starts to tire —
 /// ServUO's `WeightOverloading.OverloadAllowance`. Four stones of slack, so a
@@ -218,23 +218,25 @@ pub fn regen_stamina(state: &mut WorldState) {
 
 /// A creature's `BaseSoundID` from its body, or `None` for a human or an unlisted
 /// body — the key both [`attack_sound`] and [`death_sound`] read.
-fn body_base_sound(state: &WorldState, entity: EntityId) -> Option<u16> {
-    creature_base_sound(state.registry.get::<Body>(entity)?.id.0)
+fn body_base_sound(state: &WorldState, entity: EntityId) -> Option<SoundId> {
+    creature_base_sound(state.registry.get::<Body>(entity)?.id)
 }
 
 /// The sound `attacker` makes landing a blow: a creature's own attack sound
 /// (ServUO's `BaseSoundID + 2`), or the human fists thwack. So an orc growls its
 /// attack instead of punching like a man, which was the point of the sound rule.
-fn attack_sound(state: &WorldState, attacker: EntityId, humanoid_fallback: u16) -> u16 {
+fn attack_sound(state: &WorldState, attacker: EntityId, humanoid_fallback: SoundId) -> SoundId {
+    // The offset is arithmetic on the base, so the base is opened for it and the
+    // result named again — ServUO's `BaseSoundID + 2`.
     body_base_sound(state, attacker)
-        .map(|base| base.wrapping_add(2))
+        .map(|base| SoundId(base.0.wrapping_add(2)))
         .unwrap_or(humanoid_fallback)
 }
 
 /// The growl a creature makes noticing prey — ServUO's `GetAngerSound`
 /// (`BaseSoundID + 0`). `None` for a human, which does not growl. The `ai` plays
 /// it on the aggro transition, so a monster announces itself when it sees you.
-pub fn anger_sound(state: &WorldState, entity: EntityId) -> Option<u16> {
+pub fn anger_sound(state: &WorldState, entity: EntityId) -> Option<SoundId> {
     body_base_sound(state, entity)
 }
 
@@ -242,23 +244,23 @@ pub fn anger_sound(state: &WorldState, entity: EntityId) -> Option<u16> {
 /// humanoid's gendered death cry (ServUO's `Random(0x423, 5)` male / `Random(0x314,
 /// 4)` female, drawn from the tick's seeded rng so a death replays), or `None` for
 /// the passive fauna ServUO leaves silent.
-fn death_sound(state: &mut WorldState, victim: EntityId) -> Option<u16> {
-    let body = state.registry.get::<Body>(victim)?.id.0;
+fn death_sound(state: &mut WorldState, victim: EntityId) -> Option<SoundId> {
+    let body = state.registry.get::<Body>(victim)?.id;
     if let Some(base) = creature_base_sound(body) {
-        return Some(base.wrapping_add(4));
+        return Some(SoundId(base.0.wrapping_add(4)));
     }
     if body_opens_doors(body) {
-        return Some(if body_is_female(body) {
+        return Some(SoundId(if body_is_female(body) {
             0x0314 + state.rng.below(4) as u16
         } else {
             0x0423 + state.rng.below(5) as u16
-        });
+        }));
     }
     None
 }
 /// The arrow that flies from a bow — ServUO's `Bow.EffectID`. A moving graphical
 /// effect draws it crossing the gap to the mark.
-const ARROW_GRAPHIC: u16 = 0x0F42;
+const ARROW_GRAPHIC: Graphic = Graphic(0x0F42);
 /// How fast the arrow crosses, ServUO's `MovingEffect` speed for a bow shot.
 const RANGED_EFFECT_SPEED: u8 = 18;
 
@@ -296,7 +298,7 @@ pub struct MobileDied {
     pub serial: Serial,
     /// Its body — so a pack can tell *what* died (a rat, an orc) for a kill quest
     /// without a second lookup. `0` if it somehow has none.
-    pub body: u16,
+    pub body: Graphic,
     /// Who dealt the killing blow, if known — carried so a pack can attribute a
     /// kill (a quest's "slay N", a bounty). `None` for a death with no attacker: a
     /// field or a reflected blow, a script's unattributed damage.
@@ -470,14 +472,14 @@ pub fn die(state: &mut WorldState, entity: EntityId, serial: Serial, killer: Opt
     // a wolf's yelp, a human's death gasp.
     state.animate(entity, Action::Die);
     if let Some(sound) = death_sound(state, entity) {
-        state.play_sound(entity, SoundId(sound));
+        state.play_sound(entity, sound);
     }
     // Announce it and stop. What becomes of the body — a corpse for a creature, a
     // ghost for a player — is the world's job off this event (the tick's `reap`);
     // combat reports the death, it does not dispose of the body. A player is left
     // standing at zero hits for now (ghosts are a later slice); a creature the
     // world turns into a corpse and takes off the map.
-    let body = state.registry.get::<Body>(entity).map_or(0, |b| b.id.0);
+    let body = state.registry.get::<Body>(entity).map_or(Graphic(0), |b| b.id);
     state.bus.send(MobileDied {
         entity,
         serial,
@@ -600,7 +602,7 @@ pub fn volleys(state: &mut WorldState) {
             kind: EffectKind::Moving,
             from: by,
             to: Some(target_serial),
-            art: WireGraphic(ARROW_GRAPHIC),
+            art: ARROW_GRAPHIC,
             from_point: Point::new(from.x, from.y, from.z),
             to_point: Point::new(to.x, to.y, to.z),
             speed: RANGED_EFFECT_SPEED,
@@ -611,7 +613,7 @@ pub fn volleys(state: &mut WorldState) {
         state.animate(attacker, Action::Attack);
         state.broadcast_packet(attacker, &ServerPacket::Effect(arrow));
         let sound = attack_sound(state, attacker, RANGED_HIT_SOUND);
-        state.play_sound(attacker, SoundId(sound));
+        state.play_sound(attacker, sound);
         // The bolt still flew and twanged; on a miss it simply finds no mark. The
         // hit roll trains the shooter's Archery the same as a melee swing trains
         // its weapon. Damage precedence matches melee via `scaled_blow`.
@@ -684,7 +686,7 @@ pub fn swings(state: &mut WorldState) {
         // just killed the target.
         let sound = attack_sound(state, attacker, MELEE_HIT_SOUND);
         damage(state, target_serial.raw(), blow, DamageType::Physical, by);
-        state.play_sound(attacker, SoundId(sound));
+        state.play_sound(attacker, sound);
         // A coated blade spends a dose into whatever it just cut.
         deliver_weapon_poison(state, attacker, target_serial.raw(), now);
         set_next_swing(state, attacker, now + swing_speed(state, attacker));

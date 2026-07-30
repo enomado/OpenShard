@@ -13,16 +13,16 @@
 //! counter.
 
 use openshard_entities::EntityId;
-use openshard_protocol::wire::ClilocId;
+use openshard_protocol::wire::{ClilocId, Graphic};
 use openshard_state::components::{Bandaging, Ghost, Hitpoints, Lock, Poisoned, Stats};
 use openshard_state::{Skill, TICKS_PER_SECOND, TargetPurpose, WorldState};
 
 use crate::check::roll_skill_band;
 
 /// The clean bandage a healer carries — ServUO's `Bandage`, item `0x0E21`.
-pub const BANDAGE_GRAPHIC: u16 = 0x0E21;
+pub const BANDAGE_GRAPHIC: Graphic = Graphic(0x0E21);
 /// A lockpick — ServUO's `Lockpick`, item `0x14FC`.
-pub const LOCKPICK_GRAPHIC: u16 = 0x14FC;
+pub const LOCKPICK_GRAPHIC: Graphic = Graphic(0x14FC);
 
 /// "Who will you use the bandage on?"
 const HEAL_WHOM: ClilocId = ClilocId(500_951);

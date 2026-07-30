@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 /// The graphic of a gold coin — the pile every payout, corpse drop and vendor
 /// sale is made of, and what the status bar counts.
-pub const GOLD_GRAPHIC: u16 = 0x0EED;
+pub const GOLD_GRAPHIC: Graphic = Graphic(0x0EED);
 
 /// A body's own weight in stones, before anything it carries — Sphere's and
 /// ServUO's `BodyWeight`. Sent on the status bar; kept well under the carry cap
@@ -110,7 +110,7 @@ pub fn contents_index(state: &WorldState) -> Contents {
 /// visited set is belt-and-braces against a save restored from a store someone
 /// hand-edited, where a cycle would otherwise hang the tick.
 #[must_use]
-pub fn carried_with(state: &WorldState, contents: &Contents, mobile: EntityId) -> Vec<(u16, u16)> {
+pub fn carried_with(state: &WorldState, contents: &Contents, mobile: EntityId) -> Vec<(Graphic, u16)> {
     let Some(serial) = state.registry.serial_of(mobile) else {
         return Vec::new();
     };
@@ -149,7 +149,7 @@ fn held_by(state: &WorldState, mobile: EntityId) -> Option<EntityId> {
 /// a caller doing this for every player wants [`contents_index`] once and
 /// [`carried_with`] per player.
 #[must_use]
-pub fn carried(state: &WorldState, mobile: EntityId) -> Vec<(u16, u16)> {
+pub fn carried(state: &WorldState, mobile: EntityId) -> Vec<(Graphic, u16)> {
     carried_with(state, &contents_index(state), mobile)
 }
 
@@ -158,7 +158,7 @@ fn gather(
     state: &WorldState,
     contents: &Contents,
     item: EntityId,
-    out: &mut Vec<(u16, u16)>,
+    out: &mut Vec<(Graphic, u16)>,
     visited: &mut Vec<Serial>,
 ) {
     let Some(serial) = state.registry.serial_of(item) else {
@@ -168,7 +168,7 @@ fn gather(
         return;
     }
     visited.push(serial);
-    if let Some(graphic) = state.registry.get::<Graphic>(item) {
+    if let Some(graphic) = state.registry.get::<Drawn>(item) {
         let amount = state.registry.get::<Amount>(item).map_or(1, |a| a.0.max(1));
         out.push((graphic.id, amount));
     }
@@ -186,7 +186,7 @@ fn gather(
 /// like any container — a purse inside it is still banked — so it is walked the
 /// same way, just from a different root.
 #[must_use]
-pub fn banked_with(state: &WorldState, contents: &Contents, mobile: EntityId) -> Vec<(u16, u16)> {
+pub fn banked_with(state: &WorldState, contents: &Contents, mobile: EntityId) -> Vec<(Graphic, u16)> {
     let Some(serial) = state.registry.serial_of(mobile) else {
         return Vec::new();
     };
@@ -308,7 +308,7 @@ pub fn owner_of_container(state: &WorldState, container: Serial) -> Option<Entit
 /// stack by its amount, the same two rules [`carried`] applies.
 #[must_use]
 pub fn weight_of(state: &WorldState, item: EntityId) -> u16 {
-    let Some(graphic) = state.registry.get::<Graphic>(item).map(|g| g.id) else {
+    let Some(graphic) = state.registry.get::<Drawn>(item).map(|g| g.id) else {
         return 0;
     };
     let amount = u32::from(state.registry.get::<Amount>(item).map_or(1, |a| a.0.max(1)));

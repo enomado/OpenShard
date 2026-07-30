@@ -14,11 +14,13 @@
 //! pack animals — plus a taming difficulty for the mounts, which the mount table has
 //! no column for.
 
+use openshard_protocol::wire::Graphic;
+
 use crate::components::Tamable;
 
 /// One tamable kind: the body, the skill it takes, and the slots it fills.
 struct TameData {
-    body: u16,
+    body: Graphic,
     min_skill: u16,
     slots: u8,
 }
@@ -29,7 +31,7 @@ const MOUNT_MIN_SKILL: u16 = 291;
 
 /// What it takes to tame `body`, or `None` for a creature nobody tames.
 #[must_use]
-pub fn tamable(body: u16) -> Option<Tamable> {
+pub fn tamable(body: Graphic) -> Option<Tamable> {
     if let Some(row) = TAMABLE.iter().find(|row| row.body == body) {
         return Some(Tamable {
             min_skill: row.min_skill,
@@ -82,7 +84,7 @@ static TAMABLE: &[TameData] = &[
 /// A row, so the table reads as data.
 const fn t(body: u16, min_skill: u16, slots: u8) -> TameData {
     TameData {
-        body,
+        body: Graphic(body),
         min_skill,
         slots,
     }
@@ -97,10 +99,11 @@ mod tests {
         // Derived from the mount table rather than listed again: a horse you cannot
         // tame is a horse nobody can have, and two hand-kept halves of one mapping
         // is how a saved ride came back as the wrong animal once already.
-        for body in [0x0074, 0x0075, 0x00C8, 0x00E2, 0x0114, 0x0317] {
+        for body in [0x0074, 0x0075, 0x00C8, 0x00E2, 0x0114, 0x0317].map(Graphic) {
             assert!(
                 tamable(body).is_some(),
-                "0x{body:04X} is rideable and must be tamable"
+                "0x{:04X} is rideable and must be tamable",
+                body.0
             );
         }
     }
@@ -109,16 +112,16 @@ mod tests {
     fn a_monster_is_not_tamable() {
         // The default matters: a body with no row cannot be tamed at all, so the
         // table is a list of what *is* rather than a list of exceptions.
-        assert!(tamable(0x0190).is_none(), "a person");
-        assert!(tamable(0x003B).is_none(), "a dragon");
+        assert!(tamable(Graphic(0x0190)).is_none(), "a person");
+        assert!(tamable(Graphic(0x003B)).is_none(), "a dragon");
     }
 
     #[test]
     fn a_bird_is_easier_than_a_grizzly() {
         // Both numbers are ServUO's `MinTameSkill` in tenths, and the gap between
         // them is the whole shape of the skill: a tamer trains up through the woods.
-        assert_eq!(tamable(0x0006).expect("a bird").min_skill, 0);
-        assert_eq!(tamable(0x00D4).expect("a grizzly").min_skill, 591);
-        assert_eq!(tamable(0x00E8).expect("a bull").min_skill, 711);
+        assert_eq!(tamable(Graphic(0x0006)).expect("a bird").min_skill, 0);
+        assert_eq!(tamable(Graphic(0x00D4)).expect("a grizzly").min_skill, 591);
+        assert_eq!(tamable(Graphic(0x00E8)).expect("a bull").min_skill, 711);
     }
 }

@@ -1,6 +1,7 @@
 //! Whether a mobile can actually stand somewhere.
 
 use openshard_movement::Terrain;
+use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{TileData, TileFlags};
@@ -353,33 +354,36 @@ impl MapTerrain {
 }
 
 impl Terrain for MapTerrain {
-    fn item_blocks(&self, graphic: u16) -> bool {
-        self.tiles.static_tile(graphic).flags.is_blocking()
+    // `.0` throughout: `tiledata.mul` is indexed by a bare `u16`, and the ids in
+    // the map's own static blocks never went through a packet, so the newtype
+    // stops here — the client-file boundary — rather than inside the reader.
+    fn item_blocks(&self, graphic: Graphic) -> bool {
+        self.tiles.static_tile(graphic.0).flags.is_blocking()
     }
 
-    fn item_height(&self, graphic: u16) -> u8 {
-        self.tiles.static_tile(graphic).height
+    fn item_height(&self, graphic: Graphic) -> u8 {
+        self.tiles.static_tile(graphic.0).height
     }
 
-    fn item_name(&self, graphic: u16) -> Option<&str> {
+    fn item_name(&self, graphic: Graphic) -> Option<&str> {
         // The tiledata placeholder is "NoName"; an unfilled short table pads with
         // an empty string. Neither is worth drawing over a clicked item.
-        let name = self.tiles.static_tile(graphic).name.as_str();
+        let name = self.tiles.static_tile(graphic.0).name.as_str();
         (!name.is_empty() && name != "NoName").then_some(name)
     }
 
-    fn item_weight(&self, graphic: u16) -> u8 {
+    fn item_weight(&self, graphic: Graphic) -> u8 {
         // 255 is tiledata's "immovable" sentinel — a wall, a tree, a signpost —
         // not a quarter-ton object. Nothing immovable can be in a pack, so it
         // weighs nothing rather than instantly overloading whoever holds it.
-        match self.tiles.static_tile(graphic).weight {
+        match self.tiles.static_tile(graphic.0).weight {
             255 => 0,
             weight => weight,
         }
     }
 
-    fn item_layer(&self, graphic: u16) -> u8 {
-        self.tiles.static_tile(graphic).layer
+    fn item_layer(&self, graphic: Graphic) -> u8 {
+        self.tiles.static_tile(graphic.0).layer
     }
 
     fn can_step(&self, from: Point, to: Point) -> Option<Point> {
@@ -518,6 +522,7 @@ impl Terrain for MapTerrain {
 mod tests {
     use super::*;
     use openshard_protocol::direction::Direction;
+    use openshard_protocol::wire::Layer;
 
     #[test]
     fn a_stair_is_stepped_onto_at_its_base_not_its_top() {
@@ -1010,20 +1015,20 @@ mod tests {
             return;
         };
         assert_eq!(
-            openshard_protocol::wire::Layer(terrain.item_layer(0x13B2)),
+            Layer(terrain.item_layer(Graphic(0x13B2))),
             openshard_state::weapon::LAYER_ONE_HANDED,
             "the bow, which is why the override exists"
         );
         for graphic in [0x143E, 0x0F4D, 0x0E89, 0x0F62] {
             assert_eq!(
-                openshard_protocol::wire::Layer(terrain.item_layer(graphic)),
+                Layer(terrain.item_layer(Graphic(graphic))),
                 openshard_state::weapon::LAYER_TWO_HANDED,
                 "0x{graphic:04X} should be two-handed"
             );
         }
         for graphic in [0x13FF, 0x0F52, 0x0F61, 0x0F5C] {
             assert_eq!(
-                openshard_protocol::wire::Layer(terrain.item_layer(graphic)),
+                Layer(terrain.item_layer(Graphic(graphic))),
                 openshard_state::weapon::LAYER_ONE_HANDED,
                 "0x{graphic:04X} should be one-handed"
             );

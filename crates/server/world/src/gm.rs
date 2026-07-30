@@ -16,8 +16,7 @@ use openshard_entities::EntityId;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
 use openshard_protocol::target::{TargetCursor, TargetKind};
-use openshard_protocol::wire::CursorId;
-use openshard_protocol::wire::Hue;
+use openshard_protocol::wire::{CursorId, Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{Client, Equipped, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats};
 use openshard_state::{TargetPurpose, WorldState};
@@ -90,7 +89,7 @@ fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     let facet = state.facet_of(actor);
     // ServUO's iron key, `0x100E`.
-    let Some(key) = items::spawn_item(state, 0x100E, 0, 1, false, at, facet.0) else {
+    let Some(key) = items::spawn_item(state, Graphic(0x100E), Hue(0), 1, false, at, facet.0) else {
         notify(state, actor, "No room for a key.");
         return;
     };
@@ -122,7 +121,7 @@ fn make_poison(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     let facet = state.facet_of(actor);
     let graphic = openshard_state::components::POISON_POTION_GRAPHIC;
-    let Some(potion) = items::spawn_item(state, graphic, 0, 1, false, at, facet.0) else {
+    let Some(potion) = items::spawn_item(state, graphic, Hue(0), 1, false, at, facet.0) else {
         notify(state, actor, "No room for a potion.");
         return;
     };
@@ -354,7 +353,7 @@ fn full_spellbook(state: &mut WorldState, actor: EntityId) {
         notify(state, actor, "You have no backpack.");
         return;
     };
-    if let Some(book) = items::give(state, backpack, SPELLBOOK_GRAPHIC, 0, 1) {
+    if let Some(book) = items::give(state, backpack, SPELLBOOK_GRAPHIC, Hue(0), 1) {
         state.registry.insert(book, Spellbook::full());
         notify(state, actor, "A full spellbook appears in your pack.");
     }
@@ -363,7 +362,7 @@ fn full_spellbook(state: &mut WorldState, actor: EntityId) {
 /// `.add <graphic> [amount]` — drop an item at the actor's feet. Hex (`0x1bf2`)
 /// or decimal, because item ids are quoted both ways.
 fn add_item(state: &mut WorldState, actor: EntityId, args: &[&str]) {
-    let Some(graphic) = args.first().and_then(parse_u16) else {
+    let Some(graphic) = args.first().and_then(parse_u16).map(Graphic) else {
         notify(state, actor, "Usage: .add <graphic> [amount]");
         return;
     };
@@ -376,11 +375,11 @@ fn add_item(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     // by decree here — the graphic decides that in real gameplay, but a spawned
     // pile the operator named is stackable so the count takes.
     let stackable = amount > 1;
-    if items::spawn_item(state, graphic, 0, amount, stackable, at, facet.0).is_some() {
+    if items::spawn_item(state, graphic, Hue(0), amount, stackable, at, facet.0).is_some() {
         notify(
             state,
             actor,
-            &format!("Spawned {amount} of {graphic:#06x} at your feet."),
+            &format!("Spawned {amount} of {:#06x} at your feet.", graphic.0),
         );
     }
 }

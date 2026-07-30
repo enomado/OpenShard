@@ -36,7 +36,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
     };
     // Only a thing with a graphic is an item. A mobile has none, so this
     // rejects trying to pick up a person.
-    if !state.registry.has::<Graphic>(item) {
+    if !state.registry.has::<Drawn>(item) {
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     }
@@ -242,16 +242,19 @@ pub fn drop_into_container(
         return;
     }
 
-    // In it goes. The drop's `x`/`y` are gump coordinates, not world tiles.
+    // In it goes. The drop's `x`/`y` are gump coordinates, not world tiles — the
+    // `0x08` this came from reuses the position field for both, and the parameter
+    // is still a `Point` because the packet is. Converted here, at the one place
+    // the two meanings part company.
+    let position = GumpPoint::new(i32::from(position.x), i32::from(position.y));
     let grid = item_count(state, container_serial);
     state.held.remove(&connection);
     state.registry.insert(
         held.entity,
         Contained {
             container: container_serial,
-            x: position.x,
-            y: position.y,
-            grid,
+            position,
+            grid: GridSlot(grid),
         },
     );
     // Tell the client, whose gump is open, that the item is now inside.
@@ -320,7 +323,7 @@ fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: He
         bounce(state, connection, held, DragCancelReason::OutOfRange);
         return;
     }
-    let graphic = state.registry.get::<Graphic>(held.entity).map(|g| g.id);
+    let graphic = state.registry.get::<Drawn>(held.entity).map(|g| g.id);
 
     // A Recall scroll recharges it — ServUO's `Runebook.OnDragDrop`.
     if graphic.and_then(scroll_spell) == Some(RECALL_SPELL) {
@@ -401,7 +404,7 @@ const RECALL_SPELL: u8 = 31;
 fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: HeldItem, book: EntityId) {
     let spell = state
         .registry
-        .get::<Graphic>(held.entity)
+        .get::<Drawn>(held.entity)
         .and_then(|g| scroll_spell(g.id));
     let (Some(spell), Some(&player), Some(book_serial)) = (
         spell,
@@ -430,7 +433,7 @@ fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: H
         connection,
         &ServerPacket::SpellbookContent(SpellbookContent {
             serial: book_serial,
-            graphic: openshard_protocol::wire::Graphic(SPELLBOOK_GRAPHIC),
+            graphic: SPELLBOOK_GRAPHIC,
             offset: 1,
             content: mask.0,
         }),

@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::Graphic;
 
 /// A player used (double-clicked) an item the engine has no built-in behaviour
 /// for — the item-trigger seam.
@@ -17,7 +18,7 @@ pub struct ItemUsed {
     /// The item that was double-clicked.
     pub item: Serial,
     /// Its graphic, so a pack matches on the tile with no lookup.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// The mobile that used it.
     pub by: Serial,
 }
@@ -36,7 +37,7 @@ pub struct MobileUsed {
     /// The mobile that was double-clicked.
     pub mobile: Serial,
     /// Its body, so a pack matches on the kind with no lookup.
-    pub body: u16,
+    pub body: Graphic,
     /// The mobile that used it.
     pub by: Serial,
 }
@@ -52,7 +53,7 @@ pub struct ItemsTaken {
     /// Whose backpack it was taken from.
     pub player: Serial,
     /// The item graphic asked for.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// How many were actually taken — the amount asked, or `0`.
     pub taken: u16,
 }
@@ -91,7 +92,7 @@ pub(crate) fn emit_mobile_used(
     };
     state.bus.send(MobileUsed {
         mobile: target_serial,
-        body: body.0,
+        body,
         by,
     });
 }
@@ -103,12 +104,12 @@ pub(crate) fn emit_mobile_used(
 /// Reach is server-authoritative: the same [`in_reach`] a lift uses,
 /// which resolves a ground item by its tile, a carried one by its holder, and a
 /// worn one by its wearer — so a double-click across the map fires nothing. An
-/// item that somehow has no `Graphic` is not a drawable item and is ignored.
+/// item that somehow has no `Drawn` is not a drawable item and is ignored.
 pub(crate) fn item_used(state: &mut WorldState, player: EntityId, target: EntityId, target_serial: Serial) {
     if !in_reach(state, target, player) {
         return;
     }
-    let Some(&Graphic { id, .. }) = state.registry.get::<Graphic>(target) else {
+    let Some(&Drawn { id, .. }) = state.registry.get::<Drawn>(target) else {
         return;
     };
     let Some(by) = state.registry.serial_of(player) else {

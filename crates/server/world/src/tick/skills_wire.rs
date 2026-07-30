@@ -160,7 +160,7 @@ impl World {
     /// customise in the pack" — a pack that gives a graphic its own meaning has
     /// already been heard.
     pub(super) fn use_item_skill(&mut self, player: EntityId, item: EntityId) {
-        let Some(graphic) = self.state.registry.get::<Graphic>(item).map(|g| g.id) else {
+        let Some(graphic) = self.state.registry.get::<Drawn>(item).map(|g| g.id) else {
             return;
         };
         match graphic {
@@ -199,7 +199,7 @@ impl World {
     /// what knows the click happened; from the moment the window is drawn the
     /// crate owns everything, including the reply.
     fn open_craft_window(&mut self, player: EntityId, tool: EntityId) {
-        let Some(graphic) = self.state.registry.get::<Graphic>(tool).map(|g| g.id) else {
+        let Some(graphic) = self.state.registry.get::<Drawn>(tool).map(|g| g.id) else {
             return;
         };
         let Some(system) = crafting::tool_system(graphic) else {

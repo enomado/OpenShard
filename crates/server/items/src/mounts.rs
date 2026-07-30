@@ -26,7 +26,7 @@ pub fn try_mount(state: &mut WorldState, player: EntityId, target: EntityId, tar
     let Some(&Body { id: body, hue }) = state.registry.get::<Body>(target) else {
         return false;
     };
-    let Some(mount_graphic) = mount_item_for(body.0) else {
+    let Some(mount_graphic) = mount_item_for(body) else {
         return false;
     };
     if state.registry.has::<Client>(target)
@@ -53,13 +53,12 @@ pub fn try_mount(state: &mut WorldState, player: EntityId, target: EntityId, tar
         return false;
     };
     // The saddle takes the creature's own colour, so a dyed horse still looks
-    // dyed once ridden. `.0` because the item `Graphic` component is a pair of
-    // raw `u16`s where `Body` is a wire `Graphic`/`Hue`.
+    // dyed once ridden.
     state.registry.insert(
         item,
-        Graphic {
+        Drawn {
             id: mount_graphic,
-            hue: hue.0,
+            hue,
         },
     );
     state.registry.insert(

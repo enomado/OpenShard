@@ -23,6 +23,8 @@
 
 /// The four facings a generated door can take, as `DoorFacing` indices into the
 /// hinge-offset table — the only ones `DoorGenerator` ever produces.
+use openshard_protocol::wire::Graphic;
+
 #[derive(Clone, Copy)]
 pub(crate) enum GenFacing {
     /// A single or left leaf of an east/west doorway.
@@ -53,10 +55,13 @@ impl GenFacing {
     /// The closed graphic, open graphic, and hinge offset of a `DarkWoodDoor` at
     /// this facing — everything the [`Door`](openshard_state::components::Door)
     /// component needs.
-    pub(crate) fn door(self) -> (u16, u16, i16, i16) {
+    pub(crate) fn door(self) -> (Graphic, Graphic, i16, i16) {
+        // `DARK_WOOD_BASE` is a base the facing indexes off, so it stays a bare
+        // `u16` and the two ids are named on the way out — the same split the
+        // cliloc sweep settled on for `base + arithmetic`.
         let closed = DARK_WOOD_BASE + 2 * self.index();
         let (ox, oy) = OFFSETS[self.index() as usize];
-        (closed, closed + 1, ox, oy)
+        (Graphic(closed), Graphic(closed + 1), ox, oy)
     }
 }
 

@@ -1,4 +1,4 @@
-use openshard_protocol::wire::{ClilocId, SoundId};
+use openshard_protocol::wire::{ClilocId, Graphic, SoundId};
 use openshard_state::components::{Trap, TrapKind};
 
 use super::*;
@@ -10,9 +10,9 @@ const DART_SOUND: SoundId = SoundId(0x0223);
 /// The hiss of a poison cloud.
 const POISON_SOUND: SoundId = SoundId(0x0231);
 /// The explosion's flame, and the dart's — ServUO's `0x36BD` location effect.
-const BLAST_GRAPHIC: u16 = 0x36BD;
+const BLAST_GRAPHIC: Graphic = Graphic(0x36BD);
 /// The green cloud a poison trap lets out.
-const CLOUD_GRAPHIC: u16 = 0x113A;
+const CLOUD_GRAPHIC: Graphic = Graphic(0x113A);
 /// "You set off a trap!"
 const SET_OFF_A_TRAP: ClilocId = ClilocId(502_999);
 /// "Your skin blisters from the heat!"
@@ -102,7 +102,7 @@ impl World {
 
     /// A flash, a puff of smoke or a cloud, standing at a thing's own tile — the
     /// `0x70` in its simplest form, seen by everyone who can see the thing.
-    fn location_effect(&mut self, at: EntityId, graphic: u16) {
+    fn location_effect(&mut self, at: EntityId, graphic: Graphic) {
         let Some(&Position(spot)) = self.state.registry.get::<Position>(at) else {
             return;
         };
@@ -110,7 +110,7 @@ impl World {
             kind: openshard_protocol::feedback::EffectKind::FixedXyz,
             from: None,
             to: None,
-            art: openshard_protocol::wire::Graphic(graphic),
+            art: graphic,
             from_point: spot,
             to_point: spot,
             speed: 9,

@@ -33,6 +33,7 @@ use crate::craft;
 use crate::defs::system;
 use crate::recipe::Recipe;
 use crate::system::{CraftSystemDef, Text};
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// The window's own id. Distinct from the quest log's, so the two claims of a
 /// `0xB1` cannot be confused.
@@ -420,7 +421,7 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
     layout.html_localized_colored(50, 390, 150, 18, 1_044_150, LABEL, false, false); // BACK
 
     label(&mut layout, 330, 40, 180, recipe.name, "");
-    layout.item(90, 110, u32::from(recipe.graphic), u32::from(recipe.hue));
+    layout.item(90, 110, u32::from(recipe.graphic.0), u32::from(recipe.hue.0));
 
     let mut other = 0;
     if recipe.use_all_res {
@@ -476,7 +477,7 @@ fn percent(value: u32) -> String {
 }
 
 /// The hue a material line is really taken at, once the axis has been applied.
-fn axis_hue(def: &CraftSystemDef, res: &crate::recipe::CraftRes, sub_res: u8) -> u16 {
+fn axis_hue(def: &CraftSystemDef, res: &crate::recipe::CraftRes, sub_res: u8) -> Hue {
     if !res.from_axis {
         return res.hue;
     }
@@ -495,7 +496,7 @@ fn axis_name(def: &CraftSystemDef, res: &crate::recipe::CraftRes, sub_res: u8) -
 }
 
 /// How many of a material a player is carrying.
-fn carried(state: &WorldState, player: EntityId, graphic: u16, hue: u16) -> u32 {
+fn carried(state: &WorldState, player: EntityId, graphic: Graphic, hue: Hue) -> u32 {
     state.registry.serial_of(player).map_or(0, |serial| {
         openshard_items::carried_amount_of_hue(state, serial, graphic, Some(hue))
     })

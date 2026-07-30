@@ -26,19 +26,16 @@ use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, LocalizedMessage, SpokenMessage, TalkMode};
-// `Graphic` is also a component name in this crate — an item's tiledata id and
-// hue together — so the wire's one-field newtype is imported under the name the
-// packet field has.
-use openshard_protocol::wire::{ClilocId, Graphic as WireGraphic, Hue, SoundId};
+use openshard_protocol::wire::{ClilocId, Hue, SoundId};
 use openshard_protocol::world::{
     Facet, MapChange, MapSize, PlayerUpdate, Point, Season, encode_server_change,
 };
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
-    Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Ghost, Graphic, Heading, HearsGhosts,
-    Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing,
-    TradeWindow, body_opens_doors,
+    Access, Amount, Body, Client, Contained, CraftedBy, Drawn, Equipped, Ghost, Heading, HearsGhosts, Hidden,
+    Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing, TradeWindow,
+    body_opens_doors,
 };
 use crate::connection::Connection;
 use crate::dialogue::Dialogue;
@@ -1009,7 +1006,7 @@ impl WorldState {
             .registry
             .get::<Body>(source)
             .map(|body| body.id)
-            .or_else(|| self.registry.get::<Graphic>(source).map(|g| WireGraphic(g.id)));
+            .or_else(|| self.registry.get::<Drawn>(source).map(|g| g.id));
         let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
             serial,
             graphic,
@@ -1042,7 +1039,7 @@ impl WorldState {
             .registry
             .get::<Body>(source)
             .map(|body| body.id)
-            .or_else(|| self.registry.get::<Graphic>(source).map(|g| WireGraphic(g.id)));
+            .or_else(|| self.registry.get::<Drawn>(source).map(|g| g.id));
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
             serial,
             graphic,
@@ -1131,7 +1128,7 @@ impl WorldState {
         let humanoid = self
             .registry
             .get::<Body>(mobile)
-            .is_some_and(|body| body_opens_doors(body.id.0));
+            .is_some_and(|body| body_opens_doors(body.id));
         // Built once each; the per-recipient choice is only which to send.
         let new_packet = ServerPacket::NewAnimation(NewAnimation {
             serial,
@@ -1576,8 +1573,8 @@ impl WorldState {
             // slot whole and the other two stay empty.
             let name = crate::title::titled_name(self, entity, name);
             list.add_args(1_050_045, &format!(" \t{name}\t "));
-        } else if let Some(&Graphic { id, .. }) = self.registry.get::<Graphic>(entity) {
-            let cliloc = 1_020_000 + u32::from(id);
+        } else if let Some(&Drawn { id, .. }) = self.registry.get::<Drawn>(entity) {
+            let cliloc = 1_020_000 + u32::from(id.0);
             match self.registry.get::<Amount>(entity) {
                 Some(Amount(amount)) if *amount > 1 => {
                     list.add_args(1_050_039, &format!("{amount}\t#{cliloc}"));
@@ -1620,7 +1617,7 @@ impl WorldState {
         if self.registry.has::<Body>(entity) {
             let incoming = self.mobile_incoming(entity)?;
             Some(ServerPacket::MobileIncoming(incoming).encode(version))
-        } else if self.registry.has::<Graphic>(entity) {
+        } else if self.registry.has::<Drawn>(entity) {
             Some(ServerPacket::WorldItem(self.world_item(entity)?).encode(version))
         } else {
             None
@@ -1631,16 +1628,16 @@ impl WorldState {
     #[must_use]
     pub fn world_item(&self, entity: EntityId) -> Option<WorldItem> {
         let serial = self.registry.serial_of(entity)?;
-        let Graphic { id, hue } = *self.registry.get::<Graphic>(entity)?;
+        let Drawn { id, hue } = *self.registry.get::<Drawn>(entity)?;
         let Position(position) = *self.registry.get::<Position>(entity)?;
         // No `Amount` means a single. The encoder treats 1 and absent the same.
         let amount = self.registry.get::<Amount>(entity).map_or(1, |a| a.0);
         Some(WorldItem {
             serial,
-            graphic: openshard_protocol::wire::Graphic(id),
+            graphic: id,
             amount,
             position,
-            hue: openshard_protocol::wire::Hue(hue),
+            hue,
         })
     }
 
@@ -1879,7 +1876,7 @@ impl WorldState {
     /// without knowing the map exists breaks it silently.
     ///
     /// It holds *entities*, not the finished list, so a re-dyed or re-graphicked
-    /// item still reads its current `Graphic` here — only membership is cached,
+    /// item still reads its current `Drawn` here — only membership is cached,
     /// and only membership is what the version tracks.
     #[must_use]
     pub fn equipment_of(&mut self, mobile: Serial) -> Vec<Equipment> {
@@ -1905,12 +1902,12 @@ impl WorldState {
                 }
                 let serial = self.registry.serial_of(item)?;
                 let worn = self.registry.get::<Equipped>(item)?;
-                let Graphic { id, hue } = *self.registry.get::<Graphic>(item)?;
+                let Drawn { id, hue } = *self.registry.get::<Drawn>(item)?;
                 Some(Equipment {
                     serial,
-                    graphic: WireGraphic(id),
+                    graphic: id,
                     layer: worn.layer,
-                    hue: Hue(hue),
+                    hue,
                 })
             })
             .collect()

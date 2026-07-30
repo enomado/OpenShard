@@ -24,8 +24,7 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::wire::Layer;
-use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
+use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::components::{
@@ -52,17 +51,17 @@ const MURDER_THRESHOLD: u16 = 5;
 /// (~40s at 20Hz). ServUO's idle timer wanders it a while, then deletes it.
 const IDLE_TICKS: u64 = 40 * 20;
 /// The male and female guard bodies — plain humans, as ServUO's guard is.
-const GUARD_BODIES: [u16; 2] = [0x0190, 0x0191];
+const GUARD_BODIES: [Graphic; 2] = [Graphic(0x0190), Graphic(0x0191)];
 /// Plate and a halberd, so it reads as a guard on sight: `(graphic, layer, hue)`.
-const GUARD_KIT: [(u16, Layer, u16); 4] = [
-    (0x1415, Layer(0x05), 0), // plate chest, on the torso layer
-    (0x1410, Layer(0x13), 0), // plate arms
-    (0x1411, Layer(0x04), 0), // plate legs
-    (0x143E, Layer(0x02), 0), // halberd, in hand
+const GUARD_KIT: [(Graphic, Layer, Hue); 4] = [
+    (Graphic(0x1415), Layer(0x05), Hue(0)), // plate chest, on the torso layer
+    (Graphic(0x1410), Layer(0x13), Hue(0)), // plate arms
+    (Graphic(0x1411), Layer(0x04), Hue(0)), // plate legs
+    (Graphic(0x143E), Layer(0x02), Hue(0)), // halberd, in hand
 ];
 /// The teleport-in sparkle and its sound — ServUO's `WarriorGuard.TeleportTo`,
 /// the same pair the Teleport spell uses.
-const ARRIVAL_GRAPHIC: u16 = 0x3728;
+const ARRIVAL_GRAPHIC: Graphic = Graphic(0x3728);
 const ARRIVAL_SOUND: u16 = 0x01FE;
 /// What a guard says as it takes its focus — ServUO's cliloc 500131.
 const GUARD_LINE: &str = "Thou wilt regret thine actions, swine!";
@@ -195,7 +194,7 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
         state,
         SpawnSpec {
             body,
-            hue: 0,
+            hue: Hue(0),
             // Not invulnerable, but not meant to be fought either: it is gone
             // before a fight could start.
             hits: 1000,
@@ -244,7 +243,7 @@ fn flash(state: &mut WorldState, guard: EntityId, at: Point) {
         kind: EffectKind::FixedXyz,
         from: None,
         to: None,
-        art: WireGraphic(ARRIVAL_GRAPHIC),
+        art: ARRIVAL_GRAPHIC,
         from_point: at,
         to_point: at,
         speed: 9,

@@ -3,6 +3,7 @@
 use std::time::Instant;
 
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::{Point, WalkRequest};
 
 use crate::pace::{Pace, WalkPace};
@@ -116,21 +117,21 @@ pub trait Terrain {
     /// Whether static art `graphic` is impassable by its tiledata flags — what
     /// decides if a *placed* copy of it should block the tile it stands on. A
     /// terrain with no tiledata blocks nothing.
-    fn item_blocks(&self, _graphic: u16) -> bool {
+    fn item_blocks(&self, _graphic: Graphic) -> bool {
         false
     }
 
     /// The height of static art `graphic` by its tiledata, so a *placed* copy
     /// blocks only the vertical span it occupies — an upper-floor wall does not
     /// seal the ground beneath it. A terrain with no tiledata reports zero.
-    fn item_height(&self, _graphic: u16) -> u8 {
+    fn item_height(&self, _graphic: Graphic) -> u8 {
         0
     }
 
     /// The tiledata name of static art `graphic`, for a single-click label — the
     /// same table as [`item_blocks`](Self::item_blocks), read for its name rather
     /// than its flags. A terrain with no tiledata (an open world) has no names.
-    fn item_name(&self, _graphic: u16) -> Option<&str> {
+    fn item_name(&self, _graphic: Graphic) -> Option<&str> {
         None
     }
 
@@ -142,7 +143,7 @@ pub trait Terrain {
     /// every step. Tiledata's `255` means *immovable*, not "heavy", and an
     /// implementation is expected to report zero for it — nothing immovable is
     /// ever in a pack.
-    fn item_weight(&self, _graphic: u16) -> u8 {
+    fn item_weight(&self, _graphic: Graphic) -> u8 {
         0
     }
 
@@ -155,7 +156,7 @@ pub trait Terrain {
     /// the weapon table twice. A terrain with no tiledata reports `0` — no layer —
     /// so a shard running without client files treats every weapon as one-handed,
     /// the same bargain its terrain makes by allowing every step.
-    fn item_layer(&self, _graphic: u16) -> u8 {
+    fn item_layer(&self, _graphic: Graphic) -> u8 {
         0
     }
 

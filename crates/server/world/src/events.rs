@@ -15,6 +15,7 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawSwitchId};
 use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 
 /// A character entered the world.
@@ -116,7 +117,7 @@ pub struct MobileRestored {
     /// Its wire identity — the same serial it had before the restart.
     pub serial: Serial,
     /// Its body, so a listener matches the kind without a lookup.
-    pub body: u16,
+    pub body: Graphic,
     /// Where it stands right now.
     pub at: Point,
     /// The post it belongs to — its [`Npc`] home, or where it stands if it has
@@ -220,7 +221,7 @@ pub struct CorpseCreated {
     pub corpse: Serial,
     /// The body the creature was, so a pack matches its loot table with no
     /// lookup — the same key `creature_name`/`creature_base_sound` use.
-    pub body: u16,
+    pub body: Graphic,
 }
 
 /// A mobile crossed from one region into another.

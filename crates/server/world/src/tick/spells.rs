@@ -21,7 +21,7 @@ use openshard_magic::{MAGERY_SKILL, SpellEffect, SpellTarget};
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
-use openshard_protocol::wire::{CursorId, Graphic as WireGraphic, SoundId};
+use openshard_protocol::wire::{CursorId, Graphic, SoundId};
 use openshard_state::components::{Casting, Skills};
 use openshard_state::{CastStyle, DamageType, FieldKind, TargetPurpose};
 
@@ -137,7 +137,7 @@ impl World {
         let mana_loss_on_fail = self.state.gameplay.mana_loss_on_fail;
         let reagent_loss_on_fail = self.state.gameplay.reagent_loss_on_fail;
         // Reagents off means an empty list: nothing to check, nothing to consume.
-        let reagents: Vec<(u16, u16)> = if reagents_required {
+        let reagents: Vec<(Graphic, u16)> = if reagents_required {
             info.reagents.iter().map(|&graphic| (graphic, 1)).collect()
         } else {
             Vec::new()
@@ -484,7 +484,7 @@ impl World {
                 kind: EffectKind::Moving,
                 from: caster_serial,
                 to: Serial::new(target_serial),
-                art: WireGraphic(graphic),
+                art: Graphic(graphic),
                 from_point: caster_pos,
                 to_point: target_pos,
                 speed: 7,
@@ -496,7 +496,7 @@ impl World {
                 kind: EffectKind::FixedFrom,
                 from: Serial::new(target_serial),
                 to: None,
-                art: WireGraphic(graphic),
+                art: Graphic(graphic),
                 from_point: target_pos,
                 to_point: target_pos,
                 speed: 9,
@@ -508,7 +508,7 @@ impl World {
                 kind: EffectKind::FixedXyz,
                 from: None,
                 to: None,
-                art: WireGraphic(graphic),
+                art: Graphic(graphic),
                 from_point: target_location,
                 to_point: target_location,
                 speed: 9,

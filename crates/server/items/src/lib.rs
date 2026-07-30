@@ -23,13 +23,13 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::spellbook::SpellbookContent;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::trade::{encode_trade_close, encode_trade_open, encode_trade_update};
-use openshard_protocol::wire::{ClilocId, CursorId, Hue, Layer, RawLayer, SoundId};
+use openshard_protocol::wire::{ClilocId, CursorId, Graphic, Hue, Layer, RawLayer, SoundId};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{
-    Amount, Body, Client, Combat, Contained, Container, Corpse, Decays, Decoration, Door, Equipped, Ghost,
-    Graphic, KeyValue, Lock, Name, PoisonCharges, Position, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, Ridden,
-    Riding, RuneMark, Runebook, RunebookEntry, SPELLBOOK_GRAPHIC, Spellbook, Stackable, Weapon,
-    mount_item_for, scroll_spell,
+    Amount, Body, Client, Combat, Contained, Container, Corpse, Decays, Decoration, Door, Drawn, Equipped,
+    Ghost, KeyValue, Lock, Name, PoisonCharges, Position, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, Ridden, Riding,
+    RuneMark, Runebook, RunebookEntry, SPELLBOOK_GRAPHIC, Spellbook, Stackable, Weapon, mount_item_for,
+    scroll_spell,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{HeldItem, Origin, Outbound, TICKS_PER_SECOND, TradeWindow, WorldState};

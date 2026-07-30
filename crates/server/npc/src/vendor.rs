@@ -11,13 +11,14 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_items as items;
 use openshard_movement::Terrain;
-use openshard_protocol::containers::{ContainerContents, encode_open_container};
+use openshard_protocol::containers::{ContainerContents, GridSlot, encode_open_container};
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
-use openshard_protocol::wire::Layer;
+use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_state::components::{
-    Amount, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord, Vendor,
+    Amount, Contained, Drawn, Equipped, Name, Position, Price, Restock, StockRecord, Vendor,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{TooltipMode, WorldState};
@@ -36,11 +37,11 @@ pub const STOCK_LAYER: Layer = Layer(0x1A);
 pub const RESALE_LAYER: Layer = Layer(0x1B);
 
 /// The crate the stock lives in, and its gump.
-const STOCK_GRAPHIC: u16 = 0x0E3F;
-const STOCK_GUMP: u16 = 0x003E;
+const STOCK_GRAPHIC: Graphic = Graphic(0x0E3F);
+const STOCK_GUMP: Graphic = Graphic(0x003E);
 
 /// The vendor buy gump the client opens over the stock container.
-const SHOP_GUMP: openshard_protocol::wire::Graphic = openshard_protocol::wire::Graphic(0x0030);
+const SHOP_GUMP: Graphic = Graphic(0x0030);
 
 /// How near a customer must stand to trade — a few tiles, so a shopper reaches
 /// the counter but cannot buy from across the street. Trade also needs line of
@@ -51,9 +52,9 @@ const TRADE_RANGE: u32 = 4;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StockLine {
     /// The goods' graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Their hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// How many the vendor holds.
     pub amount: u16,
     /// What one unit costs.
@@ -139,7 +140,7 @@ fn place_stock_line(state: &mut WorldState, stock_serial: Serial, line: &StockLi
     };
     state.registry.insert(
         entity,
-        Graphic {
+        Drawn {
             id: line.graphic,
             hue: line.hue,
         },
@@ -148,9 +149,8 @@ fn place_stock_line(state: &mut WorldState, stock_serial: Serial, line: &StockLi
         entity,
         Contained {
             container: stock_serial,
-            x: 50,
-            y: 50,
-            grid: 0,
+            position: GumpPoint::new(50, 50),
+            grid: GridSlot(0),
         },
     );
     state.registry.insert(entity, Amount(line.amount));
@@ -185,7 +185,7 @@ fn restock_if_due(state: &mut WorldState, vendor: EntityId, stock_serial: Serial
             .filter(|(item, _)| {
                 state
                     .registry
-                    .get::<Graphic>(*item)
+                    .get::<Drawn>(*item)
                     .is_some_and(|g| g.id == line.graphic && g.hue == line.hue)
             })
             .map(|(item, _)| item)
@@ -280,7 +280,14 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: Seria
     // client crashes when the shop opens.
     if worn_container(state, vendor, RESALE_LAYER).is_none() {
         if let Some(vendor_serial) = state.registry.serial_of(vendor) {
-            items::equip_new_container(state, vendor_serial, STOCK_GRAPHIC, STOCK_GUMP, 0, RESALE_LAYER);
+            items::equip_new_container(
+                state,
+                vendor_serial,
+                STOCK_GRAPHIC,
+                STOCK_GUMP,
+                Hue(0),
+                RESALE_LAYER,
+            );
         }
     }
 
@@ -359,7 +366,7 @@ pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: RawS
     // Price the whole basket first: a purchase is all-or-nothing, so a client
     // that asked for more than it can pay is refused before anything moves.
     let mut total: u32 = 0;
-    let mut basket: Vec<(EntityId, u16, u16, u16, u32)> = Vec::new();
+    let mut basket: Vec<(EntityId, u16, Graphic, Hue, u32)> = Vec::new();
     for purchase in list {
         let Some(item) = purchase
             .serial
@@ -378,7 +385,7 @@ pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: RawS
             continue;
         }
         let price = state.registry.get::<Price>(item).map_or(1, |p| p.0);
-        let Some(&Graphic { id, hue }) = state.registry.get::<Graphic>(item) else {
+        let Some(&Drawn { id, hue }) = state.registry.get::<Drawn>(item) else {
             continue;
         };
         total = total.saturating_add(price.saturating_mul(u32::from(take)));
@@ -453,18 +460,18 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
         .query::<Contained>()
         .filter(|(_, held)| held.container == backpack)
         .filter_map(|(entity, _)| {
-            let &Graphic { id, hue } = state.registry.get::<Graphic>(entity)?;
+            let &Drawn { id, hue } = state.registry.get::<Drawn>(entity)?;
             let price = sell_price(*catalogue.iter().find(|(g, _)| *g == id).map(|(_, p)| p)?);
             let serial = state.registry.serial_of(entity)?;
             let amount = state.registry.get::<Amount>(entity).map_or(1, |a| a.0);
             let name = state
                 .registry
                 .get::<Name>(entity)
-                .map_or_else(|| format!("item {id:#06x}"), |n| n.0.clone());
+                .map_or_else(|| format!("item {:#06x}", id.0), |n| n.0.clone());
             Some(SellLine {
                 serial,
-                graphic: openshard_protocol::wire::Graphic(id),
-                hue: openshard_protocol::wire::Hue(hue),
+                graphic: id,
+                hue,
                 amount,
                 price,
                 name,
@@ -515,7 +522,7 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: Raw
         if state.registry.get::<Contained>(item).map(|c| c.container) != Some(backpack) {
             continue;
         }
-        let Some(&Graphic { id, .. }) = state.registry.get::<Graphic>(item) else {
+        let Some(&Drawn { id, .. }) = state.registry.get::<Drawn>(item) else {
             continue;
         };
         let Some(&(_, price)) = catalogue.iter().find(|(g, _)| *g == id) else {
@@ -531,7 +538,7 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: Raw
     // needs. Clamping it to one stack's worth here was the same silent loss as
     // clamping a merge.
     let paid = earned;
-    items::give(state, backpack, GOLD_GRAPHIC, 0, paid);
+    items::give(state, backpack, GOLD_GRAPHIC, Hue(0), paid);
     vendor_says(state, vendor, &format!("The total of thy sale is {paid} gold."));
 }
 
@@ -541,13 +548,13 @@ fn sell_price(buy: u32) -> u16 {
 }
 
 /// Every (graphic, unit price) the vendor's crate holds.
-fn stock_prices(state: &WorldState, stock_serial: Serial) -> Vec<(u16, u32)> {
+fn stock_prices(state: &WorldState, stock_serial: Serial) -> Vec<(Graphic, u32)> {
     state
         .registry
         .query::<Contained>()
         .filter(|(_, held)| held.container == stock_serial)
         .filter_map(|(entity, _)| {
-            let graphic = state.registry.get::<Graphic>(entity)?.id;
+            let graphic = state.registry.get::<Drawn>(entity)?.id;
             let price = state.registry.get::<Price>(entity).map_or(1, |p| p.0);
             Some((graphic, price))
         })
@@ -606,7 +613,7 @@ fn worn_container(state: &WorldState, mobile: EntityId, layer: Layer) -> Option<
 /// Dress a fresh townsperson as a vendor: the mark, and the stock crate.
 pub(crate) fn make_vendor(state: &mut WorldState, entity: EntityId, serial: Serial) {
     state.registry.insert(entity, Vendor);
-    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, 0, STOCK_LAYER);
+    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, Hue(0), STOCK_LAYER);
     // The empty second crate ClassicUO's buy scan insists on — see `RESALE_LAYER`.
-    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, 0, RESALE_LAYER);
+    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, Hue(0), RESALE_LAYER);
 }

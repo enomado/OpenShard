@@ -25,7 +25,7 @@
 //! [`FIXED_LAYERS`] names the layers nothing may be lifted from — ServUO's
 //! `Movable = false` on the same items.
 
-use openshard_protocol::wire::Layer;
+use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_state::rng::Rng;
 
 /// Layer `0x03`, UO `Layer.Shoes`.
@@ -51,9 +51,9 @@ pub const LAYER_OUTER_LEGS: Layer = Layer(0x17);
 pub use openshard_items::FIXED_LAYERS;
 
 /// The male human body, UO `0x0190`.
-pub const BODY_MALE: u16 = 0x0190;
+pub const BODY_MALE: Graphic = Graphic(0x0190);
 /// The female human body, UO `0x0191`.
-pub const BODY_FEMALE: u16 = 0x0191;
+pub const BODY_FEMALE: Graphic = Graphic(0x0191);
 
 /// What a profession puts on its feet — ServUO's `VendorShoeType`, which each
 /// vendor class overrides (`Mage` rolls shoes or sandals, a `Ranger` wears thigh
@@ -88,13 +88,13 @@ impl ShoeType {
     }
 
     /// The graphic worn, or `None` when barefoot.
-    const fn graphic(self) -> Option<u16> {
+    const fn graphic(self) -> Option<Graphic> {
         match self {
             Self::None => None,
-            Self::Shoes => Some(0x170F),
-            Self::Boots => Some(0x170B),
-            Self::Sandals => Some(0x170D),
-            Self::ThighBoots => Some(0x1711),
+            Self::Shoes => Some(Graphic(0x170F)),
+            Self::Boots => Some(Graphic(0x170B)),
+            Self::Sandals => Some(Graphic(0x170D)),
+            Self::ThighBoots => Some(Graphic(0x1711)),
         }
     }
 }
@@ -103,13 +103,13 @@ impl ShoeType {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Appearance {
     /// The human body graphic, [`BODY_MALE`] or [`BODY_FEMALE`].
-    pub body: u16,
+    pub body: Graphic,
     /// The skin hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// Whether it came out female — the pack needs it to pick a name list.
     pub female: bool,
     /// Everything worn, `(graphic, layer, hue)`, in the order `spawn` equips it.
-    pub equipment: Vec<(u16, Layer, u16)>,
+    pub equipment: Vec<(Graphic, Layer, Hue)>,
 }
 
 /// Dress a townsperson, ServUO's `BaseVendor.InitBody` then `InitOutfit`.
@@ -136,7 +136,7 @@ pub fn dress_townsperson(rng: &mut Rng, shoe: ShoeType, female: Option<bool>) ->
         1 => (0x1F7B, LAYER_MIDDLE_TORSO), // Doublet
         _ => (0x1517, LAYER_SHIRT),        // Shirt
     };
-    equipment.push((torso.0, torso.1, random_clothing_hue(rng)));
+    equipment.push((Graphic(torso.0), torso.1, random_clothing_hue(rng)));
 
     // Then the feet.
     if let Some(graphic) = shoe.graphic() {
@@ -165,7 +165,7 @@ pub fn dress_townsperson(rng: &mut Rng, shoe: ShoeType, female: Option<bool>) ->
     } else {
         (0x152E, LAYER_PANTS) // ShortPants
     };
-    equipment.push((legs.0, legs.1, random_clothing_hue(rng)));
+    equipment.push((Graphic(legs.0), legs.1, random_clothing_hue(rng)));
 
     Appearance {
         body,
@@ -177,24 +177,24 @@ pub fn dress_townsperson(rng: &mut Rng, shoe: ShoeType, female: Option<bool>) ->
 
 /// `Utility.RandomSkinHue`: one of 57 flesh tones, with the partial-hue bit set —
 /// which is what stops the whole body being painted one flat colour.
-fn random_skin_hue(rng: &mut Rng) -> u16 {
-    (1002 + rng.below(57)) as u16 | 0x8000
+fn random_skin_hue(rng: &mut Rng) -> Hue {
+    Hue((1002 + rng.below(57)) as u16 | 0x8000)
 }
 
 /// `Utility.RandomHairHue`: one of 48 hair colours.
-fn random_hair_hue(rng: &mut Rng) -> u16 {
-    (1102 + rng.below(48)) as u16
+fn random_hair_hue(rng: &mut Rng) -> Hue {
+    Hue((1102 + rng.below(48)) as u16)
 }
 
 /// `Utility.RandomNeutralHue`: the browns and greys leather comes in.
-fn random_neutral_hue(rng: &mut Rng) -> u16 {
-    (1801 + rng.below(108)) as u16
+fn random_neutral_hue(rng: &mut Rng) -> Hue {
+    Hue((1801 + rng.below(108)) as u16)
 }
 
 /// `BaseVendor.GetShoeHue`: mostly a neutral leather, one time in ten black.
-fn shoe_hue(rng: &mut Rng) -> u16 {
+fn shoe_hue(rng: &mut Rng) -> Hue {
     if rng.below(10) == 0 {
-        0
+        Hue(0)
     } else {
         random_neutral_hue(rng)
     }
@@ -202,12 +202,12 @@ fn shoe_hue(rng: &mut Rng) -> u16 {
 
 /// `BaseVendor.GetRandomHue`: cloth comes in one of five bands, so a street of
 /// shopkeepers is not five hundred shades of the same blue.
-fn random_clothing_hue(rng: &mut Rng) -> u16 {
+fn random_clothing_hue(rng: &mut Rng) -> Hue {
     match rng.below(5) {
-        0 => (1301 + rng.below(54)) as u16, // RandomBlueHue
-        1 => (1401 + rng.below(54)) as u16, // RandomGreenHue
-        2 => (1601 + rng.below(54)) as u16, // RandomRedHue
-        3 => (1701 + rng.below(54)) as u16, // RandomYellowHue
+        0 => Hue((1301 + rng.below(54)) as u16), // RandomBlueHue
+        1 => Hue((1401 + rng.below(54)) as u16), // RandomGreenHue
+        2 => Hue((1601 + rng.below(54)) as u16), // RandomRedHue
+        3 => Hue((1701 + rng.below(54)) as u16), // RandomYellowHue
         _ => random_neutral_hue(rng),
     }
 }
@@ -215,8 +215,8 @@ fn random_clothing_hue(rng: &mut Rng) -> u16 {
 /// `RaceDefinitions.Human.RandomHair`: nine styles, and never baldness. The last
 /// case differs by gender — buns for a woman, a receding hairline for a man —
 /// because the other body cannot wear it (`ValidateHair` rejects it).
-fn random_hair(rng: &mut Rng, female: bool) -> u16 {
-    match rng.below(9) {
+fn random_hair(rng: &mut Rng, female: bool) -> Graphic {
+    Graphic(match rng.below(9) {
         0 => 0x203B,           // Short
         1 => 0x203C,           // Long
         2 => 0x203D,           // Pony Tail
@@ -227,15 +227,15 @@ fn random_hair(rng: &mut Rng, female: bool) -> u16 {
         7 => 0x204A,           // Krisna
         _ if female => 0x2046, // Buns
         _ => 0x2048,           // Receding
-    }
+    })
 }
 
 /// `RaceDefinitions.Human.RandomFacialHair`: `((rand < 4) ? 0x203E : 0x2047) + rand`
 /// over seven rolls — the odd-looking arithmetic is ServUO's, and it lands on the
 /// four short beards then the three long ones.
-fn random_facial_hair(rng: &mut Rng) -> u16 {
+fn random_facial_hair(rng: &mut Rng) -> Graphic {
     let rand = rng.below(7) as u16;
-    if rand < 4 { 0x203E + rand } else { 0x2047 + rand }
+    Graphic(if rand < 4 { 0x203E + rand } else { 0x2047 + rand })
 }
 
 #[cfg(test)]
@@ -288,7 +288,8 @@ mod tests {
             for &(graphic, layer, _) in &look.equipment {
                 assert!(
                     seen.insert(layer),
-                    "seed {seed}: {graphic:#06x} collides on layer {:#04x}",
+                    "seed {seed}: {:#06x} collides on layer {:#04x}",
+                    graphic.0,
                     layer.0
                 );
             }
@@ -343,8 +344,8 @@ mod tests {
         for seed in 1..100u64 {
             let mut rng = Rng::new(seed);
             let hue = dress_townsperson(&mut rng, ShoeType::Shoes, None).hue;
-            assert_ne!(hue & 0x8000, 0, "seed {seed}: skin hue {hue:#06x} is flat");
-            assert!((1002..=1058).contains(&(hue & 0x7FFF)));
+            assert_ne!(hue.0 & 0x8000, 0, "seed {seed}: skin hue {:#06x} is flat", hue.0);
+            assert!((1002..=1058).contains(&(hue.0 & 0x7FFF)));
         }
     }
 

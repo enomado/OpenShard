@@ -6,7 +6,7 @@ pub fn can_stack(state: &WorldState, a: EntityId, b: EntityId) -> bool {
     a != b
         && state.registry.has::<Stackable>(a)
         && state.registry.has::<Stackable>(b)
-        && state.registry.get::<Graphic>(a) == state.registry.get::<Graphic>(b)
+        && state.registry.get::<Drawn>(a) == state.registry.get::<Drawn>(b)
 }
 
 /// Merge a held stack onto another stack, on the ground or inside a container.

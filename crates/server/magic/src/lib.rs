@@ -13,6 +13,7 @@
 use openshard_entities::EntityId;
 use openshard_items::{count_in_container, take_from_container};
 use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::Graphic;
 use openshard_state::components::{
     BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina, StatMod, StatMods, Stats,
     stat_shift,
@@ -77,7 +78,7 @@ pub struct Cast<'a> {
     /// The container reagents come out of, or zero for a spell that needs none.
     pub pack: u32,
     /// The reagents the spell consumes, as `(graphic, count)`.
-    pub reagents: &'a [(u16, u16)],
+    pub reagents: &'a [(Graphic, u16)],
 }
 
 /// Cast a spell: check the mana and reagents, spend them, roll the skill, and
@@ -168,7 +169,7 @@ pub fn pay_and_roll(
     max_skill: i32,
     skill: u8,
     pack: u32,
-    reagents: &[(u16, u16)],
+    reagents: &[(Graphic, u16)],
     mana_loss_on_fail: bool,
     reagent_loss_on_fail: bool,
 ) -> Option<bool> {
@@ -197,7 +198,7 @@ pub fn pay_and_roll(
 
 /// Whether `pack` holds every reagent the spell needs. A zero pack with any
 /// reagent required is short by definition.
-fn has_reagents(state: &WorldState, pack: u32, reagents: &[(u16, u16)]) -> bool {
+fn has_reagents(state: &WorldState, pack: u32, reagents: &[(Graphic, u16)]) -> bool {
     let Some(pack) = Serial::new(pack) else {
         return reagents.is_empty();
     };
@@ -208,7 +209,7 @@ fn has_reagents(state: &WorldState, pack: u32, reagents: &[(u16, u16)]) -> bool 
 
 /// Take every reagent out of the pack. Only called once [`has_reagents`] has
 /// confirmed they are all there, so each take succeeds.
-fn consume_reagents(state: &mut WorldState, pack: u32, reagents: &[(u16, u16)]) {
+fn consume_reagents(state: &mut WorldState, pack: u32, reagents: &[(Graphic, u16)]) {
     if let Some(pack) = Serial::new(pack) {
         for &(graphic, count) in reagents {
             take_from_container(state, pack, graphic, u32::from(count));

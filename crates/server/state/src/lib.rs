@@ -56,7 +56,7 @@ pub mod weapon;
 pub use components::{
     Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs, Body, BodyType, Brain, Client, Combat,
     Contained, Container, CriminalUntil, DEFAULT_SKILL_CAP, DamageType, Decays, Decoration, Discorded, Door,
-    EMPTY_BOTTLE_GRAPHIC, Equipped, FIELD_HEIGHT, Fame, Field, FieldKind, Frozen, Ghost, Graphic, Guard,
+    Drawn, EMPTY_BOTTLE_GRAPHIC, Equipped, FIELD_HEIGHT, Fame, Field, FieldKind, Frozen, Ghost, Guard,
     Harvesting, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Instrument, Karma, KeyValue, LastStatGain,
     Lock, MOONGATE_GRAPHIC, MOONGATE_REACH, Mana, Meditating, MeleeDamage, Moongate, Movement, MurderDecay,
     Murders, Name, NightHome, Npc, POISON_POTION_GRAPHIC, Pacified, PoisonCharges, Poisoned, Position,

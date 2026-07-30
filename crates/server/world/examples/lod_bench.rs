@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
 use openshard_world::{Brain, Character, Command, Entering, FreshCharacter, Gameplay, TICK_INTERVAL, World};
@@ -94,8 +95,8 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
                 awake += 1;
             }
             world.queue(Command::SpawnMobile {
-                body: 0x00D1, // a wandering creature that does not work door handles
-                hue: 0,
+                body: Graphic(0x00D1), // a wandering creature that does not work door handles
+                hue: Hue(0),
                 hits: 50,
                 notoriety: 5,
                 damage: 5,

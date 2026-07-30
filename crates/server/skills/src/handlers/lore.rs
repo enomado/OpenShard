@@ -137,8 +137,8 @@ pub(super) fn eval_int(state: &mut WorldState, actor: EntityId, target: EntityId
     let mana = fuzzed_index(state, mana, margin);
     // Which block of eleven the sentence comes from: he, she, or it.
     let body = state.registry.get::<Body>(target).map_or(22, |body| {
-        match openshard_state::components::body_type(body.id.0) {
-            BodyType::Human => u32::from(openshard_state::components::body_is_female(body.id.0)) * 11,
+        match openshard_state::components::body_type(body.id) {
+            BodyType::Human => u32::from(openshard_state::components::body_is_female(body.id)) * 11,
             _ => 22,
         }
     });

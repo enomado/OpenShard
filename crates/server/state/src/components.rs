@@ -4,7 +4,7 @@
 //!
 //! Nothing here is a "GameObject". A player is an entity that happens to carry a
 //! [`Body`], a [`Position`] and a [`Client`]; an NPC is the same minus the
-//! `Client`; a rock is a `Position` and a `Graphic`. What a thing *is* falls out
+//! `Client`; a rock is a `Position` and a `Drawn`. What a thing *is* falls out
 //! of what it carries, which is the whole reason for an ECS.
 //!
 //! These are the ones the world itself needs to put a character on screen and
@@ -17,10 +17,12 @@ use std::collections::HashMap;
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_movement::Walker;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
-use openshard_protocol::wire::Layer;
+use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
 use openshard_protocol::world::Point;
 use openshard_protocol::{access::AccessLevel, direction::Facing};
 
@@ -40,41 +42,41 @@ pub struct Heading(pub Facing);
 ///
 /// UO calls this the "body". 0x0190 is a human male, 0x0191 a human female;
 /// everything else is a creature.
-///
-/// Both fields are fully qualified rather than imported, because this module
-/// declares its own unrelated [`Graphic`] — the item component below — and a bare
-/// `use` of the wire type would shadow it at exactly the place the two are most
-/// easily confused. The same collision, and the same spelling out of it, is in
-/// `world::tick::command`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Body {
     /// The body graphic id.
-    pub id: openshard_protocol::wire::Graphic,
+    pub id: Graphic,
     /// Its colour.
-    pub hue: openshard_protocol::wire::Hue,
+    pub hue: Hue,
 }
 
 /// The graphic an item is drawn as: its tiledata id and hue.
 ///
 /// The item counterpart of [`Body`]. An entity carries one or the other — a
-/// mobile a `Body`, a thing on the ground a `Graphic` — and that is what the
+/// mobile a `Body`, a thing on the ground a `Drawn` — and that is what the
 /// interest system reads to decide which packet draws it: `0x78` for a body,
 /// `0x1A` for a graphic. Kept in `world` and not in a gameplay crate for the
 /// same reason `Body` is: drawing a thing in the world is the world's job, and
 /// the crate that owns item *rules* (stacking, decay, containment) builds on
 /// this rather than the other way round.
+///
+/// Named `Drawn` and not `Graphic` because [`Graphic`] is the wire type this
+/// component is *made of*. While both were called `Graphic` the collision cost
+/// three spellings of one conversion across the server — a full path here, an
+/// `as WireGraphic` import in four crates — and every one of them was a place a
+/// reader had to work out which of the two was meant.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Graphic {
+pub struct Drawn {
     /// The tiledata id.
-    pub id: u16,
-    /// Its colour, or 0 for none.
-    pub hue: u16,
+    pub id: Graphic,
+    /// Its colour, or [`Hue`]`(0)` for none.
+    pub hue: Hue,
 }
 
 /// How many of a stackable item this entity is: a pile of 500 gold is one entity
 /// with `Amount(500)`, not 500 entities.
 ///
-/// Separate from [`Graphic`] because most items are single and storing a `1` on
+/// Separate from [`Drawn`] because most items are single and storing a `1` on
 /// every one of them is a column of ones. An item with no `Amount` is a single.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Amount(pub u16);
@@ -87,25 +89,32 @@ pub struct Amount(pub u16);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Container {
     /// The gump graphic the client opens for it.
-    pub gump: u16,
+    ///
+    /// A [`Graphic`] and not a bare `u16` for the reason the type's own doc
+    /// gives: gump art indexes the same `art.mul` as everything else the client
+    /// draws, so a container's window art is the same kind of id as the item's.
+    pub gump: Graphic,
 }
 
 /// Marks an item as being *inside* a container rather than on the ground.
 ///
 /// An item carries either a [`Position`] (on the ground, in the sector grid and
 /// on nearby screens) or a `Contained` (in a container, on nobody's ground) —
-/// never both. The `x`/`y` are where it sits in the container's gump, not world
-/// tiles; `grid` is its slot in the enhanced grid view.
+/// never both.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Contained {
     /// The container it is in, by serial.
     pub container: Serial,
-    /// Its column in the gump.
-    pub x: u16,
-    /// Its row in the gump.
-    pub y: u16,
-    /// Its slot in the grid view.
-    pub grid: u8,
+    /// Where its icon sits inside the container's gump art.
+    ///
+    /// A [`GumpPoint`] and not a loose pair: these are gump pixels, not world
+    /// tiles, and half a position is not a smaller one — it is an icon in the
+    /// wrong place. The same type the packet built from this carries
+    /// (`containers::ContainedItem::position`), so the two no longer disagree
+    /// about what space they are in.
+    pub position: GumpPoint,
+    /// Its slot in the enhanced client's grid view.
+    pub grid: GridSlot,
 }
 
 /// Marks an item as *worn* by a mobile, at a layer.
@@ -286,9 +295,9 @@ pub struct Decoration;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Door {
     /// The graphic drawn while shut.
-    pub closed: u16,
+    pub closed: Graphic,
     /// The graphic drawn while open.
-    pub open: u16,
+    pub open: Graphic,
     /// How far the door hops east/west when it swings open.
     pub offset_x: i16,
     /// How far it hops north/south.
@@ -649,11 +658,11 @@ pub struct Trap {
 /// All four strengths are the same bottle: which poison one holds is on the item
 /// (a [`PoisonCharges`]), not in its graphic, which is why the core cannot key
 /// poison off a table the way it keys a weapon's damage.
-pub const POISON_POTION_GRAPHIC: u16 = 0x0F0A;
+pub const POISON_POTION_GRAPHIC: Graphic = Graphic(0x0F0A);
 
 /// The empty bottle a used potion leaves behind — ServUO hands one back on every
 /// `Consume`.
-pub const EMPTY_BOTTLE_GRAPHIC: u16 = 0x0F0E;
+pub const EMPTY_BOTTLE_GRAPHIC: Graphic = Graphic(0x0F0E);
 
 /// What a persistent field does — the behaviour a field-tile entity carries.
 ///
@@ -1275,14 +1284,14 @@ impl Spellbook {
 pub const SPELL_COUNT: u8 = 64;
 
 /// A Magery spellbook's item graphic.
-pub const SPELLBOOK_GRAPHIC: u16 = 0x0EFA;
+pub const SPELLBOOK_GRAPHIC: Graphic = Graphic(0x0EFA);
 
 /// A recall rune's item graphic — ServUO's `RecallRune`.
-pub const RECALL_RUNE_GRAPHIC: u16 = 0x1F14;
+pub const RECALL_RUNE_GRAPHIC: Graphic = Graphic(0x1F14);
 
 /// A runebook's item graphic — ServUO's `Runebook`, whose constructor defaults
 /// to this id.
-pub const RUNEBOOK_GRAPHIC: u16 = 0x22C5;
+pub const RUNEBOOK_GRAPHIC: Graphic = Graphic(0x22C5);
 
 /// Where a recall rune points, once the Mark spell has written it.
 ///
@@ -1344,7 +1353,7 @@ pub struct Runebook {
 pub const RUNEBOOK_ENTRIES: usize = 16;
 
 /// A moongate's item graphic — ServUO's `Moongate` and `PublicMoongate` alike.
-pub const MOONGATE_GRAPHIC: u16 = 0x0F6C;
+pub const MOONGATE_GRAPHIC: Graphic = Graphic(0x0F6C);
 
 /// A gate on the ground, and where stepping into it leads.
 ///
@@ -1373,10 +1382,10 @@ pub const MOONGATE_REACH: u32 = 1;
 /// The corpse item graphic. A protocol special case: for item `0x2006` the
 /// client reads the `Amount` field as the dead body id, so a corpse draws as the
 /// creature it was. A corpse is a container (the loot window) that decays.
-pub const CORPSE_GRAPHIC: u16 = 0x2006;
+pub const CORPSE_GRAPHIC: Graphic = Graphic(0x2006);
 
 /// The gump the client opens for a corpse — the loot window, not a chest.
-pub const CORPSE_GUMP: u16 = 0x0009;
+pub const CORPSE_GUMP: Graphic = Graphic(0x0009);
 
 /// What a corpse remembers about how it came to be one — ServUO's `Corpse` fields
 /// (`Owner`, `Killer`, `m_Forensicist`, `Looters`).
@@ -1407,14 +1416,18 @@ pub struct Corpse {
 
 /// The death shroud a fresh ghost wears — item `0x204E` on the outer-torso
 /// layer, the grey robe a dead player rises in. ServUO's `deathShroud`.
-pub const DEATH_SHROUD_GRAPHIC: u16 = 0x204E;
+pub const DEATH_SHROUD_GRAPHIC: Graphic = Graphic(0x204E);
 
 /// The ghost body a dead player wears — ServUO's `Race.GhostBody`. Female bodies
 /// rise as `0x0193`, every other as `0x0192`; the client greys the world once it
 /// draws the player in one.
 #[must_use]
-pub const fn ghost_body(body: u16) -> u16 {
-    if body_is_female(body) { 0x0193 } else { 0x0192 }
+pub const fn ghost_body(body: Graphic) -> Graphic {
+    if body_is_female(body) {
+        Graphic(0x0193)
+    } else {
+        Graphic(0x0192)
+    }
 }
 
 /// The item graphic of the scroll for a Magery spell, `0-based` — the classic
@@ -1426,7 +1439,9 @@ pub const fn spell_scroll_graphic(spell: u8) -> u16 {
 
 /// The Magery spell a scroll graphic teaches, if it is a Magery scroll.
 #[must_use]
-pub const fn scroll_spell(graphic: u16) -> Option<u8> {
+pub const fn scroll_spell(graphic: Graphic) -> Option<u8> {
+    // Opened once, so the scroll table below stays terse.
+    let graphic = graphic.0;
     let base = 0x1F2D;
     if graphic >= base && graphic < base + SPELL_COUNT as u16 {
         Some((graphic - base) as u8)
@@ -1968,8 +1983,8 @@ const MOUNTS: &[(u16, u16)] = &[
 /// A binary search over a sorted table, so it is cheap enough for the tick paths that
 /// ask it about every creature in range.
 #[must_use]
-pub fn body_type(body: u16) -> BodyType {
-    match BODY_TYPES.binary_search_by_key(&body, |&(id, _)| id) {
+pub fn body_type(body: Graphic) -> BodyType {
+    match BODY_TYPES.binary_search_by_key(&body.0, |&(id, _)| id) {
         Ok(index) => BODY_TYPES[index].1,
         Err(_) => BodyType::Empty,
     }
@@ -1986,7 +2001,7 @@ pub fn body_type(body: u16) -> BodyType {
 /// "without body-type tables yet". The whole monster half of Britannia was shut out by
 /// a closed door it could have opened.
 #[must_use]
-pub fn body_opens_doors(body: u16) -> bool {
+pub fn body_opens_doors(body: Graphic) -> bool {
     !matches!(body_type(body), BodyType::Animal | BodyType::Sea)
 }
 
@@ -1998,11 +2013,11 @@ pub fn body_opens_doors(body: u16) -> bool {
 /// several looks keeps (`Horse` is one of four). Thirty bodies, against the eight the
 /// hand-kept list had.
 #[must_use]
-pub fn mount_item_for(body: u16) -> Option<u16> {
+pub fn mount_item_for(body: Graphic) -> Option<Graphic> {
     MOUNTS
-        .binary_search_by_key(&body, |&(id, _)| id)
+        .binary_search_by_key(&body.0, |&(id, _)| id)
         .ok()
-        .map(|index| MOUNTS[index].1)
+        .map(|index| Graphic(MOUNTS[index].1))
 }
 
 /// The creature body a mount-item graphic stands for — the inverse of
@@ -2014,11 +2029,11 @@ pub fn mount_item_for(body: u16) -> Option<u16> {
 /// hand-kept halves of one mapping is how a saved ride comes back as the wrong
 /// animal.
 #[must_use]
-pub fn mount_body_for(item_graphic: u16) -> Option<u16> {
+pub fn mount_body_for(item_graphic: Graphic) -> Option<Graphic> {
     MOUNTS
         .iter()
-        .find(|&&(_, item)| item == item_graphic)
-        .map(|&(body, _)| body)
+        .find(|&&(_, item)| item == item_graphic.0)
+        .map(|&(body, _)| Graphic(body))
 }
 
 /// The default name a creature's body gives it — "a chicken", "a horse" —
@@ -2032,8 +2047,9 @@ pub fn mount_body_for(item_graphic: u16) -> Option<u16> {
 /// read right out of the box and an unlisted body simply stays nameless rather
 /// than wearing a wrong label. Body ids are ServUO's. Expand as needed.
 #[must_use]
-pub const fn creature_name(body: u16) -> Option<&'static str> {
-    Some(match body {
+pub const fn creature_name(body: Graphic) -> Option<&'static str> {
+    // Opened once, so the body table below stays the terse block it reads as.
+    Some(match body.0 {
         // Farm and forest animals.
         0x0006 => "a bird",
         0x00C9 => "a cat",
@@ -2130,8 +2146,10 @@ pub const fn creature_name(body: u16) -> Option<&'static str> {
 /// mobile making the human punch sound. `None` for a human body (which uses the
 /// gendered death sounds) and for the passive fauna ServUO leaves silent (a
 /// rabbit, a deer). Grow it alongside `creature_name` as bodies are added.
-pub const fn creature_base_sound(body: u16) -> Option<u16> {
-    Some(match body {
+pub const fn creature_base_sound(body: Graphic) -> Option<SoundId> {
+    // Opened once for the same reason as `creature_name`; the rows stay bare and
+    // the one wrap is on the way out.
+    Some(SoundId(match body.0 {
         // Farm and forest animals.
         0x0006 => 0x001B,          // bird
         0x00C9 => 0x0069,          // cat
@@ -2197,13 +2215,13 @@ pub const fn creature_base_sound(body: u16) -> Option<u16> {
         0x0007 => 0x045A,          // orc captain (orc sound)
         0x0046 => 0x024D,          // terathan warrior
         _ => return None,
-    })
+    }))
 }
 
 /// Whether a body is female — the human death sound splits male from female,
 /// ServUO's `m_Female`. The known female bodies: human, elf and gargoyle.
-pub const fn body_is_female(body: u16) -> bool {
-    matches!(body, 0x0191 | 0x025E | 0x02EF)
+pub const fn body_is_female(body: Graphic) -> bool {
+    matches!(body.0, 0x0191 | 0x025E | 0x02EF)
 }
 
 /// A creature that fights at distance — an archer's bow, a mage's bolt, a
@@ -2346,9 +2364,9 @@ pub struct Restock {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StockRecord {
     /// The goods' graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Their hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// How many the shelf holds when full.
     pub amount: u16,
     /// What one unit costs.
@@ -2617,22 +2635,22 @@ mod tests {
         // ServUO's `CanOpenDoors`: `!Body.IsAnimal && !Body.IsSea`. The eight-body list
         // this replaced shut out every monster in Britannia — an orc could not follow
         // you through a door it plainly has hands for.
-        assert!(body_opens_doors(0x0190), "a man");
-        assert!(body_opens_doors(0x0191), "a woman");
-        assert!(body_opens_doors(0x0011), "an orc");
-        assert!(!body_opens_doors(0x00C9), "a cat");
-        assert!(!body_opens_doors(0x00E2), "a horse");
+        assert!(body_opens_doors(Graphic(0x0190)), "a man");
+        assert!(body_opens_doors(Graphic(0x0191)), "a woman");
+        assert!(body_opens_doors(Graphic(0x0011)), "an orc");
+        assert!(!body_opens_doors(Graphic(0x00C9)), "a cat");
+        assert!(!body_opens_doors(Graphic(0x00E2)), "a horse");
         // An unlisted body is `BodyType::Empty` — neither animal nor sea — so it has
         // hands, which is ServUO's answer too.
-        assert_eq!(body_type(0xFFFE), BodyType::Empty);
-        assert!(body_opens_doors(0xFFFE));
+        assert_eq!(body_type(Graphic(0xFFFE)), BodyType::Empty);
+        assert!(body_opens_doors(Graphic(0xFFFE)));
     }
 
     #[test]
     fn the_body_types_are_servuos() {
-        assert_eq!(body_type(0x0190), BodyType::Human);
-        assert_eq!(body_type(0x00E2), BodyType::Animal);
-        assert_eq!(body_type(0x0011), BodyType::Monster);
+        assert_eq!(body_type(Graphic(0x0190)), BodyType::Human);
+        assert_eq!(body_type(Graphic(0x00E2)), BodyType::Animal);
+        assert_eq!(body_type(Graphic(0x0011)), BodyType::Monster);
     }
 
     #[test]
@@ -2647,10 +2665,11 @@ mod tests {
             (0x00E4, 0x3EA1),
             (0x00DC, 0x3EA6),
         ] {
-            assert_eq!(mount_item_for(body), Some(item), "body {body:#06x}");
-            assert_eq!(mount_body_for(item), Some(body), "item {item:#06x}");
+            let (body, item) = (Graphic(body), Graphic(item));
+            assert_eq!(mount_item_for(body), Some(item), "body {:#06x}", body.0);
+            assert_eq!(mount_body_for(item), Some(body), "item {:#06x}", item.0);
         }
-        assert_eq!(mount_item_for(0x0190), None, "a person is not a mount");
+        assert_eq!(mount_item_for(Graphic(0x0190)), None, "a person is not a mount");
         assert!(MOUNTS.len() >= 25, "{} mounts", MOUNTS.len());
     }
 
@@ -2705,21 +2724,22 @@ mod tests {
         // The two bestiary tables cover the same creatures: a body that growls has
         // a name to show on single-click too. Names may outrun sounds — passive
         // fauna (a rabbit, a deer) are named but silent — but never the reverse.
-        for body in 0u16..=0x0400 {
+        for body in (0u16..=0x0400).map(Graphic) {
             if creature_base_sound(body).is_some() {
                 assert!(
                     creature_name(body).is_some(),
-                    "body {body:#06x} sounds like a creature but has no name"
+                    "body {:#06x} sounds like a creature but has no name",
+                    body.0
                 );
             }
         }
         // Spot-checks of the extended table (ServUO's BaseSoundID), and that a
         // human body is in neither — it falls back to the fists/gendered sounds.
-        assert_eq!(creature_base_sound(0x001A), Some(0x0482)); // spectre / wraith
-        assert_eq!(creature_base_sound(0x000C), Some(0x016A)); // dragon
-        assert_eq!(creature_name(0x0009), Some("a daemon"));
+        assert_eq!(creature_base_sound(Graphic(0x001A)), Some(SoundId(0x0482))); // spectre / wraith
+        assert_eq!(creature_base_sound(Graphic(0x000C)), Some(SoundId(0x016A))); // dragon
+        assert_eq!(creature_name(Graphic(0x0009)), Some("a daemon"));
         assert_eq!(
-            creature_base_sound(0x0190),
+            creature_base_sound(Graphic(0x0190)),
             None,
             "a human is not a creature-sound body"
         );

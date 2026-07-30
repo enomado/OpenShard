@@ -40,7 +40,7 @@ use openshard_state::{Trade, TradeSide};
 pub const TRADE_RANGE: u32 = 2;
 
 /// The escrow container's art — ServUO's `SecureTradeContainer`, item `0x1E5E`.
-pub const TRADE_CONTAINER_GRAPHIC: u16 = 0x1E5E;
+pub const TRADE_CONTAINER_GRAPHIC: Graphic = Graphic(0x1E5E);
 
 /// The layer an escrow is worn on: ServUO's `Layer.SecureTrade`.
 ///
@@ -53,7 +53,7 @@ pub const TRADE_LAYER: Layer = Layer(0x1E);
 /// Never opened: the client draws the trade window itself off the `0x6F`, and
 /// the two container serials only name its halves. It is set because a
 /// [`Container`] carries one, not because anything reads it.
-const TRADE_CONTAINER_GUMP: u16 = 0x003C;
+const TRADE_CONTAINER_GUMP: Graphic = Graphic(0x003C);
 
 /// "You cannot trade with someone who is dragging something."
 const CLILOC_PARTNER_IS_DRAGGING: ClilocId = ClilocId(1_062_727);
@@ -203,7 +203,7 @@ fn new_escrow(state: &mut WorldState, player: EntityId) -> Option<(EntityId, Ser
         mobile,
         TRADE_CONTAINER_GRAPHIC,
         TRADE_CONTAINER_GUMP,
-        0,
+        Hue(0),
         TRADE_LAYER,
     )?;
     state.registry.insert(entity, TradeWindow);
@@ -359,9 +359,8 @@ fn hand_over(state: &mut WorldState, items: &[EntityId], receiver: EntityId) {
                     item,
                     Contained {
                         container: pack,
-                        x: 0,
-                        y: 0,
-                        grid,
+                        position: GumpPoint::new(0, 0),
+                        grid: GridSlot(grid),
                     },
                 );
                 tell_watchers_updated(state, pack, item);

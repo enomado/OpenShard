@@ -600,6 +600,7 @@ function emit(parsed) {
   out.push('//! Generated once from ServUO by `tools/gen-craft-tables`, and ordinary source');
   out.push('//! from then on: edit it, do not regenerate it. Skills are in tenths.');
   out.push('');
+  out.push('use openshard_protocol::wire::{Graphic, Hue};');
   out.push('use openshard_state::Skill;');
   out.push('');
   const axis = subRes && subRes.entries.length;
@@ -625,7 +626,7 @@ function emit(parsed) {
       out.push(`const RES_${i}: &[CraftRes] = &[`);
       for (const r of recipe.resources) {
         out.push(
-          `    CraftRes { graphic: ${hex(r.graphic)}, hue: ${hex(r.hue)}, amount: ${r.amount}, ` +
+          `    CraftRes { graphic: Graphic(${hex(r.graphic)}), hue: Hue(${hex(r.hue)}), amount: ${r.amount}, ` +
           `name: ${rustText(r.name)}, message: ${rustText(r.message)}, from_axis: ${!!r.fromAxis} },`,
         );
       }
@@ -637,13 +638,13 @@ function emit(parsed) {
   out.push('pub const RECIPES: &[Recipe] = &[');
   recipes.forEach((recipe, i) => {
     out.push('    Recipe {');
-    out.push(`        graphic: ${hex(recipe.graphic)},`);
+    out.push(`        graphic: Graphic(${hex(recipe.graphic)}),`);
     out.push(`        name: ${rustText(recipe.name)},`);
     out.push(`        group: ${recipe.group},`);
     out.push(`        skills: SKILLS_${i},`);
     out.push(`        resources: ${recipe.resources.length ? `RES_${i}` : '&[]'},`);
     out.push(`        amount: 1,`);
-    out.push(`        hue: ${hex(recipe.hue)},`);
+    out.push(`        hue: Hue(${hex(recipe.hue)}),`);
     out.push(`        use_all_res: ${recipe.useAllRes},`);
     out.push(`        min_skill_offset: ${recipe.minSkillOffset},`);
     out.push(`        markable: ${recipe.markable},`);
@@ -663,7 +664,7 @@ function emit(parsed) {
     out.push('    entries: &[');
     for (const entry of subRes.entries) {
       out.push(
-        `        SubRes { hue: ${hex(entry.hue)}, name: ${rustText(entry.name)}, ` +
+        `        SubRes { hue: Hue(${hex(entry.hue)}), name: ${rustText(entry.name)}, ` +
         `req_skill: ${entry.reqSkill}, message: ${rustText(entry.message)} },`,
       );
     }

@@ -1,5 +1,6 @@
 use super::*;
-use openshard_protocol::wire::Layer;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_state::components::{
     CORPSE_GRAPHIC, CORPSE_GUMP, Corpse, DEATH_SHROUD_GRAPHIC, Decays, creature_name, ghost_body,
 };
@@ -145,7 +146,7 @@ impl World {
         // The living body, remembered so resurrection can restore it exactly —
         // colour and race included.
         let living = self.state.registry.get::<Body>(entity).copied().unwrap_or(Body {
-            id: openshard_protocol::wire::Graphic(BODY_HUMAN_MALE),
+            id: BODY_HUMAN_MALE,
             hue: openshard_protocol::wire::Hue(0),
         });
 
@@ -157,7 +158,7 @@ impl World {
         self.state.registry.insert(entity, Ghost { body: living });
         // Rise in the ghost body.
         let ghost = Body {
-            id: openshard_protocol::wire::Graphic(ghost_body(living.id.0)),
+            id: ghost_body(living.id),
             hue: openshard_protocol::wire::Hue(0),
         };
         self.state.registry.insert(entity, ghost);
@@ -260,7 +261,7 @@ impl World {
                     && self
                         .state
                         .registry
-                        .get::<Graphic>(*item)
+                        .get::<Drawn>(*item)
                         .is_some_and(|g| g.id == DEATH_SHROUD_GRAPHIC)
             })
             .map(|(item, _)| item);
@@ -277,9 +278,9 @@ impl World {
         };
         self.state.registry.insert(
             item,
-            Graphic {
+            Drawn {
                 id: DEATH_SHROUD_GRAPHIC,
-                hue: 0,
+                hue: Hue(0),
             },
         );
         self.state.registry.insert(
@@ -308,7 +309,14 @@ impl World {
     /// target being a real container, so a stray or stale serial adds nothing
     /// rather than conjuring a floating item. A stackable merges (gold, reagents);
     /// a discrete piece (a weapon) is placed whole.
-    pub(super) fn add_loot(&mut self, container: u32, graphic: u16, hue: u16, amount: u16, stackable: bool) {
+    pub(super) fn add_loot(
+        &mut self,
+        container: u32,
+        graphic: Graphic,
+        hue: Hue,
+        amount: u16,
+        stackable: bool,
+    ) {
         let Some(container) = Serial::new(container) else {
             return;
         };
@@ -344,7 +352,7 @@ impl World {
             .registry
             .get::<Name>(entity)
             .map(|n| n.0.clone())
-            .or_else(|| body.and_then(|b| creature_name(b.id.0)).map(str::to_owned));
+            .or_else(|| body.and_then(|b| creature_name(b.id)).map(str::to_owned));
         let name = owner
             .as_ref()
             .map_or_else(|| "a corpse".to_owned(), |n| format!("a corpse of {n}"));
@@ -363,14 +371,20 @@ impl World {
         self.move_gear_to_corpse(serial, corpse, &[]);
         let gold = self.corpse_gold(max_hits);
         if gold > 0 {
-            let _ = items::give(&mut self.state, corpse, items::GOLD_GRAPHIC, 0, u32::from(gold));
+            let _ = items::give(
+                &mut self.state,
+                corpse,
+                items::GOLD_GRAPHIC,
+                Hue(0),
+                u32::from(gold),
+            );
         }
         // The loot hook: a pack adds the real per-creature table on top of the
         // baseline, by serial, off this event. Emitted before the creature is
         // despawned so `body` is still readable if a listener wants it live.
         self.state.bus.send(CorpseCreated {
             corpse,
-            body: body.map_or(0, |b| b.id.0),
+            body: body.map_or(Graphic(0), |b| b.id),
         });
         self.despawn_creature(entity, serial);
     }
@@ -386,10 +400,10 @@ impl World {
         story: Corpse,
     ) -> Option<Serial> {
         let (entity, serial) = self.state.registry.spawn_with_serial(SerialKind::Item).ok()?;
-        let hue = body.map_or(0, |b| b.hue.0);
+        let hue = body.map_or(Hue(0), |b| b.hue);
         self.state.registry.insert(
             entity,
-            Graphic {
+            Drawn {
                 id: CORPSE_GRAPHIC,
                 hue,
             },
@@ -442,9 +456,8 @@ impl World {
                 item,
                 Contained {
                     container,
-                    x: 40 + (slot as u16) * 12,
-                    y: 60,
-                    grid: 0,
+                    position: GumpPoint::new(40 + i32::try_from(slot).unwrap_or(0) * 12, 60),
+                    grid: GridSlot(0),
                 },
             );
         }

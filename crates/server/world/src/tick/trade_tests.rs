@@ -9,7 +9,7 @@ use super::tests::{backpack_serial, connection, enter_as, serial_of, teleport, w
 use super::*;
 use openshard_items::{TRADE_CONTAINER_GRAPHIC, TRADE_LAYER};
 use openshard_protocol::trade::SECURE_TRADE;
-use openshard_state::components::{Contained, Equipped, Graphic};
+use openshard_state::components::{Contained, Drawn, Equipped};
 
 const GOLD: u16 = 0x0EED;
 
@@ -40,8 +40,8 @@ fn give(world: &mut World, connection: ConnectionId, graphic: u16, now: Instant)
     let before = contained_serials(world, pack);
     world.queue(Command::GiveItem {
         serial: owner,
-        graphic,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(graphic),
+        hue: openshard_protocol::wire::Hue(0),
         amount: 1,
         stackable: false,
     });
@@ -548,7 +548,7 @@ fn the_escrow_wears_servuos_own_graphic_and_layer() {
     let escrow = Serial::new(escrow_of(&world, first).unwrap()).unwrap();
     let entity = world.registry().entity_of(escrow).unwrap();
     assert_eq!(
-        world.registry().get::<Graphic>(entity).unwrap().id,
+        world.registry().get::<Drawn>(entity).unwrap().id,
         TRADE_CONTAINER_GRAPHIC
     );
     assert_eq!(

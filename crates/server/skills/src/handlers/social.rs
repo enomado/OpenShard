@@ -71,7 +71,7 @@ fn beg_refusal(state: &WorldState, target: EntityId) -> Option<ClilocId> {
     let Some(body) = state.registry.get::<Body>(target) else {
         return Some(BEG_FROM_A_THING);
     };
-    if body_type(body.id.0) != BodyType::Human {
+    if body_type(body.id) != BodyType::Human {
         return Some(BEG_FROM_A_THING);
     }
     None
@@ -99,7 +99,7 @@ pub(super) fn begging(state: &mut WorldState, actor: EntityId, target: EntityId)
         let female = state
             .registry
             .get::<Body>(target)
-            .is_some_and(|body| openshard_state::components::body_is_female(body.id.0));
+            .is_some_and(|body| openshard_state::components::body_is_female(body.id));
         state.localized_message(actor, if female { TOO_FAR_HER } else { TOO_FAR_HIM }, "");
         return;
     }

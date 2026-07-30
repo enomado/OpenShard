@@ -14,6 +14,7 @@ use openshard_state::WorldState;
 
 use crate::recipe::Recipe;
 use crate::system::{CraftSystemDef, Text};
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// Why a craft cannot go ahead for want of materials.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -32,14 +33,14 @@ pub enum Refusal {
 pub struct Materials {
     /// Each line as `(graphic, hue, per-craft amount)`, with the material axis
     /// already substituted into whichever line takes it.
-    pub lines: Vec<(u16, Option<u16>, u16)>,
+    pub lines: Vec<(Graphic, Option<Hue>, u16)>,
     /// How many items this craft will make. One, unless the recipe consumes
     /// everything in the pack — then it is as many as the scarcest line allows.
     pub max_amount: u16,
     /// The hue the finished item takes, where the recipe does not fix one: the
     /// colour of the material it was made from, which is what makes a valorite
     /// blade valorite-coloured.
-    pub res_hue: u16,
+    pub res_hue: Hue,
 }
 
 /// How much of the materials a resolved craft spends.
@@ -74,7 +75,7 @@ pub fn check(
     // Which material the axis is set to, and whether the crafter can work it.
     // ServUO checks this against the **base** skill, not the stat-lent value: no
     // amount of Strength teaches a smith what to do with valorite.
-    let mut res_hue = 0;
+    let mut res_hue = Hue(0);
     let mut axis_hue = None;
     if let Some(axis) = system.sub_res {
         let entry = axis.entries.get(sub_res).or_else(|| axis.entries.first());

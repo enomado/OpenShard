@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// Handle a double-click. See `Command::DoubleClick`.
 ///
@@ -95,7 +96,7 @@ pub(crate) fn open_spellbook(
         connection,
         &ServerPacket::SpellbookContent(SpellbookContent {
             serial: book_serial,
-            graphic: openshard_protocol::wire::Graphic(SPELLBOOK_GRAPHIC),
+            graphic: SPELLBOOK_GRAPHIC,
             offset: 1,
             content: mask,
         }),
@@ -161,10 +162,7 @@ pub(crate) fn open_container(
         return;
     };
     let contents = contents_of(state, container_serial);
-    state.send(
-        connection,
-        encode_open_container(container_serial, openshard_protocol::wire::Graphic(gump), version),
-    );
+    state.send(connection, encode_open_container(container_serial, gump, version));
     state.send_packet(
         connection,
         &ServerPacket::ContainerContents(ContainerContents {
@@ -180,7 +178,7 @@ pub(crate) fn open_container(
         .insert(connection);
     debug!(
         %container_serial,
-        gump = format!("0x{gump:04X}"),
+        gump = format!("0x{:04X}", gump.0),
         items = contents.len(),
         "container opened"
     );
@@ -289,7 +287,7 @@ pub fn item_count(state: &WorldState, container: Serial) -> u8 {
 
 /// How many of `graphic` a container holds, counting stack amounts.
 #[must_use]
-pub fn count_in_container(state: &WorldState, container: Serial, graphic: u16) -> u32 {
+pub fn count_in_container(state: &WorldState, container: Serial, graphic: Graphic) -> u32 {
     state
         .registry
         .query::<Contained>()
@@ -297,7 +295,7 @@ pub fn count_in_container(state: &WorldState, container: Serial, graphic: u16) -
         .filter(|(entity, _)| {
             state
                 .registry
-                .get::<Graphic>(*entity)
+                .get::<Drawn>(*entity)
                 .is_some_and(|g| g.id == graphic)
         })
         .map(|(entity, _)| u32::from(state.registry.get::<Amount>(entity).map_or(1, |a| a.0)))
@@ -313,7 +311,7 @@ pub fn count_in_container(state: &WorldState, container: Serial, graphic: u16) -
 /// stack it empties is despawned; a stack it dips into loses that much
 /// [`Amount`]. (A container open on a client is not live-redrawn yet — reagents
 /// come from a closed pack; the gump refreshes when reopened.)
-pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: u16, count: u32) -> bool {
+pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: Graphic, count: u32) -> bool {
     if count == 0 {
         return true;
     }
@@ -324,7 +322,7 @@ pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: u
         .filter(|(entity, _)| {
             state
                 .registry
-                .get::<Graphic>(*entity)
+                .get::<Drawn>(*entity)
                 .is_some_and(|g| g.id == graphic)
         })
         .map(|(entity, _)| (entity, state.registry.get::<Amount>(entity).map_or(1, |a| a.0)))
@@ -370,22 +368,21 @@ pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: u
 pub fn place_one(
     state: &mut WorldState,
     container: Serial,
-    graphic: u16,
-    hue: u16,
+    graphic: Graphic,
+    hue: Hue,
     amount: u16,
 ) -> Option<EntityId> {
     let Ok((entity, _serial)) = state.registry.spawn_with_serial(SerialKind::Item) else {
         warn!("out of item serials; nothing placed");
         return None;
     };
-    state.registry.insert(entity, Graphic { id: graphic, hue });
+    state.registry.insert(entity, Drawn { id: graphic, hue });
     state.registry.insert(
         entity,
         Contained {
             container,
-            x: 60,
-            y: 60,
-            grid: 0,
+            position: GumpPoint::new(60, 60),
+            grid: GridSlot(0),
         },
     );
     if amount > 1 {
@@ -409,7 +406,7 @@ pub fn spawn_contained_leftover(
     amount: u16,
     contained: Contained,
 ) -> Option<EntityId> {
-    let &Graphic { id, hue } = state.registry.get::<Graphic>(original)?;
+    let &Drawn { id, hue } = state.registry.get::<Drawn>(original)?;
     let leftover = match state.registry.spawn_with_serial(SerialKind::Item) {
         Ok((entity, _)) => entity,
         Err(error) => {
@@ -417,15 +414,14 @@ pub fn spawn_contained_leftover(
             return None;
         }
     };
-    state.registry.insert(leftover, Graphic { id, hue });
+    state.registry.insert(leftover, Drawn { id, hue });
     state.registry.insert(leftover, Stackable);
     set_stack_amount(state, leftover, amount);
     state.registry.insert(
         leftover,
         Contained {
             container: contained.container,
-            x: contained.x,
-            y: contained.y,
+            position: contained.position,
             grid: contained.grid,
         },
     );
@@ -445,8 +441,8 @@ pub fn spawn_contained_leftover(
 pub fn give(
     state: &mut WorldState,
     container: Serial,
-    graphic: u16,
-    hue: u16,
+    graphic: Graphic,
+    hue: Hue,
     amount: u32,
 ) -> Option<EntityId> {
     if amount == 0 {
@@ -462,14 +458,13 @@ pub fn give(
             warn!("out of item serials; nothing given");
             return None;
         };
-        state.registry.insert(entity, Graphic { id: graphic, hue });
+        state.registry.insert(entity, Drawn { id: graphic, hue });
         state.registry.insert(
             entity,
             Contained {
                 container,
-                x: 60,
-                y: 60,
-                grid: 0,
+                position: GumpPoint::new(60, 60),
+                grid: GridSlot(0),
             },
         );
         if graphic == SPELLBOOK_GRAPHIC {
@@ -489,7 +484,7 @@ pub fn give(
             state.registry.has::<Stackable>(*entity)
                 && state
                     .registry
-                    .get::<Graphic>(*entity)
+                    .get::<Drawn>(*entity)
                     .is_some_and(|g| g.id == graphic && g.hue == hue)
         })
         .map(|(entity, _)| entity)
@@ -523,14 +518,13 @@ pub fn give(
             warn!("out of item serials; the rest of the payout is lost");
             return last;
         };
-        state.registry.insert(entity, Graphic { id: graphic, hue });
+        state.registry.insert(entity, Drawn { id: graphic, hue });
         state.registry.insert(
             entity,
             Contained {
                 container,
-                x: 60,
-                y: 60,
-                grid: 0,
+                position: GumpPoint::new(60, 60),
+                grid: GridSlot(0),
             },
         );
         state.registry.insert(entity, Amount(take));
@@ -635,19 +629,17 @@ pub(crate) fn tell_watchers_updated_except(
 /// Build the `0x25`/`0x3C` record for one contained item.
 pub fn contained_record(state: &WorldState, entity: EntityId) -> Option<ContainedItem> {
     let serial = state.registry.serial_of(entity)?;
-    let Contained { x, y, grid, .. } = *state.registry.get::<Contained>(entity)?;
-    // The component still keeps the two halves apart — `Contained.{x, y}` is
-    // the component sweep's job, not this one — so the pair is made here, at
-    // the one place the record is built.
-    let at = GumpPoint::new(i32::from(x), i32::from(y));
-    let Graphic { id, hue } = *state.registry.get::<Graphic>(entity)?;
+    // Component and record now carry the same three types, so this is a copy
+    // rather than a conversion — which is the point of having swept them.
+    let Contained { position, grid, .. } = *state.registry.get::<Contained>(entity)?;
+    let Drawn { id, hue } = *state.registry.get::<Drawn>(entity)?;
     let amount = state.registry.get::<Amount>(entity).map_or(1, |a| a.0);
     Some(ContainedItem {
         serial,
-        graphic: openshard_protocol::wire::Graphic(id),
+        graphic: id,
         amount,
-        at,
-        grid: GridSlot(grid),
-        hue: Hue(hue),
+        at: position,
+        grid,
+        hue,
     })
 }

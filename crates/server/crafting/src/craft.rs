@@ -13,7 +13,7 @@
 //! animation for a craft that was never possible.
 
 use openshard_entities::EntityId;
-use openshard_protocol::wire::{ClilocId, SoundId};
+use openshard_protocol::wire::{ClilocId, Graphic, Hue, SoundId};
 use openshard_state::WorldState;
 use openshard_state::components::{CraftedBy, Crafting, Name, Position, Quality, Tool};
 
@@ -56,9 +56,9 @@ pub struct ItemCrafted {
     /// The item that came out, or `None` for a batch that could not be placed.
     pub item: Option<EntityId>,
     /// Its art.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Its hue, which for most materials is the material.
-    pub hue: u16,
+    pub hue: Hue,
     /// How many.
     pub amount: u16,
     /// Whether it came out exceptional.
@@ -294,7 +294,7 @@ fn complete(state: &mut WorldState, crafter: EntityId, work: &Crafting, def: &Cr
         train_per_item(state, crafter, recipe, materials.max_amount);
     }
 
-    let hue = if recipe.hue == 0 {
+    let hue = if recipe.hue == Hue(0) {
         materials.res_hue
     } else {
         recipe.hue
@@ -342,7 +342,7 @@ fn place(
     state: &mut WorldState,
     crafter: EntityId,
     recipe: &Recipe,
-    hue: u16,
+    hue: Hue,
     amount: u16,
 ) -> Option<EntityId> {
     let serial = state.registry.serial_of(crafter)?;
@@ -392,7 +392,7 @@ fn wear_tool(state: &mut WorldState, crafter: EntityId, tool: EntityId) {
 /// second copy here keyed by system is the pair of hand-kept halves the mount
 /// table's lesson is about.
 #[must_use]
-pub fn tool_system(graphic: u16) -> Option<SystemId> {
+pub fn tool_system(graphic: Graphic) -> Option<SystemId> {
     let tool = openshard_state::craft::craft_tool(graphic)?;
     SYSTEMS
         .iter()

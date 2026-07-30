@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use openshard_protocol::wire::{ClilocId, SoundId};
+use openshard_protocol::wire::{ClilocId, Graphic, Hue, SoundId};
 
 use crate::rng::Rng;
 use crate::runtime::TICKS_PER_SECOND;
@@ -73,10 +73,10 @@ pub struct HarvestResource {
     /// The cliloc said on a success — "You have found some iron ore."
     pub success_cliloc: ClilocId,
     /// The item art the yield is made of.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// And its hue — ServUO's `CraftResources.GetHue`, which is the *only* thing
     /// telling valorite ore from iron.
-    pub hue: u16,
+    pub hue: Hue,
 }
 
 /// One vein of a bank — which resource it holds and how often it disappoints.
@@ -255,7 +255,7 @@ pub struct ToolData {
 /// again: an axe you can swing at an orc and not at a tree is the kind of split
 /// two hand-kept tables produce, and the mount table already taught that lesson.
 #[must_use]
-pub fn tool_data(graphic: u16) -> Option<ToolData> {
+pub fn tool_data(graphic: Graphic) -> Option<ToolData> {
     if let Some(row) = TOOLS.iter().find(|(art, _)| *art == graphic) {
         return Some(row.1);
     }
@@ -282,13 +282,13 @@ const AXE_MAX_USES: u16 = 100;
 /// The purpose-built tools, each with `BaseHarvestTool`'s `50..=100` uses.
 /// A hatchet and the axe classes come through [`tool_data`]'s `is_axe` branch.
 #[rustfmt::skip]
-static TOOLS: &[(u16, ToolData)] = &[
-    (0x0E86, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe
-    (0x0E85, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe (flipped art)
-    (0x0F39, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel
-    (0x0F3A, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel (flipped art)
-    (0x0DC0, ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole
-    (0x0DBF, ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole (flipped art)
+static TOOLS: &[(Graphic, ToolData)] = &[
+    (Graphic(0x0E86), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe
+    (Graphic(0x0E85), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe (flipped art)
+    (Graphic(0x0F39), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel
+    (Graphic(0x0F3A), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel (flipped art)
+    (Graphic(0x0DC0), ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole
+    (Graphic(0x0DBF), ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole (flipped art)
 ];
 
 // ---------------------------------------------------------------------------
@@ -616,14 +616,14 @@ pub static ORES: &[HarvestResource] = &[
 ];
 
 /// The item art every ore pile takes — ServUO's most common `RandomSize` result.
-pub const ORE_GRAPHIC: u16 = 0x19B9;
+pub const ORE_GRAPHIC: Graphic = Graphic(0x19B9);
 /// A log, ServUO's `BaseLog`.
-pub const LOG_GRAPHIC: u16 = 0x1BDD;
+pub const LOG_GRAPHIC: Graphic = Graphic(0x1BDD);
 /// A pile of sand.
-pub const SAND_GRAPHIC: u16 = 0x423A;
+pub const SAND_GRAPHIC: Graphic = Graphic(0x423A);
 /// A fish. ServUO rolls between `0x09CC..0x09CF`; one art, for the reason the ore
 /// table gives.
-pub const FISH_GRAPHIC: u16 = 0x09CC;
+pub const FISH_GRAPHIC: Graphic = Graphic(0x09CC);
 
 /// An ore row, so the table above reads as data.
 const fn ore(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestResource {
@@ -633,7 +633,7 @@ const fn ore(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestReso
         max_skill: max,
         success_cliloc: ClilocId(cliloc),
         graphic: ORE_GRAPHIC,
-        hue,
+        hue: Hue(hue),
     }
 }
 
@@ -671,7 +671,7 @@ static PLAIN_WOOD: &[HarvestResource] = &[HarvestResource {
     max_skill: 1000,
     success_cliloc: ClilocId(500_498), // You put some logs in your backpack.
     graphic: LOG_GRAPHIC,
-    hue: 0,
+    hue: Hue(0),
 }];
 
 /// A wood row.
@@ -682,7 +682,7 @@ const fn wood(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestRes
         max_skill: max,
         success_cliloc: ClilocId(cliloc),
         graphic: LOG_GRAPHIC,
-        hue,
+        hue: Hue(hue),
     }
 }
 
@@ -705,7 +705,7 @@ static SANDS: &[HarvestResource] = &[HarvestResource {
     max_skill: 1000,
     success_cliloc: ClilocId(1_044_631), // You carefully dig up some workable sand.
     graphic: SAND_GRAPHIC,
-    hue: 0,
+    hue: Hue(0),
 }];
 
 /// Fish, one grade, banded so a beginner still catches something.
@@ -715,7 +715,7 @@ static FISHES: &[HarvestResource] = &[HarvestResource {
     max_skill: 1200,
     success_cliloc: ClilocId(1_043_297), // You pull out a heavy and beautiful fish!
     graphic: FISH_GRAPHIC,
-    hue: 0,
+    hue: Hue(0),
 }];
 
 /// The single vein the one-resource definitions have.
@@ -1001,11 +1001,14 @@ mod tests {
 
     #[test]
     fn a_pickaxe_mines_and_an_axe_chops() {
-        assert_eq!(tool_data(0x0E86).map(|t| t.skill), Some(Skill::Mining));
-        assert_eq!(tool_data(0x0DC0).map(|t| t.skill), Some(Skill::Fishing));
+        assert_eq!(tool_data(Graphic(0x0E86)).map(|t| t.skill), Some(Skill::Mining));
+        assert_eq!(tool_data(Graphic(0x0DC0)).map(|t| t.skill), Some(Skill::Fishing));
         // Derived from the weapon table's `is_axe`, not listed twice: a hatchet.
-        assert_eq!(tool_data(0x0F43).map(|t| t.skill), Some(Skill::Lumberjacking));
+        assert_eq!(
+            tool_data(Graphic(0x0F43)).map(|t| t.skill),
+            Some(Skill::Lumberjacking)
+        );
         // A katana is a weapon and nothing else.
-        assert!(tool_data(0x13FF).is_none());
+        assert!(tool_data(Graphic(0x13FF)).is_none());
     }
 }

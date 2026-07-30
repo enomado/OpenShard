@@ -14,9 +14,9 @@
 //! a double-click anywhere else says so.
 
 use openshard_entities::EntityId;
-use openshard_protocol::wire::ClilocId;
+use openshard_protocol::wire::{ClilocId, Graphic};
 use openshard_skills::{roll_skill_band, skill_value};
-use openshard_state::components::{Graphic, Stackable};
+use openshard_state::components::{Drawn, Stackable};
 use openshard_state::harvest::{ORE_GRAPHIC, ORES};
 use openshard_state::{Skill, WorldState};
 
@@ -25,7 +25,7 @@ use crate::system::Needs;
 
 /// The art an ingot takes — ServUO's `BaseIngot`, one graphic for all nine
 /// metals, told apart by hue exactly as the ore is.
-pub const INGOT_GRAPHIC: u16 = 0x1BF2;
+pub const INGOT_GRAPHIC: Graphic = Graphic(0x1BF2);
 
 /// How many ingots one unit of the large ore pile yields. ServUO's
 /// `ingotAmount = toConsume * 2` for art `0x19B9`, which is the only ore art this
@@ -61,7 +61,7 @@ const BAND: i32 = 250;
 
 /// Smelt a pile of ore, or say why not. Returns whether the item was ore at all.
 pub fn smelt(state: &mut WorldState, smelter: EntityId, ore: EntityId) -> bool {
-    let Some(graphic) = state.registry.get::<Graphic>(ore).copied() else {
+    let Some(graphic) = state.registry.get::<Drawn>(ore).copied() else {
         return false;
     };
     if graphic.id != ORE_GRAPHIC {

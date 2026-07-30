@@ -1,4 +1,6 @@
 use super::*;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
 
 impl World {
     /// Act on a targeting cursor's answer. Looks up what the cursor was raised for
@@ -204,9 +206,8 @@ impl World {
                     theft.item,
                     openshard_state::components::Contained {
                         container: backpack,
-                        x: 60,
-                        y: 60,
-                        grid: 0,
+                        position: GumpPoint::new(60, 60),
+                        grid: GridSlot(0),
                     },
                 );
             }

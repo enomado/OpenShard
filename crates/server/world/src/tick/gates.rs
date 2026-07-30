@@ -19,7 +19,7 @@ use openshard_protocol::gump::{
     GumpPoint, GumpResponse, SwitchId,
 };
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::wire::SoundId;
+use openshard_protocol::wire::{Hue, SoundId};
 use openshard_state::components::{MOONGATE_GRAPHIC, MOONGATE_REACH, Moongate, Position};
 
 use super::*;
@@ -140,9 +140,9 @@ impl World {
         };
         self.state.registry.insert(
             entity,
-            Graphic {
+            Drawn {
                 id: MOONGATE_GRAPHIC,
-                hue: 0,
+                hue: Hue(0),
             },
         );
         self.state.registry.insert(entity, Position(at));
@@ -184,9 +184,9 @@ impl World {
             };
             self.state.registry.insert(
                 entity,
-                Graphic {
+                Drawn {
                     id: MOONGATE_GRAPHIC,
-                    hue: 0,
+                    hue: Hue(0),
                 },
             );
             self.state.registry.insert(entity, Position(gate.at));
@@ -227,7 +227,7 @@ impl World {
         magic::public_gate_at(facet, at)?;
         self.state
             .registry
-            .query::<Graphic>()
+            .query::<Drawn>()
             .find(|(entity, graphic)| {
                 graphic.id == MOONGATE_GRAPHIC
                     && self.state.facet_of(*entity) == Facet(facet)

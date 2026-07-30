@@ -11,15 +11,17 @@
 //! pick of tile both draw on the world's seeded [`Rng`](openshard_state::rng::Rng),
 //! so a replay repopulates identically.
 
+use openshard_protocol::wire::{Graphic, Hue};
+
 /// One creature a spawn region may put down. The fields a spawn needs beyond the
 /// where — mirrors [`crate::tick::Command::SpawnMobile`] minus the position, which
 /// the region supplies.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CreatureTemplate {
     /// The body graphic (a chicken, a skeleton).
-    pub body: u16,
+    pub body: Graphic,
     /// Its hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// Starting and maximum hit points.
     pub hits: u16,
     /// Health-bar colour: the [`openshard_protocol::Notoriety`] wire value.

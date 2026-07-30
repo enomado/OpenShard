@@ -14,7 +14,7 @@
 //! script speaks — is the price of that decoupling, and it is cheap.
 
 use openshard_events::Cursor;
-use openshard_protocol::wire::Hue;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_scripting::{Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine};
 use openshard_world::events::{
     AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileSpawned, PlayerEntered, PlayerLeft,
@@ -136,7 +136,7 @@ impl Scripts {
             for e in bus.read(&mut self.restored) {
                 events.push(ScriptEvent::MobileRestored {
                     serial: e.serial.raw(),
-                    body: e.body,
+                    body: e.body.0,
                     // `home`, not `at`: a pack binds by the tile an NPC was placed
                     // on, and a townsperson with a routine is not standing on it
                     // when the save is taken. See `ScriptEvent::MobileRestored`.
@@ -174,7 +174,7 @@ impl Scripts {
             for e in bus.read(&mut self.died) {
                 events.push(ScriptEvent::MobileDied {
                     serial: e.serial.raw(),
-                    body: e.body,
+                    body: e.body.0,
                     killer: e.killer.map_or(0, |k| k.raw()),
                 });
             }
@@ -209,28 +209,28 @@ impl Scripts {
             for e in bus.read(&mut self.item_used) {
                 events.push(ScriptEvent::ItemUsed {
                     item: e.item.raw(),
-                    graphic: e.graphic,
+                    graphic: e.graphic.0,
                     by: e.by.raw(),
                 });
             }
             for e in bus.read(&mut self.mobile_used) {
                 events.push(ScriptEvent::MobileUsed {
                     mobile: e.mobile.raw(),
-                    body: e.body,
+                    body: e.body.0,
                     by: e.by.raw(),
                 });
             }
             for e in bus.read(&mut self.items_taken) {
                 events.push(ScriptEvent::ItemsTaken {
                     player: e.player.raw(),
-                    graphic: e.graphic,
+                    graphic: e.graphic.0,
                     taken: e.taken,
                 });
             }
             for e in bus.read(&mut self.corpse) {
                 events.push(ScriptEvent::CorpseCreated {
                     corpse: e.corpse.raw(),
-                    body: e.body,
+                    body: e.body.0,
                 });
             }
             for e in bus.read(&mut self.admin) {
@@ -306,8 +306,8 @@ fn into_world(command: ScriptCommand) -> Command {
             z,
             facet,
         } => Command::SpawnItem {
-            graphic,
-            hue,
+            graphic: Graphic(graphic),
+            hue: Hue(hue),
             amount,
             stackable,
             position: openshard_protocol::world::Point::new(x, y, z),
@@ -322,9 +322,9 @@ fn into_world(command: ScriptCommand) -> Command {
             z,
             facet,
         } => Command::SpawnContainer {
-            graphic,
-            gump,
-            hue,
+            graphic: Graphic(graphic),
+            gump: Graphic(gump),
+            hue: Hue(hue),
             position: openshard_protocol::world::Point::new(x, y, z),
             facet,
         },
@@ -357,8 +357,8 @@ fn into_world(command: ScriptCommand) -> Command {
             equipment,
             skills,
         } => Command::SpawnMobile {
-            body,
-            hue,
+            body: Graphic(body),
+            hue: Hue(hue),
             hits,
             notoriety,
             damage,
@@ -388,7 +388,13 @@ fn into_world(command: ScriptCommand) -> Command {
             // N3 amendment 9, the same place `Command::Speak`'s hue is made.
             equipment: equipment
                 .into_iter()
-                .map(|w| (w.graphic, openshard_protocol::wire::Layer(w.layer), w.hue))
+                .map(|w| {
+                    (
+                        Graphic(w.graphic),
+                        openshard_protocol::wire::Layer(w.layer),
+                        Hue(w.hue),
+                    )
+                })
                 .collect(),
             skills,
         },
@@ -423,7 +429,7 @@ fn into_world(command: ScriptCommand) -> Command {
             max_skill,
             skill,
             pack,
-            reagents,
+            reagents: reagents.into_iter().map(|(g, n)| (Graphic(g), n)).collect(),
         },
         ScriptCommand::SetStats {
             serial,
@@ -481,8 +487,8 @@ fn into_world(command: ScriptCommand) -> Command {
             stock: stock
                 .into_iter()
                 .map(|line| openshard_world::StockLine {
-                    graphic: line.graphic,
-                    hue: line.hue,
+                    graphic: Graphic(line.graphic),
+                    hue: Hue(line.hue),
                     amount: line.amount,
                     price: line.price,
                     name: line.name,
@@ -497,8 +503,8 @@ fn into_world(command: ScriptCommand) -> Command {
             stackable,
         } => Command::AddLoot {
             container,
-            graphic,
-            hue,
+            graphic: Graphic(graphic),
+            hue: Hue(hue),
             amount,
             stackable,
         },
@@ -527,8 +533,8 @@ fn into_world(command: ScriptCommand) -> Command {
                 creatures
                     .into_iter()
                     .map(|c| openshard_world::spawner::CreatureTemplate {
-                        body: c.body,
-                        hue: c.hue,
+                        body: Graphic(c.body),
+                        hue: Hue(c.hue),
                         hits: c.hits,
                         notoriety: c.notoriety,
                         damage: c.damage,
@@ -598,8 +604,8 @@ fn into_world(command: ScriptCommand) -> Command {
                 .into_iter()
                 .map(|s| {
                     (
-                        s.graphic,
-                        s.hue,
+                        Graphic(s.graphic),
+                        Hue(s.hue),
                         openshard_protocol::world::Point::new(s.x, s.y, s.z),
                     )
                 })
@@ -608,8 +614,8 @@ fn into_world(command: ScriptCommand) -> Command {
                 .into_iter()
                 .map(|d| openshard_world::DecorDoor {
                     key_value: d.key_value,
-                    closed: d.closed,
-                    open: d.open,
+                    closed: Graphic(d.closed),
+                    open: Graphic(d.open),
                     offset_x: d.offset_x,
                     offset_y: d.offset_y,
                     position: openshard_protocol::world::Point::new(d.x, d.y, d.z),
@@ -619,9 +625,9 @@ fn into_world(command: ScriptCommand) -> Command {
                 .into_iter()
                 .map(|c| openshard_world::DecorContainer {
                     key_value: c.key_value,
-                    graphic: c.graphic,
-                    gump: c.gump,
-                    hue: c.hue,
+                    graphic: Graphic(c.graphic),
+                    gump: Graphic(c.gump),
+                    hue: Hue(c.hue),
                     position: openshard_protocol::world::Point::new(c.x, c.y, c.z),
                 })
                 .collect(),
@@ -687,8 +693,8 @@ fn into_world(command: ScriptCommand) -> Command {
             stackable,
         } => Command::GiveItem {
             serial,
-            graphic,
-            hue,
+            graphic: Graphic(graphic),
+            hue: Hue(hue),
             amount,
             stackable,
         },
@@ -698,7 +704,7 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
         } => Command::TakeItem {
             serial,
-            graphic,
+            graphic: Graphic(graphic),
             amount,
         },
     }
@@ -747,13 +753,13 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
     for objective in quest.objectives {
         let kind = match objective.kind.as_str() {
             "slay" | "kill" => ObjectiveKind::Slay {
-                body: objective.target,
+                body: Graphic(objective.target),
             },
             "obtain" | "collect" => ObjectiveKind::Obtain {
-                graphic: objective.target,
+                graphic: Graphic(objective.target),
             },
             "deliver" => ObjectiveKind::Deliver {
-                graphic: objective.target,
+                graphic: Graphic(objective.target),
                 to: objective.destination.clone(),
             },
             "escort" => ObjectiveKind::Escort {
@@ -784,8 +790,8 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
                 RewardKind::Gold(reward.gold)
             } else {
                 RewardKind::Item {
-                    graphic: reward.graphic,
-                    hue: reward.hue,
+                    graphic: Graphic(reward.graphic),
+                    hue: Hue(reward.hue),
                     amount: reward.amount.max(1),
                     stackable: reward.stackable,
                 }
@@ -1011,8 +1017,8 @@ mod tests {
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
         world.queue(Command::SpawnMobile {
-            body: 0x0190,
-            hue: 0,
+            body: Graphic(0x0190),
+            hue: Hue(0),
             hits: 5,
             notoriety: 5,
             damage: 5,
@@ -1058,7 +1064,7 @@ mod tests {
         assert!(
             world
                 .registry()
-                .query::<openshard_world::Graphic>()
+                .query::<openshard_world::Drawn>()
                 .next()
                 .is_some(),
             "the script dropped an item when the creature died"
@@ -1085,8 +1091,8 @@ mod tests {
         // A pure creature: no brain of its own (sight 0, no wander), so nothing but
         // the script's onTick can move it.
         world.queue(Command::SpawnMobile {
-            body: 0x0190,
-            hue: 0,
+            body: Graphic(0x0190),
+            hue: Hue(0),
             hits: 5,
             notoriety: 5,
             damage: 0,
@@ -1185,7 +1191,7 @@ mod tests {
         assert!(
             world
                 .registry()
-                .query::<openshard_world::Graphic>()
+                .query::<openshard_world::Drawn>()
                 .next()
                 .is_some(),
             "the successful skill use produced its reward"

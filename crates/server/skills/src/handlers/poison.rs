@@ -11,9 +11,9 @@
 //! cursor was up poisons nothing.
 
 use openshard_entities::EntityId;
-use openshard_protocol::wire::{ClilocId, SoundId};
+use openshard_protocol::wire::{ClilocId, Hue, SoundId};
 use openshard_state::components::{
-    Amount, EMPTY_BOTTLE_GRAPHIC, Graphic, POISON_POTION_GRAPHIC, PoisonCharges,
+    Amount, Drawn, EMPTY_BOTTLE_GRAPHIC, POISON_POTION_GRAPHIC, PoisonCharges,
 };
 use openshard_state::weapon::{WeaponKind, weapon_data};
 use openshard_state::{Skill, TargetPurpose, WorldState};
@@ -185,7 +185,7 @@ pub(super) fn taste_id(state: &mut WorldState, actor: EntityId, target: EntityId
 fn is_poison_potion(state: &WorldState, item: EntityId) -> bool {
     state
         .registry
-        .get::<Graphic>(item)
+        .get::<Drawn>(item)
         .is_some_and(|graphic| graphic.id == POISON_POTION_GRAPHIC)
         && state.registry.has::<PoisonCharges>(item)
 }
@@ -205,7 +205,7 @@ fn can_be_poisoned(state: &WorldState, target: EntityId) -> bool {
 
 /// The weapon kind of an item, if the core table knows it as a weapon at all.
 fn weapon_kind_of(state: &WorldState, item: EntityId) -> Option<WeaponKind> {
-    let graphic = state.registry.get::<Graphic>(item)?.id;
+    let graphic = state.registry.get::<Drawn>(item)?.id;
     weapon_data(graphic).map(|weapon| weapon.kind)
 }
 
@@ -226,9 +226,9 @@ fn spend_potion(state: &mut WorldState, potion: EntityId) {
     state.registry.remove::<PoisonCharges>(potion);
     state.registry.insert(
         potion,
-        Graphic {
+        Drawn {
             id: EMPTY_BOTTLE_GRAPHIC,
-            hue: 0,
+            hue: Hue(0),
         },
     );
 }

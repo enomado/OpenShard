@@ -12,7 +12,8 @@
 //! undo.
 
 use openshard_entities::EntityId;
-use openshard_state::components::{Equipped, Graphic, Weapon};
+use openshard_protocol::wire::Graphic;
+use openshard_state::components::{Drawn, Equipped, Weapon};
 use openshard_state::weapon::{LAYER_ONE_HANDED, WeaponData, WeaponSkill, weapon_data};
 use openshard_state::weapon::{LAYER_TWO_HANDED, WeaponKind};
 use openshard_state::{Skill, WorldState};
@@ -64,14 +65,14 @@ pub fn equipped_weapon(state: &WorldState, mobile: EntityId) -> Option<WeaponDat
         .map(|(entity, _)| entity)?;
     let base = state
         .registry
-        .get::<Graphic>(item)
+        .get::<Drawn>(item)
         .and_then(|graphic| weapon_data(graphic.id))
         .copied();
     match state.registry.get::<Weapon>(item) {
         // An override stands the item's stats up, keeping the base graphic's skill
         // (a magic longsword is still a Swords weapon); same numbers either era.
         Some(&Weapon { speed, min, max }) => Some(WeaponData {
-            graphic: 0,
+            graphic: Graphic(0),
             skill: base.map_or(WeaponSkill::Wrestling, |weapon| weapon.skill),
             kind: base.map_or(WeaponKind::Bashing, |weapon| weapon.kind),
             old_speed: speed,
@@ -94,6 +95,7 @@ pub fn equipped_weapon(state: &WorldState, mobile: EntityId) -> Option<WeaponDat
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::wire::Graphic;
     use openshard_state::weapon::{swing_base, weapon_data};
 
     #[test]
@@ -108,7 +110,7 @@ mod tests {
         assert_eq!(crate::swing_ticks(255, 255, 0, 15000), 10); // 5 tenths ·2
         assert!(crate::swing_ticks(255, 255, 1, 15000) < 10);
         // And the speed those formulas are fed comes from the era's own column.
-        let sword = weapon_data(0x0F61).expect("longsword");
+        let sword = weapon_data(Graphic(0x0F61)).expect("longsword");
         assert_eq!(swing_base(sword, 3), 30);
         assert_eq!(swing_base(sword, 4), 350);
     }

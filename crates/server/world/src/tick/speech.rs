@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::Hue;
 
 impl World {
     /// A player's speech, with staff commands split off the front. A
@@ -114,7 +115,7 @@ impl World {
             return;
         };
 
-        // A mobile carries a `Name` and a `Body`; an item a `Graphic` and no
+        // A mobile carries a `Name` and a `Body`; an item a `Drawn` and no
         // `Name`. The two cases pick a different graphic, hue, and name source.
         let (graphic, hue, text) = if let Some(name) = self.state.registry.get::<Name>(target) {
             // The earned name, not the bare one: ServUO shows a fame title to an
@@ -132,7 +133,7 @@ impl World {
                 .name_hue();
             (body, hue, name)
         } else {
-            let Some(&Graphic { id, .. }) = self.state.registry.get::<Graphic>(target) else {
+            let Some(&Drawn { id, .. }) = self.state.registry.get::<Drawn>(target) else {
                 return;
             };
             let facet = self.state.facet_of(target);
@@ -156,7 +157,7 @@ impl World {
             } else {
                 resolved
             };
-            (openshard_protocol::wire::Graphic(id), TEXT_HUE, text)
+            (id, TEXT_HUE, text)
         };
 
         // The object's own serial makes the client draw the text over it; an empty

@@ -23,7 +23,7 @@ use openshard_state::armor::{
     LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES, LAYER_GORGET, LAYER_HELM, LAYER_LEGS, LAYER_SHIELD, MedAllowance,
     armor_data, hit_layer, layer_coverage, piece_rating, worn_armor_rating, worn_on_layer,
 };
-use openshard_state::components::{Equipped, Graphic};
+use openshard_state::components::{Drawn, Equipped};
 
 /// How much a mobile's worn armour gets in the way of meditating, in hundredths
 /// of a rating point — ServUO's `RegenRates.GetArmorOffset`.
@@ -53,7 +53,7 @@ pub fn meditation_offset(state: &WorldState, mobile: EntityId) -> u32 {
             let rating = u32::from(piece_rating(state, item)) * 100;
             match state
                 .registry
-                .get::<Graphic>(item)
+                .get::<Drawn>(item)
                 .and_then(|graphic| armor_data(graphic.id))
                 .map_or(MedAllowance::All, |armor| armor.meditation)
             {

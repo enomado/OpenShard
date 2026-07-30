@@ -45,6 +45,4 @@ mod walk;
 pub use pace::{Pace, RUN_INTERVAL, WALK_BUFFER, WALK_INTERVAL, WalkPace};
 pub use path::find_path;
 pub use sequence::{OutOfSequence, StepCounter, WalkSequence};
-pub use walk::{
-    Intent, OpenWorld, Terrain, Walk, Walker, direction_toward, intend, line_tiles, step_from,
-};
+pub use walk::{Intent, OpenWorld, Terrain, Walk, Walker, direction_toward, intend, line_tiles, step_from};

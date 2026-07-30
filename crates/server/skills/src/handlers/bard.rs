@@ -17,7 +17,7 @@
 use openshard_entities::EntityId;
 use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{
-    Contained, Discorded, Equipped, Graphic, Hitpoints, Instrument, Mana, Pacified, Skills, Stamina,
+    Contained, Discorded, Drawn, Equipped, Hitpoints, Instrument, Mana, Pacified, Skills, Stamina,
 };
 use openshard_state::instrument::instrument_data;
 use openshard_state::{Skill, TICKS_PER_SECOND, TargetPurpose, WorldState};
@@ -127,7 +127,7 @@ fn instrument_in_pack(state: &WorldState, bard: EntityId) -> Option<EntityId> {
         .find(|&entity| {
             state
                 .registry
-                .get::<Graphic>(entity)
+                .get::<Drawn>(entity)
                 .is_some_and(|graphic| instrument_data(graphic.id).is_some())
         })
 }
@@ -140,7 +140,7 @@ fn instrument_in_pack(state: &WorldState, bard: EntityId) -> Option<EntityId> {
 fn play(state: &mut WorldState, bard: EntityId, item: EntityId, well: bool) {
     let sound = state
         .registry
-        .get::<Graphic>(item)
+        .get::<Drawn>(item)
         .and_then(|graphic| instrument_data(graphic.id))
         .map(|data| if well { data.well } else { data.badly });
     if let Some(sound) = sound {

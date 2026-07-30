@@ -11,12 +11,14 @@
 
 use super::tests::{START, enter, enter_as, packets_for, spawn_mobile_at, world};
 use super::*;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::serial::RawSerial;
-use openshard_protocol::wire::RawSkillId;
+use openshard_protocol::wire::{Graphic, Hue, RawSkillId};
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::Skill;
 use openshard_state::components::{
-    Amount, Contained, Corpse, Equipped, Graphic, HearsGhosts, Hidden, Hitpoints, Mana, Meditating, Name,
+    Amount, Contained, Corpse, Drawn, Equipped, HearsGhosts, Hidden, Hitpoints, Mana, Meditating, Name,
     POISON_POTION_GRAPHIC, PoisonCharges, Poisoned, Stealthing,
 };
 
@@ -32,10 +34,10 @@ fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) 
 }
 
 /// Put an item on the ground next to the player and return its serial.
-fn item_beside(world: &mut World, graphic: u16, now: Instant) -> u32 {
+fn item_beside(world: &mut World, graphic: Graphic, now: Instant) -> u32 {
     world.queue(Command::SpawnItem {
         graphic,
-        hue: 0,
+        hue: Hue(0),
         amount: 1,
         stackable: false,
         position: Point::new(START.0 + 1, START.1, 0),
@@ -45,7 +47,7 @@ fn item_beside(world: &mut World, graphic: u16, now: Instant) -> u32 {
     let (entity, _) = world
         .state
         .registry
-        .query::<Graphic>()
+        .query::<Drawn>()
         .find(|(entity, g)| g.id == graphic && !world.state.registry.has::<Body>(*entity))
         .expect("the item was spawned");
     world.state.registry.serial_of(entity).unwrap().raw()
@@ -105,7 +107,7 @@ fn arms_lore_reads_a_weapon_off_the_core_table() {
     let looker = enter(&mut world, now);
     train(&mut world, looker, Skill::ArmsLore, 1000);
     world.tick(now);
-    let katana = item_beside(&mut world, 0x13FF, now);
+    let katana = item_beside(&mut world, openshard_protocol::wire::Graphic(0x13FF), now);
     let _ = packets_for(&mut world, looker);
 
     let said = use_skill_on(&mut world, looker, Skill::ArmsLore, katana, now);
@@ -128,7 +130,7 @@ fn arms_lore_knows_a_two_handed_weapon_from_a_one_handed_one() {
     let looker = enter(&mut world, now);
     train(&mut world, looker, Skill::ArmsLore, 1000);
     world.tick(now);
-    let bow = item_beside(&mut world, 0x13B2, now);
+    let bow = item_beside(&mut world, openshard_protocol::wire::Graphic(0x13B2), now);
     let _ = packets_for(&mut world, looker);
 
     // Bow: pre-AoS 9..41 averages 25, band 5.
@@ -148,7 +150,7 @@ fn arms_lore_reads_armour_by_its_rating() {
     let looker = enter(&mut world, now);
     train(&mut world, looker, Skill::ArmsLore, 1000);
     world.tick(now);
-    let plate = item_beside(&mut world, 0x1415, now);
+    let plate = item_beside(&mut world, openshard_protocol::wire::Graphic(0x1415), now);
     let _ = packets_for(&mut world, looker);
 
     let said = use_skill_on(&mut world, looker, Skill::ArmsLore, plate, now);
@@ -164,7 +166,7 @@ fn arms_lore_refuses_something_that_is_neither() {
     let looker = enter(&mut world, now);
     train(&mut world, looker, Skill::ArmsLore, 1000);
     world.tick(now);
-    let gold = item_beside(&mut world, 0x0EED, now);
+    let gold = item_beside(&mut world, openshard_protocol::wire::Graphic(0x0EED), now);
     let _ = packets_for(&mut world, looker);
 
     let said = use_skill_on(&mut world, looker, Skill::ArmsLore, gold, now);
@@ -182,7 +184,7 @@ fn item_identification_names_the_thing_and_prices_it_if_it_has_one() {
     let looker = enter(&mut world, now);
     train(&mut world, looker, Skill::ItemId, 1000);
     world.tick(now);
-    let scroll = item_beside(&mut world, 0x1F2D, now);
+    let scroll = item_beside(&mut world, openshard_protocol::wire::Graphic(0x1F2D), now);
     let entity = world
         .state
         .registry
@@ -442,7 +444,13 @@ fn meditation_wants_free_hands() {
 
     // A katana on the one-handed layer.
     let (sword, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(sword, Graphic { id: 0x13FF, hue: 0 });
+    world.state.registry.insert(
+        sword,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(0x13FF),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     world.state.registry.insert(
         sword,
         Equipped {
@@ -485,7 +493,13 @@ fn a_trance_doubles_the_rate_mana_comes_back_at() {
     // rule bite rather than merely nag.
     let owner = world.state.registry.serial_of(entity).unwrap();
     let (plate, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(plate, Graphic { id: 0x1415, hue: 0 });
+    world.state.registry.insert(
+        plate,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(0x1415),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     world.state.registry.insert(
         plate,
         Equipped {
@@ -518,7 +532,7 @@ fn spirit_speak_lets_the_living_hear_the_dead_without_seeing_them() {
         ghost,
         openshard_state::components::Ghost {
             body: Body {
-                id: openshard_protocol::wire::Graphic(0x0190),
+                id: Graphic(0x0190),
                 hue: openshard_protocol::wire::Hue(0),
             },
         },
@@ -597,7 +611,7 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
         .state
         .registry
         .insert(potion_entity, PoisonCharges { level: 2, charges: 1 });
-    let katana = item_beside(&mut world, 0x13FF, now);
+    let katana = item_beside(&mut world, openshard_protocol::wire::Graphic(0x13FF), now);
     let blade = world
         .state
         .registry
@@ -624,7 +638,7 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
     // The bottle is spent either way, and what is left is an empty one.
     assert!(!world.state.registry.has::<PoisonCharges>(potion_entity));
     assert_eq!(
-        world.state.registry.get::<Graphic>(potion_entity).unwrap().id,
+        world.state.registry.get::<Drawn>(potion_entity).unwrap().id,
         openshard_state::components::EMPTY_BOTTLE_GRAPHIC
     );
 
@@ -687,7 +701,7 @@ fn poison_only_goes_on_a_bladed_or_piercing_weapon() {
         .state
         .registry
         .insert(potion_entity, PoisonCharges { level: 0, charges: 1 });
-    let mace = item_beside(&mut world, 0x0F5C, now);
+    let mace = item_beside(&mut world, openshard_protocol::wire::Graphic(0x0F5C), now);
     let _ = packets_for(&mut world, player);
 
     let _ = use_skill_on(&mut world, player, Skill::Poisoning, potion, now);
@@ -704,7 +718,7 @@ fn taste_identification_finds_the_poison_on_a_blade() {
     let player = enter(&mut world, now);
     train(&mut world, player, Skill::TasteId, 1000);
     world.tick(now);
-    let clean = item_beside(&mut world, 0x13FF, now);
+    let clean = item_beside(&mut world, openshard_protocol::wire::Graphic(0x13FF), now);
     let _ = packets_for(&mut world, player);
     let said = use_skill_on(&mut world, player, Skill::TasteId, clean, now);
     assert!(said.contains(&1_010_600), "nothing unusual: {said:?}");
@@ -770,9 +784,9 @@ fn a_trapped_chest_goes_off_when_it_is_opened_and_remove_trap_takes_it_off() {
         .map_or(0, |h| h.current);
 
     world.queue(Command::SpawnContainer {
-        graphic: 0x0E3C,
-        gump: 0x003C,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0E3C),
+        gump: openshard_protocol::wire::Graphic(0x003C),
+        hue: openshard_protocol::wire::Hue(0),
         position: Point::new(START.0 + 1, START.1, 0),
         facet: 0,
     });
@@ -984,19 +998,24 @@ fn detecting_hidden_strips_a_worse_hider_and_not_a_better_one() {
 }
 
 /// Put an instrument in the player's backpack and return its entity.
-fn give_instrument(world: &mut World, connection: ConnectionId, graphic: u16) -> EntityId {
+fn give_instrument(world: &mut World, connection: ConnectionId, graphic: Graphic) -> EntityId {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = openshard_items::backpack_of(&world.state, owner).expect("a backpack");
     let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
+    world.state.registry.insert(
+        item,
+        Drawn {
+            id: graphic,
+            hue: Hue(0),
+        },
+    );
     world.state.registry.insert(
         item,
         Contained {
             container: backpack,
-            x: 20,
-            y: 20,
-            grid: 0,
+            position: GumpPoint::new(20, 20),
+            grid: GridSlot(0),
         },
     );
     world
@@ -1017,7 +1036,7 @@ fn peacemaking_calms_a_creature_and_it_stops_swinging() {
     train(&mut world, bard, Skill::Peacemaking, 1000);
     train(&mut world, bard, Skill::Musicianship, 1000);
     world.tick(now);
-    let lute = give_instrument(&mut world, bard, 0x0EB3);
+    let lute = give_instrument(&mut world, bard, Graphic(0x0EB3));
     let creature = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 20, now);
     let creature_entity = world
         .state
@@ -1073,7 +1092,7 @@ fn discordance_makes_a_creature_worse_at_everything_at_once() {
     train(&mut world, bard, Skill::Discordance, 1000);
     train(&mut world, bard, Skill::Musicianship, 1000);
     world.tick(now);
-    give_instrument(&mut world, bard, 0x0EB3);
+    give_instrument(&mut world, bard, Graphic(0x0EB3));
     let creature = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 20, now);
     let entity = world
         .state
@@ -1105,19 +1124,24 @@ fn discordance_makes_a_creature_worse_at_everything_at_once() {
 }
 
 /// Put a plain item in the player's backpack and return its serial.
-fn give_item(world: &mut World, connection: ConnectionId, graphic: u16) -> u32 {
+fn give_item(world: &mut World, connection: ConnectionId, graphic: Graphic) -> u32 {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = openshard_items::backpack_of(&world.state, owner).expect("a backpack");
     let (item, serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
+    world.state.registry.insert(
+        item,
+        Drawn {
+            id: graphic,
+            hue: Hue(0),
+        },
+    );
     world.state.registry.insert(
         item,
         Contained {
             container: backpack,
-            x: 20,
-            y: 20,
-            grid: 0,
+            position: GumpPoint::new(20, 20),
+            grid: GridSlot(0),
         },
     );
     serial.raw()
@@ -1199,9 +1223,9 @@ fn a_lockpick_opens_a_lock_it_is_good_enough_for() {
     let pick = give_item(&mut world, thief, openshard_skills::LOCKPICK_GRAPHIC);
 
     world.queue(Command::SpawnContainer {
-        graphic: 0x0E3C,
-        gump: 0x003C,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0E3C),
+        gump: openshard_protocol::wire::Graphic(0x003C),
+        hue: openshard_protocol::wire::Hue(0),
         position: Point::new(START.0 + 1, START.1, 0),
         facet: 0,
     });
@@ -1359,8 +1383,8 @@ fn a_pet_hears_all_stay_and_stops() {
 /// Spawn a creature with a chosen body — what the tamable table is keyed by.
 fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> u32 {
     world.queue(Command::SpawnMobile {
-        body,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(body),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 5,
         damage: 5,
@@ -1422,9 +1446,9 @@ fn a_shop_bottle_holds_the_poison_its_label_names() {
     let (labelled, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
     world.state.registry.insert(
         labelled,
-        Graphic {
+        Drawn {
             id: POISON_POTION_GRAPHIC,
-            hue: 0,
+            hue: openshard_protocol::wire::Hue(0),
         },
     );
     world

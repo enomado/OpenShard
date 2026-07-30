@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// The highest layer an item can be worn on: 1–25 are the body; higher numbers
 /// are the backpack and bank, not "worn".
@@ -10,8 +11,8 @@ pub(crate) const MAX_WEARABLE_LAYER: Layer = Layer(25);
 pub fn equip_worn_item(
     state: &mut WorldState,
     mobile: Serial,
-    graphic: u16,
-    hue: u16,
+    graphic: Graphic,
+    hue: Hue,
     layer: Layer,
 ) -> Option<EntityId> {
     let (entity, serial) = match state.registry.spawn_with_serial(SerialKind::Item) {
@@ -21,9 +22,9 @@ pub fn equip_worn_item(
             return None;
         }
     };
-    state.registry.insert(entity, Graphic { id: graphic, hue });
+    state.registry.insert(entity, Drawn { id: graphic, hue });
     state.registry.insert(entity, Equipped { mobile, layer });
-    debug!(%serial, graphic, layer = layer.0, "clothing equipped");
+    debug!(%serial, graphic = graphic.0, layer = layer.0, "clothing equipped");
     Some(entity)
 }
 
@@ -173,12 +174,12 @@ pub fn equip_audience(state: &WorldState, mobile: EntityId) -> Vec<EntityId> {
 pub fn equip_packet(state: &WorldState, item: EntityId) -> Option<EquipUpdate> {
     let serial = state.registry.serial_of(item)?;
     let Equipped { mobile, layer } = *state.registry.get::<Equipped>(item)?;
-    let Graphic { id, hue } = *state.registry.get::<Graphic>(item)?;
+    let Drawn { id, hue } = *state.registry.get::<Drawn>(item)?;
     Some(EquipUpdate {
         item: serial,
-        graphic: openshard_protocol::wire::Graphic(id),
+        graphic: id,
         layer,
         mobile,
-        hue: Hue(hue),
+        hue,
     })
 }

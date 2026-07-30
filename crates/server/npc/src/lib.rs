@@ -32,7 +32,7 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
-use openshard_protocol::wire::Hue;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_state::WorldState;
 use openshard_state::components::{Banker, Position};
 use openshard_state::sectors::in_range;
@@ -59,9 +59,9 @@ pub use vendor::{
 /// The bank box graphic and gump — ServUO's `BankBox` on `Layer.Bank`. A
 /// character wears one; a banker opens it. Exported so the world equips it on the
 /// same layer this crate opens.
-pub const BANK_GRAPHIC: u16 = 0x0E7C;
+pub const BANK_GRAPHIC: Graphic = Graphic(0x0E7C);
 /// The bank box gump.
-pub const BANK_GUMP: u16 = 0x004A;
+pub const BANK_GUMP: Graphic = Graphic(0x004A);
 /// The bank layer, `Layer.Bank`. Defined by `items`, which also has to know where
 /// a character's own load stops; re-exported here so a banker still reads as
 /// owning its own box.
