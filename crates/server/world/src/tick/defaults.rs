@@ -9,12 +9,12 @@ pub const TICK_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A human male body.
 pub(super) const BODY_HUMAN_MALE: u16 = 0x0190;
-/// The graphic, container gump, and paperdoll layer of a starting backpack.
-/// Layer 0x15 is UO's `Layer.Backpack`; the gump `0x003C` is the bag window the
-/// client draws when it is opened.
+/// The graphic and container gump of a starting backpack. The gump `0x003C` is
+/// the bag window the client draws when it is opened; the layer it rides on is
+/// `openshard_items::BACKPACK_LAYER`, which was written out in five places
+/// across two crates until N4 — see `docs/protocol_newtypes.md`.
 pub(super) const BACKPACK_GRAPHIC: u16 = 0x0E75;
 pub(super) const BACKPACK_GUMP: u16 = 0x003C;
-pub(super) const BACKPACK_LAYER: u8 = 0x15;
 /// The skin hue a character gets when nothing else chose one — the same one
 /// Sphere hands a body with no stored colour.
 pub(super) const DEFAULT_HUE: u16 = 0x83EA;

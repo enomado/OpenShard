@@ -46,7 +46,7 @@ pub const TRADE_CONTAINER_GRAPHIC: u16 = 0x1E5E;
 ///
 /// Past the `0x13` equip path's own ceiling, so no client can put anything here
 /// or take anything off it. Nothing is drawn on it either — see [`TradeWindow`].
-pub const TRADE_LAYER: u8 = 0x1E;
+pub const TRADE_LAYER: Layer = Layer(0x1E);
 
 /// The gump an escrow reports as a container.
 ///
@@ -123,7 +123,7 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
                 .map(|(mine, _)| mine.container_serial.raw());
             match container {
                 Some(container) => {
-                    drop_into_container(state, connection, held, Point::default(), container);
+                    drop_into_container(state, connection, held, Point::default(), RawSerial(container));
                 }
                 None => bounce(state, connection, held, DragCancelReason::Other),
             }
@@ -191,7 +191,7 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
     let index = state.trades.len() - 1;
     draw_window(state, index);
     // And in goes what was dropped, through the ordinary door.
-    drop_into_container(state, connection, held, Point::default(), mine.1.raw());
+    drop_into_container(state, connection, held, Point::default(), RawSerial(mine.1.raw()));
     debug!("a secure trade opened");
 }
 

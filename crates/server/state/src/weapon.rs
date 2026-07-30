@@ -25,11 +25,12 @@
 //! see [`weapon_layer`].
 
 use crate::Skill;
+use openshard_protocol::wire::Layer;
 
 /// The paperdoll layer a one-handed weapon sits on (UO layer 1).
-pub const LAYER_ONE_HANDED: u8 = 1;
+pub const LAYER_ONE_HANDED: Layer = Layer(1);
 /// The paperdoll layer a two-handed weapon or shield sits on (UO layer 2).
-pub const LAYER_TWO_HANDED: u8 = 2;
+pub const LAYER_TWO_HANDED: Layer = Layer(2);
 
 /// Which combat skill a weapon trains and hits with — ServUO's `DefSkill`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +127,7 @@ pub struct WeaponData {
     /// crossbow, the heavy crossbow, the battle axe and the war hammer as
     /// one-handed. Everyone knows you do not fire a bow one-handed, so ServUO says
     /// so in code and so does this. Read through [`weapon_layer`], never directly.
-    pub hands: Option<u8>,
+    pub hands: Option<Layer>,
 }
 
 /// Pick the era-appropriate damage value: the AoS family (eras 2 AoS, 3 SE, 4 ML)
@@ -163,7 +164,7 @@ pub fn weapon_data(graphic: u16) -> Option<&'static WeaponData> {
 /// but the six, which is the honest answer: without tiledata the engine does not
 /// know, and it says so rather than guessing one-handed.
 #[must_use]
-pub const fn weapon_layer(weapon: &WeaponData, tiledata_layer: u8) -> u8 {
+pub const fn weapon_layer(weapon: &WeaponData, tiledata_layer: Layer) -> Layer {
     match weapon.hands {
         Some(layer) => layer,
         None => tiledata_layer,
@@ -353,8 +354,9 @@ mod tests {
 
     #[test]
     fn the_six_classes_that_distrust_tiledata_win_over_it() {
-        let layer =
-            |graphic: u16, tiledata: u8| weapon_layer(weapon_data(graphic).expect("in the table"), tiledata);
+        let layer = |graphic: u16, tiledata: Layer| {
+            weapon_layer(weapon_data(graphic).expect("in the table"), tiledata)
+        };
         // A real `tiledata.mul` files all five of these as one-handed. They are not.
         for graphic in [0x13B2, 0x0F50, 0x13FD, 0x0F47, 0x1439] {
             assert_eq!(
@@ -368,7 +370,7 @@ mod tests {
         // Everything else takes the client's word, whichever way it reads.
         assert_eq!(layer(0x143E, LAYER_TWO_HANDED), LAYER_TWO_HANDED); // halberd
         assert_eq!(layer(0x13FF, LAYER_ONE_HANDED), LAYER_ONE_HANDED); // katana
-        assert_eq!(layer(0x13FF, 0), 0, "no tiledata, no answer");
+        assert_eq!(layer(0x13FF, Layer(0)), Layer(0), "no tiledata, no answer");
     }
 
     #[test]

@@ -158,6 +158,7 @@ The allowlist so far, each entry argued where it was decided:
 | `mobile::MobileStatus::{strength, dexterity, intelligence, gold, armor, weight, max_weight, stat_cap, followers, followers_max}` | the status bar's quantities — [N2 amendment 3](#amendments-forced-by-n2-mobilers) |
 | `containers::ContainedItem::{x, y}` | the item's place in the gump: a pair whose type is `gump.rs`'s to name, in N5 — [N4 amendment 6](#amendments-forced-by-n4-containersrs) |
 | `containers::ContainedItem::amount` | a stack size: a quantity, by the `MobileStatus` argument — [N4 amendment 8](#amendments-forced-by-n4-containersrs) |
+| `items::WorldItem::amount`, `items::PickUpItem::amount` | the same quantity, outbound and in — [N4 amendment 9](#amendments-forced-by-n4-itemsrs) |
 
 **N11. No compatibility shims.** Same as D9: a stage wraps a group of fields
 **and** updates every call site in the same commit.
@@ -552,6 +553,74 @@ all but a flag riding on one.
    quantity by N2 amendment 3's argument — added to, split and compared, with
    its rules in `items` far above `protocol`.
 
+## Amendments forced by N4 (`items.rs`)
+
+The module is the sweep's first genuinely two-directional one — the same item
+drawn outbound and named inbound — and it is where `Layer`, parked by
+[N2 amendment 7](#amendments-forced-by-n2-mobilers), had to become one answer
+rather than two.
+
+1. **`Equipped.layer` is a `Layer`, and that is where the component sweep stops
+   this stage.** N2 left the question open; the answer is yes, and the reason is
+   not symmetry with the packet but that *every* rule reading it is naming a
+   slot, never doing arithmetic: what a corpse keeps, what armour covers, what
+   may not be lifted, which hand a weapon is in. The type carried outward from
+   there through `state::armor`, `state::weapon`, `combat`, `npc` and `world`
+   with no `.0` except at the two seams that are supposed to have one — the
+   persistence record's `u8` and the script bridge's JSON number. Contrast
+   `Contained.grid` and `components::Graphic` in
+   [containers amendment 4](#amendments-forced-by-n4-containersrs), which stayed
+   bare: those are read as *numbers* nowhere either, but nothing in a packet
+   forced the question, and a sweep with no forcing packet is its own stage.
+2. **`RawLayer` lives in `wire.rs`, beside its twin, against N4's own counting
+   rule.** Only `0x13` carries an inbound layer, so N4 would put it in
+   `items.rs`. Every other `Raw*` in the crate sits beside the validated type it
+   promotes to — `RawHue` beside `Hue`, `RawSerial` beside `Serial` — and a pair
+   split across two modules is a pair the next reader has to be told about. The
+   counting rule is for `Raw*` types with **no** twin (`RawStatValue`,
+   `RawStartLocationIndex`); where there is one, the twin's home wins.
+3. **`RawLayer::interpret` is degenerate, and deliberately so.** The second
+   `RawStepSequence` (N1 amendment 1): a layer is a *name*, not a range — N2
+   amendment 7 settled that — so every one of the 256 bytes interprets, and what
+   the pair records is provenance. The refusal that does exist is a gameplay
+   one and stayed where it was: `equip_item` still rejects layer `0` and
+   anything past `MAX_WEARABLE_LAYER`, now stated in `Layer`s.
+4. **`DROP_TO_GROUND` is a `RawSerial` constant, and `to_ground` compares
+   against it rather than asking `validate`.** N3 amendment 4's lesson, met from
+   the other side: `RawSerial::validate` answers `None` for `0xFFFFFFFF` *and*
+   for `0`, but a `0` container is a confused client and `0xFFFFFFFF` is the
+   floor. Folding the two would have compiled and silently turned every
+   malformed drop into a ground drop.
+5. **`BACKPACK_LAYER` was written out five times in two crates.** `world`'s
+   `gm.rs`, `travel.rs`, `spells.rs` and `tick/defaults.rs` each declared their
+   own `0x15`, and `npc/vendor.rs` a fifth, while `openshard_items` had the
+   canonical one all along. Exactly N3 amendment 2's finding (`TALKMODE_WHISPER`
+   in two crates) and N2 amendment 8's (`PAPERDOLL_WARMODE`), for the third
+   time: **a bare integer that travels between crates gets re-declared at each
+   stop.** The four copies are gone; there is one `Layer`.
+6. **The paperdoll layers scattered as loose `pub const u8` are all `Layer`
+   now** — `state::armor`'s seven coverage layers, `state::weapon`'s two hands,
+   `npc::dress`'s seven garment slots, `items`' backpack/bank/mount/trade, and
+   `world`'s corpse robe. `layer_coverage` and `hit_layer` take and return one,
+   which is what stopped `hit_layer`'s roll and its layer from being the same
+   type.
+7. **`Terrain::item_layer` keeps its byte, wrapped at one call site.** The trait
+   lives in `openshard_movement`, which is below `protocol`, and it reads the
+   quality byte out of `tiledata.mul`. `skills::appraise::tiledata_layer` is the
+   single place the byte meets a `Layer`, and it names the wrap. `weapon_layer`
+   above it takes and returns `Layer`s.
+8. **`WorldItem`'s stack-amount bit still masks a serial it cannot need to.**
+   `serial & 0x7FFF_FFFF` in the unstacked branch is now provably a no-op —
+   `Serial` cannot be built above the item pool — and it stayed, with a comment
+   saying so. Removing it would make the encoder depend on `Serial`'s invariant
+   at a distance for no byte saved.
+9. **Bare-integer field count in `items.rs`: 16 before, 3 after** (N10). The
+   three are `WorldItem::amount`, `PickUpItem::amount` and `Point`'s components
+   inside `position`, all already allowlisted quantities;
+   `PickUpItem::amount` joins the list explicitly because it is the first
+   *client-supplied* one, and its check — is there that much in the stack —
+   exists today in `items::pick_up`.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -573,7 +642,8 @@ request (`main` is protected).
 - **N3 — `speech.rs`.** One header sent five times, in both directions. Lands
   `TalkMode`/`RawTalkMode` and `Font`/`RawFont` in `speech.rs` and `ClilocId` in
   `wire.rs`; the four later stages that carry a cliloc use the last one.
-- **N4 — `items.rs`, `containers.rs`.**
+- **N4 — `items.rs`, `containers.rs`.** Two directions on the same item, and the
+  stage that answers N2's parked question about `Equipped.layer`.
 - **N5 — `vendor.rs`, `gump.rs`, `context.rs`.** Gump ids and button ids are the
   interesting inbound case: a `0xB1` response echoes ids the *server* chose, so
   the check is "is this one I offered", not a range.
@@ -630,7 +700,7 @@ resolved silently in one module is a pattern the next module contradicts.
 | N1 | done — `world.rs` 20 bare int fields → 5 allowlisted | |
 | N2 | done — `mobile.rs` 37 bare int fields → 12 allowlisted | |
 | N3 | done — `speech.rs` 22 bare int fields → 0 | |
-| N4 | not started | |
+| N4 | done — `containers.rs` 9 → 3, `items.rs` 16 → 3, all allowlisted | |
 | N5 | not started | |
 | N6 | not started | |
 | N7 | not started | |

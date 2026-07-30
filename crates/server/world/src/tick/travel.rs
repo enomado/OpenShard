@@ -18,10 +18,6 @@ use openshard_state::components::{
     RunebookEntry,
 };
 
-/// The layer a backpack rides on. Mark wants the rune *in* it, which is stricter
-/// than being able to reach it.
-const BACKPACK_LAYER: u8 = 0x15;
-
 impl World {
     /// The travel family's pre-cast refusals — ServUO's `Recall.CheckCast` and
     /// the identical block in `GateTravel`.
@@ -240,7 +236,7 @@ impl World {
             .state
             .registry
             .query::<Equipped>()
-            .find(|(_, worn)| worn.mobile == owner && worn.layer == BACKPACK_LAYER)
+            .find(|(_, worn)| worn.mobile == owner && worn.layer == items::BACKPACK_LAYER)
             .and_then(|(pack, _)| self.state.registry.serial_of(pack))
         else {
             return false;

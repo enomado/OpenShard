@@ -380,9 +380,12 @@ fn into_world(command: ScriptCommand) -> Command {
             night_home: night_home.map(|(x, y, z)| openshard_protocol::world::Point::new(x, y, z)),
             banker,
             vendor,
+            // The script bridge is a serialization seam like SQL or the wire, so
+            // the JSON number becomes a `Layer` here — `docs/protocol_newtypes.md`
+            // N3 amendment 9, the same place `Command::Speak`'s hue is made.
             equipment: equipment
                 .into_iter()
-                .map(|w| (w.graphic, w.layer, w.hue))
+                .map(|w| (w.graphic, openshard_protocol::wire::Layer(w.layer), w.hue))
                 .collect(),
             skills,
         },

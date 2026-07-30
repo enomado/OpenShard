@@ -366,7 +366,7 @@ fn picking_up_then_dropping_moves_an_item_on_everyone_elses_screen() {
 
     world.queue(Command::PickUpItem {
         connection: picker,
-        serial,
+        serial: RawSerial(serial),
         amount: 1,
     });
     world.tick(now);
@@ -377,7 +377,7 @@ fn picking_up_then_dropping_moves_an_item_on_everyone_elses_screen() {
 
     world.queue(Command::DropItem {
         connection: picker,
-        serial,
+        serial: RawSerial(serial),
         position: Point::new(START.0, START.1, 0),
         container: DROP_TO_GROUND,
     });
@@ -404,7 +404,7 @@ fn picking_up_out_of_reach_is_rejected_and_leaves_the_item() {
 
     world.queue(Command::PickUpItem {
         connection: picker,
-        serial,
+        serial: RawSerial(serial),
         amount: 1,
     });
     world.tick(now);
@@ -436,7 +436,7 @@ fn dropping_out_of_reach_bounces_the_item_back_to_where_it_was() {
 
     world.queue(Command::PickUpItem {
         connection: picker,
-        serial,
+        serial: RawSerial(serial),
         amount: 1,
     });
     world.tick(now);
@@ -445,7 +445,7 @@ fn dropping_out_of_reach_bounces_the_item_back_to_where_it_was() {
     // Drop it far from the player: refused, and put back where it started.
     world.queue(Command::DropItem {
         connection: picker,
-        serial,
+        serial: RawSerial(serial),
         position: Point::new(START.0 + 40, START.1, 0),
         container: DROP_TO_GROUND,
     });
@@ -480,7 +480,7 @@ fn logging_out_while_holding_an_item_returns_it_to_the_ground() {
 
     world.queue(Command::PickUpItem {
         connection: picker,
-        serial,
+        serial: RawSerial(serial),
         amount: 1,
     });
     world.tick(now);
@@ -513,7 +513,7 @@ fn you_cannot_pick_up_a_mobile() {
 
     world.queue(Command::PickUpItem {
         connection: picker,
-        serial: mobile_serial,
+        serial: RawSerial(mobile_serial),
         amount: 1,
     });
     world.tick(now);
@@ -674,7 +674,7 @@ pub(super) fn backpack_serial(world: &World, connection: ConnectionId) -> u32 {
     world
         .registry()
         .query::<Equipped>()
-        .find(|(_, worn)| worn.mobile == owner && worn.layer == BACKPACK_LAYER)
+        .find(|(_, worn)| worn.mobile == owner && worn.layer == items::BACKPACK_LAYER)
         .and_then(|(item, _)| world.registry().serial_of(item))
         .expect("a character wears a backpack")
         .raw()
@@ -746,15 +746,15 @@ fn dropping_an_item_into_your_worn_backpack_stores_it() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         position: Point::new(0, 0, 0),
-        container: pack,
+        container: RawSerial(pack),
     });
     world.tick(now);
 
@@ -844,15 +844,15 @@ fn dropping_an_item_into_a_container_puts_it_inside() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         position: Point::new(50, 60, 0), // gump coordinates, not tiles
-        container,
+        container: RawSerial(container),
     });
     world.tick(now);
 
@@ -886,15 +886,15 @@ fn an_opened_container_lists_what_was_put_in_it() {
     // Put the item in, then open the container and read the count.
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         position: Point::new(50, 60, 0),
-        container,
+        container: RawSerial(container),
     });
     world.tick(now);
     let _ = packets_for(&mut world, player);
@@ -931,15 +931,15 @@ fn picking_an_item_out_of_a_container_holds_it() {
     for _ in 0..1 {
         world.queue(Command::PickUpItem {
             connection: player,
-            serial: item_serial,
+            serial: RawSerial(item_serial),
             amount: 1,
         });
         world.tick(now);
         world.queue(Command::DropItem {
             connection: player,
-            serial: item_serial,
+            serial: RawSerial(item_serial),
             position: Point::new(50, 60, 0),
-            container,
+            container: RawSerial(container),
         });
         world.tick(now);
     }
@@ -947,7 +947,7 @@ fn picking_an_item_out_of_a_container_holds_it() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         amount: 1,
     });
     world.tick(now);
@@ -990,7 +990,7 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: held_serial,
+        serial: RawSerial(held_serial),
         amount: 1,
     });
     world.tick(now);
@@ -999,9 +999,9 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
 
     world.queue(Command::DropItem {
         connection: player,
-        serial: held_serial,
+        serial: RawSerial(held_serial),
         position: Point::new(0, 0, 0),
-        container: target, // a real item, but not a container
+        container: RawSerial(target), // a real item, but not a container
     });
     world.tick(now);
 
@@ -1038,7 +1038,7 @@ fn take_loose_item(world: &mut World, connection: ConnectionId, now: Instant) ->
         .expect("a ground item to lift");
     world.queue(Command::PickUpItem {
         connection,
-        serial,
+        serial: RawSerial(serial),
         amount: 1,
     });
     world.tick(now);
@@ -1046,7 +1046,7 @@ fn take_loose_item(world: &mut World, connection: ConnectionId, now: Instant) ->
 }
 
 /// A plausible armour layer.
-const LAYER_TORSO: u8 = 5;
+const LAYER_TORSO: Layer = Layer(5);
 
 #[test]
 fn equipping_a_held_item_dresses_the_mobile() {
@@ -1059,9 +1059,9 @@ fn equipping_a_held_item_dresses_the_mobile() {
 
     world.queue(Command::EquipItem {
         connection: player,
-        item: item_serial,
-        layer: LAYER_TORSO,
-        mobile: me,
+        item: RawSerial(item_serial),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(me),
     });
     world.tick(now);
 
@@ -1090,9 +1090,9 @@ fn a_newcomer_sees_a_dressed_mobile_in_its_0x78() {
     let (item_serial, _) = take_loose_item(&mut world, player, now);
     world.queue(Command::EquipItem {
         connection: player,
-        item: item_serial,
-        layer: LAYER_TORSO,
-        mobile: me,
+        item: RawSerial(item_serial),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(me),
     });
     world.tick(now);
 
@@ -1118,16 +1118,16 @@ fn unequipping_lifts_the_item_off_and_forgets_it_for_others() {
     let (item_serial, item) = take_loose_item(&mut world, player, now);
     world.queue(Command::EquipItem {
         connection: player,
-        item: item_serial,
-        layer: LAYER_TORSO,
-        mobile: me,
+        item: RawSerial(item_serial),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(me),
     });
     world.tick(now);
     let _ = packets_for(&mut world, watcher);
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         amount: 1,
     });
     world.tick(now);
@@ -1193,15 +1193,15 @@ fn consuming_a_contained_item_removes_it_from_the_open_gump() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         position: Point::new(50, 60, 0),
-        container,
+        container: RawSerial(container),
     });
     world.tick(now);
     world.queue(Command::DoubleClick {
@@ -1243,9 +1243,9 @@ fn consuming_a_worn_item_takes_it_off_for_everyone_including_the_wearer() {
     let (item_serial, item) = take_loose_item(&mut world, player, now);
     world.queue(Command::EquipItem {
         connection: player,
-        item: item_serial,
-        layer: LAYER_TORSO,
-        mobile: me,
+        item: RawSerial(item_serial),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(me),
     });
     world.tick(now);
     let _ = packets_for(&mut world, player);
@@ -1317,15 +1317,15 @@ fn consuming_a_container_takes_its_contents_with_it() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: item_serial,
+        serial: RawSerial(item_serial),
         position: Point::new(50, 60, 0),
-        container,
+        container: RawSerial(container),
     });
     world.tick(now);
 
@@ -1376,9 +1376,9 @@ fn a_layer_holds_only_one_item() {
     let (first, _) = take_loose_item(&mut world, player, now);
     world.queue(Command::EquipItem {
         connection: player,
-        item: first,
-        layer: LAYER_TORSO,
-        mobile: me,
+        item: RawSerial(first),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(me),
     });
     world.tick(now);
 
@@ -1387,9 +1387,9 @@ fn a_layer_holds_only_one_item() {
     let _ = packets_for(&mut world, player);
     world.queue(Command::EquipItem {
         connection: player,
-        item: second,
-        layer: LAYER_TORSO,
-        mobile: me,
+        item: RawSerial(second),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(me),
     });
     world.tick(now);
 
@@ -1417,9 +1417,9 @@ fn you_cannot_equip_onto_something_that_is_not_a_mobile() {
 
     world.queue(Command::EquipItem {
         connection: player,
-        item: held,
-        layer: LAYER_TORSO,
-        mobile: target, // an item, not a mobile
+        item: RawSerial(held),
+        layer: RawLayer(LAYER_TORSO.0),
+        mobile: RawSerial(target), // an item, not a mobile
     });
     world.tick(now);
 
@@ -1448,15 +1448,15 @@ fn dropping_a_stack_onto_an_identical_one_merges_them() {
     // Lift the small pile and drop it onto the big one.
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: loose,
+        serial: RawSerial(loose),
         amount: 50,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: loose,
+        serial: RawSerial(loose),
         position: here,
-        container: pile, // dropping onto the other stack
+        container: RawSerial(pile), // dropping onto the other stack
     });
     world.tick(now);
 
@@ -1493,15 +1493,15 @@ fn merging_past_the_stack_cap_keeps_the_remainder() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: loose,
+        serial: RawSerial(loose),
         amount: 50_000,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: loose,
+        serial: RawSerial(loose),
         position: here,
-        container: pile,
+        container: RawSerial(pile),
     });
     world.tick(now);
 
@@ -1577,9 +1577,9 @@ fn a_non_stackable_item_does_not_merge() {
 
     world.queue(Command::DropItem {
         connection: player,
-        serial: held,
+        serial: RawSerial(held),
         position: here,
-        container: target,
+        container: RawSerial(target),
     });
     world.tick(now);
 
@@ -1674,13 +1674,13 @@ fn a_container_does_not_decay_even_after_being_moved() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: container,
+        serial: RawSerial(container),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: container,
+        serial: RawSerial(container),
         position: here,
         container: DROP_TO_GROUND,
     });
@@ -1722,7 +1722,7 @@ fn picking_up_part_of_a_stack_splits_it() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: pile,
+        serial: RawSerial(pile),
         amount: 30,
     });
     world.tick(now);
@@ -1764,13 +1764,13 @@ fn the_split_portion_keeps_its_serial_and_can_be_dropped() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: pile,
+        serial: RawSerial(pile),
         amount: 30,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: pile, // the client drops the same serial it lifted
+        serial: RawSerial(pile), // the client drops the same serial it lifted
         position: here,
         container: DROP_TO_GROUND,
     });
@@ -1794,7 +1794,7 @@ fn picking_up_a_whole_stack_does_not_split_it() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: pile,
+        serial: RawSerial(pile),
         amount: 100,
     });
     world.tick(now);
@@ -1830,15 +1830,15 @@ fn gold_in_open_container(
     let gold = spawn_gold(world, point, amount, now);
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: gold,
+        serial: RawSerial(gold),
         amount, // the whole pile, so no split and the serial is kept
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: gold,
+        serial: RawSerial(gold),
         position: Point::new(50, 60, 0), // gump coordinates
-        container,
+        container: RawSerial(container),
     });
     world.tick(now);
     world.queue(Command::DoubleClick {
@@ -1865,15 +1865,15 @@ fn dropping_a_stack_onto_an_identical_one_inside_a_container_merges_them() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: loose,
+        serial: RawSerial(loose),
         amount: 50,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: player,
-        serial: loose,
+        serial: RawSerial(loose),
         position: here,
-        container: pile, // onto the contained stack
+        container: RawSerial(pile), // onto the contained stack
     });
     world.tick(now);
 
@@ -1911,7 +1911,7 @@ fn picking_up_part_of_a_stack_from_a_container_splits_it() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: pile,
+        serial: RawSerial(pile),
         amount: 30,
     });
     world.tick(now);
@@ -1959,7 +1959,7 @@ fn picking_up_a_whole_stack_from_a_container_does_not_split_it() {
 
     world.queue(Command::PickUpItem {
         connection: player,
-        serial: pile,
+        serial: RawSerial(pile),
         amount: 100,
     });
     world.tick(now);
@@ -2230,7 +2230,7 @@ fn a_dead_player_leaves_a_corpse_but_keeps_its_backpack() {
         robe,
         Equipped {
             mobile: serial_obj,
-            layer: 0x16,
+            layer: Layer(0x16),
         },
     );
 
@@ -2273,7 +2273,7 @@ fn a_dead_player_leaves_a_corpse_but_keeps_its_backpack() {
         .state
         .registry
         .query::<Equipped>()
-        .any(|(_, worn)| worn.mobile == serial_obj && worn.layer == 0x15);
+        .any(|(_, worn)| worn.mobile == serial_obj && worn.layer == items::BACKPACK_LAYER);
     assert!(keeps_backpack, "the ghost keeps its backpack");
     let _ = (player_entity, robe_serial);
 }
@@ -2663,7 +2663,7 @@ fn add_loot_fills_a_container_and_ignores_a_stray_serial() {
         .state
         .registry
         .query::<Equipped>()
-        .find(|(_, w)| w.mobile == serial_obj && w.layer == 0x15)
+        .find(|(_, w)| w.mobile == serial_obj && w.layer == items::BACKPACK_LAYER)
         .map(|(e, _)| world.registry().serial_of(e).unwrap())
         .expect("the player wears a backpack");
 
@@ -2813,7 +2813,7 @@ fn a_wielded_weapon_sets_the_swing_pace() {
     );
 
     // Longsword (old_speed 35) beats wrestling (base 50): fewer ticks per swing.
-    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
     assert_eq!(
         combat::swing_speed(&world.state, entity),
         swing_ticks(100, 35, 1, scale),
@@ -2822,10 +2822,10 @@ fn a_wielded_weapon_sets_the_swing_pace() {
 
     // A katana (58) is faster than a mace (30): the table drives the ordering.
     world.state.registry.despawn(sword);
-    let katana = items::equip_worn_item(&mut world.state, serial, 0x13FF, 0, 1).unwrap();
+    let katana = items::equip_worn_item(&mut world.state, serial, 0x13FF, 0, Layer(1)).unwrap();
     let katana_pace = combat::swing_speed(&world.state, entity);
     world.state.registry.despawn(katana);
-    items::equip_worn_item(&mut world.state, serial, 0x0F5C, 0, 1).unwrap();
+    items::equip_worn_item(&mut world.state, serial, 0x0F5C, 0, Layer(1)).unwrap();
     assert!(
         katana_pace < combat::swing_speed(&world.state, entity),
         "the katana swings sooner than the mace"
@@ -2842,7 +2842,7 @@ fn taking_the_weapon_off_reverts_to_wrestling() {
     let entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(entity).unwrap();
 
-    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
     assert_ne!(combat::swing_speed(&world.state, entity), WRESTLING_SWING_TICKS);
     world.state.registry.despawn(sword);
     assert_eq!(
@@ -2862,7 +2862,7 @@ fn a_wielded_weapon_rolls_its_damage_within_range_and_replays() {
         let connection = enter(&mut world, now);
         let entity = world.state.players[&connection];
         let serial = world.state.registry.serial_of(entity).unwrap();
-        items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+        items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
         (world, entity)
     }
 
@@ -2888,7 +2888,7 @@ fn a_natural_blow_beats_a_wielded_weapon() {
     let mob = spawn_mobile_full(&mut world, spot, 50, 4, 7, 0, now);
     let mob_entity = entity(&world, mob);
     let serial = world.state.registry.serial_of(mob_entity).unwrap();
-    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
     for _ in 0..20 {
         assert_eq!(
             combat::melee_blow(&mut world.state, mob_entity),
@@ -2908,7 +2908,7 @@ fn era_two_reads_the_aos_weapon_numbers() {
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(entity).unwrap();
-    items::equip_worn_item(&mut world.state, serial, 0x13FF, 0, 1).unwrap();
+    items::equip_worn_item(&mut world.state, serial, 0x13FF, 0, Layer(1)).unwrap();
 
     assert_eq!(
         combat::swing_speed(&world.state, entity),
@@ -2933,7 +2933,7 @@ fn a_skilled_swing_lands_and_trains_its_weapon_skill() {
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
     openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 300);
-    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
     // A tough, skill-less dummy so the fight runs long enough to train.
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 1000, now);
     let mob_entity = entity(&world, mob);
@@ -2970,7 +2970,7 @@ fn an_even_unskilled_duel_sometimes_misses() {
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
     openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 200);
-    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 2000, now);
     openshard_skills::set_skill(&mut world.state, mob, WRESTLING_SKILL, 1000);
     engage(&mut world, connection, mob, now);
@@ -3011,7 +3011,7 @@ fn tactics_scales_the_blow() {
         let serial = world.state.registry.serial_of(player_entity).unwrap();
         openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 1000);
         openshard_skills::set_skill(&mut world.state, serial.raw(), TACTICS_SKILL, tactics);
-        items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+        items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
         let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 60000, now);
         let mob_entity = entity(&world, mob);
         engage(&mut world, connection, mob, now);
@@ -3039,7 +3039,7 @@ fn lumberjacking_lends_an_axe_its_bite() {
         let serial = world.state.registry.serial_of(player_entity).unwrap();
         openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 1000);
         openshard_skills::set_skill(&mut world.state, serial.raw(), LUMBERJACKING_SKILL, lumber);
-        items::equip_worn_item(&mut world.state, serial, graphic, 0, 1).unwrap();
+        items::equip_worn_item(&mut world.state, serial, graphic, 0, Layer(1)).unwrap();
         let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 60000, now);
         let mob_entity = entity(&world, mob);
         engage(&mut world, connection, mob, now);
@@ -3122,7 +3122,7 @@ fn a_bow_deals_its_own_damage_band() {
     let connection = enter(&mut world, now);
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
-    items::equip_worn_item(&mut world.state, serial, 0x13B2, 0, 2).unwrap(); // bow
+    items::equip_worn_item(&mut world.state, serial, 0x13B2, 0, Layer(2)).unwrap(); // bow
     world
         .state
         .registry
@@ -3155,7 +3155,7 @@ fn a_weapon_override_beats_the_core_table() {
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(entity).unwrap();
-    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, 1).unwrap();
+    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
     let sword_serial = world.state.registry.serial_of(sword).unwrap().raw();
     let scale = world.state.gameplay.speed_scale_factor;
 
@@ -7014,7 +7014,7 @@ fn decoration_cannot_be_picked_up() {
 
     world.queue(Command::PickUpItem {
         connection: gm,
-        serial,
+        serial: RawSerial(serial),
         amount: 1,
     });
     world.tick(now);
@@ -7630,7 +7630,7 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
     let (backpack, _) = home
         .registry()
         .query::<Equipped>()
-        .find(|(_, worn)| worn.layer == BACKPACK_LAYER)
+        .find(|(_, worn)| worn.layer == items::BACKPACK_LAYER)
         .expect("a backpack was equipped");
     let backpack_serial = home.registry().serial_of(backpack).unwrap();
 
@@ -7700,7 +7700,7 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
     let backpacks = shard
         .registry()
         .query::<Equipped>()
-        .filter(|(_, worn)| worn.mobile.raw() == char_serial && worn.layer == BACKPACK_LAYER)
+        .filter(|(_, worn)| worn.mobile.raw() == char_serial && worn.layer == items::BACKPACK_LAYER)
         .count();
     assert_eq!(backpacks, 1, "the saved backpack came back, no starter added");
     let gold = shard
@@ -7737,7 +7737,7 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     let (backpack, _) = home
         .registry()
         .query::<Equipped>()
-        .find(|(_, worn)| worn.layer == BACKPACK_LAYER)
+        .find(|(_, worn)| worn.layer == items::BACKPACK_LAYER)
         .expect("a backpack was equipped");
     let backpack_serial = home.registry().serial_of(backpack).unwrap();
 
@@ -7821,7 +7821,7 @@ fn a_relogin_in_the_same_run_keeps_the_inventory() {
     let (backpack, _) = world
         .registry()
         .query::<Equipped>()
-        .find(|(_, w)| w.layer == BACKPACK_LAYER)
+        .find(|(_, w)| w.layer == items::BACKPACK_LAYER)
         .unwrap();
     let backpack_serial = world.registry().serial_of(backpack).unwrap();
     let (gold, gold_serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
@@ -8256,7 +8256,7 @@ fn a_snapshot_saves_an_idle_online_character_and_the_ground() {
     let (backpack, _) = world
         .registry()
         .query::<Equipped>()
-        .find(|(_, w)| w.layer == BACKPACK_LAYER)
+        .find(|(_, w)| w.layer == items::BACKPACK_LAYER)
         .unwrap();
     let backpack_serial = world.registry().serial_of(backpack).unwrap();
     // A backpack item and a loose ground item.
@@ -8484,7 +8484,7 @@ fn a_townsperson_is_dressed_and_named_by_the_core() {
     );
     assert_ne!(body.hue.0, 0, "a rolled skin hue, not the flat default");
 
-    let worn: Vec<u8> = world
+    let worn: Vec<Layer> = world
         .registry()
         .query::<Equipped>()
         .filter(|(_, w)| Some(w.mobile) == world.registry().serial_of(smith))
@@ -8492,10 +8492,16 @@ fn a_townsperson_is_dressed_and_named_by_the_core() {
         .collect();
     // The regression that catches "everyone is back in the one generic robe":
     // hair, a torso, legs and shoes, on four distinct layers.
-    assert!(worn.contains(&0x0B), "hair: {worn:?}");
-    assert!(worn.contains(&0x03), "shoes: {worn:?}");
-    assert!(worn.contains(&0x05) || worn.contains(&0x11), "a torso: {worn:?}");
-    assert!(worn.contains(&0x04) || worn.contains(&0x17), "legs: {worn:?}");
+    assert!(worn.contains(&Layer(0x0B)), "hair: {worn:?}");
+    assert!(worn.contains(&Layer(0x03)), "shoes: {worn:?}");
+    assert!(
+        worn.contains(&Layer(0x05)) || worn.contains(&Layer(0x11)),
+        "a torso: {worn:?}"
+    );
+    assert!(
+        worn.contains(&Layer(0x04)) || worn.contains(&Layer(0x17)),
+        "legs: {worn:?}"
+    );
 }
 
 /// Place a door at `at`, locked to `key_value` (0 for unlocked), and return it.
@@ -8900,7 +8906,7 @@ fn a_townspersons_hair_cannot_be_lifted_off_its_head() {
     let hair = world
         .registry()
         .query::<Equipped>()
-        .find(|(_, w)| w.mobile == smith_serial && w.layer == 0x0B)
+        .find(|(_, w)| w.mobile == smith_serial && w.layer == Layer(0x0B))
         .map(|(item, _)| item)
         .expect("a townsperson has hair");
     let hair_serial = world.registry().serial_of(hair).unwrap().raw();
@@ -8908,7 +8914,7 @@ fn a_townspersons_hair_cannot_be_lifted_off_its_head() {
 
     world.queue(Command::PickUpItem {
         connection,
-        serial: hair_serial,
+        serial: RawSerial(hair_serial),
         amount: 1,
     });
     world.tick(now);
@@ -11242,7 +11248,7 @@ fn a_mounted_character_logs_back_in_still_mounted() {
             inventory.items.iter().any(|item| {
                 matches!(
                     item.location,
-                    ItemLocation::Equipped { layer, .. } if layer == openshard_items::MOUNT_LAYER
+                    ItemLocation::Equipped { layer, .. } if Layer(layer) == openshard_items::MOUNT_LAYER
                 )
             })
         }),
@@ -12200,7 +12206,9 @@ fn give_item_lands_in_the_players_backpack() {
         .registry()
         .query::<Equipped>()
         .find(|(item, eq)| {
-            eq.mobile == serial && eq.layer == 0x15 && world.registry().has::<Container>(*item)
+            eq.mobile == serial
+                && eq.layer == items::BACKPACK_LAYER
+                && world.registry().has::<Container>(*item)
         })
         .and_then(|(item, _)| world.registry().serial_of(item))
         .expect("a backpack");

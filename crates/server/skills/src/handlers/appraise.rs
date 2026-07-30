@@ -10,6 +10,7 @@
 //! turns a weapon row into a swing, and this turns the same row into a sentence.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::Layer;
 use openshard_state::armor::armor_data;
 use openshard_state::components::{Body, Graphic, Name, PoisonCharges, Price};
 use openshard_state::weapon::{LAYER_TWO_HANDED, WeaponKind, by_era, weapon_data, weapon_layer};
@@ -178,11 +179,15 @@ pub(super) fn item_name(state: &WorldState, near: EntityId, item: EntityId) -> O
 
 /// The paperdoll layer `graphic` carries in the client's own tiledata, or `0` on a
 /// shard with no client files.
-fn tiledata_layer(state: &WorldState, near: EntityId, graphic: u16) -> u8 {
+///
+/// The wrap from `Terrain::item_layer`'s byte to a [`Layer`] happens here: the
+/// terrain trait lives in `openshard_movement`, below `protocol`, and reads the
+/// byte out of `tiledata.mul` — see `docs/protocol_newtypes.md` N4.
+fn tiledata_layer(state: &WorldState, near: EntityId, graphic: u16) -> Layer {
     let facet = state.facet_of(near);
     state
         .facets
         .get(&facet)
         .and_then(|facet| facet.terrain.as_deref())
-        .map_or(0, |terrain| terrain.item_layer(graphic))
+        .map_or(Layer(0), |terrain| Layer(terrain.item_layer(graphic)))
 }

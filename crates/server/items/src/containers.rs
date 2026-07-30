@@ -108,14 +108,14 @@ pub(crate) fn open_spellbook(
 /// only one of them is the banker's: what a character *carries* stops at the bank
 /// box (see [`carried`](crate::carried)). `npc` re-exports this, so there is one
 /// number and the two rules cannot drift apart.
-pub const BANK_LAYER: u8 = 0x1D;
+pub const BANK_LAYER: Layer = Layer(0x1D);
 
 /// Open the container a player wears at `layer` — its backpack, or its bank box.
 ///
 /// The service path a banker uses: find the worn container and open it onto the
 /// player's own client, the same `0x24`/`0x3C` a double-click sends. Does nothing
 /// if the player wears no container there.
-pub fn open_worn_container(state: &mut WorldState, connection: ConnectionId, player: EntityId, layer: u8) {
+pub fn open_worn_container(state: &mut WorldState, connection: ConnectionId, player: EntityId, layer: Layer) {
     let Some(mobile) = state.registry.serial_of(player) else {
         return;
     };

@@ -20,6 +20,7 @@ use openshard_movement::Walker;
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
+use openshard_protocol::wire::Layer;
 use openshard_protocol::world::Point;
 use openshard_protocol::{access::AccessLevel, direction::Facing, version::ClientVersion};
 
@@ -119,7 +120,13 @@ pub struct Equipped {
     /// The mobile wearing it.
     pub mobile: Serial,
     /// Which layer it sits on.
-    pub layer: u8,
+    ///
+    /// The wire type, not a byte: a layer is the client's own numbering, this
+    /// is the only component whose value goes out unaltered in two packets
+    /// (`0x2E` and the `0x78` outfit list), and every rule that reads it — what
+    /// a corpse keeps, what armour counts, what may not be lifted — is naming a
+    /// slot rather than doing arithmetic. `docs/protocol_newtypes.md` N4.
+    pub layer: Layer,
 }
 
 /// Marks a container as one half of a secure trade window.

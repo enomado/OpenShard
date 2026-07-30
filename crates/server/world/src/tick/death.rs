@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::Layer;
 use openshard_state::components::{
     CORPSE_GRAPHIC, CORPSE_GUMP, Corpse, DEATH_SHROUD_GRAPHIC, Decays, creature_name, ghost_body,
 };
@@ -8,7 +9,7 @@ use openshard_state::components::{
 const CORPSE_DECAY_TICKS: u64 = 7 * 60 * TICKS_PER_SECOND;
 
 /// The outer-torso layer the death shroud wears at — ServUO's `Layer.OuterTorso`.
-const OUTER_TORSO_LAYER: u8 = 0x16;
+const OUTER_TORSO_LAYER: Layer = Layer(0x16);
 
 impl World {
     /// Dispose of every mobile that died this tick: a creature becomes a corpse
@@ -128,7 +129,7 @@ impl World {
                 self.move_gear_to_corpse(
                     serial,
                     corpse,
-                    &[BACKPACK_LAYER, npc::BANK_LAYER, items::MOUNT_LAYER],
+                    &[items::BACKPACK_LAYER, npc::BANK_LAYER, items::MOUNT_LAYER],
                 );
             }
         }
@@ -427,7 +428,7 @@ impl World {
     /// layer in `keep`. A creature keeps nothing; a player keeps its backpack and
     /// bank box — those are worn containers it walks away (as a ghost) still
     /// holding, not loot for the corpse. The worn *gear* still drops.
-    fn move_gear_to_corpse(&mut self, mobile: Serial, container: Serial, keep: &[u8]) {
+    fn move_gear_to_corpse(&mut self, mobile: Serial, container: Serial, keep: &[Layer]) {
         let worn: Vec<EntityId> = self
             .state
             .registry

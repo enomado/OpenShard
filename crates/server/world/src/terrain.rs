@@ -1011,20 +1011,20 @@ mod tests {
             return;
         };
         assert_eq!(
-            terrain.item_layer(0x13B2),
+            openshard_protocol::wire::Layer(terrain.item_layer(0x13B2)),
             openshard_state::weapon::LAYER_ONE_HANDED,
             "the bow, which is why the override exists"
         );
         for graphic in [0x143E, 0x0F4D, 0x0E89, 0x0F62] {
             assert_eq!(
-                terrain.item_layer(graphic),
+                openshard_protocol::wire::Layer(terrain.item_layer(graphic)),
                 openshard_state::weapon::LAYER_TWO_HANDED,
                 "0x{graphic:04X} should be two-handed"
             );
         }
         for graphic in [0x13FF, 0x0F52, 0x0F61, 0x0F5C] {
             assert_eq!(
-                terrain.item_layer(graphic),
+                openshard_protocol::wire::Layer(terrain.item_layer(graphic)),
                 openshard_state::weapon::LAYER_ONE_HANDED,
                 "0x{graphic:04X} should be one-handed"
             );

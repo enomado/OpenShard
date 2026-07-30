@@ -491,7 +491,7 @@ pub enum Command {
         vendor: bool,
         /// Worn clothing and gear, as `(graphic, layer, hue)` — so an NPC is not
         /// naked. Drawn in its `0x78`.
-        equipment: Vec<(u16, u8, u16)>,
+        equipment: Vec<(u16, Layer, u16)>,
         /// Trained combat skills, `(skill id, value in tenths)` — what turns on the
         /// to-hit roll and damage scaling for the creature.
         skills: Vec<(u8, u16)>,
@@ -725,19 +725,21 @@ pub enum Command {
     EquipItem {
         /// Which connection.
         connection: ConnectionId,
-        /// The item to wear.
-        item: u32,
-        /// The layer to wear it on.
-        layer: u8,
+        /// The item to wear, as the client names it.
+        item: RawSerial,
+        /// The layer the client proposes. Which slots may be worn into is
+        /// `openshard_items`' rule, and it is applied there.
+        layer: RawLayer,
         /// The mobile to wear it — usually the player's own.
-        mobile: u32,
+        mobile: RawSerial,
     },
     /// A client asked to pick an item up onto its cursor (`0x07`).
     PickUpItem {
         /// Which connection.
         connection: ConnectionId,
-        /// The item's serial.
-        serial: u32,
+        /// The item's serial, as the client names it. A lift the server refuses
+        /// is answered with a `0x27`, so the check is at the seam and not here.
+        serial: RawSerial,
         /// How many of a stack to lift. Honoured for a ground pile — part is
         /// taken, the remainder left as a new dupe — and ignored for a contained
         /// or worn item, which lifts whole (the split there is still roadmap).
@@ -748,14 +750,14 @@ pub enum Command {
         /// Which connection.
         connection: ConnectionId,
         /// The item's serial, as the client names it.
-        serial: u32,
+        serial: RawSerial,
         /// Where, for a ground drop.
         position: Point,
         /// Where it is going: a container serial, another player (which opens a
         /// secure trade), or
         /// [`DROP_TO_GROUND`](openshard_protocol::DROP_TO_GROUND). A target that
         /// is none of those bounces the item home.
-        container: u32,
+        container: RawSerial,
     },
     /// A client acted on its secure trade window (`0x6F`).
     ///

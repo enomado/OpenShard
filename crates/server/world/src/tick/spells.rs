@@ -25,9 +25,6 @@ use openshard_protocol::wire::{CursorId, Graphic as WireGraphic, SoundId};
 use openshard_state::components::{Casting, Skills};
 use openshard_state::{CastStyle, DamageType, FieldKind, TargetPurpose};
 
-/// The layer a backpack rides on, where reagents are kept.
-const BACKPACK_LAYER: u8 = 0x15;
-
 impl World {
     /// A client asked to cast a spell (`0xBF`). Begin it: right away in the
     /// Sphere style, or as a rooted [`Casting`] with a cast delay in the ServUO
@@ -642,7 +639,7 @@ impl World {
         self.state
             .registry
             .query::<Equipped>()
-            .find(|(_, worn)| worn.mobile == caster && worn.layer == BACKPACK_LAYER)
+            .find(|(_, worn)| worn.mobile == caster && worn.layer == items::BACKPACK_LAYER)
             .and_then(|(item, _)| self.state.registry.serial_of(item))
             .map_or(0, |s| s.raw())
     }

@@ -5,7 +5,7 @@ use openshard_state::components::{Aggression, Brain, Heading, Hitpoints, Movemen
 
 /// The layer a mount item rides on — the client draws whoever wears one as
 /// mounted. `0x19`, the classic mount layer.
-pub const MOUNT_LAYER: u8 = 0x19;
+pub const MOUNT_LAYER: Layer = Layer(0x19);
 
 /// How close a rider must stand to swing up.
 const MOUNT_REACH: u32 = 2;

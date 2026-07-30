@@ -29,7 +29,7 @@ use openshard_protocol::speech::{Font, LocalizedMessage, SpokenMessage, TalkMode
 // `Graphic` is also a component name in this crate — an item's tiledata id and
 // hue together — so the wire's one-field newtype is imported under the name the
 // packet field has.
-use openshard_protocol::wire::{ClilocId, Graphic as WireGraphic, Hue, Layer, SoundId};
+use openshard_protocol::wire::{ClilocId, Graphic as WireGraphic, Hue, SoundId};
 use openshard_protocol::world::{MapChange, MapId, MapSize, PlayerUpdate, Point, encode_server_change};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
@@ -1649,11 +1649,11 @@ impl WorldState {
         // No `Amount` means a single. The encoder treats 1 and absent the same.
         let amount = self.registry.get::<Amount>(entity).map_or(1, |a| a.0);
         Some(WorldItem {
-            serial: serial.raw(),
-            graphic: id,
+            serial,
+            graphic: openshard_protocol::wire::Graphic(id),
             amount,
             position,
-            hue,
+            hue: openshard_protocol::wire::Hue(hue),
         })
     }
 
@@ -1922,7 +1922,7 @@ impl WorldState {
                 Some(Equipment {
                     serial,
                     graphic: WireGraphic(id),
-                    layer: Layer(worn.layer),
+                    layer: worn.layer,
                     hue: Hue(hue),
                 })
             })

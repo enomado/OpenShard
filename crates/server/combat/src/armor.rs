@@ -17,6 +17,7 @@
 //! needs no undoing.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::Layer;
 use openshard_state::WorldState;
 use openshard_state::armor::{
     LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES, LAYER_GORGET, LAYER_HELM, LAYER_LEGS, LAYER_SHIELD, MedAllowance,
@@ -39,7 +40,7 @@ pub fn meditation_offset(state: &WorldState, mobile: EntityId) -> u32 {
     let Some(serial) = state.registry.serial_of(mobile) else {
         return 0;
     };
-    let worn: Vec<(EntityId, u8)> = state
+    let worn: Vec<(EntityId, Layer)> = state
         .registry
         .query::<Equipped>()
         .filter(|(_, worn)| worn.mobile == serial)
@@ -70,7 +71,7 @@ pub fn meditation_offset(state: &WorldState, mobile: EntityId) -> u32 {
 /// The layers `meditation_offset` counts, pre-AoS: the six armour positions and
 /// the shield. ServUO adds the shield only outside AoS, and it is the difference
 /// between a mage who can meditate and one who cannot.
-const MEDITATION_LAYERS: [u8; 7] = [
+const MEDITATION_LAYERS: [Layer; 7] = [
     LAYER_SHIELD,
     LAYER_LEGS,
     LAYER_HELM,

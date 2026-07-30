@@ -15,6 +15,7 @@ use super::tests::{
     packets_for, serial_of, walk, world,
 };
 use super::*;
+use openshard_protocol::serial::RawSerial;
 use openshard_state::components::{
     Contained, CriminalUntil, Decays, Facet, InRegion, Mana, Moongate, Movement, Position,
     RECALL_RUNE_GRAPHIC, RuneMark, SPELLBOOK_GRAPHIC, Spellbook,
@@ -939,13 +940,13 @@ fn a_marked_rune_dropped_on_a_book_becomes_an_entry_and_is_consumed() {
         .unwrap();
     let marked_at = world.registry().get::<RuneMark>(rune).unwrap().destination;
 
-    openshard_items::pick_up(&mut world.state, connection, rune_serial, 1);
+    openshard_items::pick_up(&mut world.state, connection, RawSerial(rune_serial), 1);
     openshard_items::drop_item(
         &mut world.state,
         connection,
-        rune_serial,
+        RawSerial(rune_serial),
         Point::new(0, 0, 0),
-        book_serial,
+        RawSerial(book_serial),
     );
 
     let owned = world
@@ -987,13 +988,13 @@ fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
     let scrolls = openshard_items::give(&mut world.state, backpack, RECALL_SCROLL, 0, 3).expect("scrolls");
     let scroll_serial = world.state.registry.serial_of(scrolls).unwrap().raw();
 
-    openshard_items::pick_up(&mut world.state, connection, scroll_serial, 3);
+    openshard_items::pick_up(&mut world.state, connection, RawSerial(scroll_serial), 3);
     openshard_items::drop_item(
         &mut world.state,
         connection,
-        scroll_serial,
+        RawSerial(scroll_serial),
         Point::new(0, 0, 0),
-        book_serial,
+        RawSerial(book_serial),
     );
 
     let owned = world

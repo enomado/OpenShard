@@ -11,7 +11,7 @@
 use super::*;
 
 /// The paperdoll layer a backpack is worn on. ServUO's `Layer.Backpack`.
-pub const BACKPACK_LAYER: u8 = 0x15;
+pub const BACKPACK_LAYER: Layer = Layer(0x15);
 
 /// The container a mobile wears as its backpack, if it has one.
 ///

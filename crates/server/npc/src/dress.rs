@@ -25,22 +25,23 @@
 //! [`FIXED_LAYERS`] names the layers nothing may be lifted from — ServUO's
 //! `Movable = false` on the same items.
 
+use openshard_protocol::wire::Layer;
 use openshard_state::rng::Rng;
 
 /// Layer `0x03`, UO `Layer.Shoes`.
-pub const LAYER_SHOES: u8 = 0x03;
+pub const LAYER_SHOES: Layer = Layer(0x03);
 /// Layer `0x04`, UO `Layer.Pants` — trousers.
-pub const LAYER_PANTS: u8 = 0x04;
+pub const LAYER_PANTS: Layer = Layer(0x04);
 /// Layer `0x05`, UO `Layer.Shirt`.
-pub const LAYER_SHIRT: u8 = 0x05;
+pub const LAYER_SHIRT: Layer = Layer(0x05);
 /// Layer `0x0B`, UO `Layer.Hair`.
-pub const LAYER_HAIR: u8 = 0x0B;
+pub const LAYER_HAIR: Layer = Layer(0x0B);
 /// Layer `0x10`, UO `Layer.FacialHair` — a beard.
-pub const LAYER_FACIAL_HAIR: u8 = 0x10;
+pub const LAYER_FACIAL_HAIR: Layer = Layer(0x10);
 /// Layer `0x11`, UO `Layer.MiddleTorso` — a doublet, a tunic, an apron.
-pub const LAYER_MIDDLE_TORSO: u8 = 0x11;
+pub const LAYER_MIDDLE_TORSO: Layer = Layer(0x11);
 /// Layer `0x17`, UO `Layer.OuterLegs` — a kilt or a skirt.
-pub const LAYER_OUTER_LEGS: u8 = 0x17;
+pub const LAYER_OUTER_LEGS: Layer = Layer(0x17);
 
 /// The layers a player may never lift something off, however close they stand.
 ///
@@ -108,7 +109,7 @@ pub struct Appearance {
     /// Whether it came out female — the pack needs it to pick a name list.
     pub female: bool,
     /// Everything worn, `(graphic, layer, hue)`, in the order `spawn` equips it.
-    pub equipment: Vec<(u16, u8, u16)>,
+    pub equipment: Vec<(u16, Layer, u16)>,
 }
 
 /// Dress a townsperson, ServUO's `BaseVendor.InitBody` then `InitOutfit`.
@@ -262,7 +263,7 @@ mod tests {
         for seed in 1..200u64 {
             let mut rng = Rng::new(seed);
             let look = dress_townsperson(&mut rng, ShoeType::Shoes, None);
-            let layers: HashSet<u8> = look.equipment.iter().map(|&(_, l, _)| l).collect();
+            let layers: HashSet<Layer> = look.equipment.iter().map(|&(_, l, _)| l).collect();
             assert!(
                 layers.contains(&LAYER_SHIRT) || layers.contains(&LAYER_MIDDLE_TORSO),
                 "seed {seed}: nothing on the torso"
@@ -287,7 +288,8 @@ mod tests {
             for &(graphic, layer, _) in &look.equipment {
                 assert!(
                     seen.insert(layer),
-                    "seed {seed}: {graphic:#06x} collides on layer {layer:#04x}"
+                    "seed {seed}: {graphic:#06x} collides on layer {:#04x}",
+                    layer.0
                 );
             }
         }

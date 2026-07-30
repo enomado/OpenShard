@@ -308,7 +308,7 @@ fn taking_something_off_a_corpse_makes_you_a_looter() {
 
     world.queue(Command::PickUpItem {
         connection: looter,
-        serial: loot_serial,
+        serial: RawSerial(loot_serial),
         amount: 1,
     });
     world.tick(now);
@@ -446,7 +446,7 @@ fn meditation_wants_free_hands() {
         sword,
         Equipped {
             mobile: owner,
-            layer: 1,
+            layer: Layer(1),
         },
     );
     let _ = packets_for(&mut world, player);
@@ -489,7 +489,7 @@ fn a_trance_doubles_the_rate_mana_comes_back_at() {
         plate,
         Equipped {
             mobile: owner,
-            layer: 0x0D,
+            layer: Layer(0x0D),
         },
     );
     assert!(
@@ -632,7 +632,7 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
         blade,
         Equipped {
             mobile: owner,
-            layer: 1,
+            layer: Layer(1),
         },
     );
     let victim = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 200, now);

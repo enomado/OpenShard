@@ -2,7 +2,7 @@ use super::*;
 
 /// The highest layer an item can be worn on: 1–25 are the body; higher numbers
 /// are the backpack and bank, not "worn".
-pub(crate) const MAX_WEARABLE_LAYER: u8 = 25;
+pub(crate) const MAX_WEARABLE_LAYER: Layer = Layer(25);
 
 /// Put a plain worn item on a mobile — a robe, hair, shoes. Like
 /// [`equip_new_container`] but without the `Container`, so it is clothing, not a
@@ -12,7 +12,7 @@ pub fn equip_worn_item(
     mobile: Serial,
     graphic: u16,
     hue: u16,
-    layer: u8,
+    layer: Layer,
 ) -> Option<EntityId> {
     let (entity, serial) = match state.registry.spawn_with_serial(SerialKind::Item) {
         Ok(pair) => pair,
@@ -23,28 +23,37 @@ pub fn equip_worn_item(
     };
     state.registry.insert(entity, Graphic { id: graphic, hue });
     state.registry.insert(entity, Equipped { mobile, layer });
-    debug!(%serial, graphic, layer, "clothing equipped");
+    debug!(%serial, graphic, layer = layer.0, "clothing equipped");
     Some(entity)
 }
 
 /// Wear a client's held item on a mobile. See `Command::EquipItem`.
-pub fn equip_item(state: &mut WorldState, connection: ConnectionId, item: u32, layer: u8, mobile: u32) {
+pub fn equip_item(
+    state: &mut WorldState,
+    connection: ConnectionId,
+    item: RawSerial,
+    layer: RawLayer,
+    mobile: RawSerial,
+) {
     // Equipping is a *drop* of the dragged item, so there has to be one, and
     // it has to be the item named.
     let Some(held) = state.held.get(&connection).copied() else {
         return;
     };
-    if state.registry.serial_of(held.entity) != Serial::new(item) {
+    if state.registry.serial_of(held.entity) != item.validate() {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     }
-    if layer == 0 || layer > MAX_WEARABLE_LAYER {
+    // Which slots may be *worn into* is this crate's rule, not the wire's: a
+    // layer byte is a name, and `RawLayer::interpret` gives it back whole.
+    let layer = layer.interpret();
+    if layer == Layer(0) || layer > MAX_WEARABLE_LAYER {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     }
     let (Some(wearer_serial), Some(wearer)) = (
-        Serial::new(mobile),
-        Serial::new(mobile).and_then(|s| state.registry.entity_of(s)),
+        mobile.validate(),
+        mobile.validate().and_then(|s| state.registry.entity_of(s)),
     ) else {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
@@ -84,7 +93,7 @@ pub fn equip_item(state: &mut WorldState, connection: ConnectionId, item: u32, l
         },
     );
     broadcast_equip(state, held.entity, wearer);
-    debug!(item, layer, "equipped");
+    debug!(item = item.0, layer = layer.0, "equipped");
 }
 
 /// Despawn everything a mobile carries — its worn items and whatever those hold.
@@ -118,7 +127,7 @@ pub fn despawn_belongings(state: &mut WorldState, mobile: Serial) {
 }
 
 /// Whether a mobile already wears something on a layer.
-pub fn layer_taken(state: &WorldState, mobile: Serial, layer: u8) -> bool {
+pub fn layer_taken(state: &WorldState, mobile: Serial, layer: Layer) -> bool {
     state
         .registry
         .query::<Equipped>()
@@ -166,10 +175,10 @@ pub fn equip_packet(state: &WorldState, item: EntityId) -> Option<EquipUpdate> {
     let Equipped { mobile, layer } = *state.registry.get::<Equipped>(item)?;
     let Graphic { id, hue } = *state.registry.get::<Graphic>(item)?;
     Some(EquipUpdate {
-        item: serial.raw(),
-        graphic: id,
+        item: serial,
+        graphic: openshard_protocol::wire::Graphic(id),
         layer,
-        mobile: mobile.raw(),
-        hue,
+        mobile,
+        hue: Hue(hue),
     })
 }

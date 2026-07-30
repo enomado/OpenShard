@@ -20,26 +20,26 @@
 //! armour coming off needs no undoing.
 
 /// The shield layer (UO `Layer.TwoHanded`).
-pub const LAYER_SHIELD: u8 = 0x02;
+pub const LAYER_SHIELD: Layer = Layer(0x02);
 /// Leggings (UO `Layer.Pants`).
-pub const LAYER_LEGS: u8 = 0x04;
+pub const LAYER_LEGS: Layer = Layer(0x04);
 /// Helm (UO `Layer.Helm`).
-pub const LAYER_HELM: u8 = 0x06;
+pub const LAYER_HELM: Layer = Layer(0x06);
 /// Gloves (UO `Layer.Gloves`).
-pub const LAYER_GLOVES: u8 = 0x07;
+pub const LAYER_GLOVES: Layer = Layer(0x07);
 /// Gorget (UO `Layer.Neck`).
-pub const LAYER_GORGET: u8 = 0x0A;
+pub const LAYER_GORGET: Layer = Layer(0x0A);
 /// Chest (UO `Layer.InnerTorso`).
-pub const LAYER_CHEST: u8 = 0x0D;
+pub const LAYER_CHEST: Layer = Layer(0x0D);
 /// Sleeves (UO `Layer.Arms`).
-pub const LAYER_ARMS: u8 = 0x13;
+pub const LAYER_ARMS: Layer = Layer(0x13);
 
 /// How much of a body each armour layer covers, in hundredths — ServUO's
 /// `BaseArmor.m_ArmorScalars` (`{ 0.07, 0.07, 0.14, 0.15, 0.22, 0.35 }` over
 /// gorget, gloves, helm, arms, legs, chest). A shield is not in that array and
 /// falls to ServUO's `1.0`: a shield's rating counts whole.
 #[must_use]
-pub const fn layer_coverage(layer: u8) -> u32 {
+pub const fn layer_coverage(layer: Layer) -> u32 {
     match layer {
         LAYER_GORGET | LAYER_GLOVES => 7,
         LAYER_HELM => 14,
@@ -63,7 +63,7 @@ pub const fn layer_coverage(layer: u8) -> u32 {
 /// mean writing the same fact twice and having to keep them apart. The scalars
 /// array wins here, because the second stage of the absorb reads it directly.
 #[must_use]
-pub const fn hit_layer(roll: u32) -> u8 {
+pub const fn hit_layer(roll: u32) -> Layer {
     match roll {
         0..=6 => LAYER_GORGET,
         7..=13 => LAYER_GLOVES,
@@ -111,6 +111,7 @@ pub fn armor_data(graphic: u16) -> Option<&'static ArmorData> {
 use crate::WorldState;
 use crate::components::{Armor, Equipped, Graphic, Quality};
 use openshard_entities::EntityId;
+use openshard_protocol::wire::Layer;
 
 /// What an exceptional piece is worth — ServUO's `ar += -8 + 8 * (int)m_Quality`
 /// with `ItemQuality.Exceptional` being 2, so eight points over an ordinary one.
@@ -168,7 +169,7 @@ pub fn piece_rating(state: &WorldState, item: EntityId) -> u16 {
 
 /// The item a mobile wears on `layer`, if any.
 #[must_use]
-pub fn worn_on_layer(state: &WorldState, mobile: EntityId, layer: u8) -> Option<EntityId> {
+pub fn worn_on_layer(state: &WorldState, mobile: EntityId, layer: Layer) -> Option<EntityId> {
     let serial = state.registry.serial_of(mobile)?;
     state
         .registry
@@ -189,7 +190,7 @@ pub fn worn_armor_rating(state: &WorldState, mobile: EntityId) -> u16 {
     let Some(serial) = state.registry.serial_of(mobile) else {
         return 0;
     };
-    let worn: Vec<(EntityId, u8)> = state
+    let worn: Vec<(EntityId, Layer)> = state
         .registry
         .query::<Equipped>()
         .filter(|(_, worn)| worn.mobile == serial)
@@ -331,7 +332,7 @@ mod tests {
     fn the_hit_bands_match_their_coverage() {
         // The ladder and the scalars are the same fact told twice; a chest is hit
         // 35% of the time because it covers 35% of a body.
-        let mut counts: [(u8, u32); 6] = [
+        let mut counts: [(Layer, u32); 6] = [
             (LAYER_GORGET, 0),
             (LAYER_GLOVES, 0),
             (LAYER_ARMS, 0),
@@ -348,7 +349,7 @@ mod tests {
             slot.1 += 1;
         }
         for (layer, count) in counts {
-            assert_eq!(count, layer_coverage(layer), "layer {layer:#04X}");
+            assert_eq!(count, layer_coverage(layer), "layer {:#04X}", layer.0);
         }
     }
 }

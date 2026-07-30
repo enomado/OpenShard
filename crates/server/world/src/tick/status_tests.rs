@@ -16,11 +16,11 @@ const GOLD: u16 = 0x0EED;
 
 /// The serial of the container a connection's character wears on its back.
 fn backpack_of(world: &World, connection: ConnectionId) -> Serial {
-    worn_container_on(world, connection, BACKPACK_LAYER)
+    worn_container_on(world, connection, items::BACKPACK_LAYER)
 }
 
 /// The serial of the container worn on a given layer — the backpack, or the bank.
-fn worn_container_on(world: &World, connection: ConnectionId, layer: u8) -> Serial {
+fn worn_container_on(world: &World, connection: ConnectionId, layer: Layer) -> Serial {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let (entity, _) = world
@@ -53,7 +53,7 @@ fn put_in(world: &mut World, container: Serial, graphic: u16, amount: u16) -> En
 }
 
 /// Wear an item on a layer, the way `equip` would.
-fn wear(world: &mut World, connection: ConnectionId, graphic: u16, layer: u8) -> EntityId {
+fn wear(world: &mut World, connection: ConnectionId, graphic: u16, layer: Layer) -> EntityId {
     let player = world.state.players[&connection];
     let mobile = world.state.registry.serial_of(player).unwrap();
     let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
@@ -224,14 +224,14 @@ fn worn_plate_shows_an_armour_rating() {
         "a character in a shirt rates nothing"
     );
 
-    wear(&mut world, connection, 0x1415, 0x0D); // plate chest, InnerTorso
+    wear(&mut world, connection, 0x1415, Layer(0x0D)); // plate chest, InnerTorso
     assert_eq!(
         openshard_state::armor::worn_armor_rating(&world.state, player),
         14,
         "40 rating over 35% of a body"
     );
 
-    wear(&mut world, connection, 0x1412, 0x06); // plate helm, Helm
+    wear(&mut world, connection, 0x1412, Layer(0x06)); // plate helm, Helm
     assert_eq!(
         openshard_state::armor::worn_armor_rating(&world.state, player),
         19,
@@ -273,7 +273,7 @@ fn armour_blunts_a_blow_and_bare_skin_does_not() {
         (0x1414, 0x07), // gloves
         (0x1413, 0x0A), // gorget
     ] {
-        wear(&mut world, connection, graphic, layer);
+        wear(&mut world, connection, graphic, Layer(layer));
     }
     let armoured = through(&mut world);
     assert!(

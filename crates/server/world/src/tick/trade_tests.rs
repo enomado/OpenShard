@@ -76,15 +76,15 @@ fn offer_to(world: &mut World, from: ConnectionId, item: u32, to: ConnectionId, 
 fn drop_onto(world: &mut World, connection: ConnectionId, item: u32, target: u32, now: Instant) {
     world.queue(Command::PickUpItem {
         connection,
-        serial: item,
+        serial: RawSerial(item),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection,
-        serial: item,
+        serial: RawSerial(item),
         position: Point::default(),
-        container: target,
+        container: RawSerial(target),
     });
     world.tick(now);
 }
@@ -427,7 +427,7 @@ fn the_escrow_container_itself_cannot_be_lifted() {
 
     world.queue(Command::PickUpItem {
         connection: first,
-        serial: escrow,
+        serial: RawSerial(escrow),
         amount: 1,
     });
     world.tick(now);
@@ -454,7 +454,7 @@ fn an_onlooker_is_not_shown_the_trade_container_on_a_paperdoll() {
         "the escrow is not in the equipment list a 0x78 draws"
     );
     assert!(
-        !worn.iter().any(|item| item.layer.0 == TRADE_LAYER),
+        !worn.iter().any(|item| item.layer == TRADE_LAYER),
         "and neither is anything else on its layer"
     );
 }
@@ -519,15 +519,15 @@ fn taking_an_offer_back_out_of_the_window_is_an_ordinary_lift() {
 
     world.queue(Command::PickUpItem {
         connection: first,
-        serial: sword,
+        serial: RawSerial(sword),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: first,
-        serial: sword,
+        serial: RawSerial(sword),
         position: Point::default(),
-        container: pack,
+        container: RawSerial(pack),
     });
     world.tick(now);
 

@@ -304,7 +304,7 @@ impl World {
             .state
             .registry
             .query::<Equipped>()
-            .any(|(_, worn)| worn.mobile == serial && worn.layer == BACKPACK_LAYER);
+            .any(|(_, worn)| worn.mobile == serial && worn.layer == items::BACKPACK_LAYER);
         if !restored || !has_backpack {
             items::equip_new_container(
                 &mut self.state,
@@ -312,7 +312,7 @@ impl World {
                 BACKPACK_GRAPHIC,
                 BACKPACK_GUMP,
                 0,
-                BACKPACK_LAYER,
+                items::BACKPACK_LAYER,
             );
         }
 

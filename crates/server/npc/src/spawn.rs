@@ -6,6 +6,7 @@ use openshard_movement::Walker;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::wire::Layer;
 use openshard_protocol::world::Point;
 use openshard_state::WorldState;
 use openshard_state::components::{
@@ -96,7 +97,7 @@ pub struct SpawnSpec {
     /// precedence ServUO's per-trade `InitOutfit` overrides have — they call
     /// `base.InitOutfit()` and add an apron, not instead of the shirt. Where the two
     /// want one layer, this list wins. A mobile with no `title` wears only this.
-    pub equipment: Vec<(u16, u8, u16)>,
+    pub equipment: Vec<(u16, Layer, u16)>,
     /// Trained combat skills, `(skill id, value in tenths)` — Wrestling, Tactics,
     /// Anatomy and the weapon skills. Without these a creature has no `Skills`
     /// sheet, so its blows always land unscaled (the combat gate); with them it
@@ -351,7 +352,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // one layer the pack wins. `equip_worn_item` does not check the layer — it would
     // cheerfully list two items on one and leave the client drawing whichever it
     // read last — so the check is here, at the one place that equips a whole outfit.
-    let mut worn: Vec<u8> = Vec::with_capacity(8);
+    let mut worn: Vec<Layer> = Vec::with_capacity(8);
     for (graphic, layer, item_hue) in equipment
         .into_iter()
         .chain(dressed.into_iter().flat_map(|look| look.equipment))

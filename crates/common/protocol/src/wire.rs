@@ -72,6 +72,34 @@ pub struct ClilocId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct Layer(pub u8);
 
+/// A layer exactly as a client packet proposed it.
+///
+/// Only `0x13` carries one inbound — the client works the slot out from the
+/// item's tiledata and offers it — so by N4's counting rule in
+/// `docs/protocol_newtypes.md` this would live in `items.rs`. It is here
+/// instead, beside its validated twin, the way [`RawHue`] sits beside [`Hue`]
+/// and `RawSerial` beside `Serial`: a pair split across two modules is a pair
+/// the next reader has to be told about.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawLayer(pub u8);
+
+impl RawLayer {
+    /// The [`Layer`] this names.
+    ///
+    /// Total, and structurally identical to what it wraps, for
+    /// `RawStepSequence`'s reason: every byte names a slot, because a layer is
+    /// a name and not a range — see [`Layer`]. What the pair records is
+    /// *provenance*, which is the only thing that differs between the layer a
+    /// client proposed and the layer a server sends back. Whether the slot may
+    /// be *worn into* is a different question, and a gameplay one:
+    /// `openshard_items::equip_item` answers it.
+    #[inline]
+    #[must_use]
+    pub const fn interpret(self) -> Layer {
+        Layer(self.0)
+    }
+}
+
 /// A colour choice exactly as a client packet carried it: not yet checked
 /// against the set of hues this shard actually allows. See
 /// `docs/protocol_newtypes.md` — the allowed set is content, so the check that

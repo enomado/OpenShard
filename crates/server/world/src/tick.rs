@@ -41,10 +41,10 @@ use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::login::{AOS_FEATURE_FLAGS, encode_supported_features};
 use openshard_protocol::mobile::{MobileStatus, Notoriety, Stat, StatLockBits, StatusFlags, Vitals};
-use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, RawFont, RawTalkMode, SpokenMessage, TalkMode};
-use openshard_protocol::wire::{Hue, RawHue};
+use openshard_protocol::wire::{Hue, Layer, RawHue, RawLayer};
 use openshard_protocol::world::{
     DeathStatus, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapId, MapSize, PlayerStart,
     PlayerUpdate, Point, RawStepSequence, Season, SeasonChange, WalkAck, WalkReject, WalkRequest,

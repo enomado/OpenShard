@@ -4,6 +4,7 @@ use openshard_persistence::{
     RunebookEntryData, WorldRecord,
 };
 use openshard_protocol::identity::CharacterName;
+use openshard_protocol::wire::Layer;
 use openshard_state::components::{
     Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy, DoneQuest, Escortable, Field,
     Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality, QuestGiver,
@@ -192,7 +193,7 @@ impl World {
             // ridden creature from it, so the rider logs back in still mounted.
             let location = ItemLocation::Equipped {
                 mobile: owner_raw,
-                layer: worn.layer,
+                layer: worn.layer.0,
             };
             if let Some(record) = Self::item_record(registry, item, owner_raw, location) {
                 if record.container_gump.is_some() {
@@ -1053,10 +1054,16 @@ impl World {
             match record.location {
                 ItemLocation::Equipped { mobile, layer } => {
                     if let Some(mobile) = Serial::new(mobile) {
-                        self.state.registry.insert(entity, Equipped { mobile, layer });
+                        self.state.registry.insert(
+                            entity,
+                            Equipped {
+                                mobile,
+                                layer: Layer(layer),
+                            },
+                        );
                         // A saved mount: rebuild the ridden creature the saddle
                         // stands for and put the rider back in the saddle.
-                        if layer == items::MOUNT_LAYER {
+                        if Layer(layer) == items::MOUNT_LAYER {
                             self.remount_saved(mobile, entity, record.graphic, record.hue);
                         }
                     }

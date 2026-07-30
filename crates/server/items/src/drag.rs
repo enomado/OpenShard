@@ -12,10 +12,10 @@ pub(crate) const ITEM_REACH: u32 = 3;
 /// means the lift path below would happily take them, and a player standing next to
 /// a shopkeeper could pull the hair off its head onto their cursor. ServUO marks the
 /// same items `Movable = false`; this is that, at the one door a lift comes through.
-pub const FIXED_LAYERS: &[u8] = &[0x0B, 0x10];
+pub const FIXED_LAYERS: &[Layer] = &[Layer(0x0B), Layer(0x10)];
 
 /// Lift an item onto a client's cursor. See `Command::PickUpItem`.
-pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, amount: u16) {
+pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSerial, amount: u16) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
@@ -23,7 +23,10 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         reject_drag(state, connection, DragCancelReason::AlreadyHolding);
         return;
     }
-    let Some(item_serial) = Serial::new(serial) else {
+    // The seam, and a refusal rather than silence: a lift the server will not
+    // do is answered with a `0x27`, or the client keeps the item on its cursor
+    // for ever.
+    let Some(item_serial) = serial.validate() else {
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     };
@@ -167,9 +170,9 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
 pub fn drop_item(
     state: &mut WorldState,
     connection: ConnectionId,
-    serial: u32,
+    serial: RawSerial,
     position: Point,
-    container: u32,
+    container: RawSerial,
 ) {
     let Some(held) = state.held.get(&connection).copied() else {
         // Nothing on the cursor — a stray 0x08, nothing to bounce.
@@ -177,7 +180,7 @@ pub fn drop_item(
     };
     // The serial has to be the thing actually held; a mismatch is a confused
     // client, and the safe answer is to give it back what it was holding.
-    if state.registry.serial_of(held.entity) != Serial::new(serial) {
+    if state.registry.serial_of(held.entity) != serial.validate() {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     }
@@ -203,7 +206,7 @@ pub fn drop_item(
 
     state.held.remove(&connection);
     place_on_ground(state, held.entity, position, state.facet_of(player).0);
-    debug!(serial, "dropped on the ground");
+    debug!(serial = serial.0, "dropped on the ground");
 }
 
 /// Put a held item into a container. See `Command::DropItem`.
@@ -212,9 +215,9 @@ pub fn drop_into_container(
     connection: ConnectionId,
     held: HeldItem,
     position: Point,
-    container: u32,
+    container: RawSerial,
 ) {
-    let Some(container_serial) = Serial::new(container) else {
+    let Some(container_serial) = container.validate() else {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     };
@@ -264,7 +267,7 @@ pub fn drop_into_container(
     // And everyone else looking into the same container, which is what makes an
     // offer visible across a trade window.
     tell_watchers_updated_except(state, container_serial, held.entity, Some(connection));
-    debug!(container, "dropped into a container");
+    debug!(%container_serial, "dropped into a container");
 }
 
 /// A drop onto another item *or another player*: into it if it is a container,
@@ -275,9 +278,9 @@ pub fn drop_onto_item(
     connection: ConnectionId,
     held: HeldItem,
     position: Point,
-    target_serial: u32,
+    target_serial: RawSerial,
 ) {
-    let target = Serial::new(target_serial).and_then(|s| state.registry.entity_of(s));
+    let target = target_serial.validate().and_then(|s| state.registry.entity_of(s));
     match target {
         Some(target) if state.registry.has::<Spellbook>(target) => {
             drop_scroll_on_book(state, connection, held, target);

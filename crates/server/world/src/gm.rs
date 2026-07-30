@@ -344,14 +344,13 @@ pub(crate) fn teleport_to(state: &mut WorldState, actor: EntityId, to: Point) {
 /// pack, so a tester can cast anything without buying each scroll. The mage's
 /// book off the shelf is empty; this is the staff shortcut.
 fn full_spellbook(state: &mut WorldState, actor: EntityId) {
-    const BACKPACK_LAYER: u8 = 0x15;
     let Some(actor_serial) = state.registry.serial_of(actor) else {
         return;
     };
     let backpack = state
         .registry
         .query::<Equipped>()
-        .find(|(_, worn)| worn.mobile == actor_serial && worn.layer == BACKPACK_LAYER)
+        .find(|(_, worn)| worn.mobile == actor_serial && worn.layer == openshard_items::BACKPACK_LAYER)
         .and_then(|(entity, _)| state.registry.serial_of(entity));
     let Some(backpack) = backpack else {
         notify(state, actor, "You have no backpack.");

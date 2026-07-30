@@ -129,7 +129,7 @@ pub fn equip_new_container(
     graphic: u16,
     gump: u16,
     hue: u16,
-    layer: u8,
+    layer: Layer,
 ) -> Option<EntityId> {
     let (entity, serial) = match state.registry.spawn_with_serial(SerialKind::Item) {
         Ok(pair) => pair,
@@ -141,7 +141,7 @@ pub fn equip_new_container(
     state.registry.insert(entity, Graphic { id: graphic, hue });
     state.registry.insert(entity, Container { gump });
     state.registry.insert(entity, Equipped { mobile, layer });
-    debug!(%serial, graphic, layer, "container equipped");
+    debug!(%serial, graphic, layer = layer.0, "container equipped");
     Some(entity)
 }
 

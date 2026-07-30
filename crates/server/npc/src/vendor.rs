@@ -16,6 +16,7 @@ use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::TalkMode;
 use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
+use openshard_protocol::wire::Layer;
 use openshard_state::components::{
     Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord, Vendor,
 };
@@ -27,13 +28,13 @@ use crate::GOLD_GRAPHIC;
 
 /// The layer a vendor's stock container rides on — ServUO's restockable buy
 /// layer, `0x1A` (ClassicUO's `ShopBuyRestock`).
-pub const STOCK_LAYER: u8 = 0x1A;
+pub const STOCK_LAYER: Layer = Layer(0x1A);
 
 /// The second shop layer, `0x1B` (ClassicUO's `ShopBuy`). ClassicUO's buy window
 /// scans layers `0x1A` **and** `0x1B` and dereferences the container on each with
 /// no null check, so a vendor must wear one on both or the client crashes when
 /// the shop opens. This one holds nothing; it exists only to satisfy the scan.
-pub const RESALE_LAYER: u8 = 0x1B;
+pub const RESALE_LAYER: Layer = Layer(0x1B);
 
 /// The crate the stock lives in, and its gump.
 const STOCK_GRAPHIC: u16 = 0x0E3F;
@@ -352,7 +353,7 @@ pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32,
     if !crate::speech::check_vendor_access(state, vendor, player) {
         return;
     }
-    let Some(backpack) = worn_container(state, player, BACKPACK_LAYER) else {
+    let Some(backpack) = worn_container(state, player, openshard_items::BACKPACK_LAYER) else {
         return;
     };
 
@@ -437,7 +438,7 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
     if !crate::speech::check_vendor_access(state, vendor, actor) {
         return true;
     }
-    let Some(backpack) = worn_container(state, actor, BACKPACK_LAYER) else {
+    let Some(backpack) = worn_container(state, actor, openshard_items::BACKPACK_LAYER) else {
         return false;
     };
 
@@ -498,7 +499,7 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32
     if !crate::speech::check_vendor_access(state, vendor, player) {
         return;
     }
-    let Some(backpack) = worn_container(state, player, BACKPACK_LAYER) else {
+    let Some(backpack) = worn_container(state, player, openshard_items::BACKPACK_LAYER) else {
         return;
     };
     let catalogue = stock_prices(state, stock_serial);
@@ -597,7 +598,7 @@ fn vendor_says(state: &mut WorldState, vendor: EntityId, text: &str) {
 }
 
 /// The serial of the container `mobile` wears at `layer`, if any.
-fn worn_container(state: &WorldState, mobile: EntityId, layer: u8) -> Option<Serial> {
+fn worn_container(state: &WorldState, mobile: EntityId, layer: Layer) -> Option<Serial> {
     let serial = state.registry.serial_of(mobile)?;
     state
         .registry
@@ -605,9 +606,6 @@ fn worn_container(state: &WorldState, mobile: EntityId, layer: u8) -> Option<Ser
         .find(|(_, worn)| worn.mobile == serial && worn.layer == layer)
         .and_then(|(entity, _)| state.registry.serial_of(entity))
 }
-
-/// The layer a backpack rides on.
-const BACKPACK_LAYER: u8 = 0x15;
 
 /// Dress a fresh townsperson as a vendor: the mark, and the stock crate.
 pub(crate) fn make_vendor(state: &mut WorldState, entity: EntityId, serial: Serial) {

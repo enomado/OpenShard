@@ -25,6 +25,7 @@ use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::TalkMode;
+use openshard_protocol::wire::Layer;
 use openshard_protocol::wire::{Graphic as WireGraphic, SoundId};
 use openshard_protocol::world::Point;
 use openshard_state::WorldState;
@@ -54,11 +55,11 @@ const IDLE_TICKS: u64 = 40 * 20;
 /// The male and female guard bodies — plain humans, as ServUO's guard is.
 const GUARD_BODIES: [u16; 2] = [0x0190, 0x0191];
 /// Plate and a halberd, so it reads as a guard on sight: `(graphic, layer, hue)`.
-const GUARD_KIT: [(u16, u8, u16); 4] = [
-    (0x1415, 0x05, 0), // plate chest, on the torso layer
-    (0x1410, 0x13, 0), // plate arms
-    (0x1411, 0x04, 0), // plate legs
-    (0x143E, 0x02, 0), // halberd, in hand
+const GUARD_KIT: [(u16, Layer, u16); 4] = [
+    (0x1415, Layer(0x05), 0), // plate chest, on the torso layer
+    (0x1410, Layer(0x13), 0), // plate arms
+    (0x1411, Layer(0x04), 0), // plate legs
+    (0x143E, Layer(0x02), 0), // halberd, in hand
 ];
 /// The teleport-in sparkle and its sound — ServUO's `WarriorGuard.TeleportTo`,
 /// the same pair the Teleport spell uses.

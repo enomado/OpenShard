@@ -17,12 +17,12 @@ use openshard_protocol::containers::{
 };
 use openshard_protocol::items::{DROP_TO_GROUND, DragCancel, DragCancelReason, EquipUpdate};
 use openshard_protocol::mobile::{OpenPaperdoll, PaperdollFlags, Remove};
-use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::spellbook::SpellbookContent;
 use openshard_protocol::target::{TargetCursor, TargetKind};
 use openshard_protocol::trade::{encode_trade_close, encode_trade_open, encode_trade_update};
-use openshard_protocol::wire::{CursorId, Hue};
+use openshard_protocol::wire::{CursorId, Hue, Layer, RawLayer};
 use openshard_protocol::world::Point;
 use openshard_state::components::{
     Amount, Body, Client, Combat, Contained, Container, Corpse, Decays, Decoration, Door, Equipped, Facet,
