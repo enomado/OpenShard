@@ -160,3 +160,31 @@ targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
   a UO client.** That is the right scope for M1–M3, and it is also how both
   ends quietly agree on the same mistake. Every packet this client learns should
   be checked against a real client's behaviour, not only against our own server.
+
+## Backlog, found while building M0 and M1
+
+Each is a seam the work made visible. None blocks the next milestone.
+
+- **The shard sends the feature mask and the character list as one write.**
+  Correct, and worth naming: it means "one compressed block" and "one packet"
+  are different things on this wire, and any future reader — a proxy, a packet
+  logger, a second client — has to keep the two layers apart.
+- **`ServerPacket::decode` covers the login set only.** Everything else arrives
+  as `Undecoded`, which is honest but means a `WorldView` cannot yet hold
+  anyone but the player. `0x20`, `0x11`, `0x77`, `0x78`, `0x1A` and `0x1D` are
+  the next six, and they are what M1a needs.
+- **`CharacterList` decodes only the post-7.0.13.0 form.** The older start list
+  carries no coordinates, so there is no honest `StartLocation` to build; the
+  decoder says so rather than inventing zeros. If this engine ever wants to be
+  a client to an *old* shard, that is where to start.
+- **The client-to-server encoders are still labelled "test fixtures only".**
+  `AccountLogin::encode`, `SelectShard::encode`, `GameServerLogin::encode` and
+  `CharacterPlay::encode` are what the client actually sends now. Their docs
+  describe a world where only tests called them.
+- **`Login` fixes the seed value at `0x0A000001`.** It is never read — see
+  `RawSeedValue` — but a client that will one day face a shard implementing
+  login encryption will need it to be the value that keys the cipher.
+- **The `0x82` refusal loses why.** `DenyReason::from_wire_code` returns one
+  reason per wire code because the wire has five, and the server collapsed
+  fifteen into them. Nothing to fix on this side; worth remembering before
+  anyone builds a UI that explains a failed login.
