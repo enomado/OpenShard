@@ -353,49 +353,69 @@ Character *select* is pure instantiation, which is why it falls out as a single
 delete is deletion plus a question about presence — which is why those two are
 the ones that kept wanting to reach into the world.
 
-### Three owners, and the boundary between them
+### Two owners, and the boundary between them
 
-- **Existence lives on the account** (`openshard-login`): names, nothing more.
-  It never learns a serial or a position, which is what keeps that crate down to
-  `protocol` + `getrandom` + `argon2` and testable as a sequence of byte slices.
-- **State lives in the roster** (`server/src/roster.rs`): where each character
-  was when last seen — serial, spot, look, sheet. Seeded from the store at boot,
-  refreshed from `World::drain_departed` on every logout, because the store is
-  written *later* and a player can beat their own save back in.
-- **Presence lives in the sessions** (`server/src/session.rs`): which connection
-  is playing which character, from the moment `Enter` is queued.
+*This section said three, and named the binary as the owner of two of them, until
+[`connection_state.md`](connection_state.md) S4 and S5 moved them into the world.
+What is below is where they are.*
 
-The boundary between the login crate and the binary is exactly one question:
-**does this need the saved record?** Select needs it, so select cannot live in
-the login crate without dragging `openshard-persistence` — and with it bundled
-SQLite and `tokio-postgres` — into a crate whose whole value is that it has
-neither. And because select must stay, moving create and delete out of the
-binary would not reunite the character-screen conversation, only move the seam to
-a different arbitrary packet. So all three live together, on the binary's side of
-that line, and `Command` stays in `openshard-world`.
+- **Credentials live in `openshard-login`**: a password, a ban, an access level —
+  what a *login* is about. Nothing about a character, which is what keeps that
+  crate down to `protocol` + `getrandom` + `argon2` and testable as a sequence of
+  byte slices.
+- **Existence and state both live in the world's roster**
+  (`world/src/tick/roster.rs`): the account's characters, in the slot order `0xA9`
+  shows and `0x83` indexes, each carrying `Option<CharacterRecord>` — where that
+  character was when last seen, or `None` for one that exists and that nothing has
+  described yet. They were two lists before, one per crate, and the world's half
+  could not see the other.
+- **Presence lives in the entity**: a character is being played if it is in the
+  world, which is the fact itself rather than a table about it. The binary keeps a
+  `WorldPhase` per connection, but only to decide synchronously whether a packet
+  may be queued — see below.
 
-### Presence is asked of the sessions, never of the world
+The boundary is authentication, and it is one question: **is this the login
+conversation, or is it the world's?** The login crate ends at
+`Command::Authenticated`, and the character screen — list, create, select, delete
+— is answered out of a tick like everything else. What used to argue for the
+binary owning it was that select needs the saved record, and pulling
+`openshard-persistence` (with bundled SQLite and `tokio-postgres`) into the login
+crate would cost that crate its whole value. Moving the screen *into the world*,
+which already depends on persistence, is the other direction, and that objection
+does not apply.
 
-"Is this character being played?" is answered by scanning the session table, not
-by looking for its entity. The world can only be asked about a *serial*, and the
-only route to a serial from the character screen is the roster — which a
-character created during this run is not in until it logs out. Asking the world
-therefore skipped the check entirely for exactly the character most likely to be
-online, and deleted it out from under the connection playing it. The sessions
-know what they are playing from the moment they ask to.
+### Presence is asked of the entity, never of a table about it
+
+*Also reversed by S5, and it is worth keeping the old answer visible because the
+reasoning that produced it was sound and still incomplete.* "Is this character
+being played?" used to be answered by scanning the session table, because the
+world could only be asked about a *serial*, and the only route to a serial from
+the character screen was the roster — which a character created during this run
+was not in until it logged out. Asking the world therefore skipped the check for
+exactly the character most likely to be online, and deleted it out from under the
+connection playing it.
+
+What changed is the route, not the argument: the roster is the world's and holds
+the account's characters by name, so the world resolves the name itself and looks
+for the entity. The question is asked of the thing that *is* the fact, and
+`Sessions::is_playing` is gone.
 
 ### The world mints serials; the roster only remembers them
 
 A serial is durable — it is what every packet ever sent about a character
 referred to, so a restored character must come back on the one it was saved
 under. It is tempting to conclude that the registry should therefore own it, and
-that `Command::Enter { serial: Option<u32> }` and `World::reserve_serial` are an
-inversion showing through. They are not. Items, NPCs and decoration are persisted
-and reserve their serials at boot in exactly the same way; players are not a
-special case, and serials are one space (`SerialKind`) shared by all of them.
-Splitting a player range out would put two allocators over one pool to fix
-nothing. `None` on `Enter` is honest: a character being created has no serial
-yet, which is absence and not ignorance.
+that `World::reserve_serial` is an inversion showing through. It is not. Items,
+NPCs and decoration are persisted and reserve their serials at boot in exactly
+the same way; players are not a special case, and serials are one space
+(`SerialKind`) shared by all of them. Splitting a player range out would put two
+allocators over one pool to fix nothing.
+
+`Command::Enter` says which of the two it is by name rather than by an absent
+serial: `Character::Saved` asks the world to play whatever is on file for that
+account and name, and `Character::Fresh` carries what a creation chose. The
+serial is never on the command at all now — it is on the roster row, which the
+world holds.
 
 ### Where the login conversation ends
 
