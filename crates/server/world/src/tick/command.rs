@@ -1,13 +1,14 @@
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// How a character looks: its body graphic and hue. Chosen on the creation
 /// screen, or restored from the save.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Appearance {
     /// The body graphic id. Spelled out rather than imported: the glob above
-    /// already carries `openshard_state::components::Graphic`, which is the
+    /// already carries `openshard_state::components::Drawn`, which is the
     /// *component* an item is drawn by, and the two must not be confused.
-    pub body: openshard_protocol::wire::Graphic,
+    pub body: Graphic,
     /// The skin hue.
     pub hue: openshard_protocol::wire::Hue,
 }
@@ -21,7 +22,7 @@ impl Appearance {
     /// screen — cannot drift apart.
     pub fn default_human() -> Self {
         Self {
-            body: openshard_protocol::wire::Graphic(BODY_HUMAN_MALE),
+            body: BODY_HUMAN_MALE,
             hue: openshard_protocol::wire::Hue(DEFAULT_HUE),
         }
     }
@@ -161,7 +162,7 @@ impl StoredCharacter {
             position: Point::new(record.x, record.y, record.z),
             facing: Facing::from_bits(record.facing),
             appearance: Appearance {
-                body: openshard_protocol::wire::Graphic(record.body),
+                body: Graphic(record.body),
                 hue: openshard_protocol::wire::Hue(record.hue),
             },
             sheet: CharacterSheet {
@@ -198,20 +199,37 @@ impl StoredCharacter {
 /// The distinction the four `Option`s used to encode between them, and the only
 /// one the world needs: a stored character binds its saved serial and stands
 /// where it stood, a fresh one takes a serial from the pool and the start city.
+///
+/// # Why [`Saved`](Self::Saved) carries nothing
+///
+/// It used to carry the row — the shard read its own roster, unpacked it with
+/// [`StoredCharacter::from_record`] and sent the result along. Since S4 of
+/// `docs/connection_state.md` the roster is the world's, so the row is already
+/// on the far side of this command and sending it would be sending the world
+/// something it holds. `Saved` is therefore a *question*, not an answer: play
+/// whatever is on file for this account and name. That the answer may be
+/// "nothing on file" is not an error — a config-seeded name and a character
+/// created this run and never logged out both reach the world that way, and both
+/// enter fresh.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Character {
-    /// Never saved: created just now, or seeded by config.
+    /// Created on the character screen a moment ago: everything about it is on
+    /// this command, because nothing about it is on file yet.
     Fresh(FreshCharacter),
-    /// Restored from the database.
-    Stored(StoredCharacter),
+    /// Whatever the world has on file for this account and name, or a bare fresh
+    /// character if it has nothing.
+    Saved,
 }
 
 impl Character {
     /// A character with nothing chosen and nothing saved — the world's default
     /// body, its flat default stats, no skills, and the start city of `facet`.
     ///
-    /// What a config-seeded name enters as on its first ever login, before there
-    /// is a row for it anywhere.
+    /// What a test enters as when the character it is entering is not the
+    /// subject. A real client never sends this: it either created the character
+    /// a moment ago, which fills in a [`FreshCharacter`], or it picked one off
+    /// the list, which is [`Saved`](Self::Saved) — and a `Saved` the roster has
+    /// never heard of enters as exactly this.
     pub fn fresh(facet: Facet) -> Self {
         Self::Fresh(FreshCharacter {
             facet,
@@ -251,9 +269,9 @@ pub struct DecorDoor {
     /// Which key opens it; `0` is unlocked.
     pub key_value: u32,
     /// The shut graphic.
-    pub closed: u16,
+    pub closed: Graphic,
     /// The open graphic.
-    pub open: u16,
+    pub open: Graphic,
     /// East/west hinge swing.
     pub offset_x: i16,
     /// North/south hinge swing.
@@ -269,11 +287,11 @@ pub struct DecorContainer {
     /// Which key opens it; `0` is unlocked.
     pub key_value: u32,
     /// The item graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// The gump the client opens for it.
-    pub gump: u16,
+    pub gump: Graphic,
     /// Its hue, or 0.
-    pub hue: u16,
+    pub hue: Hue,
     /// Where.
     pub position: Point,
 }
@@ -380,7 +398,7 @@ pub enum Command {
         /// Which facet.
         facet: u8,
         /// The plain statics to place, as `(graphic, hue, position)`.
-        statics: Vec<(u16, u16, Point)>,
+        statics: Vec<(Graphic, Hue, Point)>,
         /// The doors to place.
         doors: Vec<DecorDoor>,
         /// The containers to place.
@@ -426,9 +444,9 @@ pub enum Command {
     /// this spot", the item counterpart of a mobile entering.
     SpawnItem {
         /// The tiledata graphic id.
-        graphic: u16,
+        graphic: Graphic,
         /// Its hue, or 0 for none.
-        hue: u16,
+        hue: Hue,
         /// How many, for a stackable item; 0 or 1 is a single.
         amount: u16,
         /// Whether it merges with an identical pile when dropped onto one.
@@ -442,11 +460,11 @@ pub enum Command {
     /// [`SpawnItem`](Self::SpawnItem) but the thing can hold others.
     SpawnContainer {
         /// The tiledata graphic id (a chest, a backpack).
-        graphic: u16,
+        graphic: Graphic,
         /// The gump the client opens when it is double-clicked.
-        gump: u16,
+        gump: Graphic,
         /// Its hue, or 0 for none.
-        hue: u16,
+        hue: Hue,
         /// Where it lies.
         position: Point,
         /// Which facet.
@@ -457,9 +475,9 @@ pub enum Command {
     /// but no client driving it.
     SpawnMobile {
         /// The body graphic (a creature id, or a human body).
-        body: u16,
+        body: Graphic,
         /// Its hue.
-        hue: u16,
+        hue: Hue,
         /// Its starting and maximum hit points.
         hits: u16,
         /// Its standing — the health-bar colour — as a wire byte (1 innocent, 5
@@ -509,7 +527,7 @@ pub enum Command {
         vendor: bool,
         /// Worn clothing and gear, as `(graphic, layer, hue)` — so an NPC is not
         /// naked. Drawn in its `0x78`.
-        equipment: Vec<(u16, Layer, u16)>,
+        equipment: Vec<(Graphic, Layer, Hue)>,
         /// Trained combat skills, `(skill id, value in tenths)` — what turns on the
         /// to-hit roll and damage scaling for the creature.
         skills: Vec<(u8, u16)>,
@@ -552,7 +570,7 @@ pub enum Command {
         pack: u32,
         /// The reagents the spell consumes, as `(graphic, count)`. All must be in
         /// the pack or the spell fizzles, spending nothing.
-        reagents: Vec<(u16, u16)>,
+        reagents: Vec<(Graphic, u16)>,
     },
     /// Heal a mobile — a spell's or a script's mending. Raises hit points toward
     /// the maximum and never past it.
@@ -811,13 +829,20 @@ pub enum Command {
         connection: ConnectionId,
     },
     /// A character was deleted from the character-select screen (`0x83`). The
-    /// server has already dropped it from the account's list; this tells the
-    /// world to forget its saved row and inventory so the deletion reaches the
-    /// store on the next save. The serial stays reserved — a packet still in
-    /// flight may name it — so nothing is unbound here.
+    /// shard has already dropped it from the account's list; this tells the
+    /// world to forget its roster row, its store row and its saved inventory, so
+    /// the deletion reaches the store on the next save. The serial stays
+    /// reserved — a packet still in flight may name it — so nothing is unbound.
+    ///
+    /// Named by account and character rather than by serial: since S4 the roster
+    /// is the world's, and the serial is on the row the world itself holds. The
+    /// shard has no serial to send — a character created this run and never
+    /// logged out has never had one recorded anywhere the shard can see.
     DeleteCharacter {
-        /// The deleted character's wire serial.
-        serial: u32,
+        /// Whose account it was on.
+        account: AccountName,
+        /// The deleted character's name.
+        name: CharacterName,
     },
     /// Hand a mobile's brain to the script: the built-in `ai` stops driving it and
     /// its `onTick` takes over. A script controls a creature it spawned.
@@ -906,9 +931,9 @@ pub enum Command {
         /// Whose backpack, by wire serial.
         serial: u32,
         /// The item graphic.
-        graphic: u16,
+        graphic: Graphic,
         /// Its hue, or 0.
-        hue: u16,
+        hue: Hue,
         /// How many.
         amount: u16,
         /// Whether it merges onto a like pile.
@@ -921,7 +946,7 @@ pub enum Command {
         /// Whose backpack, by wire serial.
         serial: u32,
         /// The item graphic to take.
-        graphic: u16,
+        graphic: Graphic,
         /// How many to take.
         amount: u16,
     },
@@ -946,9 +971,9 @@ pub enum Command {
         /// The container's wire serial — a corpse, a chest.
         container: u32,
         /// The item graphic.
-        graphic: u16,
+        graphic: Graphic,
         /// Its hue, or 0.
-        hue: u16,
+        hue: Hue,
         /// How many; a stackable merges, a single is one item.
         amount: u16,
         /// Whether it stacks (gold, reagents, arrows) or is a discrete piece

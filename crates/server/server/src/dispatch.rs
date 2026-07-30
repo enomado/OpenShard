@@ -31,7 +31,7 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
         // Routed before the gate, by `handle_world_packet`: `0x5D` is the
         // character screen's packet rather than the world's — the one thing a
         // connection *outside* the world may send — and the only one that needs
-        // the roster and the account this connection authenticated as.
+        // the account this connection authenticated as.
         ClientPacket::CharacterPlay(_) => {
             unreachable!("0x5D is routed by handle_world_packet, before the gate")
         }
@@ -239,8 +239,13 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
 /// The character screen's third packet, beside [`create_character`] and
 /// [`delete_character`], and routed with them rather than through
 /// [`dispatch_world_packet`]: it is the one packet a connection that is *not* in
-/// the world may send, and the only one that needs the roster and the account's
-/// access level.
+/// the world may send, and the only one that needs the account's access level.
+///
+/// It names the character and says no more about it. Where that character was —
+/// its serial, spot, look and sheet — is the world's since S4 of
+/// `docs/connection_state.md`, and `World::enter` reads its own roster. This end
+/// could not read it correctly anyway: it would have to be told every logout to
+/// stay current, which is exactly the drained-vector arrangement S4 deleted.
 ///
 /// Returns `false` only to drop the connection: no game login behind it means no
 /// account to enter with — the same guard `create_character` opens with, and for
@@ -249,7 +254,6 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
 pub(crate) fn play_character(
     session: &mut Session,
     world: &mut World,
-    roster: &Roster,
     play: CharacterPlay,
     id: ConnectionId,
     access: AccessLevel,
@@ -259,14 +263,6 @@ pub(crate) fn play_character(
         return false;
     };
     let name = CharacterName(play.name.0);
-    // A stored character enters on its saved serial, spot and look; one the
-    // roster has never heard of — a config-only character on a fresh shard, or
-    // one created this run and not yet saved — enters fresh at the start.
-    // Unpacking the row is `StoredCharacter::from_record`'s job, not this one's.
-    let character = roster
-        .get(&account, &name)
-        .and_then(StoredCharacter::from_record)
-        .map_or_else(|| Character::fresh(Facet(0)), Character::Stored);
     // The connection's own note of what it is playing, taken as the `Enter` is
     // queued. It is what tells another connection on this account that the
     // character is in use — see `Sessions::is_playing` — and it is what opens the
@@ -284,7 +280,7 @@ pub(crate) fn play_character(
         account,
         name,
         access,
-        character,
+        character: Character::Saved,
     }));
     true
 }
@@ -489,7 +485,6 @@ pub(crate) fn delete_character(
     sessions: &Sessions,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
-    roster: &mut Roster,
     delete: DeleteCharacter,
     id: ConnectionId,
 ) -> bool {
@@ -525,9 +520,12 @@ pub(crate) fn delete_character(
         .name;
 
     // A character being played cannot be deleted out from under its session.
-    // Asked of the connections and not of the world: the world knows a serial,
-    // and the only way to a serial from here is the roster — which a character
-    // created during this run is not in until it logs out.
+    // Asked of the connections and not of the world, and that stays true now
+    // that the world owns the roster: the world answers no synchronous question
+    // — see `docs/connection_state.md` D4 — and this refusal has to be decided
+    // before the reply packet is written, on this line. It is answerable here
+    // because a played character is a *connection's* fact, which is what the
+    // phase on each session records.
     if sessions.is_playing(&account, &name) {
         let _ = session.send_packet(
             ServerPacket::DeleteReject(DeleteReject {
@@ -552,14 +550,16 @@ pub(crate) fn delete_character(
         return true;
     }
 
-    // Forget the roster entry so a re-login this run does not restore it, and
-    // tell the world to forget the store row and inventory on the next save. The
-    // serial stays reserved — a packet in flight may still name it.
-    if let Some(record) = roster.forget(&account, &name) {
-        world.queue(Command::DeleteCharacter {
-            serial: record.serial,
-        });
-    }
+    // And tell the world to forget everything it has under that name: the roster
+    // row a re-login this run would read, the store row, and the saved
+    // inventory. By name, because the serial is on the row the world holds — and
+    // a character created this run and never logged out has no serial recorded
+    // anywhere this end can see, which is the case that used to queue nothing at
+    // all. The serial stays reserved; a packet in flight may still name it.
+    world.queue(Command::DeleteCharacter {
+        account: account.clone(),
+        name: name.clone(),
+    });
     info!(%id, %account, %name, "character deleted");
 
     // Resend the updated list so the select screen redraws.
@@ -591,7 +591,6 @@ mod tests {
         let now = Instant::now();
         let mut login = login_server();
         let mut world = World::new((1363, 1600));
-        let mut roster = Roster::new();
 
         let mut sessions = Sessions::new();
         let (mut playing, _playing_wire) = at_character_screen(&mut login, now);
@@ -609,7 +608,6 @@ mod tests {
                 &sessions,
                 &mut login,
                 &mut world,
-                &mut roster,
                 DeleteCharacter {
                     slot: RawCharacterSlot(0),
                 },
@@ -641,7 +639,6 @@ mod tests {
         let now = Instant::now();
         let mut login = login_server();
         let mut world = World::new((1363, 1600));
-        let mut roster = Roster::new();
 
         let screen = ConnectionId::from_raw(1);
         let mut sessions = Sessions::new();
@@ -652,7 +649,6 @@ mod tests {
             &sessions,
             &mut login,
             &mut world,
-            &mut roster,
             DeleteCharacter {
                 slot: RawCharacterSlot(0),
             },

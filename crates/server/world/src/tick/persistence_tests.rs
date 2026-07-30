@@ -2,6 +2,7 @@ use super::tests::{START, enter, enter_as, walk};
 use super::*;
 use openshard_gateway::ConnectionId;
 use openshard_movement::WALK_INTERVAL;
+use openshard_protocol::wire::Graphic;
 
 /// A world that saves every tick, so a test does not have to run four
 /// hundred of them to see one row.
@@ -70,7 +71,12 @@ fn deleting_a_character_forgets_its_row_on_the_next_save() {
     world.tick(now + WALK_INTERVAL);
     let _ = world.drain_saves().count();
 
-    world.delete_character(serial);
+    // By name, through the command: the serial is on the roster row the world
+    // holds, and the shard has none to send. See `docs/connection_state.md`, S4.
+    world.queue(Command::DeleteCharacter {
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
+    });
     world.tick(now + WALK_INTERVAL * 2);
     let snapshot = only_snapshot(&mut world).expect("a deletion is a change worth saving");
     assert!(
@@ -246,7 +252,7 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
             facet: Facet(0),
             start: None,
             appearance: Some(Appearance {
-                body: openshard_protocol::wire::Graphic(0x0190),
+                body: Graphic(0x0190),
                 hue: openshard_protocol::wire::Hue::NONE,
             }),
             sheet: Some(CharacterSheet {
@@ -281,7 +287,10 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
     );
     // No fresh corpse laid on re-entry — that would duplicate the saved one.
     assert!(
-        world.registry().query::<Graphic>().all(|(_, g)| g.id != 0x2006),
+        world
+            .registry()
+            .query::<Drawn>()
+            .all(|(_, g)| g.id != Graphic(0x2006)),
         "no corpse is laid on relog"
     );
 }

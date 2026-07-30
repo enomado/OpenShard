@@ -4,16 +4,18 @@ use openshard_combat::{MobileDamaged, MobileDied, WRESTLING_SPEED, swing_ticks};
 use openshard_events::Cursor;
 use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::items::DROP_TO_GROUND;
 use openshard_protocol::mobile::Remove;
 use openshard_protocol::packet::encode_packet;
 use openshard_protocol::serial::RawSerial;
 use openshard_protocol::skill::SkillLock;
-use openshard_protocol::wire::RawSkillId;
+use openshard_protocol::wire::{Graphic, Hue, RawSkillId};
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
 use openshard_state::components::{
-    Amount, Contained, Container, CriminalUntil, Decays, Equipped, Graphic, MurderDecay, Murders, Skills,
+    Amount, Contained, Container, CriminalUntil, Decays, Drawn, Equipped, MurderDecay, Murders, Skills,
     Stackable,
 };
 use openshard_state::components::{Banker, SwingSpeed};
@@ -43,6 +45,45 @@ pub(super) fn world() -> World {
 
 pub(super) fn connection() -> ConnectionId {
     ConnectionId::from_raw(1)
+}
+
+/// Put "admin"/"Lord British" on file as if a previous run had saved it there,
+/// so the next `Character::Saved` entry restores it.
+///
+/// This is the boot path — [`World::restore_characters`] is what the shard calls
+/// with the store's rows — and it is how a test builds a *stored* character now
+/// that the roster is the world's: the row goes in, and `Enter` names it. There
+/// is no longer a way to hand `enter` a character it has nothing on file for,
+/// which is the point of S4 and also the reason this helper exists.
+///
+/// Everything but the serial, the spot and the look is what
+/// `CharacterSheet::starting()` describes, so a character restored through here
+/// is the same one the hand-built `StoredCharacter` fixtures used to be.
+pub(super) fn on_file(world: &mut World, serial: u32, position: Point, appearance: Appearance) {
+    world.restore_characters(vec![CharacterRecord {
+        serial,
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
+        body: appearance.body.0,
+        hue: appearance.hue.0,
+        facet: 0,
+        x: position.x,
+        y: position.y,
+        z: position.z,
+        facing: Facing::walking(Direction::South).to_bits(),
+        strength: DEFAULT_HITPOINTS,
+        dexterity: DEFAULT_DEXTERITY,
+        intelligence: DEFAULT_MANA,
+        skills: Vec::new(),
+        stat_locks: openshard_persistence::StatLockRecord::default(),
+        effects: Vec::new(),
+        dead: false,
+        fame: 0,
+        karma: 0,
+        murders: 0,
+        quests: Vec::new(),
+        done_quests: Vec::new(),
+    }]);
 }
 
 pub(super) fn enter(world: &mut World, now: Instant) -> ConnectionId {
@@ -218,8 +259,8 @@ const GOLD: u16 = 0x0EED;
 
 fn spawn_item_at(world: &mut World, point: Point, now: Instant) {
     world.queue(Command::SpawnItem {
-        graphic: GOLD,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(GOLD),
+        hue: openshard_protocol::wire::Hue(0),
         amount: 1,
         stackable: false,
         position: point,
@@ -231,8 +272,8 @@ fn spawn_item_at(world: &mut World, point: Point, now: Instant) {
 /// Spawn a stackable pile of `amount` gold and return its serial.
 fn spawn_gold(world: &mut World, point: Point, amount: u16, now: Instant) -> u32 {
     world.queue(Command::SpawnItem {
-        graphic: GOLD,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(GOLD),
+        hue: openshard_protocol::wire::Hue(0),
         amount,
         stackable: true,
         position: point,
@@ -323,8 +364,8 @@ fn a_stacked_item_keeps_its_amount_when_drawn() {
     let _ = packets_for(&mut world, connection);
 
     world.queue(Command::SpawnItem {
-        graphic: GOLD,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(GOLD),
+        hue: openshard_protocol::wire::Hue(0),
         amount: 500,
         stackable: false,
         position: Point::new(START.0, START.1, 0),
@@ -341,11 +382,11 @@ fn a_stacked_item_keeps_its_amount_when_drawn() {
 /// The serial of the one item in the world.
 fn only_item_serial(world: &World) -> u32 {
     // The one spawned test item — never a worn backpack, which every character
-    // now carries (an item with a `Graphic`, worn via `Equipped`).
+    // now carries (an item with a `Drawn`, worn via `Equipped`).
     let (entity, _) = world
         .state
         .registry
-        .query::<Graphic>()
+        .query::<Drawn>()
         .find(|(entity, _)| !world.state.registry.has::<Equipped>(*entity))
         .expect("a loose item is in the world");
     world.state.registry.serial_of(entity).unwrap().raw()
@@ -503,7 +544,7 @@ fn logging_out_while_holding_an_item_returns_it_to_the_ground() {
 
 #[test]
 fn you_cannot_pick_up_a_mobile() {
-    // A body has no `Graphic`, so lifting one is refused rather than yanking
+    // A body has no `Drawn`, so lifting one is refused rather than yanking
     // a person onto the cursor.
     let now = Instant::now();
     let mut world = world();
@@ -526,13 +567,13 @@ fn you_cannot_pick_up_a_mobile() {
 
 /// A backpack graphic and its gump.
 const BACKPACK: u16 = 0x0E75;
-const BACKPACK_GUMP: u16 = 0x003C;
+const BACKPACK_GUMP: Graphic = Graphic(0x003C);
 
 fn spawn_container_at(world: &mut World, point: Point, now: Instant) -> u32 {
     world.queue(Command::SpawnContainer {
-        graphic: BACKPACK,
+        graphic: openshard_protocol::wire::Graphic(BACKPACK),
         gump: BACKPACK_GUMP,
-        hue: 0,
+        hue: openshard_protocol::wire::Hue(0),
         position: point,
         facet: 0,
     });
@@ -553,7 +594,7 @@ fn loose_item_serial(world: &World) -> u32 {
     let (entity, _) = world
         .state
         .registry
-        .query::<Graphic>()
+        .query::<Drawn>()
         .find(|(entity, _)| !world.state.registry.has::<Container>(*entity))
         .expect("a non-container item exists");
     world.state.registry.serial_of(entity).unwrap().raw()
@@ -588,13 +629,13 @@ fn double_clicking_a_container_opens_it() {
 
 /// A bottle graphic — the engine has no built-in double-click behaviour for it,
 /// so it is the plain-item case the trigger seam exists for.
-const POTION_GRAPHIC: u16 = 0x0F0E;
+const POTION_GRAPHIC: Graphic = Graphic(0x0F0E);
 
 /// Spawn a plain item at `point` and return its serial.
 fn spawn_plain_item_at(world: &mut World, point: Point, now: Instant) -> u32 {
     world.queue(Command::SpawnItem {
         graphic: POTION_GRAPHIC,
-        hue: 0,
+        hue: openshard_protocol::wire::Hue(0),
         amount: 1,
         stackable: false,
         position: point,
@@ -604,7 +645,7 @@ fn spawn_plain_item_at(world: &mut World, point: Point, now: Instant) -> u32 {
     world
         .state
         .registry
-        .query::<Graphic>()
+        .query::<Drawn>()
         .find(|(_, g)| g.id == POTION_GRAPHIC)
         .and_then(|(e, _)| world.state.registry.serial_of(e))
         .expect("the item spawned")
@@ -919,7 +960,7 @@ fn dropping_an_item_into_a_container_puts_it_inside() {
         .get::<Contained>(item)
         .expect("the item is now in a container");
     assert_eq!(contained.container.raw(), container);
-    assert_eq!((contained.x, contained.y), (50, 60));
+    assert_eq!((contained.position.x, contained.position.y), (50, 60));
     assert!(
         !world.state.registry.has::<Position>(item),
         "and no longer on the ground"
@@ -1025,8 +1066,8 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
     spawn_item_at(&mut world, here, now);
     let target = loose_item_serial(&world);
     world.queue(Command::SpawnItem {
-        graphic: GOLD,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(GOLD),
+        hue: openshard_protocol::wire::Hue(0),
         amount: 1,
         stackable: false,
         position: here,
@@ -1038,7 +1079,7 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
     let held_serial = world
         .state
         .registry
-        .query::<Graphic>()
+        .query::<Drawn>()
         .filter(|(e, _)| !world.state.registry.has::<Equipped>(*e))
         .filter_map(|(e, _)| world.state.registry.serial_of(e).map(|s| s.raw()))
         .find(|s| *s != target)
@@ -1088,7 +1129,7 @@ fn take_loose_item(world: &mut World, connection: ConnectionId, now: Instant) ->
         .registry
         .query::<Position>()
         .filter(|(entity, _)| {
-            world.state.registry.has::<Graphic>(*entity) && !world.state.registry.has::<Container>(*entity)
+            world.state.registry.has::<Drawn>(*entity) && !world.state.registry.has::<Container>(*entity)
         })
         .filter_map(|(entity, _)| world.state.registry.serial_of(entity).map(|s| (entity, s.raw())))
         .max_by_key(|(_, serial)| *serial)
@@ -1591,7 +1632,13 @@ fn a_payout_past_the_stack_cap_lands_in_a_second_pile() {
     let backpack = backpack_serial(&world, connection);
 
     let backpack = Serial::new(backpack).unwrap();
-    openshard_items::give(&mut world.state, backpack, GOLD, 0, 100_000);
+    openshard_items::give(
+        &mut world.state,
+        backpack,
+        openshard_protocol::wire::Graphic(GOLD),
+        openshard_protocol::wire::Hue(0),
+        100_000,
+    );
 
     let piles: Vec<u16> = world
         .state
@@ -1602,8 +1649,8 @@ fn a_payout_past_the_stack_cap_lands_in_a_second_pile() {
                 && world
                     .state
                     .registry
-                    .get::<Graphic>(*entity)
-                    .is_some_and(|g| g.id == GOLD)
+                    .get::<Drawn>(*entity)
+                    .is_some_and(|g| g.id == openshard_protocol::wire::Graphic(GOLD))
         })
         .map(|(entity, _)| openshard_items::amount_of(&world.state, entity))
         .collect();
@@ -1694,8 +1741,8 @@ fn gameplay_config_reaches_the_systems() {
     };
     let mut world = World::new(START).with_gameplay(gameplay);
     world.queue(Command::SpawnItem {
-        graphic: 0x0EED,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0EED),
+        hue: openshard_protocol::wire::Hue(0),
         amount: 1,
         stackable: false,
         position: Point::new(START.0, START.1, 0),
@@ -2056,8 +2103,8 @@ fn spawn_mobile_full(
     now: Instant,
 ) -> u32 {
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits,
         notoriety,
         damage,
@@ -2282,7 +2329,13 @@ fn a_dead_player_leaves_a_corpse_but_keeps_its_backpack() {
 
     // Wear a robe (outer torso) so there is gear to fall to the corpse.
     let (robe, robe_serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(robe, Graphic { id: 0x1F03, hue: 0 });
+    world.state.registry.insert(
+        robe,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(0x1F03),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     world.state.registry.insert(
         robe,
         Equipped {
@@ -2303,8 +2356,8 @@ fn a_dead_player_leaves_a_corpse_but_keeps_its_backpack() {
     let corpse = world
         .state
         .registry
-        .query::<Graphic>()
-        .find(|(_, g)| g.id == 0x2006)
+        .query::<Drawn>()
+        .find(|(_, g)| g.id == openshard_protocol::wire::Graphic(0x2006))
         .map(|(entity, _)| entity)
         .expect("a player corpse was laid");
     let corpse_serial = world.registry().serial_of(corpse).unwrap();
@@ -2510,7 +2563,7 @@ fn a_landed_blow_plays_a_hit_sound() {
         world.tick(now);
     }
     let packets = packets_for(&mut world, player);
-    let fists = combat::MELEE_HIT_SOUND.to_be_bytes();
+    let fists = combat::MELEE_HIT_SOUND.0.to_be_bytes();
     assert!(
         packets
             .iter()
@@ -2556,14 +2609,14 @@ fn a_creature_dies_with_its_own_voice() {
     // Per-creature sound, the point of the sound rule: an orc's death cry is its
     // own (ServUO BaseSoundID 0x45A, death = +4), not the human death gasp or the
     // fists thwack every mobile used to share.
-    const ORC_BODY: u16 = 0x0011;
+    const ORC_BODY: Graphic = Graphic(0x0011);
     const ORC_DEATH_SOUND: u16 = 0x045A + 4;
     let now = Instant::now();
     let mut world = world();
     let player = enter(&mut world, now);
     world.queue(Command::SpawnMobile {
         body: ORC_BODY,
-        hue: 0,
+        hue: openshard_protocol::wire::Hue(0),
         hits: 1, // one blow fells it
         notoriety: 5,
         damage: 5,
@@ -2593,7 +2646,7 @@ fn a_creature_dies_with_its_own_voice() {
         .state
         .registry
         .query::<Body>()
-        .find(|(entity, body)| body.id.0 == ORC_BODY && !world.state.registry.has::<Client>(*entity))
+        .find(|(entity, body)| body.id == ORC_BODY && !world.state.registry.has::<Client>(*entity))
         .and_then(|(entity, _)| world.state.registry.serial_of(entity))
         .expect("the orc spawned")
         .raw();
@@ -2640,8 +2693,8 @@ fn a_slain_creature_leaves_a_corpse_with_loot() {
     let corpse = world
         .state
         .registry
-        .query::<Graphic>()
-        .find(|(_, g)| g.id == CORPSE)
+        .query::<Drawn>()
+        .find(|(_, g)| g.id == openshard_protocol::wire::Graphic(CORPSE))
         .map(|(entity, _)| entity)
         .expect("a corpse was laid where it fell");
     assert_eq!(
@@ -2668,8 +2721,8 @@ fn a_slain_creature_leaves_a_corpse_with_loot() {
             world
                 .state
                 .registry
-                .get::<Graphic>(entity)
-                .is_some_and(|g| g.id == GOLD)
+                .get::<Drawn>(entity)
+                .is_some_and(|g| g.id == openshard_protocol::wire::Graphic(GOLD))
         });
     assert!(gold, "the corpse holds a gold pile");
 }
@@ -2695,7 +2748,11 @@ fn a_slain_creature_fires_the_loot_hook() {
         fired.extend(world.bus().read(&mut corpses).copied());
     }
     assert_eq!(fired.len(), 1, "one corpse, one hook");
-    assert_eq!(fired[0].body, 0x0190, "the hook carries the body");
+    assert_eq!(
+        fired[0].body,
+        openshard_protocol::wire::Graphic(0x0190),
+        "the hook carries the body"
+    );
     let corpse_entity = world
         .registry()
         .entity_of(fired[0].corpse)
@@ -2726,43 +2783,43 @@ fn add_loot_fills_a_container_and_ignores_a_stray_serial() {
 
     world.queue(Command::AddLoot {
         container: backpack.raw(),
-        graphic: 0x0EED, // gold
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0EED), // gold
+        hue: openshard_protocol::wire::Hue(0),
         amount: 50,
         stackable: true,
     });
     world.queue(Command::AddLoot {
         container: backpack.raw(),
-        graphic: 0x0F5E, // a broadsword
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0F5E), // a broadsword
+        hue: openshard_protocol::wire::Hue(0),
         amount: 1,
         stackable: false,
     });
     // A stray serial: nothing exists at it, so nothing is placed.
     world.queue(Command::AddLoot {
         container: 0xDEAD_BEEF,
-        graphic: 0x0EED,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0EED),
+        hue: openshard_protocol::wire::Hue(0),
         amount: 999,
         stackable: true,
     });
     world.tick(now);
 
-    let in_pack: Vec<u16> = world
+    let in_pack: Vec<Graphic> = world
         .state
         .registry
         .query::<Contained>()
         .filter(|(_, c)| c.container == backpack)
-        .filter_map(|(e, _)| world.registry().get::<Graphic>(e).map(|g| g.id))
+        .filter_map(|(e, _)| world.registry().get::<Drawn>(e).map(|g| g.id))
         .collect();
-    assert!(in_pack.contains(&0x0EED), "the gold landed");
-    assert!(in_pack.contains(&0x0F5E), "and the sword");
+    assert!(in_pack.contains(&Graphic(0x0EED)), "the gold landed");
+    assert!(in_pack.contains(&Graphic(0x0F5E)), "and the sword");
     // The stray-serial gold never appeared anywhere.
     let gold_piles = world
         .state
         .registry
-        .query::<Graphic>()
-        .filter(|(_, g)| g.id == 0x0EED)
+        .query::<Drawn>()
+        .filter(|(_, g)| g.id == openshard_protocol::wire::Graphic(0x0EED))
         .count();
     assert_eq!(gold_piles, 1, "the stray-serial loot was dropped, not floated");
 }
@@ -2782,8 +2839,8 @@ fn a_decaying_corpse_takes_its_loot_with_it() {
     let corpse = world
         .state
         .registry
-        .query::<Graphic>()
-        .find(|(_, g)| g.id == 0x2006)
+        .query::<Drawn>()
+        .find(|(_, g)| g.id == openshard_protocol::wire::Graphic(0x2006))
         .map(|(entity, _)| entity)
         .expect("a corpse");
     let corpse_serial = world.registry().serial_of(corpse).unwrap();
@@ -2870,7 +2927,14 @@ fn a_wielded_weapon_sets_the_swing_pace() {
     );
 
     // Longsword (old_speed 35) beats wrestling (base 50): fewer ticks per swing.
-    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+    let sword = items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x0F61),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     assert_eq!(
         combat::swing_speed(&world.state, entity),
         swing_ticks(100, 35, 1, scale),
@@ -2879,10 +2943,24 @@ fn a_wielded_weapon_sets_the_swing_pace() {
 
     // A katana (58) is faster than a mace (30): the table drives the ordering.
     world.state.registry.despawn(sword);
-    let katana = items::equip_worn_item(&mut world.state, serial, 0x13FF, 0, Layer(1)).unwrap();
+    let katana = items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x13FF),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     let katana_pace = combat::swing_speed(&world.state, entity);
     world.state.registry.despawn(katana);
-    items::equip_worn_item(&mut world.state, serial, 0x0F5C, 0, Layer(1)).unwrap();
+    items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x0F5C),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     assert!(
         katana_pace < combat::swing_speed(&world.state, entity),
         "the katana swings sooner than the mace"
@@ -2899,7 +2977,14 @@ fn taking_the_weapon_off_reverts_to_wrestling() {
     let entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(entity).unwrap();
 
-    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+    let sword = items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x0F61),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     assert_ne!(combat::swing_speed(&world.state, entity), WRESTLING_SWING_TICKS);
     world.state.registry.despawn(sword);
     assert_eq!(
@@ -2919,7 +3004,14 @@ fn a_wielded_weapon_rolls_its_damage_within_range_and_replays() {
         let connection = enter(&mut world, now);
         let entity = world.state.players[&connection];
         let serial = world.state.registry.serial_of(entity).unwrap();
-        items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+        items::equip_worn_item(
+            &mut world.state,
+            serial,
+            openshard_protocol::wire::Graphic(0x0F61),
+            openshard_protocol::wire::Hue(0),
+            Layer(1),
+        )
+        .unwrap();
         (world, entity)
     }
 
@@ -2945,7 +3037,14 @@ fn a_natural_blow_beats_a_wielded_weapon() {
     let mob = spawn_mobile_full(&mut world, spot, 50, 4, 7, 0, now);
     let mob_entity = entity(&world, mob);
     let serial = world.state.registry.serial_of(mob_entity).unwrap();
-    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+    items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x0F61),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     for _ in 0..20 {
         assert_eq!(
             combat::melee_blow(&mut world.state, mob_entity),
@@ -2965,7 +3064,14 @@ fn era_two_reads_the_aos_weapon_numbers() {
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(entity).unwrap();
-    items::equip_worn_item(&mut world.state, serial, 0x13FF, 0, Layer(1)).unwrap();
+    items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x13FF),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
 
     assert_eq!(
         combat::swing_speed(&world.state, entity),
@@ -2990,7 +3096,14 @@ fn a_skilled_swing_lands_and_trains_its_weapon_skill() {
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
     openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 300);
-    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+    items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x0F61),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     // A tough, skill-less dummy so the fight runs long enough to train.
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 1000, now);
     let mob_entity = entity(&world, mob);
@@ -3027,7 +3140,14 @@ fn an_even_unskilled_duel_sometimes_misses() {
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
     openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 200);
-    items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+    items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x0F61),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 2000, now);
     openshard_skills::set_skill(&mut world.state, mob, WRESTLING_SKILL, 1000);
     engage(&mut world, connection, mob, now);
@@ -3037,10 +3157,10 @@ fn an_even_unskilled_duel_sometimes_misses() {
         world.tick(now);
     }
     let packets = packets_for(&mut world, connection);
-    let hit = combat::MELEE_HIT_SOUND.to_be_bytes();
+    let hit = combat::MELEE_HIT_SOUND.0.to_be_bytes();
     // A longsword whiffs with its own class sound (ServUO's DefMissSound), not the
     // generic bare-hands swish.
-    let miss = openshard_state::weapon::weapon_data(0x0F61)
+    let miss = openshard_state::weapon::weapon_data(openshard_protocol::wire::Graphic(0x0F61))
         .unwrap()
         .miss_sound
         .to_be_bytes();
@@ -3068,7 +3188,14 @@ fn tactics_scales_the_blow() {
         let serial = world.state.registry.serial_of(player_entity).unwrap();
         openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 1000);
         openshard_skills::set_skill(&mut world.state, serial.raw(), TACTICS_SKILL, tactics);
-        items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+        items::equip_worn_item(
+            &mut world.state,
+            serial,
+            openshard_protocol::wire::Graphic(0x0F61),
+            openshard_protocol::wire::Hue(0),
+            Layer(1),
+        )
+        .unwrap();
         let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 60000, now);
         let mob_entity = entity(&world, mob);
         engage(&mut world, connection, mob, now);
@@ -3096,7 +3223,14 @@ fn lumberjacking_lends_an_axe_its_bite() {
         let serial = world.state.registry.serial_of(player_entity).unwrap();
         openshard_skills::set_skill(&mut world.state, serial.raw(), SWORDS_SKILL, 1000);
         openshard_skills::set_skill(&mut world.state, serial.raw(), LUMBERJACKING_SKILL, lumber);
-        items::equip_worn_item(&mut world.state, serial, graphic, 0, Layer(1)).unwrap();
+        items::equip_worn_item(
+            &mut world.state,
+            serial,
+            openshard_protocol::wire::Graphic(graphic),
+            openshard_protocol::wire::Hue(0),
+            Layer(1),
+        )
+        .unwrap();
         let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 60000, now);
         let mob_entity = entity(&world, mob);
         engage(&mut world, connection, mob, now);
@@ -3126,8 +3260,8 @@ fn a_creature_can_be_given_combat_skills() {
     let now = Instant::now();
     let mut world = world();
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 5,
         damage: 8,
@@ -3179,7 +3313,14 @@ fn a_bow_deals_its_own_damage_band() {
     let connection = enter(&mut world, now);
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
-    items::equip_worn_item(&mut world.state, serial, 0x13B2, 0, Layer(2)).unwrap(); // bow
+    items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x13B2),
+        openshard_protocol::wire::Hue(0),
+        Layer(2),
+    )
+    .unwrap(); // bow
     world
         .state
         .registry
@@ -3212,7 +3353,14 @@ fn a_weapon_override_beats_the_core_table() {
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(entity).unwrap();
-    let sword = items::equip_worn_item(&mut world.state, serial, 0x0F61, 0, Layer(1)).unwrap();
+    let sword = items::equip_worn_item(
+        &mut world.state,
+        serial,
+        openshard_protocol::wire::Graphic(0x0F61),
+        openshard_protocol::wire::Hue(0),
+        Layer(1),
+    )
+    .unwrap();
     let sword_serial = world.state.registry.serial_of(sword).unwrap().raw();
     let scale = world.state.gameplay.speed_scale_factor;
 
@@ -3876,9 +4024,10 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        // Through the very function the server uses, so the test cannot pass on
-        // an unpacking the shard does not do.
-        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+        // Nothing but the name: the world reads its own roster, which the
+        // logout above wrote. Handing the row in would test an unpacking the
+        // shard no longer does — see `docs/connection_state.md`, S4.
+        character: Character::Saved,
     }));
     world.tick(now);
     let player = world.state.players[&conn];
@@ -3916,14 +4065,20 @@ fn ready_caster(world: &mut World, reagent: u16, now: Instant) -> (ConnectionId,
     });
     world.tick(now);
     let backpack = Serial::new(backpack_serial(world, connection)).unwrap();
-    openshard_items::give(&mut world.state, backpack, reagent, 0, 20);
+    openshard_items::give(
+        &mut world.state,
+        backpack,
+        openshard_protocol::wire::Graphic(reagent),
+        openshard_protocol::wire::Hue(0),
+        20,
+    );
     // A full spellbook, so the cast gate — you may cast only what your book holds
     // — passes for every spell a cast test tries.
     if let Some(book) = openshard_items::give(
         &mut world.state,
         backpack,
         openshard_state::components::SPELLBOOK_GRAPHIC,
-        0,
+        openshard_protocol::wire::Hue(0),
         1,
     ) {
         world
@@ -3943,7 +4098,7 @@ fn give_full_spellbook(world: &mut World, connection: ConnectionId) {
         &mut world.state,
         backpack,
         openshard_state::components::SPELLBOOK_GRAPHIC,
-        0,
+        openshard_protocol::wire::Hue(0),
         1,
     ) {
         world
@@ -4047,7 +4202,13 @@ fn a_travel_spell_asks_for_an_object_and_not_a_patch_of_ground() {
     let (connection, _) = ready_caster(&mut world, BLACK_PEARL, now);
     let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
     for reagent in [BLOOD_MOSS, MANDRAKE_ROOT] {
-        openshard_items::give(&mut world.state, backpack, reagent, 0, 20);
+        openshard_items::give(
+            &mut world.state,
+            backpack,
+            openshard_protocol::wire::Graphic(reagent),
+            openshard_protocol::wire::Hue(0),
+            20,
+        );
     }
 
     // Recall aims at a rune, so the client itself must refuse bare ground.
@@ -4262,9 +4423,10 @@ fn poison_survives_a_relogin() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        // Through the very function the server uses, so the test cannot pass on
-        // an unpacking the shard does not do.
-        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+        // Nothing but the name: the world reads its own roster, which the
+        // logout above wrote. Handing the row in would test an unpacking the
+        // shard no longer does — see `docs/connection_state.md`, S4.
+        character: Character::Saved,
     }));
     world.tick(now);
 
@@ -4461,9 +4623,10 @@ fn a_stat_buff_survives_a_relogin() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        // Through the very function the server uses, so the test cannot pass on
-        // an unpacking the shard does not do.
-        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+        // Nothing but the name: the world reads its own roster, which the
+        // logout above wrote. Handing the row in would test an unpacking the
+        // shard no longer does — see `docs/connection_state.md`, S4.
+        character: Character::Saved,
     }));
     world.tick(now);
 
@@ -4785,9 +4948,10 @@ fn a_behaviour_buff_survives_a_relogin() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        // Through the very function the server uses, so the test cannot pass on
-        // an unpacking the shard does not do.
-        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+        // Nothing but the name: the world reads its own roster, which the
+        // logout above wrote. Handing the row in would test an unpacking the
+        // shard no longer does — see `docs/connection_state.md`, S4.
+        character: Character::Saved,
     }));
     world.tick(now);
 
@@ -5194,9 +5358,10 @@ fn paralysis_survives_a_relogin() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        // Through the very function the server uses, so the test cannot pass on
-        // an unpacking the shard does not do.
-        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+        // Nothing but the name: the world reads its own roster, which the
+        // logout above wrote. Handing the row in would test an unpacking the
+        // shard no longer does — see `docs/connection_state.md`, S4.
+        character: Character::Saved,
     }));
     world.tick(now);
 
@@ -5260,7 +5425,13 @@ fn the_bless_spell_raises_the_targets_stats() {
     let (connection, entity) = ready_caster(&mut world, GARLIC, now);
     let self_serial = serial_of(&world, connection);
     let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
-    openshard_items::give(&mut world.state, backpack, MANDRAKE_ROOT, 0, 20);
+    openshard_items::give(
+        &mut world.state,
+        backpack,
+        openshard_protocol::wire::Graphic(MANDRAKE_ROOT),
+        openshard_protocol::wire::Hue(0),
+        20,
+    );
     let base = *world.registry().get::<Stats>(entity).unwrap();
 
     world.queue(Command::RequestCast {
@@ -5915,7 +6086,7 @@ fn a_ghost_cannot_use_a_skill_at_all() {
         entity,
         openshard_state::Ghost {
             body: Body {
-                id: openshard_protocol::wire::Graphic(0x0190),
+                id: Graphic(0x0190),
                 hue: openshard_protocol::wire::Hue(0),
             },
         },
@@ -6240,19 +6411,24 @@ fn reagents_are_consumed_on_a_cast_and_a_short_pack_fizzles() {
             .registry
             .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
             .unwrap();
-        world.state.registry.insert(item, Graphic { id: REAGENT, hue: 0 });
+        world.state.registry.insert(
+            item,
+            Drawn {
+                id: openshard_protocol::wire::Graphic(REAGENT),
+                hue: openshard_protocol::wire::Hue(0),
+            },
+        );
         world.state.registry.insert(
             item,
             Contained {
                 container,
-                x: 0,
-                y: 0,
-                grid: 0,
+                position: GumpPoint::new(0, 0),
+                grid: GridSlot(0),
             },
         );
     }
 
-    let spell = |reagents: Vec<(u16, u16)>| Command::CastSpell {
+    let spell = |reagents: Vec<(Graphic, u16)>| Command::CastSpell {
         serial,
         spell: 5,
         target: 0,
@@ -6266,19 +6442,19 @@ fn reagents_are_consumed_on_a_cast_and_a_short_pack_fizzles() {
     let mut cast: Cursor<SpellCast> = world.bus().cursor();
 
     // First cast needs two; the pack has three, so it takes them and casts.
-    world.queue(spell(vec![(REAGENT, 2)]));
+    world.queue(spell(vec![(Graphic(REAGENT), 2)]));
     world.tick(now);
     let first: Vec<SpellCast> = world.bus().read(&mut cast).copied().collect();
     assert!(first[0].success, "the stocked pack lets it cast");
     assert_eq!(
-        openshard_items::count_in_container(&world.state, container, REAGENT),
+        openshard_items::count_in_container(&world.state, container, Graphic(REAGENT)),
         1,
         "two of the three reagents were consumed"
     );
 
     // One left; a second cast needing two fizzles and spends nothing.
     let mana = world.state.registry.get::<Mana>(entity).unwrap().current;
-    world.queue(spell(vec![(REAGENT, 2)]));
+    world.queue(spell(vec![(Graphic(REAGENT), 2)]));
     world.tick(now);
     let second: Vec<SpellCast> = world.bus().read(&mut cast).copied().collect();
     assert!(!second[0].success, "one reagent left is not enough");
@@ -6288,7 +6464,7 @@ fn reagents_are_consumed_on_a_cast_and_a_short_pack_fizzles() {
         "a fizzle spends no mana"
     );
     assert_eq!(
-        openshard_items::count_in_container(&world.state, container, REAGENT),
+        openshard_items::count_in_container(&world.state, container, Graphic(REAGENT)),
         1,
         "and consumes no reagent"
     );
@@ -6319,14 +6495,19 @@ fn consuming_a_reagent_redraws_an_open_pack() {
         .spawn_with_serial(openshard_protocol::serial::SerialKind::Item)
         .unwrap();
     let item = world.state.registry.entity_of(item_serial).unwrap();
-    world.state.registry.insert(item, Graphic { id: REAGENT, hue: 0 });
+    world.state.registry.insert(
+        item,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(REAGENT),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     world.state.registry.insert(
         item,
         Contained {
             container,
-            x: 0,
-            y: 0,
-            grid: 0,
+            position: GumpPoint::new(0, 0),
+            grid: GridSlot(0),
         },
     );
 
@@ -6348,7 +6529,7 @@ fn consuming_a_reagent_redraws_an_open_pack() {
         max_skill: 0,
         skill: 1,
         pack,
-        reagents: vec![(REAGENT, 1)],
+        reagents: vec![(openshard_protocol::wire::Graphic(REAGENT), 1)],
     });
     world.tick(now);
 
@@ -6487,8 +6668,8 @@ fn stamina_is_a_real_pool_that_trickles_back() {
 /// Spawn a creature with a brain (sight, wander) and return its serial.
 fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now: Instant) -> u32 {
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 5,
         damage: combat::SWING_DAMAGE,
@@ -7027,8 +7208,16 @@ fn decorate_places_statics_and_clear_removes_them() {
     world.queue(Command::Decorate {
         facet: 0,
         statics: vec![
-            (0x07C1, 0, Point::new(START.0 + 1, START.1, 0)),
-            (0x08DA, 0, Point::new(START.0 + 2, START.1, 0)),
+            (
+                openshard_protocol::wire::Graphic(0x07C1),
+                openshard_protocol::wire::Hue(0),
+                Point::new(START.0 + 1, START.1, 0),
+            ),
+            (
+                openshard_protocol::wire::Graphic(0x08DA),
+                openshard_protocol::wire::Hue(0),
+                Point::new(START.0 + 2, START.1, 0),
+            ),
         ],
         doors: Vec::new(),
         containers: Vec::new(),
@@ -7060,7 +7249,11 @@ fn decoration_cannot_be_picked_up() {
     let gm = enter_gm(&mut world, now);
     world.queue(Command::Decorate {
         facet: 0,
-        statics: vec![(0x07C1, 0, Point::new(START.0, START.1, 0))],
+        statics: vec![(
+            openshard_protocol::wire::Graphic(0x07C1),
+            openshard_protocol::wire::Hue(0),
+            Point::new(START.0, START.1, 0),
+        )],
         doors: Vec::new(),
         containers: Vec::new(),
     });
@@ -7098,8 +7291,8 @@ fn a_door_opens_and_closes_on_double_click() {
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value: 0,
-            closed: 0x0675,
-            open: 0x0676,
+            closed: openshard_protocol::wire::Graphic(0x0675),
+            open: openshard_protocol::wire::Graphic(0x0676),
             offset_x: -1,
             offset_y: 1,
             position: at,
@@ -7120,8 +7313,8 @@ fn a_door_opens_and_closes_on_double_click() {
     });
     world.tick(now);
     assert_eq!(
-        world.registry().get::<Graphic>(door).unwrap().id,
-        0x0676,
+        world.registry().get::<Drawn>(door).unwrap().id,
+        openshard_protocol::wire::Graphic(0x0676),
         "the door drew open"
     );
     assert_eq!(
@@ -7141,7 +7334,10 @@ fn a_door_opens_and_closes_on_double_click() {
         request: UseRequest::Use(RawSerial(serial)),
     });
     world.tick(now);
-    assert_eq!(world.registry().get::<Graphic>(door).unwrap().id, 0x0675);
+    assert_eq!(
+        world.registry().get::<Drawn>(door).unwrap().id,
+        openshard_protocol::wire::Graphic(0x0675)
+    );
     assert_eq!(world.registry().get::<Position>(door).unwrap().0, at);
     assert!(!world.registry().get::<Door>(door).unwrap().is_open);
 }
@@ -7157,8 +7353,8 @@ fn an_open_door_swings_shut_on_its_own() {
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value: 0,
-            closed: 0x0675,
-            open: 0x0676,
+            closed: openshard_protocol::wire::Graphic(0x0675),
+            open: openshard_protocol::wire::Graphic(0x0676),
             offset_x: -1,
             offset_y: 1,
             position: at,
@@ -7239,8 +7435,8 @@ fn doors_are_generated_between_static_frames() {
         "the door fills the gap between the frames"
     );
     // A DarkWoodDoor, WestCW: closed 0x06A5, open 0x06A6, hinge (-1, 1).
-    assert_eq!(door.closed, 0x06A5);
-    assert_eq!(door.open, 0x06A6);
+    assert_eq!(door.closed, openshard_protocol::wire::Graphic(0x06A5));
+    assert_eq!(door.open, openshard_protocol::wire::Graphic(0x06A6));
     assert_eq!((door.offset_x, door.offset_y), (-1, 1));
     assert!(
         world.registry().has::<Decoration>(entity),
@@ -7282,9 +7478,9 @@ fn a_decoration_container_opens_on_double_click() {
         doors: Vec::new(),
         containers: vec![DecorContainer {
             key_value: 0,
-            graphic: 0x0E42,
-            gump: 0x49,
-            hue: 0,
+            graphic: openshard_protocol::wire::Graphic(0x0E42),
+            gump: openshard_protocol::wire::Graphic(0x49),
+            hue: openshard_protocol::wire::Hue(0),
             position: Point::new(START.0 + 1, START.1, 0),
         }],
     });
@@ -7370,8 +7566,8 @@ fn a_spawner_fills_to_its_ceiling_and_clear_empties_it() {
     let creature = CreatureTemplate {
         fame: 0,
         karma: 0,
-        body: 0x0009,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0009),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 10,
         notoriety: 3,
         damage: 0,
@@ -7428,8 +7624,8 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
     let player = world.state.players[&gm];
 
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 1,
         damage: 0,
@@ -7466,8 +7662,8 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
     world.queue(Command::StockVendor {
         serial: vendor_serial,
         stock: vec![npc::StockLine {
-            graphic: 0x0F7A,
-            hue: 0,
+            graphic: openshard_protocol::wire::Graphic(0x0F7A),
+            hue: openshard_protocol::wire::Hue(0),
             amount: 50,
             price: 4,
             name: "black pearl".to_owned(),
@@ -7634,7 +7830,7 @@ fn a_created_character_enters_with_its_chosen_body() {
             facet: Facet(0),
             start: None,
             appearance: Some(Appearance {
-                body: openshard_protocol::wire::Graphic(0x025E),
+                body: Graphic(0x025E),
                 hue: openshard_protocol::wire::Hue(0x0430),
             }),
             sheet: None,
@@ -7667,7 +7863,7 @@ fn a_played_character_keeps_the_default_body() {
     let connection = enter(&mut world, Instant::now());
     let entity = world.state.players[&connection];
     let body = world.registry().get::<Body>(entity).copied().unwrap();
-    assert_eq!(body.id.0, BODY_HUMAN_MALE);
+    assert_eq!(body.id, BODY_HUMAN_MALE);
     assert_eq!(body.hue.0, DEFAULT_HUE);
 }
 
@@ -7693,16 +7889,21 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
 
     // A stack of gold inside it.
     let (gold, gold_serial) = home.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    home.state.registry.insert(gold, Graphic { id: 0x0EED, hue: 0 });
+    home.state.registry.insert(
+        gold,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(0x0EED),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     home.state.registry.insert(gold, Amount(500));
     home.state.registry.insert(gold, Stackable);
     home.state.registry.insert(
         gold,
         Contained {
             container: backpack_serial,
-            x: 40,
-            y: 65,
-            grid: 0,
+            position: GumpPoint::new(40, 65),
+            grid: GridSlot(0),
         },
     );
 
@@ -7732,7 +7933,12 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
 
     // A fresh shard: reserve the serials, load the items, play the character.
     let mut shard = world();
-    shard.reserve_serial(char_serial);
+    on_file(
+        &mut shard,
+        char_serial,
+        Point::new(1500, 1000, 0),
+        Appearance::default_human(),
+    );
     shard.restore_items(records);
     let conn_b = connection();
     shard.queue(Command::Enter(Entering {
@@ -7741,14 +7947,7 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        character: Character::Stored(StoredCharacter {
-            serial: Serial::new(char_serial).unwrap(),
-            facet: Facet(0),
-            position: Point::new(1500, 1000, 0),
-            facing: Facing::walking(Direction::South),
-            appearance: Appearance::default_human(),
-            sheet: CharacterSheet::starting(),
-        }),
+        character: Character::Saved,
     }));
     shard.tick(now);
 
@@ -7804,9 +8003,9 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     let (book, book_serial) = home.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
     home.state.registry.insert(
         book,
-        Graphic {
+        Drawn {
             id: SPELLBOOK_GRAPHIC,
-            hue: 0,
+            hue: openshard_protocol::wire::Hue(0),
         },
     );
     home.state.registry.insert(book, Spellbook(learned));
@@ -7814,9 +8013,8 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
         book,
         Contained {
             container: backpack_serial,
-            x: 40,
-            y: 65,
-            grid: 0,
+            position: GumpPoint::new(40, 65),
+            grid: GridSlot(0),
         },
     );
 
@@ -7833,7 +8031,12 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     home.tick(now);
 
     let mut shard = world();
-    shard.reserve_serial(char_serial);
+    on_file(
+        &mut shard,
+        char_serial,
+        Point::new(1500, 1000, 0),
+        Appearance::default_human(),
+    );
     shard.restore_items(records);
     let conn_b = connection();
     shard.queue(Command::Enter(Entering {
@@ -7842,14 +8045,7 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        character: Character::Stored(StoredCharacter {
-            serial: Serial::new(char_serial).unwrap(),
-            facet: Facet(0),
-            position: Point::new(1500, 1000, 0),
-            facing: Facing::walking(Direction::South),
-            appearance: Appearance::default_human(),
-            sheet: CharacterSheet::starting(),
-        }),
+        character: Character::Saved,
     }));
     shard.tick(now);
 
@@ -7882,15 +8078,20 @@ fn a_relogin_in_the_same_run_keeps_the_inventory() {
         .unwrap();
     let backpack_serial = world.registry().serial_of(backpack).unwrap();
     let (gold, gold_serial) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(gold, Graphic { id: 0x0EED, hue: 0 });
+    world.state.registry.insert(
+        gold,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(0x0EED),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     world.state.registry.insert(gold, Amount(300));
     world.state.registry.insert(
         gold,
         Contained {
             container: backpack_serial,
-            x: 0,
-            y: 0,
-            grid: 0,
+            position: GumpPoint::new(0, 0),
+            grid: GridSlot(0),
         },
     );
 
@@ -7904,17 +8105,22 @@ fn a_relogin_in_the_same_run_keeps_the_inventory() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        character: Character::Stored(StoredCharacter {
-            serial: Serial::new(char_serial).unwrap(),
-            facet: Facet(0),
-            position: Point::new(1500, 1000, 0),
-            facing: Facing::walking(Direction::South),
-            appearance: Appearance::default_human(),
-            sheet: CharacterSheet::starting(),
-        }),
+        character: Character::Saved,
     }));
     world.tick(now);
 
+    // On its own serial: the world found the roster row its logout wrote, which
+    // is also what makes the inventory below findable — it is filed under this
+    // number.
+    assert_eq!(
+        world
+            .registry()
+            .serial_of(world.state.players[&conn])
+            .unwrap()
+            .raw(),
+        char_serial,
+        "the same character came back, not a fresh one on a new serial"
+    );
     let gold = world
         .registry()
         .entity_of(gold_serial)
@@ -8003,8 +8209,8 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
     let mut home = world();
     let _gm = enter_gm(&mut home, now);
     home.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 7,
         damage: 0,
@@ -8041,8 +8247,8 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
     home.queue(Command::StockVendor {
         serial: vendor_serial,
         stock: vec![npc::StockLine {
-            graphic: 0x0F7A,
-            hue: 0,
+            graphic: openshard_protocol::wire::Graphic(0x0F7A),
+            hue: openshard_protocol::wire::Hue(0),
             amount: 50,
             price: 4,
             name: "black pearl".to_owned(),
@@ -8128,8 +8334,8 @@ fn a_wounded_spawner_creature_survives_a_restart_and_is_counted() {
     let creature = CreatureTemplate {
         fame: 0,
         karma: 0,
-        body: 0x0009,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0009),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 10,
         notoriety: 3,
         damage: 0,
@@ -8220,20 +8426,24 @@ fn decoration_and_door_state_survive_a_restart() {
     let open_at = Point::new(START.0 + 4, START.1, 0);
     home.queue(Command::Decorate {
         facet: 0,
-        statics: vec![(0x07C1, 0, Point::new(START.0 + 6, START.1, 0))],
+        statics: vec![(
+            openshard_protocol::wire::Graphic(0x07C1),
+            openshard_protocol::wire::Hue(0),
+            Point::new(START.0 + 6, START.1, 0),
+        )],
         doors: vec![
             DecorDoor {
                 key_value: 0,
-                closed: 0x0675,
-                open: 0x0676,
+                closed: openshard_protocol::wire::Graphic(0x0675),
+                open: openshard_protocol::wire::Graphic(0x0676),
                 offset_x: -1,
                 offset_y: 1,
                 position: shut_at,
             },
             DecorDoor {
                 key_value: 0,
-                closed: 0x0675,
-                open: 0x0676,
+                closed: openshard_protocol::wire::Graphic(0x0675),
+                open: openshard_protocol::wire::Graphic(0x0676),
                 offset_x: -1,
                 offset_y: 1,
                 position: open_at,
@@ -8275,7 +8485,7 @@ fn decoration_and_door_state_survive_a_restart() {
         .query::<Door>()
         .find(|(_, door)| door.is_open)
         .expect("the open door is still open");
-    assert_eq!(restored_open.1.open, 0x0676);
+    assert_eq!(restored_open.1.open, openshard_protocol::wire::Graphic(0x0676));
     // The shut door seals its doorway; the open one blocks nobody.
     assert!(
         shard
@@ -8318,23 +8528,25 @@ fn a_snapshot_saves_an_idle_online_character_and_the_ground() {
     let backpack_serial = world.registry().serial_of(backpack).unwrap();
     // A backpack item and a loose ground item.
     let (bagged, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world
-        .state
-        .registry
-        .insert(bagged, Graphic { id: 0x0EED, hue: 0 });
+    world.state.registry.insert(
+        bagged,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(0x0EED),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     world.state.registry.insert(
         bagged,
         Contained {
             container: backpack_serial,
-            x: 0,
-            y: 0,
-            grid: 0,
+            position: GumpPoint::new(0, 0),
+            grid: GridSlot(0),
         },
     );
     items::spawn_item(
         &mut world.state,
-        0x1BFB,
-        0,
+        openshard_protocol::wire::Graphic(0x1BFB),
+        openshard_protocol::wire::Hue(0),
         1,
         false,
         Point::new(1365, 1600, 0),
@@ -8371,8 +8583,8 @@ fn a_snapshot_saves_an_idle_online_character_and_the_ground() {
 
 fn spawn_banker(world: &mut World, at: Point, now: Instant) {
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 100,
         notoriety: 7, // invulnerable
         damage: 0,
@@ -8471,8 +8683,8 @@ fn a_banker_greets_a_nearby_player() {
 /// Spawn a townsperson of a trade, dressed and named by the core.
 pub(super) fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 100,
         notoriety: 7,
         damage: 0,
@@ -8568,8 +8780,8 @@ fn place_lockable_door(world: &mut World, at: Point, key_value: u32, now: Instan
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value,
-            closed: 0x0675,
-            open: 0x0676,
+            closed: openshard_protocol::wire::Graphic(0x0675),
+            open: openshard_protocol::wire::Graphic(0x0676),
             offset_x: 0,
             offset_y: 0,
             position: at,
@@ -8642,8 +8854,8 @@ fn a_kill_pays_the_killer_in_fame_and_karma() {
 /// Spawn a creature carrying standing to give up.
 fn spawn_creature_with_standing(world: &mut World, fame: i32, karma: i32, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
-        body: 0x00D0,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x00D0),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 10,
         notoriety: 3,
         damage: 0,
@@ -8819,8 +9031,16 @@ fn a_key_turns_only_the_lock_it_fits() {
     );
 
     // A key to another lock does nothing.
-    let wrong =
-        openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0).expect("a key");
+    let wrong = openshard_items::spawn_item(
+        &mut world.state,
+        openshard_protocol::wire::Graphic(0x100E),
+        openshard_protocol::wire::Hue(0),
+        1,
+        false,
+        player_at,
+        0,
+    )
+    .expect("a key");
     world
         .state
         .registry
@@ -8832,8 +9052,16 @@ fn a_key_turns_only_the_lock_it_fits() {
     );
 
     // The right one unlocks it, and turning it again locks it back.
-    let right =
-        openshard_items::spawn_item(&mut world.state, 0x100E, 0, 1, false, player_at, 0).expect("a key");
+    let right = openshard_items::spawn_item(
+        &mut world.state,
+        openshard_protocol::wire::Graphic(0x100E),
+        openshard_protocol::wire::Hue(0),
+        1,
+        false,
+        player_at,
+        0,
+    )
+    .expect("a key");
     world
         .state
         .registry
@@ -8893,8 +9121,8 @@ fn a_non_human_townsperson_keeps_its_own_body() {
     let mut world = world();
     let _ = enter(&mut world, now);
     world.queue(Command::SpawnMobile {
-        body: 266,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(266),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 100,
         notoriety: 7,
         damage: 0,
@@ -9151,8 +9379,8 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
     // A real shopkeeper: the `vendor` flag is what gives it the stock crate
     // `open_shop` reads, and an empty crate still opens a window.
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 100,
         notoriety: 7,
         damage: 0,
@@ -9240,8 +9468,8 @@ fn shop_hours_world(hour: u64) -> World {
 /// shopkeeper that silently refuses every customer.
 fn spawn_shopkeeper(world: &mut World, now: Instant) -> (EntityId, u32) {
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 100,
         notoriety: 7,
         damage: 0,
@@ -9455,8 +9683,8 @@ fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
     };
     let mut world = World::new(START).with_gameplay(gameplay);
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 100,
         notoriety: 7,
         damage: 0,
@@ -9652,8 +9880,8 @@ impl Terrain for NamedTerrain {
     fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
         Some(to)
     }
-    fn item_name(&self, graphic: u16) -> Option<&str> {
-        (graphic == self.graphic).then_some(self.name.as_str())
+    fn item_name(&self, graphic: Graphic) -> Option<&str> {
+        (graphic.0 == self.graphic).then_some(self.name.as_str())
     }
 }
 
@@ -9766,8 +9994,8 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
     world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(RaisedFloorTerrain));
     // Placed at z=0 (as the pack does), the shop floor is at z=7.
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 100,
         notoriety: 7,
         damage: 0,
@@ -9814,8 +10042,8 @@ fn an_unnamed_creature_takes_its_body_default_name() {
     let connection = enter(&mut world, now);
     // A chicken (body 0xD0) with no name given.
     world.queue(Command::SpawnMobile {
-        body: 0x00D0,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x00D0),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 10,
         notoriety: 1,
         damage: 0,
@@ -9994,8 +10222,8 @@ impl Terrain for BlindTerrain {
 /// Spawn a stocked vendor at `point` and return its serial.
 pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant) -> u32 {
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 1,
         damage: 0,
@@ -10032,8 +10260,8 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
     world.queue(Command::StockVendor {
         serial,
         stock: vec![npc::StockLine {
-            graphic: 0x0F7A,
-            hue: 0,
+            graphic: openshard_protocol::wire::Graphic(0x0F7A),
+            hue: openshard_protocol::wire::Hue(0),
             amount: 50,
             price: 4,
             name: "black pearl".to_owned(),
@@ -10129,24 +10357,22 @@ fn a_loaded_character_returns_on_its_saved_serial_and_spot() {
     // and not on a fresh serial that would orphan every reference to it.
     let mut world = world();
     let connection = connection();
-    world.reserve_serial(0x0000_0202);
+    on_file(
+        &mut world,
+        0x0000_0202,
+        Point::new(1500, 1000, -5),
+        Appearance {
+            body: Graphic(0x0191),
+            hue: openshard_protocol::wire::Hue(0x83EA),
+        },
+    );
     world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        character: Character::Stored(StoredCharacter {
-            serial: Serial::new(0x0000_0202).unwrap(),
-            facet: Facet(0),
-            position: Point::new(1500, 1000, -5),
-            facing: Facing::walking(Direction::South),
-            appearance: Appearance {
-                body: openshard_protocol::wire::Graphic(0x0191),
-                hue: openshard_protocol::wire::Hue(0x83EA),
-            },
-            sheet: CharacterSheet::starting(),
-        }),
+        character: Character::Saved,
     }));
     world.tick(Instant::now());
 
@@ -10160,6 +10386,56 @@ fn a_loaded_character_returns_on_its_saved_serial_and_spot() {
         world.registry().get::<Position>(entity).unwrap().0,
         Point::new(1500, 1000, -5),
         "and its saved spot, z and all"
+    );
+}
+
+#[test]
+fn a_deleted_character_is_no_longer_on_file_under_its_name() {
+    // The other end of the roster's life, and the half S4 moved into the world:
+    // `0x83` now names the character rather than the serial the shard used to
+    // look up, so this is the whole of what deletion does — the row stops being
+    // there. Someone who creates the same name afterwards must get a new
+    // character, not the deleted one's serial, gear and spot.
+    //
+    // The name is lower-cased on the way in on purpose: the client sends it back
+    // as the player typed it, and the key folds. A delete that missed by case
+    // would leave the row behind and this test would find the old serial.
+    let now = Instant::now();
+    let mut world = world();
+    on_file(
+        &mut world,
+        0x0000_0202,
+        Point::new(1500, 1000, -5),
+        Appearance::default_human(),
+    );
+    world.queue(Command::DeleteCharacter {
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("lord british".to_owned()),
+    });
+    world.tick(now);
+
+    let connection = connection();
+    world.queue(Command::Enter(Entering {
+        connection,
+        version: ClientVersion::TOL,
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
+        access: AccessLevel::Player,
+        character: Character::Saved,
+    }));
+    world.tick(now);
+
+    let entity = world.state.players[&connection];
+    assert_ne!(
+        world.registry().serial_of(entity).unwrap().raw(),
+        0x0000_0202,
+        "the deleted serial is not handed back out"
+    );
+    let position = world.registry().get::<Position>(entity).unwrap().0;
+    assert_eq!(
+        (position.x, position.y),
+        START,
+        "and the new character stands at the start, not where the deleted one stood"
     );
 }
 
@@ -10425,10 +10701,12 @@ fn disconnecting_releases_the_entity_and_its_serial() {
 }
 
 #[test]
-fn a_departing_character_carries_where_it_walked_to() {
-    // The re-login rewind bug: the world must hand the server the character's
-    // *current* position on logout, so the server's cache tracks the move and
-    // a re-login this run spawns it where it left — not where it logged in.
+fn a_departing_character_is_filed_where_it_walked_to() {
+    // The re-login rewind bug: the logout must file the character's *current*
+    // position, so a re-login this run spawns it where it left — not where it
+    // logged in. It used to be asserted on the `departed` vector the shard
+    // drained; since S4 the roster is the world's, and the only way to ask what
+    // it filed is to log back in and look, which is also what a player does.
     let mut world = world();
     let now = Instant::now();
     let connection = enter(&mut world, now);
@@ -10440,12 +10718,23 @@ fn a_departing_character_carries_where_it_walked_to() {
     world.queue(Command::Disconnect { connection });
     world.tick(now);
 
-    let departed: Vec<_> = world.drain_departed().collect();
-    assert_eq!(departed.len(), 1, "one character left");
+    let again = ConnectionId::from_raw(2);
+    world.queue(Command::Enter(Entering {
+        connection: again,
+        version: ClientVersion::TOL,
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
+        access: AccessLevel::Player,
+        character: Character::Saved,
+    }));
+    world.tick(now);
+
+    let entity = world.state.players[&again];
+    let position = world.registry().get::<Position>(entity).unwrap().0;
     assert_eq!(
-        (departed[0].x, departed[0].y),
+        (position.x, position.y),
         (walked_to.x, walked_to.y),
-        "the logout record carries the moved position, not the login one"
+        "the logout filed the moved position, not the login one"
     );
 }
 
@@ -10555,8 +10844,8 @@ fn place_door(world: &mut World, at: Point, now: Instant) -> (EntityId, u32) {
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value: 0,
-            closed: 0x0675,
-            open: 0x0676,
+            closed: openshard_protocol::wire::Graphic(0x0675),
+            open: openshard_protocol::wire::Graphic(0x0676),
             offset_x: -1,
             offset_y: 1,
             position: at,
@@ -10682,8 +10971,8 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
     // it: the only sight line runs through the door.
     let (_door, door_serial) = place_door(&mut world, Point::new(START.0, START.1 + 1, 0), now);
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 5,
         damage: 5,
@@ -10750,8 +11039,8 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
 /// it knows door handles (0x0190 human does; 0x00D1 goat does not).
 fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
-        body,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(body),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 5,
         damage: 5,
@@ -10936,8 +11225,8 @@ fn a_human_chaser_opens_the_door_in_its_way() {
 /// Spawn a creature with an explicit aggression posture, returning its entity.
 fn spawn_postured(world: &mut World, at: Point, sight: u8, aggression: u8, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
-        body: 0x00D1,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x00D1),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 1,
         damage: 5,
@@ -11103,8 +11392,8 @@ fn the_chase_pace_is_the_operators_knob() {
 /// Spawn a bay horse next to the start and return its entity and serial.
 fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, u32) {
     world.queue(Command::SpawnMobile {
-        body: 0x00C8,
-        hue: 0x0455,
+        body: openshard_protocol::wire::Graphic(0x00C8),
+        hue: openshard_protocol::wire::Hue(0x0455),
         hits: 30,
         notoriety: 1,
         damage: 3,
@@ -11170,8 +11459,8 @@ fn a_horse_is_mounted_and_dismounted_by_double_click() {
         .expect("a mount item");
     assert_eq!(saddle.layer, openshard_items::MOUNT_LAYER);
     assert_eq!(
-        world.registry().get::<Graphic>(riding.item).unwrap().id,
-        0x3E9F,
+        world.registry().get::<Drawn>(riding.item).unwrap().id,
+        openshard_protocol::wire::Graphic(0x3E9F),
         "a bay horse draws as the bay mount item"
     );
 
@@ -11294,7 +11583,7 @@ fn a_mounted_character_logs_back_in_still_mounted() {
     world.tick(now);
     let mount_graphic = {
         let riding = world.registry().get::<Riding>(player).copied().expect("mounted");
-        world.registry().get::<Graphic>(riding.item).unwrap().id
+        world.registry().get::<Drawn>(riding.item).unwrap().id
     };
 
     // The save now carries the saddle, on the mount layer.
@@ -11323,17 +11612,15 @@ fn a_mounted_character_logs_back_in_still_mounted() {
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::GameMaster,
-        character: Character::Stored(StoredCharacter {
-            serial: Serial::new(char_serial).unwrap(),
-            facet: Facet(0),
-            position: Point::new(START.0, START.1, 0),
-            facing: Facing::walking(Direction::South),
-            appearance: Appearance::default_human(),
-            sheet: CharacterSheet::starting(),
-        }),
+        character: Character::Saved,
     }));
     world.tick(now);
     let player = world.state.players[&gm];
+    assert_eq!(
+        world.registry().serial_of(player).unwrap().raw(),
+        char_serial,
+        "the same character came back, so the saddle filed under its serial is findable"
+    );
     let riding = world
         .registry()
         .get::<Riding>(player)
@@ -11344,7 +11631,7 @@ fn a_mounted_character_logs_back_in_still_mounted() {
         "the ridden creature was rebuilt from the saved saddle"
     );
     assert_eq!(
-        world.registry().get::<Graphic>(riding.item).unwrap().id,
+        world.registry().get::<Drawn>(riding.item).unwrap().id,
         mount_graphic,
         "and it draws as the same mount it was"
     );
@@ -11442,8 +11729,8 @@ fn a_shop_sells_goods_and_buys_them_back() {
 
     // A shopkeeper one tile away, stocked with black pearls by "the script".
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 1,
         damage: 0,
@@ -11480,8 +11767,8 @@ fn a_shop_sells_goods_and_buys_them_back() {
     world.queue(Command::StockVendor {
         serial: vendor_serial,
         stock: vec![npc::StockLine {
-            graphic: 0x0F7A,
-            hue: 0,
+            graphic: openshard_protocol::wire::Graphic(0x0F7A),
+            hue: openshard_protocol::wire::Hue(0),
             amount: 50,
             price: 4,
             name: "black pearl".to_owned(),
@@ -11500,7 +11787,13 @@ fn a_shop_sells_goods_and_buys_them_back() {
     // A hundred coins in the pack, and a double-click opens the shop: the buy
     // list rides out with the contents.
     let backpack = Serial::new(backpack_serial(&world, gm)).unwrap();
-    openshard_items::give(&mut world.state, backpack, GOLD, 0, 100);
+    openshard_items::give(
+        &mut world.state,
+        backpack,
+        openshard_protocol::wire::Graphic(GOLD),
+        openshard_protocol::wire::Hue(0),
+        100,
+    );
     world.drain_outbound().count();
     world.queue(Command::DoubleClick {
         connection: gm,
@@ -11525,12 +11818,16 @@ fn a_shop_sells_goods_and_buys_them_back() {
     });
     world.tick(now);
     assert_eq!(
-        openshard_items::count_in_container(&world.state, backpack, GOLD),
+        openshard_items::count_in_container(&world.state, backpack, openshard_protocol::wire::Graphic(GOLD)),
         88,
         "twelve gold paid"
     );
     assert_eq!(
-        openshard_items::count_in_container(&world.state, backpack, 0x0F7A),
+        openshard_items::count_in_container(
+            &world.state,
+            backpack,
+            openshard_protocol::wire::Graphic(0x0F7A)
+        ),
         3,
         "three pearls delivered"
     );
@@ -11544,8 +11841,8 @@ fn a_shop_sells_goods_and_buys_them_back() {
         .find(|(entity, _)| {
             world
                 .registry()
-                .get::<Graphic>(*entity)
-                .is_some_and(|g| g.id == 0x0F7A)
+                .get::<Drawn>(*entity)
+                .is_some_and(|g| g.id == openshard_protocol::wire::Graphic(0x0F7A))
         })
         .map(|(entity, _)| world.registry().serial_of(entity).unwrap().raw())
         .expect("pearls in the pack");
@@ -11559,12 +11856,16 @@ fn a_shop_sells_goods_and_buys_them_back() {
     });
     world.tick(now);
     assert_eq!(
-        openshard_items::count_in_container(&world.state, backpack, GOLD),
+        openshard_items::count_in_container(&world.state, backpack, openshard_protocol::wire::Graphic(GOLD)),
         92,
         "two pearls at half price is four gold"
     );
     assert_eq!(
-        openshard_items::count_in_container(&world.state, backpack, 0x0F7A),
+        openshard_items::count_in_container(
+            &world.state,
+            backpack,
+            openshard_protocol::wire::Graphic(0x0F7A)
+        ),
         1,
         "one pearl kept"
     );
@@ -11580,7 +11881,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
     });
     world.tick(now);
     assert_eq!(
-        openshard_items::count_in_container(&world.state, backpack, GOLD),
+        openshard_items::count_in_container(&world.state, backpack, openshard_protocol::wire::Graphic(GOLD)),
         92,
         "no gold moved on the refused purchase"
     );
@@ -11594,8 +11895,8 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
 
     // A shopkeeper one tile off, its stock crate empty.
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 1,
         damage: 0,
@@ -11715,8 +12016,8 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
     let mut world = world();
     let gm = enter_gm(&mut world, now);
     world.queue(Command::SpawnMobile {
-        body: 0x0190,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 1,
         damage: 0,
@@ -11753,8 +12054,8 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
     world.queue(Command::StockVendor {
         serial: vendor_serial,
         stock: vec![npc::StockLine {
-            graphic: 0x0F7A,
-            hue: 0,
+            graphic: openshard_protocol::wire::Graphic(0x0F7A),
+            hue: openshard_protocol::wire::Hue(0),
             amount: 20,
             price: 4,
             name: "black pearl".to_owned(),
@@ -11834,8 +12135,8 @@ fn spawn_archer(world: &mut World, at: Point, now: Instant) -> EntityId {
 /// The same archer with a chosen body — a beast body cannot open doors.
 fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) -> EntityId {
     world.queue(Command::SpawnMobile {
-        body,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(body),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 50,
         notoriety: 5,
         damage: 7,
@@ -12176,8 +12477,8 @@ fn lod_a_spawner_with_no_player_near_stays_dormant_then_wakes() {
     let creature = CreatureTemplate {
         fame: 0,
         karma: 0,
-        body: 0x0009,
-        hue: 0,
+        body: openshard_protocol::wire::Graphic(0x0009),
+        hue: openshard_protocol::wire::Hue(0),
         hits: 10,
         notoriety: 3,
         damage: 0,
@@ -12280,8 +12581,8 @@ fn give_item_lands_in_the_players_backpack() {
 
     world.queue(Command::GiveItem {
         serial: serial.raw(),
-        graphic: 0x0EED, // gold
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0EED), // gold
+        hue: openshard_protocol::wire::Hue(0),
         amount: 100,
         stackable: true,
     });
@@ -12304,8 +12605,8 @@ fn take_item_is_all_or_nothing_and_reports_what_it_took() {
     // Put five gold in the backpack.
     world.queue(Command::GiveItem {
         serial,
-        graphic: 0x0eed,
-        hue: 0,
+        graphic: openshard_protocol::wire::Graphic(0x0eed),
+        hue: openshard_protocol::wire::Hue(0),
         amount: 5,
         stackable: true,
     });
@@ -12317,8 +12618,8 @@ fn take_item_is_all_or_nothing_and_reports_what_it_took() {
             .filter(|(item, _)| {
                 world
                     .registry()
-                    .get::<Graphic>(*item)
-                    .is_some_and(|g| g.id == 0x0eed)
+                    .get::<Drawn>(*item)
+                    .is_some_and(|g| g.id == openshard_protocol::wire::Graphic(0x0eed))
             })
             .map(|(item, _)| openshard_items::amount_of(&world.state, item))
             .sum()
@@ -12328,7 +12629,7 @@ fn take_item_is_all_or_nothing_and_reports_what_it_took() {
     // Take three: enough, so three go and two remain.
     world.queue(Command::TakeItem {
         serial,
-        graphic: 0x0eed,
+        graphic: openshard_protocol::wire::Graphic(0x0eed),
         amount: 3,
     });
     world.tick(now);
@@ -12343,7 +12644,7 @@ fn take_item_is_all_or_nothing_and_reports_what_it_took() {
     // Take ten: short, so nothing is taken and the two are kept.
     world.queue(Command::TakeItem {
         serial,
-        graphic: 0x0eed,
+        graphic: openshard_protocol::wire::Graphic(0x0eed),
         amount: 10,
     });
     world.tick(now);

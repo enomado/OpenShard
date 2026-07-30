@@ -25,27 +25,38 @@ impl RosterKey {
 
 /// Where every stored character was when it was last seen.
 ///
-/// # Why the shard keeps this at all
+/// # Why the world keeps this at all
 ///
 /// The store has the same rows, but the store is written *later* — a snapshot is
 /// handed to a task nobody waits for, so a player who logs out and straight back
 /// in can beat their own save. This is the copy that closes that gap: seeded from
-/// the store at boot, and kept current from `World::drain_departed` on every
-/// logout.
+/// the store at boot by [`World::restore_characters`], and written by the logout
+/// in [`World::despawn`] at the same instant the journal takes its copy.
+///
+/// # Why it is the world's and not the shard binary's
+///
+/// It was the binary's until S4 of `docs/connection_state.md`. The world was the
+/// only thing that could *fill* it — a logout is a tick — so the world drained a
+/// `departed` vector into a table it could not read, and the one caller that
+/// needed to read it, entering a character, had to be handed the row on its
+/// command. That put the same fact in two places with a channel between them:
+/// the roster could be stale for exactly as long as the shard loop took to drain,
+/// and nothing said so. Now the writer and the reader are the same value.
 ///
 /// # It is not the account's character list
 ///
-/// That lives on `Accounts`, and it is the authority on which characters exist.
-/// This is the authority on *where they were* — serial, spot, look, sheet — and a
-/// character can be on the list with nothing here at all: one created during this
-/// run has never logged out, so nothing has been recorded about it yet. Code that
-/// treats "no record" as "no character" is how a brand-new character got deleted
-/// out from under the connection playing it; see `Sessions::is_playing`.
-pub(crate) struct Roster(HashMap<RosterKey, CharacterRecord>);
+/// That lives on `Accounts`, outside the world entirely, and it is the authority
+/// on which characters *exist*. This is the authority on *where they were* —
+/// serial, spot, look, sheet — and a character can be on the list with nothing
+/// here at all: one created during this run has never logged out, so nothing has
+/// been recorded about it yet. Code that treats "no record" as "no character" is
+/// how a brand-new character got deleted out from under the connection playing
+/// it; see `Sessions::is_playing` in the shard binary.
+pub(super) struct Roster(HashMap<RosterKey, CharacterRecord>);
 
 impl Roster {
     /// An empty roster — a shard whose store has not been read yet.
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(HashMap::new())
     }
 
@@ -53,21 +64,21 @@ impl Roster {
     ///
     /// The key comes off the record rather than from the caller, so a record
     /// cannot be filed under the wrong name.
-    pub(crate) fn remember(&mut self, record: CharacterRecord) {
+    pub(super) fn remember(&mut self, record: CharacterRecord) {
         self.0
             .insert(RosterKey::new(&record.account, &record.name), record);
     }
 
     /// Where this character was last seen, or `None` if nothing ever recorded it.
-    pub(crate) fn get(&self, account: &AccountName, character: &CharacterName) -> Option<&CharacterRecord> {
+    pub(super) fn get(&self, account: &AccountName, character: &CharacterName) -> Option<&CharacterRecord> {
         self.0.get(&RosterKey::new(account, character))
     }
 
     /// Drop what was known about a character — it has been deleted.
     ///
-    /// Hands the record back, because the caller needs the serial off it to tell
-    /// the world to forget the store row too.
-    pub(crate) fn forget(
+    /// Hands the record back, because the caller needs the serial off it to
+    /// forget the store row and the inventory waiting under it.
+    pub(super) fn forget(
         &mut self,
         account: &AccountName,
         character: &CharacterName,
@@ -76,13 +87,8 @@ impl Roster {
     }
 
     /// How many characters are on file, for the boot log.
-    pub(crate) fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.0.len()
-    }
-
-    /// Whether nothing has been restored, for the boot log.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
 }
 
@@ -168,6 +174,6 @@ mod tests {
 
         let dropped = roster.forget(&AccountName::new("ADMIN"), &CharacterName::new("LORD BRITISH"));
         assert_eq!(dropped.map(|record| record.serial), Some(7));
-        assert!(roster.is_empty());
+        assert_eq!(roster.len(), 0);
     }
 }

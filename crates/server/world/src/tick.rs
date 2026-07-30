@@ -44,7 +44,7 @@ use openshard_protocol::mobile::{MobileStatus, Notoriety, Stat, StatLockBits, St
 use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, RawFont, RawTalkMode, SpokenMessage, TalkMode};
-use openshard_protocol::wire::{Hue, Layer, RawHue, RawLayer};
+use openshard_protocol::wire::{Graphic, Hue, Layer, RawHue, RawLayer};
 use openshard_protocol::world::{
     DeathStatus, Facet, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapSize, MusicId,
     PlayerStart, PlayerUpdate, Point, RawStepSequence, SeasonChange, WalkAck, WalkReject, WalkRequest,
@@ -59,7 +59,7 @@ use tracing::{debug, info, warn};
 
 use openshard_state::components::{
     Access, Account, Amount, Body, Brain, Client, Combat, Contained, Container, DamageType, Decoration, Door,
-    Equipped, Ghost, Graphic, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position, Resistance,
+    Drawn, Equipped, Ghost, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position, Resistance,
     Ridden, Riding, Scripted, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
 };
 use openshard_state::harvest::Banks;
@@ -99,6 +99,7 @@ mod gates;
 mod motion;
 mod persist;
 mod regions;
+mod roster;
 mod skills_wire;
 mod spawners;
 mod speech;
@@ -115,6 +116,7 @@ pub use command::{
 };
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
+use roster::Roster;
 
 // `Outbound`, `FacetState`, `HeldItem` and `Origin` are the world's runtime
 // state, moved down into `openshard-state` with `WorldState` so the systems can
@@ -137,12 +139,12 @@ pub struct World {
     save_every: u64,
     /// Snapshots the tick has taken and nobody has collected yet.
     saves: Vec<Snapshot>,
-    /// Characters that left this tick, with the state they left in. The server
-    /// drains these to keep its in-memory character list current, so a re-login in
-    /// the same run finds the character where it logged out — not where it was at
-    /// boot. The store gets the same record through the journal; this is the
-    /// immediate copy, because a re-login can beat the next deferred save.
-    departed: Vec<CharacterRecord>,
+    /// Where every stored character was when it was last seen: seeded from the
+    /// store at boot, and rewritten by every logout. It is what a re-login reads
+    /// to come back where it left rather than where it stood at boot, and the
+    /// store cannot answer that — its copy is written by a task nobody waits for,
+    /// which a fast re-login can beat. See [`Roster`].
+    roster: Roster,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     entered: Cursor<PlayerEntered>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
@@ -266,7 +268,7 @@ impl World {
             journal: Journal::new(),
             save_every: SAVE_EVERY_TICKS,
             saves: Vec::new(),
-            departed: Vec::new(),
+            roster: Roster::new(),
             entered: Cursor::default(),
             moved: Cursor::default(),
             gated: Cursor::default(),
@@ -452,31 +454,30 @@ impl World {
         self.saves.drain(..)
     }
 
-    /// Take the records of characters that logged out since the last call.
-    ///
-    /// The server keeps an in-memory character list — where each stored character
-    /// was, so playing one spawns it back at its spot — seeded from the store at
-    /// boot. Without this it would go stale the moment a character moved and logged
-    /// out, and a re-login in the same run would rewind to the boot position. These
-    /// are the fresh records to fold in; the store gets the same data through the
-    /// journal, but a re-login can beat that deferred write, so this is the copy
-    /// that closes the gap.
-    pub fn drain_departed(&mut self) -> std::vec::Drain<'_, CharacterRecord> {
-        self.departed.drain(..)
+    /// How many stored characters the world has on file, for the boot log.
+    pub fn stored_characters(&self) -> usize {
+        self.roster.len()
     }
 
-    /// Delete a logged-out character's saved state.
+    /// Delete a character's saved state.
     ///
-    /// The server has already dropped it from the account's in-memory list and
-    /// its own restore map; this forgets the store row and inventory so the
-    /// deletion lands on the next save. The serial is *not* unbound — a packet in
-    /// flight may still name it — so `reserve_serial` keeps it out of circulation
-    /// for the rest of the run.
-    pub fn delete_character(&mut self, serial: u32) {
-        self.journal.forget_serial(serial);
+    /// The shard has already dropped it from the account's in-memory list — that
+    /// list is login's, and the world never sees it — so what is left is the
+    /// world's own three copies: the roster row a re-login would read, the store
+    /// row, and the inventory waiting under its serial. A character the roster
+    /// has never heard of is a no-op: it was created this run and never logged
+    /// out, so there is nothing saved anywhere to forget.
+    ///
+    /// The serial is *not* unbound — a packet in flight may still name it — so
+    /// `reserve_serial` keeps it out of circulation for the rest of the run.
+    fn delete_character(&mut self, account: &AccountName, name: &CharacterName) {
+        let Some(record) = self.roster.forget(account, name) else {
+            return;
+        };
+        self.journal.forget_serial(record.serial);
         // Drop the fast-relogin inventory cache: the character is gone, not
         // coming back this run.
-        self.pending_inventories.remove(&serial);
+        self.pending_inventories.remove(&record.serial);
     }
 
     /// How many entities are waiting to be saved.
@@ -568,7 +569,7 @@ impl World {
             let Some(backpack) = items::backpack_of(&self.state, serial) else {
                 continue;
             };
-            items::give(&mut self.state, backpack, items::GOLD_GRAPHIC, 0, beg.gold);
+            items::give(&mut self.state, backpack, items::GOLD_GRAPHIC, Hue(0), beg.gold);
         }
         combat::expire_criminality(&mut self.state);
         combat::decay_murders(&mut self.state);
@@ -1062,7 +1063,7 @@ impl World {
                 container,
             } => items::cancel_by_container(&mut self.state, connection, container),
             Command::Disconnect { connection } => self.disconnect(connection),
-            Command::DeleteCharacter { serial } => self.delete_character(serial),
+            Command::DeleteCharacter { account, name } => self.delete_character(&account, &name),
             Command::Control { serial } => self.control(serial),
             Command::ShowGump {
                 serial,
@@ -1323,7 +1324,7 @@ impl World {
     /// Drop an item into a player's backpack — a quest reward. Merges onto a like
     /// pile when `stackable` (gold), else a discrete piece. Silent if the serial
     /// names no mobile or it wears no backpack.
-    fn give_item(&mut self, serial: u32, graphic: u16, hue: u16, amount: u16, stackable: bool) {
+    fn give_item(&mut self, serial: u32, graphic: Graphic, hue: Hue, amount: u16, stackable: bool) {
         let Some(mobile) = Serial::new(serial) else {
             return;
         };
@@ -1335,7 +1336,7 @@ impl World {
     /// result with an [`ItemsTaken`](crate::ItemsTaken) event the pack reads next
     /// tick. Nothing (and `taken: 0`) if the serial names no mobile or it wears no
     /// backpack.
-    fn take_item(&mut self, serial: u32, graphic: u16, amount: u16) {
+    fn take_item(&mut self, serial: u32, graphic: Graphic, amount: u16) {
         let Some(player) = Serial::new(serial) else {
             return;
         };
@@ -1400,10 +1401,11 @@ impl World {
         // it is the only moment a player's whole session is at stake — so the
         // record is taken at the one instant it still can be.
         if let Some(record) = Self::record_of(&self.state.registry, entity, self.state.ticks) {
-            // The journal copy is for the store; the departed copy is for the
-            // server's in-memory character list, which a re-login reads before the
-            // deferred store save has necessarily landed.
-            self.departed.push(record.clone());
+            // The journal copy is for the store; the roster copy is what a
+            // re-login reads, because it can arrive before the deferred store
+            // save has landed. Written here, at the same instant, so the two
+            // cannot describe different logouts.
+            self.roster.remember(record.clone());
             // The carried inventory, walked now for the same reason as the record:
             // in a moment the items are despawned with the character and there is
             // nothing left to read. Two copies, for two readers: the journal's for

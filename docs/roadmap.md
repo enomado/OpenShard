@@ -154,16 +154,21 @@ than keeping their own copy of the unpacking. The private `struct Entering` besi
 
 The remaining step is the one this makes worth doing:
 
-- [ ] **The roster belongs in the world.** Characters are the only saved thing
-      whose `restore_*` hands data back to the caller instead of into `World`, and
-      the only one that asks the world for a favour (`reserve_serial`) rather than
-      giving it something. Moving it in deletes `departed`, `pending_inventories`
-      and the roster's place in `run_shard`'s signature; the character list becomes
-      a `Command` answered with a `0xA9`, exactly as `RequestStatus` is answered
-      with a status, and "exists" and "is being played" become two states of one
-      record rather than two tables. Accounts stay outside: argon2 must not run
-      inside a tick, and `openshard-login` exists to be sans-io. This is also the
-      shape UO itself has — an account is global, a character belongs to a shard.
+- [x] **The roster belongs in the world.** Done — S4 of
+      [connection_state.md](connection_state.md). `restore_characters` hands the
+      store's rows into `World` like every other `restore_*`, and `reserve_serial`
+      is something the world does to itself on the way in rather than a favour the
+      shard asks for. `departed` and its drain are gone: the logout writes the
+      roster at the same instant it hands the journal its copy. `Character::Saved`
+      and `Command::DeleteCharacter { account, name }` name a character instead of
+      carrying what the shard looked up, and `run_shard` no longer holds a roster
+      to look anything up in. `pending_inventories` stayed — it is keyed by mobile
+      serial and holds NPC gear too; see the finding in connection_state.md.
+      Accounts stay outside: argon2 must not run inside a tick, and
+      `openshard-login` exists to be sans-io. This is also the shape UO itself has
+      — an account is global, a character belongs to a shard. What is left is the
+      character *list*: `0xA9` becoming a `Command` answered out of a tick, the way
+      `RequestStatus` is answered with a status, is S5.
 
 Found while doing the above, none of them blockers — all fixed:
 

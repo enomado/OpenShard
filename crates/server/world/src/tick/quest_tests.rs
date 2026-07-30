@@ -8,9 +8,11 @@
 
 use super::tests::{START, enter, packets_for, spawn_mobile_at, world};
 use super::*;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::serial::RawSerial;
 use openshard_quests::{QUEST_GUMP, QUEST_RESIGN_GUMP};
-use openshard_state::components::{Amount, Contained, Graphic, QuestGiver, QuestLog, Stackable};
+use openshard_state::components::{Amount, Contained, Drawn, QuestGiver, QuestLog, Stackable};
 use openshard_state::quest::{ObjectiveDef, ObjectiveKind, QuestDef, RewardDef, RewardKind};
 
 /// The body a rat is drawn as — the slay quests' target.
@@ -26,7 +28,9 @@ fn rat_cull() -> QuestDef {
         description: "Slay five rats.".to_owned(),
         complete: "Well done.".to_owned(),
         objectives: vec![ObjectiveDef {
-            kind: ObjectiveKind::Slay { body: RAT },
+            kind: ObjectiveKind::Slay {
+                body: openshard_protocol::wire::Graphic(RAT),
+            },
             count: 5,
             name: "sewer rat".to_owned(),
             seconds: 0,
@@ -45,7 +49,9 @@ fn silk_gather() -> QuestDef {
         key: "silk_gather".to_owned(),
         title: "Silk for the Spellwright".to_owned(),
         objectives: vec![ObjectiveDef {
-            kind: ObjectiveKind::Obtain { graphic: SILK },
+            kind: ObjectiveKind::Obtain {
+                graphic: openshard_protocol::wire::Graphic(SILK),
+            },
             count: 5,
             name: "spiders' silk".to_owned(),
             seconds: 0,
@@ -253,7 +259,7 @@ fn a_slain_body_advances_only_the_killers_objective() {
     world.state.bus.send(openshard_combat::MobileDied {
         entity: player,
         serial: killer,
-        body: RAT,
+        body: openshard_protocol::wire::Graphic(RAT),
         killer: Some(killer),
     });
     world.tick(now);
@@ -281,7 +287,7 @@ fn an_unattributed_death_advances_nothing() {
     world.state.bus.send(openshard_combat::MobileDied {
         entity: player,
         serial,
-        body: RAT,
+        body: openshard_protocol::wire::Graphic(RAT),
         killer: None, // a field, a fall, a reflected blow
     });
     world.tick(now);
@@ -366,12 +372,12 @@ fn a_turn_in_takes_the_items_and_pays() {
     assert!(log.active.is_empty(), "the quest leaves the log");
     assert_eq!(log.done.len(), 1, "and is remembered as done");
     assert_eq!(
-        openshard_items::carried_amount(&world.state, owner, SILK),
+        openshard_items::carried_amount(&world.state, owner, openshard_protocol::wire::Graphic(SILK)),
         0,
         "the silk was handed over"
     );
     assert_eq!(
-        openshard_items::carried_amount(&world.state, owner, 0x0EED),
+        openshard_items::carried_amount(&world.state, owner, openshard_protocol::wire::Graphic(0x0EED)),
         120,
         "and the gold arrived"
     );
@@ -389,13 +395,17 @@ fn a_player_one_item_short_loses_nothing_and_is_paid_nothing() {
         title: "Two Things".to_owned(),
         objectives: vec![
             ObjectiveDef {
-                kind: ObjectiveKind::Obtain { graphic: SILK },
+                kind: ObjectiveKind::Obtain {
+                    graphic: openshard_protocol::wire::Graphic(SILK),
+                },
                 count: 2,
                 name: "silk".to_owned(),
                 seconds: 0,
             },
             ObjectiveDef {
-                kind: ObjectiveKind::Obtain { graphic: 0x0F7A },
+                kind: ObjectiveKind::Obtain {
+                    graphic: openshard_protocol::wire::Graphic(0x0F7A),
+                },
                 count: 2,
                 name: "garlic".to_owned(),
                 seconds: 0,
@@ -436,7 +446,7 @@ fn a_player_one_item_short_loses_nothing_and_is_paid_nothing() {
     world.tick(now);
 
     assert_eq!(
-        openshard_items::carried_amount(&world.state, owner, SILK),
+        openshard_items::carried_amount(&world.state, owner, openshard_protocol::wire::Graphic(SILK)),
         2,
         "nothing was taken, because not everything could be"
     );
@@ -513,7 +523,7 @@ fn a_done_once_quest_is_never_offered_again() {
     world.state.bus.send(openshard_combat::MobileDied {
         entity: player,
         serial: killer,
-        body: RAT,
+        body: openshard_protocol::wire::Graphic(RAT),
         killer: Some(killer),
     });
     world.tick(now);
@@ -565,7 +575,7 @@ fn a_completed_quest_reaches_the_pack() {
     world.state.bus.send(openshard_combat::MobileDied {
         entity: player,
         serial: killer,
-        body: RAT,
+        body: openshard_protocol::wire::Graphic(RAT),
         killer: Some(killer),
     });
     world.tick(now);
@@ -587,16 +597,21 @@ fn a_completed_quest_reaches_the_pack() {
 /// Put a stack of silk in a container.
 fn put_silk(world: &mut World, container: Serial, amount: u16) -> EntityId {
     let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(item, Graphic { id: SILK, hue: 0 });
+    world.state.registry.insert(
+        item,
+        Drawn {
+            id: openshard_protocol::wire::Graphic(SILK),
+            hue: openshard_protocol::wire::Hue(0),
+        },
+    );
     world.state.registry.insert(item, Amount(amount));
     world.state.registry.insert(item, Stackable);
     world.state.registry.insert(
         item,
         Contained {
             container,
-            x: 0,
-            y: 0,
-            grid: 0,
+            position: GumpPoint::new(0, 0),
+            grid: GridSlot(0),
         },
     );
     item
@@ -757,7 +772,7 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
     world.state.bus.send(openshard_combat::MobileDied {
         entity: player,
         serial: killer,
-        body: RAT,
+        body: openshard_protocol::wire::Graphic(RAT),
         killer: Some(killer),
     });
     world.tick(now);
@@ -778,15 +793,18 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
     // And it comes back on login.
     let mut shard = super::tests::world();
     shard.state.quests.set(vec![rat_cull()]);
+    // The boot path: the row goes into the world's roster, and the entry names
+    // the character rather than carrying it. See `docs/connection_state.md`, S4.
+    shard.restore_characters(vec![record]);
     shard.queue(Command::Enter(Entering {
         connection: connection_two(),
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         access: AccessLevel::Player,
-        // Through the very function the server uses, so the test cannot pass on
-        // an unpacking the shard does not do.
-        character: Character::Stored(StoredCharacter::from_record(&record).expect("a saved serial")),
+        // Nothing but the name: the row went in through the boot path above,
+        // and the world unpacks it itself.
+        character: Character::Saved,
     }));
     shard.tick(now);
 
@@ -1193,7 +1211,7 @@ fn deliver_quest() -> QuestDef {
         title: "A Parcel for Mirabel".to_owned(),
         objectives: vec![ObjectiveDef {
             kind: ObjectiveKind::Deliver {
-                graphic: SILK,
+                graphic: openshard_protocol::wire::Graphic(SILK),
                 to: "Mirabel".to_owned(),
             },
             count: 2,
@@ -1330,13 +1348,17 @@ fn an_any_of_these_quest_completes_on_one_objective() {
         all_objectives: false,
         objectives: vec![
             ObjectiveDef {
-                kind: ObjectiveKind::Slay { body: RAT },
+                kind: ObjectiveKind::Slay {
+                    body: openshard_protocol::wire::Graphic(RAT),
+                },
                 count: 1,
                 name: "rat".to_owned(),
                 seconds: 0,
             },
             ObjectiveDef {
-                kind: ObjectiveKind::Obtain { graphic: SILK },
+                kind: ObjectiveKind::Obtain {
+                    graphic: openshard_protocol::wire::Graphic(SILK),
+                },
                 count: 5,
                 name: "silk".to_owned(),
                 seconds: 0,
@@ -1359,7 +1381,7 @@ fn an_any_of_these_quest_completes_on_one_objective() {
     world.state.bus.send(openshard_combat::MobileDied {
         entity: player,
         serial: killer,
-        body: RAT,
+        body: openshard_protocol::wire::Graphic(RAT),
         killer: Some(killer),
     });
     world.tick(now);

@@ -146,20 +146,17 @@ async fn load_accounts(store: &dyn Store, config: &Config) -> DevAccounts {
     accounts
 }
 
-/// Bring the world's characters back from the database: reserve every stored
-/// serial so a new character cannot take one, list the stored characters so
-/// they show up to play, and keep their records so playing one restores it
-/// where it was.
-async fn restore_characters(
-    store: &dyn Store,
-    world: &mut World,
-    mut accounts: DevAccounts,
-) -> (DevAccounts, Roster) {
-    let mut roster = Roster::new();
+/// Bring the world's characters back from the database.
+///
+/// Two halves, on the two sides of the login/world line this whole file is
+/// drawn along. The rows go to the world — it reserves their serials and keeps
+/// their positions, so playing one restores it where it was — and the *names* go
+/// to the accounts, so a character the store knows about shows up on the list to
+/// be picked even if no config line mentions it.
+async fn restore_characters(store: &dyn Store, world: &mut World, mut accounts: DevAccounts) -> DevAccounts {
     match store.characters().await {
         Ok(characters) => {
-            for record in characters {
-                world.reserve_serial(record.serial);
+            for record in &characters {
                 let listed = accounts
                     .characters(&record.account)
                     .iter()
@@ -167,15 +164,18 @@ async fn restore_characters(
                 if !listed {
                     accounts = accounts.with_character(&record.account, &record.name);
                 }
-                roster.remember(record);
             }
-            if !roster.is_empty() {
-                info!(characters = roster.len(), "restored the world from the database");
+            world.restore_characters(characters);
+            if world.stored_characters() > 0 {
+                info!(
+                    characters = world.stored_characters(),
+                    "restored the world from the database"
+                );
             }
         }
         Err(error) => error!(%error, "could not read saved characters; starting with none"),
     }
-    (accounts, roster)
+    accounts
 }
 
 /// Bring back saved items: the world reserves their serials, drops the loose
@@ -317,9 +317,8 @@ fn build_login_server(
     login
 }
 
-/// Run one tick: advance the world, flush its outbound packets, hand off
-/// its snapshots and departed characters, pump the gameplay script, and
-/// reclaim expired login keys.
+/// Run one tick: advance the world, flush its outbound packets, hand off its
+/// snapshots, pump the gameplay script, and reclaim expired login keys.
 ///
 /// The key reclaim rides along here rather than after every `select!` branch
 /// because `AuthKeys::expire` is memory upkeep for abandoned relay keys —
@@ -331,7 +330,6 @@ fn world_tick(
     sessions: &mut Sessions,
     phases: &mut PhaseSync,
     saves: &SnapshotTx,
-    roster: &mut Roster,
     scripts: &mut Option<Scripts>,
     login_server: &mut LoginServer<DevAccounts>,
 ) {
@@ -354,13 +352,6 @@ fn world_tick(
     // holding the only copy.
     for snapshot in world.drain_saves() {
         let _ = saves.send(snapshot);
-    }
-    // Keep the in-memory character list current with logouts, so a
-    // re-login this run finds a character where it left, not where it
-    // was at boot. The store gets the same record via the snapshot
-    // above; this is the copy a re-login can read before that lands.
-    for record in world.drain_departed() {
-        roster.remember(record);
     }
     // Feed the script this tick's events and queue its commands for
     // the next one. After the drains, so a command a script emits is
@@ -394,7 +385,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
     // items, and so on — see each function's doc for why. This all borrows the
     // store; the save task takes ownership after, so it has to come last.
     let accounts = load_accounts(store.as_ref(), config).await;
-    let (accounts, mut roster) = restore_characters(store.as_ref(), &mut world, accounts).await;
+    let accounts = restore_characters(store.as_ref(), &mut world, accounts).await;
     restore_items(store.as_ref(), &mut world).await;
     restore_mobiles(store.as_ref(), &mut world).await;
     restore_decorations(store.as_ref(), &mut world).await;
@@ -436,7 +427,6 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
                     &mut sessions,
                     &mut phases,
                     &saves,
-                    &mut roster,
                     &mut scripts,
                     &mut login_server,
                 );
@@ -461,7 +451,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, mut world: Wo
                     error!("the gateway stopped; saving the world");
                     break;
                 };
-                world_handle_network(&mut sessions, &mut login_server, &mut world, advertised, &mut roster, event);
+                world_handle_network(&mut sessions, &mut login_server, &mut world, advertised, event);
             }
         }
     }
@@ -574,20 +564,19 @@ fn handle_world_packet(
     session: &mut Session,
     login: &LoginServer<DevAccounts>,
     world: &mut World,
-    roster: &Roster,
     packet: ClientPacket,
     id: ConnectionId,
 ) -> bool {
     // `0x5D` is the one packet a connection outside the world may send, and it
     // is what puts it inside. It also needs the account's authority, looked up
-    // here because this is where the store is in reach.
+    // here because this is where the accounts are in reach.
     let packet = match packet {
         ClientPacket::CharacterPlay(play) => {
             let access = session
                 .login
                 .account()
                 .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
-            return play_character(session, world, roster, play, id, access);
+            return play_character(session, world, play, id, access);
         }
         packet => packet,
     };
@@ -607,7 +596,6 @@ pub(crate) fn world_handle_network(
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
     advertised: SocketAddrV4,
-    roster: &mut Roster,
     event: ServerEvent,
 ) {
     match event {
@@ -657,7 +645,7 @@ pub(crate) fn world_handle_network(
                             // the table and is routed here rather than through
                             // `handle_login_packet`.
                             Packet::Login(LoginStagePacket::DeleteCharacter(delete)) => {
-                                delete_character(sessions, login, world, roster, delete, id)
+                                delete_character(sessions, login, world, delete, id)
                             }
                             Packet::Login(login_packet) => {
                                 let session = sessions.get_mut(id).expect(PRESENT);
@@ -665,7 +653,7 @@ pub(crate) fn world_handle_network(
                             }
                             Packet::World(world_packet) => {
                                 let session = sessions.get_mut(id).expect(PRESENT);
-                                handle_world_packet(session, login, world, roster, world_packet, id)
+                                handle_world_packet(session, login, world, world_packet, id)
                             }
                         };
                         if !keep {
@@ -786,12 +774,11 @@ mod tests {
         // "nothing happened" has nothing else to look at; see `World::queued`.
         let mut login = login_server();
         let mut world = World::new((1363, 1600));
-        let roster = Roster::new();
         let id = ConnectionId::from_raw(1);
         let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
 
         assert!(
-            handle_world_packet(&mut session, &login, &mut world, &roster, a_step(), id),
+            handle_world_packet(&mut session, &login, &mut world, a_step(), id),
             "a packet that is merely early is not a reason to close"
         );
         assert_eq!(world.queued(), 0, "and it did not become work");
@@ -804,7 +791,6 @@ mod tests {
         // the same packet.
         let mut login = login_server();
         let mut world = World::new((1363, 1600));
-        let roster = Roster::new();
         let id = ConnectionId::from_raw(1);
         let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
         session.enter_world(admin(), lord_british());
@@ -813,7 +799,6 @@ mod tests {
             &mut session,
             &login,
             &mut world,
-            &roster,
             a_step(),
             id
         ));
@@ -828,7 +813,6 @@ mod tests {
         // waits on "logging into shard" and this end says nothing.
         let mut login = login_server();
         let mut world = World::new((1363, 1600));
-        let roster = Roster::new();
         let id = ConnectionId::from_raw(1);
         let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
         assert!(!session.in_world(), "the fixture is on the character screen");
@@ -837,7 +821,6 @@ mod tests {
             &mut session,
             &login,
             &mut world,
-            &roster,
             picking_lord_british(),
             id
         ));

@@ -46,9 +46,7 @@ use openshard_gateway::{
     VersionTx,
 };
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response};
-use openshard_persistence::{
-    AccountRecord, CharacterRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store,
-};
+use openshard_persistence::{AccountRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store};
 use openshard_protocol::client_packet::ClientPacket;
 use openshard_protocol::encoded::EncodedSubcommand;
 use openshard_protocol::extended::ExtendedRequest;
@@ -68,7 +66,7 @@ use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 use openshard_world::{
     Appearance, Character, CharacterSheet, Command, Entering, FreshCharacter, Gameplay, MapTerrain,
-    PlayerEntered, PlayerLeft, PlayerRefused, StatLock, StoredCharacter, TICK_INTERVAL, World,
+    PlayerEntered, PlayerLeft, PlayerRefused, StatLock, TICK_INTERVAL, World,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -77,7 +75,6 @@ pub mod boot;
 pub mod shard;
 
 mod dispatch;
-mod roster;
 mod scripting;
 mod session;
 #[cfg(test)]
@@ -85,7 +82,6 @@ mod testing;
 
 use boot::{load_config, load_world, open_store};
 use dispatch::{create_character, delete_character, dispatch_world_packet, play_character, start_cities};
-use roster::Roster;
 use scripting::Scripts;
 use session::{PhaseSync, Session, Sessions};
 use shard::run_shard;

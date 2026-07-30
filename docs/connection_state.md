@@ -190,11 +190,20 @@ follows.
       observation of the world is downstream of a tick that would have had
       nothing to apply either way.
 
-- [ ] **S4. The roster moves into the world.** Already planned — see
-      [`roadmap.md` §2](roadmap.md). Collapses `Roster`, `departed` and
-      `pending_inventories`; "exists" and "is played" become two states of one
-      record; `is_playing` is answered by `(account, name)` rather than by a
-      serial nobody has yet.
+- [x] **S4. The roster moves into the world.** Done. `Roster` is
+      `world/src/tick/roster.rs` and a field on `World`; `departed` and
+      `drain_departed` are gone, because the logout that filled the vector now
+      writes the roster directly, at the same instant it hands the journal its
+      copy. Boot hands the store's rows to `World::restore_characters` instead of
+      keeping them, and the two commands that used to carry what the shard had
+      looked up carry a name instead: `Character::Saved` asks the world to play
+      whatever is on file, and `Command::DeleteCharacter { account, name }` tells
+      it to forget everything under that name — its roster row, its store row and
+      its saved inventory. `world_tick` is down from seven parameters to six.
+      Guarded by the relogin tests in `world/src/tick/tests.rs`, which now enter
+      with `Character::Saved` and nothing else: the row they come back on is the
+      one the logout wrote, so a roster the world failed to fill would put the
+      character back at the start city with default stats rather than pass.
 
 - [ ] **S5. The character screen is world commands.** `0xA9`, `0x00`/`0xF8`,
       `0x83`, `0x5D` become commands answered out of a tick.
@@ -210,7 +219,7 @@ follows.
       `pending_targets`, `last_status`, `last_light`, `last_music`. Teardown
       becomes one `remove`, and forgetting a field stops being possible.
 
-## Backlog, found while doing S1, S2 and S3
+## Backlog, found while doing S1, S2, S3 and S4
 
 None is a blocker; each is written down where the next step through this area
 will read it.
@@ -246,6 +255,35 @@ will read it.
   Harmless today — the client sends nothing in that window — but it is the state
   the first draft called `LoggingOut`, and it is unnamed.
 
+- **`pending_inventories` did not collapse, and cannot.** S4's plan above said it
+  would fold into the roster's record along with `departed`. Two of the three
+  merged; the third is keyed by *mobile* serial and holds an NPC's gear and a
+  vendor's stock crate as well as a character's pack — `restore_items` files
+  every record whose owner is non-zero, and `restore_mobiles` equips out of the
+  same map. Folding it into a table of characters would leave the NPC half of it
+  homeless. What S4 did instead is put the two behind one *deletion*:
+  `World::delete_character` forgets the roster row and the inventory under its
+  serial together, so the pair can no longer disagree about whether a character
+  exists even though they are still two maps.
+- **A character that is playing is still on file at its logout position.**
+  `enter` reads the roster and never writes it, so while a character is in the
+  world its row describes where it was *last* time. Nothing reads that row in the
+  meantime, so it is inert rather than wrong — but it is exactly the "exists"
+  versus "is played" distinction this plan wanted as two states of one record,
+  and it is still unnamed. S5 is where it gets a name, and where `is_playing`
+  could stop being a question the sessions answer.
+- **`StoredCharacter` is public and nothing outside the world names it any
+  more.** It was on `Command::Enter`, so it had to be; now `enter` is the only
+  caller of `from_record` and the only reader of the type. It is still exported
+  from `openshard_world`, which is a public API nobody uses. Left alone here
+  because demoting it means unpicking the doc links that point at it from
+  `Character` — a rustdoc change, not a code one, and S5 rewrites this seam.
+- **`restore_characters` must run before `restore_items`, and only a doc says
+  so.** The serials it reserves are the owners the item records point at; run
+  them the other way round and a character's pack is filed under a serial the
+  allocator is free to hand to something else. Both `restore_*` docs state the
+  order and `run_shard` obeys it, but nothing in the types does.
+
 - **`ClientPacket` mixes the character screen in with the world.** S3 left one
   `unreachable!` behind: `0x5D` is a `ClientPacket` variant that
   `dispatch_world_packet` can never legitimately see, because the caller matches
@@ -277,6 +315,6 @@ will read it.
 
 ## Status
 
-S1, S2 and S3 landed; S4 is next. Findings are recorded in
+S1 through S4 landed; S5 is next. Findings are recorded in
 [`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
 that must agree".

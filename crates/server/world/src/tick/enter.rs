@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::Hue;
 
 impl World {
     /// Take a connection over from the login conversation.
@@ -44,19 +45,34 @@ impl World {
 
         // Split the two arrivals into what the rest of this function reads. The
         // `Option`s below are the honest ones — a character nobody ever described
-        // has no look and no sheet — and they are local now: a *stored* character
-        // cannot reach here half-unpacked, because `StoredCharacter` has no way to
-        // say it.
+        // has no look and no sheet — and they are local: a *stored* character
+        // cannot reach the arms below half-unpacked, because `StoredCharacter`
+        // has no way to say it.
+        //
+        // Resolving `Saved` is this function's job rather than the caller's,
+        // because the roster is the world's since S4 of
+        // `docs/connection_state.md`. This is the one place a name becomes a row.
+        // A name nothing has recorded — config-seeded, or created this run and
+        // never logged out — is neither an error nor a refusal: it enters fresh
+        // on the default facet, which is what it did when the shard resolved this
+        // and passed a bare `Character::fresh`.
         let (requested_facet, saved_serial, saved_position, saved_facing, appearance, sheet) = match character
         {
-            Character::Stored(stored) => (
-                stored.facet,
-                Some(stored.serial),
-                Some(stored.position),
-                Some(stored.facing),
-                Some(stored.appearance),
-                Some(stored.sheet),
-            ),
+            Character::Saved => match self
+                .roster
+                .get(&account, &name)
+                .and_then(StoredCharacter::from_record)
+            {
+                Some(stored) => (
+                    stored.facet,
+                    Some(stored.serial),
+                    Some(stored.position),
+                    Some(stored.facing),
+                    Some(stored.appearance),
+                    Some(stored.sheet),
+                ),
+                None => (self.state.default_facet, None, None, None, None, None),
+            },
             Character::Fresh(fresh) => (
                 fresh.facet,
                 None,
@@ -114,7 +130,7 @@ impl World {
         let facing = saved_facing.unwrap_or_else(|| Facing::walking(Direction::South));
         // A created or loaded character brings its body and hue; without one it
         // falls back to the default. `Body` and `Appearance` now hold the same wire
-        // `Graphic`/`Hue`, so this is a move rather than an unwrap-and-rewrap: the
+        // `Drawn`/`Hue`, so this is a move rather than an unwrap-and-rewrap: the
         // only place the numbers are opened is the encoder that puts them on the
         // wire.
         let look = appearance.unwrap_or_else(Appearance::default_human);
@@ -340,7 +356,7 @@ impl World {
                 serial,
                 BACKPACK_GRAPHIC,
                 BACKPACK_GUMP,
-                0,
+                Hue(0),
                 items::BACKPACK_LAYER,
             );
         }
@@ -360,7 +376,7 @@ impl World {
                 serial,
                 npc::BANK_GRAPHIC,
                 npc::BANK_GUMP,
-                0,
+                Hue(0),
                 npc::BANK_LAYER,
             );
         }
