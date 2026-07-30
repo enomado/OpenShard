@@ -1456,6 +1456,7 @@ dependencies = [
  "openshard-protocol",
  "openshard-quests",
  "openshard-scripting",
+ "openshard-uofiles",
  "openshard-world",
  "tokio",
  "tracing",
@@ -1486,6 +1487,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshard-uofiles"
+version = "0.0.1"
+dependencies = [
+ "openshard-protocol",
+]
+
+[[package]]
 name = "openshard-world"
 version = "0.0.1"
 dependencies = [
@@ -1505,6 +1513,7 @@ dependencies = [
  "openshard-quests",
  "openshard-skills",
  "openshard-state",
+ "openshard-uofiles",
  "tracing",
 ]
 

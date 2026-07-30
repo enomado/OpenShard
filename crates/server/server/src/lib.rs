@@ -64,9 +64,11 @@ use openshard_protocol::trade::SecureTradeAction;
 use openshard_protocol::wire::{ClilocId, Graphic, Hue};
 use openshard_protocol::world::{CreateCharacter, Facet, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
+use openshard_uofiles::map::Map;
+use openshard_uofiles::tiledata::TileData;
 use openshard_world::{
-    Appearance, Character, CharacterSheet, Command, Entering, FreshCharacter, Gameplay, Map, MapTerrain,
-    StatLock, StoredCharacter, TICK_INTERVAL, TileData, World,
+    Appearance, Character, CharacterSheet, Command, Entering, FreshCharacter, Gameplay, MapTerrain, StatLock,
+    StoredCharacter, TICK_INTERVAL, World,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};

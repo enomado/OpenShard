@@ -2,9 +2,8 @@
 
 use openshard_movement::Terrain;
 use openshard_protocol::world::Point;
-
-use crate::map::Map;
-use crate::tiledata::{TileData, TileFlags};
+use openshard_uofiles::map::Map;
+use openshard_uofiles::tiledata::{TileData, TileFlags};
 
 /// How far a walking human can step up.
 ///

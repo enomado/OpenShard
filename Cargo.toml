@@ -51,6 +51,7 @@ openshard-scripting = { path = "crates/server/scripting", version = "0.0.1" }
 openshard-server = { path = "crates/server/server", version = "0.0.1" }
 openshard-skills = { path = "crates/server/skills", version = "0.0.1" }
 openshard-state = { path = "crates/server/state", version = "0.0.1" }
+openshard-uofiles = { path = "crates/common/uofiles", version = "0.0.1" }
 openshard-world = { path = "crates/server/world", version = "0.0.1" }
 
 # External

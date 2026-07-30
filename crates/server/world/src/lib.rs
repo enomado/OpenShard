@@ -34,12 +34,9 @@ pub mod admin;
 mod doorgen;
 pub mod events;
 pub mod gm;
-pub mod map;
 pub mod spawner;
 pub mod terrain;
 pub mod tick;
-pub mod tiledata;
-pub mod uop;
 
 // Components, the spatial index and the generator moved down into
 // `openshard-state` so the gameplay systems can live in their own crates above
@@ -48,7 +45,6 @@ pub use events::{
     AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileRestored, MobileSpawned, MobileTurned,
     PlayerEntered, PlayerLeft, RefusedReason, SpellRequested, StepRefused,
 };
-pub use map::{BLOCK_SIZE, LandCell, Map, MapError, StaticItem};
 pub use openshard_chat::MobileSpoke;
 pub use openshard_combat::{MobileDamaged, MobileDied};
 pub use openshard_items::{ItemSpawned, ItemUsed, ItemsTaken, MobileUsed};
@@ -72,5 +68,3 @@ pub use tick::{
     Appearance, Character, CharacterSheet, Command, DecorContainer, DecorDoor, Entering, FreshCharacter,
     StoredCharacter, TICK_INTERVAL, World,
 };
-pub use tiledata::{LandTile, StaticTile, TileData, TileDataError, TileDataFormat, TileFlags};
-pub use uop::UopError;
