@@ -2424,3 +2424,29 @@ has. Tests that need one read `OPENSHARD_CLIENT` and skip when it is unset.
 
 What this project contains is readers for the *formats*. Nothing is derived from
 any particular shard's data, and nothing should be documented as if it were.
+
+### Which client versions to support — see [`client_versions.md`](client_versions.md)
+
+That document holds the evidence: which clients people actually play (7.0.x on
+the big shards, 5.0.8.3 on the T2A/Renaissance ones), what changes between
+versions in the files and on the wire, and how to obtain a set of files legally.
+
+The backlog it leaves us, in order of size:
+
+- [ ] **`verdata.mul` support.** Mandatory below 5.0.0a and entirely absent:
+      `grep -rn verdata --include='*.rs' crates` finds nothing. `uo-rust-libs`
+      `src/map/diff.rs` (MIT) is worth reading first for the sibling
+      `mapdif`/`stadif` format, whose `*difl` lookup does not announce itself.
+- [ ] **A version-driven map width.** Felucca and Trammel are 6144 wide below
+      4.0.11d. We derive the width from the file, which is right about the file
+      and wrong about the client: a modern `map0.mul` served to a 3.0.8 client
+      gives a world 1024 tiles wider than the one being drawn. ClassicUO clamps
+      by version. Wants a `Feature`-shaped rule and a test.
+- [ ] **The lower half of two protocol boundaries.** `Feature::NewContextMenu`
+      (6.0.0.0) gates the *new* `0xBF.0x14.0x02` form, so nothing stops us
+      sending the old form to a client with no popup menus at all. Same gap for
+      cliloc: `Feature::Tooltips` (4.0.0a) covers OPL, the plain localized
+      message `0xC1` has no entry.
+- [ ] **The AoS boundary is Sphere's, not the client's.** `MINCLIVER_AOS` is
+      4.0.0.0 while the client gained AoS features at 3.0.8z, so every client in
+      `[3.0.8z, 4.0.0)` is told it has no AoS support when it does.
