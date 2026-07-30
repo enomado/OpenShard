@@ -1343,13 +1343,9 @@ underneath them, and it found a protocol module the sweep had never staged.
 
 ### Backlog from this stage
 
-- **N10's counter still cannot see an enum variant's fields or a function's
-  parameters** (amendment 4). The variant case is a one-line change to the scan —
-  a field line inside an `enum` body has no `pub` — but it needs the scan to know
-  where an `enum` body starts and ends, which a text scan does not. The parameter
-  case is out of reach of any field scan and probably wants the `syn` dependency
-  N8 argued against; it is worth re-opening that argument now that a whole module
-  has slipped through.
+- ~~**N10's counter still cannot see an enum variant's fields or a function's
+  parameters** (amendment 4).~~ — **half fixed (N-gate, below): the variant case
+  is closed, the parameter case is argued and left open on purpose.**
 - ~~**`CharacterRecord::serial` and the persistence records around it are bare
   `u32`s.**~~ — fixed (N-persistence, below).
 
@@ -1499,6 +1495,49 @@ predecessor plan's value was that every stage's surprise got written down
 (`0xB9` not fitting `EncodePacket`, `CreateCharacter`'s two ids), and a surprise
 resolved silently in one module is a pattern the next module contradicts.
 
+## Amendments forced by N-gate (the coverage check itself)
+
+Not a module: the check that all the other stages are enforced. N8's own backlog
+left it with two blind spots, and by the time N-commands had to find `trade.rs`'s
+three variant fields *by reading*, the gate had stopped being a gate — a sweep
+that only a person can verify is a sweep that decays the first week nobody looks.
+
+**1. An enum variant's fields carry no `pub`, so the scan walked past all of
+them.** Closed. The walk is a second pass with its own bracket state machine,
+because the two shapes share nothing textually: a struct field is recognised by
+`pub`, a variant's field only by where it sits. It runs between `enum Name {` and
+the brace that closes it and nowhere else, which is what keeps the `impl` blocks
+and the `{ resizepic … }` layout examples in the doc comments out of the depth
+count. Struct-like variants key as `Variant.field`, tuple ones as `Variant.0`.
+
+**2. What the blind spot was hiding was nothing — and that is the finding.** All
+fifteen fields it turned up fall in classes N3's table had already decided on a
+struct field: five are a `Raw*::interpret` leftover arm (the byte is carried
+through *because* this engine has no name for it, and typing it would assert the
+meaning the arm exists to deny), five are a diagnostic on a typed error
+(`WrongPacket::expected`'s argument — carried for `Display`, already rejected,
+never read as wire data again), three are quantities on the `MobileStatus`
+argument, and `ClientPacket::Unknown.body` is a `Vec<u8>` buffer that the
+deliberately broad type match cannot tell from a number. No new type was needed.
+The gap hid no untyped wire value; it hid the *evidence* that none was there.
+
+**3. A function's parameters stay out of reach, on purpose.** `fn encode(serial:
+u32)` is the same bare integer and no field scan can see it. That wants `syn`,
+and N8's argument against the dependency has not changed — so instead of a
+half-measure the scan now *reports what it examined*: files, enum bodies,
+variants, with a floor asserted on each. "No violations" can no longer mean
+"nothing was read", which is the failure mode this file was written against in
+the first place and which had already produced a green, meaningless result here
+once. The parameter gap is documented, not papered over.
+
+**4. The detector has a fixture.** `the_enum_walk_sees_what_it_claims_to_see`
+runs the walk over synthetic source containing every shape that sits next to a
+variant field — a unit variant, a discriminant, a doc comment with braces, a
+typed tuple element, a method parameter after the body — and asserts the exact
+set of hits. A detector that has never been shown to go red is worth nothing
+green, and this one reads source text it does not own, so the fixture is the only
+place its behaviour can be pinned.
+
 ## Progress
 
 | Stage | State | Commit |
@@ -1515,4 +1554,5 @@ resolved silently in one module is a pattern the next module contradicts.
 | N-tables | done — the cliloc and `SoundId` content tables: `protocol` took `serde`, and `State`'s four doors take the types | `a78ee4c`, `4d9561d` |
 | N-components | done — `Drawn`, `Container.gump`, `Contained.{position, grid}`, and the graphic-keyed tables under them | `6c01d6e` |
 | N-commands | done — `Command` 27 bare serials → 0, `trade.rs` 3 → 0 (the module N8's counter could not see), and the system functions under them | |
-| N-persistence | done — `CharacterRecord`, `ItemRecord`, `MobileRecord`, `DecorationRecord`, `PetData`, `Inventory`, `QuestRecord` serials typed via `serde(with = ...)`, on-disk shape unchanged, `SCHEMA_VERSION` still 23; `MobileRecord::spawned_by` stays `Option<u32>` (a spawner-list index, not a serial) | |
+| N-persistence | done — `CharacterRecord`, `ItemRecord`, `MobileRecord`, `DecorationRecord`, `PetData`, `Inventory`, `QuestRecord` serials typed via `serde(with = ...)`, on-disk shape unchanged, `SCHEMA_VERSION` still 23; `MobileRecord::spawned_by` stays `Option<u32>` (a spawner-list index, not a serial) | `84a59b1` |
+| N-gate | done — the coverage check now walks enum bodies (15 fields found, all allowlisted in existing classes), reports and asserts what it examined, and has a fixture; a function's parameters stay out of reach and are documented as such | |

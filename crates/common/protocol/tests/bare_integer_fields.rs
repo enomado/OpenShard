@@ -22,6 +22,22 @@
 //! names a primitive integer anywhere in it, not on the field being one on
 //! its own; that is what catches `GumpResponse::text_entries: Vec<(u16,
 //! String)>` below without a second rule.
+//!
+//! A third shape is what N8's own backlog left open and this file now closes:
+//! **an enum variant's fields carry no `pub`**, so the struct scan walked past
+//! every one of them. `DecodeError::UnknownValue { value: u32 }` and
+//! `Text::Cliloc(u32)` are the same bare integer a struct field would be, and
+//! the sweep that typed `Command`'s twenty-seven serials found them by reading,
+//! not by being told. The enum walk below is a second, separate pass with its
+//! own bracket state machine, because the two shapes have nothing in common
+//! textually: one is recognised by `pub`, the other by where it sits.
+//!
+//! What is still out of reach: **a function's parameters**. `fn encode(serial:
+//! u32)` is a bare integer in the same sense and no field scan can see it —
+//! that one wants `syn`, and the argument against the dependency has not
+//! changed. The scan therefore reports what it examined (files, enums,
+//! variants) and asserts those counts are non-trivial, so "no violations" can
+//! never again mean "nothing was read".
 
 use std::collections::HashMap;
 use std::fs;
@@ -195,6 +211,96 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "InvalidContextMenuIndex: same — the rejected value, carried for Display",
     ),
     ("wire.rs", "slot", "InvalidCharacterSlot: same"),
+    // -- enum variants, first scanned here; keyed `Variant.field` -------------
+    //
+    // Every one of the fifteen the enum walk turned up falls in a class the
+    // sweep had already argued out on a struct field. That is the finding, and
+    // it is worth writing down: the blind spot hid no untyped wire value, it
+    // hid the *evidence* that nothing was hiding.
+    //
+    // Class 1 — the leftover arm of a `Raw*::interpret`. The byte is carried
+    // through precisely because this engine has no name for it; wrapping it in
+    // a type would assert a meaning the arm exists to deny.
+    (
+        "speech.rs",
+        "Other.0",
+        "TalkMode: interpret's leftover arm, the unnamed mode as the byte it was",
+    ),
+    (
+        "encoded.rs",
+        "Other.0",
+        "EncodedSubcommand: the same leftover arm, a word this engine does not name",
+    ),
+    (
+        "extended.rs",
+        "Unknown.0",
+        "ExtendedRequest: the same, a 0xBF subcommand with no handler",
+    ),
+    (
+        "login.rs",
+        "Unknown.0",
+        "ClientLoginPacket: the same, an id the login conversation does not act on",
+    ),
+    (
+        "world.rs",
+        "Predefined.0",
+        "Profession: which template a non-zero id names is Community Pack content, not this crate's",
+    ),
+    (
+        "client_packet.rs",
+        "Unknown.id",
+        "ClientPacket: an id with no handler, logged as a fact — the leftover arm again",
+    ),
+    (
+        "client_packet.rs",
+        "Unknown.body",
+        "ClientPacket: the undecoded packet's own bytes; Vec<u8> is a buffer, not a number, and \
+         the scan's deliberately broad type match cannot tell the two apart",
+    ),
+    // Class 2 — a diagnostic field on a typed error, the `WrongPacket::expected`
+    // argument: the value is carried for `Display` after it was already
+    // rejected, and is never read as wire data again.
+    (
+        "error.rs",
+        "UnknownValue.value",
+        "DecodeError: the rejected value, carried for Display — WrongPacket::expected's argument",
+    ),
+    (
+        "error.rs",
+        "Unsupported.packet",
+        "DecodeError: the id whose form is not decoded, for the log line",
+    ),
+    (
+        "login.rs",
+        "PastEnd.index",
+        "InvalidShardIndex: the out-of-range index, carried for Display",
+    ),
+    (
+        "packet.rs",
+        "BadLength.id",
+        "FrameError: same — the id that framed wrong, for the log line",
+    ),
+    (
+        "packet.rs",
+        "UnknownPacket.0",
+        "FrameError: same — the id this server cannot size",
+    ),
+    // Class 3 — quantities, on the MobileStatus argument.
+    (
+        "packet.rs",
+        "Fixed.0",
+        "PacketLength: a byte count, arithmetic on it is the point",
+    ),
+    (
+        "trade.rs",
+        "UpdateGold.gold",
+        "SecureTradeAction: gold, the MobileStatus::gold argument; decoded and ignored besides",
+    ),
+    (
+        "trade.rs",
+        "UpdateGold.platinum",
+        "SecureTradeAction: same currency, same argument",
+    ),
 ];
 
 /// Whether a field's type expression names a primitive wire integer anywhere
@@ -255,6 +361,136 @@ fn scan_file(text: &str) -> Vec<(String, String)> {
     hits
 }
 
+/// What one file's enum walk saw. The counts are not decoration: a scan that
+/// reports zero violations having examined zero variants is the failure mode
+/// this whole file exists to prevent, so the caller asserts on them.
+struct EnumScan {
+    /// Bare-integer variant fields, as `(Variant.field, type text)` for a
+    /// struct-like variant and `(Variant.0, type text)` for a tuple one. The
+    /// variant name is part of the key because a variant's field carries no
+    /// `pub` and would otherwise be indistinguishable from a struct's.
+    hits: Vec<(String, String)>,
+    /// How many enum bodies the walk entered.
+    enums: usize,
+    /// How many variants it read inside them.
+    variants: usize,
+}
+
+/// Split a tuple variant's parenthesised body on its top-level commas —
+/// `Vec<(u16, String)>, u32` is two elements, not three. Angle brackets and
+/// nested parentheses both nest; a `->` in a fn-pointer type would confuse the
+/// angle-bracket counter, and no variant in this crate has one.
+fn split_top_level(inner: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    for c in inner.chars() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_owned());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    let last = current.trim();
+    if !last.is_empty() {
+        parts.push(last.to_owned());
+    }
+    parts
+}
+
+/// Every bare-integer field declared inside an `enum` body in one source file.
+///
+/// The walk is a brace counter that runs only between `enum Name {` and the
+/// brace that closes it, so the string literals and `impl` blocks elsewhere in
+/// the file — which a whole-file brace counter would trip over — are never
+/// counted. Doc comments are skipped before counting, which is what keeps
+/// `gump.rs`'s `{ resizepic … }` layout examples out of the depth.
+///
+/// At depth 1 a line is a variant: `Name {` opens a struct-like one, `Name(..)`
+/// is a tuple one read on the spot, anything else is a unit variant or a
+/// discriminant. At depth 2 a line is a struct-like variant's field, which
+/// looks exactly like a struct field with the `pub` removed.
+///
+/// Panics if an enum body does not close before the end of the file: that means
+/// the counter lost the depth, and a silently truncated scan is the one outcome
+/// worse than no scan.
+fn scan_enums(file_name: &str, text: &str) -> EnumScan {
+    let mut scan = EnumScan {
+        hits: Vec::new(),
+        enums: 0,
+        variants: 0,
+    };
+    let mut depth = 0i32;
+    let mut variant: Option<String> = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with("#[") {
+            continue;
+        }
+
+        if depth == 0 {
+            // `pub enum Foo {`, `enum Foo {`, `pub enum Foo<T> {` — the body
+            // always opens on the same line under this repo's rustfmt.
+            let head = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+            if head.starts_with("enum ") && trimmed.ends_with('{') {
+                scan.enums += 1;
+                depth = 1;
+            }
+            continue;
+        }
+
+        if depth == 1 && !trimmed.starts_with('}') {
+            if let Some(open) = trimmed.find('(') {
+                // A tuple variant, read whole: `Cliloc(u32),`.
+                let name = trimmed[..open].trim();
+                if let Some(close) = trimmed.rfind(')') {
+                    scan.variants += 1;
+                    for (index, element) in split_top_level(&trimmed[open + 1..close]).iter().enumerate() {
+                        if names_a_primitive_int(element) {
+                            scan.hits.push((format!("{name}.{index}"), element.clone()));
+                        }
+                    }
+                }
+            } else if trimmed.ends_with('{') {
+                scan.variants += 1;
+                variant = Some(trimmed.trim_end_matches('{').trim().to_owned());
+            } else if !trimmed.is_empty() {
+                scan.variants += 1;
+            }
+        } else if depth == 2 {
+            if let (Some(name), Some(colon)) = (variant.as_deref(), trimmed.find(':')) {
+                let field = &trimmed[..colon];
+                if !field.is_empty() && field.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    let ty = trimmed[colon + 1..].trim().trim_end_matches(',').trim();
+                    if names_a_primitive_int(ty) {
+                        scan.hits.push((format!("{name}.{field}"), ty.to_owned()));
+                    }
+                }
+            }
+        }
+
+        depth += i32::try_from(trimmed.matches('{').count()).unwrap()
+            - i32::try_from(trimmed.matches('}').count()).unwrap();
+        if depth <= 1 {
+            variant = None;
+        }
+    }
+
+    assert_eq!(
+        depth, 0,
+        "the enum walk left {file_name} at brace depth {depth} — it lost track of a body, and \
+         everything after that point went unscanned",
+    );
+    scan
+}
+
 /// `a` minus `b` as multisets, keyed by `(file, field)` — what is in `a` more
 /// times than in `b`. Called both ways: found-minus-allowed is a violation to
 /// fix, allowed-minus-found is a stale entry the field's own fix should have
@@ -277,6 +513,62 @@ fn multiset_extra(a: &[(String, String)], b: &[(String, String)]) -> Vec<(String
     extra
 }
 
+/// The enum walk finds a planted field, and is not fooled by the shapes that
+/// sit next to one.
+///
+/// A detector is only worth its green when it has been shown to go red, and
+/// this one runs against source text it does not own — the fixture is the only
+/// place its behaviour can be pinned. Every line below is a shape that appears
+/// in `src/`: a unit variant, a discriminant, a doc comment with braces in it
+/// (`gump.rs`'s layout examples), a nested type in a tuple, and an `impl` after
+/// the body, which must not be counted as part of it.
+#[test]
+fn the_enum_walk_sees_what_it_claims_to_see() {
+    let source = r#"
+/// A mode, with a layout example: `{ resizepic 0 0 }{ button 5 5 }`.
+pub enum Fixture {
+    /// A unit variant.
+    Quiet,
+    /// A discriminant.
+    Loud = 0x09,
+    /// A tuple variant with one bare byte and one type.
+    Raw(u8, Serial),
+    /// A tuple variant that is fully typed.
+    Typed(Serial),
+    /// A struct variant, half typed.
+    Both {
+        /// Bare.
+        count: u16,
+        /// Not bare.
+        who: Serial,
+        /// Bare, inside a collection.
+        pairs: Vec<(u32, String)>,
+    },
+}
+
+impl Fixture {
+    /// A method whose parameter is bare — out of reach, and it must not be
+    /// mistaken for a variant field.
+    pub fn of(id: u16) -> Self {
+        Self::Raw(id as u8, Serial::new(1))
+    }
+}
+"#;
+
+    let scan = scan_enums("fixture.rs", source);
+    assert_eq!(scan.enums, 1, "one enum body");
+    assert_eq!(scan.variants, 5, "five variants");
+
+    let found: Vec<&str> = scan.hits.iter().map(|(field, _ty)| field.as_str()).collect();
+    assert_eq!(
+        found,
+        vec!["Raw.0", "Both.count", "Both.pairs"],
+        "the walk must find the bare tuple element and both bare struct-variant \
+         fields, and must skip the typed ones, the unit variants, the doc \
+         comment's braces and the method parameter",
+    );
+}
+
 #[test]
 fn every_bare_integer_field_is_wrapped_or_allowlisted() {
     let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -294,13 +586,31 @@ fn every_bare_integer_field_is_wrapped_or_allowlisted() {
     );
 
     let mut found: Vec<(String, String)> = Vec::new();
+    let mut enums = 0;
+    let mut variants = 0;
     for path in &entries {
         let file_name = path.file_name().unwrap().to_str().unwrap().to_owned();
         let text = fs::read_to_string(path).expect("protocol source file must be readable");
         for (field, _ty) in scan_file(&text) {
             found.push((file_name.clone(), field));
         }
+        let scan = scan_enums(&file_name, &text);
+        enums += scan.enums;
+        variants += scan.variants;
+        for (field, _ty) in scan.hits {
+            found.push((file_name.clone(), field));
+        }
     }
+
+    // What the scan examined, asserted rather than assumed. These are floors a
+    // long way below the real numbers, so they do not need editing when a
+    // packet lands; they fire when the walk stops walking — a changed brace
+    // convention, a moved directory, a file the reader silently skipped.
+    assert!(
+        enums > 25 && variants > 100,
+        "the enum walk examined {enums} enums and {variants} variants — far too few for this \
+         crate, so the walk is broken and any \"no violations\" it reports is meaningless",
+    );
 
     let allowed: Vec<(String, String)> = ALLOWLIST
         .iter()
