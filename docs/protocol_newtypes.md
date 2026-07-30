@@ -709,7 +709,8 @@ rather than two.
   reach the persistence record and both stores' SQL, `Graphic` reaches most of
   the server. Worth doing as its own stage after N8, with the cliloc and
   `SoundId` table sweeps N3 left — they share the blocker, which is that the
-  numbers should arrive from config already typed.
+  numbers should arrive from config already typed. **Done** — N-tables and
+  N-components; the estimate of `Graphic`'s reach was the accurate part.
 - **`GumpPoint` for N5.** Three modules now carry an `x`/`y` pair that is a
   *gump* coordinate rather than a world one: `containers::ContainedItem`,
   `gump::GumpDisplay`, and `Command::ShowGump`. N5 owns `gump.rs` and should
@@ -721,6 +722,8 @@ rather than two.
   component an item is *drawn* by, the other the id on the wire — but three
   spellings of the same conversion across the server is a smell. Renaming the
   component (`Drawn`? `Art`?) is a `state` question, not a protocol one.
+  **Done** — `Drawn`, in N-components, and it turned out to be the move that
+  made the rest of that stage readable rather than a tidy-up after it.
 
 ## Amendments forced by N5 (`vendor.rs`)
 
@@ -1174,6 +1177,80 @@ fields — and mostly was. The counter itself is what found the exceptions.
    repeating the four-class table in two documents is the kind of copy this
    repository's own `CLAUDE.md` warns goes stale silently.
 
+## Amendments forced by N-components (the component sweep)
+
+The stage N4's two backlogs recorded twice and deferred twice. It is the first
+one whose subject is not a protocol module at all — the components sit in
+`openshard_state`, above `protocol` — and what it cost was not the components
+but everything they are read *against*.
+
+1. **The item graphic component is `Drawn`, and the rename was the enabling
+   move rather than a tidy-up.** While both it and `wire::Graphic` were called
+   `Graphic`, one conversion had three spellings across the server: a full
+   `openshard_protocol::wire::Graphic(..)` path in a dozen files, an
+   `as WireGraphic` import in four crates, and a comment in `components.rs` and
+   `world::tick::command` explaining the collision to the next reader. All of
+   them are gone, and the component is now named for what it does to an item
+   rather than for what it is made of — which is also how its neighbours read
+   (`Contained`, `Equipped`, `Stackable`, `Hidden`).
+2. **`Contained`'s `x`/`y` became the `GumpPoint` N4 amendment 6 parked.** N5
+   made the type; this stage was the one allowed to use it. The payoff is at
+   `items::contained_record`, which built the packet's `GumpPoint` from two
+   loose halves and now copies one field — the conversion that could disagree
+   about which space the pair was in no longer exists.
+3. **Typing a component types the table it is keyed by, and that is the stage.**
+   `Drawn.id` reaches `armor_data`, `weapon_data`, `instrument_data`,
+   `tool_data`, `craft_tool`, `mount_item_for`/`mount_body_for`, `tamable`,
+   `creature_name`, `creature_base_sound`, `body_type`, `body_opens_doors`,
+   `scroll_spell` and the five `Terrain` tiledata methods. Each was a
+   `fn(u16) -> ..` over a table of art ids; each takes a `Graphic` now. The
+   components were a day; the tables were the rest of it.
+4. **A terse table keeps its bare literals, and the wrap goes in the row
+   helper.** `ore`, `wood`, `i`, `a`, `t` and the `TOOLS` tuple list stay aligned
+   blocks that read as data — this is N3 amendment 7's `instrument.rs` decision
+   applied to six more tables. The variant for a *lookup* rather than a table is
+   to open the argument once at the top (`let graphic = graphic.0;` in
+   `craft_tool`, `match body.0` in `creature_name`), so the arms below stay the
+   art table they are.
+5. **A base with arithmetic on it stays an integer; the result is named.** A
+   creature's attack and death sounds are `BaseSoundID + 2` and `+ 4`, and
+   `doorgen`'s facing offsets are `DARK_WOOD_BASE + 2 * index`. The base is
+   opened for the arithmetic and the answer wrapped once on the way out — the
+   same split N-tables settled on for Arms Lore and Anatomy clilocs, for the
+   same reason: a newtype names an identity, not a quantity still being counted.
+6. **`MapTerrain`'s five `Terrain` methods are a seam, and they are the only new
+   `.0` in a lib.** `tiledata.mul` is indexed by a bare `u16`, and the ids in a
+   map's static blocks never went through a packet, so the newtype stops at the
+   client-file boundary rather than inside `openshard_uofiles`. The other `.0`s
+   this stage added are the ones that were already supposed to exist: the
+   persistence record and both stores' SQL, the script bridge's JSON numbers in
+   `server/scripting.rs`, and the gump layout language (N5 amendment 9).
+7. **The generator was changed with the tables it generates.**
+   `tools/gen-craft-tables/generate.cjs` emits `Graphic(..)`/`Hue(..)` and the
+   import line, so regenerating `crafting/src/defs/*.rs` — 2,323 typed literals —
+   does not silently walk the sweep back. A one-shot generator whose output has
+   been hand-edited since is exactly the thing that reverts a sweep a year later.
+
+### Backlog from this stage
+
+- **`PropertyList::add`/`add_args` still take a bare `u32` cliloc.** Every caller
+  above them now holds a `ClilocId`, so the tooltip path is the one place a
+  message id is opened for no reason. Small, and it belongs with whatever next
+  touches `properties.rs`.
+- **`items::drop_into_container` takes a `Point` that is holding gump
+  coordinates.** The `0x08` reuses the position field for both meanings, so the
+  parameter is a world `Point` and the function converts it to a `GumpPoint` at
+  the one place the two part company. The honest fix is upstream, in how the
+  packet is interpreted — a drop onto the ground and a drop into a container are
+  not the same request — and it is a `containers.rs` question, not this stage's.
+- **`crafting::system::Text::Cliloc(u32)` is still bare**, for N-tables' reason:
+  it is ServUO's `TextDefinition` and doubles as gump-label text, so it is a
+  wider structure than a message id.
+- **`Command`'s script-facing serials are still bare `u32`.** `ShowGump::serial`
+  and roughly a dozen others take a raw serial where the tick then calls
+  `Serial::new`. The bridge in `server/scripting.rs` is the seam that should
+  make them, exactly as it now makes every `Graphic` and `Hue`.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -1211,6 +1288,16 @@ request (`main` is protected).
 - **N8 — the sweep.** The counting check from N10, the allowlist with reasons,
   and a pass over `docs/style.md` if the four classes deserve a line in the
   canon.
+- **N-tables — the cliloc and `SoundId` content tables.** Not a protocol module:
+  the four `openshard_state::WorldState` doors every gameplay crate says a line
+  or plays a sound through. Blocked until `protocol` was allowed a `serde`
+  dependency, which is what lets a message id or a sound arrive from a content
+  table already typed instead of being wrapped at each of ~200 call sites.
+- **N-components — the components under the packets.** `openshard_state`'s
+  `Drawn` (the item graphic component, renamed out of the way of `wire::Graphic`),
+  `Container.gump` and `Contained.{position, grid}` — the bare integers N4's
+  backlog recorded and deferred. Typing them forces the graphic- and hue-keyed
+  content tables they are read against, which is most of the stage's size.
 
 Stages N1–N7 are agent work. They are ordered by module size rather than
 dependency: `wire.rs`'s shared types all land in the pilot, so nothing after it
@@ -1262,3 +1349,5 @@ resolved silently in one module is a pattern the next module contradicts.
 | N6 | done — `login.rs` 8 → 2 allowlisted, `seed.rs` 1 → 0, `version.rs` 4 → 4 allowlisted | |
 | N7 | done — `feedback.rs` 10 → 10 allowlisted, `skill.rs` 6 → 4 allowlisted, `combat.rs` 2 → 0, `properties.rs` 2 → 1 allowlisted, `spellbook.rs` 3 → 1 allowlisted, `encoded.rs` 2 → 0, `casting.rs` 1 → 0 | |
 | N8 | done — `login.rs`'s `StartLocation::position` tuple became `Point`; the repo-level coverage check landed with a full allowlist; `docs/style.md` gained a short section | |
+| N-tables | done — the cliloc and `SoundId` content tables: `protocol` took `serde`, and `State`'s four doors take the types | `a78ee4c`, `4d9561d` |
+| N-components | done — `Drawn`, `Container.gump`, `Contained.{position, grid}`, and the graphic-keyed tables under them | `6c01d6e` |
