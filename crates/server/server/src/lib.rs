@@ -62,7 +62,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::trade::SecureTradeAction;
 use openshard_protocol::wire::{ClilocId, Graphic, Hue};
-use openshard_protocol::world::{CreateCharacter, Facet, Point};
+use openshard_protocol::world::{CharacterPlay, CreateCharacter, Facet, Point};
 use openshard_protocol::{access::AccessLevel, huffman};
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
@@ -84,7 +84,7 @@ mod session;
 mod testing;
 
 use boot::{load_config, load_world, open_store};
-use dispatch::{create_character, delete_character, dispatch_world_packet, start_cities};
+use dispatch::{create_character, delete_character, dispatch_world_packet, play_character, start_cities};
 use roster::Roster;
 use scripting::Scripts;
 use session::{PhaseSync, Session, Sessions};

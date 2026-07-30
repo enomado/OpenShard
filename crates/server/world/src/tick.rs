@@ -425,6 +425,17 @@ impl World {
         self.inbox.push(command);
     }
 
+    /// How many commands are waiting for the next tick.
+    ///
+    /// The only way anything outside can see that a packet became work. A test
+    /// that a gate *refused* a packet has nothing else to look at: the whole
+    /// assertion is that nothing happened, and every other observation of the
+    /// world — the outbox, the players, the events — is downstream of a tick that
+    /// would have had nothing to apply either way.
+    pub fn queued(&self) -> usize {
+        self.inbox.len()
+    }
+
     /// Take the packets the last tick produced.
     pub fn drain_outbound(&mut self) -> std::vec::Drain<'_, Outbound> {
         self.state.outbox.drain(..)

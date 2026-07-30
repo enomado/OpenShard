@@ -36,6 +36,9 @@ Five things follow from the split, and each is a reason on its own:
    can say.
 2. **`in_world()` is a second copy of `players.contains_key`.** Thirty arms of
    `dispatch_world_packet` open by consulting the copy rather than the world.
+   *(S3: it is asked once now. It stays a projection — D4 says why it must be —
+   but there is one place that reads it, and one place a new packet can forget
+   to.)*
 3. **The world cannot answer a connection that has no entity.**
    `WorldState::send_packet` resolves the client version through
    `players → Client`, so a connection on the character screen is unreachable
@@ -168,10 +171,24 @@ follows.
       `a_character_the_world_let_go_of_is_no_longer_being_played` in
       `server/src/session.rs`.
 
-- [ ] **S3. One gate instead of thirty.** `dispatch_world_packet` matches the
-      phase once on the way in and returns `Option<Command>` instead of taking
-      `&mut World` — the rule `roadmap.md` §2 already asks for on the character
-      screen, applied to the whole dispatcher.
+- [x] **S3. One gate instead of thirty.** Done. `dispatch_world_packet` is
+      `fn(ClientPacket, ConnectionId) -> Option<Command>`: it takes neither the
+      session nor the world, so an arm cannot reach past the packet it was
+      handed, and `None` is a packet the world has nothing to do about. The
+      phase is matched once, in `handle_world_packet`, which queues what comes
+      back — the rule `roadmap.md` §2 asks for on the character screen, applied
+      to the whole dispatcher.
+      `0x5D` moved out to `dispatch::play_character` and is routed *before* the
+      gate: it is the one packet a connection outside the world may send, and
+      the only one that needed the roster and the account's access. That is what
+      leaves the gate a single `if` and the dispatcher total.
+      Guarded by `a_world_packet_from_outside_the_world_becomes_no_command`,
+      `the_same_packet_becomes_a_command_once_the_connection_is_in` and
+      `the_character_screen_packet_is_the_one_the_gate_does_not_stop` in
+      `server/src/shard.rs`. They assert on `World::queued`, added for them: a
+      refused packet's whole story is that no work was created, and every other
+      observation of the world is downstream of a tick that would have had
+      nothing to apply either way.
 
 - [ ] **S4. The roster moves into the world.** Already planned — see
       [`roadmap.md` §2](roadmap.md). Collapses `Roster`, `departed` and
@@ -193,7 +210,7 @@ follows.
       `pending_targets`, `last_status`, `last_light`, `last_music`. Teardown
       becomes one `remove`, and forgetting a field stops being possible.
 
-## Backlog, found while doing S1 and S2
+## Backlog, found while doing S1, S2 and S3
 
 None is a blocker; each is written down where the next step through this area
 will read it.
@@ -229,6 +246,24 @@ will read it.
   Harmless today — the client sends nothing in that window — but it is the state
   the first draft called `LoggingOut`, and it is unnamed.
 
+- **`ClientPacket` mixes the character screen in with the world.** S3 left one
+  `unreachable!` behind: `0x5D` is a `ClientPacket` variant that
+  `dispatch_world_packet` can never legitimately see, because the caller matches
+  it out first. The invariant is real but it lives in a `match` arm in another
+  file, which is exactly the shape this whole plan is trying to delete. The fix
+  is at the decode seam — `parse_packet` already splits `Packet::Login` from
+  `Packet::World`, and `0x5D` belongs on the screen side of that split with
+  `0x00`/`0xF8` and `0x83`, at which point the arm cannot be written at all. Not
+  done here because it moves a public protocol enum for what is today a
+  one-line comment, and S5 rewrites this seam anyway.
+- **The gate no longer says which packet it dropped.** Thirty arms could each
+  name their own; one gate has only the connection. Naming the packet would mean
+  either `ClientPacket`'s `Debug` — which carries bodies, so a `0x03` would put
+  the player's typing in the log — or a per-variant name table, a second list to
+  keep in step with the enum. Worth revisiting if a real client ever hits this
+  path, because today it means a misbehaving client is one indistinguishable
+  line per packet.
+
 ## To verify with a real client
 
 - **S5 delays `0xA9` by up to one tick** (50 ms). It answers `0x91`
@@ -242,6 +277,6 @@ will read it.
 
 ## Status
 
-S1 and S2 landed; S3 is next. Findings are recorded in
+S1, S2 and S3 landed; S4 is next. Findings are recorded in
 [`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
 that must agree".

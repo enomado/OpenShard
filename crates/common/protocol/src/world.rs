@@ -75,8 +75,7 @@ impl fmt::Display for Point {
 pub struct CharacterPlay {
     /// The character's name, echoed from the 0xA9 list, not yet checked
     /// against the account's actual list — see [`RawCharacterName`]'s module
-    /// docs; the lookup at the seam (`dispatch::dispatch_world_packet`) is the
-    /// check.
+    /// docs; the lookup at the seam (`dispatch::play_character`) is the check.
     pub name: RawCharacterName,
     /// Which slot, zero-based, into the list the server sent. Class D: the
     /// seam looks the character up by name, not by slot. See [`RawCharacterSlot`].

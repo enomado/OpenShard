@@ -555,10 +555,21 @@ fn handle_login_packet(
     }
 }
 
-/// Route a decoded world packet to the dispatcher, first looking up the
-/// account's authority where the store is in reach — `dispatch_world_packet`
-/// only sees the world, so the GM command gate needs it passed in. A player
-/// by default; only the store grants more.
+/// Route a decoded world packet: pick the character screen's `0x5D` out of it,
+/// then gate everything else on the connection's phase and queue what the
+/// dispatcher makes of it.
+///
+/// # The one gate
+///
+/// This `if` is the whole of what thirty arms of `dispatch_world_packet` used to
+/// repeat — see that function's doc, and `docs/connection_state.md` S3. It is
+/// here rather than there because this is the last place that still holds the
+/// session: past it, a packet is only a packet.
+///
+/// The dropped packet is not named in the log. `ClientPacket`'s `Debug` carries
+/// bodies — a `0x03` would put whatever the player typed in the log — and a
+/// per-variant name table would be a second list to keep in step with the enum.
+/// The connection is what a reader needs; which packet it was, the client knows.
 fn handle_world_packet(
     session: &mut Session,
     login: &LoginServer<DevAccounts>,
@@ -567,11 +578,28 @@ fn handle_world_packet(
     packet: ClientPacket,
     id: ConnectionId,
 ) -> bool {
-    let access = session
-        .login
-        .account()
-        .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
-    dispatch_world_packet(session, world, packet, id, roster, access)
+    // `0x5D` is the one packet a connection outside the world may send, and it
+    // is what puts it inside. It also needs the account's authority, looked up
+    // here because this is where the store is in reach.
+    let packet = match packet {
+        ClientPacket::CharacterPlay(play) => {
+            let access = session
+                .login
+                .account()
+                .map_or(AccessLevel::Player, |a| login.accounts.access_level(a));
+            return play_character(session, world, roster, play, id, access);
+        }
+        packet => packet,
+    };
+
+    if !session.in_world() {
+        debug!(%id, "a world packet from a connection that is not in the world");
+        return true;
+    }
+    if let Some(command) = dispatch_world_packet(packet, id) {
+        world.queue(command);
+    }
+    true
 }
 
 pub(crate) fn world_handle_network(
@@ -683,7 +711,13 @@ pub(crate) fn world_handle_network(
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::direction::{Direction, Facing};
+    use openshard_protocol::identity::RawCharacterName;
+    use openshard_protocol::wire::{RawCharacterSlot, RawClientIp};
+    use openshard_protocol::world::{RawFastwalkKey, RawStepSequence, WalkRequest};
+
     use super::*;
+    use crate::testing::{admin, at_character_screen, login_server, lord_british};
 
     fn client(address: &str) -> SocketAddr {
         address.parse().expect("a client address")
@@ -723,6 +757,92 @@ mod tests {
                 "{address} should be able to reach an advertised LAN address"
             );
         }
+    }
+
+    /// One step north — any in-world packet would do; this is the smallest.
+    fn a_step() -> ClientPacket {
+        ClientPacket::Walk(WalkRequest {
+            facing: Facing::walking(Direction::North),
+            sequence: RawStepSequence(0),
+            fastwalk_key: RawFastwalkKey(0),
+        })
+    }
+
+    /// The `0x5D` a client sends when it picks [`lord_british`] off the list.
+    fn picking_lord_british() -> ClientPacket {
+        ClientPacket::CharacterPlay(CharacterPlay {
+            name: RawCharacterName(lord_british().0),
+            slot: RawCharacterSlot(0),
+            client_ip: RawClientIp(0),
+        })
+    }
+
+    #[test]
+    fn a_world_packet_from_outside_the_world_becomes_no_command() {
+        // The gate, from the side it refuses. A connection sitting on the
+        // character screen has no entity, so a `0x02` from it would be queued
+        // into a tick that drops it on a `players` miss — work created out of a
+        // packet nobody can act on. The queue length is the assertion because
+        // "nothing happened" has nothing else to look at; see `World::queued`.
+        let mut login = login_server();
+        let mut world = World::new((1363, 1600));
+        let roster = Roster::new();
+        let id = ConnectionId::from_raw(1);
+        let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
+
+        assert!(
+            handle_world_packet(&mut session, &login, &mut world, &roster, a_step(), id),
+            "a packet that is merely early is not a reason to close"
+        );
+        assert_eq!(world.queued(), 0, "and it did not become work");
+    }
+
+    #[test]
+    fn the_same_packet_becomes_a_command_once_the_connection_is_in() {
+        // The other direction, so the test above cannot pass by a gate that
+        // refuses everything. Nothing changes but the phase — the same session,
+        // the same packet.
+        let mut login = login_server();
+        let mut world = World::new((1363, 1600));
+        let roster = Roster::new();
+        let id = ConnectionId::from_raw(1);
+        let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
+        session.enter_world(admin(), lord_british());
+
+        assert!(handle_world_packet(
+            &mut session,
+            &login,
+            &mut world,
+            &roster,
+            a_step(),
+            id
+        ));
+        assert_eq!(world.queued(), 1, "the step is queued for the next tick");
+    }
+
+    #[test]
+    fn the_character_screen_packet_is_the_one_the_gate_does_not_stop() {
+        // `0x5D` arrives from a connection that is by definition outside the
+        // world — it is what puts it in — so it is routed before the gate. Route
+        // it after and a shard accepts no logins at all, silently: the client
+        // waits on "logging into shard" and this end says nothing.
+        let mut login = login_server();
+        let mut world = World::new((1363, 1600));
+        let roster = Roster::new();
+        let id = ConnectionId::from_raw(1);
+        let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
+        assert!(!session.in_world(), "the fixture is on the character screen");
+
+        assert!(handle_world_packet(
+            &mut session,
+            &login,
+            &mut world,
+            &roster,
+            picking_lord_british(),
+            id
+        ));
+        assert_eq!(world.queued(), 1, "the entry is queued");
+        assert!(session.in_world(), "and the gate is open for what follows");
     }
 
     #[test]

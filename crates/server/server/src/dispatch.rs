@@ -1,397 +1,292 @@
 use super::*;
 
-/// Turn a packet the world cares about into a command. `false` closes.
+/// Turn a packet the world cares about into the command it means.
 ///
-/// Nothing here answers the client. Every reply comes out of a tick, which is
-/// what keeps the two ends in one order.
+/// Nothing here answers the client, and nothing here reaches the world. Every
+/// arm is a translation of one decoded packet into at most one [`Command`], and
+/// the caller queues what comes back — so every reply still comes out of a tick,
+/// which is what keeps the two ends in one order. `None` is a packet the world
+/// has nothing to do about: a subcommand this shard does not act on, or a body
+/// that names no object.
+///
+/// # The phase is matched once, and not here
+///
+/// Thirty of these arms used to open with `if !session.in_world()`, which is one
+/// question asked thirty times and answered thirty ways — some arms logged, most
+/// did not, and the next arm written was one forgotten line away from letting a
+/// connection with no character queue work into the tick. `handle_world_packet`
+/// matches the phase once on the way in, so a packet that reaches this function
+/// is already one its connection may send, and there is no per-arm decision left
+/// to forget. See `docs/connection_state.md`, S3.
+///
+/// That is also why this takes neither the session nor the world: with the gate
+/// gone the only thing left in the arms is the packet, so it cannot reach past
+/// the one it was handed.
 ///
 /// `packet` is already decoded — `parse_packet` in `shard.rs` does that once,
 /// before routing here, so a malformed packet never reaches this function at
 /// all; it closes the connection at the routing step instead.
-pub(crate) fn dispatch_world_packet(
-    session: &mut Session,
-    world: &mut World,
-    packet: ClientPacket,
-    id: ConnectionId,
-    roster: &Roster,
-    access: AccessLevel,
-) -> bool {
+pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> Option<Command> {
     match packet {
-        ClientPacket::CharacterPlay(play) => {
-            // Same guard as `create_character`/`delete_character`: no game login
-            // behind this connection means no account to enter with, and a
-            // default would enter the character on an account that never
-            // authenticated it.
-            let Some(account) = session.login.account().cloned() else {
-                warn!(%id, "character-play before a game login");
-                return false;
-            };
-            let name = CharacterName(play.name.0);
-            // A stored character enters on its saved serial, spot and look; one
-            // the roster has never heard of — a config-only character on a fresh
-            // shard, or one created this run and not yet saved — enters fresh at
-            // the start. Unpacking the row is `StoredCharacter::from_record`'s
-            // job, not this one's.
-            let character = roster
-                .get(&account, &name)
-                .and_then(StoredCharacter::from_record)
-                .map_or_else(|| Character::fresh(Facet(0)), Character::Stored);
-            // The connection's own note of what it is playing, taken as the
-            // `Enter` is queued. It is what tells another connection on this
-            // account that the character is in use — see `Sessions::is_playing`.
-            session.enter_world(account.clone(), name.clone());
-            // Tell the gateway framer this client's version now, before any
-            // in-world packet whose length depends on it (the drop packet). The
-            // game connection never stated its version; this is the auth-key-linked
-            // one the login carried across. Character select is the last quiet
-            // moment before world traffic starts.
-            let _ = session.control.send(session.login.version());
-            world.queue(Command::Enter(Entering {
-                connection: id,
-                version: session.login.version(),
-                account,
-                name,
-                access,
-                character,
-            }));
-            true
+        // Routed before the gate, by `handle_world_packet`: `0x5D` is the
+        // character screen's packet rather than the world's — the one thing a
+        // connection *outside* the world may send — and the only one that needs
+        // the roster and the account this connection authenticated as.
+        ClientPacket::CharacterPlay(_) => {
+            unreachable!("0x5D is routed by handle_world_packet, before the gate")
         }
-        ClientPacket::Walk(request) => {
-            if !session.in_world() {
-                debug!(%id, "0x02 before entering the world");
-                return true;
-            }
-            world.queue(Command::Walk {
-                connection: id,
-                request,
-            });
-            true
-        }
-        ClientPacket::LogoutRequest => {
-            // "Log Out" on the paperdoll. The client tells the server it is
-            // leaving and then waits to be told it may — see `world::LogoutAck`.
-            // Queued like everything else, so the answer comes out of a tick.
-            if session.in_world() {
-                world.queue(Command::LogoutRequest { connection: id });
-            }
-            true
-        }
-        ClientPacket::StatusQuery(query) => {
-            if session.in_world() {
-                match query.kind {
-                    StatusQueryKind::Skills => {
-                        world.queue(Command::RequestSkills { connection: id });
-                    }
-                    StatusQueryKind::Status => {
-                        world.queue(Command::RequestStatus { connection: id });
-                    }
-                }
-            }
-            true
-        }
+        ClientPacket::Walk(request) => Some(Command::Walk {
+            connection: id,
+            request,
+        }),
+        // "Log Out" on the paperdoll. The client tells the server it is leaving
+        // and then waits to be told it may — see `world::LogoutAck`. Queued like
+        // everything else, so the answer comes out of a tick.
+        ClientPacket::LogoutRequest => Some(Command::LogoutRequest { connection: id }),
+        ClientPacket::StatusQuery(query) => Some(match query.kind {
+            StatusQueryKind::Skills => Command::RequestSkills { connection: id },
+            StatusQueryKind::Status => Command::RequestStatus { connection: id },
+        }),
         ClientPacket::Encoded(command) => {
             // The AoS "encoded command": the paperdoll's own buttons, which are
             // not gump replies — the paperdoll is drawn client-side and has no
             // server layout to answer. Without this the Quest button does nothing
             // at all, with nothing anywhere to say why.
-            if !session.in_world() {
-                return true;
-            }
             match command.subcommand.interpret() {
-                EncodedSubcommand::QuestGumpRequest => {
-                    world.queue(Command::QuestLogRequest { connection: id });
-                }
+                EncodedSubcommand::QuestGumpRequest => Some(Command::QuestLogRequest { connection: id }),
                 // Named, not routed: combat has no weapon abilities and `guilds`
                 // is a stub. Naming them means the byte layout is not re-derived
                 // the day either lands.
-                EncodedSubcommand::SetAbility | EncodedSubcommand::GuildGumpRequest => {}
+                EncodedSubcommand::SetAbility | EncodedSubcommand::GuildGumpRequest => None,
                 EncodedSubcommand::Other(other) => {
                     debug!(subcommand = format!("0x{other:02X}"), "unhandled 0xD7");
+                    None
                 }
             }
-            true
         }
-        ClientPacket::GumpResponse(response) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::GumpResponse {
+        ClientPacket::GumpResponse(response) => Some(Command::GumpResponse {
+            connection: id,
+            response,
+        }),
+        ClientPacket::TargetResponse(response) => Some(Command::TargetResponse {
+            connection: id,
+            response,
+        }),
+        ClientPacket::PickUpItem(pickup) => Some(Command::PickUpItem {
+            connection: id,
+            serial: pickup.serial,
+            amount: pickup.amount,
+        }),
+        ClientPacket::DropItem(drop) => Some(Command::DropItem {
+            connection: id,
+            serial: drop.serial,
+            position: drop.position,
+            container: drop.container,
+        }),
+        ClientPacket::SecureTrade(action) => match action {
+            SecureTradeAction::Cancel { container } => Some(Command::TradeCancel {
                 connection: id,
-                response,
-            });
-            true
-        }
-        ClientPacket::TargetResponse(response) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::TargetResponse {
+                container,
+            }),
+            SecureTradeAction::Accept { container, accepted } => Some(Command::TradeAction {
                 connection: id,
-                response,
-            });
-            true
-        }
-        ClientPacket::PickUpItem(pickup) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::PickUpItem {
-                connection: id,
-                serial: pickup.serial,
-                amount: pickup.amount,
-            });
-            true
-        }
-        ClientPacket::DropItem(drop) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::DropItem {
-                connection: id,
-                serial: drop.serial,
-                position: drop.position,
-                container: drop.container,
-            });
-            true
-        }
-        ClientPacket::SecureTrade(action) => {
-            if !session.in_world() {
-                return true;
-            }
-            match action {
-                SecureTradeAction::Cancel { container } => {
-                    world.queue(Command::TradeCancel {
-                        connection: id,
-                        container,
-                    });
-                }
-                SecureTradeAction::Accept { container, accepted } => {
-                    world.queue(Command::TradeAction {
-                        connection: id,
-                        container,
-                        accepted,
-                    });
-                }
-                // Virtual gold and platinum: an account balance this shard does
-                // not keep. Gold is an item, and it trades by being dragged into
-                // the window like anything else.
-                SecureTradeAction::UpdateGold { .. } => {}
-            }
-            true
-        }
-        ClientPacket::DoubleClick(click) => {
-            if !session.in_world() {
-                return true;
-            }
-            // The paperdoll bit comes off here, where the packet is read: it is
-            // framing the client owns, and `interpret` is total, so nothing
-            // downstream has to know which bit it was.
-            world.queue(Command::DoubleClick {
-                connection: id,
-                request: click.interpret(),
-            });
-            true
-        }
-        ClientPacket::Buy(reply) => {
-            // A vendor purchase, answered out of the tick like everything else.
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::Buy {
-                connection: id,
-                vendor: reply.vendor,
-                purchases: reply.purchases,
-            });
-            true
-        }
-        ClientPacket::Sell(reply) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::Sell {
-                connection: id,
-                vendor: reply.vendor,
-                sales: reply.sales,
-            });
-            true
-        }
+                container,
+                accepted,
+            }),
+            // Virtual gold and platinum: an account balance this shard does not
+            // keep. Gold is an item, and it trades by being dragged into the
+            // window like anything else.
+            SecureTradeAction::UpdateGold { .. } => None,
+        },
+        // The paperdoll bit comes off here, where the packet is read: it is
+        // framing the client owns, and `interpret` is total, so nothing
+        // downstream has to know which bit it was.
+        ClientPacket::DoubleClick(click) => Some(Command::DoubleClick {
+            connection: id,
+            request: click.interpret(),
+        }),
+        // A vendor purchase, answered out of the tick like everything else.
+        ClientPacket::Buy(reply) => Some(Command::Buy {
+            connection: id,
+            vendor: reply.vendor,
+            purchases: reply.purchases,
+        }),
+        ClientPacket::Sell(reply) => Some(Command::Sell {
+            connection: id,
+            vendor: reply.vendor,
+            sales: reply.sales,
+        }),
         ClientPacket::Look(look) => {
-            if !session.in_world() {
-                return true;
-            }
             // A `0x09` naming nothing — zero, or `0xFFFF_FFFF` — is a click that
             // hit no object, which is an answer and not a reason to queue work.
-            let Some(serial) = look.serial.validate() else {
-                return true;
-            };
-            world.queue(Command::SingleClick {
+            let serial = look.serial.validate()?;
+            Some(Command::SingleClick {
                 connection: id,
                 serial,
-            });
-            true
+            })
         }
         ClientPacket::PropertyQuery(query) => {
             // The AoS tooltip batch query: a client hovering wants these objects'
             // property lists. Answered out of the tick like every other reply.
-            if !session.in_world() {
-                return true;
-            }
             debug!(%id, count = query.serials.len(), "0xD6 tooltip query");
-            world.queue(Command::QueryProperties {
+            Some(Command::QueryProperties {
                 connection: id,
                 serials: query.serials,
-            });
-            true
+            })
         }
-        ClientPacket::Equip(equip) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::EquipItem {
+        ClientPacket::Equip(equip) => Some(Command::EquipItem {
+            connection: id,
+            item: equip.item,
+            layer: equip.layer,
+            mobile: equip.mobile,
+        }),
+        ClientPacket::WarMode(request) => Some(Command::WarMode {
+            connection: id,
+            war: request.war,
+        }),
+        ClientPacket::Attack(request) => Some(Command::Attack {
+            connection: id,
+            target: request.target,
+        }),
+        ClientPacket::Talk(talk) => Some(Command::Say {
+            connection: id,
+            mode: talk.mode,
+            hue: talk.hue,
+            font: talk.font,
+            text: talk.text,
+        }),
+        // What a modern client actually sends when you type. Same `Say` as the
+        // ASCII 0x03 once the words are out.
+        ClientPacket::UnicodeTalk(talk) => Some(Command::Say {
+            connection: id,
+            mode: talk.mode,
+            hue: talk.hue,
+            font: talk.font,
+            text: talk.text,
+        }),
+        // `0xBF` is a whole family of extended commands; `ExtendedRequest` has
+        // already picked the one subcommand this packet carries.
+        ClientPacket::Extended(request) => match request {
+            // interpret() is total, so it may run right here rather than waiting
+            // for a tick system to have the domain in hand — see
+            // `docs/protocol_newtypes.md`'s N4 containers amendment 2. A wire 0
+            // is never a legitimate spell id and queues nothing.
+            ExtendedRequest::Cast(cast) => cast.spell.interpret().map(|spell| Command::RequestCast {
                 connection: id,
-                item: equip.item,
-                layer: equip.layer,
-                mobile: equip.mobile,
-            });
-            true
-        }
-        ClientPacket::WarMode(request) => {
-            if !session.in_world() {
-                return true;
+                spell,
+            }),
+            ExtendedRequest::ContextMenuRequest(request) => {
+                debug!(%id, serial = request.serial.0, "0xBF context-menu request");
+                Some(Command::ContextMenuRequest {
+                    connection: id,
+                    serial: request.serial,
+                })
             }
-            world.queue(Command::WarMode {
+            ExtendedRequest::ContextMenuSelect(select) => Some(Command::ContextMenuSelect {
                 connection: id,
-                war: request.war,
-            });
-            true
-        }
-        ClientPacket::Attack(request) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::Attack {
-                connection: id,
-                target: request.target,
-            });
-            true
-        }
-        ClientPacket::Talk(talk) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::Say {
-                connection: id,
-                mode: talk.mode,
-                hue: talk.hue,
-                font: talk.font,
-                text: talk.text,
-            });
-            true
-        }
-        ClientPacket::UnicodeTalk(talk) => {
-            // What a modern client actually sends when you type. Same `Say` as the
-            // ASCII 0x03 once the words are out.
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::Say {
-                connection: id,
-                mode: talk.mode,
-                hue: talk.hue,
-                font: talk.font,
-                text: talk.text,
-            });
-            true
-        }
-        ClientPacket::Extended(request) => {
-            // `0xBF` is a whole family of extended commands; `ExtendedRequest`
-            // has already picked the one subcommand this packet carries.
-            if !session.in_world() {
-                return true;
-            }
-            match request {
-                ExtendedRequest::Cast(cast) => {
-                    // interpret() is total, so it may run right here rather than
-                    // waiting for a tick system to have the domain in hand — see
-                    // `docs/protocol_newtypes.md`'s N4 containers amendment 2. A
-                    // wire 0 is never a legitimate spell id and queues nothing.
-                    if let Some(spell) = cast.spell.interpret() {
-                        world.queue(Command::RequestCast {
-                            connection: id,
-                            spell,
-                        });
+                serial: select.serial,
+                index: select.index,
+            }),
+            ExtendedRequest::StatLock(request) => {
+                // The seam is where a client's byte becomes a stat: the status
+                // bar has three arrows, and a packet naming a fourth is dropped
+                // here rather than travelling into the tick to be ignored by a
+                // `_ =>` arm nobody can see from the packet.
+                match request.stat.validate() {
+                    Ok(stat) => Some(Command::SetStatLock {
+                        connection: id,
+                        stat,
+                        lock: StatLock::from_wire(request.lock.interpret()),
+                    }),
+                    Err(invalid) => {
+                        debug!(%id, %invalid, "0xBF 0x1A named no stat");
+                        None
                     }
                 }
-                ExtendedRequest::ContextMenuRequest(request) => {
-                    debug!(%id, serial = request.serial.0, "0xBF context-menu request");
-                    world.queue(Command::ContextMenuRequest {
-                        connection: id,
-                        serial: request.serial,
-                    });
-                }
-                ExtendedRequest::ContextMenuSelect(select) => {
-                    world.queue(Command::ContextMenuSelect {
-                        connection: id,
-                        serial: select.serial,
-                        index: select.index,
-                    });
-                }
-                ExtendedRequest::StatLock(request) => {
-                    // The seam is where a client's byte becomes a stat: the
-                    // status bar has three arrows, and a packet naming a fourth
-                    // is dropped here rather than travelling into the tick to be
-                    // ignored by a `_ =>` arm nobody can see from the packet.
-                    match request.stat.validate() {
-                        Ok(stat) => world.queue(Command::SetStatLock {
-                            connection: id,
-                            stat,
-                            lock: StatLock::from_wire(request.lock.interpret()),
-                        }),
-                        Err(invalid) => debug!(%id, %invalid, "0xBF 0x1A named no stat"),
-                    }
-                }
-                ExtendedRequest::Unknown(subcommand) => {
-                    debug!(%id, subcommand = format!("0x{subcommand:02X}"), "unhandled 0xBF");
-                }
-                // `ExtendedRequest` is `#[non_exhaustive]` for callers outside
-                // this workspace; every variant that exists today is matched
-                // above.
-                _ => unreachable!("every ExtendedRequest variant is matched above"),
             }
-            true
-        }
-        ClientPacket::UseSkill(request) => {
-            if !session.in_world() {
-                return true;
+            ExtendedRequest::Unknown(subcommand) => {
+                debug!(%id, subcommand = format!("0x{subcommand:02X}"), "unhandled 0xBF");
+                None
             }
-            world.queue(Command::UseSkillButton {
-                connection: id,
-                skill: request.skill,
-            });
-            true
-        }
-        ClientPacket::SkillLock(request) => {
-            if !session.in_world() {
-                return true;
-            }
-            world.queue(Command::SetSkillLock {
-                connection: id,
-                skill: request.skill,
-                lock: request.lock,
-            });
-            true
-        }
+            // `ExtendedRequest` is `#[non_exhaustive]` for callers outside this
+            // workspace; every variant that exists today is matched above.
+            _ => unreachable!("every ExtendedRequest variant is matched above"),
+        },
+        ClientPacket::UseSkill(request) => Some(Command::UseSkillButton {
+            connection: id,
+            skill: request.skill,
+        }),
+        ClientPacket::SkillLock(request) => Some(Command::SetSkillLock {
+            connection: id,
+            skill: request.skill,
+            lock: request.lock,
+        }),
         // A `0x12` text command that is not "use skill" reaches here as
         // Unknown, not an error — see `ClientPacket::decode`.
         ClientPacket::Unknown { id: 0x12, .. } => {
             debug!(%id, "0x12 text command we do not act on");
-            true
+            None
         }
-        ClientPacket::Unknown { .. } => true,
+        ClientPacket::Unknown { .. } => None,
         // `ClientPacket` is `#[non_exhaustive]` for callers outside this
         // workspace; every variant that exists today is matched above.
         _ => unreachable!("every ClientPacket variant is matched above"),
     }
+}
+
+/// Enter the world with a character the account already has (`0x5D`).
+///
+/// The character screen's third packet, beside [`create_character`] and
+/// [`delete_character`], and routed with them rather than through
+/// [`dispatch_world_packet`]: it is the one packet a connection that is *not* in
+/// the world may send, and the only one that needs the roster and the account's
+/// access level.
+///
+/// Returns `false` only to drop the connection: no game login behind it means no
+/// account to enter with — the same guard `create_character` opens with, and for
+/// the same reason. A default there would enter the character on an account that
+/// never authenticated it.
+pub(crate) fn play_character(
+    session: &mut Session,
+    world: &mut World,
+    roster: &Roster,
+    play: CharacterPlay,
+    id: ConnectionId,
+    access: AccessLevel,
+) -> bool {
+    let Some(account) = session.login.account().cloned() else {
+        warn!(%id, "character-play before a game login");
+        return false;
+    };
+    let name = CharacterName(play.name.0);
+    // A stored character enters on its saved serial, spot and look; one the
+    // roster has never heard of — a config-only character on a fresh shard, or
+    // one created this run and not yet saved — enters fresh at the start.
+    // Unpacking the row is `StoredCharacter::from_record`'s job, not this one's.
+    let character = roster
+        .get(&account, &name)
+        .and_then(StoredCharacter::from_record)
+        .map_or_else(|| Character::fresh(Facet(0)), Character::Stored);
+    // The connection's own note of what it is playing, taken as the `Enter` is
+    // queued. It is what tells another connection on this account that the
+    // character is in use — see `Sessions::is_playing` — and it is what opens the
+    // gate in `handle_world_packet` for everything the client sends next.
+    session.enter_world(account.clone(), name.clone());
+    // Tell the gateway framer this client's version now, before any in-world
+    // packet whose length depends on it (the drop packet). The game connection
+    // never stated its version; this is the auth-key-linked one the login carried
+    // across. Character select is the last quiet moment before world traffic
+    // starts.
+    let _ = session.control.send(session.login.version());
+    world.queue(Command::Enter(Entering {
+        connection: id,
+        version: session.login.version(),
+        account,
+        name,
+        access,
+        character,
+    }));
+    true
 }
 
 /// The starting cities offered on the character-creation screen.
