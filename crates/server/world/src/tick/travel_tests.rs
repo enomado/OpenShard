@@ -15,6 +15,7 @@ use super::tests::{
     packets_for, serial_of, walk, world,
 };
 use super::*;
+use openshard_protocol::items::DropDestination;
 use openshard_protocol::serial::RawSerial;
 use openshard_state::components::{
     Contained, CriminalUntil, Decays, InRegion, Mana, Moongate, Movement, Position, RECALL_RUNE_GRAPHIC,
@@ -931,8 +932,10 @@ fn a_marked_rune_dropped_on_a_book_becomes_an_entry_and_is_consumed() {
         &mut world.state,
         connection,
         RawSerial(rune_serial.raw()),
-        Point::new(0, 0, 0),
-        RawSerial(book_serial.raw()),
+        DropDestination::Item {
+            item: book_serial,
+            at: GumpPoint::new(0, 0),
+        },
     );
 
     let owned = world
@@ -982,8 +985,10 @@ fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
         &mut world.state,
         connection,
         RawSerial(scroll_serial.raw()),
-        Point::new(0, 0, 0),
-        RawSerial(book_serial.raw()),
+        DropDestination::Item {
+            item: book_serial,
+            at: GumpPoint::new(0, 0),
+        },
     );
 
     let owned = world

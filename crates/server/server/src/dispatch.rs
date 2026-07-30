@@ -80,8 +80,7 @@ pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> O
         ClientPacket::DropItem(drop) => Some(Command::DropItem {
             connection: id,
             serial: drop.serial,
-            position: drop.position,
-            container: drop.container,
+            destination: drop.destination(),
         }),
         ClientPacket::SecureTrade(action) => match action {
             SecureTradeAction::Cancel { container } => Some(Command::TradeCancel {

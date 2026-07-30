@@ -167,12 +167,16 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
 }
 
 /// Put a client's held item down. See `Command::DropItem`.
+///
+/// The destination arrives already interpreted — which of the three the client
+/// asked for, and its position read in the space that destination uses. Nothing
+/// in this crate re-derives it from a serial, which is what used to make a
+/// gump offset and a map tile the same `Point`.
 pub fn drop_item(
     state: &mut WorldState,
     connection: ConnectionId,
     serial: RawSerial,
-    position: Point,
-    container: RawSerial,
+    destination: DropDestination,
 ) {
     let Some(held) = state.held_of(connection) else {
         // Nothing on the cursor — a stray 0x08, nothing to bounce.
@@ -185,10 +189,27 @@ pub fn drop_item(
         return;
     }
 
-    if container != DROP_TO_GROUND {
-        drop_onto_item(state, connection, held, position, container);
-        return;
-    }
+    let position = match destination {
+        DropDestination::Ground(position) => position,
+        DropDestination::Item { item, at } => {
+            drop_onto_serial(state, connection, held, at, item);
+            return;
+        }
+        // A mobile is dropped *on*, not into, and the packet's position means
+        // nothing — `drop_onto_serial` reaches the equip and trade arms without
+        // one, so the gump point it takes for the container case is a default
+        // no arm below reads.
+        DropDestination::Mobile(mobile) => {
+            drop_onto_serial(state, connection, held, GumpPoint::new(0, 0), mobile);
+            return;
+        }
+        // The client named nothing. It is still holding the item, so it is owed
+        // the bounce it would get for a target it cannot reach.
+        DropDestination::Nowhere => {
+            bounce(state, connection, held, DragCancelReason::Other);
+            return;
+        }
+    };
 
     // Onto the ground: within reach of the player, on the player's facet.
     let Some(&player) = state.players.get(&connection) else {
@@ -210,17 +231,19 @@ pub fn drop_item(
 }
 
 /// Put a held item into a container. See `Command::DropItem`.
+///
+/// `at` is where in the container's gump the client let go — gump space, not
+/// world tiles. The `0x08` carries both meanings in one field and
+/// [`DropDestination`] is where they part company, so by the time a serial
+/// reaches this function the question has already been answered and there is
+/// nothing here to convert.
 pub fn drop_into_container(
     state: &mut WorldState,
     connection: ConnectionId,
     held: HeldItem,
-    position: Point,
-    container: RawSerial,
+    at: GumpPoint,
+    container_serial: Serial,
 ) {
-    let Some(container_serial) = container.validate() else {
-        bounce(state, connection, held, DragCancelReason::Other);
-        return;
-    };
     let Some(container_entity) = state.registry.entity_of(container_serial) else {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
@@ -242,18 +265,13 @@ pub fn drop_into_container(
         return;
     }
 
-    // In it goes. The drop's `x`/`y` are gump coordinates, not world tiles — the
-    // `0x08` this came from reuses the position field for both, and the parameter
-    // is still a `Point` because the packet is. Converted here, at the one place
-    // the two meanings part company.
-    let position = GumpPoint::new(i32::from(position.x), i32::from(position.y));
     let grid = item_count(state, container_serial);
     state.take_held(connection);
     state.registry.insert(
         held.entity,
         Contained {
             container: container_serial,
-            position,
+            position: at,
             grid: GridSlot(grid),
         },
     );
@@ -272,17 +290,21 @@ pub fn drop_into_container(
     debug!(%container_serial, "dropped into a container");
 }
 
-/// A drop onto another item *or another player*: into it if it is a container,
-/// merged with it if it is an identical stack, offered as a trade if it is
-/// somebody, refused otherwise.
-pub fn drop_onto_item(
+/// A drop onto something the client named by serial — an item *or another
+/// player*: into it if it is a container, merged with it if it is an identical
+/// stack, offered as a trade if it is somebody, refused otherwise.
+///
+/// `at` is a gump point and only the container arm reads it. A drop onto a
+/// mobile has no meaningful position at all, which is why
+/// [`DropDestination::Mobile`] does not carry one.
+pub fn drop_onto_serial(
     state: &mut WorldState,
     connection: ConnectionId,
     held: HeldItem,
-    position: Point,
-    target_serial: RawSerial,
+    at: GumpPoint,
+    target_serial: Serial,
 ) {
-    let target = target_serial.validate().and_then(|s| state.registry.entity_of(s));
+    let target = state.registry.entity_of(target_serial);
     match target {
         Some(target) if state.registry.has::<Spellbook>(target) => {
             drop_scroll_on_book(state, connection, held, target);
@@ -291,7 +313,7 @@ pub fn drop_onto_item(
             drop_onto_runebook(state, connection, held, target);
         }
         Some(target) if state.registry.has::<Container>(target) => {
-            drop_into_container(state, connection, held, position, target_serial);
+            drop_into_container(state, connection, held, at, target_serial);
         }
         Some(target) if can_stack(state, held.entity, target) => {
             merge_onto(state, connection, held, target);

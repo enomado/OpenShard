@@ -120,10 +120,14 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
         if state.trades[index].involves(target) {
             let container = state.trades[index]
                 .sides_for(player)
-                .map(|(mine, _)| mine.container_serial.raw());
+                .map(|(mine, _)| mine.container_serial);
             match container {
                 Some(container) => {
-                    drop_into_container(state, connection, held, Point::default(), RawSerial(container));
+                    // Nobody dragged this onto a gump: the item goes into the
+                    // escrow because the trade is already open, so there is no
+                    // cursor position to honour and the origin is the honest
+                    // answer.
+                    drop_into_container(state, connection, held, GumpPoint::new(0, 0), container);
                 }
                 None => bounce(state, connection, held, DragCancelReason::Other),
             }
@@ -190,8 +194,10 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
 
     let index = state.trades.len() - 1;
     draw_window(state, index);
-    // And in goes what was dropped, through the ordinary door.
-    drop_into_container(state, connection, held, Point::default(), RawSerial(mine.1.raw()));
+    // And in goes what was dropped, through the ordinary door — at the origin
+    // of the escrow's gump, for the reason above: the drop was onto a person,
+    // and the packet's position never meant a point in this window.
+    drop_into_container(state, connection, held, GumpPoint::new(0, 0), mine.1);
     debug!("a secure trade opened");
 }
 

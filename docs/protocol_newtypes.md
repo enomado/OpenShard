@@ -1241,12 +1241,13 @@ but everything they are read *against*.
   string for `1_050_039`'s stack-amount template — that number is *text* the
   client's own cliloc parser substitutes into another string, not a value this
   crate reads, so it stays `cliloc.0` there.
-- **`items::drop_into_container` takes a `Point` that is holding gump
+- ~~**`items::drop_into_container` takes a `Point` that is holding gump
   coordinates.** The `0x08` reuses the position field for both meanings, so the
   parameter is a world `Point` and the function converts it to a `GumpPoint` at
   the one place the two part company. The honest fix is upstream, in how the
   packet is interpreted — a drop onto the ground and a drop into a container are
-  not the same request — and it is a `containers.rs` question, not this stage's.
+  not the same request — and it is a `containers.rs` question, not this stage's.~~
+  — **fixed (N-drop, below), and the honest fix is what landed.**
 - **`crafting::system::Text::Cliloc(u32)` is still bare**, for N-tables' reason:
   it is ServUO's `TextDefinition` and doubles as gump-label text, so it is a
   wider structure than a message id.
@@ -1495,6 +1496,54 @@ predecessor plan's value was that every stage's surprise got written down
 (`0xB9` not fitting `EncodePacket`, `CreateCharacter`'s two ids), and a surprise
 resolved silently in one module is a pattern the next module contradicts.
 
+## Amendments forced by N-drop (the `0x08`'s two coordinate spaces)
+
+The one backlog entry the sweep left that was a *design* bug rather than a
+missing type: `0x08` carries one position field with two meanings, and the
+struct that decoded it carried both meanings forward as a world `Point`.
+
+**1. A newtype cannot fix a field that means two things.** `Point` was already a
+newtype and already correct; what was wrong is that the same field was sometimes
+a map tile and sometimes a pixel offset into a container's gump, and the type
+system was being asked a question the type could not hold. Every seam downstream
+took a `Point` that was sometimes not one, and the conversion happened at
+whatever depth first noticed — `drop_into_container`, four calls deep. The rest
+of this sweep was "give the number a name"; this one was "the number is two
+numbers".
+
+**2. The fix is an interpreted destination, in the crate's own idiom.**
+`DropItem::destination` reads the container field and returns a
+`DropDestination`: `Ground(Point)`, `Item { item, at: GumpPoint }`,
+`Mobile(Serial)`, `Nowhere`. It is the `Raw*::interpret` shape N3 class B already
+uses everywhere — total over all 2³², with the ordering of the checks as the
+whole rule, because [`DROP_TO_GROUND`] is outside both serial pools and would
+otherwise fall in with the values that address nothing. `Command::DropItem` now
+carries the destination instead of a `(position, container)` pair, so the choice
+is made once, at the packet, and nothing below can re-derive it differently.
+
+**3. `Item`, deliberately not `Container`.** The client sends the identical shape
+for a drop into a bag, onto a stack to merge with, onto a spellbook and onto a
+runebook; which it is depends on components the wire knows nothing about. The
+variant claims only what the wire actually said — the target is in the item pool.
+Naming it `Container` would have been the same class of lie the position field
+was telling.
+
+**4. `Nowhere` is a variant, not an `Option`.** A destination that addresses
+nothing still owes the client a `0x27`: the item is on its cursor, and a seam
+that quietly does nothing leaves the server believing the item is held forever.
+As an `Option` that obligation is something a caller can drop by writing `if
+let`; as a `match` arm it is something the compiler asks about. There is a test
+named for exactly that (`a_drop_that_addresses_nothing_bounces_rather_than_
+swallowing_the_item`).
+
+**5. What it deleted.** `DropItem::to_ground`, the `RawSerial` → `Serial`
+validation inside `drop_onto_item` (the destination already validated it, so the
+function takes a `Serial` and is renamed `drop_onto_serial`), and the
+`GumpPoint::new(i32::from(position.x), …)` conversion in the middle of
+`drop_into_container`. The two `trade.rs` callers that passed `Point::default()`
+into a gump-space parameter now say `GumpPoint::new(0, 0)` and read as what they
+are. Wrapping deletes code, again.
+
 ## Amendments forced by N-gate (the coverage check itself)
 
 Not a module: the check that all the other stages are enforced. N8's own backlog
@@ -1555,4 +1604,5 @@ place its behaviour can be pinned.
 | N-components | done — `Drawn`, `Container.gump`, `Contained.{position, grid}`, and the graphic-keyed tables under them | `6c01d6e` |
 | N-commands | done — `Command` 27 bare serials → 0, `trade.rs` 3 → 0 (the module N8's counter could not see), and the system functions under them | |
 | N-persistence | done — `CharacterRecord`, `ItemRecord`, `MobileRecord`, `DecorationRecord`, `PetData`, `Inventory`, `QuestRecord` serials typed via `serde(with = ...)`, on-disk shape unchanged, `SCHEMA_VERSION` still 23; `MobileRecord::spawned_by` stays `Option<u32>` (a spawner-list index, not a serial) | `84a59b1` |
+| N-drop | done — the `0x08`'s one position field with two meanings became `DropDestination`; `Command::DropItem` carries it, `drop_into_container` takes a `GumpPoint`, `drop_onto_item` became `drop_onto_serial` | |
 | N-gate | done — the coverage check now walks enum bodies (15 fields found, all allowlisted in existing classes), reports and asserts what it examined, and has a fixture; a function's parameters stay out of reach and are documented as such | |

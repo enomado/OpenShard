@@ -8,6 +8,7 @@
 use super::tests::{backpack_serial, connection, enter_as, serial_of, teleport, world};
 use super::*;
 use openshard_items::{TRADE_CONTAINER_GRAPHIC, TRADE_LAYER};
+use openshard_protocol::items::{DropDestination, DropItem};
 use openshard_protocol::trade::SECURE_TRADE;
 use openshard_state::components::{Contained, Drawn, Equipped};
 
@@ -69,6 +70,12 @@ fn offer_to(world: &mut World, from: ConnectionId, item: Serial, to: ConnectionI
 }
 
 /// Lift `item` and drop it onto `target`'s serial — the drag a trade opens on.
+///
+/// The destination is built by running the real `0x08` through
+/// [`DropItem::destination`] rather than naming a variant here: `target` is a
+/// person in some of these tests and a container in others, and which variant
+/// that is is exactly the decision under test. Naming it by hand would let the
+/// test agree with itself while the packet said something else.
 fn drop_onto(world: &mut World, connection: ConnectionId, item: Serial, target: Serial, now: Instant) {
     world.queue(Command::PickUpItem {
         connection,
@@ -79,8 +86,12 @@ fn drop_onto(world: &mut World, connection: ConnectionId, item: Serial, target: 
     world.queue(Command::DropItem {
         connection,
         serial: RawSerial(item.raw()),
-        position: Point::default(),
-        container: RawSerial(target.raw()),
+        destination: DropItem {
+            serial: RawSerial(item.raw()),
+            position: Point::default(),
+            container: RawSerial(target.raw()),
+        }
+        .destination(),
     });
     world.tick(now);
 }
@@ -524,8 +535,10 @@ fn taking_an_offer_back_out_of_the_window_is_an_ordinary_lift() {
     world.queue(Command::DropItem {
         connection: first,
         serial: RawSerial(sword.raw()),
-        position: Point::default(),
-        container: RawSerial(pack.raw()),
+        destination: DropDestination::Item {
+            item: pack,
+            at: GumpPoint::new(0, 0),
+        },
     });
     world.tick(now);
 

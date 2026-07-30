@@ -81,8 +81,8 @@ use openshard_skills as skills;
 
 use crate::doorgen;
 use crate::events::{
-    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeft, PlayerRefused,
-    RefusedEntry, RefusedReason, RegionChanged, StepRefused,
+    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeaving, PlayerLeft,
+    PlayerRefused, RefusedEntry, RefusedReason, RegionChanged, StepRefused,
 };
 use crate::gm;
 use crate::terrain::MapTerrain;
@@ -749,6 +749,12 @@ impl World {
                 // way of leaving — there is no second logout rule here.
                 self.state
                     .send_packet(connection, &ServerPacket::LogoutAck(LogoutAck));
+                // But say it out loud as well, because the character stays in the
+                // world until the socket closes and something has to know that
+                // this connection is on its way out. The shard loop stops
+                // accepting in-world packets from it; the world itself changes
+                // nothing, which is why this is an event and not a rule.
+                self.state.bus.send(PlayerLeaving { connection });
             }
             Command::RequestSkills { connection } => {
                 if let Some(&entity) = self.state.players.get(&connection) {
@@ -1081,9 +1087,8 @@ impl World {
             Command::DropItem {
                 connection,
                 serial,
-                position,
-                container,
-            } => items::drop_item(&mut self.state, connection, serial, position, container),
+                destination,
+            } => items::drop_item(&mut self.state, connection, serial, destination),
             Command::TradeAction {
                 connection,
                 container,

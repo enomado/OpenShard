@@ -6,7 +6,7 @@ use openshard_magic::SpellCast;
 use openshard_movement::WALK_INTERVAL;
 use openshard_protocol::containers::GridSlot;
 use openshard_protocol::gump::GumpPoint;
-use openshard_protocol::items::DROP_TO_GROUND;
+use openshard_protocol::items::DropDestination;
 use openshard_protocol::mobile::Remove;
 use openshard_protocol::packet::encode_packet;
 use openshard_protocol::serial::RawSerial;
@@ -458,8 +458,7 @@ fn picking_up_then_dropping_moves_an_item_on_everyone_elses_screen() {
     world.queue(Command::DropItem {
         connection: picker,
         serial: RawSerial(serial.raw()),
-        position: Point::new(START.0, START.1, 0),
-        container: DROP_TO_GROUND,
+        destination: DropDestination::Ground(Point::new(START.0, START.1, 0)),
     });
     world.tick(now);
     assert!(
@@ -518,8 +517,7 @@ fn dropping_out_of_reach_bounces_the_item_back_to_where_it_was() {
     world.queue(Command::DropItem {
         connection: picker,
         serial: RawSerial(serial.raw()),
-        position: Point::new(START.0 + 40, START.1, 0),
-        container: DROP_TO_GROUND,
+        destination: DropDestination::Ground(Point::new(START.0 + 40, START.1, 0)),
     });
     world.tick(now);
 
@@ -815,8 +813,10 @@ fn dropping_an_item_into_your_worn_backpack_stores_it() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(item_serial.raw()),
-        position: Point::new(0, 0, 0),
-        container: RawSerial(pack.raw()),
+        destination: DropDestination::Item {
+            item: pack,
+            at: GumpPoint::new(0, 0),
+        },
     });
     world.tick(now);
 
@@ -965,8 +965,12 @@ fn dropping_an_item_into_a_container_puts_it_inside() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(item_serial.raw()),
-        position: Point::new(50, 60, 0), // gump coordinates, not tiles
-        container: RawSerial(container.raw()),
+        // Gump coordinates, not tiles — and now the type says so rather than a
+        // comment: `DropDestination` chose the space when it read the target.
+        destination: DropDestination::Item {
+            item: container,
+            at: GumpPoint::new(50, 60),
+        },
     });
     world.tick(now);
 
@@ -1007,8 +1011,10 @@ fn an_opened_container_lists_what_was_put_in_it() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(item_serial.raw()),
-        position: Point::new(50, 60, 0),
-        container: RawSerial(container.raw()),
+        destination: DropDestination::Item {
+            item: container,
+            at: GumpPoint::new(50, 60),
+        },
     });
     world.tick(now);
     let _ = packets_for(&mut world, player);
@@ -1052,8 +1058,10 @@ fn picking_an_item_out_of_a_container_holds_it() {
         world.queue(Command::DropItem {
             connection: player,
             serial: RawSerial(item_serial.raw()),
-            position: Point::new(50, 60, 0),
-            container: RawSerial(container.raw()),
+            destination: DropDestination::Item {
+                item: container,
+                at: GumpPoint::new(50, 60),
+            },
         });
         world.tick(now);
     }
@@ -1114,8 +1122,12 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(held_serial.raw()),
-        position: Point::new(0, 0, 0),
-        container: RawSerial(target.raw()), // a real item, but not a container
+        // A real item, but not a container — which is exactly why the variant is
+        // `Item` and not `Container`: the wire cannot tell the two apart.
+        destination: DropDestination::Item {
+            item: target,
+            at: GumpPoint::new(0, 0),
+        },
     });
     world.tick(now);
 
@@ -1127,6 +1139,62 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
         world.state.registry.get::<Position>(held_item).map(|p| p.0),
         Some(origin),
         "and the item is back on the ground where it was"
+    );
+}
+
+/// A `0x08` whose destination addresses nothing still owes the client its item
+/// back.
+///
+/// The variant that is easiest to get wrong: `Nowhere` reads like "nothing to
+/// do", and doing nothing leaves the item on the client's cursor forever with
+/// the server believing it is held — the classic way an item goes quietly
+/// missing. Making it a `match` arm rather than an `Option` the caller may
+/// ignore is what puts the obligation somewhere the compiler can see it, and
+/// this test is what proves the arm does the work.
+#[test]
+fn a_drop_that_addresses_nothing_bounces_rather_than_swallowing_the_item() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let here = Point::new(START.0, START.1, 0);
+    spawn_item_at(&mut world, here, now);
+    let held_serial = loose_item_serial(&world);
+    let held_item = entity(&world, held_serial);
+
+    world.queue(Command::PickUpItem {
+        connection: player,
+        serial: RawSerial(held_serial.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    assert!(
+        world.state.held_of(player).is_some(),
+        "on the cursor to begin with"
+    );
+    let _ = packets_for(&mut world, player);
+
+    // What a client sends when it has lost track of what it is dropping onto:
+    // a zero. It is neither the ground sentinel nor a serial, and the packet
+    // reads it as `Nowhere` — see `DropItem::destination`.
+    world.queue(Command::DropItem {
+        connection: player,
+        serial: RawSerial(held_serial.raw()),
+        destination: DropDestination::Nowhere,
+    });
+    world.tick(now);
+
+    assert!(
+        packets_for(&mut world, player).iter().any(|p| p[0] == 0x27),
+        "the drag is cancelled"
+    );
+    assert!(
+        world.state.held_of(player).is_none(),
+        "and the server is no longer holding it"
+    );
+    assert_eq!(
+        world.state.registry.get::<Position>(held_item).map(|p| p.0),
+        Some(here),
+        "the item is back where it was lifted from"
     );
 }
 
@@ -1306,8 +1374,10 @@ fn consuming_a_contained_item_removes_it_from_the_open_gump() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(item_serial.raw()),
-        position: Point::new(50, 60, 0),
-        container: RawSerial(container.raw()),
+        destination: DropDestination::Item {
+            item: container,
+            at: GumpPoint::new(50, 60),
+        },
     });
     world.tick(now);
     world.queue(Command::DoubleClick {
@@ -1421,8 +1491,10 @@ fn consuming_a_container_takes_its_contents_with_it() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(item_serial.raw()),
-        position: Point::new(50, 60, 0),
-        container: RawSerial(container.raw()),
+        destination: DropDestination::Item {
+            item: container,
+            at: GumpPoint::new(50, 60),
+        },
     });
     world.tick(now);
 
@@ -1552,8 +1624,12 @@ fn dropping_a_stack_onto_an_identical_one_merges_them() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(loose.raw()),
-        position: here,
-        container: RawSerial(pile.raw()), // dropping onto the other stack
+        // Dropping onto the other stack. It is on the ground, so the gump point
+        // is nobody's coordinate; the merge arm never reads it.
+        destination: DropDestination::Item {
+            item: pile,
+            at: GumpPoint::new(0, 0),
+        },
     });
     world.tick(now);
 
@@ -1597,8 +1673,10 @@ fn merging_past_the_stack_cap_keeps_the_remainder() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(loose.raw()),
-        position: here,
-        container: RawSerial(pile.raw()),
+        destination: DropDestination::Item {
+            item: pile,
+            at: GumpPoint::new(0, 0),
+        },
     });
     world.tick(now);
 
@@ -1680,8 +1758,10 @@ fn a_non_stackable_item_does_not_merge() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(held.raw()),
-        position: here,
-        container: RawSerial(target.raw()),
+        destination: DropDestination::Item {
+            item: target,
+            at: GumpPoint::new(0, 0),
+        },
     });
     world.tick(now);
 
@@ -1779,8 +1859,7 @@ fn a_container_does_not_decay_even_after_being_moved() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(container.raw()),
-        position: here,
-        container: DROP_TO_GROUND,
+        destination: DropDestination::Ground(here),
     });
     world.tick(now);
 
@@ -1869,8 +1948,7 @@ fn the_split_portion_keeps_its_serial_and_can_be_dropped() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(pile.raw()), // the client drops the same serial it lifted
-        position: here,
-        container: DROP_TO_GROUND,
+        destination: DropDestination::Ground(here),
     });
     world.tick(now);
 
@@ -1935,8 +2013,10 @@ fn gold_in_open_container(
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(gold.raw()),
-        position: Point::new(50, 60, 0), // gump coordinates
-        container: RawSerial(container.raw()),
+        destination: DropDestination::Item {
+            item: container,
+            at: GumpPoint::new(50, 60),
+        },
     });
     world.tick(now);
     world.queue(Command::DoubleClick {
@@ -1970,8 +2050,12 @@ fn dropping_a_stack_onto_an_identical_one_inside_a_container_merges_them() {
     world.queue(Command::DropItem {
         connection: player,
         serial: RawSerial(loose.raw()),
-        position: here,
-        container: RawSerial(pile.raw()), // onto the contained stack
+        // Onto the contained stack — here the gump point would be a real one,
+        // and the merge arm still does not read it.
+        destination: DropDestination::Item {
+            item: pile,
+            at: GumpPoint::new(0, 0),
+        },
     });
     world.tick(now);
 

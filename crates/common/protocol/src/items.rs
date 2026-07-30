@@ -10,6 +10,7 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::feature::Feature;
+use crate::gump::GumpPoint;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
@@ -200,14 +201,88 @@ pub struct DropItem {
     pub container: RawSerial,
 }
 
+/// What a `0x08` is actually asking for, with its position field read the way
+/// the destination means it.
+///
+/// # Why this exists
+///
+/// The packet has one position field and two meanings for it, chosen by the
+/// container field: onto the ground it is a world tile, into a container it is a
+/// pixel offset inside that container's *gump*, which is a different coordinate
+/// space entirely — `(50, 50)` is a spot on a bag's picture, not fifty tiles
+/// north. Reading the packet as one struct meant every seam downstream took a
+/// world [`Point`] that was sometimes not one, and converted it at whatever
+/// depth first noticed. That is the conversion this type deletes: the meaning is
+/// fixed here, once, where the container field that decides it is read.
+///
+/// # Totality
+///
+/// Every one of the 2³² values the container field can hold lands in exactly one
+/// variant, and the order the checks run in is the whole rule. [`DROP_TO_GROUND`]
+/// (`0xFFFFFFFF`) is outside both serial pools, so it would otherwise fall in
+/// with the values that address nothing; it is tested first, which is what keeps
+/// this packet's own sentinel from being confused with a client's `0`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DropDestination {
+    /// Onto the ground, at a world position. The only variant where the
+    /// packet's position field is a [`Point`].
+    Ground(Point),
+    /// Onto an item — the destination serial is in the item pool.
+    ///
+    /// Deliberately not called `Container`: the client sends the same shape for
+    /// a drop into a bag, onto a stack to merge with, and onto a spellbook, and
+    /// which of those it is depends on components the wire knows nothing about.
+    /// All this variant claims is that the target is an item.
+    ///
+    /// `at` is where in that item's gump the client let go. The server may or
+    /// may not honour it (this one places by slot), but it is gump-space either
+    /// way and typed as such so it can never be added to a world coordinate.
+    Item {
+        /// What the item is going onto or into.
+        item: Serial,
+        /// Where in that item's gump the cursor was.
+        at: GumpPoint,
+    },
+    /// Onto a mobile — the destination serial is a mobile's. Equipping it, or
+    /// offering it in a trade; which one is the server's business.
+    ///
+    /// The position field is carried by the packet and means nothing here, so
+    /// it is not in this variant: a client dragging onto a person is pointing at
+    /// the person, not at a coordinate.
+    Mobile(Serial),
+    /// The destination addresses nothing at all — a `0`, or a value above the
+    /// item pool that is not the ground sentinel.
+    ///
+    /// Not an error and not a `None`: it is a fourth answer the client can give,
+    /// and the seam that acts on it still owes the client a bounce, because the
+    /// item is on its cursor either way. Making it a variant rather than an
+    /// `Option` is what keeps that obligation in the `match`.
+    Nowhere,
+}
+
 impl DropItem {
     /// The packet id.
     pub const ID: u8 = 0x08;
 
-    /// Whether this drop is onto the ground rather than into a container or onto
-    /// a mobile.
-    pub const fn to_ground(&self) -> bool {
-        self.container.0 == DROP_TO_GROUND.0
+    /// Where this drop is going, with the position read as that destination
+    /// means it. Total: see [`DropDestination`].
+    #[must_use]
+    pub const fn destination(&self) -> DropDestination {
+        if self.container.0 == DROP_TO_GROUND.0 {
+            return DropDestination::Ground(self.position);
+        }
+        match Serial::new(self.container.0) {
+            // A gump's x/y are the packet's x/y read in the other space. The
+            // widths differ (the wire is unsigned, gump offsets are signed for
+            // layouts that hang off the left edge), so this widens rather than
+            // reinterprets.
+            Some(serial) if serial.is_item() => DropDestination::Item {
+                item: serial,
+                at: GumpPoint::new(self.position.x as i32, self.position.y as i32),
+            },
+            Some(serial) => DropDestination::Mobile(serial),
+            None => DropDestination::Nowhere,
+        }
     }
 }
 
@@ -341,6 +416,7 @@ impl EncodePacket for EquipUpdate {
 mod tests {
     use super::*;
     use crate::packet::{decode_packet, encode_packet};
+    use crate::serial::{ITEM_MAX, ITEM_MIN, MOBILE_MAX, MOBILE_MIN};
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -454,7 +530,11 @@ mod tests {
         let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
         assert_eq!(drop.serial, RawSerial(0x4000_002A));
         assert_eq!(drop.position, Point::new(1000, 2000, 5));
-        assert!(drop.to_ground());
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Ground(Point::new(1000, 2000, 5)),
+            "the ground is the one destination whose position is a world tile",
+        );
     }
 
     #[test]
@@ -476,20 +556,80 @@ mod tests {
         assert_eq!(drop.serial, RawSerial(0x4000_002A));
         assert_eq!(drop.position, Point::new(1000, 2000, 5));
         assert_eq!(drop.container, DROP_TO_GROUND);
-        assert!(drop.to_ground(), "the grid byte must not shift the container");
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Ground(Point::new(1000, 2000, 5)),
+            "the grid byte must not shift the container",
+        );
     }
 
     #[test]
-    fn a_drop_into_a_container_is_not_a_ground_drop() {
+    fn a_drop_into_a_container_reads_its_position_in_gump_space() {
+        // The same two bytes, and not the same coordinate: an item serial in the
+        // container field makes x/y a spot on that container's picture. The
+        // conversion happens here and nowhere downstream, which is the whole
+        // point of the type — a `Point` this size would be off the far edge of
+        // any map, and nothing would have said so.
         let mut bytes = vec![0x08];
         bytes.extend_from_slice(&0x4000_002Au32.to_be_bytes());
-        bytes.extend_from_slice(&0u16.to_be_bytes());
-        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend_from_slice(&50u16.to_be_bytes());
+        bytes.extend_from_slice(&60u16.to_be_bytes());
         bytes.push(0);
         bytes.extend_from_slice(&0x4000_00FFu32.to_be_bytes()); // a container serial
         let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
-        assert!(!drop.to_ground());
         assert_eq!(drop.container, RawSerial(0x4000_00FF));
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Item {
+                item: Serial::new(0x4000_00FF).unwrap(),
+                at: GumpPoint::new(50, 60),
+            },
+        );
+    }
+
+    #[test]
+    fn a_drop_onto_a_mobile_keeps_no_position_at_all() {
+        // A mobile serial in the container field: the client is pointing at a
+        // person, and the x/y it sent are neither a tile nor a gump offset. The
+        // variant has nowhere to put them, which is the type saying so.
+        let mut bytes = vec![0x08];
+        bytes.extend_from_slice(&0x4000_002Au32.to_be_bytes());
+        bytes.extend_from_slice(&50u16.to_be_bytes());
+        bytes.extend_from_slice(&60u16.to_be_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&0x0000_0007u32.to_be_bytes()); // a mobile serial
+        let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Mobile(Serial::new(7).unwrap()),
+        );
+    }
+
+    #[test]
+    fn every_destination_value_lands_in_exactly_one_variant() {
+        // Class B totality, on the field that decides how the *other* field is
+        // read. Walking all 2^32 is not worth the minute; these are the four
+        // pool boundaries plus the two sentinels, which is where an off-by-one
+        // in the ordering of the checks would show.
+        let drop = |container: u32| {
+            DropItem {
+                serial: RawSerial(0x4000_002A),
+                position: Point::new(1, 2, 3),
+                container: RawSerial(container),
+            }
+            .destination()
+        };
+
+        assert_eq!(
+            drop(DROP_TO_GROUND.0),
+            DropDestination::Ground(Point::new(1, 2, 3))
+        );
+        assert_eq!(drop(0), DropDestination::Nowhere, "zero addresses nothing");
+        assert_eq!(drop(0x8000_0000), DropDestination::Nowhere, "above the item pool");
+        assert!(matches!(drop(MOBILE_MIN), DropDestination::Mobile(_)));
+        assert!(matches!(drop(MOBILE_MAX), DropDestination::Mobile(_)));
+        assert!(matches!(drop(ITEM_MIN), DropDestination::Item { .. }));
+        assert!(matches!(drop(ITEM_MAX), DropDestination::Item { .. }));
     }
 
     #[test]
@@ -541,9 +681,10 @@ mod tests {
 
     #[test]
     fn a_ground_drops_sentinel_is_not_a_serial() {
-        // The other half of the same pair, and the reason `to_ground` checks the
-        // sentinel itself rather than asking `validate`: `0xFFFFFFFF` addresses
-        // nothing *and* means the floor, which are different answers.
+        // The other half of the same pair, and the reason `destination` tests the
+        // sentinel before asking `Serial::new`: `0xFFFFFFFF` addresses nothing
+        // *and* means the floor, which are different answers — check them in the
+        // other order and every ground drop becomes `Nowhere` and bounces.
         let mut bytes = vec![0x08];
         bytes.extend_from_slice(&0x4000_002Au32.to_be_bytes());
         bytes.extend_from_slice(&0u16.to_be_bytes());
@@ -551,7 +692,7 @@ mod tests {
         bytes.push(0);
         bytes.extend_from_slice(&DROP_TO_GROUND.0.to_be_bytes());
         let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
-        assert!(drop.to_ground());
+        assert!(matches!(drop.destination(), DropDestination::Ground(_)));
         assert_eq!(drop.container.validate(), None, "the floor is not an object");
     }
 

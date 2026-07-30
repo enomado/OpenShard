@@ -1,5 +1,6 @@
 use super::*;
 use openshard_protocol::identity::RawCharacterName;
+use openshard_protocol::items::DropDestination;
 use openshard_protocol::wire::{Graphic, Hue, RawCharacterSlot};
 
 /// How a character looks: its body graphic and hue. Chosen on the creation
@@ -836,13 +837,15 @@ pub enum Command {
         connection: ConnectionId,
         /// The item's serial, as the client names it.
         serial: RawSerial,
-        /// Where, for a ground drop.
-        position: Point,
-        /// Where it is going: a container serial, another player (which opens a
-        /// secure trade), or
-        /// [`DROP_TO_GROUND`](openshard_protocol::DROP_TO_GROUND). A target that
-        /// is none of those bounces the item home.
-        container: RawSerial,
+        /// Where it is going, already read as the destination means it — a world
+        /// tile for the ground, a gump offset for a container, nothing at all
+        /// for a mobile. The packet has one position field for all three; the
+        /// choice is made once, in
+        /// [`DropItem::destination`](openshard_protocol::items::DropItem::destination),
+        /// so nothing below here can add a gump pixel to a map coordinate.
+        /// [`Nowhere`](openshard_protocol::items::DropDestination::Nowhere)
+        /// still owes the client a bounce: the item is on its cursor either way.
+        destination: DropDestination,
     },
     /// A client acted on its secure trade window (`0x6F`).
     ///
