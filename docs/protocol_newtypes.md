@@ -794,11 +794,13 @@ every number in it is one the server chose — which makes this the module where
 
 ### Backlog from this stage
 
-- **The admin menu is the one window still written as a layout string by hand**
-  (`world/src/admin.rs`), so its six button ids appear twice: as literals inside
-  the string and as `ButtonId` constants beside the handler. Every other window
-  went through `GumpLayout` and now has one spelling. Building it through the
-  builder would make the constants the only copy.
+- ~~**The admin menu is the one window still written as a layout string by
+  hand**~~ — done. `world/src/admin.rs` now draws through `GumpLayout` from a
+  `ROWS` table that carries the id, the art, the label and the verb together;
+  the handler looks a reply up in the same table, so a button id is written
+  once. A test pins the built layout against the hand-written string byte for
+  byte, and a second asserts the one thing the table cannot enforce by
+  construction — that no two rows share an id and none is `CLOSE_BOX`.
 - **`ButtonId::CLOSE_BOX` and `ButtonId::UNUSED` are the same value with
   different meanings**, and a third would be one too many; if one appears, the
   type wants to be an enum with a `Reply(u32)` arm rather than a newtype with
