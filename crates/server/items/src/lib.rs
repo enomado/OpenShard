@@ -16,7 +16,7 @@ use openshard_protocol::containers::{
     ContainedItem, ContainerContents, encode_add_to_container, encode_open_container,
 };
 use openshard_protocol::items::{DROP_TO_GROUND, DragCancel, DragCancelReason, EquipUpdate};
-use openshard_protocol::mobile::{OpenPaperdoll, PAPERDOLL_CAN_LIFT, PAPERDOLL_WARMODE, Remove};
+use openshard_protocol::mobile::{OpenPaperdoll, PaperdollFlags, Remove};
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::spellbook::SpellbookContent;

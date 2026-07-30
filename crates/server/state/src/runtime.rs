@@ -26,7 +26,10 @@ use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{LocalizedMessage, NO_GRAPHIC, SYSTEM_SERIAL, SpokenMessage};
-use openshard_protocol::wire::SoundId;
+// `Graphic` is also a component name in this crate — an item's tiledata id and
+// hue together — so the wire's one-field newtype is imported under the name the
+// packet field has.
+use openshard_protocol::wire::{Graphic as WireGraphic, Hue, Layer, SoundId};
 use openshard_protocol::world::{MapChange, MapId, MapSize, PlayerUpdate, Point, encode_server_change};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
@@ -1653,7 +1656,7 @@ impl WorldState {
             return;
         }
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) {
-            self.send_packet(connection, &ServerPacket::Remove(Remove { serial: serial.raw() }));
+            self.send_packet(connection, &ServerPacket::Remove(Remove { serial }));
         }
     }
 
@@ -1847,11 +1850,11 @@ impl WorldState {
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
         let body = *self.registry.get::<Body>(entity)?;
         Some(MobileIncoming {
-            serial: serial.raw(),
-            body: body.id.0,
+            serial,
+            body: body.id,
             position,
             facing,
-            hue: body.hue.0,
+            hue: body.hue,
             flags: StatusFlags::NONE,
             notoriety: self.notoriety_of(entity),
             equipment: self.equipment_of(serial),
@@ -1906,10 +1909,10 @@ impl WorldState {
                 let worn = self.registry.get::<Equipped>(item)?;
                 let Graphic { id, hue } = *self.registry.get::<Graphic>(item)?;
                 Some(Equipment {
-                    serial: serial.raw(),
-                    graphic: id,
-                    layer: worn.layer,
-                    hue,
+                    serial,
+                    graphic: WireGraphic(id),
+                    layer: Layer(worn.layer),
+                    hue: Hue(hue),
                 })
             })
             .collect()
@@ -1923,11 +1926,11 @@ impl WorldState {
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
         let body = *self.registry.get::<Body>(entity)?;
         Some(MobileMove {
-            serial: serial.raw(),
-            body: body.id.0,
+            serial,
+            body: body.id,
             position,
             facing,
-            hue: body.hue.0,
+            hue: body.hue,
             flags: StatusFlags::NONE,
             notoriety: self.notoriety_of(entity),
         })

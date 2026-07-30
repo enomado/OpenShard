@@ -49,6 +49,18 @@ pub struct CursorId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct AuthKey(pub u32);
 
+/// Where a worn item sits on a mobile: the hand, the head, the mount slot.
+///
+/// The numbers are the client's — it decides which sprite a layer draws over
+/// which — so the type is a byte with a name and nothing more, exactly as
+/// [`StatusFlags`](crate::mobile::StatusFlags) is. Modelling the twenty-odd
+/// layers as an enum would be a guess about the ones this engine has never sent.
+///
+/// It lives here rather than beside either packet that carries it because both
+/// do: a mobile's `0x78` outfit list and an item's `0x2E`/`0x13` equip pair.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct Layer(pub u8);
+
 /// A colour choice exactly as a client packet carried it: not yet checked
 /// against the set of hues this shard actually allows. See
 /// `docs/protocol_newtypes.md` — the allowed set is content, so the check that

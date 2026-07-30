@@ -139,12 +139,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
                     continue;
                 }
                 if let Some(&Client { connection: to, .. }) = state.registry.get::<Client>(watcher) {
-                    state.send_packet(
-                        to,
-                        &ServerPacket::Remove(Remove {
-                            serial: item_serial.raw(),
-                        }),
-                    );
+                    state.send_packet(to, &ServerPacket::Remove(Remove { serial: item_serial }));
                 }
             }
         }

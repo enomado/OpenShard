@@ -1132,9 +1132,13 @@ fn unequipping_lifts_the_item_off_and_forgets_it_for_others() {
     assert!(!world.state.registry.has::<Equipped>(item), "it comes off");
     assert!(world.state.held.contains_key(&player), "and onto the cursor");
     assert!(
-        packets_for(&mut world, watcher)
-            .iter()
-            .any(|p| p == &encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL)),
+        packets_for(&mut world, watcher).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: Serial::new(item_serial).unwrap()
+                },
+                ClientVersion::TOL
+            )),
         "the other player is told to forget it"
     );
 }
@@ -1159,9 +1163,13 @@ fn consuming_a_ground_item_removes_it_and_clears_every_screen() {
         "the item is gone from the world"
     );
     assert!(
-        packets_for(&mut world, watcher)
-            .iter()
-            .any(|p| p == &encode_packet(&Remove { serial }, ClientVersion::TOL)),
+        packets_for(&mut world, watcher).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: Serial::new(serial).unwrap()
+                },
+                ClientVersion::TOL
+            )),
         "and off the watcher's screen"
     );
 }
@@ -1208,9 +1216,13 @@ fn consuming_a_contained_item_removes_it_from_the_open_gump() {
 
     assert!(!world.state.registry.contains(item), "the contained item is gone");
     assert!(
-        packets_for(&mut world, player)
-            .iter()
-            .any(|p| p == &encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL)),
+        packets_for(&mut world, player).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: Serial::new(item_serial).unwrap()
+                },
+                ClientVersion::TOL
+            )),
         "and the open gump is told to forget it"
     );
 }
@@ -1245,7 +1257,12 @@ fn consuming_a_worn_item_takes_it_off_for_everyone_including_the_wearer() {
     assert!(!world.state.registry.contains(item), "the worn item is gone");
     // One drain: `packets_for` empties the whole outbox, so checking two
     // connections means partitioning a single sweep, not calling it twice.
-    let forget = encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL);
+    let forget = encode_packet(
+        &Remove {
+            serial: Serial::new(item_serial).unwrap(),
+        },
+        ClientVersion::TOL,
+    );
     let mut watcher_forgot = false;
     let mut wearer_forgot = false;
     for out in world.drain_outbound() {
@@ -1590,9 +1607,13 @@ fn a_ground_item_decays_after_its_time() {
 
     assert!(!world.state.registry.contains(item), "the item has rotted away");
     assert!(
-        packets_for(&mut world, watcher)
-            .iter()
-            .any(|p| p == &encode_packet(&Remove { serial }, ClientVersion::TOL)),
+        packets_for(&mut world, watcher).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: Serial::new(serial).unwrap()
+                },
+                ClientVersion::TOL
+            )),
         "and left every screen"
     );
 }
@@ -2086,9 +2107,13 @@ fn a_creature_dies_at_zero_hits() {
         "and the creature is removed"
     );
     assert!(
-        packets_for(&mut world, player)
-            .iter()
-            .any(|p| p == &encode_packet(&Remove { serial: mob }, ClientVersion::TOL)),
+        packets_for(&mut world, player).iter().any(|p| p
+            == &encode_packet(
+                &Remove {
+                    serial: Serial::new(mob).unwrap()
+                },
+                ClientVersion::TOL
+            )),
         "and taken off the player's screen"
     );
 }
@@ -5858,7 +5883,7 @@ fn a_stat_arrow_is_stored_and_relayed() {
 
     world.queue(Command::SetStatLock {
         connection: player,
-        stat: 1, // dexterity
+        stat: Stat::Dexterity,
         lock: StatLock::Down,
     });
     world.tick(now);
@@ -6268,13 +6293,9 @@ fn consuming_a_reagent_redraws_an_open_pack() {
     world.tick(now);
 
     assert!(
-        packets_for(&mut world, player).iter().any(|p| p
-            == &encode_packet(
-                &Remove {
-                    serial: item_serial.raw()
-                },
-                ClientVersion::TOL
-            )),
+        packets_for(&mut world, player)
+            .iter()
+            .any(|p| p == &encode_packet(&Remove { serial: item_serial }, ClientVersion::TOL)),
         "the watcher is told the reagent left the pack"
     );
 }
@@ -9532,7 +9553,7 @@ fn single_clicking_a_named_mobile_draws_its_name() {
     let connection = enter(&mut world, now);
     spawn_banker(&mut world, Point::new(START.0 + 1, START.1, 0), now);
     let banker = world.registry().query::<Banker>().next().map(|(e, _)| e).unwrap();
-    let banker_serial = world.registry().serial_of(banker).unwrap().raw();
+    let banker_serial = world.registry().serial_of(banker).unwrap();
     let _ = packets_for(&mut world, connection);
 
     world.queue(Command::SingleClick {
@@ -9583,7 +9604,10 @@ fn single_clicking_an_item_draws_its_tiledata_name() {
     let serial = spawn_gold(&mut world, Point::new(START.0, START.1, 0), 3, now);
     let _ = packets_for(&mut world, connection);
 
-    world.queue(Command::SingleClick { connection, serial });
+    world.queue(Command::SingleClick {
+        connection,
+        serial: Serial::new(serial).unwrap(),
+    });
     world.tick(now);
 
     let label = packets_for(&mut world, connection)
@@ -9756,7 +9780,7 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         .registry
         .query::<Body>()
         .filter(|(e, _)| !world.state.registry.has::<Client>(*e))
-        .filter_map(|(e, _)| world.state.registry.serial_of(e).map(|s| s.raw()))
+        .filter_map(|(e, _)| world.state.registry.serial_of(e))
         .max()
         .expect("a chicken was spawned");
     let _ = packets_for(&mut world, connection);

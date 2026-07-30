@@ -626,8 +626,9 @@ pub enum Command {
     SetStatLock {
         /// Which connection.
         connection: ConnectionId,
-        /// Which stat: 0 strength, 1 dexterity, 2 intelligence.
-        stat: u8,
+        /// Which stat's arrow moved — one the status bar actually has, checked
+        /// where the packet was read.
+        stat: openshard_protocol::mobile::Stat,
         /// The new arrow.
         lock: openshard_state::StatLock,
     },
@@ -687,8 +688,9 @@ pub enum Command {
     SingleClick {
         /// Which connection asked.
         connection: ConnectionId,
-        /// The clicked object, by serial.
-        serial: u32,
+        /// The clicked object, by serial — checked where the packet was read, so
+        /// this addresses something or the command was never queued.
+        serial: Serial,
     },
     /// A client asked for the AoS tooltip of one or more objects (`0xD6`).
     QueryProperties {

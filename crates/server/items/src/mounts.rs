@@ -108,12 +108,7 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
     if let Some(item_serial) = state.registry.serial_of(item) {
         for watcher in equip_audience(state, player) {
             if let Some(&Client { connection, .. }) = state.registry.get::<Client>(watcher) {
-                state.send_packet(
-                    connection,
-                    &ServerPacket::Remove(Remove {
-                        serial: item_serial.raw(),
-                    }),
-                );
+                state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item_serial }));
             }
         }
     }

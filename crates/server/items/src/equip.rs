@@ -147,7 +147,7 @@ pub fn broadcast_equip(state: &mut WorldState, item: EntityId, mobile: EntityId)
 pub(crate) fn broadcast_unequip(state: &mut WorldState, item: Serial, mobile: EntityId) {
     for watcher in equip_audience(state, mobile) {
         if let Some(&Client { connection, .. }) = state.registry.get::<Client>(watcher) {
-            state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item.raw() }));
+            state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item }));
         }
     }
 }

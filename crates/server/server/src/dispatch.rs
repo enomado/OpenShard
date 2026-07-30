@@ -214,9 +214,14 @@ pub(crate) fn dispatch_world_packet(
             if !session.in_world() {
                 return true;
             }
+            // A `0x09` naming nothing — zero, or `0xFFFF_FFFF` — is a click that
+            // hit no object, which is an answer and not a reason to queue work.
+            let Some(serial) = look.serial.validate() else {
+                return true;
+            };
             world.queue(Command::SingleClick {
                 connection: id,
-                serial: look.serial,
+                serial,
             });
             true
         }
@@ -321,11 +326,18 @@ pub(crate) fn dispatch_world_packet(
                     });
                 }
                 ExtendedRequest::StatLock(request) => {
-                    world.queue(Command::SetStatLock {
-                        connection: id,
-                        stat: request.stat,
-                        lock: StatLock::from_bits(request.lock),
-                    });
+                    // The seam is where a client's byte becomes a stat: the
+                    // status bar has three arrows, and a packet naming a fourth
+                    // is dropped here rather than travelling into the tick to be
+                    // ignored by a `_ =>` arm nobody can see from the packet.
+                    match request.stat.validate() {
+                        Ok(stat) => world.queue(Command::SetStatLock {
+                            connection: id,
+                            stat,
+                            lock: StatLock::from_wire(request.lock.interpret()),
+                        }),
+                        Err(invalid) => debug!(%id, %invalid, "0xBF 0x1A named no stat"),
+                    }
                 }
                 ExtendedRequest::Unknown(subcommand) => {
                     debug!(%id, subcommand = format!("0x{subcommand:02X}"), "unhandled 0xBF");

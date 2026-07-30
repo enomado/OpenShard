@@ -37,7 +37,11 @@ impl World {
     /// own arrow before the packet leaves, so it needs no answer; the status bar's
     /// arrows come out of a separate `0xBF 0x19` the server has to send, and a
     /// client that never receives one draws all three pointing up.
-    pub(super) fn set_stat_lock(&mut self, connection: ConnectionId, stat: u8, lock: StatLock) {
+    ///
+    /// `stat` is a [`Stat`] and not a byte: which of the three a client named is
+    /// checked at the seam that read the packet, so there is no fourth-stat case
+    /// to fall through here.
+    pub(super) fn set_stat_lock(&mut self, connection: ConnectionId, stat: Stat, lock: StatLock) {
         let Some(&player) = self.state.players.get(&connection) else {
             return;
         };
@@ -48,10 +52,9 @@ impl World {
             .copied()
             .unwrap_or_default();
         match stat {
-            0 => locks.strength = lock,
-            1 => locks.dexterity = lock,
-            2 => locks.intelligence = lock,
-            _ => return, // there is no fourth stat
+            Stat::Strength => locks.strength = lock,
+            Stat::Dexterity => locks.dexterity = lock,
+            Stat::Intelligence => locks.intelligence = lock,
         }
         self.state.registry.insert(player, locks);
         self.send_stat_locks(connection, player);
@@ -71,11 +74,11 @@ impl World {
         self.state.send_packet(
             connection,
             &ServerPacket::StatLocks(openshard_protocol::mobile::StatLocks {
-                serial: serial.raw(),
+                serial,
                 locks: StatLockBits {
-                    strength: locks.strength.to_bits(),
-                    dexterity: locks.dexterity.to_bits(),
-                    intelligence: locks.intelligence.to_bits(),
+                    strength: locks.strength.to_wire(),
+                    dexterity: locks.dexterity.to_wire(),
+                    intelligence: locks.intelligence.to_wire(),
                 },
             }),
         );

@@ -92,8 +92,8 @@ impl World {
     /// for a click at a time). A nameless creature or an item on an unmapped world
     /// says nothing rather than a blank label. Mirrors Sphere's `addCharName` /
     /// `addItemName`.
-    pub(super) fn single_click(&mut self, connection: ConnectionId, serial: u32) {
-        let Some(target) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    pub(super) fn single_click(&mut self, connection: ConnectionId, serial: Serial) {
+        let Some(target) = self.state.registry.entity_of(serial) else {
             return;
         };
 
@@ -145,7 +145,9 @@ impl World {
         // The object's own serial makes the client draw the text over it; an empty
         // speaker name and the label mode make it a name tag, not speech.
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
-            serial,
+            // `0x1C` still carries a bare `u32` — `speech.rs` is a later stage of
+            // `docs/protocol_newtypes.md`.
+            serial: serial.raw(),
             graphic,
             mode: LABEL_MODE,
             hue,

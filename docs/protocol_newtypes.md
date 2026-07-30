@@ -154,6 +154,8 @@ The allowlist so far, each entry argued where it was decided:
 |---|---|
 | `world::Point::{x, y, z}` | components of one geometric quantity — [N1 amendment 2](#amendments-forced-by-n1-the-rest-of-worldrs) |
 | `world::MapSize::{width, height}` | same |
+| `mobile::Vitals::{current, max}` | components of one bar — [N2 amendment 2](#amendments-forced-by-n2-mobilers) |
+| `mobile::MobileStatus::{strength, dexterity, intelligence, gold, armor, weight, max_weight, stat_cap, followers, followers_max}` | the status bar's quantities — [N2 amendment 3](#amendments-forced-by-n2-mobilers) |
 
 **N11. No compatibility shims.** Same as D9: a stage wraps a group of fields
 **and** updates every call site in the same commit.
@@ -304,6 +306,87 @@ the promotion is *total*.
    five being the allowlisted geometric components in amendment 2. `mobile.rs`
    is unchanged at 37 — the `StatusFlags` alias was not one of them.
 
+## Amendments forced by N2 (`mobile.rs`)
+
+The direction rule paid for itself exactly as N2's stage line predicted: seven of
+the module's serials, both body graphics and three hues are class A, and wrapping
+them **deleted** code — ten `.raw()` calls and four `.0`s vanished from the
+server, because the call sites already held a `Serial`, a `Graphic` and a `Hue`
+and were unwrapping them to satisfy a `u32`. The stage's real content is the two
+inbound packets and one question the class table does not answer.
+
+1. **`RawSerial` is the pattern for every inbound object reference, and it
+   returns `Option`, not `Result`.** `LookRequest` is the sweep's first client-
+   chosen serial and there will be one in `items.rs`, `target.rs`, `vendor.rs`
+   and `context.rs`, so the type went into `serial.rs` beside the rule rather
+   than into the packet that first needed it. Its promotion is
+   `validate(self) -> Option<Serial>`, wrapping the existing `Serial::new`: N7
+   asks for typed errors, but the two values a client actually sends here — `0`
+   and `0xFFFF_FFFF` — are the wire's own words for *no object*, which is an
+   answer and not a malformed packet. An `InvalidSerial` would make every seam
+   handle an error where all but one of them want to do nothing. This is the same
+   licence the pilot took with `Skill::from_id`'s `Option`, written down.
+2. **A current/max pair is one field: `Vitals`.** `MobileStatus` carried
+   `hits`/`hits_max`, `stamina`/`stamina_max`, `mana`/`mana_max` — six bare
+   `u16`s of which every source produces both halves at once (`Hitpoints`,
+   `Mana`, `Stamina` each hold the pair) and the client draws a *ratio*, so half a
+   pair is not a smaller number but a bar of the wrong length. The `MapSize`
+   argument of N1 amendment 3, applied three times. `weight`/`max_weight` looks
+   like a fourth pair and is not: the two come from different places (what is
+   carried, versus a function of strength), so they stay separate fields.
+3. **The status bar's ten remaining numbers stay bare, by decision.** `strength`,
+   `dexterity`, `intelligence`, `gold`, `armor`, `weight`, `max_weight`,
+   `stat_cap`, `followers`, `followers_max` are the case N1 amendment 2 opened
+   for `Point`: they are genuinely numbers — added to, compared and clamped on
+   every blow, every regeneration tick and every item picked up — and their rules
+   (the caps, the carry limit, the training curve) live in `skills`, `items` and
+   `[gameplay]` config, all far above `protocol`. Ten newtypes here would be ten
+   types that only ever unwrap, and the packet's named fields already prevent the
+   confusion a newtype would. They are on N10's allowlist, so the count for this
+   file asserts twelve and not zero.
+4. **Class C appeared where the plan expected only A, B and D**, and both of its
+   fields are on the same packet: `0xBF 0x1A`'s `stat` and `lock`. `RawStat::
+   validate -> Result<Stat, InvalidStat>` is a real refusal — the status bar has
+   exactly three arrows — and it moved a `_ => return` out of
+   `World::set_stat_lock` and into `dispatch.rs`, which now logs the byte it
+   dropped. N9's pair is there: a `0xBF 0x1A` naming stat 3 decodes cleanly and
+   is refused at promotion.
+5. **A decoder that rewrote a value was the stage's one real finding.**
+   `StatLockRequest::decode_body` folded `lock > 2` to `0` *while decoding* —
+   ServUO's behaviour, in the wrong place: after it, nothing downstream could
+   tell the `0` a client sent from the `0x63` it did not, so a log line about a
+   nonsense arrow was impossible to write. The fold is now
+   `RawStatLock::interpret`, class B and total, with a test that all 256 bytes
+   interpret and that the byte survives decoding unchanged.
+6. **Three-valued arrows are one type, bridged by name.** `StatLockBits`'s three
+   `u8`s became `skill::SkillLock` — its own doc already called it "the mirror of
+   `SkillLock`", so a second three-way enum was never needed. `openshard_state`
+   keeps its separate `StatLock` (its gain path is not the skill one) and gained
+   `to_wire`/`from_wire`, both directions named, no `From`. `StatLock::from_bits`
+   stays, now documented as the *saved* byte's reader — a save written by an
+   older build may hold anything, which is a different problem from a packet.
+7. **`Layer` went to `wire.rs` although only one module uses it today.** N4's
+   "two or more modules" rule is written for `Raw*` types; a validated type lives
+   where its rule lives, and a layer's rule is the client's alone. Both packet
+   modules that carry one — this module's `0x78` outfit list and `items.rs`'s
+   `0x2E`/`0x13` — would otherwise have to import it from each other. It is a
+   named byte and not an enum, for `StatusFlags`' reason: the twenty-odd layers
+   this engine has never sent would be a guess. `openshard_state::Equipped.layer`
+   stays a `u8` — that is a component, not a packet field, and N4's stage is
+   where it becomes one question rather than two.
+8. **`PaperdollFlags` replaced two loose `pub const u8`s** (`PAPERDOLL_WARMODE`,
+   `PAPERDOLL_CAN_LIFT`), with a named `with` rather than a `BitOr` impl: an
+   operator on a newtype is the same invisible coercion `Deref` is.
+9. **One byte-level test changed its input, deliberately (N8).**
+   `remove_is_five_bytes` built its `0x1D` with serial `0xDEAD_BEEF`, which is
+   past the item pool and refused by `Serial::new` — an unaddressable serial the
+   old bare `u32` let through. It now uses `0x4EAD_BEEF` and asserts the same
+   shape: five bytes, the serial big-endian. Every other assertion in the crate
+   is byte-for-byte what it was.
+10. **Bare-integer field count in `mobile.rs`: 37 before, 12 after** (N10), the
+    twelve being amendments 2 and 3's allowlisted quantities. `wire.rs` and
+    `serial.rs` gained a type each and no bare fields.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -319,7 +402,9 @@ request (`main` is protected).
   packets). The largest module, and the one whose inbound/outbound mix exercises
   N1's direction rule hardest.
 - **N2 — `mobile.rs`.** Almost entirely outbound: mostly class A, the stage that
-  proves the direction rule saves work rather than doubling it.
+  proves the direction rule saves work rather than doubling it. It also lands
+  `RawSerial` in `serial.rs` and `Layer` in `wire.rs`, both of which every later
+  stage uses.
 - **N3 — `speech.rs`.**
 - **N4 — `items.rs`, `containers.rs`.**
 - **N5 — `vendor.rs`, `gump.rs`, `context.rs`.** Gump ids and button ids are the
@@ -376,7 +461,7 @@ resolved silently in one module is a pattern the next module contradicts.
 | --- | --- | --- |
 | pilot | types landed, promotions deferred (see amendments) | |
 | N1 | done — `world.rs` 20 bare int fields → 5 allowlisted | |
-| N2 | not started | |
+| N2 | done — `mobile.rs` 37 bare int fields → 12 allowlisted | |
 | N3 | not started | |
 | N4 | not started | |
 | N5 | not started | |

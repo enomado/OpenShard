@@ -251,21 +251,21 @@ pub(crate) fn open_paperdoll(
         .registry
         .get::<Name>(mobile)
         .map_or(String::new(), |n| n.0.clone());
-    let mut flags = 0u8;
+    let mut flags = PaperdollFlags::NONE;
     if state
         .registry
         .get::<Combat>(mobile)
         .is_some_and(|combat| combat.warmode)
     {
-        flags |= PAPERDOLL_WARMODE;
+        flags = flags.with(PaperdollFlags::WARMODE);
     }
     if mobile == player {
-        flags |= PAPERDOLL_CAN_LIFT;
+        flags = flags.with(PaperdollFlags::CAN_LIFT);
     }
     state.send_packet(
         connection,
         &ServerPacket::OpenPaperdoll(OpenPaperdoll {
-            serial: mobile_serial.raw(),
+            serial: mobile_serial,
             text: name,
             flags,
         }),
@@ -597,7 +597,7 @@ pub(crate) fn tell_watchers_removed_except(
         if Some(connection) == except {
             continue;
         }
-        state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item.raw() }));
+        state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item }));
     }
 }
 

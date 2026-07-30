@@ -450,11 +450,11 @@ fn an_onlooker_is_not_shown_the_trade_container_on_a_paperdoll() {
     let owner = Serial::new(serial_of(&world, first)).unwrap();
     let worn = world.state.equipment_of(owner);
     assert!(
-        !worn.iter().any(|item| item.serial == escrow),
+        !worn.iter().any(|item| item.serial.raw() == escrow),
         "the escrow is not in the equipment list a 0x78 draws"
     );
     assert!(
-        !worn.iter().any(|item| item.layer == TRADE_LAYER),
+        !worn.iter().any(|item| item.layer.0 == TRADE_LAYER),
         "and neither is anything else on its layer"
     );
 }

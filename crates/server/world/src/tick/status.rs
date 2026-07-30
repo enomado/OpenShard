@@ -59,19 +59,44 @@ impl World {
             .map_or((DEFAULT_HITPOINTS, DEFAULT_DEXTERITY, DEFAULT_MANA), |s| {
                 (s.strength, s.dexterity, s.intelligence)
             });
-        let (hits_now, hits_max) =
-            hits.map_or((DEFAULT_HITPOINTS, DEFAULT_HITPOINTS), |h| (h.current, h.max));
-        let (mana_now, mana_max) = mana.map_or((DEFAULT_MANA, DEFAULT_MANA), |m| (m.current, m.max));
+        let hits = hits.map_or(
+            Vitals {
+                current: DEFAULT_HITPOINTS,
+                max: DEFAULT_HITPOINTS,
+            },
+            |h| Vitals {
+                current: h.current,
+                max: h.max,
+            },
+        );
+        let mana = mana.map_or(
+            Vitals {
+                current: DEFAULT_MANA,
+                max: DEFAULT_MANA,
+            },
+            |m| Vitals {
+                current: m.current,
+                max: m.max,
+            },
+        );
         // The real pool if the mobile carries one; otherwise dexterity, so an NPC
         // or a bare test mobile still reads as able to run.
-        let (stamina_now, stamina_max) = stamina.map_or((dexterity, dexterity), |s| (s.current, s.max));
+        let stamina = stamina.map_or(
+            Vitals {
+                current: dexterity,
+                max: dexterity,
+            },
+            |s| Vitals {
+                current: s.current,
+                max: s.max,
+            },
+        );
         let derived = self.derived_status(entity);
 
         Some(MobileStatus {
-            serial: serial.raw(),
+            serial,
             name,
-            hits: hits_now,
-            hits_max,
+            hits,
             // The body says which paperdoll the client draws; the bar should agree
             // with it rather than call every character male.
             female: self
@@ -82,10 +107,8 @@ impl World {
             strength,
             dexterity,
             intelligence,
-            stamina: stamina_now,
-            stamina_max,
-            mana: mana_now,
-            mana_max,
+            stamina,
+            mana,
             gold: derived.gold,
             armor: derived.armor,
             weight: derived.weight,

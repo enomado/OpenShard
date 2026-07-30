@@ -971,12 +971,41 @@ impl StatLock {
     }
 
     /// From the wire byte. ServUO's handler folds anything above 2 to `Up`.
+    ///
+    /// Kept for the *saved* byte: a stat lock is one column in the character
+    /// record, and a save written by an older build may hold anything. Traffic
+    /// goes through [`to_wire`](Self::to_wire)/[`from_wire`](Self::from_wire).
     #[must_use]
     pub const fn from_bits(bits: u8) -> Self {
         match bits {
             1 => Self::Down,
             2 => Self::Locked,
             _ => Self::Up,
+        }
+    }
+
+    /// The same arrow as the protocol names it.
+    ///
+    /// The wire has one three-way arrow type and this crate has two users of it
+    /// — skills store [`SkillLock`] directly, stats have their own enum because
+    /// their gain path is separate — so the two are bridged here, by name and in
+    /// both directions rather than through a `From` nobody can grep for.
+    #[must_use]
+    pub const fn to_wire(self) -> SkillLock {
+        match self {
+            Self::Up => SkillLock::Up,
+            Self::Down => SkillLock::Down,
+            Self::Locked => SkillLock::Locked,
+        }
+    }
+
+    /// The arrow a client asked for, as this crate names it.
+    #[must_use]
+    pub const fn from_wire(lock: SkillLock) -> Self {
+        match lock {
+            SkillLock::Up => Self::Up,
+            SkillLock::Down => Self::Down,
+            SkillLock::Locked => Self::Locked,
         }
     }
 }
