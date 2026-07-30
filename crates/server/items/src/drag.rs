@@ -19,7 +19,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    if state.held.contains_key(&connection) {
+    if state.held_of(connection).is_some() {
         reject_drag(state, connection, DragCancelReason::AlreadyHolding);
         return;
     }
@@ -97,7 +97,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
         state.registry.remove::<Position>(item);
         // Off the ground, off the decay clock.
         state.registry.remove::<Decays>(item);
-        state.held.insert(
+        state.hold(
             connection,
             HeldItem {
                 entity: item,
@@ -124,7 +124,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
         note_looter(state, contained.container, player);
         tell_watchers_removed_except(state, contained.container, item_serial, Some(connection));
         state.registry.remove::<Contained>(item);
-        state.held.insert(
+        state.hold(
             connection,
             HeldItem {
                 entity: item,
@@ -146,7 +146,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSeri
                 }
             }
         }
-        state.held.insert(
+        state.hold(
             connection,
             HeldItem {
                 entity: item,
@@ -174,7 +174,7 @@ pub fn drop_item(
     position: Point,
     container: RawSerial,
 ) {
-    let Some(held) = state.held.get(&connection).copied() else {
+    let Some(held) = state.held_of(connection) else {
         // Nothing on the cursor — a stray 0x08, nothing to bounce.
         return;
     };
@@ -204,7 +204,7 @@ pub fn drop_item(
         return;
     }
 
-    state.held.remove(&connection);
+    state.take_held(connection);
     place_on_ground(state, held.entity, position, state.facet_of(player).0);
     debug!(serial = serial.0, "dropped on the ground");
 }
@@ -248,7 +248,7 @@ pub fn drop_into_container(
     // the two meanings part company.
     let position = GumpPoint::new(i32::from(position.x), i32::from(position.y));
     let grid = item_count(state, container_serial);
-    state.held.remove(&connection);
+    state.take_held(connection);
     state.registry.insert(
         held.entity,
         Contained {
@@ -345,7 +345,7 @@ fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: He
         owned.charges += taken as u8;
         state.registry.insert(book, owned);
         if taken >= held_amount {
-            state.held.remove(&connection);
+            state.take_held(connection);
             state.registry.despawn(held.entity);
         } else {
             // Put the remainder back where it came from, still a pile.
@@ -389,7 +389,7 @@ fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: He
         owned.default_entry = Some(0);
     }
     state.registry.insert(book, owned);
-    state.held.remove(&connection);
+    state.take_held(connection);
     state.registry.despawn(held.entity);
     state.system_message(player, "You bind the rune into the book.");
     tell_watchers_updated(state, book_serial, book);
@@ -426,7 +426,7 @@ fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: H
     }
     mask.learn(spell);
     state.registry.insert(book, mask);
-    state.held.remove(&connection);
+    state.take_held(connection);
     state.registry.despawn(held.entity);
     // Refresh the open book so the new spell appears at once.
     state.send_packet(
@@ -444,7 +444,7 @@ fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: H
 /// Put a held item back where it was lifted and tell the client the drag is
 /// off, so it stops showing the item on the cursor.
 pub fn bounce(state: &mut WorldState, connection: ConnectionId, held: HeldItem, reason: DragCancelReason) {
-    state.held.remove(&connection);
+    state.take_held(connection);
     restore(state, held);
     reject_drag(state, connection, reason);
 }

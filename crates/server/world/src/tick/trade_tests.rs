@@ -372,18 +372,15 @@ fn a_trade_escrow_is_not_swept_into_the_save() {
     world.take_snapshot();
     let snapshot = world.drain_saves().next().expect("a snapshot was taken");
 
-    let saved: Vec<u32> = snapshot
+    let saved: Vec<Serial> = snapshot
         .inventories
         .iter()
         .flat_map(|inventory| inventory.items.iter())
         .map(|item| item.serial)
         .collect();
+    assert!(!saved.contains(&escrow), "the escrow container is not saved");
     assert!(
-        !saved.contains(&escrow.raw()),
-        "the escrow container is not saved"
-    );
-    assert!(
-        !saved.contains(&sword.raw()),
+        !saved.contains(&sword),
         "nor is what is inside it, which the walk would otherwise recurse into"
     );
 }
@@ -403,16 +400,13 @@ fn cancelling_every_trade_first_is_what_makes_a_shutdown_save_whole() {
     world.take_snapshot();
     let snapshot = world.drain_saves().next().expect("a snapshot was taken");
 
-    let saved: Vec<u32> = snapshot
+    let saved: Vec<Serial> = snapshot
         .inventories
         .iter()
         .flat_map(|inventory| inventory.items.iter())
         .map(|item| item.serial)
         .collect();
-    assert!(
-        saved.contains(&sword.raw()),
-        "the offered sword is saved after all"
-    );
+    assert!(saved.contains(&sword), "the offered sword is saved after all");
 }
 
 #[test]
@@ -433,7 +427,10 @@ fn the_escrow_container_itself_cannot_be_lifted() {
     });
     world.tick(now);
 
-    assert!(world.state.held.is_empty(), "nothing went onto the cursor");
+    assert!(
+        super::tests::nothing_is_held(&world),
+        "nothing went onto the cursor"
+    );
     assert!(escrow_of(&world, first).is_some(), "and the escrow is still worn");
 }
 

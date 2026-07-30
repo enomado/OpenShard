@@ -46,8 +46,8 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, RawFont, RawTalkMode, SpokenMessage, TalkMode};
 use openshard_protocol::wire::{Graphic, Hue, Layer, RawHue, RawLayer};
 use openshard_protocol::world::{
-    DeathStatus, Facet, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapSize, MusicId,
-    PlayerStart, PlayerUpdate, Point, RawStepSequence, SeasonChange, WalkAck, WalkReject, WalkRequest,
+    DeathStatus, Facet, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapSize, PlayerStart,
+    PlayerUpdate, Point, RawStepSequence, SeasonChange, WalkAck, WalkReject, WalkRequest,
 };
 use openshard_protocol::{
     access::AccessLevel,
@@ -196,16 +196,12 @@ pub struct World {
     /// entering takes its own and equips it, once.
     ///
     /// [`restore_inventory`]: World::restore_inventory
-    pending_inventories: HashMap<u32, Vec<ItemRecord>>,
-    /// The derived status numbers last sent to each connected player, so the
-    /// refresh pass can send only what changed. See `tick/status.rs`.
-    last_status: HashMap<ConnectionId, status::StatusSnapshot>,
-    /// The light level last sent to each connected player, the remembered half of
-    /// the ambient diff. See `tick/ambient.rs`.
-    last_light: HashMap<ConnectionId, Light>,
-    /// The music track each player is currently hearing, so a crossing that does
-    /// not change it does not restart it. See `tick/regions.rs`.
-    last_music: HashMap<ConnectionId, MusicId>,
+    pending_inventories: HashMap<Serial, Vec<ItemRecord>>,
+    // The status, light and music a connection was last told about used to be
+    // three maps here, keyed by connection and cleared by name in `disconnect`.
+    // They are fields on the connection's row now — see
+    // `openshard_state::connection::Connection` — because a map cleared by name is
+    // a map the next one added beside it can be left out of.
     /// Where the world clock started, in UO minutes — restored at boot so a
     /// restart does not put the world back at midnight. See `tick/ambient.rs`.
     clock_base: u64,
@@ -251,7 +247,6 @@ impl World {
                 players: HashMap::new(),
                 connections: HashMap::new(),
                 seen: HashMap::new(),
-                held: HashMap::new(),
                 start,
                 rng: Rng::new(DEFAULT_SEED),
                 ticks: 0,
@@ -292,9 +287,6 @@ impl World {
             spawners: Vec::new(),
             next_spawner_id: 1,
             pending_inventories: HashMap::new(),
-            last_status: HashMap::new(),
-            last_light: HashMap::new(),
-            last_music: HashMap::new(),
             clock_base: 0,
             player_sectors: HashMap::new(),
         }
@@ -511,7 +503,7 @@ impl World {
         let Some(record) = self.roster.forget(account, name) else {
             return;
         };
-        self.journal.forget_serial(record.serial);
+        self.journal.forget_serial(record.serial.raw());
         // Drop the fast-relogin inventory cache: the character is gone, not
         // coming back this run.
         self.pending_inventories.remove(&record.serial);
@@ -1382,24 +1374,18 @@ impl World {
         // connection addressable, and there is nothing left to say to a socket
         // that is gone. Unconditional, because a connection that never picked a
         // character has one of these and nothing else below.
-        self.state.connections.remove(&connection);
-        // A client that logs out mid-drag would otherwise leave its item nowhere —
-        // off the ground and out of any container, on a cursor that is gone. Put
-        // it back where it was.
-        if let Some(held) = self.state.held.remove(&connection) {
+        //
+        // One `remove` for everything the connection was in the middle of — what
+        // it was last told about the light, the music and its own numbers goes
+        // silently, which is right: a connection id can be reused, and a reconnect
+        // inheriting the last one's remembered light would sit in daylight inside
+        // a cave. Only the cursor needs an answer, because an item on it is
+        // nowhere — off the ground and out of any container — until something puts
+        // it back.
+        let held = self.state.forget_connection(connection).and_then(|row| row.held);
+        if let Some(held) = held {
             items::restore(&mut self.state, held);
         }
-        // Forget any containers it had open; a gone connection watches nothing.
-        self.state.open_containers.retain(|_, watchers| {
-            watchers.remove(&connection);
-            !watchers.is_empty()
-        });
-        // And forget what it was last told about itself. A connection id can be
-        // reused, and a reconnect that inherits the last one's remembered light
-        // and music is told neither — it would sit in daylight inside a cave.
-        self.last_status.remove(&connection);
-        self.forget_light(connection);
-        self.forget_music(connection);
 
         let Some(entity) = self.state.players.remove(&connection) else {
             return;

@@ -20,6 +20,29 @@
 use openshard_protocol::access::AccessLevel;
 use openshard_protocol::identity::AccountName;
 use openshard_protocol::version::ClientVersion;
+use openshard_protocol::world::{Light, MusicId};
+
+use crate::runtime::HeldItem;
+
+/// The derived half of a player's status bar, kept to compare against next time.
+///
+/// Only the fields the refresh pass computes: the stats and pools have their own
+/// re-send (off a buff landing), and the name never moves.
+///
+/// Lives on the connection because that is what it is *about*: not what the
+/// character is, but what this particular client was last told it is. Two clients
+/// looking at the same numbers were told them at different moments.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct StatusSnapshot {
+    /// Gold counted in the pack.
+    pub gold: u32,
+    /// Armour summed off what is worn.
+    pub armor: u16,
+    /// What the pack and everything in it weighs.
+    pub weight: u16,
+    /// Pets and the mount under the rider.
+    pub followers: u8,
+}
 
 /// One connected client, as the world sees it.
 ///
@@ -33,10 +56,21 @@ use openshard_protocol::version::ClientVersion;
 /// in the world yet — is the binary's, and stays there: the packet router has to
 /// answer "may this reach the world" synchronously, and the world answers no
 /// synchronous question. This is only what the world itself has to remember about
-/// a socket. The per-connection state currently spread across eight maps on
-/// [`WorldState`](crate::WorldState) belongs here and is step S7 of the plan in
-/// `docs/connection_state.md`.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// a socket.
+///
+/// # Why the transient state is here and not in a map
+///
+/// Everything below the identity fields used to be a map on
+/// [`WorldState`](crate::WorldState) or on `World`, keyed by connection, and
+/// `disconnect` cleared each one by name. That list was hand-written, so the
+/// map added without a line beside it leaked and nothing caught it — and four
+/// of them, the gump tables, had already done exactly that while their own docs
+/// claimed to be cleared on logout. A field on the row cannot be forgotten:
+/// removing the row takes it, whether or not anybody remembered it exists.
+// Deliberately not `PartialEq`: two connections are never the same connection,
+// and once the row carries what the client is in the middle of doing there is no
+// question a comparison would answer. `ConnectionId` is the identity.
+#[derive(Clone, Debug)]
 pub struct Connection {
     /// What the client claims to be. Every feature gate and every encoder reads
     /// it, and this is the only place it lives: the game socket never states its
@@ -57,15 +91,57 @@ pub struct Connection {
     /// here because entering a character is a tick's job now, and the entity's
     /// `Access` component is written from this.
     pub access: AccessLevel,
+
+    /// The item on this client's cursor, and where it was so a cancelled drag can
+    /// put it back.
+    ///
+    /// An item here is off the ground and out of everyone's
+    /// [`seen`](crate::WorldState::seen) — in limbo until a `0x08` lands it, which
+    /// is why a connection that goes while dragging has to be noticed at all. An
+    /// `Option` and not a map entry because a cursor holds one thing: that was
+    /// always what the old map's `get` returning `None` meant.
+    pub held: Option<HeldItem>,
+    /// The derived status numbers last sent, so the refresh pass sends only what
+    /// changed. `None` before the first pass has run for this connection.
+    pub last_status: Option<StatusSnapshot>,
+    /// The light level last sent, the remembered half of the ambient diff.
+    ///
+    /// Forgotten with the row, and that matters: a connection id can be reused,
+    /// and a reconnect inheriting the last one's remembered light would be told
+    /// nothing — it would sit in daylight inside a cave.
+    pub last_light: Option<Light>,
+    /// The music track this client is hearing, so a region crossing that does not
+    /// change it does not restart it. Re-sending `0x6D` with the same id starts
+    /// the track over.
+    pub last_music: Option<MusicId>,
 }
 
 impl Connection {
-    /// A connection that has just been handed over by the login conversation.
+    /// A connection that has just been handed over by the login conversation:
+    /// known identity, and nothing done yet.
     pub fn new(version: ClientVersion, account: AccountName, access: AccessLevel) -> Self {
         Self {
             version,
             account,
             access,
+            held: None,
+            last_status: None,
+            last_light: None,
+            last_music: None,
         }
+    }
+
+    /// Record who this connection is, keeping whatever it is in the middle of.
+    ///
+    /// The hand-off happens twice — once when the login conversation ends, once
+    /// when a character enters, because a test may queue an `Enter` without ever
+    /// having authenticated. Both write the same identity, read off the same auth
+    /// key, so re-writing it is harmless; *replacing the row* would not be, and
+    /// once the transient state moved here that stopped being a distinction
+    /// without a difference.
+    pub fn identify(&mut self, version: ClientVersion, account: AccountName, access: AccessLevel) {
+        self.version = version;
+        self.account = account;
+        self.access = access;
     }
 }

@@ -27,17 +27,10 @@ use openshard_state::components::{Riding, body_is_female};
 /// that the pack walk is nothing next to the rest of the tick.
 pub(super) const STATUS_REFRESH_TICKS: u64 = 10;
 
-/// The derived half of a player's status bar, kept to compare against next time.
-///
-/// Only the fields this pass computes: the stats and pools have their own
-/// re-send (`refresh_status_of`, off a buff landing), and the name never moves.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(super) struct StatusSnapshot {
-    pub(super) gold: u32,
-    pub(super) armor: u16,
-    pub(super) weight: u16,
-    pub(super) followers: u8,
-}
+// What this pass remembers between runs is `StatusSnapshot`, and it lives on the
+// connection's row in `openshard_state` rather than here: it is about what a
+// particular client was last told, not about what the character is.
+use openshard_state::connection::StatusSnapshot;
 
 impl World {
     /// What a mobile's status bar says right now.
@@ -188,7 +181,8 @@ impl World {
             .map_or(DEFAULT_HITPOINTS, |stats| stats.strength);
         let carried = self
             .connection_of(entity)
-            .and_then(|connection| self.last_status.get(&connection))
+            .and_then(|connection| self.state.connection(connection))
+            .and_then(|row| row.last_status.as_ref())
             .map_or_else(
                 || items::total_weight(&self.state, entity, BODY_WEIGHT),
                 |remembered| remembered.weight,
@@ -214,16 +208,20 @@ impl World {
             .iter()
             .map(|(&connection, &entity)| (connection, entity))
             .collect();
-        // A connection that has gone drops its remembered numbers with it.
-        self.last_status
-            .retain(|connection, _| self.state.players.contains_key(connection));
+        // No sweep of the remembered numbers here any more: they live on the
+        // connection's row and a connection that has gone took them with it. This
+        // used to be a `retain` over the map, and it was the second hand-written
+        // teardown of the same state — `disconnect` cleared it too.
         let contents = items::contents_index(&self.state);
         for (connection, entity) in players {
             let now = self.derived_status_with(&contents, entity);
-            let unchanged = self.last_status.get(&connection) == Some(&now);
+            let Some(row) = self.state.connection_mut(connection) else {
+                continue;
+            };
+            let unchanged = row.last_status == Some(now);
             // Remembered either way: the fatigue check reads this weight, and a
             // player whose numbers have not moved still needs one on file.
-            self.last_status.insert(connection, now);
+            row.last_status = Some(now);
             if !unchanged {
                 self.send_status(connection, entity);
             }

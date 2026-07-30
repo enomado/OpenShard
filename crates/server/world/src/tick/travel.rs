@@ -67,7 +67,7 @@ impl World {
         // Something on the cursor is in neither world once you leave.
         if self
             .connection_of(caster)
-            .is_some_and(|connection| self.state.held.contains_key(&connection))
+            .is_some_and(|connection| self.state.held_of(connection).is_some())
         {
             return Some("You cannot teleport while dragging an object.");
         }

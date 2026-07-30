@@ -130,11 +130,12 @@ impl World {
             .iter()
             .filter_map(|(&connection, &entity)| {
                 let level = self.light_for(entity);
-                (self.last_light.get(&connection) != Some(&level)).then_some((connection, level))
+                let remembered = self.state.connection(connection).and_then(|row| row.last_light);
+                (remembered != Some(level)).then_some((connection, level))
             })
             .collect();
         for (connection, level) in changed {
-            self.last_light.insert(connection, level);
+            self.remember_light(connection, level);
             self.state
                 .send_packet(connection, &ServerPacket::LightLevel(LightLevel { level }));
         }
@@ -148,12 +149,17 @@ impl World {
             .players
             .get(&connection)
             .map_or(LIGHT_DAY, |&entity| self.light_for(entity));
-        self.last_light.insert(connection, level);
+        self.remember_light(connection, level);
         level
     }
 
-    /// Forget a departed connection's light, so a reconnect is told afresh.
-    pub(super) fn forget_light(&mut self, connection: ConnectionId) {
-        self.last_light.remove(&connection);
+    /// Note what a connection has been told, so the refresh pass does not say it
+    /// again. Nothing to remember for a connection the world is not holding — and
+    /// nothing was sent to it either, `send_packet` having dropped it for the same
+    /// reason.
+    fn remember_light(&mut self, connection: ConnectionId, level: Light) {
+        if let Some(row) = self.state.connection_mut(connection) {
+            row.last_light = Some(level);
+        }
     }
 }

@@ -207,7 +207,7 @@ fn a_lifted_pile_is_still_carried() {
 
     // Onto the cursor: out of the container, into the drag.
     world.state.registry.remove::<Contained>(purse);
-    world.state.held.insert(
+    world.state.hold(
         connection,
         openshard_state::HeldItem {
             entity: purse,

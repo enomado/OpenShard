@@ -478,7 +478,7 @@ impl World {
         }
         if self
             .connection_of(traveller)
-            .is_some_and(|connection| self.state.held.contains_key(&connection))
+            .is_some_and(|connection| self.state.held_of(connection).is_some())
         {
             self.notify_self(traveller, "You cannot teleport while dragging an object.");
             return;

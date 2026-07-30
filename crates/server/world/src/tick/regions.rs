@@ -267,18 +267,15 @@ impl World {
             // remembered track stays, so walking back in is still a no-op.
             return;
         };
-        if self.last_music.get(&connection) == Some(&track) {
+        let Some(row) = self.state.connection_mut(connection) else {
+            return;
+        };
+        if row.last_music == Some(track) {
             return;
         }
-        self.last_music.insert(connection, track);
+        row.last_music = Some(track);
         self.state
             .send_packet(connection, &ServerPacket::PlayMusic(PlayMusic { track }));
-    }
-
-    /// Forget a departed connection's music, so a reconnect hears its region
-    /// again.
-    pub(super) fn forget_music(&mut self, connection: openshard_gateway::ConnectionId) {
-        self.last_music.remove(&connection);
     }
 
     /// Set the guards on anyone who has just walked into a town they are not

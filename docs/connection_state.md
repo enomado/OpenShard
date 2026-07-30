@@ -52,6 +52,9 @@ Five things follow from the split, and each is a reason on its own:
    state machine that can disagree with itself"* — which is what `playing` is.
 5. **Teardown is hand-written.** `World::disconnect` clears eight maps by name.
    The ninth one added without a line there leaks, and nothing catches it.
+   *(S7a: four of them already had. The connection-keyed state is fields on the
+   row now and goes with it; see the backlog for the two that stay indexes and
+   for S7b.)*
 
 ## The shape this works toward
 
@@ -291,12 +294,50 @@ follows.
       bounded that by having no choice but to run one at a time; taking the
       serialisation away without putting a bound back would have been a new door.
 
-- [ ] **S7. The rest of the per-connection state joins the row.** `held`,
-      `open_containers`, `open_quest_gumps`, `open_craft_gumps`,
-      `pending_targets`, `last_status`, `last_light`, `last_music`. Teardown
-      becomes one `remove`, and forgetting a field stops being possible.
+- [ ] **S7. The rest of the per-connection state joins the row.** In two parts,
+      because the eight maps turned out to be two different problems wearing one
+      name.
 
-## Backlog, found while doing S1 through S6
+      - [x] **S7a. What is keyed by a connection.** Done. `held`, `last_status`,
+            `last_light` and `last_music` are fields on
+            `openshard_state::connection::Connection` — the first from
+            `WorldState`, the other three from `World` itself, where they had
+            been since before there was a row to put them on. `held` is an
+            `Option<HeldItem>` rather than a map entry, which is what the map's
+            missing key always meant: a cursor holds one thing.
+
+            Teardown is `WorldState::forget_connection`, and `disconnect` reads
+            one field off the row it removed — the cursor, because an item on it
+            is off the ground and in no container and would be deleted by the
+            row simply ceasing to exist. Nothing else needs an answer, which is
+            the point. Two hand-written sweeps went with it: `disconnect`'s list
+            of maps by name, and a second one in `refresh_statuses` that
+            `retain`ed the same state on a different condition.
+
+            `attach` writes the identity *into* the row now instead of replacing
+            it. Both callers pass the same identity — that is why replacing was
+            safe — but the row carries what the client is in the middle of, and
+            a second hand-off must not take an item off a cursor.
+
+            Guarded by `a_disconnect_takes_everything_the_connection_was_in_the_middle_of`
+            and `a_second_hand_off_keeps_what_the_connection_was_doing` in
+            `world/src/tick/tests.rs`. The first asserts the row's *absence*
+            rather than each field's, on purpose: a field added later is covered
+            by it without anybody remembering to extend it, which is the whole
+            property the shape was changed for.
+
+      - [ ] **S7b. What is keyed by an entity.** `pending_targets`,
+            `open_quest_gumps`, `open_craft_gumps`, `open_runebook_gumps` and
+            `open_gate_gumps` are keyed by the *player's entity*, so `disconnect`
+            cannot sweep them by connection — and four of the five it does not
+            sweep at all, though their own docs say "Cleared on logout". They are
+            client windows, not properties of a mobile: re-keying them by
+            connection puts them on the row and closes the leak in one move.
+            `Client { connection }` on the entity makes the lookup O(1), so the
+            cost is roughly twenty call sites across six crates, not a design
+            problem.
+
+## Backlog, found while doing S1 through S7a
 
 None is a blocker; each is written down where the next step through this area
 will read it.
@@ -401,6 +442,32 @@ will read it.
   path, because today it means a misbehaving client is one indistinguishable
   line per packet.
 
+- **`open_containers` did not collapse, and cannot** — the `pending_inventories`
+  finding of S4, in the same shape and for a different reason. It is an *inverted*
+  index, `Serial -> {ConnectionId}`, and every read of it asks "who is watching
+  this container" as an item inside it changes. On the row it would be
+  `HashSet<Serial>` per connection, and each of those reads would become a scan of
+  every connection on the shard — a per-item-change cost that grows with the
+  player count. So it stays an index, and `WorldState::forget_connection` sweeps
+  it: the one piece of per-connection state the row cannot carry, in the one place
+  that lets go of a connection.
+
+- **The four gump tables prove the argument this plan opens with.** Point 5 of
+  "Why" says the ninth map added without a line in `disconnect` leaks and nothing
+  catches it. `open_quest_gumps`, `open_craft_gumps`, `open_runebook_gumps` and
+  `open_gate_gumps` are that map, four times over, and each one's own doc comment
+  says "Cleared on logout" — which was true of the neighbour it was written beside
+  and never true of it. Logging out with a craft window open leaves an entry keyed
+  by an entity that no longer exists, until the id is reused. S7b is the fix.
+
+- **`connection_of` is a scan, and it is the third copy.** `world/src/tick/enter.rs`
+  finds a mobile's connection by walking `state.players` looking for the entity —
+  when `Client { connection }` on the entity answers it in one lookup, which is
+  what `WorldState::client_of` does. `items/src/weight.rs` has a fourth copy of the
+  same walk. Both are the S1 finding again: a duplicate helper is invisible to the
+  grep that would prove it is a duplicate, and this pair is also O(players) where
+  the original is O(1).
+
 ## To verify with a real client
 
 - **S5 delays `0xA9` by up to one tick** (50 ms). It answers `0x91`
@@ -442,6 +509,6 @@ will read it.
 
 ## Status
 
-S1 through S6 landed; S7 is next. Findings are recorded in
+S1 through S6 landed, and S7a with them; S7b is next. Findings are recorded in
 [`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
 that must agree".

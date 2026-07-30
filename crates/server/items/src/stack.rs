@@ -41,7 +41,7 @@ pub fn merge_onto(state: &mut WorldState, connection: ConnectionId, held: HeldIt
             bounce(state, connection, held, DragCancelReason::Other);
             return;
         }
-        state.held.remove(&connection);
+        state.take_held(connection);
         state.registry.despawn(held.entity);
         debug!("stacks merged");
     } else if let Some(&contained) = state.registry.get::<Contained>(target) {
@@ -61,7 +61,7 @@ pub fn merge_onto(state: &mut WorldState, connection: ConnectionId, held: HeldIt
             bounce(state, connection, held, DragCancelReason::Other);
             return;
         }
-        state.held.remove(&connection);
+        state.take_held(connection);
         // The dragged stack was on a cursor, on no screen and in no gump, so
         // despawning it needs no packet of its own.
         state.registry.despawn(held.entity);

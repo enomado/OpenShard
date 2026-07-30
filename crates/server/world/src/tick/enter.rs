@@ -17,6 +17,11 @@ impl World {
     /// is the same one both times, because both read it off the auth key the login
     /// socket issued.
     ///
+    /// Which is why this writes the identity *into* the row rather than replacing
+    /// it. Since S7 the row also carries what the client is in the middle of — the
+    /// item on its cursor above all — and that is not something either caller
+    /// knows or is entitled to reset.
+    ///
     /// [`WorldState::send_packet`]: openshard_state::WorldState::send_packet
     pub(super) fn attach(
         &mut self,
@@ -25,10 +30,19 @@ impl World {
         account: AccountName,
         access: AccessLevel,
     ) {
-        self.state.connections.insert(
-            connection,
-            openshard_state::connection::Connection::new(version, account, access),
-        );
+        // Written into the existing row when there is one, rather than over it:
+        // both callers pass the same identity, but the row now also carries what
+        // the client is in the middle of, and a second hand-off must not put a
+        // dragged item back on the floor of a world it never left.
+        match self.state.connection_mut(connection) {
+            Some(row) => row.identify(version, account, access),
+            None => {
+                self.state.connections.insert(
+                    connection,
+                    openshard_state::connection::Connection::new(version, account, access),
+                );
+            }
+        }
     }
 
     /// The facet a mobile is on, or the default if it carries none.
@@ -351,7 +365,7 @@ impl World {
         // Bring back what this character was carrying, if the store had it. A
         // returning character re-equips its saved backpack, bank box and gear; a
         // new one has nothing waiting.
-        let restored = self.restore_inventory(serial.raw());
+        let restored = self.restore_inventory(serial);
 
         // Every character wears a backpack. Without it the paperdoll's bag is dead
         // and there is nowhere to put anything picked up. Equipped before the

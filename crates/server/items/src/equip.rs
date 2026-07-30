@@ -38,7 +38,7 @@ pub fn equip_item(
 ) {
     // Equipping is a *drop* of the dragged item, so there has to be one, and
     // it has to be the item named.
-    let Some(held) = state.held.get(&connection).copied() else {
+    let Some(held) = state.held_of(connection) else {
         return;
     };
     if state.registry.serial_of(held.entity) != item.validate() {
@@ -85,7 +85,7 @@ pub fn equip_item(
         return;
     }
 
-    state.held.remove(&connection);
+    state.take_held(connection);
     state.registry.insert(
         held.entity,
         Equipped {

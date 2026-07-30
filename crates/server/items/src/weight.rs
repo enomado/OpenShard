@@ -142,7 +142,7 @@ fn held_by(state: &WorldState, mobile: EntityId) -> Option<EntityId> {
         .iter()
         .find(|(_, &player)| player == mobile)
         .map(|(&connection, _)| connection)?;
-    state.held.get(&connection).map(|held| held.entity)
+    state.held_of(connection).map(|held| held.entity)
 }
 
 /// The same for a single mobile, indexing the world itself. For one-off reads;

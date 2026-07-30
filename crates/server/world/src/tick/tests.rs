@@ -47,6 +47,16 @@ pub(super) fn connection() -> ConnectionId {
     ConnectionId::from_raw(1)
 }
 
+/// Whether nobody at all has anything on their cursor.
+///
+/// The cursor is a field on each connection's row rather than a map of its own,
+/// so "the world holds nothing" is a question about every row and not about one
+/// map being empty. Worth keeping in that wider form: a drag that bounced onto
+/// the *wrong* connection would still leave the right one clear.
+pub(super) fn nothing_is_held(world: &World) -> bool {
+    world.state.connections.values().all(|row| row.held.is_none())
+}
+
 /// Put "admin"/"Lord British" on file as if a previous run had saved it there,
 /// so the next `Character::Saved` entry restores it.
 ///
@@ -61,7 +71,7 @@ pub(super) fn connection() -> ConnectionId {
 /// is the same one the hand-built `StoredCharacter` fixtures used to be.
 pub(super) fn on_file(world: &mut World, serial: Serial, position: Point, appearance: Appearance) {
     world.restore_characters(vec![CharacterRecord {
-        serial: serial.raw(),
+        serial,
         account: AccountName("admin".to_owned()),
         name: CharacterName("Lord British".to_owned()),
         body: appearance.body.0,
@@ -483,7 +493,7 @@ fn picking_up_out_of_reach_is_rejected_and_leaves_the_item() {
         world.state.registry.has::<Position>(item),
         "the item stays on the ground"
     );
-    assert!(world.state.held.is_empty(), "and nothing is on the cursor");
+    assert!(nothing_is_held(&world), "and nothing is on the cursor");
 }
 
 #[test]
@@ -522,7 +532,7 @@ fn dropping_out_of_reach_bounces_the_item_back_to_where_it_was() {
         Some(origin),
         "and the item is back where it was lifted"
     );
-    assert!(world.state.held.is_empty());
+    assert!(nothing_is_held(&world));
 }
 
 #[test]
@@ -816,7 +826,7 @@ fn dropping_an_item_into_your_worn_backpack_stores_it() {
     );
     assert_eq!(world.registry().get::<Contained>(item).unwrap().container, pack);
     assert!(
-        !world.state.held.contains_key(&player),
+        world.state.held_of(player).is_none(),
         "and off the cursor, not bounced"
     );
 }
@@ -1059,7 +1069,7 @@ fn picking_an_item_out_of_a_container_holds_it() {
         !world.state.registry.has::<Contained>(item),
         "lifting it out drops the containment"
     );
-    assert!(world.state.held.contains_key(&player), "and it is on the cursor");
+    assert!(world.state.held_of(player).is_some(), "and it is on the cursor");
 }
 
 #[test]
@@ -1237,7 +1247,7 @@ fn unequipping_lifts_the_item_off_and_forgets_it_for_others() {
     world.tick(now);
 
     assert!(!world.state.registry.has::<Equipped>(item), "it comes off");
-    assert!(world.state.held.contains_key(&player), "and onto the cursor");
+    assert!(world.state.held_of(player).is_some(), "and onto the cursor");
     assert!(
         packets_for(&mut world, watcher)
             .iter()
@@ -1816,7 +1826,7 @@ fn picking_up_part_of_a_stack_splits_it() {
     world.tick(now);
 
     // The original, still serial `pile`, is on the cursor holding 30.
-    assert!(world.state.held.contains_key(&player));
+    assert!(world.state.held_of(player).is_some());
     assert_eq!(openshard_items::amount_of(&world.state, pile_item), 30);
     assert!(!world.state.registry.has::<Position>(pile_item), "off the ground");
 
@@ -1864,7 +1874,7 @@ fn the_split_portion_keeps_its_serial_and_can_be_dropped() {
     });
     world.tick(now);
 
-    assert!(world.state.held.is_empty(), "the drop landed, not bounced");
+    assert!(nothing_is_held(&world), "the drop landed, not bounced");
     assert!(world.state.registry.has::<Position>(pile_item));
     assert_eq!(openshard_items::amount_of(&world.state, pile_item), 30);
 }
@@ -2004,7 +2014,7 @@ fn picking_up_part_of_a_stack_from_a_container_splits_it() {
     });
     world.tick(now);
 
-    assert!(world.state.held.contains_key(&player), "the original is held");
+    assert!(world.state.held_of(player).is_some(), "the original is held");
     assert_eq!(openshard_items::amount_of(&world.state, pile_item), 30);
     assert!(
         !world.state.registry.has::<Contained>(pile_item),
@@ -3977,7 +3987,7 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
     let record = snapshot
         .characters
         .iter()
-        .find(|c| c.serial == serial.raw())
+        .find(|c| c.serial == serial)
         .cloned()
         .expect("the character was saved");
     assert_eq!(record.strength, 55);
@@ -4372,7 +4382,7 @@ fn poison_survives_a_relogin() {
     let record = snapshot
         .characters
         .iter()
-        .find(|c| c.serial == serial.raw())
+        .find(|c| c.serial == serial)
         .cloned()
         .expect("the character was saved");
     let poison = record
@@ -4425,7 +4435,7 @@ fn a_poisoned_creature_comes_back_poisoned() {
     assert!(
         mobiles
             .iter()
-            .find(|m| m.serial == mob.raw())
+            .find(|m| m.serial == mob)
             .expect("the creature was swept")
             .effects
             .iter()
@@ -4570,7 +4580,7 @@ fn a_stat_buff_survives_a_relogin() {
     let record = snapshot
         .characters
         .iter()
-        .find(|c| c.serial == serial.raw())
+        .find(|c| c.serial == serial)
         .cloned()
         .expect("saved");
     assert_eq!(record.strength, buffed.strength, "the buffed stat went to disk");
@@ -4894,7 +4904,7 @@ fn a_behaviour_buff_survives_a_relogin() {
     let record = snapshot
         .characters
         .iter()
-        .find(|c| c.serial == serial.raw())
+        .find(|c| c.serial == serial)
         .cloned()
         .expect("saved");
     assert!(
@@ -5307,7 +5317,7 @@ fn paralysis_survives_a_relogin() {
     let record = snapshot
         .characters
         .iter()
-        .find(|c| c.serial == serial.raw())
+        .find(|c| c.serial == serial)
         .cloned()
         .expect("saved");
     assert!(
@@ -7236,7 +7246,7 @@ fn decoration_cannot_be_picked_up() {
     world.tick(now);
 
     assert!(
-        !world.state.held.contains_key(&gm),
+        world.state.held_of(gm).is_none(),
         "a town's fittings are not loot"
     );
     assert!(
@@ -7876,18 +7886,17 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
     // What persistence would carry: the backpack (worn) and the gold (inside).
     let records = home.inventory_of(entity);
     assert!(
-        records
-            .iter()
-            .any(|r| r.serial == gold_serial.raw() && r.stackable),
+        records.iter().any(|r| r.serial == gold_serial && r.stackable),
         "the gold is saved as stackable"
     );
     assert!(
-        records.iter().any(|r| r.serial == backpack_serial.raw()
-            && matches!(r.location, ItemLocation::Equipped { .. })),
+        records
+            .iter()
+            .any(|r| r.serial == backpack_serial && matches!(r.location, ItemLocation::Equipped { .. })),
         "the backpack is saved as worn"
     );
     assert!(
-        records.iter().any(|r| r.serial == gold_serial.raw()
+        records.iter().any(|r| r.serial == gold_serial
             && r.amount == 500
             && matches!(r.location, ItemLocation::Contained { .. })),
         "the gold is saved inside, amount and all"
@@ -7989,7 +7998,7 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     assert!(
         records
             .iter()
-            .any(|r| r.serial == book_serial.raw() && r.spellbook == Some(learned)),
+            .any(|r| r.serial == book_serial && r.spellbook == Some(learned)),
         "the spellbook is saved with its learned spells"
     );
 
@@ -8222,9 +8231,7 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
     let snapshot = home.drain_saves().next_back().expect("a snapshot");
     let mobiles = snapshot.mobiles.clone().expect("a mobile sweep");
     assert!(
-        mobiles
-            .iter()
-            .any(|m| m.serial == vendor_serial.raw() && m.vendor),
+        mobiles.iter().any(|m| m.serial == vendor_serial && m.vendor),
         "the vendor is in the mobile sweep, marked as one"
     );
     // What the store would hand back at boot: every saved item, inventories
@@ -8526,13 +8533,13 @@ fn a_snapshot_saves_an_idle_online_character_and_the_ground() {
     let snapshot = world.drain_saves().next().expect("a snapshot was taken");
     let owner = world.registry().serial_of(entity).unwrap();
     assert!(
-        snapshot.characters.iter().any(|c| c.serial == owner.raw()),
+        snapshot.characters.iter().any(|c| c.serial == owner),
         "the idle online character was saved"
     );
     let inv = snapshot
         .inventories
         .iter()
-        .find(|inv| inv.owner == owner.raw())
+        .find(|inv| inv.owner == owner)
         .expect("its inventory was walked");
     assert!(
         inv.items.iter().any(|i| i.graphic == 0x0EED),
@@ -10780,6 +10787,90 @@ fn a_departing_character_is_filed_where_it_walked_to() {
         (position.x, position.y),
         (walked_to.x, walked_to.y),
         "the logout filed the moved position, not the login one"
+    );
+}
+
+#[test]
+fn a_disconnect_takes_everything_the_connection_was_in_the_middle_of() {
+    // The point of S7: the per-connection state is fields on one row, so letting
+    // go of the row lets go of all of it. This used to be a list of maps cleared
+    // by name in `disconnect`, and the map added without a line there leaked —
+    // which is not hypothetical, it is what the four gump tables did.
+    //
+    // Asserted on the row's absence rather than on each field, deliberately: a
+    // field added later is covered by this test without anybody remembering to
+    // extend it, which is the property the shape was changed for.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let here = Point::new(START.0, START.1, 0);
+    spawn_item_at(&mut world, here, now);
+    let item_serial = loose_item_serial(&world);
+    let item = entity(&world, item_serial);
+
+    world.queue(Command::PickUpItem {
+        connection,
+        serial: RawSerial(item_serial.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    assert!(
+        world.state.held_of(connection).is_some(),
+        "the item is on the cursor, so the row has something in flight on it"
+    );
+
+    world.queue(Command::Disconnect { connection });
+    world.tick(now);
+
+    assert!(
+        world.state.connection(connection).is_none(),
+        "the row is gone, and with it every field it carried"
+    );
+    // The cursor is the one thing that could not simply cease to exist: an item on
+    // it is off the ground and in no container, so dropping the row without
+    // putting it back would delete it.
+    assert!(
+        world.state.registry.has::<Position>(item),
+        "and the item it was dragging is back on the ground"
+    );
+}
+
+#[test]
+fn a_second_hand_off_keeps_what_the_connection_was_doing() {
+    // `attach` runs twice on an ordinary login — once when the login conversation
+    // ends, once when a character enters — and it used to write a fresh row each
+    // time. That was harmless while the row held only the identity, all three
+    // fields being read off the same auth key. It stopped being harmless the
+    // moment the row carried the cursor: a re-write would have left the dragged
+    // item in limbo, off the ground and in no container, with nothing left
+    // pointing at it.
+    let now = Instant::now();
+    let mut world = world();
+    let connection = enter(&mut world, now);
+    let here = Point::new(START.0, START.1, 0);
+    spawn_item_at(&mut world, here, now);
+    let item_serial = loose_item_serial(&world);
+
+    world.queue(Command::PickUpItem {
+        connection,
+        serial: RawSerial(item_serial.raw()),
+        amount: 1,
+    });
+    world.tick(now);
+    let held = world.state.held_of(connection).expect("on the cursor");
+
+    world.queue(Command::Authenticated {
+        connection,
+        version: ClientVersion::TOL,
+        account: AccountName("admin".to_owned()),
+        access: AccessLevel::Player,
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.state.held_of(connection).map(|now| now.entity),
+        Some(held.entity),
+        "the hand-off said who the connection is, not what it has stopped doing"
     );
 }
 

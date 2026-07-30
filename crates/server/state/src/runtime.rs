@@ -539,6 +539,12 @@ pub struct WorldState {
     /// picked a character and after it has left one behind. See
     /// [`Connection`](crate::connection::Connection) for why that has to be
     /// expressible.
+    ///
+    /// It carries what the client is in the middle of as well as who it is — what
+    /// is on its cursor, what it was last told about the light, the music and its
+    /// own numbers. Those were maps of their own, cleared by name on the way out;
+    /// the row is what makes forgetting one impossible. Let go of through
+    /// [`forget_connection`](Self::forget_connection), never `connections.remove`.
     pub connections: HashMap<ConnectionId, Connection>,
     /// What each player's client currently has on screen.
     ///
@@ -546,10 +552,6 @@ pub struct WorldState {
     /// "what can you see" packet — only "draw this" and "forget that" — so the
     /// only way to send a mobile exactly once is to know what was sent before.
     pub seen: HashMap<EntityId, HashSet<EntityId>>,
-    /// The item each connection is dragging on its cursor, and where it was so a
-    /// cancelled drag can put it back. An item here is off the ground and out of
-    /// everyone's [`seen`](Self::seen) — in limbo until a `0x08` lands it.
-    pub held: HashMap<ConnectionId, HeldItem>,
     /// Where new characters appear. The height comes from the map.
     pub start: (u16, u16),
     /// The generator behind every roll — a swing landing, a skill gaining. Part
@@ -1572,12 +1574,12 @@ impl WorldState {
             // prefix and a suffix around the name in one string, so it goes in the name
             // slot whole and the other two stay empty.
             let name = crate::title::titled_name(self, entity, name);
-            list.add_args(1_050_045, &format!(" \t{name}\t "));
+            list.add_args(ClilocId(1_050_045), &format!(" \t{name}\t "));
         } else if let Some(&Drawn { id, .. }) = self.registry.get::<Drawn>(entity) {
-            let cliloc = 1_020_000 + u32::from(id.0);
+            let cliloc = ClilocId(1_020_000 + u32::from(id.0));
             match self.registry.get::<Amount>(entity) {
                 Some(Amount(amount)) if *amount > 1 => {
-                    list.add_args(1_050_039, &format!("{amount}\t#{cliloc}"));
+                    list.add_args(ClilocId(1_050_039), &format!("{amount}\t#{}", cliloc.0));
                 }
                 _ => list.add(cliloc),
             }
@@ -1593,10 +1595,10 @@ impl WorldState {
             .get::<Quality>(entity)
             .is_some_and(|quality| quality.exceptional)
         {
-            list.add(1_060_636); // Exceptional
+            list.add(ClilocId(1_060_636)); // Exceptional
         }
         if let Some(CraftedBy(maker)) = self.registry.get::<CraftedBy>(entity) {
-            list.add_args(1_050_043, maker); // crafted by ~1_NAME~
+            list.add_args(ClilocId(1_050_043), maker); // crafted by ~1_NAME~
         }
         Some(list.finish())
     }
@@ -1951,6 +1953,66 @@ impl WorldState {
     #[must_use]
     pub fn version_of(&self, connection: ConnectionId) -> Option<ClientVersion> {
         self.connections.get(&connection).map(|client| client.version)
+    }
+
+    /// What the world remembers about `connection`, or `None` for one it is not
+    /// holding — still in the login conversation, or already gone.
+    #[must_use]
+    pub fn connection(&self, connection: ConnectionId) -> Option<&Connection> {
+        self.connections.get(&connection)
+    }
+
+    /// The same row, to write what this client is in the middle of.
+    ///
+    /// A write to a connection the world does not hold is a no-op rather than a
+    /// panic: a tick can be applying work queued for a socket that has since
+    /// closed, which is ordinary rather than exceptional.
+    pub fn connection_mut(&mut self, connection: ConnectionId) -> Option<&mut Connection> {
+        self.connections.get_mut(&connection)
+    }
+
+    /// Let go of a connection, and of everything the world was holding for it.
+    ///
+    /// The one exit. Returns the row so the caller can deal with what was still in
+    /// flight — an item on the cursor has to be put back somewhere, and only the
+    /// item code knows where. Everything else on the row simply ceases to exist,
+    /// which is the point: teardown is a `remove`, not a list of maps to clear
+    /// that a new field can be left off.
+    ///
+    /// It does not touch the *character*: letting go of the entity, its serial and
+    /// its saved record is `World::disconnect`'s, because it involves the journal
+    /// and the roster and this crate has neither.
+    pub fn forget_connection(&mut self, connection: ConnectionId) -> Option<Connection> {
+        // The one per-connection fact that is not on the row: which containers this
+        // client has open is indexed by *container*, because every read of it asks
+        // "who is watching this one" as an item inside changes. Inverting it onto
+        // the row would turn each of those into a scan of every connection, so it
+        // stays an index — and this is the sweep the row cannot do for it.
+        self.open_containers.retain(|_, watchers| {
+            watchers.remove(&connection);
+            !watchers.is_empty()
+        });
+        self.connections.remove(&connection)
+    }
+
+    /// What `connection` is dragging on its cursor, if anything.
+    #[must_use]
+    pub fn held_of(&self, connection: ConnectionId) -> Option<HeldItem> {
+        self.connections.get(&connection).and_then(|row| row.held)
+    }
+
+    /// Put an item on `connection`'s cursor.
+    pub fn hold(&mut self, connection: ConnectionId, held: HeldItem) {
+        if let Some(row) = self.connections.get_mut(&connection) {
+            row.held = Some(held);
+        }
+    }
+
+    /// Take whatever is on `connection`'s cursor off it.
+    pub fn take_held(&mut self, connection: ConnectionId) -> Option<HeldItem> {
+        self.connections
+            .get_mut(&connection)
+            .and_then(|row| row.held.take())
     }
 
     /// Who to answer for `entity`, and in which dialect: its connection and that

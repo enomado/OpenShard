@@ -147,7 +147,7 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
             return;
         }
     };
-    if state.held.contains_key(&partner_connection) {
+    if state.held_of(partner_connection).is_some() {
         state.localized_message(player, CLILOC_PARTNER_IS_DRAGGING, "");
         bounce(state, connection, held, DragCancelReason::Other);
         return;
