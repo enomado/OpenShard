@@ -1,0 +1,1453 @@
+{
+  "groups": [1044294, 1044291, 1044292, 1044566, 1062760, 1044293, 1044290, 1044298, 1111809, 1044297],
+  "sub_res": {
+    "graphic": "0x1BD7",
+    "name": 1072643,
+    "entries": [
+      { "hue": "0x0000", "name": 1072643, "req_skill": 0, "message": 1072652 },
+      { "hue": "0x07DA", "name": 1072644, "req_skill": 650, "message": 1072652 },
+      { "hue": "0x04A7", "name": 1072645, "req_skill": 750, "message": 1072652 },
+      { "hue": "0x04A8", "name": 1072646, "req_skill": 850, "message": 1072652 },
+      { "hue": "0x04A9", "name": 1072647, "req_skill": 950, "message": 1072652 },
+      { "hue": "0x04AA", "name": 1072648, "req_skill": 950, "message": 1072652 },
+      { "hue": "0x047F", "name": 1072649, "req_skill": 950, "message": 1072652 }
+    ]
+  },
+  "recipes": [
+    {
+      "graphic": "0x1EB1",
+      "name": 1027857,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 0, "max": 250 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1DB8",
+      "name": 1027608,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 110, "max": 360 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 4, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0EB6",
+      "name": 1044313,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 789, "max": 1039 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0EB8",
+      "name": 1044314,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 789, "max": 1039 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0EBB",
+      "name": 1044315,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 815, "max": 1065 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0EBC",
+      "name": 1044316,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 815, "max": 1065 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F66",
+      "name": 1044317,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 868, "max": 1118 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F68",
+      "name": 1044318,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 868, "max": 1118 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F6A",
+      "name": 1044319,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 868, "max": 1118 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x24C2",
+      "name": 1029412,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 650, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x0EF3", "amount": 10, "name": 1044377, "message": 1044378 }
+      ]
+    },
+    {
+      "graphic": "0x24C6",
+      "name": 1029416,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 650, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x0EF3", "amount": 10, "name": 1044377, "message": 1044378 }
+      ]
+    },
+    {
+      "graphic": "0x24CB",
+      "name": 1029423,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }, { "skill": "Tailoring", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 75, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 60, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x24D0",
+      "name": 1029428,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }, { "skill": "Tailoring", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 75, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 60, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0DC0",
+      "name": 1023519,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 684, "max": 934 }, { "skill": "Tailoring", "min": 400, "max": 450 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 5, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1026",
+      "name": 1072153,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 4, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 2, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x2F61",
+      "name": 1072896,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 2, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x2F5C", "amount": 1, "name": 1072893, "message": 1053098 },
+        { "graphic": "0x2F57", "amount": 1, "name": 1073465, "message": 1053098 },
+        { "graphic": "0x2F5E", "amount": 1, "name": 1072894, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072885,
+      "group": 0,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 0, "max": 350 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 250, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072886,
+      "group": 0,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 0, "max": 350 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 250, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D4A",
+      "name": 1072889,
+      "group": 0,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x3158",
+      "name": 1032632,
+      "group": 0,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 50, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x315A", "amount": 1, "name": 1032634, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x0B5E",
+      "name": 1022910,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 110, "max": 360 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 9, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0A2A",
+      "name": 1022602,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 110, "max": 360 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 9, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B5B",
+      "name": 1044300,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 210, "max": 460 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 13, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B57",
+      "name": 1044301,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 210, "max": 460 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 13, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B4F",
+      "name": 1044302,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 421, "max": 671 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B53",
+      "name": 1044303,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 421, "max": 671 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 13, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B2D",
+      "name": 1022860,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 526, "max": 776 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 17, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B2E",
+      "name": 1044304,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 526, "max": 776 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 17, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B33",
+      "name": 1044305,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 19, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B35",
+      "name": 1044306,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 421, "max": 671 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 17, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B4A",
+      "name": 1022890,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 631, "max": 881 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 17, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B90",
+      "name": 1044308,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 842, "max": 1092 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 27, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0B8F",
+      "name": 1044307,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 631, "max": 881 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 23, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2819",
+      "name": 1030265,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x281A",
+      "name": 1030266,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072869,
+      "group": 1,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 60, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1073384,
+      "group": 1,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 60, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1073385,
+      "group": 1,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 50, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1073386,
+      "group": 1,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 50, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2DDD",
+      "name": 1073399,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2DEB",
+      "name": 1072872,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2DF5",
+      "name": 1072873,
+      "group": 1,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 30, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x09AA",
+      "name": 1023709,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 210, "max": 460 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 10, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x09A9",
+      "name": 1044309,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 100, "max": 350 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 8, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0E3F",
+      "name": 1044310,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 310, "max": 560 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0E3D",
+      "name": 1044311,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 473, "max": 723 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 18, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0E43",
+      "name": 1023650,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0A9D",
+      "name": 1022718,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 315, "max": 565 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 25, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0A4D",
+      "name": 1044312,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 842, "max": 1092 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0A4F",
+      "name": 1022643,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 842, "max": 1092 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x280B",
+      "name": 1030251,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 30, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x280D",
+      "name": 1030253,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 30, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x280F",
+      "name": 1030255,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 30, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2811",
+      "name": 1030257,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 30, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2813",
+      "name": 1030259,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 30, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2815",
+      "name": 1030261,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2817",
+      "name": 1030263,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2857",
+      "name": 1030328,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2859",
+      "name": 1030330,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x285B",
+      "name": 1030332,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x285D",
+      "name": 1030334,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0E7F",
+      "name": 1023711,
+      "group": 2,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 578, "max": 828 }],
+      "resources": [
+        { "graphic": "0x1EB1", "amount": 3, "name": 1044288, "message": 1044253 },
+        { "graphic": "0x1DB7", "amount": 1, "name": 1044289, "message": 1044253 },
+        { "graphic": "0x1DB8", "amount": 1, "name": 1044251, "message": 1044253 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072865,
+      "group": 2,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 700, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1073387,
+      "group": 2,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 700, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D05",
+      "name": 1073401,
+      "group": 2,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 60, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2DF1",
+      "name": 1073402,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 30, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2DF3",
+      "name": 1073403,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 25, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0A99",
+      "name": 1071213,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 600, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 25, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1E25", "amount": 1, "name": 1071202, "message": 1044253 }
+      ]
+    },
+    {
+      "graphic": "0x0FAE",
+      "name": 1150816,
+      "group": 2,
+      "skills": [{ "skill": "Carpentry", "min": 600, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 50, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0E81",
+      "name": 1023713,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 789, "max": 1039 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 7, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0E89",
+      "name": 1023721,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 6, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13F8",
+      "name": 1025112,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 789, "max": 1039 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 7, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27A8",
+      "name": 1030227,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 700, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 6, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27AA",
+      "name": 1030229,
+      "group": 3,
+      "skills": [{ "skill": "Carpentry", "min": 600, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 6, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27A6",
+      "name": 1030225,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 10, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D25",
+      "name": 1031557,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 638, "max": 1138 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 16, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13B4",
+      "name": 1025043,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 650, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 9, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0DF0",
+      "name": 1023568,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 815, "max": 1065 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 9, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1B7A",
+      "name": 1027034,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 526, "max": 776 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 9, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B67",
+      "name": 1031111,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 6, "name": 1032687, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B6C",
+      "name": 1031116,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 4, "name": 1032687, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B6A",
+      "name": 1031114,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 4, "name": 1032687, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B6B",
+      "name": 1031115,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 4, "name": 1032687, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B69",
+      "name": 1031113,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 4, "name": 1032687, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B71",
+      "name": 1031121,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 650, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 10, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 4, "name": 1032687, "message": 1053098 },
+        { "graphic": "0x1BD1", "amount": 25, "name": 1027123, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B72",
+      "name": 1031122,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 639, "max": 1139 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 10, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 4, "name": 1032687, "message": 1053098 },
+        { "graphic": "0x1BD1", "amount": 25, "name": 1027123, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B73",
+      "name": 1031123,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 584, "max": 1084 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 10, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318F", "amount": 4, "name": 1032687, "message": 1053098 },
+        { "graphic": "0x1BD1", "amount": 60, "name": 1027123, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B71",
+      "name": 1073481,
+      "group": 4,
+      "markable": true,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 10, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x3189", "amount": 1, "name": 1032681, "message": 1053098 },
+        { "graphic": "0x3183", "amount": 10, "name": 1032675, "message": 1053098 },
+        { "graphic": "0x3187", "amount": 10, "name": 1032679, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B67",
+      "name": 1073482,
+      "group": 4,
+      "markable": true,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318A", "amount": 1, "name": 1032682, "message": 1053098 },
+        { "graphic": "0x3184", "amount": 10, "name": 1032676, "message": 1053098 },
+        { "graphic": "0x3188", "amount": 10, "name": 1032680, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B69",
+      "name": 1073483,
+      "group": 4,
+      "markable": true,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318B", "amount": 1, "name": 1032683, "message": 1053098 },
+        { "graphic": "0x3183", "amount": 10, "name": 1032675, "message": 1053098 },
+        { "graphic": "0x3185", "amount": 10, "name": 1032677, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B6B",
+      "name": 1073484,
+      "group": 4,
+      "markable": true,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318C", "amount": 1, "name": 1032684, "message": 1053098 },
+        { "graphic": "0x3184", "amount": 10, "name": 1032676, "message": 1053098 },
+        { "graphic": "0x3186", "amount": 10, "name": 1072137, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B6C",
+      "name": 1073485,
+      "group": 4,
+      "markable": true,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318D", "amount": 1, "name": 1032685, "message": 1053098 },
+        { "graphic": "0x3185", "amount": 10, "name": 1032677, "message": 1053098 },
+        { "graphic": "0x3187", "amount": 10, "name": 1032679, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x2B6A",
+      "name": 1073486,
+      "group": 4,
+      "markable": true,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x318E", "amount": 1, "name": 1032686, "message": 1053098 },
+        { "graphic": "0x3186", "amount": 10, "name": 1032678, "message": 1053098 },
+        { "graphic": "0x3188", "amount": 10, "name": 1032680, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x4200",
+      "name": 1095768,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 526, "max": 776 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 9, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0EB2",
+      "name": 1023762,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 631, "max": 881 }, { "skill": "Musicianship", "min": 450, "max": 500 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 10, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0EB1",
+      "name": 1023761,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 789, "max": 1039 }, { "skill": "Musicianship", "min": 450, "max": 500 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 35, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 15, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0E9C",
+      "name": 1023740,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 578, "max": 828 }, { "skill": "Musicianship", "min": 450, "max": 500 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 20, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 10, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0EB3",
+      "name": 1023763,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 684, "max": 934 }, { "skill": "Musicianship", "min": 450, "max": 500 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 25, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 10, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0E9D",
+      "name": 1023741,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 578, "max": 828 }, { "skill": "Musicianship", "min": 450, "max": 500 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 10, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0E9E",
+      "name": 1044320,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 578, "max": 828 }, { "skill": "Musicianship", "min": 450, "max": 500 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 15, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2805",
+      "name": 1030247,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Carpentry", "min": 800, "max": 1050 }, { "skill": "Musicianship", "min": 450, "max": 500 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 15, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2312",
+      "name": 1062420,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 50, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2311",
+      "name": 1062421,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 50, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072617,
+      "group": 6,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 500, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072703,
+      "group": 6,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x3198", "amount": 2, "name": 1026255, "message": 1053098 },
+        { "graphic": "0x3194", "amount": 2, "name": 1026251, "message": 1053098 },
+        { "graphic": "0x3197", "amount": 2, "name": 1026254, "message": 1053098 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072860,
+      "group": 6,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 100, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072861,
+      "group": 6,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 100, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044321,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1198 }, { "skill": "Tailoring", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 100, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044322,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1198 }, { "skill": "Tailoring", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 100, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044323,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1198 }, { "skill": "Tailoring", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 150, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 150, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044324,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1198 }, { "skill": "Tailoring", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 150, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 150, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044325,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 157, "max": 407 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044326,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 157, "max": 407 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044327,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 473, "max": 723 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044328,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 1000, "max": 1250 }, { "skill": "Magery", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 40, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044329,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 1000, "max": 1250 }, { "skill": "Magery", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 40, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1155842,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 950, "max": 1200 }, { "skill": "Tinkering", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1155843,
+      "group": 6,
+      "skills": [{ "skill": "Carpentry", "min": 950, "max": 1200 }, { "skill": "Tinkering", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 40, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x0EC6",
+      "name": 1044339,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 631, "max": 881 }, { "skill": "Tailoring", "min": 650, "max": 700 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 25, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 10, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0EC7",
+      "name": 1044340,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 631, "max": 881 }, { "skill": "Tailoring", "min": 650, "max": 700 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 25, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 10, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1073393,
+      "group": 7,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 750, "max": 1000 }, { "skill": "Tailoring", "min": 650, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 60, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 40, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072878,
+      "group": 7,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 750, "max": 1000 }, { "skill": "Tailoring", "min": 650, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 60, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 40, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1073394,
+      "group": 7,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 80, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1073395,
+      "group": 7,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 80, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044341,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }, { "skill": "Tailoring", "min": 650, "max": 700 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 75, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 25, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044342,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }, { "skill": "Tailoring", "min": 650, "max": 700 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 75, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 25, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044343,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 842, "max": 1092 }, { "skill": "Tailoring", "min": 650, "max": 700 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 85, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 25, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044344,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 842, "max": 1092 }, { "skill": "Tailoring", "min": 650, "max": 700 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 85, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 25, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044345,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 684, "max": 934 }, { "skill": "Tinkering", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 85, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 125, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044346,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 684, "max": 934 }, { "skill": "Tinkering", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 85, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 125, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044347,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }, { "skill": "Tinkering", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 50, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044348,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }, { "skill": "Tinkering", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 100, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 50, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044349,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 150, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044350,
+      "group": 7,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 150, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1072875,
+      "group": 8,
+      "never_exceptional": true,
+      "skills": [{ "skill": "Carpentry", "min": 947, "max": 1197 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 200, "name": 1044041, "message": 1044351, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044330,
+      "group": 8,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }, { "skill": "Blacksmith", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 75, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044331,
+      "group": 8,
+      "skills": [{ "skill": "Carpentry", "min": 789, "max": 1039 }, { "skill": "Blacksmith", "min": 800, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 100, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044332,
+      "group": 8,
+      "skills": [{ "skill": "Carpentry", "min": 789, "max": 1039 }, { "skill": "Blacksmith", "min": 800, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 100, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044333,
+      "group": 8,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }, { "skill": "Blacksmith", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 150, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044334,
+      "group": 8,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }, { "skill": "Blacksmith", "min": 750, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 5, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1BF2", "amount": 150, "name": 1044036, "message": 1044037 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044335,
+      "group": 9,
+      "skills": [{ "skill": "Carpentry", "min": 684, "max": 934 }, { "skill": "Tailoring", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 55, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 60, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044336,
+      "group": 9,
+      "skills": [{ "skill": "Carpentry", "min": 684, "max": 934 }, { "skill": "Tailoring", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 55, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 60, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044337,
+      "group": 9,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }, { "skill": "Tailoring", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 65, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 60, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1044338,
+      "group": 9,
+      "skills": [{ "skill": "Carpentry", "min": 736, "max": 986 }, { "skill": "Tailoring", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BD7", "amount": 65, "name": 1044041, "message": 1044351, "from_axis": true },
+        { "graphic": "0x1766", "amount": 60, "name": 1044286, "message": 1044287 }
+      ]
+    }
+  ]
+}

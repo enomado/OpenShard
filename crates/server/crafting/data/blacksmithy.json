@@ -1,0 +1,972 @@
+{
+  "groups": [1111704, 1011079, 1011080, 1011081, 1011082, 1011083, 1011084, 1011173],
+  "sub_res": {
+    "graphic": "0x1BF2",
+    "name": 1044022,
+    "entries": [
+      { "hue": "0x0000", "name": 1044022, "req_skill": 0, "message": 1044267 },
+      { "hue": "0x0973", "name": 1044023, "req_skill": 650, "message": 1044268 },
+      { "hue": "0x0966", "name": 1044024, "req_skill": 700, "message": 1044268 },
+      { "hue": "0x096D", "name": 1044025, "req_skill": 750, "message": 1044268 },
+      { "hue": "0x0972", "name": 1044026, "req_skill": 800, "message": 1044268 },
+      { "hue": "0x08A5", "name": 1044027, "req_skill": 850, "message": 1044268 },
+      { "hue": "0x0979", "name": 1044028, "req_skill": 900, "message": 1044268 },
+      { "hue": "0x089F", "name": 1044029, "req_skill": 950, "message": 1044268 },
+      { "hue": "0x08AB", "name": 1044030, "req_skill": 990, "message": 1044268 }
+    ]
+  },
+  "recipes": [
+    {
+      "graphic": "0x13EB",
+      "name": 1025099,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 120, "max": 620 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13F0",
+      "name": 1025104,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 194, "max": 694 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13EE",
+      "name": 1025103,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 169, "max": 669 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13EC",
+      "name": 1025100,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 219, "max": 719 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13BB",
+      "name": 1025051,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 145, "max": 645 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13BE",
+      "name": 1025054,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 367, "max": 867 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13BF",
+      "name": 1025055,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 391, "max": 891 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1410",
+      "name": 1025136,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 663, "max": 1163 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1414",
+      "name": 1025140,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 589, "max": 1089 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1413",
+      "name": 1025139,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 564, "max": 1064 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1411",
+      "name": 1025137,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 688, "max": 1188 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1415",
+      "name": 1046431,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 750, "max": 1250 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1C04",
+      "name": 1046430,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 441, "max": 941 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1053012,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 725, "max": 1225 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 750, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2779",
+      "name": 1030180,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 800, "max": 1300 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x277D",
+      "name": 1030184,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 800, "max": 1300 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 28, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2780",
+      "name": 1030187,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 800, "max": 1300 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2788",
+      "name": 1030195,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 650, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x278D",
+      "name": 1030200,
+      "group": 0,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 650, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x140C",
+      "name": 1025132,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 83, "max": 583 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1408",
+      "name": 1025128,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 379, "max": 879 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x140A",
+      "name": 1025130,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 379, "max": 879 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x140E",
+      "name": 1025134,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 379, "max": 879 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1412",
+      "name": 1025138,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 626, "max": 1126 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2774",
+      "name": 1030175,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 300, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2775",
+      "name": 1030176,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 450, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2777",
+      "name": 1030178,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 450, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2781",
+      "name": 1030188,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 450, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2784",
+      "name": 1030191,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 450, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2778",
+      "name": 1030179,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 900, "max": 1400 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2785",
+      "name": 1030192,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 900, "max": 1400 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2789",
+      "name": 1030196,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 900, "max": 1400 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B6E",
+      "name": 1032645,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 621, "max": 1121 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 6, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B6F",
+      "name": 1032646,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 6, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B70",
+      "name": 1032647,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 750, "max": 1250 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 6, "name": 1044036, "message": 1044037, "from_axis": true },
+        { "graphic": "0x0F18", "amount": 1, "name": 1044237, "message": 1044240 },
+        { "graphic": "0x0F16", "amount": 1, "name": 1044236, "message": 1044240 },
+        { "graphic": "0x3198", "amount": 1, "name": 1032696, "message": 1044240 }
+      ]
+    },
+    {
+      "graphic": "0x1B73",
+      "name": 1027027,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": -250, "max": 250 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1B72",
+      "name": 1027026,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": -152, "max": 348 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1B76",
+      "name": 1027030,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 243, "max": 743 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1B7B",
+      "name": 1027035,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": -102, "max": 398 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1B74",
+      "name": 1027028,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 46, "max": 546 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1B78",
+      "name": 1027032,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": -152, "max": 348 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 8, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1BC3",
+      "name": 1027107,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 850, "max": 1350 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1BC4",
+      "name": 1027108,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 850, "max": 1350 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26BB",
+      "name": 1029915,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 330, "max": 830 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F5E",
+      "name": 1023934,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 354, "max": 854 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26C1",
+      "name": 1029921,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 450, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1441",
+      "name": 1025185,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 243, "max": 743 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 8, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F52",
+      "name": 1023921,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": -4, "max": 496 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 3, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13FF",
+      "name": 1025119,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 441, "max": 941 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 8, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1401",
+      "name": 1025121,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 367, "max": 867 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 8, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F61",
+      "name": 1023937,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 280, "max": 780 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13B6",
+      "name": 1025046,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 317, "max": 817 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13B9",
+      "name": 1025049,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 243, "max": 743 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27A2",
+      "name": 1030221,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 750, "max": 1250 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27A4",
+      "name": 1030223,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 500, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 8, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27A7",
+      "name": 1030226,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 800, "max": 1300 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27A9",
+      "name": 1030228,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 600, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27AB",
+      "name": 1030230,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 550, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27AC",
+      "name": 1030231,
+      "group": 3,
+      "skills": [{ "skill": "Blacksmith", "min": 450, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 5, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27AD",
+      "name": 1030232,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 400, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27AF",
+      "name": 1030234,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 500, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D33",
+      "name": 1031571,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 750, "max": 1250 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D2F",
+      "name": 1031567,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D20",
+      "name": 1031564,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D21",
+      "name": 1031565,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 9, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D22",
+      "name": 1031566,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D32",
+      "name": 1031570,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 15, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D35",
+      "name": 1031573,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F49",
+      "name": 1023913,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 342, "max": 842 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F47",
+      "name": 1023911,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 305, "max": 805 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F4B",
+      "name": 1023915,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 293, "max": 793 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F45",
+      "name": 1023909,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 342, "max": 842 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13FB",
+      "name": 1025115,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 280, "max": 780 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1443",
+      "name": 1025187,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 330, "max": 830 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13B0",
+      "name": 1025040,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 391, "max": 891 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2D28",
+      "name": 1031572,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F4D",
+      "name": 1023917,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 317, "max": 817 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 18, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26BD",
+      "name": 1029917,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 400, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26BF",
+      "name": 1029919,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 450, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x143E",
+      "name": 1025183,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 391, "max": 891 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26C0",
+      "name": 1029920,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 480, "max": 980 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26BE",
+      "name": 1029918,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 470, "max": 970 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1403",
+      "name": 1025123,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 453, "max": 953 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 6, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26BA",
+      "name": 1029914,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 390, "max": 890 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F62",
+      "name": 1023938,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 490, "max": 990 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1405",
+      "name": 1025125,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 429, "max": 929 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 12, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x143D",
+      "name": 1025181,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 342, "max": 842 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0F5C",
+      "name": 1023932,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 145, "max": 645 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 6, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x143B",
+      "name": 1025179,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 194, "max": 694 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x26BC",
+      "name": 1029916,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 214, "max": 714 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 10, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1407",
+      "name": 1025127,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 280, "max": 780 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 14, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1439",
+      "name": 1025177,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 342, "max": 842 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27A3",
+      "name": 1030222,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 850, "max": 1350 }, { "skill": "Tailoring", "min": 500, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 16, "name": 1044036, "message": 1044037, "from_axis": true },
+        { "graphic": "0x1766", "amount": 10, "name": 1044286, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2D24",
+      "name": 1031568,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Blacksmith", "min": 700, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 20, "name": 1044036, "message": 1044037, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x0E7F",
+      "name": 1150675,
+      "group": 7,
+      "skills": [{ "skill": "Blacksmith", "min": 850, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1BF2", "amount": 25, "name": 1044036, "message": 1044253, "from_axis": true }
+      ]
+    }
+  ]
+}
