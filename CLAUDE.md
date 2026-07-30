@@ -25,6 +25,7 @@ copy that goes stale silently, which is worse than no copy at all.
 | [`docs/architecture.md`](docs/architecture.md) | The shape: layers, dependency rules, the crate map, how entities/events/protocol/persistence fit together, and what belongs in which file. |
 | [`docs/findings.md`](docs/findings.md) | What the client actually does, and how to read Sphere and ServUO without inheriting their mistakes. Every entry cost a day. |
 | [`docs/roadmap.md`](docs/roadmap.md) | The order, and what is built. §6 is gameplay, system by system, with the protocol findings and reference-emulator arguments behind each one. |
+| [`docs/client.md`](docs/client.md) | **Our own client**, milestone by milestone: what the protocol is missing in the client's direction, and what has to move out of `server/world` before anything draws. |
 | [`docs/development.md`](docs/development.md) | The environment: the three commands, a toolchain without root, `target/` bloat, the `Cargo.lock` MSRV pin. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | What lands and how: branch, PR, review, merge commit. |
 

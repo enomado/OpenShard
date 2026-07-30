@@ -19,16 +19,23 @@
 //! rewritten are here, the rest are still free functions elsewhere in the crate.
 //! `docs/protocol_rewrite.md` tracks which group lands when.
 
+use std::fmt;
+
 use crate::codec::PacketWriter;
 use crate::combat::{AttackTarget, HealthBar, WarMode};
-use crate::containers::ContainerContents;
+use crate::containers::{ContainerContents, add_to_container_length, open_container_length};
 use crate::context::ContextMenu;
+use crate::error::{DecodeError, expect_id};
+use crate::feature::Feature;
 use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, PlaySound};
 use crate::gump::{CloseGump, GumpDisplay};
 use crate::items::{DragCancel, EquipUpdate, WorldItem};
-use crate::login::{CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList};
+use crate::login::{
+    CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
+    supported_features_length,
+};
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
-use crate::packet::{EncodePacket, PacketLength, frame_body};
+use crate::packet::{DecodePacket, EncodePacket, Frame, FrameError, PacketLength, frame_body, frame_packet};
 use crate::properties::TooltipRevision;
 use crate::skill::{SkillUpdate, SkillsFull};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
@@ -38,7 +45,7 @@ use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
 use crate::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart, PlayerUpdate,
-    SeasonChange, WalkAck, WalkReject,
+    SERVER_CHANGE_LENGTH, SeasonChange, WalkAck, WalkReject,
 };
 
 /// A packet the server sends to a client.
@@ -164,18 +171,18 @@ impl ServerPacket {
             Self::NewAnimation(_) => NewAnimation::ID,
             Self::Effect(_) => GraphicalEffect::ID,
             Self::HuedEffect(_) => HuedEffect::ID,
-            Self::LoginDenied(_) => LoginDenied::ID,
-            Self::ShardList(_) => ShardList::ID,
-            Self::Relay(_) => Relay::ID,
-            Self::CharacterList(_) => CharacterList::ID,
+            Self::LoginDenied(_) => <LoginDenied as EncodePacket>::ID,
+            Self::ShardList(_) => <ShardList as EncodePacket>::ID,
+            Self::Relay(_) => <Relay as EncodePacket>::ID,
+            Self::CharacterList(_) => <CharacterList as EncodePacket>::ID,
             Self::DeleteReject(_) => DeleteReject::ID,
             Self::CharacterListUpdate(_) => CharacterListUpdate::ID,
-            Self::PlayerStart(_) => PlayerStart::ID,
+            Self::PlayerStart(_) => <PlayerStart as EncodePacket>::ID,
             Self::PlayerUpdate(_) => PlayerUpdate::ID,
             Self::DeathStatus(_) => DeathStatus::ID,
             Self::WalkAck(_) => WalkAck::ID,
             Self::WalkReject(_) => WalkReject::ID,
-            Self::LoginComplete(_) => LoginComplete::ID,
+            Self::LoginComplete(_) => <LoginComplete as EncodePacket>::ID,
             Self::LightLevel(_) => LightLevel::ID,
             Self::PlayMusic(_) => PlayMusic::ID,
             Self::SeasonChange(_) => SeasonChange::ID,
@@ -219,18 +226,18 @@ impl ServerPacket {
             Self::NewAnimation(_) => NewAnimation::LENGTH,
             Self::Effect(_) => GraphicalEffect::LENGTH,
             Self::HuedEffect(_) => HuedEffect::LENGTH,
-            Self::LoginDenied(_) => LoginDenied::LENGTH,
-            Self::ShardList(_) => ShardList::LENGTH,
-            Self::Relay(_) => Relay::LENGTH,
-            Self::CharacterList(_) => CharacterList::LENGTH,
+            Self::LoginDenied(_) => <LoginDenied as EncodePacket>::LENGTH,
+            Self::ShardList(_) => <ShardList as EncodePacket>::LENGTH,
+            Self::Relay(_) => <Relay as EncodePacket>::LENGTH,
+            Self::CharacterList(_) => <CharacterList as EncodePacket>::LENGTH,
             Self::DeleteReject(_) => DeleteReject::LENGTH,
             Self::CharacterListUpdate(_) => CharacterListUpdate::LENGTH,
-            Self::PlayerStart(_) => PlayerStart::LENGTH,
+            Self::PlayerStart(_) => <PlayerStart as EncodePacket>::LENGTH,
             Self::PlayerUpdate(_) => PlayerUpdate::LENGTH,
             Self::DeathStatus(_) => DeathStatus::LENGTH,
             Self::WalkAck(_) => WalkAck::LENGTH,
             Self::WalkReject(_) => WalkReject::LENGTH,
-            Self::LoginComplete(_) => LoginComplete::LENGTH,
+            Self::LoginComplete(_) => <LoginComplete as EncodePacket>::LENGTH,
             Self::LightLevel(_) => LightLevel::LENGTH,
             Self::PlayMusic(_) => PlayMusic::LENGTH,
             Self::SeasonChange(_) => SeasonChange::LENGTH,
@@ -325,6 +332,241 @@ impl ServerPacket {
             Self::GumpDisplay(packet) => packet.encode_body(out, version),
         }
     }
+}
+
+// -- reading, from the client's side --------------------------------------
+
+/// Decode one server-to-client payload from a framed packet.
+///
+/// [`decode_packet`](crate::packet::decode_packet) asks the *client* length
+/// table whether to skip a length field, which is the right question on the
+/// server and the wrong one here: `0xA9` is variable in this direction and
+/// unknown in that one. Same shape, other table.
+fn decode_server<P: DecodePacket>(bytes: &[u8], version: ClientVersion) -> Result<P, DecodeError> {
+    let mut reader = expect_id(bytes, P::ID)?;
+    if server_packet_length(P::ID, version) == Some(PacketLength::Variable) {
+        reader.skip(2)?;
+    }
+    P::decode_body(&mut reader, version)
+}
+
+impl ServerPacket {
+    /// Decode `packet` by its id byte, as a client does.
+    ///
+    /// `packet` must be non-empty and must already have passed
+    /// [`frame_server_packet`], which is what guarantees it is exactly one
+    /// packet.
+    ///
+    /// # Three answers, not two
+    ///
+    /// - `Ok(Some(_))` — decoded.
+    /// - `Ok(None)` — a packet this engine sends but has no decoder for yet.
+    ///   The framer knew its length, so the stream is not lost and the caller
+    ///   can log the id and read on. This is where the client grows: a variant
+    ///   moves from here to `Some` when someone writes its `DecodePacket`.
+    /// - `Err(_)` — a decoder ran and the body was not what it claimed.
+    ///
+    /// The middle answer is deliberately not the `Unknown { id, body }` variant
+    /// [`ClientPacket`](crate::client_packet::ClientPacket) uses. That one
+    /// carries the bytes because the *server* discards them otherwise; a client
+    /// still holds the buffer it just framed.
+    pub fn decode(packet: &[u8], version: ClientVersion) -> Result<Option<Self>, ServerDecodeError> {
+        let id = *packet
+            .first()
+            .expect("packet is empty: caller skipped framing, which never produces one");
+        let decoded = match id {
+            <LoginDenied as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::LoginDenied)
+                .map_err(ServerDecodeError::LoginDenied)?,
+            <ShardList as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::ShardList)
+                .map_err(ServerDecodeError::ShardList)?,
+            <Relay as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::Relay)
+                .map_err(ServerDecodeError::Relay)?,
+            <CharacterList as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::CharacterList)
+                .map_err(ServerDecodeError::CharacterList)?,
+            <PlayerStart as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::PlayerStart)
+                .map_err(ServerDecodeError::PlayerStart)?,
+            <LoginComplete as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::LoginComplete)
+                .map_err(ServerDecodeError::LoginComplete)?,
+            _ => return Ok(None),
+        };
+        Ok(Some(decoded))
+    }
+}
+
+/// A server packet arrived and its body did not decode.
+///
+/// One variant per packet, the same shape as
+/// [`ClientDecodeError`](crate::client_packet::ClientDecodeError): a caller can
+/// match the failure by type the way it matches the packet.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum ServerDecodeError {
+    /// `0x82` did not decode.
+    LoginDenied(DecodeError),
+    /// `0xA8` did not decode.
+    ShardList(DecodeError),
+    /// `0x8C` did not decode.
+    Relay(DecodeError),
+    /// `0xA9` did not decode.
+    CharacterList(DecodeError),
+    /// `0x1B` did not decode.
+    PlayerStart(DecodeError),
+    /// `0x55` did not decode.
+    LoginComplete(DecodeError),
+}
+
+impl fmt::Display for ServerDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (name, error) = match self {
+            Self::LoginDenied(error) => ("0x82 login denied", error),
+            Self::ShardList(error) => ("0xA8 shard list", error),
+            Self::Relay(error) => ("0x8C relay", error),
+            Self::CharacterList(error) => ("0xA9 character list", error),
+            Self::PlayerStart(error) => ("0x1B player start", error),
+            Self::LoginComplete(error) => ("0x55 login complete", error),
+        };
+        write!(f, "{name}: {error}")
+    }
+}
+
+impl std::error::Error for ServerDecodeError {}
+
+// -- framing, from the client's side --------------------------------------
+
+/// How long the server-to-client packet with this id is, if we send it.
+///
+/// The mirror of [`client_packet_length`](crate::packet::client_packet_length),
+/// and the table a client needs for the same reason a server needs that one:
+/// the wire has no self-describing frame, so a stream cannot be split into
+/// packets without knowing, per id, which kind it is.
+///
+/// # The numbers are not written here
+///
+/// Every payload already declares its own [`EncodePacket::LENGTH`], so this
+/// reads those constants rather than repeating them — the same argument as
+/// [`ServerPacket::id`]. What it does hold is the *ids*, and a wrong one is
+/// caught by `every_packet_frames_to_its_own_length`, which frames the real
+/// bytes of one of every variant.
+///
+/// # `None` is deliberate, not incomplete
+///
+/// An id this engine never sends has no entry, and framing it is fatal for the
+/// connection. The alternative — guessing a length from a reference for a packet
+/// no encoder here writes — would put an unverified number in the one table
+/// whose entire job is to be right, and would be discovered as a desynchronised
+/// stream hundreds of bytes later. When a packet is added, its length arrives
+/// with it.
+///
+/// # Why `version` is not optional
+///
+/// The server takes `Option<ClientVersion>` because it frames packets before it
+/// knows what is connected. A client always knows what it is, so there is no
+/// unknown state to model — and three packets need the answer: `0x24`, `0x25`
+/// and `0xB9` are fixed-length in a size that depends on the client, which is
+/// exactly why they are hand-written free functions rather than `EncodePacket`s.
+// The column alignment is load-bearing, as in the client table: this is read as
+// a table, and rustfmt would reflow it into an unscannable list.
+#[rustfmt::skip]
+#[must_use]
+pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLength> {
+    use PacketLength::Variable;
+
+    // The three whose size is a function of the client. Each rule lives beside
+    // the encoder that obeys it, so neither side can drift.
+    match id {
+        0x24 => return Some(open_container_length(version)),
+        0x25 => return Some(add_to_container_length(version)),
+        0xB9 => return Some(supported_features_length(
+            version.supports(Feature::ExtraFeatureMask),
+        )),
+        _ => {}
+    }
+
+    Some(match id {
+        0x11 => MobileStatus::LENGTH,
+        0x1A => WorldItem::LENGTH,
+        0x1B => <PlayerStart as EncodePacket>::LENGTH,
+        0x1C => SpokenMessage::LENGTH,
+        0x1D => Remove::LENGTH,
+        0x20 => PlayerUpdate::LENGTH,
+        0x21 => WalkReject::LENGTH,
+        0x22 => WalkAck::LENGTH,
+        0x27 => DragCancel::LENGTH,
+        0x2C => DeathStatus::LENGTH,
+        0x2E => EquipUpdate::LENGTH,
+        0x3A => SkillsFull::LENGTH,          // and SkillUpdate: same id, both Variable
+        0x3C => ContainerContents::LENGTH,
+        0x4F => LightLevel::LENGTH,
+        0x54 => PlaySound::LENGTH,
+        0x55 => <LoginComplete as EncodePacket>::LENGTH,
+        0x6C => TargetCursor::LENGTH,
+        0x6D => PlayMusic::LENGTH,
+        0x6E => Animation::LENGTH,
+        0x6F => Variable,                    // secure trade, hand-written in trade.rs
+        0x70 => GraphicalEffect::LENGTH,
+        0x72 => <WarMode as EncodePacket>::LENGTH,
+        0x74 => BuyList::LENGTH,
+        0x76 => SERVER_CHANGE_LENGTH,        // facet change, hand-written in world.rs
+        0x77 => MobileMove::LENGTH,
+        0x78 => MobileIncoming::LENGTH,
+        0x82 => <LoginDenied as EncodePacket>::LENGTH,
+        0x85 => DeleteReject::LENGTH,
+        0x86 => CharacterListUpdate::LENGTH,
+        0x88 => OpenPaperdoll::LENGTH,
+        0x8C => <Relay as EncodePacket>::LENGTH,
+        0x9E => SellList::LENGTH,
+        0xA1 => HealthBar::LENGTH,
+        0xA8 => <ShardList as EncodePacket>::LENGTH,
+        0xA9 => <CharacterList as EncodePacket>::LENGTH,
+        0xAA => AttackTarget::LENGTH,
+        0xAE => UnicodeMessage::LENGTH,
+        0xB0 => GumpDisplay::LENGTH,
+        0xBC => SeasonChange::LENGTH,
+        // 0xBF is the one id whose payloads disagree with the table on purpose.
+        // Each subcommand declares `Fixed(n)` and writes its own `u16` length
+        // into its body — that is what the extended-command format is — so from
+        // outside, every 0xBF on the wire is length-prefixed at offset 1 and is
+        // framed as `Variable`. Reading MapChange's `Fixed(6)` here would frame
+        // a 13-byte gump-close as six bytes and desynchronise everything after.
+        0xBF => Variable,
+        0xC0 => HuedEffect::LENGTH,
+        0xC1 => LocalizedMessage::LENGTH,
+        0xD1 => LogoutAck::LENGTH,
+        0xDC => TooltipRevision::LENGTH,
+        0xE2 => NewAnimation::LENGTH,
+        _ => return None,
+    })
+}
+
+/// Find the first whole server-to-client packet at the front of `buffer`.
+///
+/// The client's [`frame_client_packet`](crate::packet::frame_client_packet):
+/// same rule, other table. Does not copy and does not consume.
+///
+/// ```
+/// use openshard_protocol::packet::Frame;
+/// use openshard_protocol::server_packet::frame_server_packet;
+/// use openshard_protocol::version::ClientVersion;
+///
+/// let modern = ClientVersion::new(7, 0, 45, 65);
+///
+/// // 0x55 "you may start drawing" is one byte.
+/// assert_eq!(frame_server_packet(&[0x55], modern), Ok(Frame::Complete(1)));
+///
+/// // 0xB9 is three bytes for an old client and five for this one.
+/// assert_eq!(
+///     frame_server_packet(&[0xB9, 0, 0, 0], modern),
+///     Ok(Frame::Incomplete { needed: 5 }),
+/// );
+/// ```
+pub fn frame_server_packet(buffer: &[u8], version: ClientVersion) -> Result<Frame, FrameError> {
+    frame_packet(buffer, |id| server_packet_length(id, version))
 }
 
 #[cfg(test)]
@@ -653,6 +895,271 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_packet_frames_to_its_own_length() {
+        // The oracle for `server_packet_length`: encode one of every variant and
+        // ask the framer to find it again. It catches a wrong id in the table, a
+        // length that disagrees with the encoder, and — the reason this is done
+        // over bytes rather than over `packet.length()` — a 0xBF subcommand whose
+        // declared `Fixed(n)` must still be framed as length-prefixed.
+        for packet in one_of_each() {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                frame_server_packet(&bytes, version()),
+                Ok(Frame::Complete(bytes.len())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_packet_split_across_reads_asks_for_the_rest() {
+        // What a socket does to a client: half a packet arrives, and the framer
+        // has to say how much more it needs rather than guess or fail. Over every
+        // variant, because a variable-length packet answers this from its length
+        // field and a fixed one from the table.
+        for packet in one_of_each() {
+            let bytes = packet.encode(version());
+            if bytes.len() < 2 {
+                continue; // nothing to cut short
+            }
+            assert_eq!(
+                frame_server_packet(&bytes[..bytes.len() - 1], version()),
+                Ok(Frame::Incomplete { needed: bytes.len() }),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hand_written_packets_are_in_the_table() {
+        // 0x24, 0x25, 0xB9 and 0x76 are not `EncodePacket`s, so `one_of_each`
+        // cannot reach them — and a client that cannot frame them stops dead on
+        // the first container it opens.
+        let serial = Serial::new(0x0000_002A).unwrap();
+        let bytes = crate::containers::encode_open_container(serial, crate::wire::Graphic(0x3C), version());
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+
+        let bytes = crate::login::encode_supported_features(crate::login::SupportedFeatures::ML, true);
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+
+        let bytes = crate::world::encode_server_change(
+            crate::world::Point::new(1, 2, 3),
+            crate::world::MapSize {
+                width: 6144,
+                height: 4096,
+            },
+        );
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+    }
+
+    #[test]
+    fn the_old_feature_mask_is_two_bytes_narrower() {
+        // The one place the table's `version` earns its place: same id, and a
+        // client from before 6.0.14.2 reads two fewer bytes. Framing it with the
+        // modern length swallows the first two bytes of whatever follows.
+        let old = ClientVersion::new(5, 0, 9, 1);
+        assert_eq!(
+            server_packet_length(0xB9, old),
+            Some(PacketLength::Fixed(3)),
+            "an old client reads a 16-bit mask"
+        );
+        assert_eq!(
+            server_packet_length(0xB9, version()),
+            Some(PacketLength::Fixed(5))
+        );
+    }
+
+    #[test]
+    fn an_id_this_engine_never_sends_is_fatal() {
+        // Not a silent skip: without a length there is no way to find where the
+        // next packet starts, so the connection is over. 0xD6 is a real
+        // server-to-client packet this engine does not send — see the table.
+        assert_eq!(server_packet_length(0xD6, version()), None);
+        assert_eq!(
+            frame_server_packet(&[0xD6, 0x00, 0x05], version()),
+            Err(FrameError::UnknownPacket(0xD6))
+        );
+    }
+
+    #[test]
+    fn the_login_conversation_round_trips() {
+        // The packets a client has to read to reach the world, encoded by this
+        // server and decoded as the client will decode them. Round-tripping is
+        // the first test the encoders have ever had against a real inverse
+        // rather than against hand-written bytes.
+        let packets = [
+            ServerPacket::LoginDenied(LoginDenied {
+                reason: crate::login::DenyReason::BadPassword,
+            }),
+            ServerPacket::ShardList(ShardList {
+                shards: vec![crate::login::ShardEntry {
+                    name: "OpenShard".to_owned(),
+                    percent_full: 12,
+                    timezone: 5,
+                    address: std::net::Ipv4Addr::new(192, 168, 11, 6),
+                }],
+            }),
+            ServerPacket::Relay(Relay {
+                endpoint: std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(192, 168, 11, 6), 2593),
+                auth_key: AuthKey(0xDEAD_BEEF),
+            }),
+            ServerPacket::LoginComplete(LoginComplete),
+        ];
+
+        for packet in packets {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(packet.clone())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relayed_address_survives_both_byte_orders() {
+        // 0xA8 reverses the octets for a modern client and 0x8C never does. A
+        // decoder that copied one rule to the other would still round-trip
+        // against itself — so the two are checked against the *same* address,
+        // which is the only thing that catches it.
+        let address = std::net::Ipv4Addr::new(192, 168, 11, 6);
+        let list = ServerPacket::ShardList(ShardList {
+            shards: vec![crate::login::ShardEntry {
+                name: "OpenShard".to_owned(),
+                percent_full: 0,
+                timezone: 0,
+                address,
+            }],
+        })
+        .encode(version());
+        let relay = ServerPacket::Relay(Relay {
+            endpoint: std::net::SocketAddrV4::new(address, 2593),
+            auth_key: AuthKey(1),
+        })
+        .encode(version());
+
+        // The bytes differ...
+        assert_eq!(&relay[1..5], &[192, 168, 11, 6], "0x8C sends octets in order");
+        assert_eq!(
+            &list[list.len() - 4..],
+            &[6, 11, 168, 192],
+            "0xA8 reverses them for a modern client"
+        );
+
+        // ...and both decode to the one address.
+        let Ok(Some(ServerPacket::ShardList(decoded))) = ServerPacket::decode(&list, version()) else {
+            panic!("the shard list did not decode");
+        };
+        assert_eq!(decoded.shards[0].address, address);
+        let Ok(Some(ServerPacket::Relay(decoded))) = ServerPacket::decode(&relay, version()) else {
+            panic!("the relay did not decode");
+        };
+        assert_eq!(*decoded.endpoint.ip(), address);
+    }
+
+    #[test]
+    fn a_dungeon_floor_comes_back_negative() {
+        // 0x1B writes z as one signed byte behind a zero. Reading the pair as a
+        // big-endian i16 puts a character at z = 65,526 instead of -10, and the
+        // client draws them somewhere over the map.
+        let start = PlayerStart {
+            serial: Serial::new(0x0000_002A).unwrap(),
+            body: crate::wire::Graphic(0x0190),
+            position: crate::world::Point::new(1000, 1200, -10),
+            facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+            map: crate::world::MapSize::BRITANNIA,
+        };
+        let bytes = ServerPacket::PlayerStart(start).encode(version());
+        assert_eq!(
+            ServerPacket::decode(&bytes, version()),
+            Ok(Some(ServerPacket::PlayerStart(start)))
+        );
+    }
+
+    #[test]
+    fn the_character_list_comes_back_as_the_wire_holds_it() {
+        // The list is padded to five slots on the way out, so decoding gives
+        // five back however many characters exist. Re-encoding what was decoded
+        // must produce the same bytes — the property that matters, since the
+        // struct's own `characters` is not what the wire carries.
+        let list = CharacterList {
+            characters: vec![crate::login::CharacterEntry {
+                name: crate::identity::CharacterName::new("Lord British"),
+            }],
+            starts: vec![crate::login::StartLocation {
+                area: "Britain".to_owned(),
+                name: "Castle Britannia".to_owned(),
+                position: (1475, 1770, 20),
+                map: crate::world::MapId(0),
+                description_cliloc: crate::wire::ClilocId(1075072),
+            }],
+            flags: crate::login::CharacterListFlags::TOOLTIPS,
+        };
+        let bytes = ServerPacket::CharacterList(list).encode(version());
+
+        let Ok(Some(ServerPacket::CharacterList(decoded))) = ServerPacket::decode(&bytes, version()) else {
+            panic!("the character list did not decode");
+        };
+        assert_eq!(decoded.characters.len(), crate::login::MIN_CHARACTER_SLOTS);
+        assert_eq!(decoded.characters[0].name, "Lord British");
+        assert_eq!(decoded.starts[0].name, "Castle Britannia");
+        assert_eq!(decoded.starts[0].position, (1475, 1770, 20));
+        assert_eq!(
+            ServerPacket::CharacterList(decoded).encode(version()),
+            bytes,
+            "re-encoding what the wire held must reproduce it"
+        );
+    }
+
+    #[test]
+    fn the_old_character_list_says_it_is_not_decoded() {
+        // Before 7.0.13.0 a start location has no coordinates at all. Zeros
+        // would be three numbers that look chosen; this says what happened.
+        let bytes = ServerPacket::CharacterList(CharacterList {
+            characters: Vec::new(),
+            starts: Vec::new(),
+            flags: crate::login::CharacterListFlags::NONE,
+        })
+        .encode(version());
+        let old = ClientVersion::new(5, 0, 9, 1);
+        assert!(matches!(
+            ServerPacket::decode(&bytes, old),
+            Err(ServerDecodeError::CharacterList(DecodeError::Unsupported { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_deny_code_the_client_does_not_know_is_an_error() {
+        // Five codes reach a client. A sixth is a server this one does not
+        // understand, and picking the nearest legal reason would be the decoder
+        // inventing the answer.
+        assert!(matches!(
+            ServerPacket::decode(&[0x82, 0x09], version()),
+            Err(ServerDecodeError::LoginDenied(DecodeError::UnknownValue { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_packet_with_no_decoder_yet_is_not_a_failure() {
+        // The framer knew the length, so the stream is intact and the client can
+        // read on. This is the answer that shrinks as decoders are written.
+        let bytes = ServerPacket::LightLevel(crate::world::LightLevel {
+            level: crate::world::Light(0),
+        })
+        .encode(version());
+        assert_eq!(ServerPacket::decode(&bytes, version()), Ok(None));
     }
 
     #[test]

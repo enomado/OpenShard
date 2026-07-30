@@ -43,6 +43,31 @@ pub enum DecodeError {
     WrongPacket(WrongPacket),
     /// The body was malformed.
     Codec(CodecError),
+    /// A field held a value the protocol does not define.
+    ///
+    /// Distinct from a codec error: the bytes were all there and the shape was
+    /// right, and one of them named something that does not exist — a deny code
+    /// outside the five the client knows, a direction above seven. Nothing can
+    /// be salvaged from it, and substituting the nearest legal value would be a
+    /// decoder inventing data.
+    UnknownValue {
+        /// Which field, for the log line.
+        field: &'static str,
+        /// What it held.
+        value: u32,
+    },
+    /// A legitimate wire form this crate does not decode.
+    ///
+    /// Neither malformed nor misrouted: the bytes are fine and the decoder for
+    /// the shape they are in has not been written. Says so rather than reading
+    /// the bytes as the shape it does know, which would succeed and produce
+    /// wrong values.
+    Unsupported {
+        /// The packet id.
+        packet: u8,
+        /// The form that is not handled, named for a human.
+        form: &'static str,
+    },
 }
 
 impl From<CodecError> for DecodeError {
@@ -56,6 +81,12 @@ impl fmt::Display for DecodeError {
         match self {
             Self::WrongPacket(error) => error.fmt(f),
             Self::Codec(error) => error.fmt(f),
+            Self::UnknownValue { field, value } => {
+                write!(f, "{field} held {value}, which names nothing")
+            }
+            Self::Unsupported { packet, form } => {
+                write!(f, "packet 0x{packet:02X} arrived as {form}, which is not decoded")
+            }
         }
     }
 }

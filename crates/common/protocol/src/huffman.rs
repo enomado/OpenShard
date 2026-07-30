@@ -155,11 +155,39 @@ impl std::error::Error for HuffmanError {}
 /// Decoding walks bit by bit against the table. That is O(bits x table) and slow,
 /// which is fine for a function nothing calls in production.
 pub fn decompress(input: &[u8]) -> Result<Vec<u8>, HuffmanError> {
+    match decompress_prefix(input)? {
+        Some((packet, _)) => Ok(packet),
+        None => Err(HuffmanError::Truncated),
+    }
+}
+
+/// Decompress the first packet at the front of `input`, and say how many bytes
+/// it took.
+///
+/// # Why a client needs this and the server does not
+///
+/// A game connection compresses **every packet independently, terminator and
+/// all** — see `Session::send_packet`, which follows Sphere's `CNetworkOutput`.
+/// The compressor pads the last byte with zeros, so each packet occupies a whole
+/// number of bytes and the next one starts on a byte boundary.
+///
+/// That is what makes returning a byte count correct: the padding bits after a
+/// terminator belong to the packet that just ended and are discarded. A server
+/// that compressed the socket as one continuous stream would make this wrong —
+/// there the trailing bits would be the *start* of the next packet — so this is
+/// a property of how the shard sends, not of Huffman.
+///
+/// `Ok(None)` means the terminator has not arrived yet: read more from the
+/// socket and ask again, the same shape as
+/// [`Frame::Incomplete`](crate::packet::Frame::Incomplete). It is not an error,
+/// and it is the normal case for a client, which sees whatever TCP chose to
+/// deliver rather than whole packets.
+pub fn decompress_prefix(input: &[u8]) -> Result<Option<(Vec<u8>, usize)>, HuffmanError> {
     let mut output = Vec::new();
     let mut code: u16 = 0;
     let mut length: u8 = 0;
 
-    for byte in input {
+    for (index, byte) in input.iter().enumerate() {
         for shift in (0..8).rev() {
             code = (code << 1) | u16::from((byte >> shift) & 1);
             length += 1;
@@ -174,7 +202,7 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>, HuffmanError> {
                 continue;
             };
             if symbol == TERMINAL {
-                return Ok(output);
+                return Ok(Some((output, index + 1)));
             }
             output.push(symbol as u8);
             code = 0;
@@ -182,8 +210,8 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>, HuffmanError> {
         }
     }
 
-    // Trailing padding bits without a terminator: the stream was cut short.
-    Err(HuffmanError::Truncated)
+    // The bits ran out before the terminator did. More may be coming.
+    Ok(None)
 }
 
 /// Widest code in the table. Asserted by a test rather than trusted.
@@ -282,6 +310,45 @@ mod tests {
         // 0x00D4 is 0b1101 in four bits, padded right to one byte: 0b1101_0000.
         assert_eq!(compress(&[]), vec![0b1101_0000]);
         assert_eq!(decompress(&compress(&[])).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn two_packets_in_one_read_come_back_one_at_a_time() {
+        // What a client's socket actually delivers: the shard compressed two
+        // packets independently and TCP handed them over together. The second
+        // must be found exactly where the first said it ended — a byte out and
+        // every packet after it decodes to garbage.
+        let first = [0x55u8];
+        let second = [0x22u8, 0x01, 0x00];
+        let mut wire = compress(&first);
+        let boundary = wire.len();
+        wire.extend_from_slice(&compress(&second));
+
+        let (packet, consumed) = decompress_prefix(&wire).unwrap().unwrap();
+        assert_eq!(packet, first);
+        assert_eq!(consumed, boundary);
+
+        let (packet, consumed) = decompress_prefix(&wire[consumed..]).unwrap().unwrap();
+        assert_eq!(packet, second);
+        assert_eq!(consumed, wire.len() - boundary);
+    }
+
+    #[test]
+    fn half_a_packet_is_not_an_error() {
+        // The client cannot tell a slow socket from a bad one by content, so
+        // "the terminator has not arrived" has to be a distinct answer from
+        // "these bits decode to nothing". Treating it as an error would drop a
+        // connection every time a packet spanned two segments.
+        let wire = compress(&[0x1Bu8, 0x00, 0x00, 0x00, 0x2A, 0x01, 0x90]);
+        for cut in 0..wire.len() {
+            assert_eq!(
+                decompress_prefix(&wire[..cut]),
+                Ok(None),
+                "{cut} of {} bytes",
+                wire.len()
+            );
+        }
+        assert!(decompress_prefix(&wire).unwrap().is_some());
     }
 
     #[test]

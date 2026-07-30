@@ -2349,6 +2349,23 @@ and edited as normal source afterwards — there is no ongoing `.scp` dependency
 - [ ] `tools/dashboard` — Next.js admin panel
 - [ ] `tools/launcher`, `tools/map-editor`
 
+## 9. The client — planned, see [`docs/client.md`](client.md)
+
+Our own client, starting with the only part that has to exist either way: the
+protocol in the direction a client reads it, and a `crates/client/net` that
+connects, logs in and walks into the world. The milestones, and what is already
+missing for each, are in [`docs/client.md`](client.md).
+
+- [ ] M0 — `server_packet_length`, `frame_server_packet`, `ServerPacket::decode`,
+      `ClientPacket::encode`, incremental Huffman, round-trip tests
+- [ ] M1 — `crates/client/net`: sans-io connection, login state machine,
+      `WorldView`, walking
+- [ ] M2 — `crates/common/uofiles`: move the format readers out of `world`, add
+      the ones a renderer needs
+- [ ] M3 — the first picture
+- [ ] M4 — the gump layer
+- [ ] M5 — interaction
+
 ## Later
 
 LLM NPCs, quest generation, GM assistant, Discord integration. All optional, all

@@ -155,14 +155,30 @@ impl ContainedItem {
 /// it stays a hand-written free function rather than forced into a model it does
 /// not fit.
 pub fn encode_open_container(serial: Serial, gump: Graphic, version: ClientVersion) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(9);
+    let mut writer = PacketWriter::with_capacity(open_container_length(version).minimum());
     writer.u8(0x24);
     writer.u32(serial.raw());
     writer.u16(gump.0);
     if version.supports(Feature::HsPackets) {
         writer.u16(CONTAINER_TYPE);
     }
+    debug_assert_eq!(writer.len(), open_container_length(version).minimum());
     writer.into_bytes()
+}
+
+/// How [`encode_open_container`] is framed, for the client version it was
+/// written for.
+///
+/// The rule — High Seas adds a two-byte container type — lives here, next to the
+/// encoder that obeys it, so a framer can ask rather than carry its own copy of
+/// the same `if`.
+#[must_use]
+pub fn open_container_length(version: ClientVersion) -> PacketLength {
+    PacketLength::Fixed(if version.supports(Feature::HsPackets) {
+        9
+    } else {
+        7
+    })
 }
 
 /// `0x25` — add one item to a container gump the client already has open.
@@ -172,10 +188,22 @@ pub fn encode_open_container(serial: Serial, gump: Graphic, version: ClientVersi
 /// reason.
 pub fn encode_add_to_container(item: ContainedItem, container: Serial, version: ClientVersion) -> Vec<u8> {
     let grid = version.supports(Feature::ItemGrid);
-    let mut writer = PacketWriter::with_capacity(21);
+    let mut writer = PacketWriter::with_capacity(add_to_container_length(version).minimum());
     writer.u8(0x25);
     item.write(&mut writer, container, grid);
+    debug_assert_eq!(writer.len(), add_to_container_length(version).minimum());
     writer.into_bytes()
+}
+
+/// How [`encode_add_to_container`] is framed. The grid byte is the whole
+/// difference; see [`open_container_length`] for why this lives here.
+#[must_use]
+pub fn add_to_container_length(version: ClientVersion) -> PacketLength {
+    PacketLength::Fixed(if version.supports(Feature::ItemGrid) {
+        21
+    } else {
+        20
+    })
 }
 
 /// `0x3C` — the full contents of a container, all at once. Variable length.
