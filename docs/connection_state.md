@@ -418,14 +418,19 @@ will read it.
   world its row describes where it was *last* time. Nothing reads that row in the
   meantime, so it is inert rather than wrong — but it is exactly the "exists"
   versus "is played" distinction this plan wanted as two states of one record,
-  and it is still unnamed. S5 is where it gets a name, and where `is_playing`
-  could stop being a question the sessions answer.
+  and S5 did not give it one. What S5 did was move the *question*: `is_playing`
+  is asked of the entities now (`tick/screen.rs`), which is the only thing that
+  can answer it truthfully, rather than of the shard's session table. The record
+  still cannot say it, and the answer is a scan of `players` — cheap because only
+  create and delete ask it, and the reason to leave it alone until the record can.
 - **`StoredCharacter` is public and nothing outside the world names it any
   more.** It was on `Command::Enter`, so it had to be; now `enter` is the only
   caller of `from_record` and the only reader of the type. It is still exported
-  from `openshard_world`, which is a public API nobody uses. Left alone here
-  because demoting it means unpicking the doc links that point at it from
-  `Character` — a rustdoc change, not a code one, and S5 rewrites this seam.
+  from `openshard_world` (`world/src/lib.rs`), which is a public API nobody uses.
+  Left alone because demoting it means unpicking the doc links that point at it
+  from `Character` — a rustdoc change, not a code one. This was written expecting
+  S5 to rewrite the seam; S5 has landed and did not touch it, so it is now a
+  standalone tidy rather than something riding along.
 - **`restore_characters` must run before `restore_items`, and only a doc says
   so.** The serials it reserves are the owners the item records point at; run
   them the other way round and a character's pack is filed under a serial the
@@ -440,8 +445,10 @@ will read it.
   is at the decode seam — `parse_packet` already splits `Packet::Login` from
   `Packet::World`, and `0x5D` belongs on the screen side of that split with
   `0x00`/`0xF8` and `0x83`, at which point the arm cannot be written at all. Not
-  done here because it moves a public protocol enum for what is today a
-  one-line comment, and S5 rewrites this seam anyway.
+  done here because it moves a public protocol enum for what is today a one-line
+  comment, and it was left to S5 to carry — which S5 did not: the `unreachable!`
+  is still at `server/src/dispatch.rs:36`, now with no later step scheduled to
+  pass through it.
 - **`Accounts::verify` is the slow path, still reachable.** S6 split the trait
   into `credential` (a lookup) and `CredentialCheck::run` (the hash), and left
   `verify` as a provided method that does both — for fixtures, tools, and the
@@ -481,13 +488,20 @@ will read it.
   it: the one piece of per-connection state the row cannot carry, in the one place
   that lets go of a connection.
 
-- **The four gump tables prove the argument this plan opens with.** Point 5 of
-  "Why" says the ninth map added without a line in `disconnect` leaks and nothing
-  catches it. `open_quest_gumps`, `open_craft_gumps`, `open_runebook_gumps` and
-  `open_gate_gumps` are that map, four times over, and each one's own doc comment
-  says "Cleared on logout" — which was true of the neighbour it was written beside
-  and never true of it. Logging out with a craft window open leaves an entry keyed
-  by an entity that no longer exists, until the id is reused. S7b is the fix.
+- ~~**The four gump tables prove the argument this plan opens with.**~~ Fixed by
+  S7b. Point 5 of "Why" says the ninth map added without a line in `disconnect`
+  leaks and nothing catches it. `open_quest_gumps`, `open_craft_gumps`,
+  `open_runebook_gumps` and `open_gate_gumps` were that map, four times over, and
+  each one's own doc comment said "Cleared on logout" — which was true of the
+  neighbour it was written beside and never true of it. Logging out with a craft
+  window open left an entry keyed by an entity that no longer existed, until the
+  id was reused.
+
+  They are `quest_gump`, `craft_gump`, `runebook_gump` and `gate_gump` on the
+  row now, and each lost its plural with its map: a screen shows one of each, so
+  the `Option` says what the map's missing key had been standing in for. The leak
+  cannot be reintroduced by forgetting a line, because there is no line — the row
+  going away takes them.
 
 - ~~**`connection_of` is a scan, and it is the third copy.**~~ Fixed. Both walks of
   `state.players` are gone: `WorldState::connection_of` is the named lookup beside
@@ -501,24 +515,6 @@ will read it.
   they duplicated is O(1), on paths that run per status refresh and per weight
   read.
 
-## To verify with a real client
-
-- **S5 delays `0xA9` by up to one tick** (50 ms). It answers `0x91`
-  synchronously today. The client is already waiting at that point, but this is
-  the kind of thing that is fine in theory and a hang in practice.
-- **Compression must not follow the phase.** A game socket is Huffman-compressed
-  from the moment its `0x91` is read, refusal included; the flag stays in the
-  binary's transport and is set once, irreversibly, at the hand-off. Reading it
-  off a phase that lives in the world would put a channel round-trip between the
-  socket and the question "is this stream compressed".
-
-- **The character screen answers a tick late, and nobody has watched a real
-  client do it.** `0xA9` used to go back inside the same call that read the
-  `0x91`; it now waits for the next tick, up to 50 ms. The client is already
-  waiting at that point and this should be invisible — but it is exactly the kind
-  of thing that is fine in theory and a hang in practice, and it is the first item
-  under "to verify with a real client" below.
-
 - **A creation that enters the world does so without the gate ever opening.**
   `0x00` does not move the phase — a refused creation must keep the connection on
   the screen, and moving it optimistically would strand it in `Entering` with no
@@ -526,8 +522,9 @@ will read it.
   `PlayerEntered`. In the window between the two, an in-world packet from that
   connection is dropped by the gate. No client sends one there (it is waiting for
   the `0x1B`), but the window is real and unnamed. The honest fix is a phase the
-  world moves *into* on a creation as well, which is the same shape as the
-  unnamed `LoggingOut` below.
+  world moves *into* on a creation as well — the same shape `LoggingOut` was
+  given above, and the one in-between state this plan has left hiding inside a
+  transition rather than named by one.
 
 - **`DeleteResult` says less than the world knows.** A slot naming no character
   and a slot outside the list both come back as `CharNotExist`, because that is
@@ -540,14 +537,32 @@ will read it.
   right; where it is *written* is not, and it is the kind of thing the Community
   Pack should own.
 
-- **A doc comment outlived the function it described.** `World::enter` carried
-  four lines about "the facet a mobile is on, or the default if it carries none",
-  which is `WorldState::facet_of` — moved out to the state crate long ago, its doc
-  left behind to become the first thing anybody reads about world entry. The
-  sentence even ends in a comma. Nothing catches this: `missing_docs` sees a
-  documented item, and rustdoc renders it. Replaced with `enter`'s own, which now
-  states the obligation the wrapper exists for. Worth watching for wherever a
-  helper has been lifted out of a file: the doc does not move itself.
+- ~~**A doc comment outlived the function it described.**~~ Fixed where it was
+  found, and kept here for the pattern. `World::enter` carried four lines about
+  "the facet a mobile is on, or the default if it carries none", which is
+  `WorldState::facet_of` — moved out to the state crate long ago, its doc left
+  behind to become the first thing anybody reads about world entry. The sentence
+  even ended in a comma. Nothing catches this: `missing_docs` sees a documented
+  item, and rustdoc renders it. Replaced with `enter`'s own, which states the
+  obligation the wrapper exists for. Worth watching for wherever a helper has
+  been lifted out of a file: the doc does not move itself.
+
+## To verify with a real client
+
+Two things only, and both are about timing on the wire rather than about the
+shape of the code. Findings that read like work rather than like an observation
+belong in the backlog above, however they were discovered.
+
+- **The character screen answers a tick late, and nobody has watched a real
+  client do it.** `0xA9` used to go back inside the same call that read the
+  `0x91`; since S5 it waits for the next tick, up to one `TICK_INTERVAL` (50 ms).
+  The client is already waiting at that point and this should be invisible — but
+  it is exactly the kind of thing that is fine in theory and a hang in practice.
+- **Compression must not follow the phase.** A game socket is Huffman-compressed
+  from the moment its `0x91` is read, refusal included; the flag stays in the
+  binary's transport and is set once, irreversibly, at the hand-off. Reading it
+  off a phase that lives in the world would put a channel round-trip between the
+  socket and the question "is this stream compressed".
 
 ## Status
 
