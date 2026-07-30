@@ -193,6 +193,42 @@ follows.
       `pending_targets`, `last_status`, `last_light`, `last_music`. Teardown
       becomes one `remove`, and forgetting a field stops being possible.
 
+## Backlog, found while doing S1 and S2
+
+None is a blocker; each is written down where the next step through this area
+will read it.
+
+- **A helper written beside the one that already exists.** S1 found two:
+  `tick/context.rs` had a private `client_version(connection)` that was
+  `WorldState::version_of` reimplemented next to it, and `items/containers.rs`
+  walked `players → Client` inline for the same answer. Both predate the version
+  moving, and both would have had to be found and changed anyway — the point is
+  that neither was findable by grepping for `version_of`. A duplicate helper is
+  invisible to the search that would prove it is a duplicate.
+- **`world_tick` now takes seven parameters** and grows one per step: S2 added
+  two. S6 should gather the loop's state into one value; otherwise the next
+  drain is an eighth argument and the signature stops being readable before it
+  stops compiling.
+- **Closing a refused connection relies on a chain nothing states.**
+  `Sessions::close` drops the session, which drops the outbox, which ends the
+  gateway's write task, which closes the socket, which makes the gateway emit
+  `Disconnected`, which queues `Command::Disconnect` so the world lets go of
+  whatever it had. Every link is real and none is written down in one place;
+  there is no test that walks it end to end, because it needs a real gateway —
+  which is what `crates/e2e` is for.
+- **`Entering` has no timeout.** A session stays there until the world says
+  `PlayerEntered` or `PlayerRefused`, and today every exit from `World::enter`
+  emits exactly one of the two — by construction, and only checkable by reading
+  the function. A test that asserts "every early return from `enter` emits a
+  refusal" would pin it; a fourth failure path added without one would strand a
+  client in a phase nothing ever moves.
+- **A logout leaves the phase on `Playing`.** `Command::LogoutRequest` answers
+  the ack and stops; the character is not let go of until the socket closes and
+  `Disconnect` runs. So between the ack and the client hanging up, in-world
+  packets are still accepted from a connection that has announced it is leaving.
+  Harmless today — the client sends nothing in that window — but it is the state
+  the first draft called `LoggingOut`, and it is unnamed.
+
 ## To verify with a real client
 
 - **S5 delays `0xA9` by up to one tick** (50 ms). It answers `0x91`
