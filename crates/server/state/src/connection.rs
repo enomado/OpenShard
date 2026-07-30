@@ -17,6 +17,8 @@
 //! it gets a row of its own keyed by
 //! [`ConnectionId`](openshard_gateway::ConnectionId).
 
+use openshard_protocol::access::AccessLevel;
+use openshard_protocol::identity::AccountName;
 use openshard_protocol::version::ClientVersion;
 
 /// One connected client, as the world sees it.
@@ -34,17 +36,36 @@ use openshard_protocol::version::ClientVersion;
 /// a socket. The per-connection state currently spread across eight maps on
 /// [`WorldState`](crate::WorldState) belongs here and is step S7 of the plan in
 /// `docs/connection_state.md`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Connection {
     /// What the client claims to be. Every feature gate and every encoder reads
     /// it, and this is the only place it lives: the game socket never states its
     /// version, so this is what the login socket carried across on the auth key.
     pub version: ClientVersion,
+    /// Whose account this connection authenticated as.
+    ///
+    /// The character screen's packets name a character but never the account it
+    /// belongs to — `0x5D` echoes a name, `0x83` an index — so answering any of
+    /// them out of a tick means the world knowing whose list to read. It comes
+    /// off the login state machine at the hand-off and never changes: a socket
+    /// authenticates once.
+    pub account: AccountName,
+    /// The staff authority this account's characters play with.
+    ///
+    /// Re-derived from the account at every login and never saved with a
+    /// character, so it lives with the connection rather than the roster. Carried
+    /// here because entering a character is a tick's job now, and the entity's
+    /// `Access` component is written from this.
+    pub access: AccessLevel,
 }
 
 impl Connection {
     /// A connection that has just been handed over by the login conversation.
-    pub const fn new(version: ClientVersion) -> Self {
-        Self { version }
+    pub fn new(version: ClientVersion, account: AccountName, access: AccessLevel) -> Self {
+        Self {
+            version,
+            account,
+            access,
+        }
     }
 }
