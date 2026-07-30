@@ -2,6 +2,7 @@
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
+use crate::mobile::Vitals;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::{Serial, raw_or_none};
 use crate::version::ClientVersion;
@@ -93,17 +94,19 @@ impl EncodePacket for AttackTarget {
 pub struct HealthBar {
     /// Whose bar.
     pub serial: Serial,
-    /// The maximum the bar is drawn against — the real one, or `100`.
-    pub max: u16,
-    /// The filled part, in the same units as `max`.
-    pub current: u16,
+    /// The current/max pair, drawn as a bar — `mobile::Hitpoints`'s own shape,
+    /// scaled to 0–100 for anyone but the owner.
+    pub vitals: Vitals,
 }
 
 impl HealthBar {
     /// The real numbers, for the mobile's own client.
     #[must_use]
     pub const fn exact(serial: Serial, max: u16, current: u16) -> Self {
-        Self { serial, max, current }
+        Self {
+            serial,
+            vitals: Vitals { current, max },
+        }
     }
 
     /// A 0–100 bar, for everyone else.
@@ -115,8 +118,10 @@ impl HealthBar {
         let percent = (current as u32 * 100 / divisor) as u16;
         Self {
             serial,
-            max: 100,
-            current: percent,
+            vitals: Vitals {
+                current: percent,
+                max: 100,
+            },
         }
     }
 }
@@ -127,8 +132,8 @@ impl EncodePacket for HealthBar {
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u32(self.serial.raw());
-        out.u16(self.max);
-        out.u16(self.current);
+        out.u16(self.vitals.max);
+        out.u16(self.vitals.current);
     }
 }
 
@@ -165,12 +170,12 @@ mod tests {
 
     #[test]
     fn a_full_bar_reads_full_either_way() {
-        assert_eq!(HealthBar::scaled(mobile(1), 200, 200).current, 100);
+        assert_eq!(HealthBar::scaled(mobile(1), 200, 200).vitals.current, 100);
     }
 
     #[test]
     fn a_zero_max_does_not_divide_by_zero() {
-        assert_eq!(HealthBar::scaled(mobile(1), 0, 0).current, 0);
+        assert_eq!(HealthBar::scaled(mobile(1), 0, 0).vitals.current, 0);
     }
 
     #[test]

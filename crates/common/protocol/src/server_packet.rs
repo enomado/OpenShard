@@ -548,7 +548,7 @@ mod tests {
                 }],
             }),
             ServerPacket::TooltipRevision(crate::properties::TooltipRevision {
-                serial: 0x0000_00AB,
+                serial: crate::serial::Serial::new(0x0000_00AB).unwrap(),
                 hash: 0x1234_5678,
             }),
             ServerPacket::SkillsFull(crate::skill::SkillsFull {
@@ -606,8 +606,8 @@ mod tests {
                 }],
             }),
             ServerPacket::SpellbookContent(crate::spellbook::SpellbookContent {
-                serial: 0x4000_0001,
-                graphic: 0x0EFA,
+                serial: crate::serial::Serial::new(0x4000_0001).unwrap(),
+                graphic: crate::wire::Graphic(0x0EFA),
                 offset: 1,
                 content: 1,
             }),

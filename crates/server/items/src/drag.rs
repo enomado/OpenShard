@@ -430,8 +430,8 @@ fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: H
     state.send_packet(
         connection,
         &ServerPacket::SpellbookContent(SpellbookContent {
-            serial: book_serial.raw(),
-            graphic: SPELLBOOK_GRAPHIC,
+            serial: book_serial,
+            graphic: openshard_protocol::wire::Graphic(SPELLBOOK_GRAPHIC),
             offset: 1,
             content: mask.0,
         }),

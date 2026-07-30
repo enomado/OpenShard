@@ -177,12 +177,12 @@ impl World {
     /// list back to the asker. The client batches several serials as it hovers; a
     /// serial it cannot see or that names nothing is simply skipped. Off entirely
     /// when the shard serves no tooltips.
-    pub(super) fn query_properties(&mut self, connection: ConnectionId, serials: &[u32]) {
+    pub(super) fn query_properties(&mut self, connection: ConnectionId, serials: &[RawSerial]) {
         if self.state.gameplay.tooltip_mode == TooltipMode::Off {
             return;
         }
         for &serial in serials {
-            if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+            if let Some(entity) = serial.validate().and_then(|s| self.state.registry.entity_of(s)) {
                 self.state.send_property_list(connection, entity);
             }
         }

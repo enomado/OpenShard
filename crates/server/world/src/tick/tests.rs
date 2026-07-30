@@ -9,6 +9,7 @@ use openshard_protocol::mobile::Remove;
 use openshard_protocol::packet::encode_packet;
 use openshard_protocol::serial::RawSerial;
 use openshard_protocol::skill::SkillLock;
+use openshard_protocol::wire::RawSkillId;
 use openshard_skills::SkillUsed;
 use openshard_state::components::Riding;
 use openshard_state::components::{
@@ -3715,7 +3716,7 @@ fn a_skill_lock_arrow_is_stored() {
 
     world.queue(Command::SetSkillLock {
         connection,
-        skill: 45, // Mining
+        skill: RawSkillId(45), // Mining
         lock: SkillLock::Down,
     });
     world.tick(now);
@@ -3789,7 +3790,7 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
     world.tick(now);
     world.queue(Command::SetSkillLock {
         connection: conn,
-        skill: 25,
+        skill: RawSkillId(25),
         lock: SkillLock::Down,
     });
     world.tick(now);
@@ -5522,7 +5523,7 @@ fn a_locked_skill_does_not_gain() {
     });
     world.queue(Command::SetSkillLock {
         connection: player,
-        skill: Skill::Mining.id(),
+        skill: RawSkillId(Skill::Mining.id()),
         lock: SkillLock::Locked,
     });
     world.tick(now);
@@ -5555,7 +5556,7 @@ fn a_down_skill_gives_ground_at_the_total_cap() {
     fill_to_the_total_cap(&mut world, player, serial, now);
     world.queue(Command::SetSkillLock {
         connection: player,
-        skill: Skill::Fishing.id(),
+        skill: RawSkillId(Skill::Fishing.id()),
         lock: SkillLock::Down,
     });
     world.tick(now);
@@ -5653,7 +5654,7 @@ fn fill_to_the_total_cap(world: &mut World, connection: ConnectionId, serial: u3
         // Every filler is locked, so only the caller's two can move.
         world.queue(Command::SetSkillLock {
             connection,
-            skill: skill.id(),
+            skill: RawSkillId(skill.id()),
             lock: SkillLock::Locked,
         });
         filled += u32::from(value);
@@ -5790,7 +5791,7 @@ fn a_passive_skills_button_says_so_and_starts_nothing() {
 
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::Tactics.id(), // passive: there is no using it directly
+        skill: RawSkillId(Skill::Tactics.id()), // passive: there is no using it directly
     });
     world.tick(now);
 
@@ -5818,7 +5819,7 @@ fn a_usable_skills_button_announces_it_and_holds_the_button() {
 
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::Hiding.id(),
+        skill: RawSkillId(Skill::Hiding.id()),
     });
     world.tick(now);
 
@@ -5832,7 +5833,7 @@ fn a_usable_skills_button_announces_it_and_holds_the_button() {
     let _ = packets_for(&mut world, player);
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::Hiding.id(),
+        skill: RawSkillId(Skill::Hiding.id()),
     });
     world.tick(now);
     assert_eq!(
@@ -5867,7 +5868,7 @@ fn a_ghost_cannot_use_a_skill_at_all() {
 
     world.queue(Command::UseSkillButton {
         connection: player,
-        skill: Skill::Hiding.id(),
+        skill: RawSkillId(Skill::Hiding.id()),
     });
     world.tick(now);
     assert_eq!(localized_cliloc(&mut world, player), None, "not a word");
@@ -5971,7 +5972,7 @@ fn anatomy_raises_a_cursor_and_reads_the_target() {
 
     world.queue(Command::UseSkillButton {
         connection: looker,
-        skill: Skill::Anatomy.id(),
+        skill: RawSkillId(Skill::Anatomy.id()),
     });
     world.tick(now);
     let cursor = packets_for(&mut world, looker)
@@ -9639,7 +9640,7 @@ fn querying_a_stacks_properties_sends_the_amount_cliloc() {
 
     world.queue(Command::QueryProperties {
         connection,
-        serials: vec![serial],
+        serials: vec![RawSerial(serial)],
     });
     world.tick(now);
 

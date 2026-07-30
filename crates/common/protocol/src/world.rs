@@ -30,7 +30,7 @@ use crate::mobile::{Notoriety, StatusFlags};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::Serial;
 use crate::version::ClientVersion;
-use crate::wire::{Graphic, Hue, RawCharacterSlot, RawClientIp, RawGraphic, RawHue};
+use crate::wire::{Graphic, Hue, RawCharacterSlot, RawClientIp, RawGraphic, RawHue, RawSkillId};
 
 /// Where something is.
 ///
@@ -139,12 +139,6 @@ pub enum Race {
     /// Since Stygian Abyss.
     Gargoyle,
 }
-
-/// A skill id exactly as a create-character packet carried it, not yet
-/// checked against `openshard_state::Skill`'s known ids. No promotion method
-/// yet — see `docs/protocol_newtypes.md`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub struct RawSkillId(pub u8);
 
 /// A starting skill value exactly as sent — the client's own whole points,
 /// not yet checked against the shard's starting-skill rule. No promotion

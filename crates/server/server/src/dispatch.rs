@@ -97,15 +97,17 @@ pub(crate) fn dispatch_world_packet(
             if !session.in_world() {
                 return true;
             }
-            match command.subcommand {
-                EncodedCommand::QUEST_GUMP_REQUEST => {
+            match command.subcommand.interpret() {
+                EncodedSubcommand::QuestGumpRequest => {
                     world.queue(Command::QuestLogRequest { connection: id });
                 }
                 // Named, not routed: combat has no weapon abilities and `guilds`
                 // is a stub. Naming them means the byte layout is not re-derived
                 // the day either lands.
-                EncodedCommand::SET_ABILITY | EncodedCommand::GUILD_GUMP_REQUEST => {}
-                other => debug!(subcommand = format!("0x{other:02X}"), "unhandled 0xD7"),
+                EncodedSubcommand::SetAbility | EncodedSubcommand::GuildGumpRequest => {}
+                EncodedSubcommand::Other(other) => {
+                    debug!(subcommand = format!("0x{other:02X}"), "unhandled 0xD7");
+                }
             }
             true
         }
@@ -309,10 +311,16 @@ pub(crate) fn dispatch_world_packet(
             }
             match request {
                 ExtendedRequest::Cast(cast) => {
-                    world.queue(Command::RequestCast {
-                        connection: id,
-                        spell: cast.spell,
-                    });
+                    // interpret() is total, so it may run right here rather than
+                    // waiting for a tick system to have the domain in hand — see
+                    // `docs/protocol_newtypes.md`'s N4 containers amendment 2. A
+                    // wire 0 is never a legitimate spell id and queues nothing.
+                    if let Some(spell) = cast.spell.interpret() {
+                        world.queue(Command::RequestCast {
+                            connection: id,
+                            spell,
+                        });
+                    }
                 }
                 ExtendedRequest::ContextMenuRequest(request) => {
                     debug!(%id, serial = request.serial.0, "0xBF context-menu request");
