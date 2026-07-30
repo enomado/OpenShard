@@ -154,6 +154,15 @@ few hundred lines around it that a person actually reads.
 as JSON, with a `build.rs` that emits the `const` before the crate compiles.**
 The three that exist — `crafting`, `state`, `npc` — are the pattern:
 
+- **A table is not always spelled as a `const`.** `creature_name` was 91 lines
+  of `match` arms and is data by every test that matters: a key, a value, and no
+  control flow. Look for the long run of near-identical lines, not for the
+  `const` keyword.
+- **The generated code keeps the shape the hand-written code had.** A searched
+  table stays a `const` slice; `creature_name` stays a `const fn` over a
+  `match`, because the compiler turns a dense integer `match` into a jump and a
+  search over a slice could not be `const fn`. Moving the data is not licence to
+  change the lookup.
 - **The generated tables stay `const`.** Two of `state`'s are binary-searched on
   the tick path. Nothing is parsed or allocated at startup, and a caller still
   reads `&'static [Recipe]`; the file it comes from is the only thing that
@@ -166,13 +175,18 @@ The three that exist — `crafting`, `state`, `npc` — are the pattern:
   `build.rs` sorts `BODY_TYPES` and `MOUNTS` by id, because `body_type` binary-
   searches them and a table sorted by hand decays the first time somebody
   appends a row. The same script asserts there is no duplicate id — the case a
-  binary search would answer arbitrarily.
+  binary search would answer arbitrarily, and a `match` would answer with
+  whichever arm came first, so a creature quietly wears another one's name.
 - **Prose stays in the source.** The doc comments for the generated items live
   in `build.rs`, not in the JSON: a data file is a poor place to explain why
   ServUO's `StatTotal` sums the *undivided* scales.
-- **Converting is verified by round-tripping.** Both existing conversions were
-  dumped out of the compiled tables rather than parsed out of the source text,
-  and the regenerated `const`s dump back to byte-identical JSON.
+- **Converting is verified by round-tripping, or by behaviour.** Every table
+  that could be was dumped out of the *compiled* tables rather than parsed out
+  of the source text, and the regenerated `const`s dump back to byte-identical
+  JSON. Where the layout necessarily changed — the `match` arms, whose grouping
+  the generator re-derives — the check is the stronger one: `creature_name` and
+  `creature_base_sound` were called for all 65,536 body ids before and after,
+  and the snapshots compared.
 
 What is *not* worth moving: `state`'s `WEAPONS` and `ARMOR`, `magic`'s `MAGERY`,
 `harvest`'s `ORES`. Each is already one row per line with a constructor function

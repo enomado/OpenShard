@@ -2319,10 +2319,22 @@ started.
 
 ### Backlog from the data-table sweep
 
-The craft, body-type, mount, skill and NPC-name tables moved out of Rust source
-and into `data/*.json` behind a `build.rs` (17,784 lines of source became 5,222
-of data; the rule is now in [`architecture.md`](architecture.md#a-big-table-is-data-and-lives-in-datajson)).
+The craft, body-type, mount, skill, creature-name, creature-sound, harvest-tile
+and NPC-name tables moved out of Rust source and into `data/*.json` behind a
+`build.rs` (18,155 lines of source became 5,521 of data; the rule is now in
+[`architecture.md`](architecture.md#a-big-table-is-data-and-lives-in-datajson)).
 Found while doing it, none started:
+
+- **Three tables share the `body` key and are three files.** `body_types.json`
+  answers what *type* a body is, `creature_names.json` what it is *called*, and
+  `creature_sounds.json` what it *sounds* like — and `creature_base_sound`'s own
+  doc already says "grow it alongside `creature_name`", which is an invariant
+  stated in prose because nothing enforces it. They were left separate on
+  purpose: the three disagree about which bodies share a row (the dire, grey and
+  timber wolves are three names and one howl) and the sound rows carry trailing
+  notes the other two have no column for. One file keyed by body, with three
+  optional columns, would end the drift — at the cost of a format that has to
+  express "these four bodies share a sound but not a name".
 
 - **The recipe invariants are tested, not enforced.** `defs/mod.rs` asserts that
   every recipe names a group that exists and leads with its system's own skill —

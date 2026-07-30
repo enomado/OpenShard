@@ -1,18 +1,31 @@
-//! Turns `data/*.json` into the three lookup tables this crate keeps in `const`s.
+//! Turns `data/*.json` into the lookup tables this crate keeps in `const`s.
 //!
-//! All three are ported reference data — ServUO's `Data/bodyTable.cfg`, its
-//! `BaseMount` subclasses, and `SkillInfo.Table` — and between them they were
-//! 1,428 lines of Rust that no one has ever read as code: 469 body ids, 31
-//! mount pairs, and 58 skills of thirteen columns apiece. They are 258 lines of
-//! JSON now.
+//! Every one is ported reference data — ServUO's `Data/bodyTable.cfg`, its
+//! `BaseMount` subclasses, `SkillInfo.Table`, the names and `BaseSoundID`s off
+//! its `BaseCreature`s, and the tile sets its harvest definitions scan. Between
+//! them they were 1,799 lines of Rust that no one has ever read as code: 469
+//! body ids one per line, 58 skills of thirteen columns apiece, 271 lines of
+//! `match` arms keyed by body, and a hundred lines of bare tile ids. They are
+//! 557 lines of JSON now.
 //!
-//! The generated tables stay `const`, because two of them are binary-searched on
-//! the tick path and the third is indexed by a `Skill` discriminant. **Sorting
-//! is this script's job, not the data's**: `body_type` and `mount_item_for`
-//! search sorted slices, and a table sorted by hand decays the first time
-//! somebody appends a row. The doc comments for the generated items live here
-//! rather than in the JSON — a data file is a poor place for prose, and this is
-//! the file that decides what the item means.
+//! Two shapes come out of here, and which one a table gets is not a style
+//! choice:
+//!
+//! - **A `const` slice**, for the tables that are searched. `body_type` and
+//!   `mount_item_for` binary-search theirs on the tick path; `SKILLS` is indexed
+//!   by a `Skill` discriminant.
+//! - **A `const fn` over a `match`**, for `creature_name` and
+//!   `creature_base_sound`. The compiler turns a dense integer `match` into a
+//!   jump, and a search over a slice could not be `const fn` at all — so the
+//!   generated code keeps the shape the hand-written code had.
+//!
+//! **Invariants are this script's job, not the data's.** It sorts what is
+//! binary-searched, because a table sorted by hand decays the first time
+//! somebody appends a row; it rejects a duplicate id, which a binary search
+//! would answer arbitrarily and a `match` would answer with whichever arm came
+//! first. The doc comments for the generated items live here rather than in the
+//! JSON — a data file is a poor place for prose, and this is the file that
+//! decides what the item means.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
