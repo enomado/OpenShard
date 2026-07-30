@@ -1254,6 +1254,7 @@ dependencies = [
 name = "openshard-client-net"
 version = "0.0.1"
 dependencies = [
+ "openshard-movement",
  "openshard-protocol",
  "tokio",
  "tracing",
@@ -1299,6 +1300,7 @@ dependencies = [
  "openshard-client-net",
  "openshard-config",
  "openshard-gateway",
+ "openshard-movement",
  "openshard-protocol",
  "openshard-server",
  "tokio",

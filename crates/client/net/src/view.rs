@@ -120,6 +120,26 @@ impl WorldView {
         }
     }
 
+    /// Record a step of the player's own that the server has confirmed.
+    ///
+    /// The one thing that reaches the player from outside [`apply`](Self::apply),
+    /// and it has to be: a `0x22` ack carries a sequence number and a health-bar
+    /// colour and *no position*, so where the body now stands is the tile the
+    /// acked step was asking for, and only [`Walk`](crate::walk::Walk) — which
+    /// sent it — knows what that was.
+    ///
+    /// This is still a record of what the server said rather than a guess: the
+    /// ack is the saying. The prediction that has not been acked yet stays where
+    /// it belongs, in [`Walk::predicted`](crate::walk::Walk::predicted).
+    ///
+    /// Returns whether anything changed, the same as [`apply`](Self::apply).
+    pub fn player_stepped(&mut self, position: Point, facing: Facing) -> bool {
+        let changed = self.player.position != position || self.player.facing != facing;
+        self.player.position = position;
+        self.player.facing = facing;
+        changed
+    }
+
     /// Fold in what a packet says.
     ///
     /// Returns whether anything changed, which is what a renderer wants to know
@@ -291,6 +311,24 @@ mod tests {
         assert!(
             !view.apply(&ServerPacket::PlayerUpdate(update)),
             "the same packet twice changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_step_moves_the_player_and_says_when_it_did_not() {
+        // What `Walk` hands back on a `0x22`. Turning is a step in UO and its
+        // ack looks exactly like a move's, so "the position did not change"
+        // must not read as "nothing happened": the facing did.
+        let mut view = WorldView::entered(start());
+        assert!(view.player_stepped(Point::new(1475, 1769, 20), Facing::walking(Direction::North)));
+        assert_eq!(view.player.position, Point::new(1475, 1769, 20));
+        assert!(
+            !view.player_stepped(Point::new(1475, 1769, 20), Facing::walking(Direction::North)),
+            "the same place, facing the same way, is not a change"
+        );
+        assert!(
+            view.player_stepped(Point::new(1475, 1769, 20), Facing::walking(Direction::East)),
+            "a turn moves nobody and is still a change"
         );
     }
 

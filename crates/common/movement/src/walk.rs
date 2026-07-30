@@ -218,6 +218,51 @@ impl Terrain for OpenWorld {
     }
 }
 
+/// What a walk request means before terrain has a say.
+///
+/// The half of a step both ends of the wire have to agree on without talking:
+/// the server decides it from the mobile it holds, and the client predicts it
+/// from the body it is drawing, because `0x22` says only "yes" — it carries no
+/// position. Two implementations of the turn rule would put the two a tile
+/// apart, and the client would only find out on the next `0x21`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Intent {
+    /// The request turns the mobile on the spot and moves it nowhere.
+    Turned {
+        /// The new facing.
+        facing: Facing,
+    },
+    /// The request moves it, if the ground allows.
+    Stepped {
+        /// The tile it is asking for. `z` is carried over unchanged — height is
+        /// the terrain's answer, and this function has no terrain.
+        target: Point,
+        /// Which way it will face.
+        facing: Facing,
+    },
+    /// The step leaves the coordinate space; there is nowhere to allow.
+    OffTheMap,
+}
+
+/// What one `0x02` means for a mobile at `position` facing `facing`.
+///
+/// Terrain, pace and the sequence are all somebody else's answer — this is only
+/// the geometry, which is exactly the part a client can work out for itself.
+#[must_use]
+pub fn intend(position: Point, facing: Facing, want: Facing) -> Intent {
+    // Turning is a step of its own. A mobile facing north asked to go east
+    // turns to face east and stays where it is; the *next* request moves it.
+    // The running bit is not part of this — a walking mobile asked to run the
+    // way it already faces takes a step, it does not "turn".
+    if facing.direction != want.direction {
+        return Intent::Turned { facing: want };
+    }
+    match step_from(position, want.direction) {
+        Some(target) => Intent::Stepped { target, facing: want },
+        None => Intent::OffTheMap,
+    }
+}
+
 /// One mobile's walk state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Walker {
@@ -270,16 +315,16 @@ impl Walker {
             return Walk::Refused;
         }
 
-        // Turning is a step of its own. A mobile facing north asked to go east
-        // turns to face east and stays where it is; the *next* request moves it.
-        // The running bit is not part of this — a walking mobile asked to run
-        // the way it already faces takes a step, it does not "turn".
+        // The geometry, decided by the same function the client predicts with —
+        // see [`intend`], and the reason it is shared rather than written twice.
         //
         // A turn is free: it costs no ground, so charging for it would let a
         // client be throttled for spinning on the spot, which is not a speedhack
-        // and is something clients genuinely do.
-        if self.facing.direction != request.facing.direction {
-            self.facing = request.facing;
+        // and is something clients genuinely do. That is why the pace check sits
+        // below the turn and above the step.
+        let intent = intend(self.position, self.facing, request.facing);
+        if let Intent::Turned { facing } = intent {
+            self.facing = facing;
             return Walk::Turned { facing: self.facing };
         }
 
@@ -291,7 +336,7 @@ impl Walker {
             return Walk::Refused;
         }
 
-        let Some(target) = step_from(self.position, request.facing.direction) else {
+        let Intent::Stepped { target, .. } = intent else {
             // Walked off the edge of the coordinate space. The client cannot
             // express where it wanted to go, so there is nowhere to allow.
             self.sequence.reset();
@@ -566,6 +611,70 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_intent_is_a_turn_whenever_the_direction_changes() {
+        // The rule the client predicts with and the server enforces, checked on
+        // its own: what `turning_is_a_step_of_its_own` proves through a whole
+        // `Walker`, this proves for every pair of directions.
+        let here = Point::new(100, 100, 0);
+        for from in Direction::ALL {
+            for to in Direction::ALL {
+                let intent = intend(here, Facing::walking(from), Facing::walking(to));
+                if from == to {
+                    assert!(
+                        matches!(intent, Intent::Stepped { .. }),
+                        "{from} to {to} is a step"
+                    );
+                } else {
+                    assert_eq!(
+                        intent,
+                        Intent::Turned {
+                            facing: Facing::walking(to)
+                        },
+                        "{from} to {to} is a turn"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn breaking_into_a_run_is_a_step_and_the_edge_is_neither() {
+        let here = Point::new(100, 100, 0);
+        assert_eq!(
+            intend(
+                here,
+                Facing::walking(Direction::North),
+                Facing::running(Direction::North)
+            ),
+            Intent::Stepped {
+                target: Point::new(100, 99, 0),
+                facing: Facing::running(Direction::North),
+            },
+            "the direction did not change, so there is nothing to turn to"
+        );
+        // A turn at the edge is still just a turn: it needs no tile.
+        let corner = Point::new(0, 0, 0);
+        assert_eq!(
+            intend(
+                corner,
+                Facing::walking(Direction::North),
+                Facing::walking(Direction::West)
+            ),
+            Intent::Turned {
+                facing: Facing::walking(Direction::West)
+            }
+        );
+        assert_eq!(
+            intend(
+                corner,
+                Facing::walking(Direction::West),
+                Facing::walking(Direction::West)
+            ),
+            Intent::OffTheMap
+        );
     }
 
     #[test]

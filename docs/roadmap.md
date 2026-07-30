@@ -2376,12 +2376,23 @@ missing for each, are in [`docs/client.md`](client.md).
 - [x] M1 — `crates/client/net`: sans-io connection, login state machine,
       `WorldView`, and `crates/e2e` proving a client reaches the world against
       the real shard
-- [ ] M1a — walking
+- [x] M1a — walking
   - [x] The decoders that fill a `WorldView`: `0x20`, `0x11`, `0x77`, `0x78`,
         `0x1A`, `0x1D`. `WorldView` now holds every other mobile and every
         ground item, not just the player; `0x11` decodes but is not folded in
         — see `docs/client.md`.
-  - [ ] `0x02` with its sequence and fastwalk key, `0x22`/`0x21`
+  - [x] `0x02` with its sequence and fastwalk key, `0x22`/`0x21`.
+        `client_net::walk::Walk` sends the steps and predicts where they land,
+        because a `0x22` carries no position and only this end knows what the
+        acked step was asking for. Two rules are shared with the server rather
+        than written twice, which is the part that would have desynchronised
+        silently: `movement::intend` (a turn is a whole step, and the world
+        edge is not a tile) and `movement::StepCounter`, the client half of
+        the sequence rule `WalkSequence` enforces — open at zero, skip zero on
+        the wrap, back to zero on a `0x21`. `crates/e2e` walks a burst past
+        the pace budget on purpose and compares the position the resulting
+        `0x21` carries against the one the client derived on its own; the
+        refusal is the only packet that ever states the server's own answer.
 - [ ] M2 — `crates/common/uofiles`: move the format readers out of `world`, add
       the ones a renderer needs
 - [ ] M3 — the first picture

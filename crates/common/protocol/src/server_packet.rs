@@ -180,8 +180,8 @@ impl ServerPacket {
             Self::PlayerStart(_) => <PlayerStart as EncodePacket>::ID,
             Self::PlayerUpdate(_) => <PlayerUpdate as EncodePacket>::ID,
             Self::DeathStatus(_) => DeathStatus::ID,
-            Self::WalkAck(_) => WalkAck::ID,
-            Self::WalkReject(_) => WalkReject::ID,
+            Self::WalkAck(_) => <WalkAck as EncodePacket>::ID,
+            Self::WalkReject(_) => <WalkReject as EncodePacket>::ID,
             Self::LoginComplete(_) => <LoginComplete as EncodePacket>::ID,
             Self::LightLevel(_) => LightLevel::ID,
             Self::PlayMusic(_) => PlayMusic::ID,
@@ -411,6 +411,12 @@ impl ServerPacket {
             <WorldItem as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::WorldItem)
                 .map_err(ServerDecodeError::WorldItem)?,
+            <WalkAck as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::WalkAck)
+                .map_err(ServerDecodeError::WalkAck)?,
+            <WalkReject as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::WalkReject)
+                .map_err(ServerDecodeError::WalkReject)?,
             _ => return Ok(None),
         };
         Ok(Some(decoded))
@@ -449,6 +455,10 @@ pub enum ServerDecodeError {
     MobileIncoming(DecodeError),
     /// `0x1A` did not decode.
     WorldItem(DecodeError),
+    /// `0x22` did not decode.
+    WalkAck(DecodeError),
+    /// `0x21` did not decode.
+    WalkReject(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -466,6 +476,8 @@ impl fmt::Display for ServerDecodeError {
             Self::MobileMove(error) => ("0x77 mobile move", error),
             Self::MobileIncoming(error) => ("0x78 mobile incoming", error),
             Self::WorldItem(error) => ("0x1A world item", error),
+            Self::WalkAck(error) => ("0x22 walk ack", error),
+            Self::WalkReject(error) => ("0x21 walk reject", error),
         };
         write!(f, "{name}: {error}")
     }
@@ -1220,6 +1232,58 @@ mod tests {
                 max_weight: 0,
                 ..sent
             }
+        );
+    }
+
+    #[test]
+    fn the_two_answers_to_a_walk_request_round_trip() {
+        // 0x22 and 0x21: the other half of M1a. A negative z matters here —
+        // `0x21`'s height is written as a byte and read back as an `i8`, and a
+        // client that got the sign wrong would snap itself into the ground.
+        let packets = [
+            ServerPacket::WalkAck(WalkAck {
+                sequence: crate::world::StepSequence(0x2A),
+                notoriety: crate::mobile::Notoriety::Murderer,
+            }),
+            ServerPacket::WalkReject(WalkReject {
+                sequence: crate::world::StepSequence(0xFF),
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::NorthWest),
+            }),
+        ];
+
+        for packet in packets {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(packet.clone())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_client_is_told_a_yellow_bar_is_blue_and_that_is_what_it_reads_back() {
+        // `Notoriety::for_client` downgrades `Invulnerable` for a client with no
+        // yellow bar, so this one shape does not survive the round trip — by
+        // design, and the honest half of that bargain is that decoding reports
+        // what was actually on the wire rather than what the sender meant.
+        let old = ClientVersion::new(3, 0, 8, 10);
+        let sent = ServerPacket::WalkAck(WalkAck {
+            sequence: crate::world::StepSequence(1),
+            notoriety: crate::mobile::Notoriety::Invulnerable,
+        });
+        assert_eq!(
+            ServerPacket::decode(&sent.encode(old), old),
+            Ok(Some(ServerPacket::WalkAck(WalkAck {
+                sequence: crate::world::StepSequence(1),
+                notoriety: crate::mobile::Notoriety::Innocent,
+            }))),
+        );
+        // A client that does have the yellow bar gets it back intact.
+        assert_eq!(
+            ServerPacket::decode(&sent.encode(version()), version()),
+            Ok(Some(sent))
         );
     }
 

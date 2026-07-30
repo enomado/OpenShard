@@ -20,6 +20,10 @@ workspace = true
 openshard-client-net.workspace = true
 openshard-config.workspace = true
 openshard-gateway.workspace = true
+# For `WALK_BUFFER` only: the burst that provokes the `0x21` this test needs as
+# an oracle has to be bigger than the pace budget, and a number written here
+# would stop being bigger the day the budget grew.
+openshard-movement.workspace = true
 openshard-protocol.workspace = true
 openshard-server.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }

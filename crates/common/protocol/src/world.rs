@@ -706,8 +706,9 @@ impl DecodePacket for WalkRequest {
 }
 
 impl WalkRequest {
-    /// Encode a whole 0x02 packet. Test fixtures only — this server never sends
-    /// one, only ever decodes it.
+    /// Encode a whole 0x02 packet. What `crates/client/net`'s walk state
+    /// machine (`walk.rs`) sends for real; this *server* never sends one, only
+    /// ever decodes it.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(7);
         writer.u8(Self::ID);
@@ -742,6 +743,26 @@ impl EncodePacket for WalkAck {
     }
 }
 
+impl DecodePacket for WalkAck {
+    const ID: u8 = 0x22;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self {
+            // The sequence a client reads back out of an ack is a number it
+            // chose itself and the server echoed, so it is a `StepSequence`
+            // already — there is nothing to interpret. `RawStepSequence` is the
+            // other direction, where the byte is a client's claim.
+            sequence: StepSequence(reader.u8()?),
+            // Lossy in exactly one place, and knowingly: `for_client` sends a
+            // yellow bar as blue to a client older than 4.0.0, so decoding what
+            // such a client was sent gives `Innocent` back. That is what
+            // arrived, and inventing the `Invulnerable` behind it would be a
+            // guess the wire does not support.
+            notoriety: Notoriety::from_bits(reader.u8()?),
+        })
+    }
+}
+
 /// `0x21` — the step is refused; here is where you really are. 8 bytes.
 ///
 /// The client snaps back to this position and resets its sequence to zero.
@@ -765,6 +786,26 @@ impl EncodePacket for WalkReject {
         out.u16(self.position.y);
         out.u8(self.facing.to_bits());
         out.u8(self.position.z as u8);
+    }
+}
+
+impl DecodePacket for WalkReject {
+    const ID: u8 = 0x21;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        // The facing sits *between* the y and the z, which is the one thing
+        // about this packet worth reading twice: every other position on this
+        // wire is three fields in a row.
+        let sequence = StepSequence(reader.u8()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        let facing = Facing::from_bits(reader.u8()?);
+        let z = reader.u8()? as i8;
+        Ok(Self {
+            sequence,
+            position: Point::new(x, y, z),
+            facing,
+        })
     }
 }
 

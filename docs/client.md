@@ -161,9 +161,32 @@ targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
   ends quietly agree on the same mistake. Every packet this client learns should
   be checked against a real client's behaviour, not only against our own server.
 
-## Backlog, found while building M0 and M1
+## Backlog, found while building M0, M1 and M1a
 
 Each is a seam the work made visible. None blocks the next milestone.
+
+- **A walking client has no map, so `z` never changes under it.**
+  `openshard_movement::intend` carries the height over unchanged — height is
+  the terrain's answer and neither end of `intend` has terrain — so
+  `client_net::walk::Walk` predicts a flat world. The server, which does read
+  the map, lands the step wherever the ground is, and says nothing: `0x22`
+  carries no position. A client walking up a hill therefore drifts in `z` until
+  a `0x20` or a `0x21` corrects it. The fix is the map, which is M2; until then
+  the drift is documented rather than papered over, because a guessed height
+  would be indistinguishable from a real one.
+- **`enter_world` drops everything between `0x1B` and `0x55`.** It builds the
+  `WorldView` from the entry packet and then reads until the `0x55`, without
+  applying anything that arrives in between — and that window is exactly where
+  a shard sends the player's own `0x20`, the `0x78` for everyone already on
+  screen, and the ground items. Harmless for a login test, wrong for a client
+  that wants to draw the moment it is allowed to. The loop needs to `apply`
+  what it reads, not skip it.
+- **Nothing on the client models a status bar, and two packets are waiting for
+  one.** `MobileStatus` (`0x11`) decodes and is deliberately not folded into
+  `WorldView`; `WalkAck`'s notoriety reaches the caller through
+  `walk::Moved::Stepped` and has nowhere to go either. Both are the same
+  missing thing — health-bar colour and paperdoll numbers are not positions —
+  and both should land wherever M4's status bar does.
 
 - **The shard sends the feature mask and the character list as one write.**
   Correct, and worth naming: it means "one compressed block" and "one packet"
