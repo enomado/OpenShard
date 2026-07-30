@@ -26,6 +26,7 @@
 
 use crate::codec::PacketWriter;
 use crate::error::{DecodeError, expect_id};
+use crate::serial::{RawSerial, Serial};
 
 /// The packet id both directions share.
 pub const SECURE_TRADE: u8 = 0x6F;
@@ -41,13 +42,13 @@ const TRADE_NAME_LENGTH: usize = 30;
 pub enum SecureTradeAction {
     /// The player closed the window: put everything back and end the trade.
     Cancel {
-        /// The escrow container the window is drawn on.
-        container: u32,
+        /// The escrow container the window is drawn on, as the client names it.
+        container: RawSerial,
     },
     /// The player ticked or unticked their checkbox.
     Accept {
-        /// The escrow container the window is drawn on.
-        container: u32,
+        /// The escrow container the window is drawn on, as the client names it.
+        container: RawSerial,
         /// Whether the box is now ticked.
         accepted: bool,
     },
@@ -61,8 +62,8 @@ pub enum SecureTradeAction {
     ///
     /// [`Feature::NewSecureTrade`]: crate::feature::Feature::NewSecureTrade
     UpdateGold {
-        /// The escrow container the window is drawn on.
-        container: u32,
+        /// The escrow container the window is drawn on, as the client names it.
+        container: RawSerial,
         /// Gold offered from the account balance.
         gold: i32,
         /// Platinum offered from the account balance.
@@ -92,7 +93,7 @@ impl SecureTradeAction {
         // sized the slice, so it is read past rather than trusted.
         reader.u16()?;
         let action = reader.u8()?;
-        let container = reader.u32()?;
+        let container = RawSerial(reader.u32()?);
         Ok(match action {
             Self::CANCEL => Some(Self::Cancel { container }),
             Self::ACCEPT => Some(Self::Accept {
@@ -123,26 +124,26 @@ fn finish(writer: PacketWriter) -> Vec<u8> {
 /// drawn on the other half of the window. Both references write these in that
 /// order and byte for byte the same, which is as close to a specification as
 /// this packet gets.
-pub fn encode_trade_open(partner: u32, mine: u32, theirs: u32, partner_name: &str) -> Vec<u8> {
+pub fn encode_trade_open(partner: Serial, mine: Serial, theirs: Serial, partner_name: &str) -> Vec<u8> {
     let mut writer = PacketWriter::with_capacity(47);
     writer.u8(SECURE_TRADE);
     writer.u16(0); // length, patched below
     writer.u8(0); // Display
-    writer.u32(partner);
-    writer.u32(mine);
-    writer.u32(theirs);
+    writer.u32(partner.raw());
+    writer.u32(mine.raw());
+    writer.u32(theirs.raw());
     writer.u8(1); // "a name follows", always set
     writer.fixed_string(partner_name, TRADE_NAME_LENGTH);
     finish(writer)
 }
 
 /// `0x6F` action `1` — the trade is over; shut the window. 8 bytes.
-pub fn encode_trade_close(container: u32) -> Vec<u8> {
+pub fn encode_trade_close(container: Serial) -> Vec<u8> {
     let mut writer = PacketWriter::with_capacity(8);
     writer.u8(SECURE_TRADE);
     writer.u16(0); // length, patched below
     writer.u8(1); // Close
-    writer.u32(container);
+    writer.u32(container.raw());
     finish(writer)
 }
 
@@ -151,12 +152,12 @@ pub fn encode_trade_close(container: u32) -> Vec<u8> {
 /// The container is always *this* client's own escrow, and `first` is the
 /// checkbox belonging to whoever owns it — so the same pair of flags is sent to
 /// the two clients in opposite order.
-pub fn encode_trade_update(container: u32, first: bool, second: bool) -> Vec<u8> {
+pub fn encode_trade_update(container: Serial, first: bool, second: bool) -> Vec<u8> {
     let mut writer = PacketWriter::with_capacity(16);
     writer.u8(SECURE_TRADE);
     writer.u16(0); // length, patched below
     writer.u8(2); // Update
-    writer.u32(container);
+    writer.u32(container.raw());
     writer.i32(i32::from(first));
     writer.i32(i32::from(second));
     finish(writer)
@@ -170,7 +171,12 @@ mod tests {
     /// ServUO's `DisplaySecureTrade`, Sphere's `prepareContainerOpen`.
     #[test]
     fn the_display_packet_is_forty_seven_bytes_of_two_containers_and_a_name() {
-        let bytes = encode_trade_open(0x0000_0001, 0x4000_0002, 0x4000_0003, "Rowena");
+        let bytes = encode_trade_open(
+            Serial::new(0x0000_0001).unwrap(),
+            Serial::new(0x4000_0002).unwrap(),
+            Serial::new(0x4000_0003).unwrap(),
+            "Rowena",
+        );
         assert_eq!(bytes.len(), 47);
         assert_eq!(bytes[0], 0x6F);
         assert_eq!(&bytes[1..3], &47u16.to_be_bytes());
@@ -187,14 +193,14 @@ mod tests {
     /// same packet to 17; see the module note for why this follows ServUO.
     #[test]
     fn the_close_packet_is_eight_bytes() {
-        let bytes = encode_trade_close(0x4000_0002);
+        let bytes = encode_trade_close(Serial::new(0x4000_0002).unwrap());
         assert_eq!(bytes, vec![0x6F, 0x00, 0x08, 0x01, 0x40, 0x00, 0x00, 0x02]);
     }
 
     /// ServUO's `UpdateSecureTrade`: the two checkboxes as full `i32`s, not bytes.
     #[test]
     fn the_update_packet_carries_both_checkboxes_as_ints() {
-        let bytes = encode_trade_update(0x4000_0002, false, true);
+        let bytes = encode_trade_update(Serial::new(0x4000_0002).unwrap(), false, true);
         assert_eq!(bytes.len(), 16);
         assert_eq!(bytes[3], 2); // Update
         assert_eq!(&bytes[4..8], &0x4000_0002u32.to_be_bytes());
@@ -208,7 +214,7 @@ mod tests {
         assert_eq!(
             SecureTradeAction::decode(&packet).unwrap(),
             Some(SecureTradeAction::Cancel {
-                container: 0x4000_0002
+                container: RawSerial(0x4000_0002)
             })
         );
     }
@@ -222,7 +228,7 @@ mod tests {
         assert_eq!(
             SecureTradeAction::decode(&packet).unwrap(),
             Some(SecureTradeAction::Accept {
-                container: 0x4000_0002,
+                container: RawSerial(0x4000_0002),
                 accepted: true
             })
         );
@@ -238,7 +244,7 @@ mod tests {
         assert_eq!(
             SecureTradeAction::decode(&packet).unwrap(),
             Some(SecureTradeAction::UpdateGold {
-                container: 0x4000_0002,
+                container: RawSerial(0x4000_0002),
                 gold: 500,
                 platinum: 7
             })

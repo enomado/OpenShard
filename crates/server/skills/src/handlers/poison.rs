@@ -11,6 +11,7 @@
 //! cursor was up poisons nothing.
 
 use openshard_entities::EntityId;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{ClilocId, Hue, SoundId};
 use openshard_state::components::{
     Amount, Drawn, EMPTY_BOTTLE_GRAPHIC, POISON_POTION_GRAPHIC, PoisonCharges,
@@ -137,7 +138,7 @@ pub(super) fn apply_to(state: &mut WorldState, actor: EntityId, potion: EntityId
         if let Some(serial) = state.registry.serial_of(actor) {
             state.bus.send(PoisonedSelf {
                 entity: actor,
-                serial: serial.raw(),
+                serial,
                 level,
             });
         }
@@ -155,8 +156,8 @@ pub(super) fn apply_to(state: &mut WorldState, actor: EntityId, potion: EntityId
 pub struct PoisonedSelf {
     /// Who fumbled.
     pub entity: EntityId,
-    /// Their wire serial.
-    pub serial: u32,
+    /// Their wire identity.
+    pub serial: Serial,
     /// The strength of the poison they were handling.
     pub level: u8,
 }

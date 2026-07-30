@@ -188,7 +188,7 @@ fn a_dungeon_is_dark_at_noon_and_night_sight_beats_both() {
     let expires = world.state.ticks + 1000;
     magic::apply_behaviour_buff(
         &mut world.state,
-        serial.raw(),
+        serial,
         openshard_state::effect::NIGHT_SIGHT,
         0,
         expires,

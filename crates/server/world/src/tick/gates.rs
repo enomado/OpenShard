@@ -48,9 +48,8 @@ const GATE_USE_SOUND: SoundId = SoundId(0x01FE);
 impl World {
     /// Open a gate at the caster and another at `destination`, each leading to
     /// the other.
-    pub(super) fn open_gate_pair(&mut self, caster: EntityId, target_serial: u32) {
-        let Some(rune) = Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
-        else {
+    pub(super) fn open_gate_pair(&mut self, caster: EntityId, target_serial: Option<Serial>) {
+        let Some(rune) = target_serial.and_then(|serial| self.state.registry.entity_of(serial)) else {
             return;
         };
         if !openshard_items::in_reach(&self.state, rune, caster) {

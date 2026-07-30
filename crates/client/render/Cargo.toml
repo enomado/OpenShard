@@ -1,0 +1,39 @@
+[package]
+name = "openshard-client-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Draws what the client has been shown: isometric ground, and eventually everything above it."
+
+# This crate never opens a file, never spawns a thread, and never creates a
+# window or an adapter. It is handed a `Device`, a `Queue` and something to draw
+# into, and it draws. That is not minimalism for its own sake: it is what lets
+# the same code run against a surface on the desktop, against a canvas in a
+# browser, and against an offscreen texture in a test — where a frame can be
+# read back and asserted on, which is the only way a renderer gets an oracle.
+[dependencies]
+openshard-uofiles.workspace = true
+openshard-protocol.workspace = true
+wgpu = { version = "30", default-features = false, features = ["wgsl"] }
+
+# On the web the only backend is the browser's own. WebGL2 is the fallback for
+# browsers without WebGPU, and keeping it in the feature set here is what makes
+# the shader's limits real rather than aspirational: no storage buffers, no
+# compute, instancing through vertex buffers.
+# `default-features = false` above turns the backends off with everything else,
+# so the native ones are named here. Without them `request_adapter` finds
+# nothing and every GPU test skips itself — green, and testing nothing.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["vulkan", "metal", "dx12", "gles"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+pollster = "0.4.0"

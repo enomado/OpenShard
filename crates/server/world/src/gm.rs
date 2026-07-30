@@ -412,7 +412,7 @@ fn set_stat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
             return;
         }
     };
-    skills::set_stats(state, serial.raw(), strength, dexterity, intelligence);
+    skills::set_stats(state, serial, strength, dexterity, intelligence);
     notify(state, actor, &format!("Set {stat} to {value}."));
 }
 

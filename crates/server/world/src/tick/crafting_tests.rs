@@ -85,7 +85,7 @@ fn give(world: &mut World, connection: ConnectionId, graphic: Graphic, hue: Hue,
 /// Give the player a skill outright, so a roll is a sure thing.
 fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) {
     let entity = world.state.players[&connection];
-    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let serial = world.state.registry.serial_of(entity).unwrap();
     world.queue(Command::SetSkill {
         serial,
         skill: skill.id(),
@@ -162,11 +162,11 @@ fn craft(
         .filter(|(_, r)| r.group == group)
         .position(|(at, _)| at == usize::from(recipe))
         .expect("the recipe is in its own group");
-    let serial = world.state.registry.serial_of(player).unwrap().raw();
+    let serial = world.state.registry.serial_of(player).unwrap();
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: openshard_protocol::gump::RawGumpKey(serial),
+            serial: openshard_protocol::gump::RawGumpKey(serial.raw()),
             gump_id: openshard_protocol::gump::RawGumpId(openshard_crafting::CRAFT_GUMP.0),
             // ServUO's `1 + kind + index * 7`, kind 1 being "make".
             button: openshard_protocol::gump::RawButtonId(1 + 1 + u32::try_from(row).unwrap() * 7),
@@ -432,10 +432,10 @@ fn ore_becomes_ingots_at_a_forge_and_nowhere_else() {
     now += TICK_INTERVAL;
     world.tick(now);
 
-    let serial = world.state.registry.serial_of(ore).unwrap().raw();
+    let serial = world.state.registry.serial_of(ore).unwrap();
     world.queue(Command::DoubleClick {
         connection,
-        request: UseRequest::Use(RawSerial(serial)),
+        request: UseRequest::Use(RawSerial(serial.raw())),
     });
     now += TICK_INTERVAL;
     world.tick(now);
@@ -449,7 +449,7 @@ fn ore_becomes_ingots_at_a_forge_and_nowhere_else() {
     shop(&mut world, &[(FORGE.0, 0)]);
     world.queue(Command::DoubleClick {
         connection,
-        request: UseRequest::Use(RawSerial(serial)),
+        request: UseRequest::Use(RawSerial(serial.raw())),
     });
     now += TICK_INTERVAL;
     world.tick(now);
@@ -474,10 +474,10 @@ fn the_metal_a_pile_of_ore_is_survives_the_forge() {
     now += TICK_INTERVAL;
     world.tick(now);
 
-    let serial = world.state.registry.serial_of(ore).unwrap().raw();
+    let serial = world.state.registry.serial_of(ore).unwrap();
     world.queue(Command::DoubleClick {
         connection,
-        request: UseRequest::Use(RawSerial(serial)),
+        request: UseRequest::Use(RawSerial(serial.raw())),
     });
     now += TICK_INTERVAL;
     world.tick(now);
@@ -512,11 +512,11 @@ fn a_gump_reply_for_a_window_the_server_never_opened_makes_nothing() {
     world.tick(now);
 
     let player = world.state.players[&connection];
-    let serial = world.state.registry.serial_of(player).unwrap().raw();
+    let serial = world.state.registry.serial_of(player).unwrap();
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: openshard_protocol::gump::RawGumpKey(serial),
+            serial: openshard_protocol::gump::RawGumpKey(serial.raw()),
             gump_id: openshard_protocol::gump::RawGumpId(openshard_crafting::CRAFT_GUMP.0),
             button: openshard_protocol::gump::RawButtonId(2), // "make", row 0
             switches: Vec::new(),
@@ -646,10 +646,10 @@ fn double_clicking_the_tongs_is_what_opens_the_window() {
     world.tick(now);
     let _ = packets_for(&mut world, connection);
 
-    let serial = world.state.registry.serial_of(tongs).unwrap().raw();
+    let serial = world.state.registry.serial_of(tongs).unwrap();
     world.queue(Command::DoubleClick {
         connection,
-        request: UseRequest::Use(RawSerial(serial)),
+        request: UseRequest::Use(RawSerial(serial.raw())),
     });
     now += TICK_INTERVAL;
     world.tick(now);

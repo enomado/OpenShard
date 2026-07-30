@@ -311,15 +311,12 @@ impl World {
     /// a discrete piece (a weapon) is placed whole.
     pub(super) fn add_loot(
         &mut self,
-        container: u32,
+        container: Serial,
         graphic: Graphic,
         hue: Hue,
         amount: u16,
         stackable: bool,
     ) {
-        let Some(container) = Serial::new(container) else {
-            return;
-        };
         let is_container = self
             .state
             .registry

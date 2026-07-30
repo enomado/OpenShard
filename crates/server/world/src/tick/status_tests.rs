@@ -670,9 +670,9 @@ fn a_vendor_takes_the_bank_when_the_pack_is_short() {
 
     world.queue(Command::Buy {
         connection,
-        vendor: RawSerial(vendor),
+        vendor: RawSerial(vendor.raw()),
         purchases: vec![openshard_protocol::vendor::Purchase {
-            serial: RawSerial(stock),
+            serial: RawSerial(stock.raw()),
             amount: 10, // 10 × 4 gold
         }],
     });
@@ -708,9 +708,9 @@ fn with_bank_payment_off_a_banked_fortune_buys_nothing() {
 
     world.queue(Command::Buy {
         connection,
-        vendor: RawSerial(vendor),
+        vendor: RawSerial(vendor.raw()),
         purchases: vec![openshard_protocol::vendor::Purchase {
-            serial: RawSerial(stock),
+            serial: RawSerial(stock.raw()),
             amount: 10,
         }],
     });
@@ -730,12 +730,8 @@ fn with_bank_payment_off_a_banked_fortune_buys_nothing() {
 }
 
 /// The serial of the one line a `spawn_stocked_vendor` vendor has in stock.
-fn stock_line_serial(world: &World, vendor_serial: u32) -> u32 {
-    let vendor = world
-        .state
-        .registry
-        .entity_of(Serial::new(vendor_serial).unwrap())
-        .unwrap();
+fn stock_line_serial(world: &World, vendor_serial: Serial) -> Serial {
+    let vendor = world.state.registry.entity_of(vendor_serial).unwrap();
     let owner = world.state.registry.serial_of(vendor).unwrap();
     let crate_serial = world
         .state
@@ -748,5 +744,4 @@ fn stock_line_serial(world: &World, vendor_serial: u32) -> u32 {
         .first()
         .expect("the crate holds a line")
         .serial
-        .raw()
 }

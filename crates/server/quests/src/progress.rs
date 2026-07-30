@@ -123,7 +123,7 @@ pub fn refresh_obtain(state: &mut WorldState, contents: &Contents) {
 /// The arrival test is a point query — which region is this NPC standing in — and
 /// not an event, which is what lets this crate stay below the one that owns
 /// regions. An escortable whose leader has been out of sight too long gives up.
-pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
+pub fn advance_escorts(state: &mut WorldState) -> Vec<(Serial, u8)> {
     let escorting: Vec<(EntityId, Escortable)> = state
         .registry
         .query::<Escortable>()
@@ -179,7 +179,7 @@ pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
             .is_some_and(|body| openshard_state::components::body_opens_doors(body.id));
         if let Some(direction) = openshard_ai::step_toward(state, facet.0, here, there, opens_doors) {
             if let Some(serial) = state.registry.serial_of(npc) {
-                steps.push((serial.raw(), direction));
+                steps.push((serial, direction));
             }
         }
     }

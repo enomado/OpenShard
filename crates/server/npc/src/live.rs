@@ -29,6 +29,7 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::serial::Serial;
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{Heading, Npc, Position};
 use openshard_state::sectors::in_range;
@@ -121,7 +122,7 @@ pub fn first_beat(rng: &mut Rng, now: u64, interval: u64) -> u64 {
 /// by `world/tick/ambient.rs`); it is only read when `gameplay.npc_schedule` is
 /// on.
 #[must_use]
-pub fn live(state: &mut WorldState) -> Vec<(u32, u8)> {
+pub fn live(state: &mut WorldState) -> Vec<(Serial, u8)> {
     let now = state.ticks;
     let due: Vec<EntityId> = state
         .registry
@@ -169,7 +170,7 @@ pub fn live(state: &mut WorldState) -> Vec<(u32, u8)> {
         bark(state, npc, now);
         if let Some(dir) = wander_step(state, npc, at) {
             if let Some(serial) = state.registry.serial_of(npc) {
-                steps.push((serial.raw(), dir));
+                steps.push((serial, dir));
             }
         }
     }

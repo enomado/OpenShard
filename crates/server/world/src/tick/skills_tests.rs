@@ -25,7 +25,7 @@ use openshard_state::components::{
 /// Give the player a skill outright, so a roll is a sure thing.
 fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) {
     let entity = world.state.players[&connection];
-    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let serial = world.state.registry.serial_of(entity).unwrap();
     world.queue(Command::SetSkill {
         serial,
         skill: skill.id(),
@@ -34,7 +34,7 @@ fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) 
 }
 
 /// Put an item on the ground next to the player and return its serial.
-fn item_beside(world: &mut World, graphic: Graphic, now: Instant) -> u32 {
+fn item_beside(world: &mut World, graphic: Graphic, now: Instant) -> Serial {
     world.queue(Command::SpawnItem {
         graphic,
         hue: Hue(0),
@@ -50,7 +50,7 @@ fn item_beside(world: &mut World, graphic: Graphic, now: Instant) -> u32 {
         .query::<Drawn>()
         .find(|(entity, g)| g.id == graphic && !world.state.registry.has::<Body>(*entity))
         .expect("the item was spawned");
-    world.state.registry.serial_of(entity).unwrap().raw()
+    world.state.registry.serial_of(entity).unwrap()
 }
 
 /// Press a skill's button, answer its cursor with `target`, and return every
@@ -59,12 +59,12 @@ fn use_skill_on(
     world: &mut World,
     connection: ConnectionId,
     skill: Skill,
-    target: u32,
+    target: Serial,
     now: Instant,
 ) -> Vec<u32> {
     let cursor_id = {
         let entity = world.state.players[&connection];
-        world.state.registry.serial_of(entity).unwrap().raw()
+        world.state.registry.serial_of(entity).unwrap()
     };
     world.queue(Command::UseSkillButton {
         connection,
@@ -75,8 +75,8 @@ fn use_skill_on(
     world.queue(Command::TargetResponse {
         connection,
         response: openshard_protocol::target::TargetResponse {
-            cursor_id: openshard_protocol::wire::CursorId(cursor_id),
-            object: openshard_protocol::serial::Serial::new(target),
+            cursor_id: openshard_protocol::wire::CursorId(cursor_id.raw()),
+            object: Some(target),
             location: Point::new(START.0 + 1, START.1, 0),
             graphic: None,
             cancelled: false,
@@ -185,11 +185,7 @@ fn item_identification_names_the_thing_and_prices_it_if_it_has_one() {
     train(&mut world, looker, Skill::ItemId, 1000);
     world.tick(now);
     let scroll = item_beside(&mut world, openshard_protocol::wire::Graphic(0x1F2D), now);
-    let entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(scroll).unwrap())
-        .unwrap();
+    let entity = world.state.registry.entity_of(scroll).unwrap();
     world
         .state
         .registry
@@ -217,7 +213,7 @@ fn forensics_says_who_killed_a_body_and_who_has_been_through_it() {
     let looker = enter(&mut world, now);
     let player_serial = {
         let entity = world.state.players[&looker];
-        world.state.registry.serial_of(entity).unwrap().raw()
+        world.state.registry.serial_of(entity).unwrap()
     };
     train(&mut world, looker, Skill::Forensics, 1000);
     world.tick(now);
@@ -227,7 +223,7 @@ fn forensics_says_who_killed_a_body_and_who_has_been_through_it() {
         serial: victim,
         amount: 100,
         damage_type: 0,
-        by: player_serial,
+        by: Some(player_serial),
     });
     world.tick(now);
     // The corpse the reap laid, remembering the player as its killer.
@@ -243,7 +239,7 @@ fn forensics_says_who_killed_a_body_and_who_has_been_through_it() {
         Some("Lord British"),
         "the killer is remembered by name, not by serial"
     );
-    let corpse_serial = world.state.registry.serial_of(corpse).unwrap().raw();
+    let corpse_serial = world.state.registry.serial_of(corpse).unwrap();
     let _ = packets_for(&mut world, looker);
 
     let said = use_skill_on(&mut world, looker, Skill::Forensics, corpse_serial, now);
@@ -283,14 +279,14 @@ fn taking_something_off_a_corpse_makes_you_a_looter() {
     let looter = enter(&mut world, now);
     let player_serial = {
         let entity = world.state.players[&looter];
-        world.state.registry.serial_of(entity).unwrap().raw()
+        world.state.registry.serial_of(entity).unwrap()
     };
     let victim = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 10, now);
     world.queue(Command::Damage {
         serial: victim,
         amount: 100,
         damage_type: 0,
-        by: player_serial,
+        by: Some(player_serial),
     });
     world.tick(now);
     let (corpse, _) = world
@@ -307,11 +303,11 @@ fn taking_something_off_a_corpse_makes_you_a_looter() {
         .query::<Contained>()
         .find(|(_, c)| c.container == corpse_serial)
         .expect("a corpse holds the baseline gold");
-    let loot_serial = world.state.registry.serial_of(loot).unwrap().raw();
+    let loot_serial = world.state.registry.serial_of(loot).unwrap();
 
     world.queue(Command::PickUpItem {
         connection: looter,
-        serial: RawSerial(loot_serial),
+        serial: RawSerial(loot_serial.raw()),
         amount: 1,
     });
     world.tick(now);
@@ -332,14 +328,14 @@ fn a_corpses_story_comes_back_after_a_restart() {
     let player = enter(&mut world, now);
     let player_serial = {
         let entity = world.state.players[&player];
-        world.state.registry.serial_of(entity).unwrap().raw()
+        world.state.registry.serial_of(entity).unwrap()
     };
     let victim = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 10, now);
     world.queue(Command::Damage {
         serial: victim,
         amount: 100,
         damage_type: 0,
-        by: player_serial,
+        by: Some(player_serial),
     });
     world.tick(now);
     world.take_snapshot();
@@ -409,13 +405,13 @@ fn meditation_enters_a_trance_and_a_step_breaks_it() {
     );
 
     world.queue(Command::Step {
-        serial: world.state.registry.serial_of(entity).unwrap().raw(),
+        serial: world.state.registry.serial_of(entity).unwrap(),
         direction: Direction::North.to_bits(),
     });
     world.tick(now);
     // The first Step turns; the second moves, and the move is what breaks it.
     world.queue(Command::Step {
-        serial: world.state.registry.serial_of(entity).unwrap().raw(),
+        serial: world.state.registry.serial_of(entity).unwrap(),
         direction: Direction::North.to_bits(),
     });
     world.tick(now);
@@ -568,16 +564,16 @@ fn spirit_speak_lets_the_living_hear_the_dead_without_seeing_them() {
 }
 
 /// Answer a *second* cursor — the one Poisoning raises after the potion.
-fn answer_cursor(world: &mut World, connection: ConnectionId, target: u32, now: Instant) -> Vec<u32> {
+fn answer_cursor(world: &mut World, connection: ConnectionId, target: Serial, now: Instant) -> Vec<u32> {
     let cursor_id = {
         let entity = world.state.players[&connection];
-        world.state.registry.serial_of(entity).unwrap().raw()
+        world.state.registry.serial_of(entity).unwrap()
     };
     world.queue(Command::TargetResponse {
         connection,
         response: openshard_protocol::target::TargetResponse {
-            cursor_id: openshard_protocol::wire::CursorId(cursor_id),
-            object: openshard_protocol::serial::Serial::new(target),
+            cursor_id: openshard_protocol::wire::CursorId(cursor_id.raw()),
+            object: Some(target),
             location: Point::new(START.0 + 1, START.1, 0),
             graphic: None,
             cancelled: false,
@@ -602,21 +598,13 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
 
     // A bottle of greater poison (level 2) and a katana, both beside the player.
     let potion = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
-    let potion_entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(potion).unwrap())
-        .unwrap();
+    let potion_entity = world.state.registry.entity_of(potion).unwrap();
     world
         .state
         .registry
         .insert(potion_entity, PoisonCharges { level: 2, charges: 1 });
     let katana = item_beside(&mut world, openshard_protocol::wire::Graphic(0x13FF), now);
-    let blade = world
-        .state
-        .registry
-        .entity_of(Serial::new(katana).unwrap())
-        .unwrap();
+    let blade = world.state.registry.entity_of(katana).unwrap();
     let _ = packets_for(&mut world, player);
 
     // Press the button, pick the potion, then pick the blade.
@@ -657,14 +645,10 @@ fn poisoning_coats_a_blade_and_the_blade_spends_its_doses() {
     });
     world.queue(Command::Attack {
         connection: player,
-        target: openshard_protocol::serial::Serial::new(victim),
+        target: Some(victim),
     });
     // Swing until one lands — the to-hit roll can miss, and a miss spends nothing.
-    let victim_entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(victim).unwrap())
-        .unwrap();
+    let victim_entity = world.state.registry.entity_of(victim).unwrap();
     for _ in 0..400 {
         world.tick(now);
         if world.state.registry.has::<Poisoned>(victim_entity) {
@@ -692,11 +676,7 @@ fn poison_only_goes_on_a_bladed_or_piercing_weapon() {
     train(&mut world, player, Skill::Poisoning, 1000);
     world.tick(now);
     let potion = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
-    let potion_entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(potion).unwrap())
-        .unwrap();
+    let potion_entity = world.state.registry.entity_of(potion).unwrap();
     world
         .state
         .registry
@@ -723,11 +703,7 @@ fn taste_identification_finds_the_poison_on_a_blade() {
     let said = use_skill_on(&mut world, player, Skill::TasteId, clean, now);
     assert!(said.contains(&1_010_600), "nothing unusual: {said:?}");
 
-    let blade = world
-        .state
-        .registry
-        .entity_of(Serial::new(clean).unwrap())
-        .unwrap();
+    let blade = world.state.registry.entity_of(clean).unwrap();
     world.state.registry.insert(
         blade,
         PoisonCharges {
@@ -805,12 +781,12 @@ fn a_trapped_chest_goes_off_when_it_is_opened_and_remove_trap_takes_it_off() {
             level: 0,
         },
     );
-    let chest_serial = world.state.registry.serial_of(chest).unwrap().raw();
+    let chest_serial = world.state.registry.serial_of(chest).unwrap();
     let _ = packets_for(&mut world, player);
 
     world.queue(Command::DoubleClick {
         connection: player,
-        request: UseRequest::Use(RawSerial(chest_serial)),
+        request: UseRequest::Use(RawSerial(chest_serial.raw())),
     });
     world.tick(now);
     let hurt = world
@@ -900,11 +876,11 @@ fn hiding_takes_you_off_every_screen_and_a_word_puts_you_back() {
         clilocs(&mut world, hider)
     );
     assert!(!world.state.can_see_mobile(onlooker, entity));
-    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let serial = world.state.registry.serial_of(entity).unwrap();
     assert!(
         packets_for(&mut world, watcher)
             .iter()
-            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == serial),
+            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == serial.raw()),
         "and the watcher is told to forget them"
     );
 
@@ -955,7 +931,7 @@ fn stealth_buys_a_few_quiet_steps_and_no_more() {
     // Walk the budget down to its last step, then take two more: the first spends
     // it, the second is past it.
     world.state.registry.insert(entity, Stealthing { steps_left: 1 });
-    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let serial = world.state.registry.serial_of(entity).unwrap();
     for _ in 0..3 {
         world.queue(Command::Step {
             serial,
@@ -979,11 +955,7 @@ fn detecting_hidden_strips_a_worse_hider_and_not_a_better_one() {
     train(&mut world, seeker, Skill::DetectHidden, 1000);
     world.tick(now);
     let novice = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 50, now);
-    let novice_entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(novice).unwrap())
-        .unwrap();
+    let novice_entity = world.state.registry.entity_of(novice).unwrap();
     world.state.registry.insert(novice_entity, Hidden);
 
     world.queue(Command::UseSkillButton {
@@ -1038,11 +1010,7 @@ fn peacemaking_calms_a_creature_and_it_stops_swinging() {
     world.tick(now);
     let lute = give_instrument(&mut world, bard, Graphic(0x0EB3));
     let creature = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 20, now);
-    let creature_entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(creature).unwrap())
-        .unwrap();
+    let creature_entity = world.state.registry.entity_of(creature).unwrap();
     let _ = packets_for(&mut world, bard);
 
     let said = use_skill_on(&mut world, bard, Skill::Peacemaking, creature, now);
@@ -1094,11 +1062,7 @@ fn discordance_makes_a_creature_worse_at_everything_at_once() {
     world.tick(now);
     give_instrument(&mut world, bard, Graphic(0x0EB3));
     let creature = spawn_mobile_at(&mut world, Point::new(START.0 + 1, START.1, 0), 20, now);
-    let entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(creature).unwrap())
-        .unwrap();
+    let entity = world.state.registry.entity_of(creature).unwrap();
     world.queue(Command::SetSkill {
         serial: creature,
         skill: Skill::Wrestling.id(),
@@ -1124,7 +1088,7 @@ fn discordance_makes_a_creature_worse_at_everything_at_once() {
 }
 
 /// Put a plain item in the player's backpack and return its serial.
-fn give_item(world: &mut World, connection: ConnectionId, graphic: Graphic) -> u32 {
+fn give_item(world: &mut World, connection: ConnectionId, graphic: Graphic) -> Serial {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = openshard_items::backpack_of(&world.state, owner).expect("a backpack");
@@ -1144,7 +1108,7 @@ fn give_item(world: &mut World, connection: ConnectionId, graphic: Graphic) -> u
             grid: GridSlot(0),
         },
     );
-    serial.raw()
+    serial
 }
 
 #[test]
@@ -1173,7 +1137,7 @@ fn a_bandage_takes_time_and_then_mends() {
     // Double-click the bandage, then point it at yourself.
     world.queue(Command::DoubleClick {
         connection: healer,
-        request: UseRequest::Use(RawSerial(bandage)),
+        request: UseRequest::Use(RawSerial(bandage.raw())),
     });
     world.tick(now);
     assert!(
@@ -1181,7 +1145,7 @@ fn a_bandage_takes_time_and_then_mends() {
         "the bandage asks who it is for: {:?}",
         clilocs(&mut world, healer)
     );
-    let self_serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let self_serial = world.state.registry.serial_of(entity).unwrap();
     let _ = answer_cursor(&mut world, healer, self_serial, now);
     assert!(
         world
@@ -1191,11 +1155,7 @@ fn a_bandage_takes_time_and_then_mends() {
         "and the work has begun"
     );
     assert!(
-        world
-            .state
-            .registry
-            .entity_of(Serial::new(bandage).unwrap())
-            .is_none(),
+        world.state.registry.entity_of(bandage).is_none(),
         "the bandage is spent at the start, not the end"
     );
 
@@ -1244,12 +1204,12 @@ fn a_lockpick_opens_a_lock_it_is_good_enough_for() {
             max_skill: 500,
         },
     );
-    let chest_serial = world.state.registry.serial_of(chest).unwrap().raw();
+    let chest_serial = world.state.registry.serial_of(chest).unwrap();
     let _ = packets_for(&mut world, thief);
 
     world.queue(Command::DoubleClick {
         connection: thief,
-        request: UseRequest::Use(RawSerial(pick)),
+        request: UseRequest::Use(RawSerial(pick.raw())),
     });
     world.tick(now);
     let said = answer_cursor(&mut world, thief, chest_serial, now);
@@ -1276,11 +1236,7 @@ fn taming_makes_a_creature_yours_and_it_follows() {
     world.tick(now);
     // A horse, two tiles off: rideable, so tamable, and inside the cursor's reach.
     let horse = spawn_mobile_body(&mut world, 0x00C8, Point::new(START.0 + 2, START.1, 0), now);
-    let entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(horse).unwrap())
-        .unwrap();
+    let entity = world.state.registry.entity_of(horse).unwrap();
     let _ = packets_for(&mut world, tamer);
 
     let said = use_skill_on(&mut world, tamer, Skill::AnimalTaming, horse, now);
@@ -1341,11 +1297,7 @@ fn a_pet_hears_all_stay_and_stops() {
     let player = world.state.players[&owner];
     let serial = world.state.registry.serial_of(player).unwrap();
     let horse = spawn_mobile_body(&mut world, 0x00C8, Point::new(START.0 + 3, START.1, 0), now);
-    let pet = world
-        .state
-        .registry
-        .entity_of(Serial::new(horse).unwrap())
-        .unwrap();
+    let pet = world.state.registry.entity_of(horse).unwrap();
     world.state.registry.insert(
         pet,
         openshard_state::components::Pet {
@@ -1381,7 +1333,7 @@ fn a_pet_hears_all_stay_and_stops() {
 }
 
 /// Spawn a creature with a chosen body — what the tamable table is keyed by.
-fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> u32 {
+fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> Serial {
     world.queue(Command::SpawnMobile {
         body: openshard_protocol::wire::Graphic(body),
         hue: openshard_protocol::wire::Hue(0),
@@ -1416,7 +1368,6 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> u
         .query::<Body>()
         .filter(|(entity, b)| b.id.0 == body && !world.state.registry.has::<Client>(*entity))
         .filter_map(|(entity, _)| world.state.registry.serial_of(entity))
-        .map(openshard_protocol::serial::Serial::raw)
         .next_back()
         .expect("the creature was spawned")
 }
@@ -1430,11 +1381,7 @@ fn a_shop_bottle_holds_the_poison_its_label_names() {
     let mut world = world();
     let player = enter(&mut world, now);
     let serial = item_beside(&mut world, POISON_POTION_GRAPHIC, now);
-    let bottle = world
-        .state
-        .registry
-        .entity_of(Serial::new(serial).unwrap())
-        .unwrap();
+    let bottle = world.state.registry.entity_of(serial).unwrap();
     // Spawned bare, it is the middling poison.
     assert_eq!(
         world.state.registry.get::<PoisonCharges>(bottle).map(|p| p.level),
@@ -1480,11 +1427,7 @@ fn animal_lore_reads_a_pet_and_refuses_a_wild_thing_to_a_novice() {
     train(&mut world, looker, Skill::AnimalLore, 500);
     world.tick(now);
     let horse = spawn_mobile_body(&mut world, 0x00C8, Point::new(START.0 + 1, START.1, 0), now);
-    let entity = world
-        .state
-        .registry
-        .entity_of(Serial::new(horse).unwrap())
-        .unwrap();
+    let entity = world.state.registry.entity_of(horse).unwrap();
     let _ = packets_for(&mut world, looker);
 
     let said = use_skill_on(&mut world, looker, Skill::AnimalLore, horse, now);
@@ -1517,7 +1460,7 @@ fn animal_lore_reads_a_pet_and_refuses_a_wild_thing_to_a_novice() {
         connection: looker,
         response: openshard_protocol::target::TargetResponse {
             cursor_id: openshard_protocol::wire::CursorId(serial.raw()),
-            object: openshard_protocol::serial::Serial::new(horse),
+            object: Some(horse),
             location: Point::new(START.0 + 1, START.1, 0),
             graphic: None,
             cancelled: false,

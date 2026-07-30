@@ -75,9 +75,8 @@ impl World {
     }
 
     /// Write the caster's own spot onto a recall rune — the Mark spell.
-    pub(super) fn mark_rune(&mut self, caster: EntityId, target_serial: u32) {
-        let Some(rune) = Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
-        else {
+    pub(super) fn mark_rune(&mut self, caster: EntityId, target_serial: Option<Serial>) {
+        let Some(rune) = target_serial.and_then(|serial| self.state.registry.entity_of(serial)) else {
             return;
         };
         // Only a rune. ServUO says so with 502357 for anything else, and the
@@ -135,9 +134,8 @@ impl World {
     }
 
     /// Take the caster to where a marked rune points — the Recall spell.
-    pub(super) fn recall(&mut self, caster: EntityId, target_serial: u32) {
-        let Some(rune) = Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
-        else {
+    pub(super) fn recall(&mut self, caster: EntityId, target_serial: Option<Serial>) {
+        let Some(rune) = target_serial.and_then(|serial| self.state.registry.entity_of(serial)) else {
             return;
         };
         // Recall is the one of the pair that does *not* want the rune in your
@@ -586,7 +584,7 @@ impl World {
             caster: player,
             serial,
             spell,
-            target: 0,
+            target: None,
             success,
         });
         if !success {

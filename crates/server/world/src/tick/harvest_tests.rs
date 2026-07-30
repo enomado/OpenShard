@@ -99,7 +99,7 @@ fn give_tool(world: &mut World, connection: ConnectionId, graphic: Graphic) -> E
 /// Give the player a skill outright, so a roll is a sure thing.
 fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) {
     let entity = world.state.players[&connection];
-    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let serial = world.state.registry.serial_of(entity).unwrap();
     world.queue(Command::SetSkill {
         serial,
         skill: skill.id(),
@@ -125,10 +125,10 @@ fn swing_at(
     graphic: u16,
     now: Instant,
 ) {
-    let tool_serial = world.state.registry.serial_of(tool).unwrap().raw();
+    let tool_serial = world.state.registry.serial_of(tool).unwrap();
     world.queue(Command::DoubleClick {
         connection,
-        request: UseRequest::Use(RawSerial(tool_serial)),
+        request: UseRequest::Use(RawSerial(tool_serial.raw())),
     });
     world.tick(now);
     let cursor_id = {

@@ -20,13 +20,12 @@ impl World {
         if response.cancelled {
             return;
         }
-        let object_raw = response.object.map_or(0, |serial| serial.raw());
         match purpose {
             openshard_state::TargetPurpose::Teleport => {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
             openshard_state::TargetPurpose::Skill { skill } => {
-                let outcome = skills::on_target(&mut self.state, actor, skill, object_raw);
+                let outcome = skills::on_target(&mut self.state, actor, skill, response.object);
                 if let Some(theft) = outcome.stolen {
                     self.carry_out_theft(theft);
                 }
@@ -44,7 +43,7 @@ impl World {
                 // The item-started skills (a bandage, a lockpick) answer with what
                 // to spend; the rest resolve on their own.
                 let (bandage, pick) =
-                    skills::on_item_target(&mut self.state, actor, skill, first, object_raw);
+                    skills::on_item_target(&mut self.state, actor, skill, first, response.object);
                 if let Some(started) = bandage {
                     if let Some(serial) = self.state.registry.serial_of(started.bandage) {
                         items::consume(&mut self.state, serial, 1);
@@ -55,7 +54,7 @@ impl World {
                         items::consume(&mut self.state, serial, 1);
                     }
                 }
-                skills::on_second_target(&mut self.state, actor, skill, first, object_raw);
+                skills::on_second_target(&mut self.state, actor, skill, first, response.object);
             }
             openshard_state::TargetPurpose::SetTrap { kind, power } => {
                 let target = response
@@ -118,12 +117,12 @@ impl World {
                         caster: actor,
                         serial,
                         spell,
-                        target: object_raw,
+                        target: response.object,
                         success,
                     });
                 }
                 if success {
-                    self.apply_spell_effect(actor, spell, object_raw, response.location);
+                    self.apply_spell_effect(actor, spell, response.object, response.location);
                 }
             }
         }

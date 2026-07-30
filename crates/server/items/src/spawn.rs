@@ -19,8 +19,8 @@ pub struct ItemSpawned {
 /// Override a weapon item's speed and damage — the pack's magic sword, its stats
 /// standing in for the core weapon table's for that graphic. See
 /// `Command::SetWeapon`. A stray or non-existent serial sets nothing.
-pub fn set_weapon(state: &mut WorldState, serial: u32, speed: u16, min: u16, max: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial)) else {
+pub fn set_weapon(state: &mut WorldState, serial: Serial, speed: u16, min: u16, max: u16) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     state.registry.insert(entity, Weapon { speed, min, max });
@@ -32,8 +32,8 @@ pub fn set_weapon(state: &mut WorldState, serial: u32, speed: u16, min: u16, max
 /// bottle on the wire, so which poison one holds is on the item and something has to
 /// put it there. `charges` of zero clears it, which is also how a spent coating is
 /// wiped — one door in and out, so "is this poisoned" never has two answers.
-pub fn set_poison(state: &mut WorldState, serial: u32, level: u8, charges: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial)) else {
+pub fn set_poison(state: &mut WorldState, serial: Serial, level: u8, charges: u16) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     if charges == 0 {

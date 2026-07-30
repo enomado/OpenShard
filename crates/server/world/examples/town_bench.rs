@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
@@ -142,7 +143,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
 /// neighbour is wearing. Walking through a market square pays all of it, and it
 /// is what a player actually does.
 fn time_ticks(world: &mut World, rounds: u32, walking: bool) -> f64 {
-    let movers: Vec<u32> = if walking {
+    let movers: Vec<Serial> = if walking {
         world.player_serials()
     } else {
         Vec::new()

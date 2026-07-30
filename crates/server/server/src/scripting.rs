@@ -14,6 +14,7 @@
 //! script speaks — is the price of that decoupling, and it is cheap.
 
 use openshard_events::Cursor;
+use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_scripting::{Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine};
 use openshard_world::events::{
@@ -196,7 +197,9 @@ impl Scripts {
                 events.push(ScriptEvent::SpellCast {
                     serial: e.serial.raw(),
                     spell: e.spell,
-                    target: e.target,
+                    // Out through the same serialization seam the commands come
+                    // in by: a spell with no mark is the script's `0`.
+                    target: e.target.map_or(0, Serial::raw),
                     success: e.success,
                 });
             }
@@ -277,7 +280,12 @@ impl Scripts {
         }
 
         for command in self.engine.take_commands() {
-            world.queue(into_world(command));
+            // A command naming a serial nothing can have is dropped here rather
+            // than queued: the tick would have looked it up and found nothing,
+            // silently. See `script_serial`.
+            if let Some(command) = into_world(command) {
+                world.queue(command);
+            }
         }
 
         match self.engine.reload_if_changed() {
@@ -291,11 +299,39 @@ impl Scripts {
     }
 }
 
+/// A serial a script named, or `None` if the number addresses nothing.
+///
+/// The script bridge is a serialization seam like SQL or the wire, so this is
+/// where a JSON number becomes a [`Serial`] — the same place `Command::Speak`'s
+/// hue is made. Unlike a hue, the conversion can fail: `0` and everything past
+/// the item pool are not serials, and `Serial::new` refuses them.
+///
+/// A refusal is logged and the whole command dropped. Before this the number
+/// travelled to the tick as a bare `u32`, was refused there by the same
+/// `Serial::new`, and the command did nothing with nothing said — a pack bug
+/// that looked exactly like a mobile that had logged out.
+fn script_serial(serial: u32) -> Option<Serial> {
+    let made = Serial::new(serial);
+    if made.is_none() {
+        warn!(
+            serial = format!("0x{serial:08X}"),
+            "gameplay script named a serial nothing can have; command dropped"
+        );
+    }
+    made
+}
+
 /// Turn a script's command into the world's. The one place the two vocabularies
 /// meet, and the seam where §6 will grow: a new script command lands here.
-fn into_world(command: ScriptCommand) -> Command {
-    match command {
-        ScriptCommand::Move { serial, direction } => Command::Step { serial, direction },
+///
+/// `None` when the script named a serial that addresses nothing — see
+/// [`script_serial`]. Every other command is total.
+fn into_world(command: ScriptCommand) -> Option<Command> {
+    Some(match command {
+        ScriptCommand::Move { serial, direction } => Command::Step {
+            serial: script_serial(serial)?,
+            direction,
+        },
         ScriptCommand::SpawnItem {
             graphic,
             hue,
@@ -404,12 +440,18 @@ fn into_world(command: ScriptCommand) -> Command {
             damage_type,
             by,
         } => Command::Damage {
-            serial,
+            serial: script_serial(serial)?,
             amount,
             damage_type,
-            by,
+            // Zero is the script's word for unattributed, and `Serial::new`
+            // already answers `None` to it — no log line, because absence here
+            // is a value the caller may mean.
+            by: Serial::new(by),
         },
-        ScriptCommand::Heal { serial, amount } => Command::Heal { serial, amount },
+        ScriptCommand::Heal { serial, amount } => Command::Heal {
+            serial: script_serial(serial)?,
+            amount,
+        },
         ScriptCommand::CastSpell {
             serial,
             spell,
@@ -421,14 +463,16 @@ fn into_world(command: ScriptCommand) -> Command {
             pack,
             reagents,
         } => Command::CastSpell {
-            serial,
+            serial: script_serial(serial)?,
             spell,
-            target,
+            // A spell that needs neither a target nor reagents says so with a
+            // zero, which `Serial::new` reads as absent.
+            target: Serial::new(target),
             mana,
             min_skill,
             max_skill,
             skill,
-            pack,
+            pack: Serial::new(pack),
             reagents: reagents.into_iter().map(|(g, n)| (Graphic(g), n)).collect(),
         },
         ScriptCommand::SetStats {
@@ -437,19 +481,23 @@ fn into_world(command: ScriptCommand) -> Command {
             dexterity,
             intelligence,
         } => Command::SetStats {
-            serial,
+            serial: script_serial(serial)?,
             strength,
             dexterity,
             intelligence,
         },
-        ScriptCommand::SetSkill { serial, skill, value } => Command::SetSkill { serial, skill, value },
+        ScriptCommand::SetSkill { serial, skill, value } => Command::SetSkill {
+            serial: script_serial(serial)?,
+            skill,
+            value,
+        },
         ScriptCommand::SetWeapon {
             serial,
             speed,
             min,
             max,
         } => Command::SetWeapon {
-            serial,
+            serial: script_serial(serial)?,
             speed,
             min,
             max,
@@ -459,7 +507,7 @@ fn into_world(command: ScriptCommand) -> Command {
             level,
             charges,
         } => Command::SetPoison {
-            serial,
+            serial: script_serial(serial)?,
             level,
             charges,
         },
@@ -469,7 +517,7 @@ fn into_world(command: ScriptCommand) -> Command {
             min_skill,
             max_skill,
         } => Command::UseSkill {
-            serial,
+            serial: script_serial(serial)?,
             skill,
             min_skill,
             max_skill,
@@ -477,13 +525,15 @@ fn into_world(command: ScriptCommand) -> Command {
         // The script boundary is a serialization seam like the wire or SQL: a JSON
         // number becomes the newtype here and stays one from here in.
         ScriptCommand::Speak { serial, hue, text } => Command::Speak {
-            serial,
+            serial: script_serial(serial)?,
             hue: Hue(hue),
             text,
         },
-        ScriptCommand::Control { serial } => Command::Control { serial },
+        ScriptCommand::Control { serial } => Command::Control {
+            serial: script_serial(serial)?,
+        },
         ScriptCommand::StockVendor { serial, stock } => Command::StockVendor {
-            serial,
+            serial: script_serial(serial)?,
             stock: stock
                 .into_iter()
                 .map(|line| openshard_world::StockLine {
@@ -502,13 +552,16 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
             stackable,
         } => Command::AddLoot {
-            container,
+            container: script_serial(container)?,
             graphic: Graphic(graphic),
             hue: Hue(hue),
             amount,
             stackable,
         },
-        ScriptCommand::ConsumeItem { serial, amount } => Command::ConsumeItem { serial, amount },
+        ScriptCommand::ConsumeItem { serial, amount } => Command::ConsumeItem {
+            serial: script_serial(serial)?,
+            amount,
+        },
         ScriptCommand::RegisterSpawner {
             x,
             y,
@@ -654,7 +707,7 @@ fn into_world(command: ScriptCommand) -> Command {
             layout,
             lines,
         } => Command::ShowGump {
-            serial,
+            serial: script_serial(serial)?,
             gump_id: openshard_protocol::gump::GumpId(gump_id),
             at: openshard_protocol::gump::GumpPoint::new(i32::from(x), i32::from(y)),
             layout,
@@ -672,17 +725,24 @@ fn into_world(command: ScriptCommand) -> Command {
         ScriptCommand::RegisterQuests { quests } => Command::RegisterQuests {
             quests: quests.into_iter().filter_map(quest_def).collect(),
         },
-        ScriptCommand::BindQuestGiver { serial, keys } => Command::BindQuestGiver { serial, keys },
-        ScriptCommand::MakeEscortable { serial, destination } => {
-            Command::MakeEscortable { serial, destination }
-        }
+        ScriptCommand::BindQuestGiver { serial, keys } => Command::BindQuestGiver {
+            serial: script_serial(serial)?,
+            keys,
+        },
+        ScriptCommand::MakeEscortable { serial, destination } => Command::MakeEscortable {
+            serial: script_serial(serial)?,
+            destination,
+        },
         ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump {
-            serial,
+            serial: script_serial(serial)?,
             gump_id: openshard_protocol::gump::GumpId(gump_id),
         },
-        ScriptCommand::Message { serial, text } => Command::Message { serial, text },
+        ScriptCommand::Message { serial, text } => Command::Message {
+            serial: script_serial(serial)?,
+            text,
+        },
         ScriptCommand::PlaySound { serial, sound } => Command::PlaySound {
-            serial,
+            serial: script_serial(serial)?,
             sound: openshard_protocol::wire::SoundId(sound),
         },
         ScriptCommand::GiveItem {
@@ -692,7 +752,7 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
             stackable,
         } => Command::GiveItem {
-            serial,
+            serial: script_serial(serial)?,
             graphic: Graphic(graphic),
             hue: Hue(hue),
             amount,
@@ -703,11 +763,11 @@ fn into_world(command: ScriptCommand) -> Command {
             graphic,
             amount,
         } => Command::TakeItem {
-            serial,
+            serial: script_serial(serial)?,
             graphic: Graphic(graphic),
             amount,
         },
-    }
+    })
 }
 
 /// One trade's speech, from the pack's wire-primitive form to the engine's.
@@ -1047,7 +1107,7 @@ mod tests {
         let mob = world
             .registry()
             .query::<openshard_world::Hitpoints>()
-            .filter_map(|(entity, _)| world.registry().serial_of(entity).map(|s| s.raw()))
+            .filter_map(|(entity, _)| world.registry().serial_of(entity))
             .next()
             .expect("the creature exists");
 
@@ -1055,7 +1115,7 @@ mod tests {
             serial: mob,
             amount: 100,
             damage_type: 0,
-            by: 0,
+            by: None,
         });
         world.tick(now); // the creature dies, MobileDied is emitted
         scripts.pump(&mut world); // the script hears it and queues the loot
@@ -1237,13 +1297,13 @@ mod tests {
             .registry()
             .query::<openshard_world::Client>()
             .next()
-            .map(|(e, _)| world.registry().serial_of(e).unwrap().raw())
+            .map(|(e, _)| world.registry().serial_of(e).unwrap())
             .expect("the player");
         let (target_entity, target) = world
             .registry()
             .query::<openshard_world::Hitpoints>()
             .find(|(e, _)| !world.registry().has::<openshard_world::Client>(*e))
-            .map(|(e, _)| (e, world.registry().serial_of(e).unwrap().raw()))
+            .map(|(e, _)| (e, world.registry().serial_of(e).unwrap()))
             .expect("the spawned target");
 
         // Cast at it (as a client or AI would); the script's SpellCast handler
@@ -1251,12 +1311,12 @@ mod tests {
         world.queue(Command::CastSpell {
             serial: caster,
             spell: 18, // a fireball, say
-            target,
+            target: Some(target),
             mana: 10,
             min_skill: 0,
             max_skill: 0,
             skill: 1,
-            pack: 0,
+            pack: None,
             reagents: Vec::new(),
         });
         world.tick(now); // mana paid, skill rolled, SpellCast emitted

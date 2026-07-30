@@ -38,6 +38,7 @@
 //! rather than written blind.
 
 use std::fmt;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use openshard_protocol::wire::Graphic;
@@ -95,6 +96,34 @@ impl From<UopError> for ArtError {
     fn from(source: UopError) -> Self {
         Self::Container(Box::new(source))
     }
+}
+
+/// The columns a land tile's diamond covers on row `y`, empty past its last row.
+///
+/// Two pixels on the top row, widening by two to the middle and narrowing back:
+/// 1,012 of the square's 1,936 pixels, centred.
+///
+/// # Why this is public, and why a renderer needs it
+///
+/// A land tile has no transparency. Every pixel inside the diamond is drawn,
+/// **including the ones whose value is zero** — on the ground, zero is black,
+/// not "see through", and real tiles contain a handful of them. Only the corners
+/// outside the diamond are absent, and [`Image`] cannot express the difference:
+/// it stores both as [`Color16::TRANSPARENT`], because that is one buffer rather
+/// than two and the shape is a constant of the format.
+///
+/// So the shape has to be recoverable, and it has to be recoverable from here
+/// rather than from a copy of the formula somewhere else. A consumer that treats
+/// a zero pixel as transparent gets pinholes scattered through the ground, which
+/// look exactly like ordinary dark texture until they are counted.
+pub fn land_row(y: u16) -> Range<u16> {
+    let side = LAND_TILE_SIZE;
+    if y >= side {
+        return 0..0;
+    }
+    let run = if y < side / 2 { (y + 1) * 2 } else { (side - y) * 2 };
+    let start = side / 2 - run / 2;
+    start..start + run
 }
 
 /// A decoded sprite: a rectangle of pixels, transparent where nothing is drawn.
@@ -192,11 +221,8 @@ impl Art {
         let mut pixels = vec![Color16::TRANSPARENT; side * side];
         let mut words = raw.chunks_exact(2);
         for y in 0..side {
-            // The diamond: two pixels on the first row, widening by two to the
-            // middle and narrowing back. `run` is how many this row draws.
-            let run = if y < side / 2 { (y + 1) * 2 } else { (side - y) * 2 };
-            let start = side / 2 - run / 2;
-            for x in start..start + run {
+            let row = land_row(y as u16);
+            for x in row.start as usize..row.end as usize {
                 // Every row's length is accounted for above, so the iterator
                 // cannot run dry before the last row ends.
                 let word = words.next().expect("the diamond's rows sum to LAND_PIXELS");
@@ -321,17 +347,34 @@ mod tests {
 
     #[test]
     fn the_diamond_accounts_for_every_byte_of_the_picture() {
-        // 2 + 4 + … + 44, twice. If this and the loop in `land` ever disagree,
-        // the loop's `expect` is what fires.
-        let side = LAND_TILE_SIZE as usize;
-        let total: usize = (0..side)
-            .map(|y| if y < side / 2 { (y + 1) * 2 } else { (side - y) * 2 })
-            .sum();
+        // 2 + 4 + … + 44, twice — asked of `land_row` itself rather than of a
+        // second copy of its arithmetic, which would agree with a wrong answer
+        // as readily as with a right one.
+        let total: usize = (0..LAND_TILE_SIZE).map(|y| land_row(y).len()).sum();
         assert_eq!(total, LAND_PIXELS);
         assert_eq!(LAND_BYTES, 2024);
         // And the entry on disk is bigger than the picture, which is the trap:
         // 24 bytes — twelve pixels — of padding that belong to no row.
         assert_eq!(2048 - LAND_BYTES, 24);
+    }
+
+    /// The diamond's shape, stated outright. A renderer uses this to know which
+    /// pixels exist, so "off by one row" is a ring of holes around every tile.
+    #[test]
+    fn the_diamond_is_centred_and_symmetric() {
+        assert_eq!(land_row(0), 21..23);
+        assert_eq!(land_row(21), 0..44);
+        assert_eq!(land_row(22), 0..44);
+        assert_eq!(land_row(43), 21..23);
+        // Past the last row there is nothing, rather than a panic or a wrap.
+        assert_eq!(land_row(44), 0..0);
+
+        // Every row is centred on the tile's middle, and mirrors its opposite.
+        for y in 0..LAND_TILE_SIZE {
+            let row = land_row(y);
+            assert_eq!(row.start + row.end, LAND_TILE_SIZE, "row {y} is off centre");
+            assert_eq!(row, land_row(LAND_TILE_SIZE - 1 - y), "row {y} is not mirrored");
+        }
     }
 
     /// One `(gap, length, pixels…)` run.

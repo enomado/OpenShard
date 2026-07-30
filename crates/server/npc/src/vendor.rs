@@ -104,8 +104,8 @@ pub const RESTOCK_TICKS: u64 = 60 * 60 * 20;
 ///
 /// It also records the shelf as it stands *now* on the vendor, so it can be topped
 /// back up later — see [`Restock`]. The record is cumulative, like the stocking.
-pub fn stock(state: &mut WorldState, vendor_serial: u32, lines: Vec<StockLine>) {
-    let Some(vendor) = Serial::new(vendor_serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn stock(state: &mut WorldState, vendor_serial: Serial, lines: Vec<StockLine>) {
+    let Some(vendor) = state.registry.entity_of(vendor_serial) else {
         return;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {

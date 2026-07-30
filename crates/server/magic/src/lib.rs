@@ -51,8 +51,8 @@ pub struct SpellCast {
     pub serial: Serial,
     /// Which spell, by id.
     pub spell: u16,
-    /// The target's serial, or zero for a spell that needs none.
-    pub target: u32,
+    /// The target, or `None` for a spell that needs none.
+    pub target: Option<Serial>,
     /// Whether the cast succeeded (mana paid and the skill check passed).
     pub success: bool,
 }
@@ -61,12 +61,12 @@ pub struct SpellCast {
 /// and the reagents can ride along by reference.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cast<'a> {
-    /// The caster's serial.
-    pub serial: u32,
+    /// The caster.
+    pub serial: Serial,
     /// Which spell, by id.
     pub spell: u16,
-    /// The target's serial, or zero for a spell that needs none.
-    pub target: u32,
+    /// The target, or `None` for a spell that needs none.
+    pub target: Option<Serial>,
     /// The mana it costs.
     pub mana: u16,
     /// The lower edge of the skill band it is cast against, in tenths.
@@ -75,8 +75,8 @@ pub struct Cast<'a> {
     pub max_skill: i32,
     /// The skill it rolls (Magery).
     pub skill: u8,
-    /// The container reagents come out of, or zero for a spell that needs none.
-    pub pack: u32,
+    /// The container reagents come out of, or `None` for a spell that needs none.
+    pub pack: Option<Serial>,
     /// The reagents the spell consumes, as `(graphic, count)`.
     pub reagents: &'a [(Graphic, u16)],
 }
@@ -101,9 +101,6 @@ pub fn cast_spell(state: &mut WorldState, cast: Cast<'_>) {
         pack,
         reagents,
     } = cast;
-    let Some(serial) = Serial::new(serial) else {
-        return;
-    };
     let Some(caster) = state.registry.entity_of(serial) else {
         return;
     };
@@ -168,7 +165,7 @@ pub fn pay_and_roll(
     min_skill: i32,
     max_skill: i32,
     skill: u8,
-    pack: u32,
+    pack: Option<Serial>,
     reagents: &[(Graphic, u16)],
     mana_loss_on_fail: bool,
     reagent_loss_on_fail: bool,
@@ -198,8 +195,8 @@ pub fn pay_and_roll(
 
 /// Whether `pack` holds every reagent the spell needs. A zero pack with any
 /// reagent required is short by definition.
-fn has_reagents(state: &WorldState, pack: u32, reagents: &[(Graphic, u16)]) -> bool {
-    let Some(pack) = Serial::new(pack) else {
+fn has_reagents(state: &WorldState, pack: Option<Serial>, reagents: &[(Graphic, u16)]) -> bool {
+    let Some(pack) = pack else {
         return reagents.is_empty();
     };
     reagents
@@ -209,8 +206,8 @@ fn has_reagents(state: &WorldState, pack: u32, reagents: &[(Graphic, u16)]) -> b
 
 /// Take every reagent out of the pack. Only called once [`has_reagents`] has
 /// confirmed they are all there, so each take succeeds.
-fn consume_reagents(state: &mut WorldState, pack: u32, reagents: &[(Graphic, u16)]) {
-    if let Some(pack) = Serial::new(pack) {
+fn consume_reagents(state: &mut WorldState, pack: Option<Serial>, reagents: &[(Graphic, u16)]) {
+    if let Some(pack) = pack {
         for &(graphic, count) in reagents {
             take_from_container(state, pack, graphic, u32::from(count));
         }
@@ -219,10 +216,7 @@ fn consume_reagents(state: &mut WorldState, pack: u32, reagents: &[(Graphic, u16
 
 /// Mend a mobile up toward its maximum, and redraw the bar for it and everyone
 /// watching.
-pub fn heal(state: &mut WorldState, serial: u32, amount: u16) {
-    let Some(serial) = Serial::new(serial) else {
-        return;
-    };
+pub fn heal(state: &mut WorldState, serial: Serial, amount: u16) {
     let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
@@ -315,8 +309,8 @@ fn shift_stats(state: &mut WorldState, entity: EntityId, kind: u8, offset: i16) 
 /// backed out cleanly, then the new one applied, so a Bless recast never stacks a
 /// second bonus. The shift folds into the live [`Stats`] at once; the ledger entry
 /// remembers how to give it back.
-pub fn apply_stat_buff(state: &mut WorldState, serial: u32, kind: u8, offset: i16, expires_at: u64) {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn apply_stat_buff(state: &mut WorldState, serial: Serial, kind: u8, offset: i16, expires_at: u64) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     let mut mods = state
@@ -373,8 +367,8 @@ pub fn expire_buffs(state: &mut WorldState, now: u64) -> Vec<EntityId> {
 /// behaviour, not a stat: nothing folds into a number, so a recast of the same
 /// `kind` just replaces its entry (refresh, never stack), and there is nothing to
 /// back out — expiry only stops the buff being read.
-pub fn apply_behaviour_buff(state: &mut WorldState, serial: u32, kind: u8, amount: i16, expires_at: u64) {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn apply_behaviour_buff(state: &mut WorldState, serial: Serial, kind: u8, amount: i16, expires_at: u64) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     let mut buffs = state
@@ -457,8 +451,8 @@ pub fn behaviour_buff(state: &WorldState, entity: EntityId, kind: u8) -> Option<
 /// alike. A no-op if it is already frozen, matching ServUO's `Paralyze()`: a fresh
 /// cast (or a field pulse over someone already caught) does not extend the hold, so
 /// a field cannot pin a target forever.
-pub fn apply_paralyze(state: &mut WorldState, serial: u32, until: u64) {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn apply_paralyze(state: &mut WorldState, serial: Serial, until: u64) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     if state.registry.has::<Frozen>(entity) {

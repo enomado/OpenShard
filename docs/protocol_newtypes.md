@@ -1246,10 +1246,110 @@ but everything they are read *against*.
 - **`crafting::system::Text::Cliloc(u32)` is still bare**, for N-tables' reason:
   it is ServUO's `TextDefinition` and doubles as gump-label text, so it is a
   wider structure than a message id.
-- **`Command`'s script-facing serials are still bare `u32`.** `ShowGump::serial`
+- ~~**`Command`'s script-facing serials are still bare `u32`.** `ShowGump::serial`
   and roughly a dozen others take a raw serial where the tick then calls
   `Serial::new`. The bridge in `server/scripting.rs` is the seam that should
-  make them, exactly as it now makes every `Graphic` and `Hue`.
+  make them, exactly as it now makes every `Graphic` and `Hue`.~~ **Done** —
+  N-commands below.
+
+## Amendments forced by N-commands (`Command`'s serials)
+
+The stage the component sweep's backlog named, and the second whose subject is
+not a protocol module: `Command` is `openshard_world`'s own enum, above
+`protocol`, and its twenty-seven bare `u32` serials were the last place a raw
+wire number travelled through the engine untyped. Typing them turned out to be
+the smaller half. What the stage actually cost was the `0`-as-sentinel habit
+underneath them, and it found a protocol module the sweep had never staged.
+
+1. **The bridge makes the `Serial`, and a refusal drops the command with a log
+   line.** `into_world` returns `Option<Command>` now, and `script_serial`
+   (`server/scripting.rs`) is the one place a script's JSON number becomes a
+   `Serial` — the seam `Command::Speak`'s `Hue` and `PlaySound`'s `SoundId`
+   already crossed. Unlike those, the conversion can fail, and the *old*
+   behaviour was the reason to move it: a pack naming `0` or a number past the
+   item pool travelled to the tick as a bare `u32`, was refused there by the same
+   `Serial::new`, and the command did nothing with nothing said — indistinguishable
+   from a mobile that had logged out between the event and the reply to it.
+2. **A field whose absence is a *value* stays an `Option` and is not logged.**
+   `Damage::by` (unattributed damage), `CastSpell::target` and `CastSpell::pack`
+   are `Option<Serial>`, made with a plain `Serial::new`: the script's `0` is its
+   word for "none", and `Serial::new` already answers `None` to it. The
+   distinction from amendment 1 is N2 amendment 1's, applied to a command rather
+   than a packet — refuse where the value names something, be silent where it
+   names nothing.
+3. **The two client-supplied ones are `RawSerial`, by N1's direction rule.**
+   `TradeAction::container` and `TradeCancel::container` come off a `0x6F`, so
+   they cross the queue raw and `items::trade` promotes them —
+   `set_accepted`/`cancel_by_container` take a `RawSerial` and call `validate`,
+   which is the same `Serial::new` they were doing by hand. The queue is a
+   delivery and not a checkpoint (N3 amendment 9), one more time.
+4. **`trade.rs` is a protocol module the sweep never staged, and N8's counter
+   cannot see it.** Its three inbound `container` fields are bare `u32`s inside
+   *enum variants* — `SecureTradeAction::Cancel { container: u32 }` — and the
+   scan looks for lines starting with `pub name:`, which a variant's field is
+   not (it carries no `pub`). Its outbound serials were worse: `encode_trade_open
+   (partner: u32, mine: u32, theirs: u32)` and its two siblings are *function
+   parameters*, which no field scan of any kind would find. **This is the third
+   blind spot in N10's counter, after N7's tuple and collection**, and unlike
+   those two it hid a whole module rather than a field. The three inbound fields
+   are `RawSerial` now and the three encoders take `Serial`s; the bytes are
+   unchanged and both `0x6F` byte-level tests still assert what they did.
+5. **`0` as "no target" ran twelve branches deep, and it was a *parameter*.**
+   `World::apply_spell_effect(target_serial: u32)` used `0` for a self-cast or an
+   area spell and re-tested `!= 0` in every arm, twice reaching for
+   `by.map_or(0, |s| s.raw())` to fall back to the caster. It takes an
+   `Option<Serial>` now and each arm is `target_serial.or(by)` or a plain `if
+   let`. This is N1 amendment 7's `map_or(0, …)` finding for the fourth time and
+   the first outside a packet field: the same wrong value, spread over a call
+   tree instead of a struct. `caster_pack` (`0` for "wears no pack") and
+   `spell_feedback` went with it.
+6. **Typing the command types the system function, and that is where the code
+   went.** `combat::damage`, `combat::apply_poison`, `combat::cure_poison`,
+   `magic::heal`, `magic::cast_spell`, `magic::pay_and_roll`, `magic::apply_*`,
+   `skills::set_stats`/`set_skill`/`set_skill_cap`/`use_skill`,
+   `items::set_weapon`/`set_poison`, `npc::vendor::stock`, `npc::live`,
+   `quests::advance_escorts` and eight private `World` methods all take a
+   `Serial` now. Every one of them opened with its own `Serial::new(serial)`;
+   fourteen of those guards are gone, and so are the `.raw()` calls at the
+   callers that already held a `Serial` — `traps.rs` (five), `guards.rs`,
+   `gm.rs`, `skills_wire.rs`, `fields.rs`. N2 amendment 1's "wrapping deletes
+   code", now in both directions at once across five crates.
+7. **`skills::handlers`' three target entry points took `Option<Serial>`,
+   which deleted the sweep's last `map_or(0, …)`.** `staff.rs` built
+   `object_raw = response.object.map_or(0, |s| s.raw())` from an
+   `Option<Serial>` it already had, purely to satisfy `on_target`,
+   `on_second_target` and `on_item_target`. All three take the `Option` now and
+   the local is gone.
+8. **`DecorDoor::key_value` and `DecorContainer::key_value` stay bare, and are
+   not serials.** ServUO's lock value: a key opens a door when its own number
+   matches, and `0` means unlocked. It is a match token the pack chooses, never
+   an object reference — the `MobileStatus` quantity argument (N2 amendment 3)
+   in a different shape. They are the only bare integers left on `Command`.
+9. **One test's stray serial had to become an addressable one.** The AddLoot
+   "nothing exists at this number" test used `0xDEAD_BEEF`, which `Serial::new`
+   refuses, so with a `Serial` field the case cannot be expressed at all — the
+   command now cannot carry it. It uses `0x4EAD_BEEF`, in the item pool and held
+   by nothing, and still asserts nothing is placed. Exactly N2 amendment 9's
+   `remove_is_five_bytes` fix, and the second time this sweep has found a test
+   that was proving something the type system now proves.
+10. **Bare-serial field count on `Command`: 27 before, 0 after**, plus
+    amendment 8's two `key_value`s which were never serials; **`trade.rs` 3
+    before, 0 after** (the enum-variant fields amendment 4 found) and its three
+    encoders' seven `u32` parameters typed with them.
+
+### Backlog from this stage
+
+- **N10's counter still cannot see an enum variant's fields or a function's
+  parameters** (amendment 4). The variant case is a one-line change to the scan —
+  a field line inside an `enum` body has no `pub` — but it needs the scan to know
+  where an `enum` body starts and ends, which a text scan does not. The parameter
+  case is out of reach of any field scan and probably wants the `syn` dependency
+  N8 argued against; it is worth re-opening that argument now that a whole module
+  has slipped through.
+- **`CharacterRecord::serial` and the persistence records around it are bare
+  `u32`s**, which is why several tests now write `serial.raw()` where they used
+  to pass the value straight. That is the persistence half of the component
+  sweep and belongs with whatever next touches `persist.rs`.
 
 ## Stages
 
@@ -1293,6 +1393,11 @@ request (`main` is protected).
   or plays a sound through. Blocked until `protocol` was allowed a `serde`
   dependency, which is what lets a message id or a sound arrive from a content
   table already typed instead of being wrapped at each of ~200 call sites.
+- **N-commands — `Command`'s serials.** Not a protocol module either: the world's
+  own command enum, whose twenty-seven script- and client-facing `u32` serials
+  were the last raw wire numbers travelling through the engine. The script bridge
+  makes the `Serial`, and typing the commands typed every system function under
+  them — which is where the stage's size was.
 - **N-components — the components under the packets.** `openshard_state`'s
   `Drawn` (the item graphic component, renamed out of the way of `wire::Graphic`),
   `Container.gump` and `Contained.{position, grid}` — the bare integers N4's
@@ -1351,3 +1456,4 @@ resolved silently in one module is a pattern the next module contradicts.
 | N8 | done — `login.rs`'s `StartLocation::position` tuple became `Point`; the repo-level coverage check landed with a full allowlist; `docs/style.md` gained a short section | |
 | N-tables | done — the cliloc and `SoundId` content tables: `protocol` took `serde`, and `State`'s four doors take the types | `a78ee4c`, `4d9561d` |
 | N-components | done — `Drawn`, `Container.gump`, `Contained.{position, grid}`, and the graphic-keyed tables under them | `6c01d6e` |
+| N-commands | done — `Command` 27 bare serials → 0, `trade.rs` 3 → 0 (the module N8's counter could not see), and the system functions under them | |

@@ -233,14 +233,14 @@ fn draw_window(state: &mut WorldState, index: usize) {
             .get::<Name>(other.player)
             .map(|name| name.0.clone())
             .unwrap_or_default();
-        let updates = encode_trade_update(side.container_serial.raw(), false, false);
+        let updates = encode_trade_update(side.container_serial, false, false);
         state.send(side.connection, updates.clone());
         state.send(
             side.connection,
             encode_trade_open(
-                partner_serial.raw(),
-                side.container_serial.raw(),
-                other.container_serial.raw(),
+                partner_serial,
+                side.container_serial,
+                other.container_serial,
                 &name,
             ),
         );
@@ -259,21 +259,21 @@ fn send_checks(state: &mut WorldState, index: usize) {
     let (from, to) = (trade.from.clone(), trade.to.clone());
     state.send(
         from.connection,
-        encode_trade_update(from.container_serial.raw(), from.accepted, to.accepted),
+        encode_trade_update(from.container_serial, from.accepted, to.accepted),
     );
     state.send(
         to.connection,
-        encode_trade_update(to.container_serial.raw(), to.accepted, from.accepted),
+        encode_trade_update(to.container_serial, to.accepted, from.accepted),
     );
 }
 
 /// The client ticked or unticked its checkbox. When both are ticked the goods
 /// change hands.
-pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container: u32, accepted: bool) {
+pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container: RawSerial, accepted: bool) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(container) = Serial::new(container) else {
+    let Some(container) = container.validate() else {
         return;
     };
     // The reply must name a window this side actually drew, and one this player
@@ -416,7 +416,7 @@ fn close(state: &mut WorldState, index: usize) {
     // Each client is told about *its own* half — ServUO's `Close`, which sends
     // one packet per side. The client shuts the whole window on it.
     for side in [&trade.from, &trade.to] {
-        state.send(side.connection, encode_trade_close(side.container_serial.raw()));
+        state.send(side.connection, encode_trade_close(side.container_serial));
         state.open_containers.remove(&side.container_serial);
         despawn_escrow(state, side.container);
     }
@@ -432,11 +432,11 @@ fn despawn_escrow(state: &mut WorldState, container: EntityId) {
 /// The container has to name a window this side drew *and* one this player is a
 /// party to — the `open_quest_gumps` rule, so a `0x6F` naming somebody else's
 /// trade cannot end it.
-pub fn cancel_by_container(state: &mut WorldState, connection: ConnectionId, container: u32) {
+pub fn cancel_by_container(state: &mut WorldState, connection: ConnectionId, container: RawSerial) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(container) = Serial::new(container) else {
+    let Some(container) = container.validate() else {
         return;
     };
     let Some(index) = trade_of_container(state, container) else {

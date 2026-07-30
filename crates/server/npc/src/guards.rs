@@ -277,7 +277,7 @@ fn execute(state: &mut WorldState, guard: EntityId, target: EntityId) {
         .registry
         .get::<Hitpoints>(target)
         .map_or(u16::MAX, |hits| hits.max);
-    combat::damage(state, serial.raw(), blow, DamageType::Physical, by);
+    combat::damage(state, serial, blow, DamageType::Physical, by);
 }
 
 /// Retire the guards whose time is up. The tick counter, like every other timer

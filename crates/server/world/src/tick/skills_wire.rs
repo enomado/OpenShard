@@ -238,7 +238,7 @@ impl World {
                 self.state.broadcast_health(done.patient);
             }
             if done.healed > 0 {
-                magic::heal(&mut self.state, serial.raw(), done.healed);
+                magic::heal(&mut self.state, serial, done.healed);
             }
         }
     }

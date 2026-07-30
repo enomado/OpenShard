@@ -158,11 +158,11 @@ pub fn expire_ghost_contact(state: &mut WorldState) {
 /// Returns a theft to carry out, if the skill was Stealing and it resolved: moving
 /// an item into a pack is `items`' door and turning a thief criminal is `combat`'s,
 /// so this decides and the tick applies — the split `ai::think_one` uses.
-pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -> Outcome {
+pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: Option<Serial>) -> Outcome {
     // The bard skills judge their own reach, which widens with the skill, so they
     // are not in the fixed table.
     if let Some(skill @ (Skill::Peacemaking | Skill::Provocation | Skill::Discordance)) = Skill::from_id(id) {
-        let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+        let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
             return Outcome::default();
         };
         if !within(state, actor, target, bard::bard_range(state, actor, id)) {
@@ -178,7 +178,7 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -
     let Some(ask) = ask_for(id) else {
         return Outcome::default();
     };
-    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
         return Outcome::default();
     };
     // Checked server-side even though the cursor was raised with a range: the range
@@ -234,10 +234,16 @@ pub struct Outcome {
 ///
 /// The reach is the same as the first ask's, and re-checked here for the same
 /// reason: a `0x6C` range is the client's courtesy, never the judge.
-pub fn on_second_target(state: &mut WorldState, actor: EntityId, id: u8, first: EntityId, target: u32) {
+pub fn on_second_target(
+    state: &mut WorldState,
+    actor: EntityId,
+    id: u8,
+    first: EntityId,
+    target: Option<Serial>,
+) {
     if Skill::from_id(id) == Some(Skill::Provocation) {
         let range = bard::bard_range(state, actor, id);
-        if let Some(victim) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) {
+        if let Some(victim) = target.and_then(|s| state.registry.entity_of(s)) {
             if within(state, actor, victim, range) {
                 bard::provoke_second(state, actor, first, victim);
             }
@@ -247,7 +253,7 @@ pub fn on_second_target(state: &mut WorldState, actor: EntityId, id: u8, first: 
     let Some(ask) = ask_for(id) else {
         return;
     };
-    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
     if !within(state, actor, target, ask.range) {
@@ -268,9 +274,9 @@ pub fn on_item_target(
     actor: EntityId,
     id: u8,
     item: EntityId,
-    target: u32,
+    target: Option<Serial>,
 ) -> (Option<BandageStarted>, Option<LockpickBroke>) {
-    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
         return (None, None);
     };
     if !within(state, actor, target, bandage::HEAL_RANGE) {

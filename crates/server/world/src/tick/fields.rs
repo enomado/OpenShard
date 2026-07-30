@@ -119,13 +119,13 @@ impl World {
             };
             let facet = self.state.facet_of(entity);
             // Range 0 is the tile itself (Chebyshev); a field only harms who stands on it.
-            let victims: Vec<u32> = self
+            let victims: Vec<Serial> = self
                 .state
                 .facet_state(facet)
                 .sectors
                 .nearby(pos, 0)
                 .filter(|(entity, _)| self.state.registry.has::<Body>(*entity))
-                .filter_map(|(entity, _)| self.state.registry.serial_of(entity).map(|s| s.raw()))
+                .filter_map(|(entity, _)| self.state.registry.serial_of(entity))
                 .collect();
             // A Paralyze Field freezes for the tick its caster's Magery dictates —
             // computed once per pulse, not per victim.

@@ -374,10 +374,13 @@ pub const fn swing_ticks(dex: u16, base: u64, era: u8, scale: u64) -> u64 {
 /// lethal blow that leaves a blue mobile dead tallies against the attacker, so a
 /// fireball counts the same as a sword. Unattributed damage (a script's raw
 /// `op_damage` with no `by`, an environmental hazard) kills without blame.
-pub fn damage(state: &mut WorldState, serial: u32, amount: u16, kind: DamageType, attacker: Option<Serial>) {
-    let Some(serial) = Serial::new(serial) else {
-        return;
-    };
+pub fn damage(
+    state: &mut WorldState,
+    serial: Serial,
+    amount: u16,
+    kind: DamageType,
+    attacker: Option<Serial>,
+) {
     let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
@@ -440,13 +443,7 @@ pub fn damage(state: &mut WorldState, serial: u32, amount: u16, kind: DamageType
             {
                 let reflected = (u32::from(amount) * pct.max(0) as u32 / 100) as u16;
                 if reflected > 0 {
-                    damage(
-                        state,
-                        attacker_serial.raw(),
-                        reflected,
-                        DamageType::Physical,
-                        None,
-                    );
+                    damage(state, attacker_serial, reflected, DamageType::Physical, None);
                 }
             }
         }
@@ -619,8 +616,8 @@ pub fn volleys(state: &mut WorldState) {
         // its weapon. Damage precedence matches melee via `scaled_blow`.
         if check_hit(state, attacker, target) {
             let amount = scaled_blow(state, attacker, target);
-            if let Some(raw) = state.registry.serial_of(target).map(Serial::raw) {
-                damage(state, raw, amount, DamageType::from_u8(kind), by);
+            if let Some(hit) = state.registry.serial_of(target) {
+                damage(state, hit, amount, DamageType::from_u8(kind), by);
             }
         }
     }
@@ -685,10 +682,10 @@ pub fn swings(state: &mut WorldState) {
         // human's fist — from the attacker, who is still here even when the blow
         // just killed the target.
         let sound = attack_sound(state, attacker, MELEE_HIT_SOUND);
-        damage(state, target_serial.raw(), blow, DamageType::Physical, by);
+        damage(state, target_serial, blow, DamageType::Physical, by);
         state.play_sound(attacker, sound);
         // A coated blade spends a dose into whatever it just cut.
-        deliver_weapon_poison(state, attacker, target_serial.raw(), now);
+        deliver_weapon_poison(state, attacker, target_serial, now);
         set_next_swing(state, attacker, now + swing_speed(state, attacker));
         // The blow may have killed it; a dead target is no target. Dead means gone
         // *or* standing at zero hits — a creature killed this tick is not swept off
@@ -860,7 +857,7 @@ pub const fn poison_damage(level: u8) -> u16 {
 ///
 /// Nothing here decides *whether* the blow landed: it is called from the one place
 /// that knows, after the damage has gone through the one damage door.
-fn deliver_weapon_poison(state: &mut WorldState, attacker: EntityId, target: u32, now: u64) {
+fn deliver_weapon_poison(state: &mut WorldState, attacker: EntityId, target: Serial, now: u64) {
     let Some(serial) = state.registry.serial_of(attacker) else {
         return;
     };
@@ -893,8 +890,8 @@ fn deliver_weapon_poison(state: &mut WorldState, attacker: EntityId, target: u32
 }
 
 /// stronger one already working — ServUO's rule.
-pub fn apply_poison(state: &mut WorldState, serial: u32, level: u8, now: u64) {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn apply_poison(state: &mut WorldState, serial: Serial, level: u8, now: u64) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     let level = level.min(4);
@@ -916,8 +913,8 @@ pub fn apply_poison(state: &mut WorldState, serial: u32, level: u8, now: u64) {
 }
 
 /// Cure a mobile's poison — returns whether it had any to cure.
-pub fn cure_poison(state: &mut WorldState, serial: u32) -> bool {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn cure_poison(state: &mut WorldState, serial: Serial) -> bool {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return false;
     };
     state.registry.remove::<Poisoned>(entity).is_some()
@@ -940,13 +937,7 @@ pub fn poison_tick(state: &mut WorldState) {
         let Some(serial) = state.registry.serial_of(entity) else {
             continue;
         };
-        damage(
-            state,
-            serial.raw(),
-            poison_damage(level),
-            DamageType::Poison,
-            None,
-        );
+        damage(state, serial, poison_damage(level), DamageType::Poison, None);
         // The blow may have killed and despawned a creature; only touch the
         // poison if the mobile is still here.
         if state.registry.get::<Hitpoints>(entity).is_none() {

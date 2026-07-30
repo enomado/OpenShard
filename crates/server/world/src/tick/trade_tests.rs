@@ -34,7 +34,7 @@ fn two_players(world: &mut World, now: Instant) -> (ConnectionId, ConnectionId) 
 }
 
 /// Put one item in a connection's backpack and return its serial.
-fn give(world: &mut World, connection: ConnectionId, graphic: u16, now: Instant) -> u32 {
+fn give(world: &mut World, connection: ConnectionId, graphic: u16, now: Instant) -> Serial {
     let owner = serial_of(world, connection);
     let pack = backpack_serial(world, connection);
     let before = contained_serials(world, pack);
@@ -53,51 +53,46 @@ fn give(world: &mut World, connection: ConnectionId, graphic: u16, now: Instant)
 }
 
 /// The serials directly inside a container.
-fn contained_serials(world: &World, container: u32) -> Vec<u32> {
-    let Some(container) = Serial::new(container) else {
-        return Vec::new();
-    };
+fn contained_serials(world: &World, container: Serial) -> Vec<Serial> {
     world
         .registry()
         .query::<Contained>()
         .filter(|(_, held)| held.container == container)
         .filter_map(|(entity, _)| world.registry().serial_of(entity))
-        .map(|serial| serial.raw())
         .collect()
 }
 
 /// Offer `item` to another player: the lift-and-drop-on-them a trade opens on.
-fn offer_to(world: &mut World, from: ConnectionId, item: u32, to: ConnectionId, now: Instant) {
+fn offer_to(world: &mut World, from: ConnectionId, item: Serial, to: ConnectionId, now: Instant) {
     let target = serial_of(world, to);
     drop_onto(world, from, item, target, now);
 }
 
 /// Lift `item` and drop it onto `target`'s serial — the drag a trade opens on.
-fn drop_onto(world: &mut World, connection: ConnectionId, item: u32, target: u32, now: Instant) {
+fn drop_onto(world: &mut World, connection: ConnectionId, item: Serial, target: Serial, now: Instant) {
     world.queue(Command::PickUpItem {
         connection,
-        serial: RawSerial(item),
+        serial: RawSerial(item.raw()),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection,
-        serial: RawSerial(item),
+        serial: RawSerial(item.raw()),
         position: Point::default(),
-        container: RawSerial(target),
+        container: RawSerial(target.raw()),
     });
     world.tick(now);
 }
 
 /// The escrow container a connection's character is wearing, if any.
-fn escrow_of(world: &World, connection: ConnectionId) -> Option<u32> {
+fn escrow_of(world: &World, connection: ConnectionId) -> Option<Serial> {
     let owner = world.registry().serial_of(world.state.players[&connection])?;
     world
         .registry()
         .query::<Equipped>()
         .find(|(_, worn)| worn.mobile == owner && worn.layer == TRADE_LAYER)
         .and_then(|(item, _)| world.registry().serial_of(item))
-        .map(|serial| serial.raw())
 }
 
 /// Everything the last tick sent, to everyone.
@@ -150,7 +145,7 @@ fn the_escrow_is_a_container_the_partner_can_see_into() {
     let (first, second) = two_players(&mut world, now);
     let sword = give(&mut world, first, 0x0F5E, now);
     offer_to(&mut world, first, sword, second, now);
-    let escrow = Serial::new(escrow_of(&world, first).unwrap()).unwrap();
+    let escrow = escrow_of(&world, first).unwrap();
 
     let watchers = world
         .state
@@ -204,7 +199,7 @@ fn both_checkboxes_swap_the_goods_and_close_the_window() {
     ] {
         world.queue(Command::TradeAction {
             connection,
-            container,
+            container: RawSerial(container.raw()),
             accepted: true,
         });
         world.tick(now);
@@ -236,7 +231,7 @@ fn one_checkbox_alone_moves_nothing() {
 
     world.queue(Command::TradeAction {
         connection: first,
-        container: escrow,
+        container: RawSerial(escrow.raw()),
         accepted: true,
     });
     world.tick(now);
@@ -266,7 +261,7 @@ fn adding_an_item_after_a_checkbox_unticks_both() {
     // at that moment is what the tick then watches.
     world.queue(Command::TradeAction {
         connection: first,
-        container: escrow,
+        container: RawSerial(escrow.raw()),
         accepted: true,
     });
     world.tick(now);
@@ -300,7 +295,7 @@ fn a_cancel_returns_both_sides_offerings() {
 
     world.queue(Command::TradeCancel {
         connection: first,
-        container: escrow,
+        container: RawSerial(escrow.raw()),
     });
     world.tick(now);
 
@@ -383,9 +378,12 @@ fn a_trade_escrow_is_not_swept_into_the_save() {
         .flat_map(|inventory| inventory.items.iter())
         .map(|item| item.serial)
         .collect();
-    assert!(!saved.contains(&escrow), "the escrow container is not saved");
     assert!(
-        !saved.contains(&sword),
+        !saved.contains(&escrow.raw()),
+        "the escrow container is not saved"
+    );
+    assert!(
+        !saved.contains(&sword.raw()),
         "nor is what is inside it, which the walk would otherwise recurse into"
     );
 }
@@ -411,7 +409,10 @@ fn cancelling_every_trade_first_is_what_makes_a_shutdown_save_whole() {
         .flat_map(|inventory| inventory.items.iter())
         .map(|item| item.serial)
         .collect();
-    assert!(saved.contains(&sword), "the offered sword is saved after all");
+    assert!(
+        saved.contains(&sword.raw()),
+        "the offered sword is saved after all"
+    );
 }
 
 #[test]
@@ -427,7 +428,7 @@ fn the_escrow_container_itself_cannot_be_lifted() {
 
     world.queue(Command::PickUpItem {
         connection: first,
-        serial: RawSerial(escrow),
+        serial: RawSerial(escrow.raw()),
         amount: 1,
     });
     world.tick(now);
@@ -447,10 +448,10 @@ fn an_onlooker_is_not_shown_the_trade_container_on_a_paperdoll() {
     offer_to(&mut world, first, sword, second, now);
     let escrow = escrow_of(&world, first).unwrap();
 
-    let owner = Serial::new(serial_of(&world, first)).unwrap();
+    let owner = serial_of(&world, first);
     let worn = world.state.equipment_of(owner);
     assert!(
-        !worn.iter().any(|item| item.serial.raw() == escrow),
+        !worn.iter().any(|item| item.serial == escrow),
         "the escrow is not in the equipment list a 0x78 draws"
     );
     assert!(
@@ -519,15 +520,15 @@ fn taking_an_offer_back_out_of_the_window_is_an_ordinary_lift() {
 
     world.queue(Command::PickUpItem {
         connection: first,
-        serial: RawSerial(sword),
+        serial: RawSerial(sword.raw()),
         amount: 1,
     });
     world.tick(now);
     world.queue(Command::DropItem {
         connection: first,
-        serial: RawSerial(sword),
+        serial: RawSerial(sword.raw()),
         position: Point::default(),
-        container: RawSerial(pack),
+        container: RawSerial(pack.raw()),
     });
     world.tick(now);
 
@@ -545,7 +546,7 @@ fn the_escrow_wears_servuos_own_graphic_and_layer() {
     let sword = give(&mut world, first, 0x0F5E, now);
     offer_to(&mut world, first, sword, second, now);
 
-    let escrow = Serial::new(escrow_of(&world, first).unwrap()).unwrap();
+    let escrow = escrow_of(&world, first).unwrap();
     let entity = world.registry().entity_of(escrow).unwrap();
     assert_eq!(
         world.registry().get::<Drawn>(entity).unwrap().id,
