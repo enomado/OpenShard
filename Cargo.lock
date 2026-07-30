@@ -1291,6 +1291,8 @@ dependencies = [
  "openshard-protocol",
  "openshard-skills",
  "openshard-state",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1393,6 +1395,7 @@ dependencies = [
  "openshard-movement",
  "openshard-protocol",
  "openshard-state",
+ "serde_json",
  "tracing",
 ]
 
@@ -1487,6 +1490,8 @@ dependencies = [
  "openshard-gateway",
  "openshard-movement",
  "openshard-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
