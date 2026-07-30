@@ -78,7 +78,7 @@ impl World {
                 .state
                 .registry
                 .get::<Body>(entity)
-                .is_some_and(|body| body_is_female(body.id)),
+                .is_some_and(|body| body_is_female(body.id.0)),
             strength,
             dexterity,
             intelligence,

@@ -103,7 +103,7 @@ impl World {
             // The earned name, not the bare one: ServUO shows a fame title to an
             // onlooker once the mobile's fame reaches 5000.
             let name = openshard_state::titled_name(&self.state, target, &name.0.clone());
-            let Some(body) = self.state.registry.get::<Body>(target).map(|b| b.id) else {
+            let Some(body) = self.state.registry.get::<Body>(target).map(|b| b.id.0) else {
                 return;
             };
             let hue = self

@@ -589,7 +589,7 @@ fn regions_and_the_clock_survive_a_restart() {
     restored.restore_regions(saved);
     let britain = restored
         .state
-        .region_at(0, Point::new(START.0, START.1, 0))
+        .region_at(Facet(0), Point::new(START.0, START.1, 0))
         .expect("Britain came back");
     assert_eq!(britain.name, "Britain");
     assert!(britain.flags.guarded, "and it is still guarded");
@@ -597,12 +597,15 @@ fn regions_and_the_clock_survive_a_restart() {
 
     let dungeon = restored
         .state
-        .region_at(0, Point::new(105, 105, -40))
+        .region_at(Facet(0), Point::new(105, 105, -40))
         .expect("the dungeon came back, height band and all");
     assert_eq!(dungeon.light, Some(DUNGEON_LIGHT));
     assert!(dungeon.flags.no_teleport);
     assert!(
-        restored.state.region_at(0, Point::new(105, 105, 0)).is_none(),
+        restored
+            .state
+            .region_at(Facet(0), Point::new(105, 105, 0))
+            .is_none(),
         "the surface above it is still open sky"
     );
 
@@ -620,11 +623,11 @@ fn registering_again_replaces_the_set() {
 
     let here = world
         .state
-        .region_at(0, Point::new(START.0, START.1, 0))
+        .region_at(Facet(0), Point::new(START.0, START.1, 0))
         .expect("somewhere");
     assert_eq!(here.name, "Trinsic");
     assert_eq!(
-        world.state.facet_state(0).regions.len(),
+        world.state.facet_state(Facet(0)).regions.len(),
         1,
         "a second registration replaces, it does not stack"
     );

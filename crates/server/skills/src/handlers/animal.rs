@@ -54,7 +54,7 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
     };
     if state.registry.has::<Client>(target)
         || !matches!(
-            openshard_state::components::body_type(body),
+            openshard_state::components::body_type(body.0),
             BodyType::Animal | BodyType::Monster | BodyType::Sea
         )
     {
@@ -69,7 +69,7 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
         .registry
         .get::<openshard_state::components::Tamable>(target)
         .copied()
-        .or_else(|| openshard_state::tame::tamable(body))
+        .or_else(|| openshard_state::tame::tamable(body.0))
         .is_some();
 
     // The ladder, in ServUO's order. A tamed creature is always readable; the rest
@@ -119,7 +119,7 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
             state
                 .registry
                 .get::<Body>(target)
-                .and_then(|body| openshard_state::components::creature_name(body.id))
+                .and_then(|body| openshard_state::components::creature_name(body.id.0))
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "a creature".to_owned());

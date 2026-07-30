@@ -61,7 +61,7 @@ impl Terrain for Ground {
 
 /// Lay `land` under the whole facet, with an optional static standing on it.
 fn ground(world: &mut World, land: u16, static_at: Option<(u16, i8)>) {
-    world.state.facet_state_mut(0).terrain = Some(Box::new(Ground { land, static_at }));
+    world.state.facet_state_mut(Facet(0)).terrain = Some(Box::new(Ground { land, static_at }));
 }
 
 /// Put a tool in the player's pack and return its entity.
@@ -221,7 +221,7 @@ fn a_pickaxe_swung_at_a_mountain_yields_ore_and_empties_the_vein() {
     let bank_left =
         world
             .state
-            .facet_state_mut(0)
+            .facet_state_mut(Facet(0))
             .banks
             .get(before, START.0 + 1, START.1, 0, 0, &mut Rng::new(1));
     assert_eq!(
@@ -279,7 +279,7 @@ fn a_vein_runs_dry_and_says_so() {
     {
         let def = definition(HarvestKind::Ore, true);
         let mut rng = Rng::new(1);
-        let banks = &mut world.state.facet_state_mut(0).banks;
+        let banks = &mut world.state.facet_state_mut(Facet(0)).banks;
         let bank = banks.get(def, START.0 + 1, START.1, 0, 0, &mut rng);
         let all = bank.maximum;
         bank.consume(def, all, 0, &mut rng);

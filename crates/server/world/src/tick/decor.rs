@@ -15,10 +15,10 @@ impl World {
         doors: &[DecorDoor],
         containers: &[DecorContainer],
     ) {
-        let facet = if self.state.facets.contains_key(&facet) {
+        let facet = if self.state.facets.contains_key(&Facet(facet)) {
             facet
         } else {
-            self.state.default_facet
+            self.state.default_facet.0
         };
         // A closure that spawns one decoration item at a tile and reveals it,
         // returning the entity so the caller can hang a `Door` or `Container` on
@@ -52,7 +52,7 @@ impl World {
                     },
                 );
             }
-            self.state.facet_state_mut(facet).obstructions.block(
+            self.state.facet_state_mut(Facet(facet)).obstructions.block(
                 door.position.x,
                 door.position.y,
                 entity,
@@ -108,18 +108,21 @@ impl World {
         // beneath it (the Britain-library bug).
         let height = self
             .state
-            .facet_state(facet)
+            .facet_state(Facet(facet))
             .terrain
             .as_deref()
             .filter(|t| t.item_blocks(graphic))
             .map(|t| t.item_height(graphic));
         if let Some(height) = height {
             self.state
-                .facet_state_mut(facet)
+                .facet_state_mut(Facet(facet))
                 .obstructions
                 .block(position.x, position.y, entity, false, position.z, height);
         }
-        self.state.facet_state_mut(facet).sectors.insert(entity, position);
+        self.state
+            .facet_state_mut(Facet(facet))
+            .sectors
+            .insert(entity, position);
         self.state.reveal(entity);
         Some(entity)
     }
@@ -133,10 +136,10 @@ impl World {
     /// the terrain and placing entities cannot overlap borrows, so the scan
     /// collects every placement first and lays them down after.
     pub(super) fn generate_doors(&mut self, facet: u8, x: u16, y: u16, width: u16, height: u16) {
-        let facet = if self.state.facets.contains_key(&facet) {
+        let facet = if self.state.facets.contains_key(&Facet(facet)) {
             facet
         } else {
-            self.state.default_facet
+            self.state.default_facet.0
         };
 
         // Tiles that already hold a door — the named metal/special doors placed
@@ -151,7 +154,7 @@ impl World {
             .collect();
         let mut occupied: HashSet<(u16, u16)> = HashSet::new();
         for entity in door_entities {
-            if self.state.facet_of(entity) == facet {
+            if self.state.facet_of(entity) == Facet(facet) {
                 if let Some(&Position(p)) = self.state.registry.get::<Position>(entity) {
                     occupied.insert((p.x, p.y));
                 }
@@ -161,7 +164,7 @@ impl World {
         // (closed, open, offset_x, offset_y, where-it-sits-closed).
         let mut placements: Vec<(u16, u16, i16, i16, Point)> = Vec::new();
         {
-            let Some(terrain) = self.state.facet_state(facet).terrain.as_ref() else {
+            let Some(terrain) = self.state.facet_state(Facet(facet)).terrain.as_ref() else {
                 warn!(facet, "no map on this facet; no doors to generate");
                 return;
             };
@@ -239,7 +242,7 @@ impl World {
                         close_at: 0,
                     },
                 );
-                self.state.facet_state_mut(facet).obstructions.block(
+                self.state.facet_state_mut(Facet(facet)).obstructions.block(
                     position.x,
                     position.y,
                     entity,

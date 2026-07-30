@@ -39,12 +39,18 @@ pub struct Heading(pub Facing);
 ///
 /// UO calls this the "body". 0x0190 is a human male, 0x0191 a human female;
 /// everything else is a creature.
+///
+/// Both fields are fully qualified rather than imported, because this module
+/// declares its own unrelated [`Graphic`] — the item component below — and a bare
+/// `use` of the wire type would shadow it at exactly the place the two are most
+/// easily confused. The same collision, and the same spelling out of it, is in
+/// `world::tick::command`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Body {
     /// The body graphic id.
-    pub id: u16,
+    pub id: openshard_protocol::wire::Graphic,
     /// Its colour.
-    pub hue: u16,
+    pub hue: openshard_protocol::wire::Hue,
 }
 
 /// The graphic an item is drawn as: its tiledata id and hue.
@@ -373,7 +379,7 @@ pub struct Staff;
 ///
 /// A mobile only ever interacts with others on the same facet — the world keeps
 /// a separate map and interest grid per facet — so this is what selects which.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Facet(pub u8);
 
 /// Marks an entity as driven by a person rather than by the server.
@@ -2643,7 +2649,13 @@ mod tests {
 
         for entity in [player, npc] {
             registry.insert(entity, Position(Point::new(100, 100, 0)));
-            registry.insert(entity, Body { id: 0x0190, hue: 0 });
+            registry.insert(
+                entity,
+                Body {
+                    id: openshard_protocol::wire::Graphic(0x0190),
+                    hue: openshard_protocol::wire::Hue(0),
+                },
+            );
         }
         registry.insert(
             player,

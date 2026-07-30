@@ -219,7 +219,7 @@ pub fn regen_stamina(state: &mut WorldState) {
 /// A creature's `BaseSoundID` from its body, or `None` for a human or an unlisted
 /// body — the key both [`attack_sound`] and [`death_sound`] read.
 fn body_base_sound(state: &WorldState, entity: EntityId) -> Option<u16> {
-    creature_base_sound(state.registry.get::<Body>(entity)?.id)
+    creature_base_sound(state.registry.get::<Body>(entity)?.id.0)
 }
 
 /// The sound `attacker` makes landing a blow: a creature's own attack sound
@@ -243,7 +243,7 @@ pub fn anger_sound(state: &WorldState, entity: EntityId) -> Option<u16> {
 /// 4)` female, drawn from the tick's seeded rng so a death replays), or `None` for
 /// the passive fauna ServUO leaves silent.
 fn death_sound(state: &mut WorldState, victim: EntityId) -> Option<u16> {
-    let body = state.registry.get::<Body>(victim)?.id;
+    let body = state.registry.get::<Body>(victim)?.id.0;
     if let Some(base) = creature_base_sound(body) {
         return Some(base.wrapping_add(4));
     }
@@ -477,7 +477,7 @@ pub fn die(state: &mut WorldState, entity: EntityId, serial: Serial, killer: Opt
     // combat reports the death, it does not dispose of the body. A player is left
     // standing at zero hits for now (ghosts are a later slice); a creature the
     // world turns into a corpse and takes off the map.
-    let body = state.registry.get::<Body>(entity).map_or(0, |b| b.id);
+    let body = state.registry.get::<Body>(entity).map_or(0, |b| b.id.0);
     state.bus.send(MobileDied {
         entity,
         serial,

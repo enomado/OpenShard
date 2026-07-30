@@ -371,7 +371,7 @@ fn hand_over(state: &mut WorldState, items: &[EntityId], receiver: EntityId) {
                 // every player has one. Better on the floor than nowhere.
                 state.registry.remove::<Contained>(item);
                 if let Some(&Position(at)) = state.registry.get::<Position>(receiver) {
-                    place_on_ground(state, item, at, state.facet_of(receiver));
+                    place_on_ground(state, item, at, state.facet_of(receiver).0);
                 }
             }
         }

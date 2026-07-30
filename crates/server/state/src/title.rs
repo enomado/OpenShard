@@ -154,7 +154,7 @@ pub fn titled_name(state: &WorldState, mobile: EntityId, name: &str) -> String {
     let female = state
         .registry
         .get::<Body>(mobile)
-        .is_some_and(|body| body.id == 0x0191 || body.id == 0x0193);
+        .is_some_and(|body| body.id.0 == 0x0191 || body.id.0 == 0x0193);
     compute_title(name, fame, karma, female)
 }
 

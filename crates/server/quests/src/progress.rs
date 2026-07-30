@@ -174,8 +174,8 @@ pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
         let opens_doors = state
             .registry
             .get::<openshard_state::components::Body>(npc)
-            .is_some_and(|body| openshard_state::components::body_opens_doors(body.id));
-        if let Some(direction) = openshard_ai::step_toward(state, facet, here, there, opens_doors) {
+            .is_some_and(|body| openshard_state::components::body_opens_doors(body.id.0));
+        if let Some(direction) = openshard_ai::step_toward(state, facet.0, here, there, opens_doors) {
             if let Some(serial) = state.registry.serial_of(npc) {
                 steps.push((serial.raw(), direction));
             }

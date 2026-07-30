@@ -120,7 +120,7 @@ impl World {
                 killer,
                 ..Corpse::default()
             };
-            if let Some(corpse) = self.spawn_corpse(at, facet, body, name, story) {
+            if let Some(corpse) = self.spawn_corpse(at, facet.0, body, name, story) {
                 // A ghost keeps its backpack and bank box — worn containers, not
                 // loot — and its mount saddle, which the `Riding` link still points
                 // at (sweeping it into the corpse would strand the ridden creature
@@ -144,8 +144,8 @@ impl World {
         // The living body, remembered so resurrection can restore it exactly —
         // colour and race included.
         let living = self.state.registry.get::<Body>(entity).copied().unwrap_or(Body {
-            id: BODY_HUMAN_MALE,
-            hue: 0,
+            id: openshard_protocol::wire::Graphic(BODY_HUMAN_MALE),
+            hue: openshard_protocol::wire::Hue(0),
         });
 
         // War is over, and a ghost holds no target. Clearing `Combat` also stops
@@ -156,8 +156,8 @@ impl World {
         self.state.registry.insert(entity, Ghost { body: living });
         // Rise in the ghost body.
         let ghost = Body {
-            id: ghost_body(living.id),
-            hue: 0,
+            id: openshard_protocol::wire::Graphic(ghost_body(living.id.0)),
+            hue: openshard_protocol::wire::Hue(0),
         };
         self.state.registry.insert(entity, ghost);
         if equip_shroud {
@@ -193,8 +193,8 @@ impl World {
                 connection,
                 &ServerPacket::PlayerUpdate(PlayerUpdate {
                     serial: serial.raw(),
-                    body: body.id,
-                    hue: body.hue,
+                    body: body.id.0,
+                    hue: body.hue.0,
                     flags: 0,
                     position: at,
                     facing,
@@ -343,7 +343,7 @@ impl World {
             .registry
             .get::<Name>(entity)
             .map(|n| n.0.clone())
-            .or_else(|| body.and_then(|b| creature_name(b.id)).map(str::to_owned));
+            .or_else(|| body.and_then(|b| creature_name(b.id.0)).map(str::to_owned));
         let name = owner
             .as_ref()
             .map_or_else(|| "a corpse".to_owned(), |n| format!("a corpse of {n}"));
@@ -353,7 +353,7 @@ impl World {
             ..Corpse::default()
         };
 
-        let Some(corpse) = self.spawn_corpse(at, facet, body, name, story) else {
+        let Some(corpse) = self.spawn_corpse(at, facet.0, body, name, story) else {
             self.despawn_creature(entity, serial);
             return;
         };
@@ -369,7 +369,7 @@ impl World {
         // despawned so `body` is still readable if a listener wants it live.
         self.state.bus.send(CorpseCreated {
             corpse,
-            body: body.map_or(0, |b| b.id),
+            body: body.map_or(0, |b| b.id.0),
         });
         self.despawn_creature(entity, serial);
     }
@@ -385,7 +385,7 @@ impl World {
         story: Corpse,
     ) -> Option<Serial> {
         let (entity, serial) = self.state.registry.spawn_with_serial(SerialKind::Item).ok()?;
-        let hue = body.map_or(0, |b| b.hue);
+        let hue = body.map_or(0, |b| b.hue.0);
         self.state.registry.insert(
             entity,
             Graphic {
@@ -395,7 +395,7 @@ impl World {
         );
         // Amount = body: the client draws item 0x2006 as this creature's corpse.
         if let Some(body) = body {
-            self.state.registry.insert(entity, Amount(body.id));
+            self.state.registry.insert(entity, Amount(body.id.0));
         }
         self.state.registry.insert(entity, Position(at));
         self.state.registry.insert(entity, Facet(facet));
@@ -415,7 +415,10 @@ impl World {
                 at_tick: self.state.ticks + CORPSE_DECAY_TICKS,
             },
         );
-        self.state.facet_state_mut(facet).sectors.insert(entity, at);
+        self.state
+            .facet_state_mut(Facet(facet))
+            .sectors
+            .insert(entity, at);
         self.state.reveal(entity);
         Some(serial)
     }

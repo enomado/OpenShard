@@ -82,7 +82,7 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
     // `OnSaid` calls `RevealingAction`, whose last line is `DisruptiveAction`. A
     // trance you can talk through is not a trance, and nor is a hiding place.
     state.break_cover(entity);
-    let graphic = state.registry.get::<Body>(entity).map_or(NO_GRAPHIC, |b| b.id);
+    let graphic = state.registry.get::<Body>(entity).map_or(NO_GRAPHIC, |b| b.id.0);
     // Owned before the packet, so the immutable borrow of the name is done by the
     // time the mutable outbox is touched.
     let name = state

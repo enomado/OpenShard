@@ -30,7 +30,7 @@
 use openshard_entities::EntityId;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
-use openshard_state::components::{Heading, Npc, Position};
+use openshard_state::components::{Facet, Heading, Npc, Position};
 use openshard_state::sectors::in_range;
 use openshard_state::{Rng, WorldState};
 
@@ -160,7 +160,7 @@ pub fn live(state: &mut WorldState) -> Vec<(u32, u8)> {
         // Someone close? Face them, greet them if it is time, and stand still this
         // beat — you do not wander off mid-hello, and you certainly do not wander
         // off mid-sale.
-        if let Some((visitor, visitor_at)) = nearest_player(state, facet, at, GREET_RANGE) {
+        if let Some((visitor, visitor_at)) = nearest_player(state, facet.0, at, GREET_RANGE) {
             attend(state, npc, at, visitor, visitor_at, now);
             continue;
         }
@@ -271,7 +271,7 @@ fn wander_step(state: &mut WorldState, npc: EntityId, at: Point) -> Option<u8> {
 /// auto-close swings it shut again behind them).
 fn walk_home(state: &mut WorldState, npc: EntityId, at: Point, post: Point) -> Option<u8> {
     let facet = state.facet_of(npc);
-    let dir = openshard_ai::step_toward(state, facet, at, post, true)?;
+    let dir = openshard_ai::step_toward(state, facet.0, at, post, true)?;
     if let Some(tile) = openshard_movement::step_from(at, Direction::from_bits(dir)) {
         let door = state
             .facet_state(facet)
@@ -329,7 +329,7 @@ fn nearest_player(state: &WorldState, facet: u8, at: Point, range: u32) -> Optio
         .values()
         .filter_map(|&entity| {
             let pos = state.registry.get::<Position>(entity)?.0;
-            (state.facet_of(entity) == facet && in_range(pos, at, range)).then_some((entity, pos))
+            (state.facet_of(entity) == Facet(facet) && in_range(pos, at, range)).then_some((entity, pos))
         })
         .min_by_key(|(_, pos)| squared_distance(*pos, at))
 }

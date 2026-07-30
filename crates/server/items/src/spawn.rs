@@ -55,8 +55,11 @@ pub fn spawn_item(
     position: Point,
     facet: u8,
 ) -> Option<EntityId> {
-    let facet = if state.facets.contains_key(&facet) {
-        facet
+    // Wrapped here and carried as a `Facet` from this line down: the caller's
+    // number came off a command, and the world's facet table is keyed by the
+    // component type rather than by a bare byte.
+    let facet = if state.facets.contains_key(&Facet(facet)) {
+        Facet(facet)
     } else {
         warn!(facet, "unloaded facet; spawning the item on the default");
         state.default_facet
@@ -70,7 +73,7 @@ pub fn spawn_item(
     };
     state.registry.insert(entity, Graphic { id: graphic, hue });
     state.registry.insert(entity, Position(position));
-    state.registry.insert(entity, Facet(facet));
+    state.registry.insert(entity, facet);
     // Only a real stack carries an amount; a single item stays a bare graphic.
     if amount > 1 {
         state.registry.insert(entity, Amount(amount));
@@ -164,7 +167,10 @@ pub fn spawn_leftover(state: &mut WorldState, original: EntityId, amount: u16, p
     state.registry.insert(leftover, Position(position));
     state.registry.insert(leftover, Facet(facet));
     mark_decay(state, leftover);
-    state.facet_state_mut(facet).sectors.insert(leftover, position);
+    state
+        .facet_state_mut(Facet(facet))
+        .sectors
+        .insert(leftover, position);
     state.reveal(leftover);
 }
 
@@ -174,6 +180,6 @@ pub fn place_on_ground(state: &mut WorldState, item: EntityId, position: Point, 
     state.registry.insert(item, Facet(facet));
     // Back on the ground, back on the decay clock.
     mark_decay(state, item);
-    state.facet_state_mut(facet).sectors.insert(item, position);
+    state.facet_state_mut(Facet(facet)).sectors.insert(item, position);
     state.reveal(item);
 }

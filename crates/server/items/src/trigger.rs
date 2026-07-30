@@ -94,7 +94,7 @@ pub(crate) fn emit_mobile_used(
     };
     state.bus.send(MobileUsed {
         mobile: target_serial,
-        body,
+        body: body.0,
         by,
     });
 }
