@@ -459,9 +459,9 @@ const ORE: HarvestDef = HarvestDef {
         double_harvest: ClilocId(503_042),     // Someone has gotten to the metal before you.
         out_of_range: ClilocId(500_446),       // That is too far away.
         timed_out_of_range: ClilocId(503_041), // You have moved too far away to continue mining.
-        fail: ClilocId(503_043), // You loosen some rocks but fail to find any useable ore.
-        pack_full: ClilocId(1_010_481), // Your backpack is full, so the ore you mined is lost.
-        tool_broke: ClilocId(1_044_038), // You have worn out your tool!
+        fail: ClilocId(503_043),               // You loosen some rocks but fail to find any useable ore.
+        pack_full: ClilocId(1_010_481),        // Your backpack is full, so the ore you mined is lost.
+        tool_broke: ClilocId(1_044_038),       // You have worn out your tool!
     },
     resources: ORES,
     veins: ORE_VEINS,
@@ -524,9 +524,9 @@ const LUMBER_ML: HarvestDef = HarvestDef {
     beat_ticks: BEAT_TICKS,
     sound_ticks: SOUND_TICKS,
     messages: HarvestMessages {
-        no_resources: ClilocId(500_493),       // There's not enough wood here to harvest.
-        double_harvest: ClilocId(500_493),     // There's not enough wood here to harvest.
-        out_of_range: ClilocId(500_446),       // That is too far away.
+        no_resources: ClilocId(500_493),   // There's not enough wood here to harvest.
+        double_harvest: ClilocId(500_493), // There's not enough wood here to harvest.
+        out_of_range: ClilocId(500_446),   // That is too far away.
         timed_out_of_range: ClilocId(500_446), // That is too far away.
         fail: ClilocId(500_495), // You hack at the tree for a while, but fail to produce any useable wood.
         pack_full: ClilocId(500_497), // You can't place any wood into your backpack!
@@ -580,9 +580,9 @@ const FISHING: HarvestDef = HarvestDef {
         double_harvest: ClilocId(503_172),     // The fish don't seem to be biting here.
         out_of_range: ClilocId(500_976),       // You need to be closer to the water to fish!
         timed_out_of_range: ClilocId(500_976), // You need to be closer to the water to fish!
-        fail: ClilocId(503_171), // You fish a while, but fail to catch anything.
-        pack_full: ClilocId(503_176), // You do not have room in your backpack for a fish.
-        tool_broke: ClilocId(503_174), // You broke your fishing pole.
+        fail: ClilocId(503_171),               // You fish a while, but fail to catch anything.
+        pack_full: ClilocId(503_176),          // You do not have room in your backpack for a fish.
+        tool_broke: ClilocId(503_174),         // You broke your fishing pole.
     },
     resources: FISHES,
     veins: ONE_VEIN,
