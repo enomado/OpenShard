@@ -153,12 +153,13 @@ impl StoredCharacter {
     /// becomes something the world will accept, so the row format is unpacked
     /// once instead of at every call site that plays a character.
     ///
-    /// `None` when the row's serial is not a valid one (a zero, or a corrupt
-    /// row): there is no character to restore, and the caller enters the name
-    /// fresh rather than binding a serial that means nothing.
+    /// Always `Some`: the record's `serial` is a checked [`Serial`], validated
+    /// when the row was deserialised, so there is no longer an invalid-serial
+    /// case to fail on here. `Option` is kept so `enter.rs`'s `.and_then` reads
+    /// the same whether the record came from a lookup that could itself miss.
     pub fn from_record(record: &openshard_persistence::CharacterRecord) -> Option<Self> {
         Some(Self {
-            serial: Serial::new(record.serial)?,
+            serial: record.serial,
             facet: Facet(record.facet),
             position: Point::new(record.x, record.y, record.z),
             facing: Facing::from_bits(record.facing),

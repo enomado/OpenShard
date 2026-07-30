@@ -117,7 +117,7 @@ impl World {
         // exactly and a killed creature (absent here) stays dead.
         let mobiles = self.mobile_records();
         for record in &mobiles {
-            if let Some(entity) = Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s)) {
+            if let Some(entity) = self.state.registry.entity_of(record.serial) {
                 snapshot.inventories.push(Inventory {
                     owner: record.serial,
                     items: self.inventory_of(entity),
@@ -170,7 +170,6 @@ impl World {
         let Some(owner) = registry.serial_of(entity) else {
             return Vec::new();
         };
-        let owner_raw = owner.raw();
         let mut records = Vec::new();
         let mut containers: Vec<Serial> = Vec::new();
 
@@ -193,10 +192,10 @@ impl World {
             // carries the mount's graphic, and [`restore_inventory`] rebuilds the
             // ridden creature from it, so the rider logs back in still mounted.
             let location = ItemLocation::Equipped {
-                mobile: owner_raw,
+                mobile: owner,
                 layer: worn.layer.0,
             };
-            if let Some(record) = Self::item_record(registry, item, owner_raw, location) {
+            if let Some(record) = Self::item_record(registry, item, Some(owner), location) {
                 if record.container_gump.is_some() {
                     if let Some(serial) = registry.serial_of(item) {
                         containers.push(serial);
@@ -212,12 +211,12 @@ impl World {
                     continue;
                 }
                 let location = ItemLocation::Contained {
-                    container: container.raw(),
+                    container,
                     x: u16::try_from(held.position.x).unwrap_or(0),
                     y: u16::try_from(held.position.y).unwrap_or(0),
                     grid: held.grid.0,
                 };
-                if let Some(record) = Self::item_record(registry, item, owner_raw, location) {
+                if let Some(record) = Self::item_record(registry, item, Some(owner), location) {
                     if record.container_gump.is_some() {
                         if let Some(serial) = registry.serial_of(item) {
                             containers.push(serial);
@@ -262,7 +261,7 @@ impl World {
                 y: at.y,
                 z: at.z,
             };
-            if let Some(record) = Self::item_record(registry, item, 0, location) {
+            if let Some(record) = Self::item_record(registry, item, None, location) {
                 records.push(record);
             }
         }
@@ -274,7 +273,7 @@ impl World {
     pub(super) fn item_record(
         registry: &Registry,
         item: EntityId,
-        owner: u32,
+        owner: Option<Serial>,
         location: ItemLocation,
     ) -> Option<ItemRecord> {
         let serial = registry.serial_of(item)?;
@@ -282,7 +281,7 @@ impl World {
         let amount = registry.get::<Amount>(item).map_or(1, |a| a.0);
         let container_gump = registry.get::<Container>(item).map(|c| c.gump.0);
         Some(ItemRecord {
-            serial: serial.raw(),
+            serial,
             owner,
             graphic: graphic.id.0,
             hue: graphic.hue.0,
@@ -459,7 +458,7 @@ impl World {
                 .map_or((0, 0), |ranged| (ranged.range, ranged.kind));
             let npc = registry.get::<Npc>(entity).copied();
             records.push(MobileRecord {
-                serial: serial.raw(),
+                serial,
                 body: body.id.0,
                 hue: body.hue.0,
                 facet: self.state.facet_of(entity).0,
@@ -495,10 +494,10 @@ impl World {
                 // A tamed creature is property: a restart that quietly released
                 // every pet on the shard would be the `Murders` lesson again.
                 pet: registry.get::<Pet>(entity).map(|pet| PetData {
-                    owner: pet.owner.raw(),
+                    owner: pet.owner,
                     slots: pet.slots,
                     order: pet_order_code(pet.order),
-                    order_target: pet.order_target.map(Serial::raw),
+                    order_target: pet.order_target,
                 }),
                 restock: registry.get::<Restock>(entity).map(|shelf| RestockRecord {
                     // Seconds, not the tick: a tick counter restarts at boot, so a
@@ -510,6 +509,10 @@ impl World {
                         .map(|l| (l.graphic.0, l.hue.0, l.amount, l.price, l.name.clone()))
                         .collect(),
                 }),
+                // `SpawnedBy` is a plain index into the spawner list (0, 1, 2, ...), not
+                // a wire serial — a namespace of its own that starts at 0, which
+                // `Serial::new` would reject outright. It is not part of the Serial
+                // sweep and stays a bare `u32`.
                 spawned_by: registry.get::<SpawnedBy>(entity).map(|s| s.0),
                 effects: Self::effects_of(registry, entity, self.state.ticks),
                 skills: registry.get::<Skills>(entity).map_or_else(Vec::new, |s| {
@@ -548,7 +551,7 @@ impl World {
                 is_open: door.is_open,
             });
             records.push(DecorationRecord {
-                serial: serial.raw(),
+                serial,
                 graphic: id.0,
                 hue: hue.0,
                 facet: self.state.facet_of(entity).0,
@@ -741,7 +744,7 @@ impl World {
             intelligence_age: age(last.intelligence),
         };
         Some(CharacterRecord {
-            serial: serial.raw(),
+            serial,
             account: account.0.clone(),
             name: CharacterName(name.0.clone()),
             body: body.id.0,
@@ -790,7 +793,7 @@ impl World {
                 progress: quest.progress.clone(),
                 seconds: quest.seconds_left.clone(),
                 failed: quest.failed,
-                giver: quest.giver.map(Serial::raw),
+                giver: quest.giver,
             })
             .collect()
     }
@@ -835,7 +838,7 @@ impl World {
                     progress: record.progress.clone(),
                     seconds_left: record.seconds.clone(),
                     failed: record.failed,
-                    giver: record.giver.and_then(Serial::new),
+                    giver: record.giver,
                 })
                 .collect(),
             done: done
@@ -857,12 +860,11 @@ impl World {
     ///
     /// A logged-out character is not in the world — it is a row in the database —
     /// but its serial is still spoken for. Call this at boot for every stored
-    /// character, before anyone can create a new one. Values outside the serial
-    /// range are ignored: a corrupt row should not stop the shard from starting.
-    pub fn reserve_serial(&mut self, raw: u32) {
-        if let Some(serial) = Serial::new(raw) {
-            self.state.registry.reserve_serial(serial);
-        }
+    /// character, before anyone can create a new one. The record's `serial` field
+    /// is already a checked [`Serial`] (validated on deserialisation), so there is
+    /// no longer a corrupt-value case for this to swallow.
+    pub fn reserve_serial(&mut self, serial: Serial) {
+        self.state.registry.reserve_serial(serial);
     }
 
     /// Bring the saved characters back from the store at boot.
@@ -899,13 +901,11 @@ impl World {
             self.reserve_serial(record.serial);
         }
         for record in records {
-            if record.owner == 0 {
-                self.place_ground_item(&record);
-            } else {
-                self.pending_inventories
-                    .entry(record.owner)
-                    .or_default()
-                    .push(record);
+            match record.owner {
+                None => self.place_ground_item(&record),
+                Some(owner) => {
+                    self.pending_inventories.entry(owner).or_default().push(record);
+                }
             }
         }
     }
@@ -915,9 +915,7 @@ impl World {
         let ItemLocation::Ground { facet, x, y, z } = record.location else {
             return;
         };
-        let Some(serial) = Serial::new(record.serial) else {
-            return;
-        };
+        let serial = record.serial;
         let facet = if self.state.facets.contains_key(&Facet(facet)) {
             Facet(facet)
         } else {
@@ -1007,16 +1005,14 @@ impl World {
     /// record names, now that every container entity exists. Returns whether an
     /// inventory was restored, so [`enter`](Self::enter) knows not to hand out a
     /// starter backpack.
-    pub(super) fn restore_inventory(&mut self, owner: u32) -> bool {
+    pub(super) fn restore_inventory(&mut self, owner: Serial) -> bool {
         let Some(records) = self.pending_inventories.remove(&owner) else {
             return false;
         };
         // Pass one: the entities, so a container exists before its contents point
         // at it.
         for record in &records {
-            let Some(serial) = Serial::new(record.serial) else {
-                continue;
-            };
+            let serial = record.serial;
             let entity = self.state.registry.spawn();
             if self.state.registry.bind_serial(entity, serial).is_err() {
                 self.state.registry.despawn(entity);
@@ -1075,25 +1071,22 @@ impl World {
         }
         // Pass two: where each item goes.
         for record in &records {
-            let Some(entity) = Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s))
-            else {
+            let Some(entity) = self.state.registry.entity_of(record.serial) else {
                 continue;
             };
             match record.location {
                 ItemLocation::Equipped { mobile, layer } => {
-                    if let Some(mobile) = Serial::new(mobile) {
-                        self.state.registry.insert(
-                            entity,
-                            Equipped {
-                                mobile,
-                                layer: Layer(layer),
-                            },
-                        );
-                        // A saved mount: rebuild the ridden creature the saddle
-                        // stands for and put the rider back in the saddle.
-                        if Layer(layer) == items::MOUNT_LAYER {
-                            self.remount_saved(mobile, entity, Graphic(record.graphic), Hue(record.hue));
-                        }
+                    self.state.registry.insert(
+                        entity,
+                        Equipped {
+                            mobile,
+                            layer: Layer(layer),
+                        },
+                    );
+                    // A saved mount: rebuild the ridden creature the saddle
+                    // stands for and put the rider back in the saddle.
+                    if Layer(layer) == items::MOUNT_LAYER {
+                        self.remount_saved(mobile, entity, Graphic(record.graphic), Hue(record.hue));
                     }
                 }
                 ItemLocation::Contained {
@@ -1102,16 +1095,14 @@ impl World {
                     y,
                     grid,
                 } => {
-                    if let Some(container) = Serial::new(container) {
-                        self.state.registry.insert(
-                            entity,
-                            Contained {
-                                container,
-                                position: GumpPoint::new(i32::from(x), i32::from(y)),
-                                grid: GridSlot(grid),
-                            },
-                        );
-                    }
+                    self.state.registry.insert(
+                        entity,
+                        Contained {
+                            container,
+                            position: GumpPoint::new(i32::from(x), i32::from(y)),
+                            grid: GridSlot(grid),
+                        },
+                    );
                 }
                 // An owned item is never on the ground; ignore a stray one rather
                 // than drop it into the world at 0,0.
@@ -1136,9 +1127,7 @@ impl World {
     /// (the saved one is restored with the rest of the inventory).
     pub fn restore_mobiles(&mut self, records: Vec<MobileRecord>) {
         for record in records {
-            let Some(serial) = Serial::new(record.serial) else {
-                continue;
-            };
+            let serial = record.serial;
             let entity = self.state.registry.spawn();
             if self.state.registry.bind_serial(entity, serial).is_err() {
                 self.state.registry.despawn(entity);
@@ -1245,17 +1234,15 @@ impl World {
                 registry.insert(entity, Title(title));
             }
             if let Some(pet) = &record.pet {
-                if let Some(owner) = Serial::new(pet.owner) {
-                    registry.insert(
-                        entity,
-                        Pet {
-                            owner,
-                            slots: pet.slots,
-                            order: pet_order_from(pet.order),
-                            order_target: pet.order_target.and_then(Serial::new),
-                        },
-                    );
-                }
+                registry.insert(
+                    entity,
+                    Pet {
+                        owner: pet.owner,
+                        slots: pet.slots,
+                        order: pet_order_from(pet.order),
+                        order_target: pet.order_target,
+                    },
+                );
             }
             if let Some((x, y, z)) = record.night_home {
                 registry.insert(entity, NightHome(Point::new(x, y, z)));
@@ -1363,9 +1350,7 @@ impl World {
     /// never does, and why decoration cannot ride the ground-item path.
     pub fn restore_decorations(&mut self, records: Vec<DecorationRecord>) {
         for record in records {
-            let Some(serial) = Serial::new(record.serial) else {
-                continue;
-            };
+            let serial = record.serial;
             let entity = self.state.registry.spawn();
             if self.state.registry.bind_serial(entity, serial).is_err() {
                 self.state.registry.despawn(entity);

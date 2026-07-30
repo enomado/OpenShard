@@ -1233,10 +1233,14 @@ but everything they are read *against*.
 
 ### Backlog from this stage
 
-- **`PropertyList::add`/`add_args` still take a bare `u32` cliloc.** Every caller
-  above them now holds a `ClilocId`, so the tooltip path is the one place a
-  message id is opened for no reason. Small, and it belongs with whatever next
-  touches `properties.rs`.
+- ~~**`PropertyList::add`/`add_args` still take a bare `u32` cliloc.**~~ —
+  fixed. Both now take `ClilocId`; `object_properties`
+  (`crates/server/state/src/runtime.rs`) already held one everywhere it called
+  them, so the change was the signature and its call sites, not a new check.
+  The one place a `cliloc` still meets a raw number is the `#{cliloc}` argument
+  string for `1_050_039`'s stack-amount template — that number is *text* the
+  client's own cliloc parser substitutes into another string, not a value this
+  crate reads, so it stays `cliloc.0` there.
 - **`items::drop_into_container` takes a `Point` that is holding gump
   coordinates.** The `0x08` reuses the position field for both meanings, so the
   parameter is a world `Point` and the function converts it to a `GumpPoint` at
@@ -1346,10 +1350,58 @@ underneath them, and it found a protocol module the sweep had never staged.
   case is out of reach of any field scan and probably wants the `syn` dependency
   N8 argued against; it is worth re-opening that argument now that a whole module
   has slipped through.
-- **`CharacterRecord::serial` and the persistence records around it are bare
-  `u32`s**, which is why several tests now write `serial.raw()` where they used
-  to pass the value straight. That is the persistence half of the component
-  sweep and belongs with whatever next touches `persist.rs`.
+- ~~**`CharacterRecord::serial` and the persistence records around it are bare
+  `u32`s.**~~ — fixed (N-persistence, below).
+
+## Amendments forced by N-persistence (`record.rs` and its stores)
+
+The last bare serials in the engine, and the one place N1's direction rule does
+not apply: a save record is neither client → server nor server → client, it is
+server → itself, across a restart. What made the stage more than a find-and-replace
+was that `record.rs` already had the pattern to follow, for a different type.
+
+1. **`AccountName`/`CharacterName`'s `serde(with = "...")` modules are the
+   template, unchanged.** Both already prove the shape this sweep needs: a typed
+   field, a hand-written `Serializer`/`Deserializer` pair beside it, and an
+   on-disk shape (a bare JSON string) that does not move when the Rust side gets
+   a newtype. `serial`/`optional_serial` are the same two functions for `Serial`,
+   writing and reading the same `u32`/`0` a bare field always did — no
+   `SCHEMA_VERSION` bump, because nothing on disk changed, only what the type
+   system will let past it in memory.
+2. **`Serial` gains no `ToSql`/`FromSql` impl, on the same argument N7 amendment
+   6 and N8 amendment 4 already settled for a type with no natural home in one of
+   N3's four classes.** A trait impl on the newtype would make the SQL boundary
+   invisible the way `Deref` would, and CLAUDE.md's ban on both is one rule, not
+   two exceptions. `sqlite.rs` opens with `.raw()` on the way in and reads through
+   a named `get_serial`/`get_optional_serial` pair on the way out — the same
+   `.0` at the serialization seam the wire and the JSON both already use, moved to
+   a third seam. A row that fails `Serial::new` fails the read with
+   `rusqlite::Error::IntegralValueOutOfRange`, routed through the store's existing
+   `database()` — a corrupt column is exactly as fatal as `z` overflowing an
+   `i8` already was, not a new kind of error.
+3. **`ItemRecord::owner`'s `0` and `MobileRecord::spawned_by`'s `0` looked like
+   the same sentinel and are not, and only one of them is a `Serial`.**
+   `owner == 0` means "no character owns this" over the *serial* namespace, so it
+   became `Option<Serial>` through `optional_serial`. `spawned_by` is a
+   `SpawnedBy` index into the world's own spawner list — a namespace that
+   legitimately starts at zero, which `Serial::new` would refuse outright. A
+   first pass converted it anyway and then reached for the wrong fix (offsetting
+   every spawner id by one to dodge the refusal), which would have changed the
+   on-disk shape for a false cognate; the field stays `Option<u32>`, with a
+   comment now saying why, rather than gaining a type it does not own. Two
+   fields shaped alike and ruled differently is exactly N7 amendment 6's
+   `TooltipRevision::hash` lesson again: a class table answers most fields, and
+   the ones it does not are worth a sentence rather than a guess.
+4. **Wrapping deleted the `Serial::new(record.serial)`/`.raw()` round-trip at
+   every read and write in `tick/persist.rs`,** and the `record.owner == 0`
+   checks folded into plain `Option` matching — N2 amendment 1's "wrapping
+   deletes code" one more time, this time on the load/save path rather than a
+   packet.
+5. **The two round-trip tests in `record.rs` are the N9 pair for this stage,
+   read the other way round.** They already existed to prove every field is
+   reachable by name; unchanged in intent, they now also prove the on-disk shape
+   survives the type change — a `CharacterRecord`/`ItemRecord` built with typed
+   serials serialises to the same JSON integers and reads back equal.
 
 ## Stages
 
@@ -1403,6 +1455,12 @@ request (`main` is protected).
   `Container.gump` and `Contained.{position, grid}` — the bare integers N4's
   backlog recorded and deferred. Typing them forces the graphic- and hue-keyed
   content tables they are read against, which is most of the stage's size.
+- **N-persistence — `record.rs` and its stores.** Not a protocol module either,
+  and not the wire: `CharacterRecord::serial` and its siblings across
+  `ItemRecord`, `MobileRecord`, `DecorationRecord`, `PetData`, `Inventory` and
+  `QuestRecord`, the last bare serials in the engine, at the save/load seam
+  instead of the network one. Typing them forces a third `.raw()` boundary
+  (SQL bind/read) beside the wire and the script bridge.
 
 Stages N1–N7 are agent work. They are ordered by module size rather than
 dependency: `wire.rs`'s shared types all land in the pilot, so nothing after it
@@ -1457,3 +1515,4 @@ resolved silently in one module is a pattern the next module contradicts.
 | N-tables | done — the cliloc and `SoundId` content tables: `protocol` took `serde`, and `State`'s four doors take the types | `a78ee4c`, `4d9561d` |
 | N-components | done — `Drawn`, `Container.gump`, `Contained.{position, grid}`, and the graphic-keyed tables under them | `6c01d6e` |
 | N-commands | done — `Command` 27 bare serials → 0, `trade.rs` 3 → 0 (the module N8's counter could not see), and the system functions under them | |
+| N-persistence | done — `CharacterRecord`, `ItemRecord`, `MobileRecord`, `DecorationRecord`, `PetData`, `Inventory`, `QuestRecord` serials typed via `serde(with = ...)`, on-disk shape unchanged, `SCHEMA_VERSION` still 23; `MobileRecord::spawned_by` stays `Option<u32>` (a spawner-list index, not a serial) | |

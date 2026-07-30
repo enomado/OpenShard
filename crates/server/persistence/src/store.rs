@@ -21,6 +21,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use openshard_protocol::identity::AccountName;
+use openshard_protocol::serial::Serial;
 
 use crate::journal::Snapshot;
 use crate::record::{
@@ -126,15 +127,16 @@ pub trait Store: Send + Sync {
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     /// Keyed by serial, which is the identity that outlives a restart.
-    characters: Mutex<HashMap<u32, CharacterRecord>>,
-    /// Items keyed by serial: inventory (owner is a character) and ground (owner 0).
-    items: Mutex<HashMap<u32, ItemRecord>>,
+    characters: Mutex<HashMap<Serial, CharacterRecord>>,
+    /// Items keyed by serial: inventory (owner is a character) and ground
+    /// (`owner` is `None`).
+    items: Mutex<HashMap<Serial, ItemRecord>>,
     /// Spawn regions keyed by id.
     spawners: Mutex<HashMap<u32, SpawnerRecord>>,
     /// NPC mobiles keyed by serial.
-    mobiles: Mutex<HashMap<u32, MobileRecord>>,
+    mobiles: Mutex<HashMap<Serial, MobileRecord>>,
     /// Placed decorations keyed by serial.
-    decorations: Mutex<HashMap<u32, DecorationRecord>>,
+    decorations: Mutex<HashMap<Serial, DecorationRecord>>,
     /// Named regions, keyed by `(facet, id)`.
     regions: Mutex<HashMap<(u8, u16), RegionRecord>>,
     /// The world's own scalars: the clock, and where the rolls got to. `None` until
@@ -179,36 +181,42 @@ impl Store for MemoryStore {
         // Each inventory replaces everything under its owner: drop the old set,
         // then write the new one.
         for inventory in &snapshot.inventories {
-            items.retain(|_, item| item.owner != inventory.owner);
+            items.retain(|_, item| item.owner != Some(inventory.owner));
             for item in &inventory.items {
                 items.insert(item.serial, item.clone());
             }
         }
         // A ground sweep replaces every ownerless item at once.
         if let Some(ground) = &snapshot.ground {
-            items.retain(|_, item| item.owner != 0);
+            items.retain(|_, item| item.owner.is_some());
             for item in ground {
                 items.insert(item.serial, item.clone());
             }
         }
         for serial in &snapshot.removed {
-            characters.remove(serial);
+            // `snapshot.removed` carries the bare wire value (see
+            // `Journal::forget_serial`) rather than a `Serial`: the character is
+            // already gone by the time this runs, so there is nothing left to
+            // build one from except the number itself. It was a valid `Serial`
+            // when the row was written, so it stays one now.
+            let serial = Serial::new(*serial).expect("a removed serial was valid when saved");
+            characters.remove(&serial);
             // A gone character takes its inventory with it.
-            items.retain(|_, item| item.owner != *serial);
+            items.retain(|_, item| item.owner != Some(serial));
         }
         // A mobile sweep replaces the whole set — and a mobile no longer in it
         // (killed since the last save) takes its worn gear and stock with it, or
         // dead vendors would leave orphaned crates in the items table forever.
         if let Some(records) = &snapshot.mobiles {
             let mut mobiles = self.mobiles.lock().expect("the mutex is never poisoned");
-            let fresh: std::collections::HashSet<u32> = records.iter().map(|m| m.serial).collect();
-            let gone: Vec<u32> = mobiles
+            let fresh: std::collections::HashSet<Serial> = records.iter().map(|m| m.serial).collect();
+            let gone: Vec<Serial> = mobiles
                 .keys()
                 .filter(|serial| !fresh.contains(serial))
                 .copied()
                 .collect();
             for serial in gone {
-                items.retain(|_, item| item.owner != serial);
+                items.retain(|_, item| item.owner != Some(serial));
             }
             mobiles.clear();
             for record in records {
@@ -340,7 +348,7 @@ mod tests {
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
-            serial,
+            serial: Serial::new(serial).expect("a valid test serial"),
             account: AccountName::new("admin"),
             name: CharacterName::new("Alpha"),
             body: 0x0190,
@@ -445,8 +453,8 @@ mod tests {
 
     fn contained(serial: u32, owner: u32, container: u32) -> ItemRecord {
         ItemRecord {
-            serial,
-            owner,
+            serial: Serial::new(serial).expect("a valid test serial"),
+            owner: Some(Serial::new(owner).expect("a valid test serial")),
             graphic: 0x0EED,
             hue: 0,
             amount: 1,
@@ -463,7 +471,7 @@ mod tests {
             rune: None,
             runebook: None,
             location: crate::record::ItemLocation::Contained {
-                container,
+                container: Serial::new(container).expect("a valid test serial"),
                 x: 0,
                 y: 0,
                 grid: 0,
@@ -473,8 +481,8 @@ mod tests {
 
     fn ground(serial: u32) -> ItemRecord {
         ItemRecord {
-            serial,
-            owner: 0,
+            serial: Serial::new(serial).expect("a valid test serial"),
+            owner: None,
             graphic: 0x1BFB,
             hue: 0,
             amount: 1,
@@ -511,7 +519,7 @@ mod tests {
                 characters: vec![character(1, 100)],
                 removed: vec![],
                 inventories: vec![crate::record::Inventory {
-                    owner: 1,
+                    owner: Serial::new(1).expect("a valid test serial"),
                     items: vec![contained(0x4000_0001, 1, 1), contained(0x4000_0002, 1, 1)],
                 }],
                 ground: None,
@@ -530,7 +538,7 @@ mod tests {
                 characters: vec![character(1, 100)],
                 removed: vec![],
                 inventories: vec![crate::record::Inventory {
-                    owner: 1,
+                    owner: Serial::new(1).expect("a valid test serial"),
                     items: vec![contained(0x4000_0001, 1, 1)],
                 }],
                 ground: None,
@@ -549,7 +557,7 @@ mod tests {
 
     fn mobile(serial: u32, hits: u16) -> crate::record::MobileRecord {
         crate::record::MobileRecord {
-            serial,
+            serial: Serial::new(serial).expect("a valid test serial"),
             body: 0x00C8,
             hue: 0,
             facet: 0,
@@ -599,7 +607,7 @@ mod tests {
                 characters: vec![],
                 removed: vec![],
                 inventories: vec![crate::record::Inventory {
-                    owner: 2,
+                    owner: Serial::new(2).expect("a valid test serial"),
                     items: vec![contained(0x4000_0001, 2, 2)],
                 }],
                 ground: None,
@@ -632,7 +640,7 @@ mod tests {
 
         let mobiles = store.mobiles().await.expect("load");
         assert_eq!(mobiles.len(), 1, "the dead mobile is gone");
-        assert_eq!(mobiles[0].serial, 3);
+        assert_eq!(mobiles[0].serial, Serial::new(3).expect("a valid test serial"));
         assert_eq!(mobiles[0].hits_current, 7, "the survivor keeps its wounds");
         assert!(
             store.items().await.expect("load").is_empty(),
@@ -650,7 +658,7 @@ mod tests {
                 characters: vec![character(1, 100)],
                 removed: vec![],
                 inventories: vec![crate::record::Inventory {
-                    owner: 1,
+                    owner: Serial::new(1).expect("a valid test serial"),
                     items: vec![contained(0x4000_0001, 1, 1)],
                 }],
                 ground: Some(vec![ground(0x4000_0010)]),
@@ -686,6 +694,6 @@ mod tests {
         store.save(&snapshot(vec![], vec![1])).await.expect("save");
         let items = store.items().await.expect("load");
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].owner, 0, "only the ground item survives");
+        assert_eq!(items[0].owner, None, "only the ground item survives");
     }
 }

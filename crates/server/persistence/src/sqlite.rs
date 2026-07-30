@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::serial::Serial;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::journal::Snapshot;
@@ -68,7 +69,7 @@ impl ItemLocation {
                 x,
                 y,
                 z: 0,
-                parent: container,
+                parent: container.raw(),
                 grid,
                 layer: 0,
             },
@@ -78,7 +79,7 @@ impl ItemLocation {
                 x: 0,
                 y: 0,
                 z: 0,
-                parent: mobile,
+                parent: mobile.raw(),
                 grid: 0,
                 layer,
             },
@@ -95,14 +96,18 @@ impl ItemLocation {
                 y: f.y,
                 z: f.z,
             }),
+            // `f.parent` came off the same `NOT NULL` column `insert_item`/`write_item`
+            // writes a real serial into for these two kinds, so a value that does not
+            // parse as one is as corrupt as an unknown `kind` tag — dropped the same
+            // way, via the `?` on this function's own `Option` return.
             1 => Some(ItemLocation::Contained {
-                container: f.parent,
+                container: Serial::new(f.parent)?,
                 x: f.x,
                 y: f.y,
                 grid: f.grid,
             }),
             2 => Some(ItemLocation::Equipped {
-                mobile: f.parent,
+                mobile: Serial::new(f.parent)?,
                 layer: f.layer,
             }),
             _ => None,
@@ -368,7 +373,7 @@ impl Store for SqliteStore {
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
                                  ?19, ?20, ?21, ?22)",
                         params![
-                            record.serial,
+                            record.serial.raw(),
                             record.account.0,
                             record.name.0,
                             record.body,
@@ -414,7 +419,7 @@ impl Store for SqliteStore {
                     transaction
                         .execute(
                             "INSERT INTO mobiles (serial, data) VALUES (?1, ?2)",
-                            params![mobile.serial, data],
+                            params![mobile.serial.raw(), data],
                         )
                         .map_err(database)?;
                 }
@@ -435,8 +440,13 @@ impl Store for SqliteStore {
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,\
                              ?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
                         params![
-                            item.serial,
-                            item.owner,
+                            item.serial.raw(),
+                            // `owner` is `NOT NULL`, `0` the sentinel for "no owner" (a
+                            // ground item) — the same convention the `DELETE FROM items
+                            // WHERE owner = 0` sweep above relies on. Only the Rust-side
+                            // type changed, from a bare `u32` to a checked, absent
+                            // `Serial`.
+                            item.owner.map_or(0, |serial| serial.raw()),
                             item.graphic,
                             item.hue,
                             item.amount,
@@ -490,7 +500,7 @@ impl Store for SqliteStore {
                 transaction
                     .execute(
                         "DELETE FROM items WHERE owner = ?1",
-                        params![inventory.owner],
+                        params![inventory.owner.raw()],
                     )
                     .map_err(database)?;
                 for item in &inventory.items {
@@ -555,7 +565,7 @@ impl Store for SqliteStore {
                     transaction
                         .execute(
                             "INSERT INTO decorations (serial, data) VALUES (?1, ?2)",
-                            params![decoration.serial, data],
+                            params![decoration.serial.raw(), data],
                         )
                         .map_err(database)?;
                 }
@@ -618,7 +628,7 @@ impl Store for SqliteStore {
                     let stat_locks: String = row.get(21)?;
                     Ok((
                         CharacterRecord {
-                            serial: row.get(0)?,
+                            serial: get_serial(row, 0)?,
                             account: AccountName(row.get(1)?),
                             name: CharacterName(row.get(2)?),
                             body: row.get(3)?,
@@ -696,8 +706,8 @@ impl Store for SqliteStore {
                     };
                     Ok((
                         ItemRecord {
-                            serial: row.get(0)?,
-                            owner: row.get(1)?,
+                            serial: get_serial(row, 0)?,
+                            owner: get_optional_serial(row, 1)?,
                             graphic: row.get(2)?,
                             hue: row.get(3)?,
                             amount: row.get(4)?,
@@ -929,6 +939,34 @@ fn database(error: rusqlite::Error) -> StoreError {
     StoreError::Database(error.to_string())
 }
 
+/// Read column `idx` as a checked [`Serial`].
+///
+/// `Serial` has no `FromSql` impl of its own — a serial is a `u32` on disk, and
+/// the checked conversion happens here rather than by giving the newtype a wire
+/// format it does not otherwise need. A value that does not fit fails the same
+/// way `rusqlite`'s own narrowing conversions do (`z` as `i8`, `body` as `u16`):
+/// [`rusqlite::Error::IntegralValueOutOfRange`], routed through [`database`] like
+/// every other read failure in this file.
+fn get_serial(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Serial> {
+    let raw: u32 = row.get(idx)?;
+    Serial::new(raw).ok_or(rusqlite::Error::IntegralValueOutOfRange(idx, i64::from(raw)))
+}
+
+/// Read column `idx` as a checked `Option<Serial>`, where `0` is the on-disk
+/// sentinel for "none" — the same convention [`ItemRecord::owner`] writes on
+/// the way in (see the `save` method) and the `owner = 0` sweep for ground
+/// items relies on.
+fn get_optional_serial(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Option<Serial>> {
+    let raw: u32 = row.get(idx)?;
+    if raw == 0 {
+        Ok(None)
+    } else {
+        Serial::new(raw)
+            .map(Some)
+            .ok_or(rusqlite::Error::IntegralValueOutOfRange(idx, i64::from(raw)))
+    }
+}
+
 /// Run blocking database work off the async runtime.
 ///
 /// A panic in the closure comes back as a [`StoreError::Database`] rather than
@@ -952,7 +990,7 @@ mod tests {
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
-            serial,
+            serial: Serial::new(serial).expect("a valid test serial"),
             account: AccountName::new("admin"),
             name: CharacterName::new("Alpha"),
             body: 0x0190,
@@ -995,8 +1033,14 @@ mod tests {
 
     fn contained(serial: u32, owner: u32, container: u32) -> ItemRecord {
         ItemRecord {
-            serial,
-            owner,
+            serial: Serial::new(serial).expect("a valid test serial"),
+            // `0` is the on-disk sentinel for "no owner" — a ground item — the
+            // same convention `get_optional_serial` reads back.
+            owner: if owner == 0 {
+                None
+            } else {
+                Some(Serial::new(owner).expect("a valid test serial"))
+            },
             graphic: 0x0EED,
             hue: 0,
             amount: 1,
@@ -1013,7 +1057,7 @@ mod tests {
             rune: None,
             runebook: None,
             location: ItemLocation::Contained {
-                container,
+                container: Serial::new(container).expect("a valid test serial"),
                 x: 0,
                 y: 0,
                 grid: 0,
@@ -1023,10 +1067,15 @@ mod tests {
 
     /// The same item lying on the ground rather than in a pack — the *other*
     /// restore path, which no test that only fills a backpack exercises.
+    ///
+    /// Calls `contained` with a placeholder (nonzero, since `0` is not a valid
+    /// `Serial`) owner and container — both immediately overwritten below, the
+    /// owner by this function's caller's ground sweep semantics and the location
+    /// by the struct-update — so the placeholder's value never surfaces.
     fn ground(serial: u32, x: u16, y: u16) -> ItemRecord {
         ItemRecord {
             location: ItemLocation::Ground { facet: 0, x, y, z: 0 },
-            ..contained(serial, 0, 0)
+            ..contained(serial, 0, 1)
         }
     }
 
@@ -1047,7 +1096,7 @@ mod tests {
             .expect("save");
         let characters = store.characters().await.expect("read");
         assert_eq!(characters.len(), 1);
-        assert_eq!(characters[0].serial, 1);
+        assert_eq!(characters[0].serial, Serial::new(1).unwrap());
         assert_eq!(characters[0].x, 100);
     }
 
@@ -1184,7 +1233,7 @@ mod tests {
         use crate::record::{DecorationRecord, DoorState, Inventory, MobileRecord};
         fn mobile(serial: u32, hits: u16) -> MobileRecord {
             MobileRecord {
-                serial,
+                serial: Serial::new(serial).expect("a valid test serial"),
                 body: 0x00C8,
                 hue: 0,
                 facet: 0,
@@ -1222,7 +1271,7 @@ mod tests {
         }
         let decoration = DecorationRecord {
             key_value: 0,
-            serial: 0x4000_0100,
+            serial: Serial::new(0x4000_0100).unwrap(),
             graphic: 0x0675,
             hue: 0,
             facet: 0,
@@ -1243,7 +1292,7 @@ mod tests {
             let store = SqliteStore::open(&path).expect("open");
             let mut first = snapshot(vec![], vec![]);
             first.inventories = vec![Inventory {
-                owner: 2,
+                owner: Serial::new(2).unwrap(),
                 items: vec![contained(0x4000_0001, 2, 2)],
             }];
             first.mobiles = Some(vec![mobile(2, 30), mobile(3, 30)]);
@@ -1258,7 +1307,7 @@ mod tests {
             let store = SqliteStore::open(&path).expect("reopen");
             let mobiles = store.mobiles().await.expect("read");
             assert_eq!(mobiles.len(), 1, "the dead mobile is gone");
-            assert_eq!(mobiles[0].serial, 3);
+            assert_eq!(mobiles[0].serial, Serial::new(3).unwrap());
             assert_eq!(mobiles[0].hits_current, 7, "wounds survived the reopen");
             assert_eq!(mobiles[0].npc_home, Some((1400, 1600, 0)));
             assert!(
@@ -1284,7 +1333,7 @@ mod tests {
             item.name = Some("black pearl".into());
             let mut snap = snapshot(vec![character(1, 100)], vec![]);
             snap.inventories = vec![crate::record::Inventory {
-                owner: 1,
+                owner: Serial::new(1).unwrap(),
                 items: vec![item],
             }];
             store.save(&snap).await.expect("save");
@@ -1313,7 +1362,7 @@ mod tests {
             item.spellbook = Some(full);
             let mut snap = snapshot(vec![character(1, 100)], vec![]);
             snap.inventories = vec![crate::record::Inventory {
-                owner: 1,
+                owner: Serial::new(1).unwrap(),
                 items: vec![item],
             }];
             store.save(&snap).await.expect("save");
@@ -1364,7 +1413,7 @@ mod tests {
             dropped.runebook = Some(book.clone());
             let mut snap = snapshot(vec![character(1, 100)], vec![]);
             snap.inventories = vec![crate::record::Inventory {
-                owner: 1,
+                owner: Serial::new(1).unwrap(),
                 items: vec![carried],
             }];
             snap.ground = Some(vec![dropped]);
@@ -1375,7 +1424,7 @@ mod tests {
             let items = store.items().await.expect("read");
             let carried = items
                 .iter()
-                .find(|item| item.serial == 0x4000_0001)
+                .find(|item| item.serial == Serial::new(0x4000_0001).unwrap())
                 .expect("the carried rune");
             assert_eq!(
                 carried.rune,
@@ -1384,7 +1433,7 @@ mod tests {
             );
             let dropped = items
                 .iter()
-                .find(|item| item.serial == 0x4000_0002)
+                .find(|item| item.serial == Serial::new(0x4000_0002).unwrap())
                 .expect("the dropped book");
             assert_eq!(dropped.runebook, Some(book));
         }
@@ -1401,7 +1450,7 @@ mod tests {
             let store = SqliteStore::open(&path).expect("open");
             let mut snap = snapshot(vec![character(1, 100)], vec![]);
             snap.inventories = vec![crate::record::Inventory {
-                owner: 1,
+                owner: Serial::new(1).unwrap(),
                 items: vec![contained(0x4000_0001, 1, 1)],
             }];
             store.save(&snap).await.expect("save");
@@ -1434,7 +1483,7 @@ mod tests {
             item.corpse = Some(story.clone());
             let mut snap = snapshot(vec![character(1, 100)], vec![]);
             snap.inventories = vec![crate::record::Inventory {
-                owner: 1,
+                owner: Serial::new(1).unwrap(),
                 items: vec![item],
             }];
             store.save(&snap).await.expect("save");
@@ -1460,7 +1509,7 @@ mod tests {
             item.poison = Some((3, 12));
             let mut snap = snapshot(vec![character(1, 100)], vec![]);
             snap.inventories = vec![crate::record::Inventory {
-                owner: 1,
+                owner: Serial::new(1).unwrap(),
                 items: vec![item],
             }];
             store.save(&snap).await.expect("save");
@@ -1497,7 +1546,7 @@ mod tests {
             let store = SqliteStore::open(&path).expect("reopen");
             let characters = store.characters().await.expect("read");
             assert_eq!(characters.len(), 1);
-            assert_eq!(characters[0].serial, 7);
+            assert_eq!(characters[0].serial, Serial::new(7).unwrap());
             assert_eq!(characters[0].x, 4242, "position survived the restart");
             assert_eq!(store.accounts().await.expect("read").len(), 1);
         }

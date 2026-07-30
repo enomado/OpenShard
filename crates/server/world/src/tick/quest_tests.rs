@@ -637,7 +637,7 @@ fn a_quest_giver_is_still_a_giver_after_a_restart() {
     assert!(
         mobiles
             .iter()
-            .any(|m| m.serial == giver.raw() && m.quest_giver == ["rat_cull"]),
+            .any(|m| m.serial == giver && m.quest_giver == ["rat_cull"]),
         "the binding is in the save"
     );
 
@@ -781,7 +781,7 @@ fn a_quest_log_survives_a_restart_with_its_progress_and_cooldowns() {
         .expect("a snapshot")
         .characters
         .into_iter()
-        .find(|c| c.serial == killer.raw())
+        .find(|c| c.serial == killer)
         .expect("the character");
     assert_eq!(record.quests.len(), 1);
     assert_eq!(record.quests[0].progress, vec![1]);

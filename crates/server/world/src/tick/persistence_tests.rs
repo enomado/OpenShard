@@ -223,7 +223,7 @@ fn a_dead_players_save_is_flagged_but_keeps_the_living_body() {
     let record = snapshot
         .characters
         .iter()
-        .find(|c| c.serial == serial.raw())
+        .find(|c| c.serial == serial)
         .expect("the ghost is in the save");
     assert!(record.dead, "saved as dead");
     assert_eq!(
@@ -462,7 +462,7 @@ fn two_players_are_two_rows_in_one_snapshot() {
     world.take_snapshot();
     let snapshot = only_snapshot(&mut world).expect("a change");
     assert_eq!(snapshot.characters.len(), 2);
-    let serials: HashSet<u32> = snapshot.characters.iter().map(|c| c.serial).collect();
+    let serials: HashSet<Serial> = snapshot.characters.iter().map(|c| c.serial).collect();
     assert_eq!(serials.len(), 2, "and two distinct serials");
 }
 
@@ -479,5 +479,5 @@ fn a_saved_serial_is_the_one_the_client_was_told() {
 
     world.take_snapshot();
     let snapshot = only_snapshot(&mut world).expect("a change");
-    assert_eq!(snapshot.characters[0].serial, serial.raw());
+    assert_eq!(snapshot.characters[0].serial, serial);
 }

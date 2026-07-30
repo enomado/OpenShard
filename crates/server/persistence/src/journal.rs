@@ -316,7 +316,7 @@ mod tests {
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
-            serial,
+            serial: Serial::new(serial).expect("a valid test serial"),
             account: AccountName::new("admin"),
             name: CharacterName::new("Alpha"),
             body: 0x0190,

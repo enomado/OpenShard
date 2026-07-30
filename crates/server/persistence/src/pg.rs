@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::serial::Serial;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls, Row};
 
@@ -314,7 +315,7 @@ impl Store for PgStore {
                      quests = EXCLUDED.quests, done_quests = EXCLUDED.done_quests, \
                      stat_locks = EXCLUDED.stat_locks",
                     &[
-                        &i64::from(record.serial),
+                        &i64::from(record.serial.raw()),
                         &record.account.0,
                         &record.name.0,
                         &i32::from(record.body),
@@ -362,7 +363,7 @@ impl Store for PgStore {
                 transaction
                     .execute(
                         "INSERT INTO mobiles (serial, data) VALUES ($1, $2)",
-                        &[&i64::from(mobile.serial), &data],
+                        &[&i64::from(mobile.serial.raw()), &data],
                     )
                     .await
                     .map_err(database)?;
@@ -372,7 +373,7 @@ impl Store for PgStore {
             transaction
                 .execute(
                     "DELETE FROM items WHERE owner = $1",
-                    &[&i64::from(inventory.owner)],
+                    &[&i64::from(inventory.owner.raw())],
                 )
                 .await
                 .map_err(database)?;
@@ -443,7 +444,7 @@ impl Store for PgStore {
                 transaction
                     .execute(
                         "INSERT INTO decorations (serial, data) VALUES ($1, $2)",
-                        &[&i64::from(decoration.serial), &data],
+                        &[&i64::from(decoration.serial.raw()), &data],
                     )
                     .await
                     .map_err(database)?;
@@ -623,7 +624,10 @@ impl Store for PgStore {
 /// the wrong place.
 fn character_from_row(row: &Row) -> Result<CharacterRecord, StoreError> {
     Ok(CharacterRecord {
-        serial: u32::try_from(row.get::<_, i64>(0)).map_err(|_| corrupt("serial"))?,
+        serial: u32::try_from(row.get::<_, i64>(0))
+            .ok()
+            .and_then(Serial::new)
+            .ok_or_else(|| corrupt("serial"))?,
         account: AccountName(row.get(1)),
         name: CharacterName(row.get(2)),
         body: u16::try_from(row.get::<_, i32>(3)).map_err(|_| corrupt("body"))?,
@@ -661,36 +665,37 @@ async fn insert_item(
 ) -> Result<(), StoreError> {
     // (kind, facet, x, y, z, parent, grid, layer) — the fields a kind does not use
     // are zero, the same flat form the SQLite backend writes.
-    let (kind, facet, x, y, z, parent, grid, layer): (i32, i32, i32, i32, i32, i64, i32, i32) = match item
-        .location
-    {
-        ItemLocation::Ground { facet, x, y, z } => (
-            0,
-            i32::from(facet),
-            i32::from(x),
-            i32::from(y),
-            i32::from(z),
-            0,
-            0,
-            0,
-        ),
-        ItemLocation::Contained {
-            container,
-            x,
-            y,
-            grid,
-        } => (
-            1,
-            0,
-            i32::from(x),
-            i32::from(y),
-            0,
-            i64::from(container),
-            i32::from(grid),
-            0,
-        ),
-        ItemLocation::Equipped { mobile, layer } => (2, 0, 0, 0, 0, i64::from(mobile), 0, i32::from(layer)),
-    };
+    let (kind, facet, x, y, z, parent, grid, layer): (i32, i32, i32, i32, i32, i64, i32, i32) =
+        match item.location {
+            ItemLocation::Ground { facet, x, y, z } => (
+                0,
+                i32::from(facet),
+                i32::from(x),
+                i32::from(y),
+                i32::from(z),
+                0,
+                0,
+                0,
+            ),
+            ItemLocation::Contained {
+                container,
+                x,
+                y,
+                grid,
+            } => (
+                1,
+                0,
+                i32::from(x),
+                i32::from(y),
+                0,
+                i64::from(container.raw()),
+                i32::from(grid),
+                0,
+            ),
+            ItemLocation::Equipped { mobile, layer } => {
+                (2, 0, 0, 0, 0, i64::from(mobile.raw()), 0, i32::from(layer))
+            }
+        };
     transaction
         .execute(
             "INSERT INTO items \
@@ -715,8 +720,12 @@ async fn insert_item(
              rune_x = EXCLUDED.rune_x, rune_y = EXCLUDED.rune_y, rune_z = EXCLUDED.rune_z, \
              runebook = EXCLUDED.runebook",
             &[
-                &i64::from(item.serial),
-                &i64::from(item.owner),
+                &i64::from(item.serial.raw()),
+                // `owner` is `NOT NULL BIGINT` with `0` the sentinel for "no owner" —
+                // a ground item — the same convention the `DELETE FROM items WHERE
+                // owner = 0` sweeps above rely on. Only the Rust-side type changed,
+                // from a bare `u32` to a checked, absent `Serial`.
+                &i64::from(item.owner.map_or(0, |serial| serial.raw())),
                 &i32::from(item.graphic),
                 &i32::from(item.hue),
                 &i32::from(item.amount),
@@ -777,26 +786,41 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
         let x = u16::try_from(row.get::<_, i32>(9)).map_err(|_| corrupt("x"))?;
         let y = u16::try_from(row.get::<_, i32>(10)).map_err(|_| corrupt("y"))?;
         let z = i8::try_from(row.get::<_, i32>(11)).map_err(|_| corrupt("z"))?;
+        // `parent` is `0` for a `Ground` item (the column is unused there, like
+        // `facet`/`x`/`y`/`z` for the other two kinds) and a real serial for the
+        // other two, so it is only turned into a checked `Serial` inside the
+        // branches that use it as one.
         let parent = u32::try_from(row.get::<_, i64>(12)).map_err(|_| corrupt("parent"))?;
         let grid = u8::try_from(row.get::<_, i32>(13)).map_err(|_| corrupt("grid"))?;
         let layer = u8::try_from(row.get::<_, i32>(14)).map_err(|_| corrupt("layer"))?;
         let location = match kind {
             0 => ItemLocation::Ground { facet, x, y, z },
             1 => ItemLocation::Contained {
-                container: parent,
+                container: Serial::new(parent).ok_or_else(|| corrupt("parent"))?,
                 x,
                 y,
                 grid,
             },
             2 => ItemLocation::Equipped {
-                mobile: parent,
+                mobile: Serial::new(parent).ok_or_else(|| corrupt("parent"))?,
                 layer,
             },
             _ => return Ok(None),
         };
+        // `owner` is `NOT NULL BIGINT`, `0` the sentinel for "no owner" (a ground
+        // item) — see the write side in `insert_item`.
+        let owner_raw = u32::try_from(row.get::<_, i64>(1)).map_err(|_| corrupt("owner"))?;
+        let owner = if owner_raw == 0 {
+            None
+        } else {
+            Some(Serial::new(owner_raw).ok_or_else(|| corrupt("owner"))?)
+        };
         Ok(Some(ItemRecord {
-            serial: u32::try_from(row.get::<_, i64>(0)).map_err(|_| corrupt("serial"))?,
-            owner: u32::try_from(row.get::<_, i64>(1)).map_err(|_| corrupt("owner"))?,
+            serial: u32::try_from(row.get::<_, i64>(0))
+                .ok()
+                .and_then(Serial::new)
+                .ok_or_else(|| corrupt("serial"))?,
+            owner,
             graphic: u16::try_from(row.get::<_, i32>(2)).map_err(|_| corrupt("graphic"))?,
             hue: u16::try_from(row.get::<_, i32>(3)).map_err(|_| corrupt("hue"))?,
             amount: u16::try_from(row.get::<_, i32>(4)).map_err(|_| corrupt("amount"))?,
@@ -917,7 +941,7 @@ mod tests {
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
-            serial,
+            serial: Serial::new(serial).expect("a valid test serial"),
             account: AccountName::new("admin"),
             name: CharacterName::new("Alpha"),
             body: 0x0190,
@@ -993,7 +1017,7 @@ mod tests {
             .expect("save");
         let characters = store.characters().await.expect("read");
         assert_eq!(characters.len(), 1);
-        assert_eq!(characters[0].serial, 1);
+        assert_eq!(characters[0].serial, Serial::new(1).unwrap());
         assert_eq!(characters[0].x, 100);
     }
 
@@ -1102,7 +1126,10 @@ mod tests {
             .save(&snapshot(vec![character(0x7FFF_FFFF, 100)], vec![]))
             .await
             .expect("save");
-        assert_eq!(store.characters().await.expect("read")[0].serial, 0x7FFF_FFFF);
+        assert_eq!(
+            store.characters().await.expect("read")[0].serial,
+            Serial::new(0x7FFF_FFFF).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1189,7 +1216,7 @@ mod tests {
         let reopened = PgStore::connect(&url).await.expect("reconnect");
         let characters = reopened.characters().await.expect("read");
         assert_eq!(characters.len(), 1);
-        assert_eq!(characters[0].serial, 7);
+        assert_eq!(characters[0].serial, Serial::new(7).unwrap());
         assert_eq!(characters[0].x, 4242, "position survived the reconnect");
         assert_eq!(reopened.accounts().await.expect("read").len(), 1);
     }

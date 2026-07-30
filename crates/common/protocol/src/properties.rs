@@ -25,6 +25,7 @@ use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
+use crate::wire::ClilocId;
 
 /// Builder for a `0xD6` Object Property List (the "MegaCliloc" packet).
 ///
@@ -72,9 +73,9 @@ impl PropertyList {
 
     /// A cliloc with no arguments — a bare localized string (an item's tiledata
     /// name, `1020000 + graphic`).
-    pub fn add(&mut self, cliloc: u32) {
-        self.add_hash(cliloc);
-        self.writer.u32(cliloc);
+    pub fn add(&mut self, cliloc: ClilocId) {
+        self.add_hash(cliloc.0);
+        self.writer.u32(cliloc.0);
         self.writer.u16(0); // no argument bytes
     }
 
@@ -82,10 +83,10 @@ impl PropertyList {
     /// the templated names — cliloc `1050045` (`~1_PREFIX~~2_NAME~~3_SUFFIX~`)
     /// with a mobile's name, cliloc `1050039` (`~1_NUMBER~ ~2_ITEMNAME~`) with a
     /// stack's amount.
-    pub fn add_args(&mut self, cliloc: u32, arguments: &str) {
-        self.add_hash(cliloc);
+    pub fn add_args(&mut self, cliloc: ClilocId, arguments: &str) {
+        self.add_hash(cliloc.0);
         self.add_hash(string_hash(arguments));
-        self.writer.u32(cliloc);
+        self.writer.u32(cliloc.0);
         // UTF-16 little-endian, no terminator; the length is the byte count.
         let mut bytes = Vec::with_capacity(arguments.len() * 2);
         for unit in arguments.encode_utf16() {
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn a_property_list_lays_out_its_header_and_terminator() {
         let mut list = PropertyList::new(Serial::new(0x0000_1234).unwrap());
-        list.add(1_020_000 + 0x0EED); // an item's tiledata-name cliloc
+        list.add(ClilocId(1_020_000 + 0x0EED)); // an item's tiledata-name cliloc
         let (bytes, hash) = list.finish();
 
         assert_eq!(bytes[0], 0xD6);
@@ -222,7 +223,7 @@ mod tests {
     fn arguments_are_utf16_little_endian() {
         // The reason this is not the 0xAE speech encoder: OPL args are LE.
         let mut list = PropertyList::new(Serial::new(1).unwrap());
-        list.add_args(1_050_045, " \tHi\t ");
+        list.add_args(ClilocId(1_050_045), " \tHi\t ");
         let (bytes, _) = list.finish();
         // Find the arg run: header 15 bytes, then cliloc (4) + arg-len (2).
         let arg_len = u16::from_be_bytes([bytes[19], bytes[20]]) as usize;
@@ -237,7 +238,7 @@ mod tests {
     #[test]
     fn the_opl_info_carries_the_list_hash() {
         let mut list = PropertyList::new(Serial::new(0x0000_00AB).unwrap());
-        list.add_args(1_050_045, " \tLord British\t ");
+        list.add_args(ClilocId(1_050_045), " \tLord British\t ");
         let (_, hash) = list.finish();
         let info = encode_packet(
             &TooltipRevision {
@@ -276,7 +277,7 @@ mod tests {
     fn the_hash_changes_when_the_name_changes() {
         let of = |name: &str| {
             let mut list = PropertyList::new(Serial::new(1).unwrap());
-            list.add_args(1_050_045, name);
+            list.add_args(ClilocId(1_050_045), name);
             list.finish().1
         };
         assert_ne!(of(" \tArthur\t "), of(" \tGuinevere\t "));

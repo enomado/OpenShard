@@ -187,7 +187,7 @@ mod tests {
     /// found by. Written out rather than `..Default::default()` because
     /// `CharacterRecord` deliberately has no `Default` — a zeroed character is
     /// not a character.
-    fn record(account: &str, name: &str, serial: u32) -> CharacterRecord {
+    fn record(account: &str, name: &str, serial: Serial) -> CharacterRecord {
         CharacterRecord {
             serial,
             account: AccountName::new(account),
@@ -220,13 +220,13 @@ mod tests {
         // name came off a `0x91` field. Both halves are folded, which is what
         // makes a lookup with either spelling the same lookup.
         let mut roster = Roster::new();
-        roster.remember(record("Admin", "Lord British", 7));
+        roster.remember(record("Admin", "Lord British", Serial::new(7).unwrap()));
 
         assert_eq!(
             roster
                 .get(&AccountName::new("admin"), &CharacterName::new("lord british"))
                 .map(|record| record.serial),
-            Some(7)
+            Some(Serial::new(7).unwrap())
         );
         assert!(
             roster
@@ -241,25 +241,25 @@ mod tests {
         // The account is half the key. Folding only the character name would
         // have one player's logout position overwrite another's.
         let mut roster = Roster::new();
-        roster.remember(record("alice", "Dupre", 1));
-        roster.remember(record("bob", "Dupre", 2));
+        roster.remember(record("alice", "Dupre", Serial::new(1).unwrap()));
+        roster.remember(record("bob", "Dupre", Serial::new(2).unwrap()));
 
         assert_eq!(roster.saved(), 2);
         assert_eq!(
             roster
                 .get(&AccountName::new("bob"), &CharacterName::new("Dupre"))
                 .map(|record| record.serial),
-            Some(2)
+            Some(Serial::new(2).unwrap())
         );
     }
 
     #[test]
     fn forgetting_hands_back_the_serial_the_world_must_drop() {
         let mut roster = Roster::new();
-        roster.remember(record("admin", "Lord British", 7));
+        roster.remember(record("admin", "Lord British", Serial::new(7).unwrap()));
 
         let dropped = roster.forget(&AccountName::new("ADMIN"), &CharacterName::new("LORD BRITISH"));
-        assert_eq!(dropped.map(|record| record.serial), Some(7));
+        assert_eq!(dropped.map(|record| record.serial), Some(Serial::new(7).unwrap()));
         assert_eq!(roster.saved(), 0);
         assert!(
             roster.characters(&AccountName::new("admin")).is_empty(),
@@ -319,7 +319,7 @@ mod tests {
         // make `0x5D` ambiguous, because it echoes the name and not the slot.
         let mut roster = Roster::new();
         roster.enrol(&AccountName::new("admin"), &CharacterName::new("Lord British"));
-        roster.remember(record("admin", "Lord British", 7));
+        roster.remember(record("admin", "Lord British", Serial::new(7).unwrap()));
         roster.enrol(&AccountName::new("admin"), &CharacterName::new("lord british"));
 
         assert_eq!(roster.characters(&AccountName::new("admin")).len(), 1);
@@ -327,7 +327,7 @@ mod tests {
             roster
                 .get(&AccountName::new("admin"), &CharacterName::new("Lord British"))
                 .map(|record| record.serial),
-            Some(7),
+            Some(Serial::new(7).unwrap()),
             "and the late enrolment did not wipe what was known"
         );
     }
