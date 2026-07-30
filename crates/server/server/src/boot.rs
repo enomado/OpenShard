@@ -171,6 +171,31 @@ pub(crate) fn character_list_flags_of(config: &Config) -> u32 {
     flags
 }
 
+/// The world the config asks for, before a map or a save is laid over it.
+///
+/// Both of [`load_world`]'s paths — with a map and without — come through here, so
+/// a knob added to `[world]` cannot be wired into one branch and forgotten in the
+/// other. That drift is silent: the mapless mode is the one tests and a first run
+/// use, so the branch that gets it right is not the branch anyone notices.
+fn configured_world(config: &Config) -> World {
+    let world = World::new((config.world.start.x, config.world.start.y))
+        .with_gameplay(gameplay_of(config))
+        .with_save_seconds(config.persistence.save_seconds);
+    // Only when the operator pinned one. There is no `u64` that means "no seed", so
+    // an absent `world.seed` has to leave the world's own default in place rather
+    // than pass a stand-in through.
+    match config.world.seed {
+        Some(seed) => {
+            info!(
+                seed,
+                "world.seed is pinned: a fresh world's rolls are reproducible"
+            );
+            world.with_seed(seed)
+        }
+        None => world,
+    }
+}
+
 /// Load the client's map, if it is configured.
 ///
 /// Blocking, and on purpose: this reads over a hundred megabytes and takes a
@@ -178,16 +203,13 @@ pub(crate) fn character_list_flags_of(config: &Config) -> u32 {
 /// walk in exists.
 pub(crate) fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> {
     let start = (config.world.start.x, config.world.start.y);
-    let gameplay = gameplay_of(config);
     let dir = config.world.client_files.trim();
     if dir.is_empty() {
         warn!(
             "world.client_files is empty: running with no map. Every step will be allowed — \
              players walk through walls and across water. Set it to a client install."
         );
-        return Ok(World::new(start)
-            .with_gameplay(gameplay)
-            .with_save_seconds(config.persistence.save_seconds));
+        return Ok(configured_world(config));
     }
 
     let dir = Path::new(dir);
@@ -196,9 +218,7 @@ pub(crate) fn load_world(config: &Config) -> Result<World, Box<dyn std::error::E
     // a map, so it is read once and each facet's terrain gets a copy.
     let tiles = TileData::load(dir.join("tiledata.mul"))?;
 
-    let mut world = World::new(start)
-        .with_gameplay(gameplay)
-        .with_save_seconds(config.persistence.save_seconds);
+    let mut world = configured_world(config);
     for &facet in &config.world.facets {
         let map = Map::load_facet(dir, facet)?;
         // The start is only checked against facet 0, where new characters spawn.

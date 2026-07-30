@@ -299,6 +299,16 @@ keep that true, and both are load-bearing:
 A system that reads `Instant::now()` or a thread-local rng inside the tick has
 broken replay silently; no test without a replay in it will catch it.
 
+Where the stream *starts* is an input like any other, and is written down in two
+places rather than compiled in. A fresh world takes `world.seed` from the config
+when an operator pinned one (`World::with_seed`), and otherwise the engine's
+`DEFAULT_SEED`. A world with a save behind it takes neither: the save carries
+where the generator got to (`WorldRecord::rng_state`, `World::with_rng_state`) and
+a restart resumes from there. The distinction is not tidiness — a shard that
+re-seeded at boot would not roll *differently* after a restart, it would roll the
+previous run's sequence again, in order, which turns "get the shard restarted"
+into a way of asking for a roll a second time.
+
 ## Ports name their source
 
 Numbers and behaviour taken from the reference emulators cite the function they

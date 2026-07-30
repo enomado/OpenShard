@@ -27,7 +27,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::journal::Snapshot;
 use crate::record::{
     AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord, RegionRecord,
-    SCHEMA_VERSION, SpawnerRecord, StatLockRecord,
+    SCHEMA_VERSION, SpawnerRecord, StatLockRecord, WorldRecord,
 };
 use crate::store::{Store, StoreError};
 
@@ -229,10 +229,14 @@ CREATE TABLE IF NOT EXISTS regions (
     PRIMARY KEY (facet, id)
 );
 -- The world's own scalars: one row, id 0. The clock lives here so a restart does
--- not put the world back at midnight.
+-- not put the world back at midnight, and the roll generator's state so a restart
+-- does not deal the previous run's rolls again. `rng_state` is a u64 written as
+-- the signed word with the same bits: SQLite has one integer type and it is
+-- signed, so the sign is reinterpreted on the way in and out, never clamped.
 CREATE TABLE IF NOT EXISTS world (
     id            INTEGER PRIMARY KEY,
-    clock_minutes INTEGER NOT NULL
+    clock_minutes INTEGER NOT NULL,
+    rng_state     INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS spawners (
     id            INTEGER PRIMARY KEY,
@@ -336,7 +340,7 @@ impl Store for SqliteStore {
         let mobiles = snapshot.mobiles.clone();
         let decorations = snapshot.decorations.clone();
         let regions = snapshot.regions.clone();
-        let clock_minutes = snapshot.clock_minutes;
+        let world = snapshot.world;
         blocking(move || {
             let mut guard = connection
                 .lock()
@@ -572,12 +576,18 @@ impl Store for SqliteStore {
                         .map_err(database)?;
                 }
             }
-            if let Some(minutes) = clock_minutes {
+            if let Some(record) = world {
+                // `rng_state` goes in as the signed word with the same bits. A
+                // generator state uses the whole `u64`, the column is signed, and
+                // the two casts are exact inverses — a `try_into` here would refuse
+                // half of every stream's states, which is a save that starts
+                // failing after a few hundred rolls.
                 transaction
                     .execute(
-                        "INSERT INTO world (id, clock_minutes) VALUES (0, ?1) \
-                         ON CONFLICT(id) DO UPDATE SET clock_minutes = excluded.clock_minutes",
-                        params![minutes],
+                        "INSERT INTO world (id, clock_minutes, rng_state) VALUES (0, ?1, ?2) \
+                         ON CONFLICT(id) DO UPDATE SET clock_minutes = excluded.clock_minutes, \
+                         rng_state = excluded.rng_state",
+                        params![record.clock_minutes, record.rng_state.cast_signed()],
                     )
                     .map_err(database)?;
             }
@@ -853,18 +863,25 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn clock_minutes(&self) -> Result<u64, StoreError> {
+    async fn world(&self) -> Result<Option<WorldRecord>, StoreError> {
         let connection = Arc::clone(&self.connection);
         blocking(move || {
             let guard = connection.lock().expect("the sqlite mutex is never poisoned");
-            let minutes: Option<i64> = guard
-                .query_row("SELECT clock_minutes FROM world WHERE id = 0", [], |row| {
-                    row.get::<_, i64>(0)
-                })
+            let row: Option<(i64, i64)> = guard
+                .query_row(
+                    "SELECT clock_minutes, rng_state FROM world WHERE id = 0",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
                 .optional()
                 .map_err(database)?;
-            // A store that has never held a clock starts the world at midnight.
-            Ok(minutes.unwrap_or(0).max(0) as u64)
+            // No row at all is a world nobody has saved yet, which is not a row of
+            // zeroes: see `Store::world`.
+            Ok(row.map(|(clock_minutes, rng_state)| WorldRecord {
+                clock_minutes: clock_minutes.max(0) as u64,
+                // Unsigned again, bit for bit — see the write in `save`.
+                rng_state: rng_state.cast_unsigned(),
+            }))
         })
         .await
     }
@@ -972,7 +989,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         }
     }
 
@@ -1075,6 +1092,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_world_row_is_absent_until_a_snapshot_carries_it() {
+        // Absent, not a row of zeroes. A caller that got `WorldRecord::default()`
+        // out of an untouched store would seed the world with zero and quietly
+        // discard whatever `world.seed` asked for.
+        let store = SqliteStore::open_in_memory().expect("open");
+        assert_eq!(store.world().await.expect("read"), None);
+        store
+            .save(&snapshot(vec![character(1, 100)], vec![]))
+            .await
+            .expect("save");
+        assert_eq!(
+            store.world().await.expect("read"),
+            None,
+            "a snapshot that did not sweep the world's scalars must not invent them"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_high_bit_rng_state_survives_the_database() {
+        // The generator's state is a u64 and SQLite has one integer type, signed.
+        // Half of every stream's states have the high bit set, so the mistake here
+        // — a checked conversion, or a `max(0)` like the clock's — is a shard whose
+        // saves start failing, or whose roll stream silently resets, after a few
+        // hundred rolls.
+        let store = SqliteStore::open_in_memory().expect("open");
+        let record = WorldRecord {
+            clock_minutes: 13 * 60,
+            rng_state: 0xFEDC_BA98_7654_3210,
+        };
+        assert!(record.rng_state > i64::MAX.cast_unsigned(), "the high bit is set");
+        store
+            .save(&Snapshot {
+                world: Some(record),
+                ..snapshot(vec![], vec![])
+            })
+            .await
+            .expect("save");
+        assert_eq!(store.world().await.expect("read"), Some(record));
+    }
+
+    #[tokio::test]
     async fn accounts_round_trip() {
         let store = SqliteStore::open_in_memory().expect("open");
         store
@@ -1108,7 +1166,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
         assert!(matches!(error, StoreError::SchemaMismatch { .. }));

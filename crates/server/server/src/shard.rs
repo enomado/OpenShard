@@ -256,13 +256,42 @@ async fn restore_regions(store: &dyn Store, world: &mut World) {
     }
 }
 
-/// Bring back the hour of the day. The tick counter restarts at zero by
-/// design, so without this every restart would be a fresh midnight.
-async fn restore_clock(store: &dyn Store, world: World) -> World {
-    match store.clock_minutes().await {
-        Ok(minutes) => world.with_clock_minutes(minutes),
+/// Bring back the two things only the world itself knew: the hour of the day, and
+/// where its roll generator had got to.
+///
+/// The tick counter restarts at zero by design, so without the clock every restart
+/// would be a fresh midnight. The generator is the same shape of loss with a
+/// sharper edge — re-seeded, it does not roll *differently*, it rolls the previous
+/// run's sequence again, which is a thing a player who dislikes a roll can arrange
+/// by getting the shard restarted.
+///
+/// A store with no such row yet — a world nobody has saved — is left exactly as
+/// built, which is what keeps a configured `world.seed` from being overwritten on
+/// the first boot. A store that cannot be *read* is logged and treated the same
+/// way: this is cosmetic-to-annoying, not corrupting, and refusing to boot over it
+/// would be worse.
+///
+/// `pinned_seed` is only here to be *complained* about: a saved world resumes its
+/// stream, so a `world.seed` set on a shard that has saved does nothing, and a knob
+/// that silently does nothing is the failure this whole config crate exists to
+/// prevent. The operator hears it once, at boot.
+async fn restore_world(store: &dyn Store, world: World, pinned_seed: Option<u64>) -> World {
+    match store.world().await {
+        Ok(Some(record)) => {
+            if pinned_seed.is_some() {
+                warn!(
+                    "world.seed is set but this world has been saved before, so it is ignored: \
+                     the shard resumes the roll stream its save recorded. Start from a fresh \
+                     database to use it."
+                );
+            }
+            world
+                .with_clock_minutes(record.clock_minutes)
+                .with_rng_state(record.rng_state)
+        }
+        Ok(None) => world,
         Err(error) => {
-            error!(%error, "could not read the saved clock; starting at midnight");
+            error!(%error, "could not read the saved world scalars; starting at midnight with a fresh roll stream");
             world
         }
     }
@@ -371,7 +400,7 @@ pub(crate) async fn run_shard(
     restore_decorations(store.as_ref(), &mut world).await;
     restore_spawners(store.as_ref(), &mut world).await;
     restore_regions(store.as_ref(), &mut world).await;
-    world = restore_clock(store.as_ref(), world).await;
+    world = restore_world(store.as_ref(), world, config.world.seed).await;
 
     // this dont need to be here
     let mut login_server = build_login_server(config, accounts, advertised);

@@ -46,7 +46,7 @@ use tokio_postgres::{Client, NoTls, Row};
 use crate::journal::Snapshot;
 use crate::record::{
     AccountRecord, CharacterRecord, DecorationRecord, ItemLocation, ItemRecord, MobileRecord, RegionRecord,
-    SCHEMA_VERSION, SpawnerRecord,
+    SCHEMA_VERSION, SpawnerRecord, WorldRecord,
 };
 use crate::store::{Store, StoreError};
 
@@ -159,10 +159,14 @@ CREATE TABLE IF NOT EXISTS regions (
     PRIMARY KEY (facet, id)
 );
 -- The world's own scalars: one row, id 0. The clock lives here so a restart does
--- not put the world back at midnight.
+-- not put the world back at midnight, and the roll generator's state so a restart
+-- does not deal the previous run's rolls again. `rng_state` is a u64 written as the
+-- BIGINT with the same bits: Postgres has no unsigned integer, so the sign is
+-- reinterpreted on the way in and out, never clamped.
 CREATE TABLE IF NOT EXISTS world (
     id            INTEGER PRIMARY KEY,
-    clock_minutes BIGINT NOT NULL
+    clock_minutes BIGINT NOT NULL,
+    rng_state     BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS spawners (
     id             BIGINT PRIMARY KEY,
@@ -462,12 +466,18 @@ impl Store for PgStore {
                     .map_err(database)?;
             }
         }
-        if let Some(minutes) = snapshot.clock_minutes {
+        if let Some(record) = snapshot.world {
+            // `rng_state` goes in as the BIGINT with the same bits: a generator
+            // state uses the whole `u64`, Postgres has no unsigned type, and the two
+            // casts are exact inverses. A checked conversion would refuse half of
+            // every stream's states — a save that starts failing after a few
+            // hundred rolls.
             transaction
                 .execute(
-                    "INSERT INTO world (id, clock_minutes) VALUES (0, $1) \
-                     ON CONFLICT (id) DO UPDATE SET clock_minutes = EXCLUDED.clock_minutes",
-                    &[&(minutes as i64)],
+                    "INSERT INTO world (id, clock_minutes, rng_state) VALUES (0, $1, $2) \
+                     ON CONFLICT (id) DO UPDATE SET clock_minutes = EXCLUDED.clock_minutes, \
+                     rng_state = EXCLUDED.rng_state",
+                    &[&(record.clock_minutes as i64), &record.rng_state.cast_signed()],
                 )
                 .await
                 .map_err(database)?;
@@ -546,14 +556,19 @@ impl Store for PgStore {
             .collect()
     }
 
-    async fn clock_minutes(&self) -> Result<u64, StoreError> {
+    async fn world(&self) -> Result<Option<WorldRecord>, StoreError> {
         let client = self.client.lock().await;
         let rows = client
-            .query("SELECT clock_minutes FROM world WHERE id = 0", &[])
+            .query("SELECT clock_minutes, rng_state FROM world WHERE id = 0", &[])
             .await
             .map_err(database)?;
-        // A store that has never held a clock starts the world at midnight.
-        Ok(rows.first().map_or(0, |row| row.get::<_, i64>(0).max(0) as u64))
+        // No row at all is a world nobody has saved yet, which is not a row of
+        // zeroes: see `Store::world`.
+        Ok(rows.first().map(|row| WorldRecord {
+            clock_minutes: row.get::<_, i64>(0).max(0) as u64,
+            // Unsigned again, bit for bit — see the write in `save`.
+            rng_state: row.get::<_, i64>(1).cast_unsigned(),
+        }))
     }
 
     async fn spawners(&self) -> Result<Vec<SpawnerRecord>, StoreError> {
@@ -939,7 +954,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         }
     }
 
@@ -957,6 +972,7 @@ mod tests {
             .batch_execute(
                 "DROP TABLE IF EXISTS characters; \
                  DROP TABLE IF EXISTS accounts; \
+                 DROP TABLE IF EXISTS world; \
                  DROP TABLE IF EXISTS meta;",
             )
             .await
@@ -979,6 +995,48 @@ mod tests {
         assert_eq!(characters.len(), 1);
         assert_eq!(characters[0].serial, 1);
         assert_eq!(characters[0].x, 100);
+    }
+
+    #[tokio::test]
+    async fn the_world_row_round_trips_high_bit_and_all() {
+        // The SQLite twin of this test explains the trap: the generator's state uses
+        // every bit of a `u64`, PostgreSQL's widest integer is a signed BIGINT, and
+        // the fix is to reinterpret the sign rather than convert it. Both backends
+        // get the same gate because both columns are signed for the same reason and
+        // either one could be the odd one out.
+        let _guard = LOCK.lock().await;
+        let Some(store) = fresh().await else {
+            return;
+        };
+        assert_eq!(store.world().await.expect("read"), None, "nothing has saved yet");
+
+        let record = WorldRecord {
+            clock_minutes: 13 * 60,
+            rng_state: 0xFEDC_BA98_7654_3210,
+        };
+        assert!(record.rng_state > i64::MAX.cast_unsigned(), "the high bit is set");
+        store
+            .save(&Snapshot {
+                world: Some(record),
+                ..snapshot(vec![], vec![])
+            })
+            .await
+            .expect("save");
+        assert_eq!(store.world().await.expect("read"), Some(record));
+
+        // And the upsert replaces the row rather than adding a second one.
+        let later = WorldRecord {
+            clock_minutes: 14 * 60,
+            rng_state: 7,
+        };
+        store
+            .save(&Snapshot {
+                world: Some(later),
+                ..snapshot(vec![], vec![])
+            })
+            .await
+            .expect("save");
+        assert_eq!(store.world().await.expect("read"), Some(later));
     }
 
     #[tokio::test]
@@ -1095,7 +1153,7 @@ mod tests {
             mobiles: None,
             decorations: None,
             regions: None,
-            clock_minutes: None,
+            world: None,
         };
         let error = store.save(&future).await.expect_err("must refuse");
         assert!(matches!(error, StoreError::SchemaMismatch { .. }));

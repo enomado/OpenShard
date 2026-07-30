@@ -28,6 +28,28 @@ impl Rng {
         }
     }
 
+    /// Where the stream currently is, for saving it.
+    ///
+    /// # This is what a restart must restore, not the seed
+    ///
+    /// Restoring the *seed* would rewind the generator to the beginning at every
+    /// boot, so the shard would deal out the same rolls it dealt on the previous
+    /// run — a thing a player can notice and then farm. Restoring the state
+    /// continues the stream, and is just as deterministic: a save plus the
+    /// commands after it replay exactly.
+    ///
+    /// # It round-trips exactly
+    ///
+    /// `Rng::new(rng.state())` is `rng`. The zero-replacement in [`Rng::new`]
+    /// cannot interfere, because `xorshift64` is a bijection on the non-zero
+    /// words: a generator built from a non-zero state — and [`Rng::new`]
+    /// guarantees one — never reaches zero, so the value handed out here is never
+    /// the one `new` would rewrite.
+    #[must_use]
+    pub const fn state(&self) -> u64 {
+        self.state
+    }
+
     /// The next 64 bits.
     fn next_u64(&mut self) -> u64 {
         let mut x = self.state;
@@ -80,6 +102,39 @@ mod tests {
             assert!(rng.below(10) < 10);
         }
         assert_eq!(rng.below(0), 0);
+    }
+
+    #[test]
+    fn a_saved_state_resumes_the_stream_rather_than_restarting_it() {
+        let mut live = Rng::new(0xC0FF_EE00_1234_5678);
+        // Some play happens, then a save.
+        let before: Vec<u32> = (0..32).map(|_| live.below(1000)).collect();
+        let saved = live.state();
+
+        // The shard comes back up from that save and keeps rolling.
+        let mut restored = Rng::new(saved);
+        let after_restore: Vec<u32> = (0..32).map(|_| restored.below(1000)).collect();
+        let after_live: Vec<u32> = (0..32).map(|_| live.below(1000)).collect();
+        assert_eq!(
+            after_restore, after_live,
+            "a restored world must continue the stream the save was taken from"
+        );
+        assert_ne!(
+            after_restore, before,
+            "and must not deal the pre-save rolls again — that is what saving the seed would do"
+        );
+    }
+
+    #[test]
+    fn the_state_is_never_zero_so_it_always_round_trips() {
+        // `new` rewrites a zero seed, which would make the round-trip a lie if the
+        // stream could ever land on zero. It cannot: xorshift64 is a bijection on
+        // the non-zero words.
+        let mut rng = Rng::new(1);
+        for _ in 0..10_000 {
+            rng.below(1000);
+            assert_ne!(rng.state(), 0);
+        }
     }
 
     #[test]

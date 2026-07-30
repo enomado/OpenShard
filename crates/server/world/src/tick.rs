@@ -330,6 +330,39 @@ impl World {
         self
     }
 
+    /// Start a fresh world's rolls from `seed` instead of the engine's default.
+    ///
+    /// What `world.seed` in the config reaches. For a world with a save behind it
+    /// this is the wrong door — use [`with_rng_state`] and continue the stream the
+    /// save was taken from.
+    ///
+    /// [`with_rng_state`]: World::with_rng_state
+    #[must_use]
+    pub const fn with_seed(mut self, seed: u64) -> Self {
+        self.state.rng = Rng::new(seed);
+        self
+    }
+
+    /// Resume the roll stream at the point a save recorded.
+    ///
+    /// The counterpart of [`rng_state`], and the reason the pair exists rather
+    /// than one `with_seed`: the two callers mean different things. A fresh world
+    /// is *seeded*; a restored one is *resumed*, and seeding it instead would deal
+    /// the previous run's rolls again — see [`Rng::state`].
+    ///
+    /// [`rng_state`]: World::rng_state
+    #[must_use]
+    pub const fn with_rng_state(mut self, state: u64) -> Self {
+        self.state.rng = Rng::new(state);
+        self
+    }
+
+    /// Where the roll stream has got to, for the save.
+    #[must_use]
+    pub const fn rng_state(&self) -> u64 {
+        self.state.rng.state()
+    }
+
     /// Give the default facet a map.
     pub fn with_terrain(self, terrain: MapTerrain) -> Self {
         let facet = self.state.default_facet;
@@ -429,18 +462,6 @@ impl World {
     /// that closes the gap.
     pub fn drain_departed(&mut self) -> std::vec::Drain<'_, CharacterRecord> {
         self.departed.drain(..)
-    }
-
-    /// Whether a serial belongs to a character that is in the world right now.
-    ///
-    /// The server asks before deleting a character (`0x83`): a character being
-    /// played cannot be deleted out from under its own session. This reads live
-    /// world state, which is safe between ticks — the shard loop owns the world.
-    pub fn is_online(&self, serial: u32) -> bool {
-        self.state
-            .players
-            .values()
-            .any(|&entity| self.state.registry.serial_of(entity).map(|s| s.raw()) == Some(serial))
     }
 
     /// Delete a logged-out character's saved state.
