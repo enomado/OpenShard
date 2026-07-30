@@ -87,6 +87,11 @@ and two passes against a 50 ms `TICK_INTERVAL`; a password check inside a tick
 stalls the whole shard for one client's benefit. What moves is everything *after*
 the `0x91`.
 
+*Refined by S6.* The hash does not belong on the shard's **task** either, which
+is not the same statement: it stays in `openshard-login`, where the credentials
+are, but the crate hands it back as work rather than doing it. The loop is what
+must not wait.
+
 **D2. The world's record of a connection is `openshard_state::connection::Connection`.**
 What the world knows about a client that is not its character: its version
 today, the per-connection state of S7 later. It is deliberately *not* called a
@@ -246,16 +251,52 @@ follows.
       account, an unplayed one is and the screen is redrawn, and a `0x5D` naming a
       character the account does not have enters nothing.
 
-- [ ] **S6. The binary is glue again.** The `select!` loop, the transport, and
-      boot. `restore_*` into `boot.rs`, `keys.expire` into its own `select!` arm,
-      argon2 onto a blocking task.
+- [x] **S6. The binary is glue again.** Done, in two commits.
+
+      *What comes off a disk is boot's.* The accounts and the seven `restore_*`
+      calls are `boot::restore`, beside `load_world` and `open_store`. They run
+      once, before the first tick, and what holds them together is an order —
+      characters before items because the serials one reserves are the owners the
+      other points at — which now lives in one function with the reason above it
+      rather than in eight lines of the `select!` loop's own function. The loop's
+      state is one `Shard` value: the tick took seven parameters and had taken one
+      more per step of this plan. And `keys.expire` has its own arm on its own
+      interval, where memory upkeep for abandoned relay keys belongs; at the
+      tick's rate it ran twenty times a second to find nothing 599 times out of
+      600.
+
+      *argon2 left the loop.* This was the part with a design in it. The hash
+      cannot simply move to a blocking task, because the login conversation is
+      synchronous and the loop cannot wait for it: so the conversation *suspends*.
+      `LoginServer::handle` returns an `Outcome` — bytes to send, or a
+      `CredentialCheck` to run — the session waits in a state named for exactly
+      that (`VerifyingAccount` on the login socket, `GameState::Verifying` on the
+      game one), and the verdict comes back through `LoginServer::resume` on a
+      `select!` arm of its own. It is the same shape as S2: the state that
+      genuinely exists between asking and knowing, given a name instead of being
+      hidden inside a call.
+
+      Two things fall out of where the identity lives. The account stays in the
+      state machine and the `CredentialCheck` carries none, so a verdict is
+      yes-or-no about a credential and nothing else — one delivered to the wrong
+      connection closes it rather than authenticating it, and there is a test that
+      says so. And `Command::Authenticated` is now queued in one place,
+      `Shard::resume_login`, because a matching verdict on a game login is the
+      *only* transition into `CharacterListSent`: no "was it already
+      authenticated?" comparison, because the state machine cannot be asked twice.
+
+      The blocking pool is bounded by a semaphore, one permit per core. Every
+      argon2 in flight holds 19 MiB and `spawn_blocking` will start 512 of them —
+      ten gigabytes, from clients that have proved nothing yet. The old loop
+      bounded that by having no choice but to run one at a time; taking the
+      serialisation away without putting a bound back would have been a new door.
 
 - [ ] **S7. The rest of the per-connection state joins the row.** `held`,
       `open_containers`, `open_quest_gumps`, `open_craft_gumps`,
       `pending_targets`, `last_status`, `last_light`, `last_music`. Teardown
       becomes one `remove`, and forgetting a field stops being possible.
 
-## Backlog, found while doing S1 through S5
+## Backlog, found while doing S1 through S6
 
 None is a blocker; each is written down where the next step through this area
 will read it.
@@ -267,10 +308,11 @@ will read it.
   moving, and both would have had to be found and changed anyway — the point is
   that neither was findable by grepping for `version_of`. A duplicate helper is
   invisible to the search that would prove it is a duplicate.
-- **`world_tick` now takes seven parameters** and grows one per step: S2 added
-  two. S6 should gather the loop's state into one value; otherwise the next
-  drain is an eighth argument and the signature stops being readable before it
-  stops compiling.
+- ~~**`world_tick` now takes seven parameters**~~ — fixed in S6: the loop's state
+  is a `Shard`. The packet handlers still take their pieces one at a time, and
+  that is not an oversight left half-done: a handler holds a `&mut Session` while
+  it queues into the world, which the compiler splits across fields and refuses
+  across a `&mut self`.
 - **Closing a refused connection relies on a chain nothing states.**
   `Sessions::close` drops the session, which drops the outbox, which ends the
   gateway's write task, which closes the socket, which makes the gateway emit
@@ -330,6 +372,27 @@ will read it.
   `0x00`/`0xF8` and `0x83`, at which point the arm cannot be written at all. Not
   done here because it moves a public protocol enum for what is today a
   one-line comment, and S5 rewrites this seam anyway.
+- **`Accounts::verify` is the slow path, still reachable.** S6 split the trait
+  into `credential` (a lookup) and `CredentialCheck::run` (the hash), and left
+  `verify` as a provided method that does both — for fixtures, tools, and the
+  three test loops that have nothing to stall. It is exactly the call that must
+  never appear in the shard again, and nothing but a doc comment says so. A
+  clippy `disallowed_methods` entry would say it in the build; it is not there
+  because the lint's config is per-workspace and this would be its first entry.
+- **Three test loops resolve a verification by hand.** `login/src/session.rs`'s
+  `drive`, `server/src/testing.rs`'s `drive`, and the fake shard in
+  `server/tests/login_flow.rs` each write `match handle { Reply => …, Verify =>
+  resume(check.run()) }`. They are three lines each and they are honest — a test
+  *should* be able to run the check on the spot — but they are three copies of
+  the shard's control flow, and a fourth step of this plan that changes the shape
+  will find all three.
+- **A verifying session has no timeout, and its queue has no bound.** The same
+  shape as `Entering` above: a connection waits for exactly one verdict and
+  accepts nothing else. The verdict always comes — a check that cannot run is
+  answered `Rejected` rather than dropped — but nothing bounds how many
+  *unauthenticated* connections may have a check queued behind the semaphore at
+  once. Today that bound is whatever the gateway will accept; a shard under a
+  login flood queues a task per connection, each holding a password.
 - **The gate no longer says which packet it dropped.** Thirty arms could each
   name their own; one gate has only the connection. Naming the packet would mean
   either `ClientPacket`'s `Debug` — which carries bodies, so a `0x03` would put
@@ -379,6 +442,6 @@ will read it.
 
 ## Status
 
-S1 through S5 landed; S6 is next. Findings are recorded in
+S1 through S6 landed; S7 is next. Findings are recorded in
 [`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
 that must agree".

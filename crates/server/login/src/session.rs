@@ -13,7 +13,7 @@ use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::{seed::Seed, version::ClientVersion};
 use tracing::{debug, warn};
 
-use crate::accounts::Accounts;
+use crate::accounts::{Accounts, CredentialCheck, PasswordVerdict};
 use crate::auth::AuthKeys;
 
 /// Why a connection is closing, carried from the failure site to whoever logs
@@ -46,6 +46,31 @@ pub enum Response {
     Close(Reason),
 }
 
+/// What handling a login packet asks of the caller.
+///
+/// Two things and not one, because a login has a slow half. Everything a store
+/// knows is decided while the packet is in hand; comparing the password is
+/// argon2 — 19 MiB and two passes, most of a 50 ms tick — and the shard's loop
+/// is the one thread its whole simulation runs on. So the check comes back as
+/// work rather than being done here, and the verdict returns through
+/// [`LoginServer::resume`]. See [`Credential`](crate::Credential) and `docs/connection_state.md` S6.
+///
+/// A caller with nothing to stall can run it on the spot: `check.run()` and
+/// straight into `resume` is two lines, and that is what the tests do.
+#[derive(Debug)]
+#[must_use = "a login outcome is the whole point of handling the packet"]
+pub enum Outcome {
+    /// Answer the client, or do not — see [`Response`].
+    Reply(Response),
+    /// Check a password, off whatever thread must not wait for it, and bring
+    /// the [`PasswordVerdict`] back to [`LoginServer::resume`].
+    ///
+    /// The connection is *waiting* until then: the login state machine has
+    /// recorded who is being verified and will accept no other packet on this
+    /// socket in the meantime.
+    Verify(CredentialCheck),
+}
+
 /// Where a login has got to.
 ///
 /// # The fork is the point
@@ -64,6 +89,17 @@ enum LoginSessionState {
     /// Nothing yet. Expecting 0x80 (this is the login socket) or 0x91 (the game
     /// socket).
     Fresh,
+    /// Login socket: a `0x80` named an account that exists and is not blocked,
+    /// and its password is being checked somewhere else. Expecting nothing —
+    /// the next thing that moves this session is a verdict, not a packet.
+    ///
+    /// The account is here rather than travelling with the check because it is
+    /// the answer to "who is being let in", and this is the thing that will let
+    /// them in. See [`Credential::against`](crate::Credential::against).
+    VerifyingAccount {
+        /// Who the `0x80` named, if the password turns out to be theirs.
+        account: AccountName,
+    },
     /// Login socket: the account checked out and the shard list went back.
     /// Expecting 0xA0.
     ShardListSent {
@@ -87,6 +123,15 @@ enum LoginSessionState {
 /// the crypt handshake, before the password is so much as looked at.
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum GameState {
+    /// The `0x91` carried a good key for an account that exists, and its password
+    /// is being checked somewhere else. The socket is already compressed — that
+    /// was settled by reading the `0x91` — and the next thing that moves this
+    /// session is a verdict.
+    Verifying {
+        /// Whose account this socket will be authenticated to, if the password
+        /// turns out to be theirs.
+        account: AccountName,
+    },
     /// The `0x91` was refused: a bad or expired key, a key belonging to somebody
     /// else, or a bad password. Compressed, and going nowhere.
     Refused,
@@ -154,9 +199,15 @@ impl LoginSession {
     pub fn account(&self) -> Option<&AccountName> {
         match &self.state {
             LoginSessionState::Game(GameState::CharacterListSent { account }) => Some(account),
+            // A session being verified has an account *named* but not
+            // authenticated, and this is the question the rest of the shard asks
+            // to decide whether a connection may act. It answers no until the
+            // password has actually matched.
             LoginSessionState::Fresh
+            | LoginSessionState::VerifyingAccount { .. }
             | LoginSessionState::ShardListSent { .. }
             | LoginSessionState::LoginDone
+            | LoginSessionState::Game(GameState::Verifying { .. })
             | LoginSessionState::Game(GameState::Refused) => None,
         }
     }
@@ -231,11 +282,76 @@ impl<A: Accounts> LoginServer<A> {
     /// (assist version) or `0xA4` (system info) at any point in login, and
     /// dropping the connection over them would break real clients for no
     /// reason.
-    pub fn handle(&mut self, session: &mut LoginSession, packet: LoginStagePacket, now: Instant) -> Response {
+    pub fn handle(&mut self, session: &mut LoginSession, packet: LoginStagePacket, now: Instant) -> Outcome {
         match self.try_handle(session, packet, now) {
-            Ok(response) => response,
-            Err(reason) => Response::Close(reason),
+            Ok(outcome) => outcome,
+            Err(reason) => Outcome::Reply(Response::Close(reason)),
         }
+    }
+
+    /// Take back the verdict on a password this session asked to have checked.
+    ///
+    /// The other half of [`Outcome::Verify`], and the only thing that moves a
+    /// session out of a verifying state. Who was being verified comes off the
+    /// state, not off the verdict — the caller is trusted to bring the answer
+    /// back to the connection it took the check from, and nothing else.
+    ///
+    /// A verdict for a session that asked for none closes it. That is not a
+    /// reachable client behaviour: a session accepts no packet while verifying,
+    /// so there is never a second check outstanding, and a caller that has lost
+    /// track of which connection a verdict belongs to is a caller whose next act
+    /// would be to authenticate the wrong one.
+    pub fn resume(&mut self, session: &mut LoginSession, verdict: PasswordVerdict) -> Response {
+        let (response, next_state) = match (&session.state, verdict) {
+            (LoginSessionState::VerifyingAccount { account }, PasswordVerdict::Matched) => {
+                debug!(%account, "account verified");
+                let list = ServerPacket::ShardList(ShardList {
+                    shards: self.shards.clone(),
+                })
+                .encode(session.version);
+                let account = account.clone();
+                (Response::Send(list), LoginSessionState::ShardListSent { account })
+            }
+            (LoginSessionState::VerifyingAccount { account }, PasswordVerdict::Rejected) => {
+                warn!(%account, "login refused: bad password");
+                (
+                    Self::denied(session.version, DenyReason::BadPassword),
+                    LoginSessionState::LoginDone,
+                )
+            }
+            (LoginSessionState::Game(GameState::Verifying { account }), PasswordVerdict::Matched) => {
+                debug!(%account, "game login accepted; the world takes it from here");
+                let account = account.clone();
+                (
+                    Response::Idle,
+                    LoginSessionState::Game(GameState::CharacterListSent { account }),
+                )
+            }
+            (LoginSessionState::Game(GameState::Verifying { account }), PasswordVerdict::Rejected) => {
+                warn!(%account, "game login refused: bad password");
+                (
+                    Self::denied(session.version, DenyReason::BadPassword),
+                    LoginSessionState::Game(GameState::Refused),
+                )
+            }
+            (state, verdict) => {
+                warn!(
+                    ?state,
+                    ?verdict,
+                    "a password verdict for a login that asked for none"
+                );
+                return Response::Close(Reason("a password verdict nothing was waiting for"));
+            }
+        };
+        session.state = next_state;
+        response
+    }
+
+    /// The `0x82` a refusal goes back as, in this session's dialect. The client
+    /// hears one of five codes; the real reason was logged where it was decided —
+    /// see [`DenyReason::wire_code`].
+    fn denied(version: ClientVersion, reason: DenyReason) -> Response {
+        Response::SendThenClose(ServerPacket::LoginDenied(LoginDenied { reason }).encode(version))
     }
 
     /// [`Self::handle`]'s body. A `Result` so every fatal path carries why it
@@ -256,21 +372,21 @@ impl<A: Accounts> LoginServer<A> {
         session: &mut LoginSession,
         packet: LoginStagePacket,
         now: Instant,
-    ) -> Result<Response, Reason> {
+    ) -> Result<Outcome, Reason> {
         // These arrive at any point in the conversation, so they are not
         // part of the state transition table below — handling them does not
         // change what packet the login state machine is waiting for next.
         let packet = match packet {
             LoginStagePacket::VersionReport(report) => {
-                return Ok(self.on_version_report(session, report));
+                return Ok(Outcome::Reply(self.on_version_report(session, report)));
             }
             // Junk here is not fatal: the seed usually carried a version,
             // and 0xBD's string is free-form enough that clients put other
             // things in it.
-            LoginStagePacket::MalformedVersionReport => return Ok(Response::Idle),
+            LoginStagePacket::MalformedVersionReport => return Ok(Outcome::Reply(Response::Idle)),
             LoginStagePacket::Unknown(id) => {
                 debug!(id = format!("0x{id:02X}"), "ignoring packet during login");
-                return Ok(Response::Idle);
+                return Ok(Outcome::Reply(Response::Idle));
             }
             other => other,
         };
@@ -322,27 +438,26 @@ impl<A: Accounts> LoginServer<A> {
     /// Handle `0x80` from [`LoginSessionState::Fresh`]. The caller has
     /// already established that this is where the state machine allows it;
     /// this only decides the response and the state that follows.
-    fn on_account_login(&self, session: &LoginSession, login: AccountLogin) -> (Response, LoginSessionState) {
-        let account = match self.accounts.verify(&login.account, &login.password) {
-            Ok(account) => account,
+    fn on_account_login(&self, session: &LoginSession, login: AccountLogin) -> (Outcome, LoginSessionState) {
+        let credential = match self.accounts.credential(&login.account, &login.password) {
+            Ok(credential) => credential,
             Err(reason) => {
                 // The real reason is logged; the client hears one of five codes.
                 warn!(%login.account, ?reason, "login refused");
                 return (
-                    Response::SendThenClose(
-                        ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
-                    ),
+                    Outcome::Reply(Self::denied(session.version, reason)),
                     LoginSessionState::LoginDone,
                 );
             }
         };
-
-        debug!(%account, "account verified");
-        let list = ServerPacket::ShardList(ShardList {
-            shards: self.shards.clone(),
-        })
-        .encode(session.version);
-        (Response::Send(list), LoginSessionState::ShardListSent { account })
+        // Everything the store knows is settled; what is left is argon2, and it
+        // is the caller's to run somewhere nothing is waiting on it. The account
+        // stays here — see `Credential::against`.
+        let (account, check) = credential.against(login.password);
+        (
+            Outcome::Verify(check),
+            LoginSessionState::VerifyingAccount { account },
+        )
     }
 
     /// Handle `0xA0` from [`LoginSessionState::ShardListSent`]. `account` is
@@ -353,7 +468,7 @@ impl<A: Accounts> LoginServer<A> {
         account: AccountName,
         select: SelectShard,
         now: Instant,
-    ) -> Result<(Response, LoginSessionState), Reason> {
+    ) -> Result<(Outcome, LoginSessionState), Reason> {
         // One check, not two: the wire index is one-based and untrusted, and
         // `validate` refuses both zero (which would underflow) and anything
         // past the list this connection was actually sent.
@@ -370,13 +485,13 @@ impl<A: Accounts> LoginServer<A> {
         let key = self.keys.issue(&account, session.version, now);
         debug!(%account, slot = shard.0, "relaying to the game server");
         Ok((
-            Response::SendThenClose(
+            Outcome::Reply(Response::SendThenClose(
                 ServerPacket::Relay(Relay {
                     endpoint: self.game_address,
                     auth_key: key,
                 })
                 .encode(session.version),
-            ),
+            )),
             LoginSessionState::LoginDone,
         ))
     }
@@ -395,21 +510,21 @@ impl<A: Accounts> LoginServer<A> {
         session: &mut LoginSession,
         login: GameServerLogin,
         now: Instant,
-    ) -> (Response, LoginSessionState) {
+    ) -> (Outcome, LoginSessionState) {
         // Sphere skips these four bytes entirely and re-verifies the password.
         // We check them: it costs nothing and it means the game port cannot be
         // reached without going through the login server first, which closes
         // off a whole class of "connect straight to 2593" probing. The password
         // is still checked below — the key is a session token, not the gate.
+        //
+        // It is also the cheap gate in front of the expensive one: a `0x91` with
+        // no valid key is refused here, before anything has been hashed. Somebody
+        // firing forged game logins at 2593 costs this shard a hash-map lookup
+        // each.
         let Some(pending) = self.keys.redeem(login.auth_key, now) else {
             warn!(%login.account, "bad or expired auth key");
             return (
-                Response::SendThenClose(
-                    ServerPacket::LoginDenied(LoginDenied {
-                        reason: DenyReason::BadAuthId,
-                    })
-                    .encode(session.version),
-                ),
+                Outcome::Reply(Self::denied(session.version, DenyReason::BadAuthId)),
                 LoginSessionState::Game(GameState::Refused),
             );
         };
@@ -429,44 +544,33 @@ impl<A: Accounts> LoginServer<A> {
                 "auth key does not belong to this account"
             );
             return (
-                Response::SendThenClose(
-                    ServerPacket::LoginDenied(LoginDenied {
-                        reason: DenyReason::BadAuthId,
-                    })
-                    .encode(session.version),
-                ),
+                Outcome::Reply(Self::denied(session.version, DenyReason::BadAuthId)),
                 LoginSessionState::Game(GameState::Refused),
             );
         }
 
-        let account = match self.accounts.verify(&login.account, &login.password) {
-            Ok(account) => account,
+        let credential = match self.accounts.credential(&login.account, &login.password) {
+            Ok(credential) => credential,
             Err(reason) => {
                 warn!(%login.account, ?reason, "game login refused");
                 return (
-                    Response::SendThenClose(
-                        ServerPacket::LoginDenied(LoginDenied { reason }).encode(session.version),
-                    ),
+                    Outcome::Reply(Self::denied(session.version, reason)),
                     LoginSessionState::Game(GameState::Refused),
                 );
             }
         };
 
-        debug!(%account, "game login accepted; the world takes it from here");
-        // And this crate is done. The `0xA9` character list that used to go back
-        // from here is the world's since S5 of `docs/connection_state.md`: which
-        // characters exist is the roster's, a character being *played* is a fact
-        // only the world holds, and answering from here meant a second list that
-        // had to agree with the world's and could not see it. The caller notices
-        // this transition and queues `Command::Authenticated`, and the list goes
-        // out of the tick that applies it — one tick later, at most, on a client
-        // that is already waiting.
-        //
-        // The account rides into the state all the same: it is what the caller
-        // reads to say whose connection this is.
+        // The password is the caller's to check, off the loop — see `Outcome`.
+        // What follows a matching one is in `resume`, and this crate is done at
+        // that point: the `0xA9` character list that used to go back from here is
+        // the world's since S5 of `docs/connection_state.md`, because which
+        // characters exist is the roster's and a character being *played* is a
+        // fact only the world holds. Answering from here meant a second list that
+        // had to agree with the world's and could not see it.
+        let (account, check) = credential.against(login.password);
         (
-            Response::Idle,
-            LoginSessionState::Game(GameState::CharacterListSent { account }),
+            Outcome::Verify(check),
+            LoginSessionState::Game(GameState::Verifying { account }),
         )
     }
 }
@@ -498,6 +602,26 @@ mod tests {
             "OpenShard",
             single_shard(Ipv4Addr::new(127, 0, 0, 1), 2593),
         )
+    }
+
+    /// Handle a packet the way the shard does, but run the password check on
+    /// this thread instead of handing it to a task.
+    ///
+    /// Everything below is about the *conversation* — which packet is allowed
+    /// where, what goes back, what the state becomes — and where argon2 runs is
+    /// not part of that. The two-step path is exercised on its own by
+    /// [`a_login_waits_for_a_verdict_before_it_is_anybody`] and, over a real
+    /// channel and a real blocking task, by the server crate's `verify` module.
+    fn drive(
+        server: &mut LoginServer<DevAccounts>,
+        session: &mut LoginSession,
+        packet: LoginStagePacket,
+        now: Instant,
+    ) -> Response {
+        match server.handle(session, packet, now) {
+            Outcome::Reply(response) => response,
+            Outcome::Verify(check) => server.resume(session, check.run()),
+        }
     }
 
     fn modern_session() -> LoginSession {
@@ -541,7 +665,8 @@ mod tests {
         session: &mut LoginSession,
         now: Instant,
     ) -> AuthKey {
-        let Response::SendThenClose(relay) = server.handle(
+        let Response::SendThenClose(relay) = drive(
+            server,
             session,
             pkt(&SelectShard {
                 index: RawShardIndex(1),
@@ -558,10 +683,11 @@ mod tests {
     fn relay_key(server: &mut LoginServer<DevAccounts>, now: Instant) -> AuthKey {
         let mut session = modern_session();
         assert!(matches!(
-            server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
+            drive(server, &mut session, pkt(&login("admin", "hunter2")), now),
             Response::Send(_)
         ));
-        let Response::SendThenClose(relay) = server.handle(
+        let Response::SendThenClose(relay) = drive(
+            server,
             &mut session,
             pkt(&SelectShard {
                 index: RawShardIndex(1),
@@ -581,12 +707,14 @@ mod tests {
 
         // Login connection.
         let mut session = modern_session();
-        let Response::Send(shards) = server.handle(&mut session, pkt(&login("admin", "hunter2")), now) else {
+        let Response::Send(shards) = drive(&mut server, &mut session, pkt(&login("admin", "hunter2")), now)
+        else {
             panic!("expected the shard list");
         };
         assert_eq!(shards[0], 0xA8);
 
-        let Response::SendThenClose(relay) = server.handle(
+        let Response::SendThenClose(relay) = drive(
+            &mut server,
             &mut session,
             pkt(&SelectShard {
                 index: RawShardIndex(1),
@@ -610,7 +738,7 @@ mod tests {
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut session, pkt(&game_login.encode()), now),
+            drive(&mut server, &mut session, pkt(&game_login.encode()), now),
             Response::Idle,
             "this crate has nothing left to say on an accepted game login"
         );
@@ -632,15 +760,86 @@ mod tests {
 
         let mut session = modern_session();
         assert_eq!(session.account(), None, "nothing is known before the login");
-        let _ = server.handle(&mut session, pkt(&game_login(key, "admin")), now);
+        let _ = drive(&mut server, &mut session, pkt(&game_login(key, "admin")), now);
         assert_eq!(session.account().map(|a| a.0.as_str()), Some("admin"));
+    }
+
+    #[test]
+    fn a_game_login_is_nobody_until_the_verdict_comes_back() {
+        // The two-step path itself, which `drive` hides everywhere else. The
+        // window between the halves is a whole argon2 long — the shard is serving
+        // every other client through it, which is the entire point of S6 — and
+        // this connection must be nobody for all of it.
+        let mut server = server();
+        let now = Instant::now();
+        let key = relay_key(&mut server, now);
+
+        let mut session = modern_session();
+        let Outcome::Verify(check) = server.handle(&mut session, pkt(&game_login(key, "admin")), now) else {
+            panic!("a 0x91 with a good key asks for a password check");
+        };
+        assert!(
+            session.is_game_login(),
+            "the socket is compressed from the 0x91 on, verdict or not"
+        );
+        assert_eq!(session.account(), None, "and nobody is logged in yet");
+
+        assert_eq!(server.resume(&mut session, check.run()), Response::Idle);
+        assert_eq!(
+            session.account().map(|a| a.0.as_str()),
+            Some("admin"),
+            "the account comes off the state machine, which held it all along"
+        );
+    }
+
+    #[test]
+    fn a_verdict_nothing_asked_for_authenticates_nobody() {
+        // The failure this shape has to refuse. A verdict is yes-or-no about a
+        // credential and carries no identity, so a caller that brought one back to
+        // the wrong connection would otherwise be letting somebody in on a
+        // password check they never sat: `Matched` on a fresh session must not be
+        // an account.
+        let mut server = server();
+        let mut session = modern_session();
+        assert!(
+            matches!(
+                server.resume(&mut session, PasswordVerdict::Matched),
+                Response::Close(_)
+            ),
+            "a stray verdict closes the connection rather than moving it"
+        );
+        assert_eq!(session.account(), None);
+    }
+
+    #[test]
+    fn nothing_but_a_verdict_moves_a_session_that_is_being_checked() {
+        // A second `0x80` while the first is still being hashed would put two
+        // argon2 runs and two verdicts on one connection. There is no transition
+        // for it — the packet is out of order like any other — so a session can
+        // only ever have one check outstanding.
+        let mut server = server();
+        let mut session = modern_session();
+        let now = Instant::now();
+        let Outcome::Verify(_check) = server.handle(&mut session, pkt(&login("admin", "hunter2")), now)
+        else {
+            panic!("a 0x80 asks for a password check");
+        };
+        assert!(matches!(
+            server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
+            Outcome::Reply(Response::Close(_))
+        ));
     }
 
     #[test]
     fn a_bad_password_is_refused_and_closed() {
         let mut server = server();
         let mut session = modern_session();
-        let response = server.handle(&mut session, pkt(&login("admin", "wrong")), Instant::now());
+        let response = drive(
+            &mut server,
+            &mut session,
+            pkt(&login("admin", "wrong")),
+            Instant::now(),
+        );
         assert_eq!(
             response,
             Response::SendThenClose(vec![0x82, DenyReason::BadPassword.wire_code()])
@@ -651,7 +850,12 @@ mod tests {
     fn a_blocked_account_hears_blocked() {
         let mut server = server();
         let mut session = modern_session();
-        let response = server.handle(&mut session, pkt(&login("banned", "x")), Instant::now());
+        let response = drive(
+            &mut server,
+            &mut session,
+            pkt(&login("banned", "x")),
+            Instant::now(),
+        );
         assert_eq!(
             response,
             Response::SendThenClose(vec![0x82, DenyReason::Blocked.wire_code()])
@@ -664,12 +868,14 @@ mod tests {
         // differently and Sphere has always done this. The enumeration oracle
         // this creates is the protocol's, not ours to fix here.
         let mut server = server();
-        let unknown = server.handle(
+        let unknown = drive(
+            &mut server,
             &mut LoginSession::new(),
             pkt(&login("nobody", "x")),
             Instant::now(),
         );
-        let bad = server.handle(
+        let bad = drive(
+            &mut server,
             &mut LoginSession::new(),
             pkt(&login("admin", "x")),
             Instant::now(),
@@ -681,7 +887,8 @@ mod tests {
     fn selecting_a_shard_before_logging_in_is_fatal() {
         let mut server = server();
         let mut session = modern_session();
-        let response = server.handle(
+        let response = drive(
+            &mut server,
             &mut session,
             pkt(&SelectShard {
                 index: RawShardIndex(1),
@@ -698,12 +905,12 @@ mod tests {
         let mut session = modern_session();
         let now = Instant::now();
         assert!(matches!(
-            server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
+            drive(&mut server, &mut session, pkt(&login("admin", "hunter2")), now),
             Response::Send(_)
         ));
         assert!(
             matches!(
-                server.handle(&mut session, pkt(&login("admin", "hunter2")), now),
+                drive(&mut server, &mut session, pkt(&login("admin", "hunter2")), now),
                 Response::Close(_)
             ),
             "a second 0x80 means the client lost the plot"
@@ -715,9 +922,10 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let now = Instant::now();
-        let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
+        let _ = drive(&mut server, &mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(
+            drive(
+                &mut server,
                 &mut session,
                 pkt(&SelectShard {
                     index: RawShardIndex(0),
@@ -734,9 +942,10 @@ mod tests {
         let mut server = server();
         let mut session = modern_session();
         let now = Instant::now();
-        let _ = server.handle(&mut session, pkt(&login("admin", "hunter2")), now);
+        let _ = drive(&mut server, &mut session, pkt(&login("admin", "hunter2")), now);
         assert!(matches!(
-            server.handle(
+            drive(
+                &mut server,
                 &mut session,
                 pkt(&SelectShard {
                     index: RawShardIndex(99),
@@ -759,7 +968,7 @@ mod tests {
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut session, pkt(&forged.encode()), Instant::now()),
+            drive(&mut server, &mut session, pkt(&forged.encode()), Instant::now()),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "a right password with a wrong key is still refused"
         );
@@ -785,7 +994,7 @@ mod tests {
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
         let mut session = modern_session();
-        let _ = server.handle(&mut session, pkt(&forged.encode()), now);
+        let _ = drive(&mut server, &mut session, pkt(&forged.encode()), now);
         assert!(session.is_game_login(), "a bad key is still a game socket");
         assert_eq!(session.account(), None, "but nothing to play as");
 
@@ -796,7 +1005,7 @@ mod tests {
             password: RawPlaintextPassword("x".to_owned()),
         };
         let mut session = modern_session();
-        let _ = server.handle(&mut session, pkt(&wrong_account.encode()), now);
+        let _ = drive(&mut server, &mut session, pkt(&wrong_account.encode()), now);
         assert!(
             session.is_game_login(),
             "somebody else's key is still a game socket"
@@ -809,7 +1018,7 @@ mod tests {
             password: RawPlaintextPassword("wrong".to_owned()),
         };
         let mut session = modern_session();
-        let _ = server.handle(&mut session, pkt(&wrong_password.encode()), now);
+        let _ = drive(&mut server, &mut session, pkt(&wrong_password.encode()), now);
         assert!(session.is_game_login(), "a bad password is still a game socket");
     }
 
@@ -823,8 +1032,12 @@ mod tests {
         // held a key.
         let mut server = server();
         let mut session = modern_session();
-        let Response::Send(_) = server.handle(&mut session, pkt(&login("admin", "hunter2")), Instant::now())
-        else {
+        let Response::Send(_) = drive(
+            &mut server,
+            &mut session,
+            pkt(&login("admin", "hunter2")),
+            Instant::now(),
+        ) else {
             panic!("expected the shard list");
         };
         assert_eq!(session.account(), None, "verified, but not on the game socket");
@@ -843,12 +1056,12 @@ mod tests {
             password: RawPlaintextPassword("hunter2".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
+            drive(&mut server, &mut modern_session(), pkt(&game_login.encode()), now),
             Response::Idle,
             "the first redemption is accepted"
         );
         assert_eq!(
-            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
+            drive(&mut server, &mut modern_session(), pkt(&game_login.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "someone who read the key off the wire gets nothing"
         );
@@ -867,8 +1080,9 @@ mod tests {
         let now = Instant::now();
 
         let mut session = modern_session();
-        let _ = server.handle(&mut session, pkt(&login("alice", "a")), now);
-        let Response::SendThenClose(relay) = server.handle(
+        let _ = drive(&mut server, &mut session, pkt(&login("alice", "a")), now);
+        let Response::SendThenClose(relay) = drive(
+            &mut server,
             &mut session,
             pkt(&SelectShard {
                 index: RawShardIndex(1),
@@ -886,7 +1100,7 @@ mod tests {
             password: RawPlaintextPassword("b".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut modern_session(), pkt(&bob.encode()), now),
+            drive(&mut server, &mut modern_session(), pkt(&bob.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()]),
             "a valid key plus valid credentials for a different account is not a login"
         );
@@ -905,7 +1119,12 @@ mod tests {
         };
         let too_late = issued + crate::auth::DEFAULT_TTL + std::time::Duration::from_secs(1);
         assert_eq!(
-            server.handle(&mut modern_session(), pkt(&game_login.encode()), too_late),
+            drive(
+                &mut server,
+                &mut modern_session(),
+                pkt(&game_login.encode()),
+                too_late
+            ),
             Response::SendThenClose(vec![0x82, DenyReason::BadAuthId.wire_code()])
         );
     }
@@ -923,7 +1142,7 @@ mod tests {
             password: RawPlaintextPassword("wrong".to_owned()),
         };
         assert_eq!(
-            server.handle(&mut modern_session(), pkt(&game_login.encode()), now),
+            drive(&mut server, &mut modern_session(), pkt(&game_login.encode()), now),
             Response::SendThenClose(vec![0x82, DenyReason::BadPassword.wire_code()])
         );
     }
@@ -953,7 +1172,7 @@ mod tests {
             value: RawSeedValue(1),
             version: Some(ClientVersion::TOL),
         });
-        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
+        let Response::Send(_) = drive(&mut server, &mut first, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
@@ -966,7 +1185,7 @@ mod tests {
             "the game socket carries no version of its own"
         );
 
-        let _ = server.handle(&mut second, pkt(&game_login(key, "admin")), now);
+        let _ = drive(&mut server, &mut second, pkt(&game_login(key, "admin")), now);
         assert_eq!(
             second.version(),
             ClientVersion::TOL,
@@ -986,13 +1205,13 @@ mod tests {
             value: RawSeedValue(1),
             version: Some(ClientVersion::new(2, 0, 0, 0)),
         });
-        let Response::Send(_) = server.handle(&mut first, pkt(&login("admin", "hunter2")), now) else {
+        let Response::Send(_) = drive(&mut server, &mut first, pkt(&login("admin", "hunter2")), now) else {
             panic!("expected the shard list");
         };
         let key = relay_key_from(&mut server, &mut first, now);
 
         let mut second = LoginSession::new();
-        let _ = server.handle(&mut second, pkt(&game_login(key, "admin")), now);
+        let _ = drive(&mut server, &mut second, pkt(&game_login(key, "admin")), now);
         assert_eq!(second.version(), ClientVersion::new(2, 0, 0, 0));
     }
 
@@ -1014,7 +1233,8 @@ mod tests {
             value: RawSeedValue(1),
             version: Some(ClientVersion::new(4, 0, 0, 0)),
         });
-        let Response::Send(list) = server.handle(&mut modern, pkt(&login("admin", "hunter2")), now) else {
+        let Response::Send(list) = drive(&mut server, &mut modern, pkt(&login("admin", "hunter2")), now)
+        else {
             panic!("expected the shard list");
         };
         assert_eq!(&list[42..46], &[1, 0, 0, 127], "reversed since 4.0.0");
@@ -1024,7 +1244,8 @@ mod tests {
             value: RawSeedValue(1),
             version: Some(ClientVersion::new(3, 255, 255, 255)),
         });
-        let Response::Send(list) = server.handle(&mut ancient, pkt(&login("admin", "hunter2")), now) else {
+        let Response::Send(list) = drive(&mut server, &mut ancient, pkt(&login("admin", "hunter2")), now)
+        else {
             panic!("expected the shard list");
         };
         assert_eq!(&list[42..46], &[127, 0, 0, 1], "in order below it");
@@ -1053,7 +1274,7 @@ mod tests {
         let report = ClientVersionReport {
             raw: "7.0.45.65".to_owned(),
         };
-        let _ = server.handle(&mut session, pkt(&report.encode()), Instant::now());
+        let _ = drive(&mut server, &mut session, pkt(&report.encode()), Instant::now());
         assert_eq!(session.version(), ClientVersion::new(7, 0, 45, 65));
     }
 
@@ -1068,7 +1289,7 @@ mod tests {
         let report = ClientVersionReport {
             raw: "3.0.7b".to_owned(),
         };
-        let _ = server.handle(&mut session, pkt(&report.encode()), Instant::now());
+        let _ = drive(&mut server, &mut session, pkt(&report.encode()), Instant::now());
         assert_eq!(session.version(), ClientVersion::TOL, "unchanged");
     }
 
@@ -1080,7 +1301,7 @@ mod tests {
             raw: "garbage".to_owned(),
         };
         assert_eq!(
-            server.handle(&mut session, pkt(&report.encode()), Instant::now()),
+            drive(&mut server, &mut session, pkt(&report.encode()), Instant::now()),
             Response::Idle
         );
     }
@@ -1098,7 +1319,7 @@ mod tests {
             vec![0x73, 0x00],             // ping
         ] {
             assert_eq!(
-                server.handle(&mut session, pkt(&packet), Instant::now()),
+                drive(&mut server, &mut session, pkt(&packet), Instant::now()),
                 Response::Idle,
                 "0x{:02X} must not drop the connection",
                 packet[0]
@@ -1106,7 +1327,12 @@ mod tests {
         }
         // And login still works afterwards.
         assert!(matches!(
-            server.handle(&mut session, pkt(&login("admin", "hunter2")), Instant::now()),
+            drive(
+                &mut server,
+                &mut session,
+                pkt(&login("admin", "hunter2")),
+                Instant::now()
+            ),
             Response::Send(_)
         ));
     }

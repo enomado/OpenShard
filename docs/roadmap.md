@@ -226,23 +226,20 @@ in fields kept in step by hand; `Sessions` answers who is playing what; `Roster`
 replaced a bare `HashMap<(String, String), CharacterRecord>` threaded through
 five functions. What is left:
 
-- [ ] **`charscreen.rs`.** Create (`0x00`/`0xF8`), delete (`0x83`) and select
-      (`0x5D`) are one conversation and belong in one module. Select is in
-      `dispatch.rs` today only because it arrives as a `ClientPacket`, not
-      because it is about the world; it reads the roster exactly as the other two
-      do. What stays in `dispatch.rs` afterwards is the pure mapping of an
-      in-world packet to a `Command`.
-- [ ] **Nothing on the character screen takes `&mut World`.** Those three return
-      the `Command` for the caller to queue instead of queueing it themselves.
-      They already only ever produce one; the type should say so. This is the
-      same rule the tick already enforces for network tasks, applied one level
-      up: login's half of the shard can ask the world for something, and cannot
-      write to it.
-- [ ] **`run_shard` shrinks.** The seven `restore_*` functions are boot, and
-      belong in `boot.rs` beside `load_world` and `open_store`. `world_tick`
-      takes `&mut LoginServer` for one line — `keys.expire()`, which is memory
-      upkeep for abandoned relay keys and wants its own `select!` arm on a timer,
-      not a place in the tick.
+- [x] **`charscreen.rs`.** Done in S5, and one module further out than this
+      asked: create (`0x00`/`0xF8`), delete (`0x83`) and select (`0x5D`) are one
+      conversation, and it is the *world's* — `world/src/tick/screen.rs`, answered
+      out of the tick that owns the roster.
+- [x] **Nothing on the character screen takes `&mut World`.** Done in S3 and S5.
+      `dispatch_world_packet` is `fn(ClientPacket, ConnectionId) -> Option<Command>`
+      and the screen's three packets are commands. What is left holding a `&mut
+      World` is the binary's own router, which queues what the translation
+      produced — that is the seam, not a rule broken.
+- [x] **`run_shard` shrinks.** Done in S6. The seven `restore_*` functions and
+      the accounts are `boot::restore`, in `boot.rs` beside `load_world` and
+      `open_store`; the loop's own state is one `Shard` value instead of eight
+      locals; and `keys.expire` has its own `select!` arm on its own timer, where
+      memory upkeep for abandoned relay keys belongs.
 
 One smaller thing noticed on the way through, not blocking:
 
@@ -278,12 +275,16 @@ steps above, is [`connection_state.md`](connection_state.md).
   inside a tick, silently (`state/src/runtime.rs`). This is the structural reason
   the character screen cannot become world commands as planned above: the version
   has to live on the connection, not on the entity.
-- **argon2 runs on the tick's task.** `world_handle_network` shares its `select!`
-  with the ticker, and the `0x80` path reaches `password::verify` —
-  `Argon2::default()` is 19 MiB and two passes, tens of milliseconds against a
-  50 ms `TICK_INTERVAL`. One login stalls the simulation for everyone. Cheap to
-  fix once login is a hand-off rather than a call inside the loop (verify on a
-  blocking task, deliver the result as an event).
+- ~~**argon2 runs on the tick's task.**~~ Fixed in S6, and it was not as cheap as
+  this said. Moving the hash to a blocking task means the login conversation has
+  to *suspend*: `LoginServer::handle` returns an `Outcome` — bytes to send, or a
+  `CredentialCheck` to run — the session waits in a state named for it
+  (`VerifyingAccount`, `GameState::Verifying`), and the verdict comes back through
+  `LoginServer::resume` on a `select!` arm of its own. The account stays in the
+  state machine and the check carries no identity, so a verdict that reached the
+  wrong connection authenticates nobody. The blocking pool is bounded by a
+  semaphore: 19 MiB times `spawn_blocking`'s 512 threads is ten gigabytes, and the
+  loop used to bound that by having no choice but to run one at a time.
 - **Per-connection world state is seven maps and a hand-written teardown.**
   `held`, `open_containers`, `open_quest_gumps`, `open_craft_gumps`,
   `pending_targets`, `last_status`, `last_light`, `last_music` are all keyed by

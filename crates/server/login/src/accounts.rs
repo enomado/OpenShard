@@ -1,6 +1,7 @@
 //! Who is allowed in.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use openshard_protocol::access::AccessLevel;
 use openshard_protocol::identity::{AccountName, PlaintextPassword, RawAccountName, RawPlaintextPassword};
@@ -31,21 +32,50 @@ use crate::password;
 /// etc. keeps that impossible — a caller (test fixtures included) names the
 /// type explicitly at the call site instead of leaning on an implicit `Into`.
 pub trait Accounts {
-    /// Check a name and password.
+    /// Everything about a login that is a *lookup*: whether the account exists,
+    /// whether it is blocked, and whether the name and password are even shapes
+    /// a client could have sent. On success it hands back the credential the
+    /// offered password still has to match.
     ///
     /// Takes the *raw*, not-yet-validated wire types — see
-    /// `openshard_protocol::identity`'s module docs — and on success returns
-    /// the [`AccountName`] they turned out to name: the only way to a
-    /// validated account name is through this check (or trusted config
+    /// `openshard_protocol::identity`'s module docs — and the account name it
+    /// resolves rides in the returned [`Credential`]: the only way to a
+    /// validated [`AccountName`] is through this check (or trusted config
     /// seeding via [`DevAccounts::with_account`]).
+    ///
+    /// The password comes in for its *length* alone. A field wider than the
+    /// wire's is a forged packet rather than a wrong password, and it is a
+    /// different refusal; nothing here compares it. That comparison is
+    /// [`CredentialCheck::run`], and it is split off because it is thousands of
+    /// times more expensive than everything above — see [`Credential`].
     ///
     /// Returns the reason on failure so the caller can log it. What the client
     /// is told is a separate decision — see [`DenyReason::wire_code`].
+    fn credential(
+        &self,
+        account: &RawAccountName,
+        password: &RawPlaintextPassword,
+    ) -> Result<Credential, DenyReason>;
+
+    /// The whole check, hash comparison included, on the caller's own thread.
+    ///
+    /// For a caller with nothing to stall: tests, tools, a fixture. The shard
+    /// deliberately does not use it — [`LoginServer::handle`] hands the slow half
+    /// back so the loop can run it somewhere the tick is not waiting on it. See
+    /// [`Credential`].
+    ///
+    /// [`LoginServer::handle`]: crate::LoginServer::handle
     fn verify(
         &self,
         account: &RawAccountName,
         password: &RawPlaintextPassword,
-    ) -> Result<AccountName, DenyReason>;
+    ) -> Result<AccountName, DenyReason> {
+        let (account, check) = self.credential(account, password)?.against(password.clone());
+        match check.run() {
+            PasswordVerdict::Matched => Ok(account),
+            PasswordVerdict::Rejected => Err(DenyReason::BadPassword),
+        }
+    }
 
     /// The authority the account's characters play with — what staff commands
     /// they may run. Defaults to [`AccessLevel::Player`] so a store that has no
@@ -56,6 +86,111 @@ pub trait Accounts {
     fn access_level(&self, _account: &AccountName) -> AccessLevel {
         AccessLevel::Player
     }
+}
+
+/// What a login still has to prove, once the store has had its say: which
+/// account the raw name turned out to name, and the hash the offered password
+/// must match.
+///
+/// # Why a login is two halves
+///
+/// They cost wildly different amounts. Everything a store knows — does this
+/// account exist, is it blocked, is the name a shape a client could have sent —
+/// is a map lookup and two length checks. Comparing the password is argon2:
+/// 19 MiB of memory and two passes, tens of milliseconds, deliberately, because
+/// that is what makes a stolen credential file expensive to crack.
+///
+/// Tens of milliseconds is most of a 50 ms tick. Run on the shard's loop, one
+/// login stalls the simulation for every player on the shard; a handful at once
+/// stalls it visibly. So the cheap half stays where the accounts are and the
+/// expensive half becomes a value the caller can carry to a thread of its own —
+/// see [`CredentialCheck`], and `docs/connection_state.md` S6.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Credential {
+    account: AccountName,
+    phc: String,
+}
+
+impl Credential {
+    /// The credential of `account`: an argon2 PHC string, as
+    /// [`DevAccount::credential`] holds it. For implementors of [`Accounts`] —
+    /// everybody else receives one.
+    pub fn new(account: AccountName, phc: &str) -> Self {
+        Self {
+            account,
+            phc: phc.to_owned(),
+        }
+    }
+
+    /// Split into the identity the login keeps and the work it hands out.
+    ///
+    /// The account deliberately does *not* travel with the check. What comes back
+    /// from a password comparison is yes-or-no about a credential; *who* is being
+    /// logged in stays with the state machine that will act on the answer. A
+    /// state machine with facts kept outside it is a state machine that can
+    /// disagree with itself — and an identity that travelled with the work could
+    /// come back attached to a different connection's verdict.
+    pub fn against(self, offered: RawPlaintextPassword) -> (AccountName, CredentialCheck) {
+        (
+            self.account,
+            CredentialCheck {
+                phc: self.phc,
+                offered,
+            },
+        )
+    }
+}
+
+impl fmt::Debug for Credential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The hash is redacted for the same reason the plaintext is: a PHC string
+        // in a log file is an offline cracking target that escaped the store.
+        write!(f, "Credential({:?}, <redacted>)", self.account)
+    }
+}
+
+/// One password comparison, owned and ready to run anywhere: a blocking task, a
+/// thread, or the caller's own stack in a test.
+///
+/// It carries no identity — see [`Credential::against`] — so the only thing it
+/// can answer is [`PasswordVerdict`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialCheck {
+    phc: String,
+    offered: RawPlaintextPassword,
+}
+
+impl CredentialCheck {
+    /// Run the comparison. Slow by design, with the parameters the stored hash
+    /// carries: this is the call that must not happen on the shard loop.
+    #[must_use]
+    pub fn run(self) -> PasswordVerdict {
+        if password::verify(&self.offered, &self.phc) {
+            PasswordVerdict::Matched
+        } else {
+            PasswordVerdict::Rejected
+        }
+    }
+}
+
+impl fmt::Debug for CredentialCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CredentialCheck(<redacted>)")
+    }
+}
+
+/// Whether an offered password matched the credential it was checked against.
+///
+/// Not a `bool`: it crosses a channel in the shard, beside a connection id, and
+/// arrives at a state machine that will let somebody in on it. A two-variant
+/// enum says which way round it is at the call site as well as the definition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PasswordVerdict {
+    /// The password is the one the credential was made from.
+    Matched,
+    /// It is not — or the credential is not a hash at all, which verifies
+    /// against nothing.
+    Rejected,
 }
 
 /// One account in the dev store.
@@ -141,11 +276,11 @@ impl DevAccounts {
 }
 
 impl Accounts for DevAccounts {
-    fn verify(
+    fn credential(
         &self,
         account: &RawAccountName,
         password: &RawPlaintextPassword,
-    ) -> Result<AccountName, DenyReason> {
+    ) -> Result<Credential, DenyReason> {
         // Reject nonsense before touching the store. These are the widths of
         // the wire fields, so anything longer never came from a real client.
         if account.0.is_empty() || account.0.len() > ACCOUNT_NAME_LENGTH {
@@ -161,16 +296,17 @@ impl Accounts for DevAccounts {
         if entry.blocked {
             return Err(DenyReason::Blocked);
         }
-        // argon2 verify is constant-time over the digest and rejects a credential
-        // that is not a valid hash, so an account row with no real password set
-        // can never be logged into.
-        if !password::verify(password, &entry.credential) {
-            return Err(DenyReason::BadPassword);
-        }
-        // The raw name checked out: it names a real, unblocked account with the
-        // right password, so it is now a validated `AccountName` — echoed back
-        // exactly as typed, case included, since only the lookup folds case.
-        Ok(AccountName(account.0.clone()))
+        // The raw name named a real, unblocked account, so it is a validated
+        // `AccountName` as far as the store is concerned — echoed back exactly as
+        // typed, case included, since only the lookup folds case. What it is not
+        // yet is *authenticated*: nothing here has looked at the password, and the
+        // name does not leave this crate until the check below has run.
+        //
+        // The credential is handed over as it is stored. A row with no real
+        // password set holds something that is not a hash at all, and argon2
+        // verify rejects it — so "no password" can never be logged into, without
+        // a special case here.
+        Ok(Credential::new(AccountName(account.0.clone()), &entry.credential))
     }
 
     fn access_level(&self, account: &AccountName) -> AccessLevel {
@@ -215,6 +351,78 @@ mod tests {
             store().verify(&RawAccountName::new("admin"), &RawPlaintextPassword::new("")),
             Err(DenyReason::BadPassword)
         );
+    }
+
+    #[test]
+    fn the_lookup_stops_short_of_the_password() {
+        // The split this exists for. Everything a store knows is decided here;
+        // whether the password is right is not, and the wrong one gets exactly as
+        // far as the right one. That is what lets the shard run the rest of it
+        // somewhere its tick is not waiting — see `Credential`.
+        let store = store();
+        for password in ["hunter2", "wrong", ""] {
+            assert!(
+                store
+                    .credential(
+                        &RawAccountName::new("admin"),
+                        &RawPlaintextPassword::new(password)
+                    )
+                    .is_ok(),
+                "{password:?} should reach the check, right or wrong"
+            );
+        }
+        // And the refusals that do belong here still happen here, before any
+        // argon2 runs: an unknown account, a blocked one, a forged field.
+        assert_eq!(
+            store.credential(&RawAccountName::new("banned"), &RawPlaintextPassword::new("x")),
+            Err(DenyReason::Blocked)
+        );
+    }
+
+    #[test]
+    fn the_check_is_what_decides() {
+        // The other half, run on this thread the way the shard runs it on a
+        // blocking task. The account comes off the *lookup* and never travels
+        // with the check, so all the check can say is yes or no.
+        let store = store();
+        let credential = store
+            .credential(
+                &RawAccountName::new("admin"),
+                &RawPlaintextPassword::new("hunter2"),
+            )
+            .expect("admin exists");
+        let (account, check) = credential.against(RawPlaintextPassword::new("hunter2"));
+        assert_eq!(account, AccountName::new("admin"));
+        assert_eq!(check.run(), PasswordVerdict::Matched);
+
+        let (_, check) = store
+            .credential(&RawAccountName::new("admin"), &RawPlaintextPassword::new("wrong"))
+            .expect("the lookup does not care")
+            .against(RawPlaintextPassword::new("wrong"));
+        assert_eq!(check.run(), PasswordVerdict::Rejected);
+    }
+
+    #[test]
+    fn neither_half_of_a_login_prints_a_secret() {
+        // Both of these are logged by the shard on the paths that carry them —
+        // `?state` in the "out of order" warning reaches the whole login session.
+        // A password in a log line is the leak this crate exists to prevent, and
+        // a PHC hash is one an attacker can take home and grind on.
+        let credential = store()
+            .credential(
+                &RawAccountName::new("admin"),
+                &RawPlaintextPassword::new("hunter2"),
+            )
+            .expect("admin exists");
+        let printed = format!("{credential:?}");
+        assert!(
+            !printed.contains("$argon2"),
+            "the hash must not survive: {printed}"
+        );
+        let (_, check) = credential.against(RawPlaintextPassword::new("hunter2"));
+        let printed = format!("{check:?}");
+        assert!(!printed.contains("hunter2"), "the plaintext must not survive");
+        assert!(!printed.contains("$argon2"), "nor the hash");
     }
 
     #[test]

@@ -7,10 +7,17 @@
 //!                                            │                          │
 //!                                            ├──────  Outbound  <───────┤
 //!                                            │                          │
-//!                                            └──> [ save task ]  <──  Snapshot
-//!                                                      │
-//!                                                    a disk
+//!                                            ├──> [ save task ]  <──  Snapshot
+//!                                            │           │
+//!                                            │         a disk
+//!                                            │
+//!                                            ├──> [ argon2 ] ──> Verdict ──┐
+//!                                            └─────────────────────────────┘
 //! ```
+//!
+//! Everything that leaves this loop leaves because waiting for it here would
+//! stop the world: a disk that is slow, a hash that is slow on purpose. Both
+//! come back as something to react to, on the same `select!` as a packet.
 //!
 //! This crate owns neither half. The gateway is a state machine with its own
 //! tests; the world is a tick with its own. What is here is the wiring: read
@@ -45,7 +52,7 @@ use openshard_gateway::{
     ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, PacketError, ServerEvent, ServerEventRx,
     VersionTx,
 };
-use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Response};
+use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Outcome, Response};
 use openshard_persistence::{AccountRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store};
 use openshard_protocol::client_packet::ClientPacket;
 use openshard_protocol::encoded::EncodedSubcommand;
@@ -64,7 +71,7 @@ use openshard_world::tick::screen::CharacterScreen;
 use openshard_world::{
     Command, Gameplay, MapTerrain, PlayerEntered, PlayerLeft, PlayerRefused, StatLock, TICK_INTERVAL, World,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, error, info, warn};
 
 pub mod boot;
@@ -75,12 +82,14 @@ mod scripting;
 mod session;
 #[cfg(test)]
 mod testing;
+mod verify;
 
 use boot::{load_config, load_world, open_store};
 use dispatch::{dispatch_world_packet, start_cities};
 use scripting::Scripts;
 use session::{PhaseSync, Session, Sessions};
 use shard::run_shard;
+use verify::{Verdict, Verifier};
 
 /// Where the config lives, relative to the working directory.
 pub const CONFIG_PATH: &str = "openshard.toml";

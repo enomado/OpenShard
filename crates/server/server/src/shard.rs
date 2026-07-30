@@ -128,6 +128,8 @@ struct Shard {
     login: LoginServer<DevAccounts>,
     /// The gameplay script, if one is configured.
     scripts: Option<Scripts>,
+    /// Where a login's argon2 goes, so that it is not here. See `verify`.
+    verifier: Verifier,
     saves: SnapshotTx,
     /// Where the relay tells a client to dial. Read on every connect, to say so
     /// when it is an address that client cannot reach.
@@ -195,6 +197,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
 
     let (saves, snapshots) = snapshot_channel();
     let (failed, mut failures) = failure_channel();
+    let (verifier, mut verdicts) = Verifier::new();
 
     // Everything that comes off a disk, in the one order that works — see
     // `boot::restore`. It borrows the store; the save task takes ownership
@@ -219,6 +222,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
         login: LoginServer::new(accounts, &config.server.name, advertised),
         sessions: Sessions::new(),
         world,
+        verifier,
         saves,
         advertised,
     };
@@ -245,6 +249,11 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
                 warn!("a save failed; marking the world for a full sweep");
                 shard.world.resweep();
             }
+
+            // Before `events` as well: a client waiting on a password check is a
+            // client that has been waiting for a hash, and answering it costs
+            // nothing but the packet it was going to send anyway.
+            Some(verdict) = verdicts.recv() => shard.resume_login(verdict),
 
             _ = key_sweep.tick() => shard.expire_keys(),
 
@@ -327,11 +336,14 @@ pub(crate) fn relay_is_unreachable(client: SocketAddr, advertised: SocketAddrV4)
 ///
 /// What is left of the login conversation is what is genuinely not simulation:
 /// credentials, argon2, the auth key and the relay. It ends at
-/// [`Command::Authenticated`], below.
+/// [`Command::Authenticated`], which is queued by [`Shard::resume_login`] — the
+/// hand-off happens when the *password* checks out, and that answer arrives on a
+/// channel rather than out of this call. See `verify`.
 fn handle_login_packet(
     session: &mut Session,
     login: &mut LoginServer<DevAccounts>,
     world: &mut World,
+    verifier: &Verifier,
     packet: LoginStagePacket,
     id: ConnectionId,
 ) -> bool {
@@ -363,26 +375,18 @@ fn handle_login_packet(
             // which is why `apply` follows the call rather than the state
             // machine sending anything itself. Nothing is copied out to say so:
             // `Session::send_packet` reads the state machine.
-            let authenticated = session.login.account().is_some();
-            let response = login.handle(&mut session.login, login_packet, Instant::now());
-            // And it is the seam the *world* takes the connection over at. The
-            // transition is one-way and happens once — `LoginSession` has no path
-            // back out of `CharacterListSent` — so comparing the account across
-            // the call is enough to catch it exactly once, with no flag here to
-            // fall out of step with the state machine that owns the fact.
-            if let (false, Some(account)) = (authenticated, session.login.account()) {
-                // The account's authority is re-derived at every login and never
-                // saved with a character, so this is where it is looked up: the
-                // last moment the accounts and the connection are both in reach.
-                let access = login.accounts.access_level(account);
-                world.queue(Command::Authenticated {
-                    connection: id,
-                    version: session.login.version(),
-                    account: account.clone(),
-                    access,
-                });
+            match login.handle(&mut session.login, login_packet, Instant::now()) {
+                Outcome::Reply(response) => session.apply(response, id),
+                // A password to check. It goes to a blocking task and the
+                // connection waits: the login session will accept no other packet
+                // until the verdict lands in `resume_login`. Keeping the
+                // connection is the whole point — dropping it here would be
+                // refusing every login that has not been checked yet.
+                Outcome::Verify(check) => {
+                    verifier.spawn(id, check);
+                    true
+                }
             }
-            session.apply(response, id)
         }
     }
 }
@@ -452,11 +456,51 @@ impl Shard {
     /// helper: a handler holds a `&mut Session` while it queues into the world,
     /// and the compiler splits that borrow across fields where it would refuse it
     /// across a method call.
+    /// A password check came back: tell the login session, answer the client,
+    /// and — if this was the login that authenticates the connection — hand it to
+    /// the world.
+    ///
+    /// # This is the only place a connection becomes somebody
+    ///
+    /// A `LoginSession` reaches `CharacterListSent` on one transition and one
+    /// only: a matching verdict on a game login. So `account()` turning `Some`
+    /// *is* the hand-off, with no flag here to keep in step with the state machine
+    /// that owns the fact, and no "was it already authenticated?" to compare —
+    /// `resume` refuses a second verdict on a session that is no longer waiting
+    /// for one.
+    fn resume_login(&mut self, verdict: Verdict) {
+        let id = verdict.connection;
+        let Some(session) = self.sessions.get_mut(id) else {
+            // The socket closed while its password was being hashed. Nothing to
+            // answer and nothing to clean up: the session went with the
+            // `Disconnected` that removed it.
+            debug!(%id, "a password verdict for a connection that has gone");
+            return;
+        };
+        let response = self.login.resume(&mut session.login, verdict.verdict);
+        if let Some(account) = session.login.account() {
+            // The account's authority is re-derived at every login and never saved
+            // with a character, so this is where it is looked up: the last moment
+            // the accounts and the connection are both in reach.
+            let access = self.login.accounts.access_level(account);
+            self.world.queue(Command::Authenticated {
+                connection: id,
+                version: session.login.version(),
+                account: account.clone(),
+                access,
+            });
+        }
+        if !session.apply(response, id) {
+            self.sessions.close(id);
+        }
+    }
+
     fn handle_network(&mut self, event: ServerEvent) {
-        let (sessions, login, world, advertised) = (
+        let (sessions, login, world, verifier, advertised) = (
             &mut self.sessions,
             &mut self.login,
             &mut self.world,
+            &self.verifier,
             self.advertised,
         );
         match event {
@@ -504,7 +548,7 @@ impl Shard {
                             let session = sessions.get_mut(id).expect(PRESENT);
                             let keep = match packet {
                                 Packet::Login(login_packet) => {
-                                    handle_login_packet(session, login, world, login_packet, id)
+                                    handle_login_packet(session, login, world, verifier, login_packet, id)
                                 }
                                 Packet::World(world_packet) => {
                                     handle_world_packet(session, world, world_packet, id)

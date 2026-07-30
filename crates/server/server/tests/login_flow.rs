@@ -15,7 +15,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
 use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, ServerEvent};
-use openshard_login::{DevAccounts, LoginServer, LoginSession, Response, single_shard};
+use openshard_login::{DevAccounts, LoginServer, LoginSession, Outcome, Response, single_shard};
 use openshard_protocol::access::AccessLevel;
 use openshard_protocol::identity::{
     AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
@@ -70,11 +70,20 @@ async fn shard() -> SocketAddr {
                             let Ok(Packet::Login(packet)) = packet.parse_packet(session.version()) else {
                                 continue;
                             };
-                            // The hand-off, exactly as `handle_login_packet`
-                            // catches it: a one-way transition, seen by comparing
-                            // the account across the call.
+                            // The password check is a blocking task on the real
+                            // shard, with the verdict coming back on a channel —
+                            // see `Shard::resume_login`. This loop runs it on the
+                            // spot: what is under test is the wire, not where
+                            // argon2 lives.
+                            //
+                            // The hand-off is caught the way the shard catches it:
+                            // a one-way transition, seen by comparing the account
+                            // across the two halves.
                             let authenticated = session.account().is_some();
-                            let response = login.handle(session, packet, Instant::now());
+                            let response = match login.handle(session, packet, Instant::now()) {
+                                Outcome::Reply(response) => response,
+                                Outcome::Verify(check) => login.resume(session, check.run()),
+                            };
                             if let (false, Some(account)) = (authenticated, session.account()) {
                                 world.queue(Command::Authenticated {
                                     connection: id,

@@ -13,15 +13,16 @@
 //! # Sans-io, like the gateway
 //!
 //! [`LoginServer::handle`] takes an already-decoded [`LoginStagePacket`] and
-//! returns a [`Response`]. No sockets, no packet buffers, and no clock of its
-//! own — `now` is a parameter, so key expiry is tested with arithmetic rather
-//! than `sleep`. Decoding is the caller's job: the `server` crate's
-//! `parse_packet` does it once, ahead of routing to this crate or the world.
+//! returns an [`Outcome`] — bytes to send, or a password to check. No sockets,
+//! no packet buffers, no threads, and no clock of its own: `now` is a parameter,
+//! so key expiry is tested with arithmetic rather than `sleep`. Decoding is the
+//! caller's job: the `server` crate's `parse_packet` does it once, ahead of
+//! routing to this crate or the world.
 //!
 //! ```
 //! use std::net::Ipv4Addr;
 //! use std::time::Instant;
-//! use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Response};
+//! use openshard_login::{single_shard, DevAccounts, LoginServer, LoginSession, Outcome, Response};
 //! use openshard_protocol::identity::{AccountName, PlaintextPassword, RawAccountName, RawPlaintextPassword};
 //! use openshard_protocol::login::{AccountLogin, LoginStagePacket};
 //!
@@ -37,7 +38,14 @@
 //!     password: RawPlaintextPassword("hunter2".to_owned()),
 //! };
 //! let packet = LoginStagePacket::decode(&login.encode(), session.version()).unwrap();
-//! let response = server.handle(&mut session, packet, Instant::now());
+//!
+//! // The account exists and is not blocked, so what comes back is the slow half
+//! // of the login: argon2, which the shard runs on a blocking task because it
+//! // is most of a tick. A doctest has nothing to stall, so it runs it here.
+//! let Outcome::Verify(check) = server.handle(&mut session, packet, Instant::now()) else {
+//!     panic!("a 0x80 asks for a password check");
+//! };
+//! let response = server.resume(&mut session, check.run());
 //!
 //! // The shard list goes back.
 //! assert!(matches!(response, Response::Send(bytes) if bytes[0] == 0xA8));
@@ -66,6 +74,6 @@ pub mod auth;
 pub mod password;
 mod session;
 
-pub use accounts::{Accounts, DevAccount, DevAccounts};
+pub use accounts::{Accounts, Credential, CredentialCheck, DevAccount, DevAccounts, PasswordVerdict};
 pub use auth::{AuthKeys, PendingLogin};
-pub use session::{LoginServer, LoginSession, Response, single_shard};
+pub use session::{LoginServer, LoginSession, Outcome, Response, single_shard};
