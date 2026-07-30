@@ -28,6 +28,7 @@ use crate::identity::RawCharacterName;
 use crate::login::CHARACTER_NAME_LENGTH;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
+use crate::wire::{RawCharacterSlot, RawClientIp, RawGraphic, RawHue};
 
 /// Where something is.
 ///
@@ -61,12 +62,16 @@ impl fmt::Display for Point {
 /// `0x5D` — the client picks a character from the list. 73 bytes.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CharacterPlay {
-    /// The character's name, echoed from the 0xA9 list.
-    pub name: String,
-    /// Which slot, zero-based, into the list the server sent.
-    pub slot: u32,
-    /// The client's own claimed IPv4, as a raw dword. Not to be trusted or used.
-    pub client_ip: u32,
+    /// The character's name, echoed from the 0xA9 list, not yet checked
+    /// against the account's actual list — see [`RawCharacterName`]'s module
+    /// docs; the lookup at the seam (`dispatch::dispatch_world_packet`) is the
+    /// check.
+    pub name: RawCharacterName,
+    /// Which slot, zero-based, into the list the server sent. Class D: the
+    /// seam looks the character up by name, not by slot. See [`RawCharacterSlot`].
+    pub slot: RawCharacterSlot,
+    /// The client's own claimed IPv4. Never trusted or used. See [`RawClientIp`].
+    pub client_ip: RawClientIp,
 }
 
 impl DecodePacket for CharacterPlay {
@@ -76,12 +81,12 @@ impl DecodePacket for CharacterPlay {
         // A constant the client always sends. Sphere ignores it and so do we:
         // rejecting on it would be a compatibility risk for no gain.
         reader.skip(4)?;
-        let name = reader.fixed_string(30)?;
+        let name = RawCharacterName(reader.fixed_string(30)?);
         reader.skip(2)?; // unknown
         reader.skip(4)?; // client flags
         reader.skip(24)?; // unknown / login count
-        let slot = reader.u32()?;
-        let client_ip = reader.u32()?;
+        let slot = RawCharacterSlot(reader.u32()?);
+        let client_ip = RawClientIp(reader.u32()?);
         Ok(Self {
             name,
             slot,
@@ -97,12 +102,12 @@ impl CharacterPlay {
         let mut writer = PacketWriter::with_capacity(73);
         writer.u8(Self::ID);
         writer.u32(0xEDED_EDED); // the constant the client sends
-        writer.fixed_string(&self.name, 30);
+        writer.fixed_string(&self.name.0, 30);
         writer.zeros(2);
         writer.zeros(4);
         writer.zeros(24);
-        writer.u32(self.slot);
-        writer.u32(self.client_ip);
+        writer.u32(self.slot.0);
+        writer.u32(self.client_ip.0);
         writer.into_bytes()
     }
 }
@@ -124,13 +129,25 @@ pub enum Race {
     Gargoyle,
 }
 
+/// A skill id exactly as a create-character packet carried it, not yet
+/// checked against `openshard_state::Skill`'s known ids. No promotion method
+/// yet — see `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawSkillId(pub u8);
+
+/// A starting skill value exactly as sent — the client's own whole points,
+/// not yet checked against the shard's starting-skill rule. No promotion
+/// method yet — see `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawSkillValue(pub u8);
+
 /// One starting skill a player chose at creation: which skill, and its value.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct SkillChoice {
     /// The skill id, as the client numbers them.
-    pub skill: u8,
+    pub skill: RawSkillId,
     /// Its starting value; the client sends whole points here. Stored raw.
-    pub value: u8,
+    pub value: RawSkillValue,
 }
 
 /// `0x00` / `0xF8` — the client asks to create a character.
@@ -161,41 +178,124 @@ pub struct SkillChoice {
 pub struct CreateCharacter {
     /// The new character's name.
     pub name: RawCharacterName,
-    /// Client flags reported at creation.
-    pub flags: u32,
-    /// The chosen profession, or 0 for the "advanced"/custom option.
-    pub profession: u8,
-    /// The raw sex/race byte, exactly as sent. [`Self::race`] and
-    /// [`Self::is_female`] interpret it.
-    pub sex_race: u8,
-    /// Starting strength.
-    pub strength: u8,
-    /// Starting dexterity.
-    pub dexterity: u8,
-    /// Starting intelligence.
-    pub intelligence: u8,
+    /// Client flags reported at creation. Class D — never trusted, never read.
+    pub flags: ClientFlags,
+    /// The chosen profession, or the "advanced"/custom option. See
+    /// [`RawProfession::interpret`].
+    pub profession: RawProfession,
+    /// The raw sex/race byte, exactly as sent. See [`RawSexRace::interpret`].
+    pub sex_race: RawSexRace,
+    /// Starting strength, the client's own whole-point value.
+    pub strength: RawStatValue,
+    /// Starting dexterity, the client's own whole-point value.
+    pub dexterity: RawStatValue,
+    /// Starting intelligence, the client's own whole-point value.
+    pub intelligence: RawStatValue,
     /// The starting skills: three for `0x00`, four for `0xF8`.
     pub skills: Vec<SkillChoice>,
     /// Skin hue.
-    pub skin_hue: u16,
+    pub skin_hue: RawHue,
     /// Hair graphic.
-    pub hair: u16,
+    pub hair: RawGraphic,
     /// Hair hue.
-    pub hair_hue: u16,
+    pub hair_hue: RawHue,
     /// Facial-hair graphic.
-    pub beard: u16,
+    pub beard: RawGraphic,
     /// Facial-hair hue.
-    pub beard_hue: u16,
+    pub beard_hue: RawHue,
     /// Which starting city the player picked, as an index into the list the
-    /// character-list packet offered.
-    pub start_location: u8,
-    /// Which character slot to fill.
-    pub slot: u32,
+    /// character-list packet offered. No promotion method yet — see
+    /// `docs/protocol_newtypes.md`.
+    pub start_location: RawStartLocationIndex,
+    /// Which character slot to fill. Class D — `create_character` fills the
+    /// first free slot and does not read this. See [`RawCharacterSlot`].
+    pub slot: RawCharacterSlot,
     /// Shirt hue.
-    pub shirt_hue: u16,
+    pub shirt_hue: RawHue,
     /// Trousers hue.
-    pub pants_hue: u16,
+    pub pants_hue: RawHue,
 }
+
+/// Client flags reported at character creation, exactly as sent. Never
+/// trusted, never read — nothing downstream acts on them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ClientFlags(pub u32);
+
+/// The profession byte exactly as a `0x00`/`0xF8` packet carried it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RawProfession(pub u8);
+
+/// The profession a player picked at character creation.
+///
+/// The wire fixes exactly one distinction — zero means "advanced/custom" —
+/// so this is as far as `protocol` interprets it. Naming the professions a
+/// non-zero id refers to is Community Pack content, not this crate's business.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Profession {
+    /// The player set stats and skills themselves.
+    Custom,
+    /// A shard-defined template, by its id.
+    Predefined(u8),
+}
+
+impl RawProfession {
+    /// Total: every byte value means something, including "custom".
+    pub const fn interpret(self) -> Profession {
+        match self.0 {
+            0 => Profession::Custom,
+            id => Profession::Predefined(id),
+        }
+    }
+}
+
+/// The sex/race byte exactly as a `0x00`/`0xF8` packet carried it, in the
+/// Stygian Abyss encoding (`0x2`–`0x7`) every client that reaches character
+/// creation on a modern shard sends. See [`CreateCharacter`]'s module docs for
+/// the deliberate simplification this makes for a genuinely pre-SA client.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RawSexRace(pub u8);
+
+/// The sex a player picked at character creation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Sex {
+    Male,
+    Female,
+}
+
+impl RawSexRace {
+    /// Total: odd values are female on every client — Sphere notes this rule
+    /// holds across versions — and anything the Stygian Abyss encoding does
+    /// not name falls back to `(Male, Human)`, the safe default Sphere itself
+    /// uses.
+    pub const fn interpret(self) -> (Sex, Race) {
+        let sex = if self.0.is_multiple_of(2) {
+            Sex::Male
+        } else {
+            Sex::Female
+        };
+        let race = match self.0 {
+            0x4 | 0x5 => Race::Elf,
+            0x6 | 0x7 => Race::Gargoyle,
+            _ => Race::Human,
+        };
+        (sex, race)
+    }
+}
+
+/// A starting stat point exactly as sent: the client's own whole-point value,
+/// not yet checked against the shard's starting-stat rule.
+///
+/// No promotion method yet — the per-stat floor/ceiling and total-points rule
+/// that would produce one is gameplay balance this crate does not own; see
+/// `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawStatValue(pub u8);
+
+/// Which starting city index a create-character packet carried, not yet
+/// checked against the list the character-list packet actually offered. No
+/// promotion method yet — see `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawStartLocationIndex(pub u8);
 
 impl CreateCharacter {
     /// The classic create-character id: 104 bytes, three skills.
@@ -223,33 +323,33 @@ impl CreateCharacter {
         reader.skip(9)?;
         let name = RawCharacterName(reader.fixed_string(CHARACTER_NAME_LENGTH)?);
         reader.skip(2)?; // 0x0000
-        let flags = reader.u32()?;
+        let flags = ClientFlags(reader.u32()?);
         reader.skip(8)?; // unknown
-        let profession = reader.u8()?;
+        let profession = RawProfession(reader.u8()?);
         reader.skip(15)?; // 0x00 * 15
-        let sex_race = reader.u8()?;
-        let strength = reader.u8()?;
-        let dexterity = reader.u8()?;
-        let intelligence = reader.u8()?;
+        let sex_race = RawSexRace(reader.u8()?);
+        let strength = RawStatValue(reader.u8()?);
+        let dexterity = RawStatValue(reader.u8()?);
+        let intelligence = RawStatValue(reader.u8()?);
 
         let mut skills = Vec::with_capacity(skill_count);
         for _ in 0..skill_count {
-            let skill = reader.u8()?;
-            let value = reader.u8()?;
+            let skill = RawSkillId(reader.u8()?);
+            let value = RawSkillValue(reader.u8()?);
             skills.push(SkillChoice { skill, value });
         }
 
-        let skin_hue = reader.u16()?;
-        let hair = reader.u16()?;
-        let hair_hue = reader.u16()?;
-        let beard = reader.u16()?;
-        let beard_hue = reader.u16()?;
+        let skin_hue = RawHue(reader.u16()?);
+        let hair = RawGraphic(reader.u16()?);
+        let hair_hue = RawHue(reader.u16()?);
+        let beard = RawGraphic(reader.u16()?);
+        let beard_hue = RawHue(reader.u16()?);
         reader.skip(1)?; // shard index
-        let start_location = reader.u8()?;
-        let slot = reader.u32()?;
+        let start_location = RawStartLocationIndex(reader.u8()?);
+        let slot = RawCharacterSlot(reader.u32()?);
         reader.skip(4)?; // the client's claimed ip; not to be trusted
-        let shirt_hue = reader.u16()?;
-        let pants_hue = reader.u16()?;
+        let shirt_hue = RawHue(reader.u16()?);
+        let pants_hue = RawHue(reader.u16()?);
 
         Ok(Self {
             name,
@@ -272,32 +372,17 @@ impl CreateCharacter {
         })
     }
 
-    /// Whether the character is female. Odd sex/race values are female on every
-    /// client — Sphere notes this rule holds across versions.
-    pub const fn is_female(&self) -> bool {
-        !self.sex_race.is_multiple_of(2)
-    }
-
-    /// The chosen race, read with the Stygian Abyss encoding.
-    pub const fn race(&self) -> Race {
-        match self.sex_race {
-            0x4 | 0x5 => Race::Elf,
-            0x6 | 0x7 => Race::Gargoyle,
-            // 0x2 / 0x3, and anything unexpected, is a human — the safe default
-            // Sphere falls back to.
-            _ => Race::Human,
-        }
-    }
-
-    /// The body graphic for this character's race and sex.
-    pub const fn body(&self) -> u16 {
-        match (self.race(), self.is_female()) {
-            (Race::Human, false) => 0x0190,
-            (Race::Human, true) => 0x0191,
-            (Race::Elf, false) => 0x025D,
-            (Race::Elf, true) => 0x025E,
-            (Race::Gargoyle, false) => 0x029A,
-            (Race::Gargoyle, true) => 0x029B,
+    /// The body graphic for the given race and sex, as interpreted from the
+    /// wire's sex/race byte. Replaces the old `is_female`/`race` methods on
+    /// `Self` — see [`RawSexRace::interpret`].
+    pub const fn body(sex: Sex, race: Race) -> u16 {
+        match (race, sex) {
+            (Race::Human, Sex::Male) => 0x0190,
+            (Race::Human, Sex::Female) => 0x0191,
+            (Race::Elf, Sex::Male) => 0x025D,
+            (Race::Elf, Sex::Female) => 0x025E,
+            (Race::Gargoyle, Sex::Male) => 0x029A,
+            (Race::Gargoyle, Sex::Female) => 0x029B,
         }
     }
 
@@ -315,33 +400,33 @@ impl CreateCharacter {
         writer.zeros(9); // pattern1, pattern2, kuoc
         writer.fixed_string(&self.name.0, CHARACTER_NAME_LENGTH);
         writer.zeros(2);
-        writer.u32(self.flags);
+        writer.u32(self.flags.0);
         writer.zeros(8);
-        writer.u8(self.profession);
+        writer.u8(self.profession.0);
         writer.zeros(15);
-        writer.u8(self.sex_race);
-        writer.u8(self.strength);
-        writer.u8(self.dexterity);
-        writer.u8(self.intelligence);
+        writer.u8(self.sex_race.0);
+        writer.u8(self.strength.0);
+        writer.u8(self.dexterity.0);
+        writer.u8(self.intelligence.0);
 
         let count = if high_seas { 4 } else { 3 };
         for index in 0..count {
             let choice = self.skills.get(index).copied().unwrap_or_default();
-            writer.u8(choice.skill);
-            writer.u8(choice.value);
+            writer.u8(choice.skill.0);
+            writer.u8(choice.value.0);
         }
 
-        writer.u16(self.skin_hue);
-        writer.u16(self.hair);
-        writer.u16(self.hair_hue);
-        writer.u16(self.beard);
-        writer.u16(self.beard_hue);
+        writer.u16(self.skin_hue.0);
+        writer.u16(self.hair.0);
+        writer.u16(self.hair_hue.0);
+        writer.u16(self.beard.0);
+        writer.u16(self.beard_hue.0);
         writer.zeros(1); // shard index
-        writer.u8(self.start_location);
-        writer.u32(self.slot);
+        writer.u8(self.start_location.0);
+        writer.u32(self.slot.0);
         writer.zeros(4); // client ip
-        writer.u16(self.shirt_hue);
-        writer.u16(self.pants_hue);
+        writer.u16(self.shirt_hue.0);
+        writer.u16(self.pants_hue.0);
         writer.into_bytes()
     }
 }
@@ -741,9 +826,9 @@ mod tests {
     #[test]
     fn character_play_round_trips_at_the_declared_length() {
         let play = CharacterPlay {
-            name: "Lord British".to_owned(),
-            slot: 0,
-            client_ip: 0x0A00_0001,
+            name: RawCharacterName("Lord British".to_owned()),
+            slot: RawCharacterSlot(0),
+            client_ip: RawClientIp(0x0A00_0001),
         };
         let bytes = play.encode();
         assert_eq!(
@@ -761,31 +846,43 @@ mod tests {
 
     fn sample_create(high_seas: bool) -> CreateCharacter {
         let mut skills = vec![
-            SkillChoice { skill: 1, value: 50 },
-            SkillChoice { skill: 2, value: 30 },
-            SkillChoice { skill: 3, value: 20 },
+            SkillChoice {
+                skill: RawSkillId(1),
+                value: RawSkillValue(50),
+            },
+            SkillChoice {
+                skill: RawSkillId(2),
+                value: RawSkillValue(30),
+            },
+            SkillChoice {
+                skill: RawSkillId(3),
+                value: RawSkillValue(20),
+            },
         ];
         if high_seas {
-            skills.push(SkillChoice { skill: 4, value: 0 });
+            skills.push(SkillChoice {
+                skill: RawSkillId(4),
+                value: RawSkillValue(0),
+            });
         }
         CreateCharacter {
             name: RawCharacterName("Lord British".to_owned()),
-            flags: 0x0000_001F,
-            profession: 1,
-            sex_race: 0x3, // human female
-            strength: 60,
-            dexterity: 20,
-            intelligence: 20,
+            flags: ClientFlags(0x0000_001F),
+            profession: RawProfession(1),
+            sex_race: RawSexRace(0x3), // human female
+            strength: RawStatValue(60),
+            dexterity: RawStatValue(20),
+            intelligence: RawStatValue(20),
             skills,
-            skin_hue: 0x83EA,
-            hair: 0x203B,
-            hair_hue: 0x044E,
-            beard: 0,
-            beard_hue: 0,
-            start_location: 0,
-            slot: 0,
-            shirt_hue: 0x0386,
-            pants_hue: 0x01BB,
+            skin_hue: RawHue(0x83EA),
+            hair: RawGraphic(0x203B),
+            hair_hue: RawHue(0x044E),
+            beard: RawGraphic(0),
+            beard_hue: RawHue(0),
+            start_location: RawStartLocationIndex(0),
+            slot: RawCharacterSlot(0),
+            shirt_hue: RawHue(0x0386),
+            pants_hue: RawHue(0x01BB),
         }
     }
 
@@ -822,37 +919,46 @@ mod tests {
         // place, which shifts everything after it. Pin the name and the skills.
         let decoded = CreateCharacter::decode(&sample_create(true).encode()).unwrap();
         assert_eq!(decoded.name, "Lord British");
-        assert_eq!(decoded.skin_hue, 0x83EA);
+        assert_eq!(decoded.skin_hue, RawHue(0x83EA));
         assert_eq!(decoded.skills.len(), 4);
-        assert_eq!(decoded.skills[0], SkillChoice { skill: 1, value: 50 });
-        assert_eq!(decoded.start_location, 0);
+        assert_eq!(
+            decoded.skills[0],
+            SkillChoice {
+                skill: RawSkillId(1),
+                value: RawSkillValue(50)
+            }
+        );
+        assert_eq!(decoded.start_location, RawStartLocationIndex(0));
     }
 
     #[test]
     fn create_character_maps_race_and_sex_to_a_body() {
         let human_female = CreateCharacter {
-            sex_race: 0x3,
+            sex_race: RawSexRace(0x3),
             ..sample_create(true)
         };
-        assert!(human_female.is_female());
-        assert_eq!(human_female.race(), Race::Human);
-        assert_eq!(human_female.body(), 0x0191);
+        let (sex, race) = human_female.sex_race.interpret();
+        assert!(matches!(sex, Sex::Female));
+        assert_eq!(race, Race::Human);
+        assert_eq!(CreateCharacter::body(sex, race), 0x0191);
 
         let elf_male = CreateCharacter {
-            sex_race: 0x4,
+            sex_race: RawSexRace(0x4),
             ..sample_create(true)
         };
-        assert!(!elf_male.is_female());
-        assert_eq!(elf_male.race(), Race::Elf);
-        assert_eq!(elf_male.body(), 0x025D);
+        let (sex, race) = elf_male.sex_race.interpret();
+        assert!(matches!(sex, Sex::Male));
+        assert_eq!(race, Race::Elf);
+        assert_eq!(CreateCharacter::body(sex, race), 0x025D);
 
         let gargoyle_female = CreateCharacter {
-            sex_race: 0x7,
+            sex_race: RawSexRace(0x7),
             ..sample_create(true)
         };
-        assert!(gargoyle_female.is_female());
-        assert_eq!(gargoyle_female.race(), Race::Gargoyle);
-        assert_eq!(gargoyle_female.body(), 0x029B);
+        let (sex, race) = gargoyle_female.sex_race.interpret();
+        assert!(matches!(sex, Sex::Female));
+        assert_eq!(race, Race::Gargoyle);
+        assert_eq!(CreateCharacter::body(sex, race), 0x029B);
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub(crate) fn dispatch_world_packet(
                 warn!(%id, "character-play before a game login");
                 return false;
             };
-            let name = CharacterName(play.name);
+            let name = CharacterName(play.name.0);
             // A stored character enters on its saved serial, spot and look; one
             // the roster has never heard of — a config-only character on a fresh
             // shard, or one created this run and not yet saved — enters fresh at
@@ -479,7 +479,7 @@ pub(crate) fn create_character(
     // very list `start_cities` built and the character-list packet offered, so a
     // valid pick names a real city; only a client sending an out-of-range index
     // falls back to the default facet and a fresh spawn.
-    let (facet, start) = match login.starts.get(create.start_location as usize) {
+    let (facet, start) = match login.starts.get(create.start_location.0 as usize) {
         Some(city) => (
             Facet(city.map as u8),
             Some(Point::new(
@@ -500,24 +500,36 @@ pub(crate) fn create_character(
         facet,
         start,
         appearance: Some(Appearance {
-            body: Graphic(create.body()),
-            hue: Hue(create.skin_hue),
+            // No promotion exists yet for either raw value — see
+            // `docs/protocol_newtypes.md` — so this is still an unchecked
+            // pass-through, now visible at the call site as `.0` rather than
+            // hidden behind a bare integer.
+            body: {
+                let (sex, race) = create.sex_race.interpret();
+                Graphic(CreateCharacter::body(sex, race))
+            },
+            hue: Hue(create.skin_hue.0),
         }),
         // The stats and skills the player chose on the creation screen. The
         // client sends whole points; skills are stored in tenths, so a chosen 50
         // becomes 500. New skills start unlocked (training up).
+        //
+        // None of `strength`/`dexterity`/`intelligence`/`value` is validated
+        // here — no promotion exists yet for `RawStatValue`/`RawSkillValue`,
+        // so `.0` below is an unchecked pass-through of client input. See
+        // `docs/protocol_newtypes.md`'s pilot notes.
         sheet: Some(CharacterSheet {
-            strength: u16::from(create.strength),
-            dexterity: u16::from(create.dexterity),
-            intelligence: u16::from(create.intelligence),
+            strength: u16::from(create.strength.0),
+            dexterity: u16::from(create.dexterity.0),
+            intelligence: u16::from(create.intelligence.0),
             skills: create
                 .skills
                 .iter()
-                .filter(|choice| choice.value > 0)
+                .filter(|choice| choice.value.0 > 0)
                 // A cap of zero means "whatever this shard caps a skill at" —
                 // `enter` fills it in from `[gameplay] skill_cap`, so the knob is
                 // read in one place and this end needs to know nothing about it.
-                .map(|choice| (choice.skill, u16::from(choice.value) * 10, SkillLock::Up, 0))
+                .map(|choice| (choice.skill.0, u16::from(choice.value.0) * 10, SkillLock::Up, 0))
                 .collect(),
             // A new character's arrows all point up, and no stat has ever risen.
             stat_locks: openshard_persistence::StatLockRecord::default(),

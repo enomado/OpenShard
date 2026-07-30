@@ -48,3 +48,32 @@ pub struct CursorId(pub u32);
 /// about the number itself means anything.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct AuthKey(pub u32);
+
+/// A colour choice exactly as a client packet carried it: not yet checked
+/// against the set of hues this shard actually allows. See
+/// `docs/protocol_newtypes.md` — the allowed set is content, so the check that
+/// turns this into a real [`Hue`] lives above `protocol`, and does not exist
+/// yet.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct RawHue(pub u16);
+
+/// An art id exactly as a client packet carried it — a hairstyle, a beard —
+/// not yet checked against the set this shard actually allows. Same status as
+/// [`RawHue`]: the check does not exist yet.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct RawGraphic(pub u16);
+
+/// Which character slot a client asked to fill or play, exactly as sent.
+///
+/// Class D for now: `create_character` fills the first free slot and
+/// `character_play` looks the character up by name, so neither reads this
+/// value. It becomes class C — validated against the account's actual
+/// character count — the day slot choice is honoured; see
+/// `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawCharacterSlot(pub u32);
+
+/// A client's self-reported IPv4 address, exactly as sent. Never trusted,
+/// never read — the server already knows the real address from the socket.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawClientIp(pub u32);

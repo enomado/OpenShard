@@ -184,6 +184,54 @@ The pilot is done by hand, not by an agent, and it ends by writing an
 the server is missing today; each one lands with a test that a hostile value
 reaches the seam and is refused there.
 
+## Amendments forced by the pilot
+
+The pilot landed classes A, B and D in full — every row of the field table
+above now has its named type — and class C's *type* half only: every
+class-C field is a `Raw*` newtype wired through decode, encode and the seam,
+but none of the three promotion methods the field table calls "does not exist
+today" (`validate_stats`, the skill-value check, the hue/graphic allowlist)
+were written. Each one needs a real gameplay-balance number — a starting stat
+total and per-stat floor/ceiling, a starting skill-point budget, a set of
+hairstyles/hues this shard actually allows — and none of those numbers exist
+anywhere in this repo yet. Inventing them here would be a content decision, not
+a mechanical refactor, so they are left as the concrete next step rather than
+guessed at.
+
+1. **Every class-C field's `.0` is unwrapped at the seam
+   (`dispatch::create_character`) with a comment naming it as an unchecked
+   pass-through.** This is deliberately worse-looking than the old bare `u16`
+   it replaces — the point is that it is now *visible* and grep-able
+   (`Raw` with no matching `validate`/`interpret` call at its one call site),
+   where before the same gap was invisible. N9's test pair (decodes cleanly /
+   refused at promotion) has nothing to attach to until a promotion method
+   exists, so none were added this stage; the next stage that adds
+   `validate_stats`, the skill check, or the hue/graphic check owes N9's pair
+   for that field specifically.
+2. **`CharacterPlay::name` moved to `RawCharacterName` even though it is not
+   one of the three "missing check" rows.** `dispatch_world_packet` was
+   building a `CharacterName` straight from a bare `String` with no type
+   marking it as unchecked client input — the exact invisibility N3 exists to
+   remove — so it got the same treatment as `CreateCharacter::name`, at no
+   cost: the promotion is unchanged, `roster.get(&account, &name)` is still
+   the check (a name nobody has is not an account's character, and the seam
+   already handles that by falling back to a fresh spawn).
+3. **`RawSexRace::interpret` and `CreateCharacter::body` are both `pub const
+   fn`, matching the methods they replace (`is_female`, `race`, `body`).** No
+   behaviour changed; `body` moved from a method reading `self.sex_race` twice
+   (once through each of `is_female`/`race`) to an associated function taking
+   the already-interpreted `(Sex, Race)` pair once, exactly as the field
+   table's pilot row specifies.
+4. **`ClientFlags`, `RawStatValue`, `RawSkillId`, `RawSkillValue` and
+   `RawStartLocationIndex` all live in `world.rs`, not `wire.rs`** — each is
+   used by exactly one packet, so N4's "one module" branch applies. Only
+   `RawHue`, `RawGraphic`, `RawCharacterSlot` and `RawClientIp` went to
+   `wire.rs`, matching the field table's own `→ wire.rs` column exactly.
+5. **Bare-integer field count in `world.rs`: 39 before, 20 after** (N10) — the
+   19 fields the pilot's two packets own (15 on `CreateCharacter`, 2 on
+   `SkillChoice`, 2 on `CharacterPlay`) all gained a named type. The remaining
+   20 belong to packets N1 (the rest of `world.rs`) has not touched yet.
+
 ## Stages
 
 Each stage ends with all four silent: `cargo check --workspace --all-targets`,
@@ -254,7 +302,7 @@ resolved silently in one module is a pattern the next module contradicts.
 
 | Stage | State | Commit |
 | --- | --- | --- |
-| pilot | not started | |
+| pilot | types landed, promotions deferred (see amendments) | |
 | N1 | not started | |
 | N2 | not started | |
 | N3 | not started | |
