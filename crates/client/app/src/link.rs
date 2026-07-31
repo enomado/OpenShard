@@ -17,6 +17,7 @@
 //! socket gets a current-thread runtime of its own and the two exchange values.
 
 use std::net::SocketAddrV4;
+use std::sync::Arc;
 
 use openshard_client_net::connection::Event;
 use openshard_client_net::session::Plan;
@@ -25,6 +26,7 @@ use openshard_client_net::view::WorldView;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
 use openshard_protocol::version::ClientVersion;
+use openshard_uofiles::map::Map;
 use winit::event_loop::EventLoopProxy;
 
 /// What the shard thread tells the window.
@@ -64,16 +66,22 @@ impl Link {
 ///
 /// Returns as soon as the thread is spawned: the login conversation is several
 /// round trips and a window that waited for it would open blank and frozen.
+///
+/// The map comes along because the walk predicts a height and the server does
+/// not send one — see [`Walk::step`]. Shared rather than loaded twice: it is a
+/// few hundred megabytes of plain data, read by both threads and written by
+/// neither.
 pub fn connect(
     address: SocketAddrV4,
     plan: Plan,
     version: ClientVersion,
+    map: Arc<Map>,
     proxy: EventLoopProxy<Update>,
 ) -> Link {
     let (steps, commands) = tokio::sync::mpsc::unbounded_channel();
     std::thread::Builder::new()
         .name("shard".to_owned())
-        .spawn(move || run(address, plan, version, &proxy, commands))
+        .spawn(move || run(address, plan, version, &map, &proxy, commands))
         // The thread is the connection; a client that could not spawn it has
         // nothing to fall back to, and the OS refusing a thread at startup is
         // not a condition worth a variant in `Update`.
@@ -87,6 +95,7 @@ fn run(
     address: SocketAddrV4,
     plan: Plan,
     version: ClientVersion,
+    map: &Map,
     proxy: &EventLoopProxy<Update>,
     commands: tokio::sync::mpsc::UnboundedReceiver<Facing>,
 ) {
@@ -98,7 +107,7 @@ fn run(
         }
     };
     runtime.block_on(async move {
-        let reason = play(address, plan, version, proxy, commands).await;
+        let reason = play(address, plan, version, map, proxy, commands).await;
         report(proxy, Update::Lost(reason));
     });
 }
@@ -108,6 +117,7 @@ async fn play(
     address: SocketAddrV4,
     plan: Plan,
     version: ClientVersion,
+    map: &Map,
     proxy: &EventLoopProxy<Update>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Facing>,
 ) -> String {
@@ -147,7 +157,12 @@ async fn play(
                 let Some(facing) = step else {
                     return "the window closed".to_owned();
                 };
-                match walk.step(facing) {
+                // The land under the target: without it every step predicts
+                // the height it started at, and a body drawn below the terrain
+                // is hidden by it — which looks exactly like one that failed to
+                // draw. The server lands the step on the ground and says
+                // nothing, since a `0x22` carries no position.
+                match walk.step(facing, |x, y| map.land(x, y).map(|cell| cell.z)) {
                     Ok(bytes) => {
                         if let Err(error) = socket.send(&bytes).await {
                             return error.to_string();
@@ -223,7 +238,7 @@ mod tests {
         // fed packets to the view would walk on the server and stand still on
         // the screen.
         let (mut view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North)).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
 
         let ack = ServerPacket::WalkAck(WalkAck {
             sequence: StepSequence(0),
@@ -238,7 +253,7 @@ mod tests {
         // And the other direction: a 0x21 is the server disagreeing, and the
         // view has no arm for it — only `Walk` knows the step it undoes.
         let (mut view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North)).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
 
         let reject = ServerPacket::WalkReject(WalkReject {
             sequence: StepSequence(0),

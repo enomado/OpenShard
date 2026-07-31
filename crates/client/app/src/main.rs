@@ -205,9 +205,18 @@ fn main() -> ExitCode {
     // The connection, if this run was asked for one. Started before the window
     // exists: the login is several round trips, and there is a map to draw
     // while it happens.
+    // Shared with the shard thread, which predicts the height of every step
+    // from it: plain data, read by both and written by neither.
+    let map = Arc::new(map);
     let link = plan_from_environment().map(|(address, plan)| {
         eprintln!("logging in to {address} as {}", plan.account.0);
-        link::connect(address, plan, VERSION, event_loop.create_proxy())
+        link::connect(
+            address,
+            plan,
+            VERSION,
+            Arc::clone(&map),
+            event_loop.create_proxy(),
+        )
     });
 
     let mut app = App {
@@ -345,7 +354,8 @@ struct Screen {
 }
 
 struct App {
-    map: Map,
+    /// The facet, shared with the shard thread — see [`link::connect`].
+    map: Arc<Map>,
     art: Art,
     texmaps: TexMaps,
     tiledata: TileData,
