@@ -69,7 +69,25 @@ pub trait Store: Send + Sync {
     /// backend that can implement this.
     async fn save(&self, snapshot: &Snapshot) -> Result<(), StoreError>;
 
-    /// Every character.
+    /// Every character, **in ascending serial order**.
+    ///
+    /// The order is part of the contract here and nowhere else in this trait,
+    /// because this is the only read whose order a player sees. The caller enrols
+    /// them in the order given, that list is what `0xA9` draws, and `0x83` picks a
+    /// character by its position in it — so the sequence this returns is the slot
+    /// order, and a boot that returns it differently has shuffled somebody's
+    /// character screen.
+    ///
+    /// Serial ascending is creation order: the allocator hands them out upwards
+    /// and a restored character keeps the one it was created with. It is also the
+    /// only key every backend has, which is the other half of why it is the rule —
+    /// the three implementations below disagreed by default. SQLite's `serial` is
+    /// `INTEGER PRIMARY KEY`, so a bare select is already rowid order and looked
+    /// stable; Postgres returns heap order, where an `UPDATE` moves a row to the
+    /// end, so one logout reordered the list on the next boot; and
+    /// [`MemoryStore`] returned `HashMap` iteration order, which is a fresh
+    /// shuffle every process. All three now say `ORDER BY serial` or its
+    /// equivalent.
     async fn characters(&self) -> Result<Vec<CharacterRecord>, StoreError>;
 
     /// Every saved item: characters' carried inventories and loose ground clutter.
@@ -258,13 +276,20 @@ impl Store for MemoryStore {
     }
 
     async fn characters(&self) -> Result<Vec<CharacterRecord>, StoreError> {
-        Ok(self
+        // Sorted, not `values()`: the trait promises ascending serial, and a
+        // `HashMap` walks its own way round every process. This is the backend a
+        // shard with no database runs on and the one every test uses, so an
+        // unsorted read here is a slot order that is different each boot and a
+        // test that is green on the run that wrote it.
+        let mut characters = self
             .characters
             .lock()
             .expect("the mutex is never poisoned")
             .values()
             .cloned()
-            .collect())
+            .collect::<Vec<_>>();
+        characters.sort_by_key(|record| record.serial);
+        Ok(characters)
     }
 
     async fn items(&self) -> Result<Vec<ItemRecord>, StoreError> {
@@ -407,6 +432,30 @@ mod tests {
         let characters = store.characters().await.expect("load");
         assert_eq!(characters.len(), 1);
         assert_eq!(characters[0].x, 200);
+    }
+
+    #[tokio::test]
+    async fn characters_come_back_in_slot_order() {
+        // The one read in this trait whose order a player sees: it is the account's
+        // character list, and `0x83` picks by position in it. Saved out of order on
+        // purpose, and enough of them that a `HashMap` walk agreeing by luck is one
+        // arrangement in 8!.
+        let store = MemoryStore::new();
+        for serial in [6u32, 2, 8, 1, 5, 3, 7, 4] {
+            store
+                .save(&snapshot(vec![character(serial, 100)], vec![]))
+                .await
+                .expect("save");
+        }
+
+        let serials = store
+            .characters()
+            .await
+            .expect("load")
+            .iter()
+            .map(|record| record.serial.raw())
+            .collect::<Vec<_>>();
+        assert_eq!(serials, [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[tokio::test]

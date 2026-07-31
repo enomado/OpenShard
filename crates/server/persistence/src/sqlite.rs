@@ -616,7 +616,7 @@ impl Store for SqliteStore {
                     "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                      strength, dexterity, intelligence, skills, effects, dead, fame, karma, \
                      murders, quests, done_quests, stat_locks \
-                     FROM characters",
+                     FROM characters ORDER BY serial",
                 )
                 .map_err(database)?;
             let rows = statement
