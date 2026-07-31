@@ -32,7 +32,7 @@ So the question this file asks about each item is not "is it correct today"
 |---|---|---|---|
 | S1 | `restore_characters` runs before `restore_items` | ~~two doc comments and the order of two lines in `run_shard`~~ the signature: `restore_items` takes what only `restore_characters` returns | the compiler |
 | S2 | every recipe names a group that exists and leads with its system's skill | ~~an assertion in a test~~ **`crafting/build.rs`** | `cargo check`, before the crate compiles |
-| S3 | closing a refused connection tears down six things in order | six doc comments, one per link | nothing |
+| S3 | closing a refused connection tears down six things in order | ~~six doc comments, one per link~~ **`e2e/shard/tests/refused_teardown.rs`**, which walks all six | `cargo test`, on any machine — and it found link 4 half-missing |
 | S4 | the ground renderer's projection and visible set are correct | `tests/frame.rs`, behind `OPENSHARD_CLIENT` **and** a GPU | nothing, on any machine without both |
 
 ## Decisions
@@ -197,7 +197,7 @@ follows.
       accumulator and the "no main-skill line is a malformed recipe" arm with it
       — the build script has made that arm unreachable.
 
-- [ ] **S3. The teardown chain gets a test that walks it.**
+- [x] **S3. The teardown chain gets a test that walks it.**
       A refused connection is closed by a chain of six: `Sessions::close` drops
       the session, which drops the outbox, which ends the gateway's write task,
       which closes the socket, which makes the gateway emit `Disconnected`,
@@ -223,6 +223,47 @@ follows.
       green for the wrong reason (`connection_state.md` S7 learned this); no
       fixed `sleep` — a deadline and a poll (D3); the chain named link by link
       in one doc comment; all four gates silent.
+
+      **Done, and the chain was broken.** `crates/e2e/shard/tests/
+      refused_teardown.rs`: two clients on the stock account, the second
+      provoking `RefusedEntry::AlreadyInWorld` with a second `0x5D` — the one of
+      the four refusals a real client can reach over the wire. It failed on
+      first run, at the last assertion, and what it found is worth more than the
+      test:
+
+      **Link 4 was half a link.** Dropping the outbox ends the gateway's write
+      task, and dropping `OwnedWriteHalf` shuts the *write* half of the socket.
+      The client therefore reads zero bytes and knows it has been hung up on —
+      which is why this looked right for as long as anyone had looked. But the
+      socket is only closed when *both* halves are, so `read_loop` went on
+      awaiting a read that would never come, no `Disconnected` was emitted, and
+      links 5 and 6 never ran. The world kept the refused character: standing
+      there, visible to everyone, for as long as the client held its half open.
+      A well-behaved client closes and the chain completes, so the bug was
+      invisible to every real client and to every test that used one. Fixed by
+      racing `read_loop` against the write task in
+      `gateway::client_session_serve`.
+
+      Three things worth carrying forward:
+
+      - **The witness is the only honest observer.** A refused client's own
+        socket closing proves links 1–4 and says nothing about 6 — a world that
+        never let go would close it identically. The second client is what makes
+        the last link observable at all, and asserting it *saw the arrival*
+        first is what keeps the disappearance from being green on a shard that
+        spawned nothing.
+      - **Three gateway tests were dropping the outbox by accident**, which now
+        means "hang up", so they closed the connection they were about to read
+        from. They were not wrong before and are not wrong now — the operation
+        changed meaning under them, which is what a test double for a `Drop`
+        will always risk. Each now holds it and says why.
+      - **Two places already said the outbox drop *is* the close** —
+        `connection_state.md`'s chain and `Session::apply`'s doc, which adds
+        "there is no separate close to forget". Both were true of the write half
+        and read as if they were true of the socket, and neither is edited here:
+        they are right today because the code was changed to match them. Prose
+        that states an invariant correctly and is believed by nobody's compiler
+        is the whole subject of this file.
 
 - [ ] **S4. A `Map` can be built without a client install.**
       Every assertion about `ground::collect` lives in `client/render/tests/
@@ -252,6 +293,15 @@ S1 and S2 first, and in either order — they are small, they are in `server` an
 
 S3 next. It is the largest and it is new code in a crate with one occupant, so
 it collides with nothing.
+
+**And it collided anyway, with another session doing S3.** Two independent
+tests of the same chain landed in `crates/e2e/shard/tests/` in one afternoon —
+`refused_teardown.rs` and `refused_entry.rs` — because "new code in an empty
+crate" reasons about *files*, and what two sessions actually contend for is the
+next unticked box in this list. D5 was written about the working tree and this
+is the other half of it: **a stage being started is not visible anywhere**.
+Whoever merges these keeps one and deletes the other; the fix in the gateway is
+the part neither test can be without.
 
 **S4 last, and only when the tree is quiet.** `client/render` and
 `common/uofiles` are where the parallel work has been living — `atlas.rs`,
@@ -284,5 +334,5 @@ here and there is no reason to reproduce a mixed working tree on purpose.
 | --- | --- |
 | S1 — restore order in the types | done — `RestoredCharacters` is the signature |
 | S2 — craft tables fail the build | done — `build.rs` reads both halves |
-| S3 — teardown chain, end to end | not started |
+| S3 — teardown chain, end to end | done — and it found link 4 half-missing |
 | S4 — a `Map` without an install | not started |
