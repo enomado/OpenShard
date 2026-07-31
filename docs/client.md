@@ -811,16 +811,30 @@ own understanding had written.
 
 ## Backlog, found while joining the window to the wire
 
-- **Everything stands.** Every mobile is drawn in group 4 whatever it is doing,
-  because choosing walk over stand wants a mobile's *history* — where it was on
-  the previous packet, and how long ago — which `WorldView` deliberately does
-  not keep, being a record of what arrived. The place for it is a layer above
-  the view that ages what it sees, and that layer is also what smooths a step
-  into a glide instead of a teleport.
-- **One animation clock for everybody.** `client/app` holds a single
-  `AnimationClock`, so a crowd standing still breathes in unison — which is
-  wrong and looks it. A clock per mobile needs a mobile that survives between
-  frames, and today the whole list is rebuilt from the view on every update.
+- ~~**Everything stands.**~~ ~~**One animation clock for everybody.**~~ Both
+  were the same missing thing, and it is `crates/client/app/src/crowd.rs`: a
+  position, a group and a clock per serial, above the view and below the
+  renderer. It lives in the app because it reads `client/net` and writes
+  `client/render`, which may not depend on each other.
+
+  What that turned up is worth more than the animation: **the three body kinds
+  number their groups differently, and group 4 is not "standing".** It is
+  `PeopleAnimationGroup.Stand` for a player, `HighAnimationGroup.Attack1` for a
+  monster and one past `LowAnimationGroup.Eat` for a horse — all three exist, so
+  the old constant failed at nothing and drew the wrong action forever.
+  `BodyKind::standing`/`walking`/`running` answer it now, pinned in a test
+  beside the enums; a monster's `running` is `None`, because `High` has no run.
+
+  Nothing on the wire says "stopped walking", so a step is heard rather than
+  seen: a position change starts a walk and `WALK_HOLD` — `WALK_INTERVAL`
+  twice, from `common/movement` rather than chosen to look right — ends it. A
+  *turn* is not a step, which is what a layer watching the facing instead of the
+  position would get wrong while passing every other test.
+
+  Still not done: **the glide.** A step is a teleport of one tile, and smoothing
+  it wants a sub-tile offset the renderer's `Mobile` has no field for — world
+  pixels between two tiles, interpolated over the same `WALK_HOLD`. The history
+  it needs now exists.
 - ~~**Ground items are decoded, held, and not drawn.**~~ Drawn.
   `crates/client/render/src/items.rs` is two of the existing collectors put
   together: an item's picture is a static's, and its source is a mobile's — a
