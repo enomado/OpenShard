@@ -37,3 +37,8 @@ CLAUDE.local.md
 # Embedding models the code-index server downloads into the working directory.
 .fastembed_cache/
 .skeleton/
+
+# render's frame test writes here by default (OPENSHARD_FRAME_DUMP unset) for
+# visual debugging. It is a render of the client's own map data and must never
+# be committed — see CONTRIBUTING.md, "No client files. Ever."
+*.ppm
