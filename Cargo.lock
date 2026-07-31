@@ -2408,6 +2408,7 @@ dependencies = [
  "egui-winit",
  "openshard-client-net",
  "openshard-client-render",
+ "openshard-movement",
  "openshard-protocol",
  "openshard-uofiles",
  "pollster",
@@ -2589,6 +2590,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-postgres",
+]
+
+[[package]]
+name = "openshard-playground"
+version = "0.0.1"
+dependencies = [
+ "openshard-client-app",
+ "openshard-e2e-shard",
+ "tracing-subscriber",
 ]
 
 [[package]]

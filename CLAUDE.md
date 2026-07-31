@@ -120,8 +120,9 @@ map. The rules:
 - **`crates/common/*` is below the server.** `server/*` and `client/*` may depend
   on it and never on each other; anything both ends of the wire agree on lives in
   `crates/common/protocol`. The one place both ends may be named is
-  **`crates/e2e/*`**, which ships no code — only tests that need a real client
-  and a real shard in one process — and which nothing depends on.
+  **`crates/e2e/*`**, which ships nothing the engine depends on: the tests that
+  need a real client and a real shard in one process, the helper that starts
+  that shard, and `playground`, the binary that puts a window in front of it.
 
 ## What the client actually does
 

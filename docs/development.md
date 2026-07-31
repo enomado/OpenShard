@@ -31,6 +31,18 @@ that file. See [`style.md`](style.md).
 
 Running the shard: `cargo run -p openshard-server`.
 
+Running both ends at once — a shard on an ephemeral port and our own client
+logged in to it, in one process, ending together when the window closes:
+
+```sh
+OPENSHARD_CLIENT="/path/to/Ultima Online Classic" cargo run -p openshard-playground
+```
+
+It keeps nothing: the world is in memory and goes away with the process, which
+is what makes it a playground rather than a way to run a shard. The sockets are
+real loopback sockets — see `crates/e2e/playground` for why an in-memory
+transport would be the wrong shortcut.
+
 ## No Rust toolchain? Install one without root
 
 `rustup` is unreachable from some sandboxes — `static.rust-lang.org` is blocked —

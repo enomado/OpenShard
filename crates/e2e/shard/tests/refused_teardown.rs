@@ -42,14 +42,12 @@
 //! that one the expensive way.
 //!
 //! The witness is a *second account* playing a *second character*, which is why
-//! `common::config_for` appends one to the stock config. Two connections
+//! `openshard_e2e_shard::stock_config` appends one to the stock config. Two connections
 //! playing the one character the stock config ships does work today, and it is
 //! not a rule anybody wrote down — nothing refuses a second login on an account,
 //! and nothing promises not to. A fixture standing on that is a fixture that
 //! dies the day someone adds the check, in a test that has nothing to do with
 //! logging in twice.
-
-mod common;
 
 use std::time::Duration;
 
@@ -62,7 +60,7 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{RawCharacterSlot, RawClientIp};
 use openshard_protocol::world::CharacterPlay;
 
-use common::{CHARACTER, NYSTUL, WITNESS, plan, plan_for, shard, version};
+use openshard_e2e_shard::{CHARACTER, NYSTUL, WITNESS, plan, plan_for, shard, version};
 
 /// How long any one step of this may take.
 ///

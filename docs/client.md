@@ -112,6 +112,47 @@ and the tick all have better tests of their own; what is left for `e2e` is that
 two correct ends actually agree — which is exactly what caught the compression
 mistake above, on the first run.
 
+**And one command runs both ends.** `crates/e2e/playground` is that same
+arrangement with a window instead of assertions:
+
+```sh
+OPENSHARD_CLIENT=… cargo run -p openshard-playground
+```
+
+A shard on an ephemeral port in a thread, the window logged in to whatever it
+bound, and both ending when the window closes — no port to pick, no config file
+to keep in step with one, and nothing to keep, because the world is in memory.
+
+Three things it deliberately does not do. It does not skip the socket: an
+in-memory duplex would be a second transport that only this binary uses, and
+read boundaries, the relay's second connection and per-write compression are
+precisely what `client/net` and `gateway` are careful about — a transport that
+went around them would be quiet the day one of them broke. It does not give the
+shard a different map: `world.client_files` is pointed at the same install the
+window reads, because the client predicts each step's `z` from its own copy of
+the facet and two ends reading different ground is a stream of `0x21` rollbacks
+that looks like a client bug. And it does not live in `client/app`, which is why
+that crate is now a library with a thin binary — the move
+`crates/server/server` already made, and for the same reason: something that
+wants a client should call one rather than build one.
+
+Backlog it leaves behind:
+
+- **The facet is read twice in one process**, once by the shard and once by the
+  window, because `Map` is loaded from a path by each end and neither knows the
+  other is in the room. A few hundred megabytes, paid twice, and the same
+  question the "a container is read whole into memory" item below is about. The
+  honest fix is a `Map` that can be handed over rather than opened again, and
+  M3b's `Arc<Map>` cache is where that belongs.
+- **Nothing tests that the playground boots.** `e2e/shard`'s tests cover the
+  shard and the login; what this binary adds — a config with `client_files` set,
+  and a window — is covered by running it. An `#[ignore]`d test that starts the
+  shard with a real install and enters the world *without* a window would cover
+  everything but the GPU, and needs `OPENSHARD_CLIENT` like the rest.
+- **It is the obvious place for M3b.** One process already holds a shard and a
+  client; two sessions against one shard is one more `spawn` of a connection,
+  and it would be a real test of "the files are loaded once per install".
+
 ## M2 — `crates/common/uofiles`: the data files
 
 The move first: `map`, `uop`, `tiledata`, and the format-reading half of
