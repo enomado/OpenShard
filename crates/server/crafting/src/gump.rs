@@ -33,7 +33,7 @@ use crate::craft;
 use crate::defs::system;
 use crate::recipe::Recipe;
 use crate::system::{CraftSystemDef, Text};
-use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::wire::{ClilocId, Graphic, Hue};
 
 /// The window's own id. Distinct from the quest log's, so the two claims of a
 /// `0xB1` cannot be confused.
@@ -177,7 +177,7 @@ pub fn close(state: &mut WorldState, player: EntityId) {
 }
 
 /// Put a line in the window's notice box and redraw it.
-fn reopen(state: &mut WorldState, player: EntityId, mut context: CraftGumpContext, notice: u32) {
+fn reopen(state: &mut WorldState, player: EntityId, mut context: CraftGumpContext, notice: Option<ClilocId>) {
     context.notice = notice;
     context.page = CraftGumpPage::Items;
     open(state, player, context);
@@ -209,12 +209,12 @@ fn main(
     layout.alpha_region(10, 10, 510, 477);
 
     title(&mut layout, def);
-    layout.html_localized_colored(10, 37, 200, 22, 1_044_010, LABEL, false, false); // CATEGORIES
-    layout.html_localized_colored(215, 37, 305, 22, 1_044_011, LABEL, false, false); // SELECTIONS
-    layout.html_localized_colored(10, 302, 150, 25, 1_044_012, LABEL, false, false); // NOTICES
+    layout.html_localized_colored(10, 37, 200, 22, ClilocId(1_044_010), LABEL, false, false); // CATEGORIES
+    layout.html_localized_colored(215, 37, 305, 22, ClilocId(1_044_011), LABEL, false, false); // SELECTIONS
+    layout.html_localized_colored(10, 302, 150, 25, ClilocId(1_044_012), LABEL, false, false); // NOTICES
 
     layout.button(15, 442, 4017, 4019, GumpButton::Reply, 0, ButtonId::CLOSE_BOX);
-    layout.html_localized_colored(50, 445, 150, 18, 1_011_441, LABEL, false, false); // EXIT
+    layout.html_localized_colored(50, 445, 150, 18, ClilocId(1_011_441), LABEL, false, false); // EXIT
 
     layout.button(
         115,
@@ -225,10 +225,10 @@ fn main(
         0,
         button_id(kind::MISC, misc::CANCEL),
     );
-    layout.html_localized_colored(150, 445, 150, 18, 1_112_698, LABEL, false, false); // CANCEL MAKE
+    layout.html_localized_colored(150, 445, 150, 18, ClilocId(1_112_698), LABEL, false, false); // CANCEL MAKE
 
-    if context.notice != 0 {
-        layout.html_localized_colored(170, 295, 350, 40, context.notice, LABEL, false, false);
+    if let Some(notice) = context.notice {
+        layout.html_localized_colored(170, 295, 350, 40, notice, LABEL, false, false);
     }
 
     // The material row: which metal or wood is selected, and how much of it the
@@ -325,13 +325,13 @@ fn items(layout: &mut GumpLayout, def: &CraftSystemDef, group: u16) {
         if row == 0 {
             if i > 0 {
                 layout.button(370, 260, 4005, 4007, GumpButton::Page, page, ButtonId::UNUSED);
-                layout.html_localized_colored(405, 263, 100, 18, 1_044_045, LABEL, false, false);
+                layout.html_localized_colored(405, 263, 100, 18, ClilocId(1_044_045), LABEL, false, false);
                 // NEXT PAGE
             }
             layout.page(page);
             if i > 0 {
                 layout.button(220, 260, 4014, 4015, GumpButton::Page, page - 1, ButtonId::UNUSED);
-                layout.html_localized_colored(255, 263, 100, 18, 1_044_044, LABEL, false, false);
+                layout.html_localized_colored(255, 263, 100, 18, ClilocId(1_044_044), LABEL, false, false);
                 // PREV PAGE
             }
         }
@@ -415,25 +415,34 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
     layout.alpha_region(10, 10, 510, 399);
 
     title(&mut layout, def);
-    layout.html_localized_colored(170, 40, 150, 20, 1_044_053, LABEL, false, false); // ITEM
-    layout.html_localized_colored(10, 217, 150, 22, 1_044_055, LABEL, false, false); // MATERIALS
-    layout.html_localized_colored(10, 302, 150, 22, 1_044_056, LABEL, false, false); // OTHER
+    layout.html_localized_colored(170, 40, 150, 20, ClilocId(1_044_053), LABEL, false, false); // ITEM
+    layout.html_localized_colored(10, 217, 150, 22, ClilocId(1_044_055), LABEL, false, false); // MATERIALS
+    layout.html_localized_colored(10, 302, 150, 22, ClilocId(1_044_056), LABEL, false, false); // OTHER
 
     layout.button(405, 387, 4005, 4007, GumpButton::Reply, 0, detail::MAKE);
-    layout.html_localized_colored(445, 390, 150, 18, 1_044_151, LABEL, false, false); // MAKE NOW
+    layout.html_localized_colored(445, 390, 150, 18, ClilocId(1_044_151), LABEL, false, false); // MAKE NOW
     layout.button(15, 387, 4014, 4016, GumpButton::Reply, 0, detail::BACK);
-    layout.html_localized_colored(50, 390, 150, 18, 1_044_150, LABEL, false, false); // BACK
+    layout.html_localized_colored(50, 390, 150, 18, ClilocId(1_044_150), LABEL, false, false); // BACK
 
     label(&mut layout, 330, 40, 180, recipe.name, "");
     layout.item(90, 110, u32::from(recipe.graphic.0), u32::from(recipe.hue.0));
 
     let mut other = 0;
     if recipe.use_all_res {
-        layout.html_localized_colored(170, 302, 310, 18, 1_048_176, LABEL, false, false); // makes as many as possible
+        layout.html_localized_colored(170, 302, 310, 18, ClilocId(1_048_176), LABEL, false, false); // makes as many as possible
         other += 1;
     }
     if recipe.markable {
-        layout.html_localized_colored(170, 302 + other * 20, 310, 18, 1_044_059, LABEL, false, false); // may hold a maker's mark
+        layout.html_localized_colored(
+            170,
+            302 + other * 20,
+            310,
+            18,
+            ClilocId(1_044_059),
+            LABEL,
+            false,
+            false,
+        ); // may hold a maker's mark
     }
 
     // One row per required skill, at the value it starts to be possible.
@@ -444,10 +453,10 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
     }
 
     let odds = chance(state, player, def, recipe);
-    layout.html_localized_colored(170, 80, 250, 18, 1_044_057, LABEL, false, false); // Success Chance:
+    layout.html_localized_colored(170, 80, 250, 18, ClilocId(1_044_057), LABEL, false, false); // Success Chance:
     layout.label(430, 80, LABEL_HUE, percent(odds.success));
     if recipe.markable {
-        layout.html_localized_colored(170, 100, 250, 18, 1_044_058, LABEL, false, false); // Exceptional Chance:
+        layout.html_localized_colored(170, 100, 250, 18, ClilocId(1_044_058), LABEL, false, false); // Exceptional Chance:
         layout.label(430, 100, LABEL_HUE, percent(odds.exceptional));
     }
 
@@ -466,8 +475,8 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
 
 /// A skill's name, as the client's own list numbers them — ServUO's
 /// `AosSkillBonuses.GetLabel`, whose three exceptions are skills no craft wants.
-fn skill_label(skill: openshard_state::Skill) -> u32 {
-    1_044_060 + u32::from(skill.id())
+fn skill_label(skill: openshard_state::Skill) -> ClilocId {
+    ClilocId(1_044_060 + u32::from(skill.id()))
 }
 
 /// `620` tenths as `"62.0"`.
@@ -558,7 +567,7 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
             let mut next = context;
             next.group = u16::try_from(index).unwrap_or(0);
             next.page = CraftGumpPage::Items;
-            next.notice = 0;
+            next.notice = None;
             open(state, player, next);
         }
         kind::MAKE => {
@@ -631,7 +640,7 @@ fn make(state: &mut WorldState, player: EntityId, context: CraftGumpContext, rec
         recipe,
         context.sub_res,
     );
-    let notice = if started { 0 } else { context.notice };
+    let notice = if started { None } else { context.notice };
     reopen(state, player, context, notice);
 }
 

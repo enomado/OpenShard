@@ -150,7 +150,7 @@ fn craft(
             group,
             sub_res,
             page: CraftGumpPage::Items,
-            notice: 0,
+            notice: None,
         },
     );
     // The row's index is its place *within the group*, which is what the window

@@ -45,7 +45,10 @@ impl Text {
     /// The Rust expression for this text.
     fn expr(&self) -> String {
         match self {
-            Self::Cliloc(n) => format!("Text::Cliloc({n})"),
+            // Fully qualified: the generated file is `include!`d into modules
+            // whose imports it cannot see, and a bare `ClilocId` would make the
+            // generator depend on every one of them importing it.
+            Self::Cliloc(n) => format!("Text::Cliloc(openshard_protocol::wire::ClilocId({n}))"),
             Self::Str(s) => format!("Text::Str({s:?})"),
         }
     }

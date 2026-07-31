@@ -18,6 +18,7 @@ use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::Serial;
 use crate::version::ClientVersion;
+use crate::wire::ClilocId;
 
 /// Which dialog: the id the server gives a gump and the client echoes back in
 /// its `0xB1`, so a reply can be routed to whoever drew the window.
@@ -532,7 +533,7 @@ impl GumpLayout {
         y: i32,
         width: i32,
         height: i32,
-        cliloc: u32,
+        cliloc: ClilocId,
         background: bool,
         scrollbar: bool,
     ) {
@@ -543,7 +544,7 @@ impl GumpLayout {
                 i64::from(y),
                 i64::from(width),
                 i64::from(height),
-                i64::from(cliloc),
+                i64::from(cliloc.0),
                 i64::from(background),
                 i64::from(scrollbar),
             ],
@@ -557,7 +558,7 @@ impl GumpLayout {
         y: i32,
         width: i32,
         height: i32,
-        cliloc: u32,
+        cliloc: ClilocId,
         color: u32,
         background: bool,
         scrollbar: bool,
@@ -569,7 +570,7 @@ impl GumpLayout {
                 i64::from(y),
                 i64::from(width),
                 i64::from(height),
-                i64::from(cliloc),
+                i64::from(cliloc.0),
                 i64::from(background),
                 i64::from(scrollbar),
                 i64::from(color),
@@ -587,7 +588,7 @@ impl GumpLayout {
         y: i32,
         width: i32,
         height: i32,
-        cliloc: u32,
+        cliloc: ClilocId,
         args: &str,
         color: u32,
         background: bool,
@@ -603,7 +604,7 @@ impl GumpLayout {
                 i64::from(background),
                 i64::from(scrollbar),
                 i64::from(color),
-                i64::from(cliloc),
+                i64::from(cliloc.0),
             ],
         );
         let brace = self.layout.pop();
@@ -896,7 +897,17 @@ mod tests {
     #[test]
     fn a_localized_line_with_arguments_ends_in_its_argument_run() {
         let mut layout = GumpLayout::new();
-        layout.html_localized_args(98, 140, 312, 16, 1_074_782, "Britain", GUMP_WHITE, false, false);
+        layout.html_localized_args(
+            98,
+            140,
+            312,
+            16,
+            ClilocId(1_074_782),
+            "Britain",
+            GUMP_WHITE,
+            false,
+            false,
+        );
         assert_eq!(
             layout.finish().0,
             "{ xmfhtmltok 98 140 312 16 0 0 32767 1074782 @Britain@ }"

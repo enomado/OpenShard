@@ -36,7 +36,7 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // one, which is what makes the last five points of the skill worth having.
     CraftSystemDef {
         skill: Skill::Blacksmith,
-        title: Text::Cliloc(1_044_002),
+        title: Text::Cliloc(ClilocId(1_044_002)),
         chance_at_min: 0,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
@@ -54,7 +54,7 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // trade that is pleasant to learn and one that is not.
     CraftSystemDef {
         skill: Skill::Tailoring,
-        title: Text::Cliloc(1_044_005),
+        title: Text::Cliloc(ClilocId(1_044_005)),
         chance_at_min: 500,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
@@ -70,7 +70,7 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // Carpentry, the same floor as tailoring.
     CraftSystemDef {
         skill: Skill::Carpentry,
-        title: Text::Cliloc(1_044_004),
+        title: Text::Cliloc(ClilocId(1_044_004)),
         chance_at_min: 500,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
@@ -86,7 +86,7 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // Tinkering: a smith's floor with a carpenter's freedom to work anywhere.
     CraftSystemDef {
         skill: Skill::Tinkering,
-        title: Text::Cliloc(1_044_007),
+        title: Text::Cliloc(ClilocId(1_044_007)),
         chance_at_min: 0,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
@@ -104,7 +104,7 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // appears here and nowhere else.
     CraftSystemDef {
         skill: Skill::Alchemy,
-        title: Text::Cliloc(1_044_001),
+        title: Text::Cliloc(ClilocId(1_044_001)),
         chance_at_min: 0,
         eca: Eca::ChanceMinusSixty,
         delay_ticks: DELAY_TICKS,

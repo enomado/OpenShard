@@ -214,7 +214,7 @@ impl World {
                 group: 0,
                 sub_res: 0,
                 page: openshard_state::CraftGumpPage::Items,
-                notice: 0,
+                notice: None,
             },
         );
     }

@@ -24,7 +24,7 @@ use crate::recipe::{Recipe, SubResAxis};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Text {
     /// A cliloc number the client looks up.
-    Cliloc(u32),
+    Cliloc(ClilocId),
     /// A literal, for the rows that have no number.
     Str(&'static str),
 }

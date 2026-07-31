@@ -679,9 +679,13 @@ pub struct CraftGumpContext {
     pub sub_res: u8,
     /// Which page.
     pub page: CraftGumpPage,
-    /// The cliloc in the window's notice box — what the last attempt had to say.
-    /// Zero for none.
-    pub notice: u32,
+    /// The cliloc in the window's notice box — what the last attempt had to say,
+    /// or `None` when the box is empty.
+    ///
+    /// An `Option` and not a zero sentinel: cliloc `0` is a number the client
+    /// would look up, so "no notice" and "notice number zero" were the same
+    /// value here, and only the `!= 0` at the draw site kept them apart.
+    pub notice: Option<ClilocId>,
 }
 
 /// What a raised targeting cursor is waiting to do with the click.

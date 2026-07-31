@@ -513,7 +513,11 @@ shared class-B type and its second decoder-rewrites-a-value finding.
   `Deserialize`/`Serialize` now (`#[serde(transparent)]`, `wire.rs`), so a
   content loader can read either straight into the newtype instead of every
   call site wrapping a bare number by hand. The sweep across the ~190 call
-  sites itself is still open.
+  sites itself is still open. — **closed by N-gump (below): the remaining bare
+  clilocs were not call sites at all but four `u32` *parameters* on
+  `GumpLayout`, which is why no field scan ever counted them. Sourcing the
+  numbers from a content table stays open, and is a Community Pack question now
+  that the type is in place, not a newtype one.**
 - ~~**`0x03B2` is written out five times**: `gm::SYSTEM_HUE`, `npc::GREET_HUE`,
   `quests::progress::NPC_HUE`, `runtime::SYSTEM_HUE`,
   `tick::defaults::TEXT_HUE`. They are all "the client's muted grey", all four
@@ -1248,9 +1252,11 @@ but everything they are read *against*.
   packet is interpreted — a drop onto the ground and a drop into a container are
   not the same request — and it is a `containers.rs` question, not this stage's.~~
   — **fixed (N-drop, below), and the honest fix is what landed.**
-- **`crafting::system::Text::Cliloc(u32)` is still bare**, for N-tables' reason:
+- ~~**`crafting::system::Text::Cliloc(u32)` is still bare**, for N-tables' reason:
   it is ServUO's `TextDefinition` and doubles as gump-label text, so it is a
-  wider structure than a message id.
+  wider structure than a message id.~~ — **fixed (N-cliloc, below). The reason
+  above described the `Text` enum, not the variant: `Text` is wider than a
+  message id, and `Cliloc`'s payload is exactly one.**
 - ~~**`Command`'s script-facing serials are still bare `u32`.** `ShowGump::serial`
   and roughly a dozen others take a raw serial where the tick then calls
   `Serial::new`. The bridge in `server/scripting.rs` is the seam that should
@@ -1496,6 +1502,42 @@ predecessor plan's value was that every stage's surprise got written down
 (`0xB9` not fitting `EncodePacket`, `CreateCharacter`'s two ids), and a surprise
 resolved silently in one module is a pattern the next module contradicts.
 
+## Amendments forced by N-gump (`GumpLayout`'s cliloc parameters)
+
+The last of the backlog, and the one that proves N-gate's parameter gap is not
+theoretical.
+
+**1. The "~190 bare cliloc call sites" were a symptom, not the disease.**
+`ClilocId` had existed since N-tables and most of the engine used it; what kept
+producing bare numbers was that `GumpLayout::html_localized`,
+`html_localized_colored` and `html_localized_args` took `cliloc: u32`. A
+parameter, not a field — so N10's counter, which scans `pub name: type`, has
+never once looked at them, and every caller had to hand a naked number to a
+typed API. Three signatures changed and the bare numbers had nowhere left to
+come from. This is exactly the class N-gate documented as out of reach and the
+reason to keep re-opening the `syn` argument.
+
+**2. The constants moved with them.** `quests::gump`'s sixteen `pub const X:
+u32` cliloc table became sixteen `ClilocId`s, `crafting::gump`'s
+`skill_label` now returns one, and `crafting::system::Text::Cliloc` carries one
+— which meant `build.rs` had to emit `openshard_protocol::wire::ClilocId(n)`
+fully qualified, because the file it generates is `include!`d into modules whose
+imports it cannot see.
+
+**3. A zero sentinel fell out on the way.** `CraftGumpContext::notice` was a
+`u32` documented "zero for none", read through an `if context.notice != 0`.
+Cliloc `0` is a number the client would happily look up, so "no notice" and
+"notice number zero" were the same value and only that one comparison told them
+apart — the shape `docs/style.md` names as worse than an `Option` because it
+reads like a value somebody chose. It is `Option<ClilocId>` now and the
+comparison is a `if let`.
+
+**4. What stays open, and is no longer this document's problem.** The original
+entry also wanted the numbers to *come from a content table* rather than be
+literals in Rust. That is worth doing and it is a Community Pack question:
+`ClilocId` is `#[serde(transparent)]`, so a loader can read one straight into
+the newtype. Nothing about it is a newtype decision any more.
+
 ## Amendments forced by N-drop (the `0x08`'s two coordinate spaces)
 
 The one backlog entry the sweep left that was a *design* bug rather than a
@@ -1604,5 +1646,6 @@ place its behaviour can be pinned.
 | N-components | done — `Drawn`, `Container.gump`, `Contained.{position, grid}`, and the graphic-keyed tables under them | `6c01d6e` |
 | N-commands | done — `Command` 27 bare serials → 0, `trade.rs` 3 → 0 (the module N8's counter could not see), and the system functions under them | |
 | N-persistence | done — `CharacterRecord`, `ItemRecord`, `MobileRecord`, `DecorationRecord`, `PetData`, `Inventory`, `QuestRecord` serials typed via `serde(with = ...)`, on-disk shape unchanged, `SCHEMA_VERSION` still 23; `MobileRecord::spawned_by` stays `Option<u32>` (a spawner-list index, not a serial) | `84a59b1` |
+| N-gump | done — `GumpLayout`'s three localized-text methods take a `ClilocId`, `quests::gump`'s sixteen constants and `crafting`'s `Text::Cliloc` with them, and `CraftGumpContext::notice`'s zero sentinel became an `Option` | |
 | N-drop | done — the `0x08`'s one position field with two meanings became `DropDestination`; `Command::DropItem` carries it, `drop_into_container` takes a `GumpPoint`, `drop_onto_item` became `drop_onto_serial` | |
 | N-gate | done — the coverage check now walks enum bodies (15 fields found, all allowlisted in existing classes), reports and asserts what it examined, and has a fixture; a function's parameters stay out of reach and are documented as such | |

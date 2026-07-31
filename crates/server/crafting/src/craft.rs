@@ -131,7 +131,7 @@ fn say_materials(state: &mut WorldState, crafter: EntityId, refusal: Refusal) {
         // needs telling.
         Refusal::NoPack => {}
         Refusal::NotEnough(text) | Refusal::CannotWork(text) => match text {
-            crate::system::Text::Cliloc(cliloc) => state.localized_message(crafter, ClilocId(cliloc), ""),
+            crate::system::Text::Cliloc(cliloc) => state.localized_message(crafter, cliloc, ""),
             crate::system::Text::Str(line) => state.system_message(crafter, line),
         },
     }

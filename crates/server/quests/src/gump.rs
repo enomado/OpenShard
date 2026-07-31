@@ -21,6 +21,7 @@ use openshard_protocol::gump::{
 };
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Client, QuestLog};
 use openshard_state::quest::{ObjectiveKind, QuestDef};
 use openshard_state::{QuestGumpContext, QuestSection, WorldState};
@@ -97,22 +98,24 @@ pub(crate) mod sound {
 
 /// Clilocs the frame and the objective lines use, from `MondainQuestGump`.
 mod cliloc {
-    pub const QUEST_LOG: u32 = 1_046_026;
-    pub const QUEST_OFFER: u32 = 1_049_010;
-    pub const QUEST_CONVERSATION: u32 = 3_006_156;
-    pub const FAILED: u32 = 500_039;
-    pub const DESCRIPTION: u32 = 1_072_202;
-    pub const OBJECTIVE: u32 = 1_049_073;
-    pub const ALL_OF_THE_FOLLOWING: u32 = 1_072_208;
-    pub const ONLY_ONE_OF_THE_FOLLOWING: u32 = 1_072_209;
-    pub const REWARD: u32 = 1_072_201;
-    pub const SLAY: u32 = 1_072_204;
-    pub const OBTAIN: u32 = 1_072_205;
-    pub const ESCORT_TO: u32 = 1_072_206;
-    pub const DELIVER: u32 = 1_072_207;
-    pub const DELIVER_TO: u32 = 1_072_379;
-    pub const TOTAL: u32 = 3_000_087;
-    pub const TIME_REMAINING: u32 = 1_062_379;
+    use openshard_protocol::wire::ClilocId;
+
+    pub const QUEST_LOG: ClilocId = ClilocId(1_046_026);
+    pub const QUEST_OFFER: ClilocId = ClilocId(1_049_010);
+    pub const QUEST_CONVERSATION: ClilocId = ClilocId(3_006_156);
+    pub const FAILED: ClilocId = ClilocId(500_039);
+    pub const DESCRIPTION: ClilocId = ClilocId(1_072_202);
+    pub const OBJECTIVE: ClilocId = ClilocId(1_049_073);
+    pub const ALL_OF_THE_FOLLOWING: ClilocId = ClilocId(1_072_208);
+    pub const ONLY_ONE_OF_THE_FOLLOWING: ClilocId = ClilocId(1_072_209);
+    pub const REWARD: ClilocId = ClilocId(1_072_201);
+    pub const SLAY: ClilocId = ClilocId(1_072_204);
+    pub const OBTAIN: ClilocId = ClilocId(1_072_205);
+    pub const ESCORT_TO: ClilocId = ClilocId(1_072_206);
+    pub const DELIVER: ClilocId = ClilocId(1_072_207);
+    pub const DELIVER_TO: ClilocId = ClilocId(1_072_379);
+    pub const TOTAL: ClilocId = ClilocId(3_000_087);
+    pub const TIME_REMAINING: ClilocId = ClilocId(1_062_379);
 }
 
 /// The label hue an objective's numbers are drawn in (ServUO's `0x481`).
@@ -642,12 +645,12 @@ pub(crate) fn show_resign(state: &mut WorldState, player: EntityId, key: &str) {
     layout.image_tiled(10, 210, 300, 20, 0xA40);
     layout.alpha_region(10, 10, 300, 220);
     // 1049005 "Yes, I want to quit this quest." / 1049006 "No, I want to continue."
-    layout.html_localized_colored(14, 12, 300, 20, 1_049_000, GUMP_WHITE, false, false);
+    layout.html_localized_colored(14, 12, 300, 20, ClilocId(1_049_000), GUMP_WHITE, false, false);
     layout.html_colored(40, 45, 260, 40, &title, GUMP_DARK_GREEN, false, false);
     layout.radio(45, 100, 0x25F8, 0x25FB, true, RESIGN_SWITCH_YES);
-    layout.html_localized_colored(80, 100, 200, 20, 1_049_005, GUMP_WHITE, false, false);
+    layout.html_localized_colored(80, 100, 200, 20, ClilocId(1_049_005), GUMP_WHITE, false, false);
     layout.radio(45, 130, 0x25F8, 0x25FB, false, RESIGN_SWITCH_NO);
-    layout.html_localized_colored(80, 130, 200, 20, 1_049_006, GUMP_WHITE, false, false);
+    layout.html_localized_colored(80, 130, 200, 20, ClilocId(1_049_006), GUMP_WHITE, false, false);
     layout.button(265, 220, 0x00F7, 0x00F8, GumpButton::Reply, 0, RESIGN_OK);
 
     let (string, lines) = layout.finish();

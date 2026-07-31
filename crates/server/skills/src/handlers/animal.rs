@@ -158,8 +158,8 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
 
     gump.page(1);
     gump.image(128, 152, 2086);
-    gump.html_localized_colored(147, 150, 160, 18, 1_049_593, 200, false, false); // Attributes
-    let row = |gump: &mut GumpLayout, y: i32, label: u32, value: String| {
+    gump.html_localized_colored(147, 150, 160, 18, ClilocId(1_049_593), 200, false, false); // Attributes
+    let row = |gump: &mut GumpLayout, y: i32, label: ClilocId, value: String| {
         gump.html_localized_colored(153, y, 160, 18, label, LABEL_HUE, false, false);
         gump.html(
             280,
@@ -171,39 +171,69 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
             false,
         );
     };
-    row(&mut gump, 168, 1_049_578, pool(hits.map(|h| (h.current, h.max))));
-    row(&mut gump, 186, 1_049_579, pool(stam.map(|s| (s.current, s.max))));
-    row(&mut gump, 204, 1_049_580, pool(mana.map(|m| (m.current, m.max))));
-    row(&mut gump, 222, 1_028_335, stat(stats.map(|s| s.strength)));
-    row(&mut gump, 240, 3_000_113, stat(stats.map(|s| s.dexterity)));
-    row(&mut gump, 258, 3_000_112, stat(stats.map(|s| s.intelligence)));
+    row(
+        &mut gump,
+        168,
+        ClilocId(1_049_578),
+        pool(hits.map(|h| (h.current, h.max))),
+    );
+    row(
+        &mut gump,
+        186,
+        ClilocId(1_049_579),
+        pool(stam.map(|s| (s.current, s.max))),
+    );
+    row(
+        &mut gump,
+        204,
+        ClilocId(1_049_580),
+        pool(mana.map(|m| (m.current, m.max))),
+    );
+    row(
+        &mut gump,
+        222,
+        ClilocId(1_028_335),
+        stat(stats.map(|s| s.strength)),
+    );
+    row(
+        &mut gump,
+        240,
+        ClilocId(3_000_113),
+        stat(stats.map(|s| s.dexterity)),
+    );
+    row(
+        &mut gump,
+        258,
+        ClilocId(3_000_112),
+        stat(stats.map(|s| s.intelligence)),
+    );
     // Pre-AoS the fourth block is "Miscellaneous", and the armour rating is what
     // goes in it — the number this engine actually has.
     gump.image(128, 278, 2086);
-    gump.html_localized_colored(147, 276, 160, 18, 3_001_016, 200, false, false); // Miscellaneous
-    row(&mut gump, 294, 1_049_581, stat(Some(armour))); // Armor Rating
-    row(&mut gump, 312, 1_061_646, percent(physical)); // Physical
+    gump.html_localized_colored(147, 276, 160, 18, ClilocId(3_001_016), 200, false, false); // Miscellaneous
+    row(&mut gump, 294, ClilocId(1_049_581), stat(Some(armour))); // Armor Rating
+    row(&mut gump, 312, ClilocId(1_061_646), percent(physical)); // Physical
     gump.button(340, 358, 5601, 5605, GumpButton::Page, 2, ButtonId::UNUSED);
 
     gump.page(2);
     gump.image(128, 152, 2086);
-    gump.html_localized_colored(147, 150, 160, 18, 3_001_030, 200, false, false); // Combat Ratings
+    gump.html_localized_colored(147, 150, 160, 18, ClilocId(3_001_030), 200, false, false); // Combat Ratings
     let combat = [
-        (168, 1_044_103, Skill::Wrestling),
-        (186, 1_044_087, Skill::Tactics),
-        (204, 1_044_086, Skill::MagicResist),
-        (222, 1_044_061, Skill::Anatomy),
-        (240, 1_044_090, Skill::Poisoning),
-        (276, 1_044_085, Skill::Magery),
-        (294, 1_044_076, Skill::EvalInt),
-        (312, 1_044_106, Skill::Meditation),
+        (168, ClilocId(1_044_103), Skill::Wrestling),
+        (186, ClilocId(1_044_087), Skill::Tactics),
+        (204, ClilocId(1_044_086), Skill::MagicResist),
+        (222, ClilocId(1_044_061), Skill::Anatomy),
+        (240, ClilocId(1_044_090), Skill::Poisoning),
+        (276, ClilocId(1_044_085), Skill::Magery),
+        (294, ClilocId(1_044_076), Skill::EvalInt),
+        (312, ClilocId(1_044_106), Skill::Meditation),
     ];
     for (y, label, skill) in combat {
         let value = skills.as_ref().map_or(0, |s| s.get(skill.id()));
         row(&mut gump, y, label, tenths(value));
     }
     gump.image(128, 260, 2086);
-    gump.html_localized_colored(147, 258, 160, 18, 3_001_032, 200, false, false); // Lore & Knowledge
+    gump.html_localized_colored(147, 258, 160, 18, ClilocId(3_001_032), 200, false, false); // Lore & Knowledge
     // A tamed creature says what it was last told, which is the one thing this
     // window can say about loyalty that is true.
     if let Some(order) = loyalty {
