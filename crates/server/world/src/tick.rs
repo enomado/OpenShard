@@ -399,6 +399,16 @@ impl World {
         &self.state.bus
     }
 
+    /// Ask the script pack for an admin verb nobody clicked — see [`crate::admin::seed`].
+    ///
+    /// Called between the script host being loaded and the first tick, which is
+    /// the one window where the cursors exist and no tick has retired anything
+    /// yet: the bus keeps an event for a tick past the `update` that follows it,
+    /// so a verb sent here is read by the first delivery and not a tick late.
+    pub fn seed(&mut self, action: &str) {
+        crate::admin::seed(&mut self.state, action);
+    }
+
     /// Everything in the world.
     pub const fn registry(&self) -> &Registry {
         &self.state.registry

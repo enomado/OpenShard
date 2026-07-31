@@ -31,6 +31,23 @@ that file. See [`style.md`](style.md).
 
 Running the shard: `cargo run -p openshard-server`.
 
+A shard with an empty world draws its map and nothing else — the engine ships no
+spawn or decoration data, so the townsfolk, the doors and the shop signs all come
+from the script pack under the verbs the `.admin` menu's buttons send. `--seed`
+sends those verbs at boot instead, so a world can be laid without a client
+attached:
+
+```sh
+cargo run -p openshard-server -- --seed regions:felucca,decorate:felucca,populate:felucca
+```
+
+The verbs are the pack's, not a list the binary checks, and they are sent in the
+order given — regions before what stands in them. They are sent *every* run the
+flag is passed: with `persistence.database` empty the world starts bare each
+time, which is what makes this convenient, but against a real database a second
+seeded start lays everything a second time. The `.admin` menu's clear verbs are
+how that is undone.
+
 Running both ends at once — a shard and our own client logged in to it, in one
 process, with no port bound and no socket opened:
 

@@ -249,7 +249,7 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (Soc
             // `new`, because the stop it is held by already exists — the caller
             // is holding a clone of it in the `Running` below.
             let reins = openshard_server::shard::Reins::over(served);
-            openshard_server::shard::run_shard(events, config, world, store, reins).await;
+            openshard_server::shard::run_shard(events, config, world, store, reins, &[]).await;
         });
     });
 

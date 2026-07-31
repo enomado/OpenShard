@@ -7763,6 +7763,49 @@ fn the_populate_button_emits_an_admin_action_for_the_pack() {
 }
 
 #[test]
+fn a_seeded_verb_is_the_button_without_a_game_master() {
+    // What `--seed` is: the same event the button sends, from a shard with no
+    // client attached at all. The serial is `None` and must stay so — a
+    // placeholder there would name whichever entity happened to hold it, and a
+    // pack reading it would be told a lie rather than "nobody".
+    let now = Instant::now();
+    let mut world = world();
+    let mut actions: Cursor<AdminMenuAction> = world.bus().cursor();
+
+    world.seed("decorate:felucca");
+    world.tick(now);
+
+    let events: Vec<AdminMenuAction> = world.bus().read(&mut actions).cloned().collect();
+    assert_eq!(events.len(), 1, "one admin action was emitted");
+    assert_eq!(events[0].action, "decorate:felucca");
+    assert_eq!(events[0].serial, None, "nobody pressed it");
+}
+
+#[test]
+fn a_verb_seeded_before_the_first_tick_survives_that_tick() {
+    // The window `run_shard` seeds in: after the script host takes its cursors,
+    // before any tick has run. The bus retires events at the *end* of a tick, so
+    // a verb sent here has to still be readable after the first one — if it were
+    // retired with the tick it was sent before, a seeded shard would lay nothing
+    // and say nothing about it.
+    let now = Instant::now();
+    let mut world = world();
+    // The cursor a script bridge would hold, taken before the seed as `Scripts`
+    // is built before it.
+    let mut actions: Cursor<AdminMenuAction> = world.bus().cursor();
+
+    world.seed("regions:felucca");
+    world.tick(now);
+
+    let events: Vec<AdminMenuAction> = world.bus().read(&mut actions).cloned().collect();
+    assert_eq!(
+        events.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(),
+        ["regions:felucca"],
+        "the verb survived the tick it was sent before"
+    );
+}
+
+#[test]
 fn an_admin_button_from_a_non_staff_client_is_ignored() {
     // The gump id is not a secret, so a plain player could forge a 0xB1 for
     // it. The gate must be on the response, not only the .admin that opened it.
