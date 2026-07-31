@@ -2,8 +2,10 @@
 
 Living plan. The stop itself landed: a `gateway::Shutdown` is cloned into the
 accept loop, every connection task and the tick, and `run_shard` returns only
-once the world is on disk. What is written down here is the four ways that stop
-is still not what it claims to be, and the order to fix them in.
+once the world is on disk. What was written down here is the four ways that stop
+was still not what it claimed to be, and the order to fix them in. S1 through S6
+are done; S7 — an operator's stop from inside the world — is what is left, and
+the backlog at the bottom is where the next session in this area starts.
 
 As with [`connection_state.md`](connection_state.md): when reality contradicts a
 decision here, change this file in the same commit that changes the code.
@@ -218,14 +220,25 @@ on. The rest are independent.
       the caller-visible contract — a dial after a stop ends rather than hangs —
       and the unit test beside the code is what pins the mechanism.
 
-- [ ] **S6. Prove that a stop saves.** "`run_shard` returns only once the world
+- [x] **S6. Prove that a stop saves.** "`run_shard` returns only once the world
       is on disk" is the claim the whole shutdown tail exists for, and nothing
-      asserts it. An end-to-end test with a SQLite file: log in, take a step,
-      stop, reopen the store, and find the character at the new position.
-      **DoD:** the test, and a temporary path that does not need a new dependency
-      (`std::env::temp_dir` plus the pid) — and it must fail if the snapshot is
-      moved after the `drop(saves)`, which is the reordering it is really there
-      to catch.
+      asserted it: every other stop test runs with no database, where the store is
+      a `MemoryStore` and a save that never happened looks exactly like one that
+      did. `crates/e2e/shard/tests/stop_saves.rs` — log in, take one acked step,
+      stop, reopen the file, find the character at the tile it walked to.
+
+      Two things make it an assertion rather than a coincidence.
+      `persistence.save_seconds = 0`, so the periodic save cannot be what wrote
+      the row — otherwise the test would pass on a slow machine for the wrong
+      reason. And the reader is `SqliteStore` directly rather than
+      `boot::open_store`, so the claim is about the bytes on the disk and not
+      about the shard's own opener agreeing with itself.
+      **DoD (met):** the test, with `std::env::temp_dir` plus the pid for the
+      path and a `Scratch` guard that removes the file on the way in as well as
+      out — a leftover from a killed run would otherwise be a database that
+      already had the character in it. Checked to fail with the snapshot moved
+      below `drop(saves)`: the sends land on a closed channel, the `let _ =`
+      swallows them, and the character is not in the database at all.
 
 - [ ] **S7. Later: an operator's stop, from inside the world.** A GM command that
       asks for a stop, optionally in N minutes, with the countdown as tick counts
@@ -267,6 +280,20 @@ on. The rest are independent.
 - **`Shard::announce_shutdown` is the only caller of `World::announce`.** A GM
   broadcast is the obvious second, and S7's countdown is the third; until one of
   them exists the method is a one-use seam and its shape is unproven.
+- **`Running` cannot ask for a stop without waiting for it.** `stop` asks and
+  joins, and there is no way to get the first without the second — the `Shutdown`
+  it holds is private. That is why S5's e2e test cannot reach the window it
+  actually cares about, the one where the shard is stopping and its runtime is
+  still alive; by the time a test can dial, the thread is already gone and the
+  answer arrives for a second reason. A `Running::ask` that only sets the flag
+  would make that window reachable, and would also be what a test of "a client
+  connected at the moment of the stop" needs.
+- **Only SQLite is proved to be saved on a stop.** S6 opens a file, and the
+  PostgreSQL backend goes through the same `Store` and the same tail with none of
+  it asserted — a shard whose operator chose Postgres has the claim on trust. The
+  test is written against the trait and would run against either; what is missing
+  is a way to have a server in CI, which is a decision about CI and not about this
+  plan.
 - **A stop mid-`Entering` is untested.** A client whose `Command::Enter` is
   queued when the stop arrives has no entity, so it gets no announcement — only
   the hang-up. That is correct, and nothing pins it.
@@ -280,9 +307,15 @@ S1 through S4 are in: a shard under systemd is asked rather than killed, an
 operator with a wedged save has a way out that is not `SIGKILL`, what the world
 queues on its way out reaches the wire, a player is told why their screen is
 about to go, a shard thread that dies during a test's teardown fails that test
-instead of printing at it, and a gate that has been asked to stop refuses rather
-than spawning onto a runtime that is going away. S6 is what is left: the test
-that the whole shutdown tail exists for. The commit that created this plan is the one that landed the stop
+instead of printing at it, a gate that has been asked to stop refuses rather
+than spawning onto a runtime that is going away, and the claim the whole tail
+exists for — that `run_shard` returns only once the world is on disk — is
+finally asserted against a real file rather than believed.
+
+What is left is S7, an operator's stop from inside the world, and the backlog
+below. Three of its entries are now the oldest things here: the `Box::leak` in
+both `e2e` spawns, the unbounded `save_loop`, and the log that says nothing
+about how long a stop took. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.

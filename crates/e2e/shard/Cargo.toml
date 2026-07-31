@@ -33,4 +33,8 @@ toml.workspace = true
 # an oracle has to be bigger than the pace budget, and a number written here
 # would stop being bigger the day the budget grew.
 openshard-movement.workspace = true
+# To reopen, from outside the shard, the database the shard wrote: `tests/
+# stop_saves.rs` is the only assertion anywhere that a stop actually saved. A
+# dev-dependency because the reading end is a test's, not the playground's.
+openshard-persistence.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }

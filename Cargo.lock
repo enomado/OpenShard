@@ -2481,6 +2481,7 @@ dependencies = [
  "openshard-config",
  "openshard-gateway",
  "openshard-movement",
+ "openshard-persistence",
  "openshard-protocol",
  "openshard-server",
  "tokio",
