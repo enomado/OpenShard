@@ -250,11 +250,6 @@ on. The rest are independent.
 
 ## Backlog, found on the way
 
-- **`Box::leak` on the config in both `e2e` spawns.** Both say `run_shard`
-  borrows the config for the life of the process, but the future is awaited
-  inside the same `block_on` scope, so a local and a `&` may well compile. Fifty
-  worlds started and dropped is fifty leaked configs otherwise. Verify, and if it
-  compiles, delete the leak and the paragraph that justified it.
 - **`DRAIN_ON_STOP` is a constant, not a setting.** Right until an operator has a
   shard where it is wrong; the number belongs beside `save_every` in
   `[persistence]` if it ever moves.
@@ -313,8 +308,8 @@ exists for — that `run_shard` returns only once the world is on disk — is
 finally asserted against a real file rather than believed.
 
 What is left is S7, an operator's stop from inside the world, and the backlog
-below. Three of its entries are now the oldest things here: the `Box::leak` in
-both `e2e` spawns, the unbounded `save_loop`, and the log that says nothing
+below. Two of its entries are now the oldest things here: the unbounded
+`save_loop`, and the log that says nothing
 about how long a stop took. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points

@@ -100,9 +100,10 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (InP
             // is open.
             let (gate, events) = Gate::new(served.clone());
 
-            // Leaked for the same reason as in `crate::spawn`: `run_shard`
-            // borrows the config for as long as it runs, which is the process.
-            let config: &'static Config = Box::leak(Box::new(config(NOMINAL)));
+            // A local, for the same reason as in `crate::spawn`: `run_shard`
+            // borrows the config for as long as it runs, and that is this block.
+            let config = config(NOMINAL);
+            let config = &config;
             let world = openshard_server::boot::load_world(config).expect("a world");
             let store = openshard_server::boot::open_store(config).await.expect("a store");
 

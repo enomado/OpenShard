@@ -132,8 +132,8 @@ pub fn stock_config(address: SocketAddr) -> Config {
 /// joined, and the gate it held kept the event channel open, so `run_shard`
 /// never saw its input close. That is right for a process that ends with the
 /// shard and wrong for a test — and wrong in a way that grows, because a fuzzing
-/// run wants fifty worlds started and dropped, not fifty threads and fifty
-/// leaked configs kept until the process exits.
+/// run wants fifty worlds started and dropped, not fifty threads kept until the
+/// process exits.
 #[derive(Debug)]
 #[must_use = "the shard stops when this is dropped"]
 pub struct Running {
@@ -231,11 +231,13 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (Soc
                 .expect("a loopback port");
             let address = gateway.local_address().expect("the bound address");
 
-            // `run_shard` borrows the config for as long as it runs, which is
-            // the life of the process. Leaking one config is the honest way to
-            // say that here; the binary gets the same lifetime from `main`'s
-            // stack frame.
-            let config: &'static Config = Box::leak(Box::new(config(address)));
+            // A local, not a leak. `run_shard` borrows the config for as long as
+            // it runs, and this block is that long — the future is awaited below
+            // inside the same `block_on` scope, so the borrow ends with the
+            // shard. A fuzzing run that starts and drops fifty worlds leaks
+            // nothing.
+            let config = config(address);
+            let config = &config;
             let world = openshard_server::boot::load_world(config).expect("a world");
             let store = openshard_server::boot::open_store(config).await.expect("a store");
 
