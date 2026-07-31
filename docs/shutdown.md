@@ -253,11 +253,6 @@ on. The rest are independent.
 - **`DRAIN_ON_STOP` is a constant, not a setting.** Right until an operator has a
   shard where it is wrong; the number belongs beside `save_every` in
   `[persistence]` if it ever moves.
-- **Nothing says how long a stop took.** The tail does real work — a full sweep
-  and however many queued writes — and the log currently goes quiet between
-  "shutdown requested" and "world saved". One `took = ?elapsed` on the last line
-  is the whole fix, and it is what would tell an operator whether their stop
-  timeout is too tight.
 - **`save_loop` has no bound and `run_shard` awaits it forever.** D2's
   force-exit is the mitigation, not the fix: a store that never returns leaves
   the shard in a state where the only honest thing left is to say which snapshots
@@ -308,9 +303,9 @@ exists for — that `run_shard` returns only once the world is on disk — is
 finally asserted against a real file rather than believed.
 
 What is left is S7, an operator's stop from inside the world, and the backlog
-below. Two of its entries are now the oldest things here: the unbounded
-`save_loop`, and the log that says nothing
-about how long a stop took. The commit that created this plan is the one that landed the stop
+below. The oldest thing in it is now the unbounded `save_loop`, which is also
+what stands between D2's force-exit and the count of abandoned writes it
+promises. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.

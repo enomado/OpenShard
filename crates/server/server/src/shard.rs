@@ -342,6 +342,14 @@ pub async fn run_shard(
         }
     }
 
+    // From here to the last line is everything a stop actually costs: the
+    // goodbye, the sweep of a whole world, and however many writes were already
+    // queued behind it. The log goes quiet across all of it, so it is timed — an
+    // operator setting a stop timeout (systemd's `TimeoutStopSec`, and the
+    // patience of whoever is holding Ctrl-C) has nothing else to set it from, and
+    // the number they need is this one and not the wall clock of a whole run.
+    let stopping = Instant::now();
+
     // The shard's last word, and then the hang-up — in that order, and the order
     // is the whole of it.
     //
@@ -379,7 +387,7 @@ pub async fn run_shard(
     if let Err(error) = save_task.await {
         error!(%error, "the save task did not finish cleanly on shutdown");
     }
-    info!("world saved; shutting down");
+    info!(took = ?stopping.elapsed(), "world saved; shutting down");
 }
 
 /// Whether the relay is about to send this client somewhere it cannot get back
