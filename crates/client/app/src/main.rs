@@ -18,16 +18,21 @@ use std::fmt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
+use openshard_client_render::animation::{AnimationClock, FRAME_DELAY};
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
+use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::{ground, statics};
 use openshard_protocol::direction::Direction;
+use openshard_protocol::wire::Hue;
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::Anim;
 use openshard_uofiles::art::Art;
+use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::TexMaps;
 use openshard_uofiles::tiledata::TileData;
@@ -82,6 +87,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let hues = match Hues::load(dir.join("hues.mul")) {
+        Ok(hues) => hues,
+        Err(error) => {
+            eprintln!("opening hues.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Built once: `hues.mul` does not change while the camera walks, unlike
+    // the sprite atlases it is bound alongside.
+    let hue_ramp = HueRamp::build(&hues);
     eprintln!(
         "{} loaded: {}x{} tiles",
         map.facet_name(),
@@ -119,17 +134,21 @@ fn main() -> ExitCode {
         art,
         texmaps,
         tiledata,
+        hue_ramp,
         anim,
         camera: Camera::new(START, 1024, 768),
         player: Mobile {
             at: start,
-            // 400 is the male human body and 4 is its standing group; frame 0
-            // because nothing here advances an animation yet.
+            // 400 is the male human body and 4 is its standing group; the
+            // clock below picks the frame every redraw.
             body: 400,
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
+            hue: Hue::NONE,
         },
+        animation: AnimationClock::default(),
+        next_tick: Instant::now(),
         window: None,
     };
     match event_loop.run_app(&mut app) {
@@ -224,6 +243,9 @@ struct App {
     art: Art,
     texmaps: TexMaps,
     tiledata: TileData,
+    /// Every hue the client ships, packed once: unlike the sprite atlases it
+    /// tints, nothing about it depends on where the camera is standing.
+    hue_ramp: HueRamp,
     /// The animations, open but not read: `anim.mul` is 195MB and frames come
     /// out of it a body at a time. `&mut` because reading one seeks the file.
     anim: Anim,
@@ -235,6 +257,14 @@ struct App {
     /// is enough to hold the animation reader, the frame atlas and the placement
     /// against a real install, and is honest about being a placeholder.
     player: Mobile,
+    /// How long the player's body animation has played.
+    ///
+    /// Real time, not the world tick — there is no world here to tick, and a
+    /// real client's own body animation is a wall-clock timer too: see
+    /// [`openshard_client_render::animation`].
+    animation: AnimationClock,
+    /// When the clock next advances a frame.
+    next_tick: Instant,
     window: Option<Screen>,
 }
 
@@ -289,6 +319,30 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
         }
+    }
+
+    /// Re-arm the animation clock and ask for a redraw when it has advanced.
+    ///
+    /// `winit`'s idiomatic timer: `ControlFlow::WaitUntil` sleeps the event
+    /// loop rather than spinning it, and returning here every
+    /// `animation::FRAME_DELAY` is what stands in for a real client's own
+    /// `Mobile.ProcessAnimation` poll.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if now >= self.next_tick {
+            self.animation.advance(FRAME_DELAY);
+            self.next_tick += FRAME_DELAY;
+            // A stall longer than one frame — the window minimised, the
+            // machine asleep — re-arms from now rather than queuing up a
+            // burst of catch-up redraws for time nobody watched.
+            if self.next_tick < now {
+                self.next_tick = now;
+            }
+            if let Some(window) = self.window.as_ref() {
+                window.window.request_redraw();
+            }
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
     }
 }
 
@@ -401,8 +455,9 @@ impl App {
 
         let atlases = self.build_atlases()?;
         let renderer = GroundRenderer::new(&device, &queue, format, &atlases.land, &atlases.texmaps);
-        let statics = SpriteRenderer::new(&device, &queue, format, atlases.statics.pixels());
-        let mobile_pass = SpriteRenderer::new(&device, &queue, format, atlases.mobiles.pixels());
+        let statics = SpriteRenderer::new(&device, &queue, format, atlases.statics.pixels(), &self.hue_ramp);
+        let mobile_pass =
+            SpriteRenderer::new(&device, &queue, format, atlases.mobiles.pixels(), &self.hue_ramp);
         let depth = renderer::depth_texture(&device, config.width, config.height);
 
         Ok(Screen {
@@ -459,6 +514,7 @@ impl App {
         // pack reads the whole of `self`, and the window is part of it.
         let wanted = ground::visible_graphics(&self.map, &self.camera);
         let wanted_statics = statics::visible_graphics(&self.map, &self.camera);
+        let (player_direction, _) = openshard_uofiles::anim::facing(self.player.facing);
         let stale = self.window.as_ref().is_some_and(|window| {
             wanted
                 .iter()
@@ -466,6 +522,13 @@ impl App {
                 || wanted_statics
                     .iter()
                     .any(|graphic| window.static_atlas.sprite(*graphic).is_none())
+                // Turning is a step here (see `step`), and the atlas holds one
+                // stored direction at a time — packed for whichever facing the
+                // player had when it was last built.
+                || window
+                    .mobile_atlas
+                    .frame_count(self.player.body, self.player.group, player_direction)
+                    == 0
         });
         let repacked = stale.then(|| self.build_atlases());
 
@@ -486,12 +549,14 @@ impl App {
                     &window.queue,
                     window.config.format,
                     atlases.statics.pixels(),
+                    &self.hue_ramp,
                 );
                 window.mobile_pass = SpriteRenderer::new(
                     &window.device,
                     &window.queue,
                     window.config.format,
                     atlases.mobiles.pixels(),
+                    &self.hue_ramp,
                 );
                 window.atlas = atlases.land;
                 window.texmap_atlas = atlases.texmaps;
@@ -501,6 +566,15 @@ impl App {
             Some(Err(error)) => eprintln!("repacking art: {error}"),
             None => {}
         }
+
+        // The clock picks the frame from how many the atlas actually packed —
+        // asking the atlas rather than remembering the count is what keeps
+        // "frame 7 of a 6-frame walk" from being expressible.
+        let frame_count =
+            window
+                .mobile_atlas
+                .frame_count(self.player.body, self.player.group, player_direction);
+        self.player.frame = self.animation.frame(frame_count);
 
         let frame = match window.surface.get_current_texture() {
             // Suboptimal still draws: the surface wants reconfiguring, and the
@@ -531,6 +605,11 @@ impl App {
 
         let quads = ground::collect(&self.map, &self.camera, &window.atlas, &window.texmap_atlas);
         let static_quads = statics::collect(&self.map, &self.camera, &self.tiledata, &window.static_atlas);
+        let mobile_quads = mobiles::collect(
+            std::slice::from_ref(&self.player),
+            &self.camera,
+            &window.mobile_atlas,
+        );
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let target = Target {
             view: &view,
@@ -550,6 +629,9 @@ impl App {
         window
             .statics
             .render(&window.device, &window.queue, &mut encoder, target, &static_quads);
+        window
+            .mobile_pass
+            .render(&window.device, &window.queue, &mut encoder, target, &mobile_quads);
         window.queue.submit([encoder.finish()]);
         // Presentation moved onto the queue in wgpu 30; the texture is consumed.
         window.queue.present(frame);

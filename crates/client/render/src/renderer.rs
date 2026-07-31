@@ -9,6 +9,7 @@ use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 
 use crate::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use crate::ground::GroundQuad;
+use crate::hue::HueRamp;
 use crate::sprite::SpriteQuad;
 
 /// What an untouched pixel is left as.
@@ -131,11 +132,19 @@ impl GroundRenderer {
         // the textures a slope is stretched over. They stay apart because their
         // grids do — 44 pixels against 64 — and not because the shader could not
         // sample one texture.
-        let view = upload(device, queue, "land atlas", LandAtlas::side(), atlas.pixels());
+        let view = upload(
+            device,
+            queue,
+            "land atlas",
+            LandAtlas::side(),
+            LandAtlas::side(),
+            atlas.pixels(),
+        );
         let texmap_view = upload(
             device,
             queue,
             "texmap atlas",
+            TexmapAtlas::side(),
             TexmapAtlas::side(),
             texmaps.pixels(),
         );
@@ -465,11 +474,29 @@ impl SpriteRenderer {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         pixels: &[u8],
+        hue_ramp: &HueRamp,
     ) -> Self {
-        let view = upload(device, queue, "sprite atlas", SPRITE_ATLAS_SIDE, pixels);
+        let view = upload(
+            device,
+            queue,
+            "sprite atlas",
+            SPRITE_ATLAS_SIDE,
+            SPRITE_ATLAS_SIDE,
+            pixels,
+        );
+        let ramp_view = upload(
+            device,
+            queue,
+            "hue ramp",
+            HueRamp::width(),
+            hue_ramp.height(),
+            hue_ramp.pixels(),
+        );
 
         // Nearest and clamped, exactly as the ground: UO art is pixel art, and
-        // filtering it samples whatever was packed next door.
+        // filtering it samples whatever was packed next door. The ramp is looked
+        // up the same way — `statics.wgsl` picks one exact texel, and filtering
+        // between two hues would blend colours nothing in `hues.mul` asked for.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("static atlas sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -517,6 +544,22 @@ impl SpriteRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
@@ -534,6 +577,14 @@ impl SpriteRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&ramp_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
@@ -593,6 +644,11 @@ impl SpriteRenderer {
                                 format: wgpu::VertexFormat::Float32,
                                 offset: 32,
                                 shader_location: 4,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 36,
+                                shader_location: 5,
                             },
                         ],
                     }),
@@ -729,7 +785,11 @@ fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer
     })
 }
 
-/// Create a square RGBA8 texture, fill it, and hand back a view of it.
+/// Create an RGBA8 texture, fill it, and hand back a view of it.
+///
+/// Not necessarily square: every sprite atlas here is, but [`HueRamp`] is
+/// [`HueRamp::width`] wide by however many hues were read, and giving this its
+/// own two dimensions is simpler than a wrapper that pretends it is square.
 ///
 /// `Rgba8Unorm` and never `…Srgb`: the atlas holds the file's own bytes and a
 /// gamma conversion here would mean the pixel that went in is not the pixel that
@@ -738,14 +798,15 @@ fn upload(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
-    side: u32,
+    width: u32,
+    height: u32,
     pixels: &[u8],
 ) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
-            width: side,
-            height: side,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -765,12 +826,12 @@ fn upload(
         pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(side * 4),
-            rows_per_image: Some(side),
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
         },
         wgpu::Extent3d {
-            width: side,
-            height: side,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
     );

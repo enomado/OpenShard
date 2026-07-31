@@ -16,6 +16,7 @@ use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
 use openshard_client_render::ground::{self, GroundQuad};
+use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::sprite::SpriteQuad;
@@ -26,6 +27,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::anim::{Anim, AnimFrame};
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
 use openshard_uofiles::color::Color16;
+use openshard_uofiles::hues::Hues;
 use openshard_uofiles::image::Image;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::TexMaps;
@@ -159,11 +161,17 @@ fn render_both(
     let depth = renderer::depth_texture(device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
 
+    // None of these frames ask for a hue — every quad built below carries
+    // `hue: 0` — so an empty ramp is a real texture the shader can bind rather
+    // than a special case: it is never indexed because nothing here sets the
+    // bit that would make the shader look.
+    let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
+
     let mut renderer = GroundRenderer::new(device, queue, format, atlas, texmaps);
-    let mut statics = SpriteRenderer::new(device, queue, format, static_atlas.pixels());
+    let mut statics = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), &hue_ramp);
     // The mobiles are the same pass again with another atlas bound, which is
     // the whole of the difference between a static and a creature on the GPU.
-    let mut people = SpriteRenderer::new(device, queue, format, mobiles.0);
+    let mut people = SpriteRenderer::new(device, queue, format, mobiles.0, &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target {
         view: &view,
@@ -549,6 +557,7 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
         height: f32::from(sprite.height),
         region: sprite.region,
         depth: 0.5,
+        hue: 0,
     }];
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -590,6 +599,209 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
     // a sprite drawn at the wrong scale fails this even when every pixel it did
     // draw was the right colour.
     assert_eq!(drawn, usize::from(width - 1) * usize::from(height));
+}
+
+/// One `hues.mul` group, `Hue(1)`'s ramp set to `colors` and the other seven
+/// entries left at zero — the same construction [`crate`]'s own unit tests
+/// cannot reuse across crates, so this test file builds its own bytes from the
+/// documented layout rather than from a private helper.
+fn one_hue_group(colors: [Color16; 32]) -> Hues {
+    const ENTRY_BYTES: usize = 32 * 2 + 2 + 2 + 20;
+    let mut bytes = vec![0u8; 4 + 8 * ENTRY_BYTES];
+    for (index, color) in colors.iter().enumerate() {
+        let at = 4 + index * 2;
+        bytes[at..at + 2].copy_from_slice(&color.0.to_le_bytes());
+    }
+    Hues::parse(&bytes).expect("one whole group")
+}
+
+/// The art is not tinted, it is replaced: a full hue looks a pixel up by its
+/// own red channel and draws whatever `hues.mul` says, discarding the pixel's
+/// original colour entirely — even a pixel that was never grey.
+///
+/// Both texels below carry the same 5-bit red value and different green and
+/// blue, so a shader that multiplied by a tint would leave them visibly
+/// different; one that replaces them by index draws them identically.
+#[test]
+fn a_full_hue_replaces_the_pixel_by_its_red_channel_regardless_of_its_own_colour() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    const INDEX: u8 = 10;
+
+    // Genuinely grey — all three channels equal `INDEX` — against a texel
+    // whose red channel is the same `INDEX` but whose green and blue are not:
+    // "partial" is decided by the *pixel*, not by the index alone, so the two
+    // have to share an index and differ in colour for the test to mean anything.
+    let index = u16::from(INDEX);
+    let grey = Color16((index << 10) | (index << 5) | index);
+    let coloured = Color16((index << 10) | 0b0_00000_00000_11111);
+    assert_ne!(
+        grey, coloured,
+        "the two texels have to differ for this to test anything"
+    );
+
+    let art = Image::new(2, 1, vec![grey, coloured]);
+    let atlas = StaticAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
+    let sprite = atlas.sprite(GRAPHIC).expect("packed");
+
+    let mut ramp_colors = [Color16::TRANSPARENT; 32];
+    ramp_colors[usize::from(INDEX)] = Color16(0b0_00000_00000_11111); // pure blue
+    let hues = one_hue_group(ramp_colors);
+    let hue_ramp = HueRamp::build(&hues);
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+
+    let quad = |hue: u32| SpriteQuad {
+        x: 0.0,
+        y: 0.0,
+        width: f32::from(sprite.width),
+        height: f32::from(sprite.height),
+        region: sprite.region,
+        depth: 0.5,
+        hue,
+    };
+
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let render_with_ramp = |hue: u32| -> Frame {
+        let quads = [quad(hue)];
+        render_hued(
+            &device, &queue, &land, &texmaps, &atlas, &quads, &hue_ramp, format,
+        )
+    };
+
+    let (blue_r, blue_g, blue_b) = Color16(0b0_00000_00000_11111).rgb8();
+    let (grey_r, grey_g, grey_b) = grey.rgb8();
+    let (coloured_r, coloured_g, coloured_b) = coloured.rgb8();
+
+    // Hue 1, no partial flag: both texels come back as the ramp's own colour,
+    // not as anything blended with what was there.
+    let full = render_with_ramp(1);
+    assert_eq!(
+        full.pixel(0, 0),
+        [blue_r, blue_g, blue_b, u8::MAX],
+        "the grey texel"
+    );
+    assert_eq!(
+        full.pixel(1, 0),
+        [blue_r, blue_g, blue_b, u8::MAX],
+        "the coloured texel too — a full hue does not ask what a pixel looked like",
+    );
+
+    // The same hue, partial: only the grey texel is grey enough to tint: the
+    // coloured one is left exactly as the art drew it.
+    let partial = render_with_ramp(1 | 0x8000);
+    assert_eq!(
+        partial.pixel(0, 0),
+        [blue_r, blue_g, blue_b, u8::MAX],
+        "partial still tints a genuinely grey pixel",
+    );
+    assert_eq!(
+        partial.pixel(1, 0),
+        [coloured_r, coloured_g, coloured_b, u8::MAX],
+        "partial leaves an already-coloured pixel alone",
+    );
+
+    // And hue 0 is "no hue": the ramp exists but nothing here samples it.
+    let none_hue = render_with_ramp(0);
+    assert_eq!(none_hue.pixel(0, 0), [grey_r, grey_g, grey_b, u8::MAX]);
+    assert_eq!(
+        none_hue.pixel(1, 0),
+        [coloured_r, coloured_g, coloured_b, u8::MAX]
+    );
+}
+
+/// Draw one static pass with a real hue ramp bound, and read the result back.
+///
+/// [`render_both`] always binds an empty ramp — nothing it draws asks for a
+/// hue — so a test that needs a real one calls this instead rather than
+/// growing every caller of `render_both` an argument none of them use.
+#[allow(clippy::too_many_arguments)]
+fn render_hued(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    land: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    static_atlas: &StaticAtlas,
+    quads: &[SpriteQuad],
+    hue_ramp: &HueRamp,
+    format: wgpu::TextureFormat,
+) -> Frame {
+    let (width, height) = (64u32, 64u32);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hued frame"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("hued readback"),
+        size: u64::from(width) * u64::from(height) * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let depth = renderer::depth_texture(device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut ground = GroundRenderer::new(device, queue, format, land, texmaps);
+    let mut statics = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), hue_ramp);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target_view = Target {
+        view: &view,
+        depth: &depth_view,
+        width,
+        height,
+    };
+    ground.render(device, queue, &mut encoder, target_view, &[]);
+    statics.render(device, queue, &mut encoder, target_view, quads);
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping a buffer this test just wrote");
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting on our own submission");
+    let pixels = slice
+        .get_mapped_range()
+        .expect("the map completed above")
+        .to_vec();
+    readback.unmap();
+
+    Frame { width, pixels }
 }
 
 /// A hill in front hides a wall behind it.
@@ -637,6 +849,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         height: f32::from(sprite.height),
         region: sprite.region,
         depth: 0.6,
+        hue: 0,
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -764,6 +977,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
                 group: 4,
                 facing,
                 frame: 0,
+                hue: openshard_protocol::wire::Hue::NONE,
             }],
             &camera,
             &atlas,
@@ -988,6 +1202,7 @@ fn dump_a_frame_of_britain() {
                 group: 4,
                 facing: *facing,
                 frame: 0,
+                hue: openshard_protocol::wire::Hue::NONE,
             }
         })
         .collect();

@@ -37,16 +37,24 @@ pub struct SpriteQuad {
     pub region: Region,
     /// What it hides and what hides it: smaller is nearer. See [`crate::depth`].
     pub depth: f32,
+    /// The wire hue to tint this sprite with, or `0` for none.
+    ///
+    /// Carried raw rather than as [`openshard_protocol::wire::Hue`] — like every
+    /// other field here, this is the instance buffer's own layout, and `.0`
+    /// belongs at the boundary the value crosses into it. See
+    /// [`crate::hue::HueRamp`] for what a nonzero value means to the shader.
+    pub hue: u32,
 }
 
 impl SpriteQuad {
     /// Bytes one quad occupies in the instance buffer.
     ///
-    /// Nine floats: position, size, region, depth. Written by hand for the same
-    /// reason [`GroundQuad::STRIDE`](crate::ground::GroundQuad::STRIDE) is —
+    /// Nine floats and a `u32`: position, size, region, depth, hue. Written by
+    /// hand for the same reason
+    /// [`GroundQuad::STRIDE`](crate::ground::GroundQuad::STRIDE) is —
     /// `bytemuck`'s derive emits `unsafe impl` and this workspace denies
     /// `unsafe_code`.
-    pub const STRIDE: u64 = 9 * 4;
+    pub const STRIDE: u64 = 10 * 4;
 
     /// The same region, sampled right to left.
     ///
@@ -78,6 +86,7 @@ impl SpriteQuad {
         ] {
             out.extend_from_slice(&value.to_le_bytes());
         }
+        out.extend_from_slice(&self.hue.to_le_bytes());
     }
 }
 
@@ -100,6 +109,7 @@ mod tests {
                 dv: 0.25,
             },
             depth: 0.75,
+            hue: 0x8021,
         };
         let mut out = Vec::new();
         quad.write(&mut out);
@@ -107,7 +117,8 @@ mod tests {
         assert_eq!(&out[..4], &1.0f32.to_le_bytes());
         assert_eq!(&out[8..12], &44.0f32.to_le_bytes());
         assert_eq!(&out[16..20], &0.25f32.to_le_bytes());
-        assert_eq!(&out[32..36], &0.75f32.to_le_bytes(), "depth is last");
+        assert_eq!(&out[32..36], &0.75f32.to_le_bytes(), "depth");
+        assert_eq!(&out[36..40], &0x8021u32.to_le_bytes(), "hue is last");
     }
 
     /// A mirrored region covers the same texels and starts at the other end.

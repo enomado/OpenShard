@@ -81,6 +81,7 @@ pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAt
                 height: f32::from(sprite.height),
                 region: sprite.region,
                 depth: order.to_depth(base),
+                hue: u32::from(item.hue),
             },
         ));
     });

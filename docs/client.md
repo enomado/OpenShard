@@ -400,17 +400,41 @@ own understanding had written.
 
 ## Backlog, found while drawing the statics and the mobiles
 
-- **Nothing is hued.** `StaticItem` carries a hue and the map uses it; every
-  sprite here is drawn in the art's own colours. The client does the tint in a
-  shader — `get_rgb(color.r, hue)` in `IsometricWorld.fx`, where the art's red
-  channel indexes a hue ramp rather than being a colour — so this is not a
-  matter of multiplying by a tint, and `hues.mul` has no consumer until it is
-  done properly. It is also what `Hue`'s partial flag and `tiledata`'s
-  `PartialHue` are for, neither of which anything reads yet.
-- **Nothing animates.** `Mobile.frame` is a number the caller picks, and the app
-  passes 0 forever. What is missing is not the frames — a whole group is packed
-  at once — but a clock, and the tick rule is the client's `animdata`/frame
-  delay rather than a wall clock we choose.
+- ~~**Nothing is hued.**~~ Statics and mobiles are now, from a real
+  `HueRamp` (`crates/client/render/src/hue.rs`) built once from `hues.mul` and
+  bound alongside every sprite atlas. No second texture carries the palette
+  index: the atlas already stores each texel's red channel widened to eight
+  bits — `Color16::rgb8`, the same widening every other reader here uses — and
+  `statics.wgsl` recovers the file's 5-bit index from it exactly with
+  `round(r * 31.0)`, because that widening is a bijection on 0..=31. A full hue
+  replaces the pixel outright; a partial one (the wire hue's own top bit) only
+  where the sampled pixel is genuinely grey (`r == g == b`). Not done:
+  `tiledata`'s own `PartialHue` flag, which forces the same grey-only rule on
+  an item regardless of what the wire hue asks — nothing in `crate::atlas`
+  carries a tiledata reference for a static's sprite yet, so this needs a
+  second graphic to test against before it is worth wiring in.
+- ~~**Nothing animates.**~~ Given a clock. `crates/client/render/src/animation.rs`'s
+  `AnimationClock` advances by real time and picks a frame out of however many
+  the atlas actually packed, looping over the animation's own length rather than
+  a constant. What times it turned out not to be `animdata.mul` — that file
+  times an *animated static* (`AnimatedStaticsManager`, a torch or a fire) and a
+  spell *effect* graphic (`GameEffect`), each cycling a short run of consecutive
+  graphic ids, and neither is a mobile's body. `Mobile.ProcessAnimation` reads
+  `Constants.CHARACTER_ANIMATION_DELAY` instead: a fixed 80ms, unscaled unless a
+  server explicitly set the animation with its own interval byte (`0x6E`/`0xE2`)
+  — and that constant, not the file, is what `FRAME_DELAY` cites. `client/app`
+  also did not draw the mobile pass at all until now: the atlas and pipeline
+  existed and nothing called `mobile_pass.render`.
+- **The clock assumes a packed animation has no gaps.** `AnimAtlas::build`
+  keeps a frame's own index and only drops the entry when the frame is blank,
+  so a blank frame in the *middle* of a real group — which the file format
+  allows, see `AnimFrame`'s own docs — leaves a hole in the key space that
+  `frame_count` does not report. `AnimationClock::frame` cycles `0..frame_count`
+  assuming those are the packed indices, so a caller unlucky enough to hit such
+  a body would have the mobile vanish for one tick rather than loop cleanly.
+  Body 400 group 4 does not hit this, which is why the clock does not
+  compensate for it; the fix is `AnimAtlas` exposing the actual packed indices
+  rather than a count, whenever a body that needs it turns up.
 - **Equipment, mounts and corpses are not drawn.** `MobileView` layers a body,
   its clothes and what it is riding, each from its own animation, and this draws
   the body alone. That is the next thing a real character needs and it is

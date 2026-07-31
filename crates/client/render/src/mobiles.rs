@@ -21,6 +21,7 @@
 //! from where it is.
 
 use openshard_protocol::direction::Direction;
+use openshard_protocol::wire::Hue;
 use openshard_protocol::world::Point;
 
 use crate::atlas::{AnimAtlas, FrameKey};
@@ -51,6 +52,8 @@ pub struct Mobile {
     pub facing: Direction,
     /// Which frame of that animation.
     pub frame: u16,
+    /// Its hue, or [`Hue::NONE`] for none.
+    pub hue: Hue,
 }
 
 /// The body, group and stored direction a set of mobiles needs packed.
@@ -123,6 +126,7 @@ pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas) -> Vec<Sp
                 height: height as f32,
                 region,
                 depth: order.to_depth(base),
+                hue: u32::from(mobile.hue.0),
             },
         ));
     }
@@ -182,6 +186,7 @@ mod tests {
                 group: 4,
                 facing: Direction::SouthEast,
                 frame: 0,
+                hue: Hue::NONE,
             }],
             &camera,
             &atlas,
@@ -209,6 +214,7 @@ mod tests {
                     group: 4,
                     facing,
                     frame: 0,
+                    hue: Hue::NONE,
                 }],
                 &camera,
                 &atlas,
@@ -240,6 +246,7 @@ mod tests {
             facing: Direction::SouthEast,
             // One past the only frame packed.
             frame: 1,
+            hue: Hue::NONE,
         };
         assert!(collect(&[missing], &camera, &atlas).is_empty());
         // And the same mobile at frame 0 is not, so the drop above is a
@@ -259,6 +266,7 @@ mod tests {
             group: 4,
             facing,
             frame: 0,
+            hue: Hue::NONE,
         };
         // East and South share a picture, so they are one animation to read.
         let wanted = needed_animations(&[
