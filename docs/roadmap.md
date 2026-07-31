@@ -251,30 +251,32 @@ One smaller thing noticed on the way through, not blocking:
 ### A connection's state is kept in two tables that must agree
 
 Read while asking why `world_handle_network` has to hold `Sessions`, `LoginServer`,
-`World` and `Roster` at once. None of these is a bug on a working shard today; all
-of them are the same seam being unnamed. The plan that acts on them, including the
+`World` and `Roster` at once. None of these was a bug on a working shard; all of
+them were the same seam being unnamed. The plan that acted on them, including the
 steps above, is [`connection_state.md`](connection_state.md).
 
-- **Presence is a bool, and it is set optimistically.** `Session::playing` is set
-  as `Command::Enter` is *queued* (`server/src/dispatch.rs`, `create_character`
-  and the `CharacterPlay` arm), and `World::enter` has three early returns that
-  refuse silently — already in the world, a saved serial that will not bind, an
-  exhausted mobile serial pool (`world/src/tick/enter.rs`). After any of them the
-  session says it is playing, the world has no entity, and every world packet the
-  client sends is queued into a tick that drops it on a `players.get` miss. The
-  client is told nothing and sits on "logging into shard". `Option<PlayedCharacter>`
-  cannot express *asked to enter but not yet in* — the state that exists between
-  the queue and the tick — so an explicit phase would close both this and the
-  "set once and never cleared" note on the field itself.
-- **`in_world()` is a second copy of `players.contains_key`.** Thirty arms of
-  `dispatch_world_packet` open with the same `if !session.in_world()` guard
-  against the copy rather than against the world.
-- **The world cannot answer a connection that has no entity.**
-  `WorldState::send_packet` resolves the client version through
-  `players → Client`, so a connection on the character screen is unreachable from
-  inside a tick, silently (`state/src/runtime.rs`). This is the structural reason
-  the character screen cannot become world commands as planned above: the version
-  has to live on the connection, not on the entity.
+**All five are closed — S1 through S7 have landed.** What is left of that plan is
+its backlog, and that backlog is the live one: a dozen findings, each with the
+file it is in and what it would cost to act on, at
+[`connection_state.md` → "Backlog, found while doing S1 through S7"](connection_state.md).
+Anyone picking this area up should start there rather than here; the summaries
+below are kept only so a reader who arrives at this section knows what the plan
+was *for*.
+
+- ~~**Presence is a bool, and it is set optimistically.**~~ Fixed in S2.
+  `Session::playing` was set as `Command::Enter` was *queued*, while `World::enter`
+  had three early returns that refused silently — after any of them the session
+  said it was playing, the world had no entity, and the client sat on "logging into
+  shard" being told nothing. `WorldPhase` names the state
+  `Option<PlayedCharacter>` could not (`Outside → Entering → Playing → LoggingOut
+  → Left`), and a refusal comes back as an event rather than as silence.
+- ~~**`in_world()` is a second copy of `players.contains_key`.**~~ Fixed in S3.
+  Thirty arms of `dispatch_world_packet` opened with the same guard; the phase is
+  matched once now, in `handle_world_packet`. It is still a projection of the
+  world's fact — see D4 — but there is one place that reads it.
+- ~~**The world cannot answer a connection that has no entity.**~~ Fixed in S1.
+  The client version lives on the connection's row in `openshard-state`, not on
+  the entity, which is what let the character screen become world commands in S5.
 - ~~**argon2 runs on the tick's task.**~~ Fixed in S6, and it was not as cheap as
   this said. Moving the hash to a blocking task means the login conversation has
   to *suspend*: `LoginServer::handle` returns an `Outcome` — bytes to send, or a
@@ -285,12 +287,14 @@ steps above, is [`connection_state.md`](connection_state.md).
   wrong connection authenticates nobody. The blocking pool is bounded by a
   semaphore: 19 MiB times `spawn_blocking`'s 512 threads is ten gigabytes, and the
   loop used to bound that by having no choice but to run one at a time.
-- **Per-connection world state is seven maps and a hand-written teardown.**
-  `held`, `open_containers`, `open_quest_gumps`, `open_craft_gumps`,
-  `pending_targets`, `last_status`, `last_light`, `last_music` are all keyed by
-  connection or by the player entity, and `World::disconnect` clears each one by
-  name. Adding the eighth and forgetting the line is a leak nothing catches. One
-  record per connection makes the teardown a single `remove`.
+- ~~**Per-connection world state is seven maps and a hand-written teardown.**~~
+  Fixed in S7, in two halves, because the maps turned out to be two problems: what
+  is keyed by a connection moved onto its row, and what was keyed by the *player's
+  entity* — the four gump tables and the targeting cursor — was re-keyed and moved
+  there too. `disconnect` reads one field off the row it removed. The exception is
+  `open_containers`, an inverted index whose every read asks "who is watching this
+  container"; putting it on the row would turn that into a scan per item change,
+  and the backlog says so.
 
 ## 3. World — a client walks in Britannia
 

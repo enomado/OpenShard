@@ -602,6 +602,13 @@ belong in the backlog above, however they were discovered.
 
 ## Status
 
-S1 through S7 have landed. Findings are recorded in
-[`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
-that must agree".
+**S1 through S7 have landed, and the backlog above is what is left of this plan.**
+It is the live list, not an appendix: each entry names the file it is in and what
+acting on it would cost, and entries are struck through in the commit that fixes
+them rather than deleted, so the reasoning that was wrong stays readable beside
+the reasoning that replaced it.
+
+[`roadmap.md` §2](roadmap.md), under "A connection's state is kept in two tables
+that must agree", is where this plan was argued for. Its five findings are all
+closed and it points back here for what is open — do not treat the two as two
+lists.
