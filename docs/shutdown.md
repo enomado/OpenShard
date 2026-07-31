@@ -302,6 +302,21 @@ on. The rest are independent.
 - **Nothing tests that the playground boots** — carried over from
   [`client.md`](client.md), and now with one more thing to get wrong, since the
   playground stops its shard after the window closes.
+- **`run_shard` takes six arguments, and the sixth is one every test passes
+  blind.** `Unwritten` is the caller's because the force-exit reads it from
+  outside, which is right; what is not right is that three of the four callers
+  construct one only to satisfy the signature. The same pressure produced
+  `Shard` in `connection_state.md` — a signature stops being readable long
+  before it stops compiling — and the shape to consider is a small "what the
+  outside world holds of this shard" value carrying the `Shutdown` and the tally
+  together, since they are already handed to the same two places.
+- **`packets_for` drains the whole outbound queue and filters.** So two calls in
+  a row are not two questions: the first empties the world and the second
+  answers about nothing, silently and with an assertion that passes. It is used
+  that way in dozens of tests where there is only one connection, which is
+  exactly why the trap is invisible until a test has two. Either it should take
+  the drained vector, or there should be a `drain_by_connection` beside it that
+  hands back the partition.
 
 ## Status
 
