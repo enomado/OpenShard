@@ -111,9 +111,9 @@ mod traps;
 mod travel;
 mod wake;
 
+use command::StoredCharacter;
 pub use command::{
     Appearance, Character, CharacterSheet, Command, DecorContainer, DecorDoor, Entering, FreshCharacter,
-    StoredCharacter,
 };
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};

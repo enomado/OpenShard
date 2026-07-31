@@ -67,5 +67,5 @@ pub use openshard_state::{SECTOR_SIZE, Sectors, VIEW_RANGE, distance, in_range, 
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
 pub use tick::{
     Appearance, Character, CharacterSheet, Command, DecorContainer, DecorDoor, Entering, FreshCharacter,
-    StoredCharacter, TICK_INTERVAL, World,
+    TICK_INTERVAL, World,
 };

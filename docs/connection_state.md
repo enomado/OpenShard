@@ -423,14 +423,18 @@ will read it.
   can answer it truthfully, rather than of the shard's session table. The record
   still cannot say it, and the answer is a scan of `players` — cheap because only
   create and delete ask it, and the reason to leave it alone until the record can.
-- **`StoredCharacter` is public and nothing outside the world names it any
-  more.** It was on `Command::Enter`, so it had to be; now `enter` is the only
-  caller of `from_record` and the only reader of the type. It is still exported
-  from `openshard_world` (`world/src/lib.rs`), which is a public API nobody uses.
-  Left alone because demoting it means unpicking the doc links that point at it
-  from `Character` — a rustdoc change, not a code one. This was written expecting
-  S5 to rewrite the seam; S5 has landed and did not touch it, so it is now a
-  standalone tidy rather than something riding along.
+- ~~**`StoredCharacter` is public and nothing outside the world names it any
+  more.**~~ Fixed. It was on `Command::Enter`, so it had to be public; since S4
+  `enter` is the only caller of `from_record` and the only reader of the type,
+  and it was still exported from `openshard_world` — a public API nobody used.
+  It is `pub(crate)` now and off both re-export lists.
+
+  The doc links this entry expected to have to unpick were two, and neither
+  survived as a link: `CharacterSheet::starting` and `Character` are public and
+  now describe a type the crate does not export, so they name it in a code span
+  instead. That is the honest rendering — a reader of the public docs cannot
+  follow a link to something they cannot use — and it keeps
+  `rustdoc::private_intra_doc_links` quiet.
 - **`restore_characters` must run before `restore_items`, and only a doc says
   so.** The serials it reserves are the owners the item records point at; run
   them the other way round and a character's pack is filed under a serial the
@@ -556,6 +560,16 @@ will read it.
   item, and rustdoc renders it. Replaced with `enter`'s own, which states the
   obligation the wrapper exists for. Worth watching for wherever a helper has
   been lifted out of a file: the doc does not move itself.
+
+- **Nothing in this workspace ever runs rustdoc.** Found while demoting
+  `StoredCharacter`, which needed to know whether a broken doc link would be
+  noticed: `cargo doc --workspace --no-deps` emits 67 warnings across sixteen
+  crates today — unresolved links, and public items linking to private ones —
+  and none of them is visible to `cargo test`, `cargo clippy` or `cargo fmt`,
+  which is the whole of CI. They are the same class as the doc comment above: a
+  doc that has quietly stopped describing the code, with no build step that
+  disagrees. A fourth command would say so, and `-D warnings` on it would keep it
+  said; the cost is that somebody has to clear the 67 first.
 
 ## To verify with a real client
 

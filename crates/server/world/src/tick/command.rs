@@ -74,8 +74,9 @@ impl CharacterSheet {
     /// world's flat hundreds, no skills, nothing trained and nothing owed.
     ///
     /// These are the same defaults `enter` used to reach for when the sheet was
-    /// absent; naming them here is what let the saved side of [`StoredCharacter`]
-    /// stop being optional.
+    /// absent; naming them here is what let the saved side of `StoredCharacter`
+    /// stop being optional. (Not a link: that type is the world's own, and does
+    /// not appear in this crate's public API.)
     pub fn starting() -> Self {
         Self {
             strength: DEFAULT_HITPOINTS,
@@ -130,7 +131,7 @@ pub struct FreshCharacter {
 /// unpacked one. Now the type says it, and [`from_record`](Self::from_record) is
 /// the one place that does the unpacking.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct StoredCharacter {
+pub(crate) struct StoredCharacter {
     /// The wire serial it was saved under. It comes back on this one and no
     /// other: it is what every packet ever sent about this character said, and
     /// what its containers' contents point at.
@@ -158,7 +159,7 @@ impl StoredCharacter {
     /// when the row was deserialised, so there is no longer an invalid-serial
     /// case to fail on here. `Option` is kept so `enter.rs`'s `.and_then` reads
     /// the same whether the record came from a lookup that could itself miss.
-    pub fn from_record(record: &openshard_persistence::CharacterRecord) -> Option<Self> {
+    pub(crate) fn from_record(record: &openshard_persistence::CharacterRecord) -> Option<Self> {
         Some(Self {
             serial: record.serial,
             facet: Facet(record.facet),
@@ -206,7 +207,7 @@ impl StoredCharacter {
 /// # Why [`Saved`](Self::Saved) carries nothing
 ///
 /// It used to carry the row — the shard read its own roster, unpacked it with
-/// [`StoredCharacter::from_record`] and sent the result along. Since S4 of
+/// `StoredCharacter::from_record` and sent the result along. Since S4 of
 /// `docs/connection_state.md` the roster is the world's, so the row is already
 /// on the far side of this command and sending it would be sending the world
 /// something it holds. `Saved` is therefore a *question*, not an answer: play
