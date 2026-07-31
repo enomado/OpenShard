@@ -350,6 +350,16 @@ impl ClientGatewayServer {
     }
 }
 
+/// How long a stopping connection waits for what is already queued to reach the
+/// wire before it hangs up regardless.
+///
+/// A constant and not a setting: it is a bound on the shard's own teardown, not
+/// on anything an operator tunes, and a number nobody can vary is a number, not a
+/// configuration. Two seconds is generous for a handful of queued packets on a
+/// live socket and short enough that a shard whose tick has wedged still stops
+/// while somebody is watching.
+const DRAIN_ON_STOP: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Drive one connection until it closes.
 ///
 /// Generic over the stream, and not for the sake of a test double: an
@@ -429,18 +439,41 @@ where
     //
     // `None` is the right reason in all three cases: this end decided, and that
     // is a clean close.
+    let mut stopping = false;
     let reason = tokio::select! {
         reason = read_loop(id, &mut client_tcp_reader, &events, control_rx) => reason,
         _ = &mut writes => None,
         () = shutdown.requested() => {
-            debug!(%id, "the shard is stopping; hanging up");
+            debug!(%id, "the shard is stopping; draining the outbox, then hanging up");
+            stopping = true;
             None
         }
     };
 
+    // A stop is the one ending where the two halves are not symmetric, and where
+    // what is already queued is worth waiting for.
+    //
+    // Reading has stopped above and does not resume: a packet read now is work
+    // queued for a tick that will not run, and worse than useless, because it can
+    // still mutate the session it passes through on the way. What is in the
+    // *outbox*, though, is something the world decided to say while it was still
+    // the authority — the shutdown notice among it — and the client is entitled
+    // to it. So the write task is awaited rather than aborted.
+    //
+    // Bounded, because it cannot depend on the world being well. The write task
+    // ends when every `OutboxTx` has been dropped, which is the tick letting go
+    // of its sessions, which is precisely the thing that might be broken. The
+    // deadline turns "the shard did not stop" into "the shard stopped rudely".
+    if stopping && tokio::time::timeout(DRAIN_ON_STOP, &mut writes).await.is_err() {
+        warn!(%id, ?DRAIN_ON_STOP, "the outbox did not drain before the deadline; hanging up anyway");
+    }
+
     // Either the read loop ended and the write task is still waiting on an outbox
     // nobody will send to again, or the race above already resolved the other way.
     // Aborting covers both, and dropping the reader with it takes the socket down.
+    // Aborting a task that has already finished does nothing, which is what makes
+    // this one line right after a drain that succeeded as well as one that timed
+    // out.
     writes.abort();
     let _ = events.send(ServerEvent::Disconnected { id, reason });
     Ok(())
@@ -734,6 +767,43 @@ mod tests {
         assert_eq!(reason, None, "this end decided; that is a clean close");
     }
 
+    /// What the world said on its way out reaches the client before the hang-up.
+    ///
+    /// The order below is the order a shutdown actually happens in, and it is why
+    /// aborting the write task was wrong: the world *hears* the stop first and
+    /// only then says its last word, so everything worth delivering is queued
+    /// after `stop()` — on the losing side of a race the connection task used to
+    /// win. Without the drain the client reads zero bytes here, which is
+    /// indistinguishable from the shard having crashed.
+    #[tokio::test]
+    async fn a_stop_drains_what_the_world_queued_before_hanging_up() {
+        let shutdown = Shutdown::new();
+        let (gate, mut events) = Gate::new(shutdown.clone());
+        let (mut client, server) = tokio::io::duplex(4096);
+        gate.serve(server, "127.0.0.1:0".parse().unwrap());
+
+        let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
+            panic!("expected Connected");
+        };
+
+        shutdown.stop();
+        outbox.send(vec![0x82, 0x03]).unwrap();
+        // The tick letting go of its sessions, which is what ends the write task
+        // and what the drain is waiting for.
+        drop(outbox);
+
+        let mut parting = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(5), client.read_exact(&mut parting))
+            .await
+            .expect("the queued bytes were not dropped on the way out")
+            .unwrap();
+        assert_eq!(parting, [0x82, 0x03]);
+
+        let mut trailing = Vec::new();
+        client.read_to_end(&mut trailing).await.unwrap();
+        assert!(trailing.is_empty(), "and then the hang-up, in that order");
+    }
+
     #[tokio::test]
     async fn connections_get_distinct_ids() {
         let (address, mut events) = start(Shutdown::new()).await;
@@ -778,6 +848,13 @@ mod tests {
         //
         // The client here does not close: it is the well-behaved-client case
         // that hid the same gap in `dropping_the_outbox_...` above.
+        //
+        // The outbox being held for the whole of it is also the deadline case of
+        // `DRAIN_ON_STOP`: nothing is queued, but the write task cannot end while
+        // a sender is alive, so this connection hangs up rudely two seconds later
+        // rather than as soon as it hears the stop. That is the design — see the
+        // drain in `client_session_serve` — and it is why the timeout below is
+        // comfortably longer than the drain.
         let shutdown = Shutdown::new();
         let (address, mut events) = start(shutdown.clone()).await;
         let mut client = TcpStream::connect(address).await.unwrap();

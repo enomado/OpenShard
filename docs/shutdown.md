@@ -136,13 +136,21 @@ on. The rest are independent.
       dependency) and sees the `Shutdown` flip inside a deadline. It installs
       before it signals, and says why.
 
-- [ ] **S2. A stop drains the outbox before it hangs up.** In
+- [x] **S2. A stop drains the outbox before it hangs up.** In
       `client_session_serve`, the shutdown arm stops reading and awaits the write
-      task under `DRAIN_ON_STOP` (a constant beside it, ~2 s) instead of aborting
-      it; the abort stays as what happens when the deadline passes.
-      **DoD:** a gateway test that queues bytes on the outbox and stops in the
-      same breath, then reads them from the client before its zero read. It fails
-      on today's code, which is the point of writing it first.
+      task under `DRAIN_ON_STOP` (a constant beside it, 2 s) instead of aborting
+      it; the abort stays as what happens when the deadline passes, and is
+      harmless after a drain that finished.
+      **DoD (met):** `a_stop_drains_what_the_world_queued_before_hanging_up`
+      queues on the outbox *after* `stop()` — which is the order a shutdown
+      really happens in, the world hearing the stop before it says anything — and
+      reads the bytes, then the zero read. Checked to fail without the drain
+      (`early eof`), which is the point of writing it first.
+
+      Note for S3: `a_stop_hangs_up_on_a_client_that_is_already_connected` holds
+      its outbox for the whole test and so now takes the full `DRAIN_ON_STOP`
+      before hanging up. That is the deadline path working, and it is written
+      down in the test.
 
 - [ ] **S3. The world says why.** `World::announce(&str)` beside
       `cancel_all_trades` in `world/src/tick/persist.rs` — walk
@@ -223,9 +231,9 @@ on. The rest are independent.
 
 ## Status
 
-S1 is in: a shard under systemd is asked rather than killed, and an operator with
-a wedged save has a way out that is not `SIGKILL`. S2 is next, and S3 cannot
-start before it. The commit that created this plan is the one that landed the stop
+S1 and S2 are in: a shard under systemd is asked rather than killed, an operator
+with a wedged save has a way out that is not `SIGKILL`, and what the world queues
+on its way out now reaches the wire. S3 has its transport and is next. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.
