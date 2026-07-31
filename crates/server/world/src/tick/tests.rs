@@ -182,13 +182,32 @@ pub(super) fn enter_gm(world: &mut World, now: Instant) -> ConnectionId {
     connection
 }
 
-/// Every packet the last tick produced for one connection.
+/// Every packet the last tick produced for one connection, leaving the rest of
+/// the queue where it was.
+///
+/// The partition is the point. This used to drain the whole outbound queue and
+/// filter it, so two calls in a row were not two questions: the first emptied
+/// the world and the second answered about nothing — silently, and with an
+/// assertion that passed. In a test with one connection the two behaviours are
+/// indistinguishable, which is exactly why it survived in dozens of them; the
+/// first test with two connections is where it turns a green run into a proof
+/// of nothing.
 pub(super) fn packets_for(world: &mut World, connection: ConnectionId) -> Vec<Vec<u8>> {
-    world
-        .drain_outbound()
-        .filter(|out| out.connection == connection)
-        .map(|out| out.packet)
-        .collect()
+    let mut asked_about = Vec::new();
+    let mut everyone_else = Vec::new();
+    for out in world.drain_outbound() {
+        if out.connection == connection {
+            asked_about.push(out.packet);
+        } else {
+            everyone_else.push(out);
+        }
+    }
+    // Several tests assert on the order a connection was sent things in, so the
+    // packets left behind keep theirs: the drain emptied the queue and nothing
+    // can have queued anything since, so writing them back is the identity on
+    // the connections this call did not ask about.
+    world.state.outbox = everyone_else;
+    asked_about
 }
 
 /// Put an entity somewhere directly, as if it had walked there.
@@ -218,6 +237,40 @@ pub(super) fn walk(sequence: u8, direction: Direction) -> WalkRequest {
 pub(super) fn serial_of(world: &World, connection: ConnectionId) -> Serial {
     let entity = world.state.players[&connection];
     world.state.registry.serial_of(entity).unwrap()
+}
+
+#[test]
+fn asking_what_one_connection_was_sent_leaves_the_other_its_own() {
+    // `packets_for` is a question, and two of them in a row are two answers.
+    // The trap this closes is the version that drained the whole queue and
+    // filtered: the first call emptied the world and the second answered
+    // "nothing", which reads exactly like a connection the world never spoke
+    // to — silently, and with a passing assertion.
+    //
+    // Both halves are asserted, because the negative one alone would be green
+    // in a world where nothing reaches anybody.
+    let now = Instant::now();
+    let mut world = world();
+    // Named rather than taken from `connection()`, which hands back the same id
+    // every time: two `enter`s would be one connection and the test would ask
+    // its question twice.
+    let alice = enter_as(&mut world, ConnectionId::from_raw(1), now);
+    let bob = enter_as(&mut world, ConnectionId::from_raw(2), now);
+    assert_ne!(alice, bob, "two connections, not one asked about twice");
+
+    let to_alice = packets_for(&mut world, alice);
+    assert!(!to_alice.is_empty(), "entering the world says something to alice");
+
+    let to_bob = packets_for(&mut world, bob);
+    assert!(
+        !to_bob.is_empty(),
+        "and asking about alice did not take bob's answer"
+    );
+
+    assert!(
+        packets_for(&mut world, alice).is_empty(),
+        "what was answered for is gone: the queue is emptied of what it hands back"
+    );
 }
 
 #[test]

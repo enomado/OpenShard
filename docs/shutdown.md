@@ -310,13 +310,16 @@ on. The rest are independent.
   before it stops compiling — and the shape to consider is a small "what the
   outside world holds of this shard" value carrying the `Shutdown` and the tally
   together, since they are already handed to the same two places.
-- **`packets_for` drains the whole outbound queue and filters.** So two calls in
-  a row are not two questions: the first empties the world and the second
-  answers about nothing, silently and with an assertion that passes. It is used
-  that way in dozens of tests where there is only one connection, which is
-  exactly why the trap is invisible until a test has two. Either it should take
-  the drained vector, or there should be a `drain_by_connection` beside it that
-  hands back the partition.
+- ~~**`packets_for` drains the whole outbound queue and filters.**~~ Fixed: it
+  partitions instead, handing back the connection asked about and writing the
+  rest of the queue back in order, so two calls in a row are two answers. The
+  546 tests that used it as a drain did not notice, which is the measure of how
+  invisible the trap was.
+  `asking_what_one_connection_was_sent_leaves_the_other_its_own` in
+  `world/src/tick/tests.rs` pins both halves — bob's answer survives alice's
+  question, and alice's is asserted non-empty first so the surviving half cannot
+  pass in a world where nothing reaches anybody. Checked to fail with the
+  write-back dropped.
 
 ## Status
 
