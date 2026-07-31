@@ -156,15 +156,32 @@ impl Running {
 
     /// What both [`Running::stop`] and [`Drop`] do. Idempotent: whichever runs
     /// first takes the handle, and the other finds nothing to join.
+    ///
+    /// # A shard that died is a failed test, unless something is already failing
+    ///
+    /// A panic inside [`Drop`] *while another panic is unwinding* aborts the
+    /// process, which would replace the failure the test was about to report
+    /// with a bare abort. But that is only the case while unwinding, and
+    /// `std::thread::panicking()` is exactly the question — so the two cases are
+    /// separated rather than conflated: something is already going wrong, so add
+    /// a line and let it be reported; nothing is, so re-raise the shard's own
+    /// payload and let it reach the harness as the test's failure.
+    ///
+    /// Re-raising from here is safe against the drop that follows it, because
+    /// this is idempotent: `stop` unwinds out of `halt` with the handle already
+    /// taken, so the `Drop` that runs on the way out finds `None` and joins
+    /// nothing. Nothing proves that second half in a test — a test that panics
+    /// inside a panic aborts the runner rather than failing — so the argument is
+    /// here instead.
     fn halt(&mut self) {
         self.stop.stop();
         if let Some(thread) = self.thread.take() {
-            if thread.join().is_err() {
-                // Reported rather than re-raised. This runs from `Drop`, and a
-                // panic there while another panic is unwinding aborts the test
-                // process — which would hide the first failure behind the
-                // second.
-                eprintln!("the shard thread panicked");
+            if let Err(payload) = thread.join() {
+                if std::thread::panicking() {
+                    eprintln!("the shard thread panicked");
+                } else {
+                    std::panic::resume_unwind(payload);
+                }
             }
         }
     }
@@ -261,5 +278,29 @@ pub fn plan_for(account: &str, character: &str) -> Plan {
         password: RawPlaintextPassword(PASSWORD.to_owned()),
         shard: Pick::First,
         character: Pick::Named(character.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shard whose thread died has to fail the test that was using it, and the
+    /// failure has to carry the shard's own panic message — an `eprintln!` here
+    /// is a line in the output of a test that passed, which is a way to not
+    /// notice for a long time.
+    ///
+    /// This is a unit test rather than one in `tests/` because [`Running`]'s
+    /// fields are private: a thread that panics on purpose cannot be handed to
+    /// one from outside the crate, and starting a real shard and killing it is a
+    /// far less direct way to ask the same question.
+    #[test]
+    #[should_panic(expected = "the shard thread died on purpose")]
+    fn a_shard_thread_that_panicked_fails_the_test() {
+        let running = Running {
+            stop: Shutdown::new(),
+            thread: Some(std::thread::spawn(|| panic!("the shard thread died on purpose"))),
+        };
+        running.stop();
     }
 }

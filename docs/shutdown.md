@@ -174,13 +174,22 @@ on. The rest are independent.
       sentinels (`0xFFFFFFFF` speaker, `0xFFFF` graphic) folded back to `None`
       where the encoder folds them out.
 
-- [ ] **S4. `Running` raises what it currently prints.** The
-      `std::thread::panicking()` guard of D7.
-      **DoD:** a unit test in `crates/e2e/shard/src/lib.rs` building a `Running`
-      over a thread that panics — the fields are private to the crate, so this is
-      the one place it can be done — and `#[should_panic]` on `stop()`. A second
-      test cannot easily prove the not-double-panicking half; the comment carries
-      that, and says so.
+- [x] **S4. `Running` raises what it currently prints.** The
+      `std::thread::panicking()` guard of D7: unwinding already, so `eprintln!`;
+      not unwinding, so `std::panic::resume_unwind(payload)` — the shard's own
+      payload, not a message about it, so the test reports what actually failed.
+      **DoD (met):** `a_shard_thread_that_panicked_fails_the_test` in
+      `crates/e2e/shard/src/lib.rs` builds a `Running` over a thread that panics
+      — the fields are private to the crate, so this is the one place it can be
+      done — and `#[should_panic(expected = ...)]` on `stop()` names the thread's
+      message, which is what pins the payload travelling rather than a panic
+      merely happening.
+
+      The not-double-panicking half is not tested: a test that panics inside a
+      panic aborts the runner rather than failing, so there is nothing to assert
+      on. What makes it safe is that `halt` is idempotent — the unwind out of
+      `stop` leaves the handle already taken, so the `Drop` on the way out joins
+      nothing — and that argument lives in the comment on `halt`.
 
 - [ ] **S5. A gate that has closed does not spawn onto a dead runtime.**
       `InProcess` is `Clone` and outlives its `Running`, so a dial after the stop
@@ -250,11 +259,12 @@ on. The rest are independent.
 
 ## Status
 
-S1, S2 and S3 are in: a shard under systemd is asked rather than killed, an
+S1 through S4 are in: a shard under systemd is asked rather than killed, an
 operator with a wedged save has a way out that is not `SIGKILL`, what the world
-queues on its way out reaches the wire, and a player is told why their screen is
-about to go. S4 through S6 are the tests and the two remaining sharp edges, and
-they are independent of each other. The commit that created this plan is the one that landed the stop
+queues on its way out reaches the wire, a player is told why their screen is
+about to go, and a shard thread that dies during a test's teardown fails that
+test instead of printing at it. S5 and S6 are the remaining sharp edge and the
+test that the whole tail exists for, and they are independent of each other. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.
