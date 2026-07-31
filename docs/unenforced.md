@@ -265,6 +265,23 @@ follows.
         that states an invariant correctly and is believed by nobody's compiler
         is the whole subject of this file.
 
+      **The duplicate is resolved in favour of this file**, and two things came
+      across from `refused_entry.rs` before it was deleted:
+
+      - **The witness is a second account, not the stock one played twice.**
+        Both clients logging in as `admin` works today, and nothing states that
+        it may: no rule refuses a second connection on an account, and none
+        promises not to. A fixture resting on that dies the day somebody adds
+        the check — in a test that has nothing to do with logging in twice. So
+        `config_for` appends one `[[accounts]]` table to the stock config, which
+        is a complete table wherever the sections above it move to, and the
+        witness plays a character of its own.
+      - **A close is a close; any other error is not.** `Err(_) => return` while
+        waiting for the far end to hang up reads a stream that stopped making
+        sense as a teardown that worked. Only zero bytes and
+        `TransportError::Io` count now; anything else panics. This is the same
+        shape as the bug above — a thing that looks closed from one angle.
+
 - [ ] **S4. A `Map` can be built without a client install.**
       Every assertion about `ground::collect` lives in `client/render/tests/
       frame.rs`, behind `OPENSHARD_CLIENT` and a GPU, because the only way to
@@ -300,8 +317,9 @@ tests of the same chain landed in `crates/e2e/shard/tests/` in one afternoon —
 crate" reasons about *files*, and what two sessions actually contend for is the
 next unticked box in this list. D5 was written about the working tree and this
 is the other half of it: **a stage being started is not visible anywhere**.
-Whoever merges these keeps one and deletes the other; the fix in the gateway is
-the part neither test can be without.
+`refused_teardown.rs` was kept and `refused_entry.rs` deleted, with the two
+things the second one did better folded in — see the end of S3. The fix in the
+gateway is the part neither test could have been without.
 
 **S4 last, and only when the tree is quiet.** `client/render` and
 `common/uofiles` are where the parallel work has been living — `atlas.rs`,

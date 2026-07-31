@@ -40,20 +40,29 @@
 //! those is not decoration — a "it is gone" assertion about something that was
 //! never there is green for the wrong reason. `connection_state.md` S7 learned
 //! that one the expensive way.
+//!
+//! The witness is a *second account* playing a *second character*, which is why
+//! `common::config_for` appends one to the stock config. Two connections
+//! playing the one character the stock config ships does work today, and it is
+//! not a rule anybody wrote down — nothing refuses a second login on an account,
+//! and nothing promises not to. A fixture standing on that is a fixture that
+//! dies the day someone adds the check, in a test that has nothing to do with
+//! logging in twice.
 
 mod common;
 
 use std::time::Duration;
 
 use openshard_client_net::connection::Event;
-use openshard_client_net::transport::{Socket, enter_world};
+use openshard_client_net::session::Plan;
+use openshard_client_net::transport::{Socket, TransportError, enter_world};
 use openshard_client_net::view::WorldView;
 use openshard_protocol::identity::RawCharacterName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{RawCharacterSlot, RawClientIp};
 use openshard_protocol::world::CharacterPlay;
 
-use common::{CHARACTER, plan, shard, version};
+use common::{CHARACTER, NYSTUL, WITNESS, plan, plan_for, shard, version};
 
 /// How long any one step of this may take.
 ///
@@ -93,14 +102,21 @@ async fn read_until(
 ///
 /// A clean close reads as zero bytes; a reset reads as an I/O error. Both are
 /// the socket going away, and which one a given kernel produces is not what is
-/// under test — only that the client stops being connected.
+/// under test — the gateway drops its socket rather than shutting it down, so
+/// the difference is only whether anything was still sitting unread in the
+/// server's receive queue at that instant.
+///
+/// Any other error is a failure rather than a close. A stream that stopped
+/// making sense while the connection was still open is a different bug wearing
+/// this one's clothes, and `Err(_) => return` would report it as a teardown that
+/// worked.
 async fn read_until_closed(socket: &mut Socket, what: &str) {
     tokio::time::timeout(WAIT, async {
         loop {
             match socket.next_event().await {
                 Ok(Some(_)) => {}
-                Ok(None) => return,
-                Err(_) => return,
+                Ok(None) | Err(TransportError::Io(_)) => return,
+                Err(error) => panic!("the socket failed in a way that is not a close: {error}"),
             }
         }
     })
@@ -123,9 +139,9 @@ fn play_again() -> Vec<u8> {
     .encode()
 }
 
-/// Log in and stand in the world, or say which client failed to.
-async fn enter(address: std::net::SocketAddrV4, who: &str) -> (Socket, WorldView) {
-    tokio::time::timeout(WAIT, enter_world(address, plan(), version()))
+/// Log in on `plan` and stand in the world, or say which client failed to.
+async fn enter(address: std::net::SocketAddrV4, plan: Plan, who: &str) -> (Socket, WorldView) {
+    tokio::time::timeout(WAIT, enter_world(address, plan, version()))
         .await
         .unwrap_or_else(|_| panic!("{who} did not finish logging in inside {WAIT:?}"))
         .unwrap_or_else(|error| panic!("{who} did not reach the world: {error}"))
@@ -138,12 +154,12 @@ async fn a_refused_entry_closes_the_socket_and_the_world_forgets_the_character()
     // The witness first, so it is already standing there when the second client
     // arrives and is told about it by `0x78` rather than having to have been
     // there all along.
-    let (mut witness, mut seen) = enter(address, "the witness").await;
-    let (mut doomed, doomed_view) = enter(address, "the client that will be refused").await;
+    let (mut witness, mut seen) = enter(address, plan_for(WITNESS, NYSTUL), "the witness").await;
+    let (mut doomed, doomed_view) = enter(address, plan(), "the client that will be refused").await;
     let doomed_serial: Serial = doomed_view.player.serial;
     assert_ne!(
         doomed_serial, seen.player.serial,
-        "two connections playing one character are still two bodies; \
+        "the two clients are standing in the world as one body; \
          a shared serial would make every assertion below meaningless"
     );
 
