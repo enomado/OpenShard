@@ -20,12 +20,13 @@
 //! confirmed the step that produced it. Anything on top that wants to draw
 //! ahead of the server can read the prediction and do so knowingly.
 //!
-//! It also has no map. `z` therefore never changes on a step — see
-//! [`openshard_movement::intend`], which carries the height over unchanged —
-//! so a client walking up a hill drifts from the server in height until a `0x20`
-//! or a `0x21` corrects it. That is honest rather than fixed because the fix is
-//! the map, and the map moves out of `openshard-world` in M2; see
-//! `docs/client.md`.
+//! It also holds no map. [`openshard_movement::intend`] carries `z` over
+//! unchanged, because neither end of it has terrain — so the height comes in as
+//! an argument to [`Walk::step`], from whoever loaded a facet. A caller with no
+//! map passes `|_, _| None` and gets the old flat prediction, which drifts up a
+//! hill until a `0x20` or a `0x21` corrects it. What is deliberately *not*
+//! predicted here is whether a step is allowed at all: that is the server's
+//! answer and it arrives as a `0x21`.
 
 use std::collections::VecDeque;
 
