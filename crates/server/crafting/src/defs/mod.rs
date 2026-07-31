@@ -1,10 +1,19 @@
-//! The five trades, and the constants that are not in their recipe lists.
+//! The five trades: their recipe lists, and the headers that name them.
 //!
 //! Each `Def*.cs` in ServUO is a recipe table plus a short header of overrides —
 //! the main skill, the chance floor, the exceptional curve, the sound, and what
-//! `CanCraft` demands. The tables are generated (`tools/gen-craft-tables`); this
-//! file is the headers, hand-written, because they are five values apiece and
-//! they are the ones worth arguing about.
+//! `CanCraft` demands. Both halves are data here: the tables are the trades'
+//! `data/*.json` and the headers are [`data/craft_systems.json`], and `build.rs`
+//! turns the lot into the `const`s below before this crate compiles.
+//!
+//! The headers used to be hand-written Rust, which meant the build script could
+//! see a recipe's group index but not how many groups its trade had, and a
+//! recipe's skill lines but not which skill its system rolled. Both invariants
+//! then lived in assertions in this file, green until somebody ran the tests
+//! against a row that was already committed. They are checked in `build.rs` now,
+//! and a bad row is a build failure naming it — see `docs/unenforced.md` S2.
+//!
+//! [`data/craft_systems.json`]: ../../data/craft_systems.json
 
 pub mod alchemy;
 pub mod blacksmithy;
@@ -12,112 +21,12 @@ pub mod carpentry;
 pub mod tailoring;
 pub mod tinkering;
 
-use openshard_protocol::wire::{ClilocId, SoundId};
+use openshard_protocol::wire::SoundId;
 use openshard_state::{Skill, TICKS_PER_SECOND};
 
 use crate::system::{CraftSystemDef, Eca, Needs, SystemId, Text};
 
-/// ServUO's `Delay`, 1.25 seconds, which every one of the five passes to
-/// `base(1, 1, 1.25)`. In ticks, because a craft is beaten down by the tick
-/// counter like decay and a swing timer.
-const DELAY_TICKS: u64 = TICKS_PER_SECOND * 5 / 4;
-
-/// "You must be near an anvil and a forge to smith items."
-const NEEDS_SMITHY: ClilocId = ClilocId(1_044_267);
-
-/// The trades a shard can practise, in the order their ids are numbered.
-///
-/// The index into this table is a [`SystemId`] — it rides in a `Crafting`
-/// component and, once crafting is saved mid-flight, in a record. **Append, never
-/// reorder.**
-pub const SYSTEMS: &[CraftSystemDef] = &[
-    // Blacksmithy. The chance floor is zero, so a recipe you have only just
-    // qualified for always fails at first; the exceptional curve is the sliding
-    // one, which is what makes the last five points of the skill worth having.
-    CraftSystemDef {
-        skill: Skill::Blacksmith,
-        title: Text::Cliloc(ClilocId(1_044_002)),
-        chance_at_min: 0,
-        eca: Eca::ChanceMinusSixtyToFourtyFive,
-        delay_ticks: DELAY_TICKS,
-        min_beats: 1,
-        max_beats: 1,
-        craft_sound: SoundId(0x2A),
-        needs: Needs::smithy(),
-        needs_message: NEEDS_SMITHY,
-        groups: blacksmithy::GROUPS,
-        recipes: blacksmithy::RECIPES,
-        sub_res: Some(blacksmithy::SUB_RES),
-    },
-    // Tailoring. Half of everything a tailor qualifies for works first time,
-    // which is ServUO's `GetChanceAtMin` of 0.5 and the difference between a
-    // trade that is pleasant to learn and one that is not.
-    CraftSystemDef {
-        skill: Skill::Tailoring,
-        title: Text::Cliloc(ClilocId(1_044_005)),
-        chance_at_min: 500,
-        eca: Eca::ChanceMinusSixtyToFourtyFive,
-        delay_ticks: DELAY_TICKS,
-        min_beats: 1,
-        max_beats: 1,
-        craft_sound: SoundId(0x248),
-        needs: Needs::none(),
-        needs_message: ClilocId(0),
-        groups: tailoring::GROUPS,
-        recipes: tailoring::RECIPES,
-        sub_res: Some(tailoring::SUB_RES),
-    },
-    // Carpentry, the same floor as tailoring.
-    CraftSystemDef {
-        skill: Skill::Carpentry,
-        title: Text::Cliloc(ClilocId(1_044_004)),
-        chance_at_min: 500,
-        eca: Eca::ChanceMinusSixtyToFourtyFive,
-        delay_ticks: DELAY_TICKS,
-        min_beats: 1,
-        max_beats: 1,
-        craft_sound: SoundId(0x23D),
-        needs: Needs::none(),
-        needs_message: ClilocId(0),
-        groups: carpentry::GROUPS,
-        recipes: carpentry::RECIPES,
-        sub_res: Some(carpentry::SUB_RES),
-    },
-    // Tinkering: a smith's floor with a carpenter's freedom to work anywhere.
-    CraftSystemDef {
-        skill: Skill::Tinkering,
-        title: Text::Cliloc(ClilocId(1_044_007)),
-        chance_at_min: 0,
-        eca: Eca::ChanceMinusSixtyToFourtyFive,
-        delay_ticks: DELAY_TICKS,
-        min_beats: 1,
-        max_beats: 1,
-        craft_sound: SoundId(0x23B),
-        needs: Needs::none(),
-        needs_message: ClilocId(0),
-        groups: tinkering::GROUPS,
-        recipes: tinkering::RECIPES,
-        sub_res: Some(tinkering::SUB_RES),
-    },
-    // Alchemy is the only one of the five that takes the *default* exceptional
-    // curve — it overrides no `ECA` at all — which is why a flat sixty points
-    // appears here and nowhere else.
-    CraftSystemDef {
-        skill: Skill::Alchemy,
-        title: Text::Cliloc(ClilocId(1_044_001)),
-        chance_at_min: 0,
-        eca: Eca::ChanceMinusSixty,
-        delay_ticks: DELAY_TICKS,
-        min_beats: 1,
-        max_beats: 1,
-        craft_sound: SoundId(0x242),
-        needs: Needs::none(),
-        needs_message: ClilocId(0),
-        groups: alchemy::GROUPS,
-        recipes: alchemy::RECIPES,
-        sub_res: None,
-    },
-];
+include!(concat!(env!("OUT_DIR"), "/systems.rs"));
 
 /// One system by id.
 #[must_use]
@@ -160,41 +69,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_recipe_names_a_group_that_exists() {
-        // Groups are referenced by index and a dropped recipe leaves its group in
-        // place, so an out-of-range index would draw an empty category rather
-        // than fail — worth an assertion because nothing at runtime notices.
-        for def in SYSTEMS {
-            for recipe in def.recipes {
-                assert!(
-                    usize::from(recipe.group) < def.groups.len(),
-                    "{:?} recipe {:#06X} is in group {}",
-                    def.skill,
-                    recipe.graphic.0,
-                    recipe.group
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn every_recipe_leads_with_its_systems_own_skill() {
-        // The success chance is interpolated over the *main* skill's band, and a
-        // recipe with no line for it would read as chance zero — a whole trade
-        // that silently refuses everything.
-        for def in SYSTEMS {
-            for recipe in def.recipes {
-                assert!(
-                    recipe.skills.iter().any(|want| want.skill == def.skill),
-                    "{:?} recipe {:#06X} never names {:?}",
-                    def.skill,
-                    recipe.graphic.0,
-                    def.skill
-                );
-            }
-        }
-    }
+    // `every_recipe_names_a_group_that_exists` and
+    // `every_recipe_leads_with_its_systems_own_skill` were here. They are
+    // `build.rs::check` now — the same two assertions, a build earlier, and
+    // deliberately not kept in both places: a check that lives twice drifts, and
+    // the copy that is wrong is the one nobody is reading.
 
     #[test]
     fn the_material_axis_substitutes_into_a_line_that_wants_it() {

@@ -1,0 +1,64 @@
+{
+  "_comment": [
+    "The five trades' headers: each Def*.cs in ServUO is a recipe table plus a",
+    "short header of overrides, and this is the headers. The tables are the",
+    "other files in this directory, one per `trade` named below.",
+    "",
+    "ORDER IS THE ID. The index into `systems` is a SystemId, and it rides in a",
+    "`Crafting` component and in a save record. Append, never reorder.",
+    "",
+    "`delay_ms` is ServUO's `Delay` in milliseconds; build.rs turns it into a",
+    "tick count and refuses one that is not a whole number of ticks. Omitted",
+    "fields take the defaults build.rs documents: 1250ms, one beat, no",
+    "workshop, no needs_message."
+  ],
+  "systems": [
+    {
+      "trade": "blacksmithy",
+      "note": "The chance floor is zero, so a recipe you have only just qualified for always fails at first; the exceptional curve is the sliding one, which is what makes the last five points of the skill worth having.",
+      "skill": "Blacksmith",
+      "title": 1044002,
+      "chance_at_min": 0,
+      "eca": "ChanceMinusSixtyToFourtyFive",
+      "craft_sound": "0x002A",
+      "needs": { "forge": true, "anvil": true },
+      "needs_message": 1044267
+    },
+    {
+      "trade": "tailoring",
+      "note": "Half of everything a tailor qualifies for works first time, which is ServUO's `GetChanceAtMin` of 0.5 and the difference between a trade that is pleasant to learn and one that is not.",
+      "skill": "Tailoring",
+      "title": 1044005,
+      "chance_at_min": 500,
+      "eca": "ChanceMinusSixtyToFourtyFive",
+      "craft_sound": "0x0248"
+    },
+    {
+      "trade": "carpentry",
+      "note": "The same floor as tailoring.",
+      "skill": "Carpentry",
+      "title": 1044004,
+      "chance_at_min": 500,
+      "eca": "ChanceMinusSixtyToFourtyFive",
+      "craft_sound": "0x023D"
+    },
+    {
+      "trade": "tinkering",
+      "note": "A smith's floor with a carpenter's freedom to work anywhere.",
+      "skill": "Tinkering",
+      "title": 1044007,
+      "chance_at_min": 0,
+      "eca": "ChanceMinusSixtyToFourtyFive",
+      "craft_sound": "0x023B"
+    },
+    {
+      "trade": "alchemy",
+      "note": "The only one of the five that takes the *default* exceptional curve — it overrides no `ECA` at all — which is why a flat sixty points appears here and nowhere else.",
+      "skill": "Alchemy",
+      "title": 1044001,
+      "chance_at_min": 0,
+      "eca": "ChanceMinusSixty",
+      "craft_sound": "0x0242"
+    }
+  ]
+}

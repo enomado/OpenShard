@@ -2359,30 +2359,29 @@ Found while doing it, none started:
   optional columns, would end the drift — at the cost of a format that has to
   express "these four bodies share a sound but not a name".
 
-- **The recipe invariants are tested, not enforced.** *(Planned:
-  [`unenforced.md`](unenforced.md) S2, which also settles the question below and
-  takes `needs_message`'s zero with it.)* `defs/mod.rs` asserts that
-  every recipe names a group that exists and leads with its system's own skill —
-  both are properties of the *data*, and both are now checkable in
-  `crafting/build.rs`, where a bad row would fail the build instead of a test
-  run. The reason they cannot move today is that the group count and the main
-  skill live in `SYSTEMS`, which is hand-written Rust the build script does not
-  read. Either the five headers join the data, or the script learns them.
+- ~~**The recipe invariants are tested, not enforced.**~~ **Done**
+  ([`unenforced.md`](unenforced.md) S2). The five headers joined the data as
+  `crafting/data/craft_systems.json`, so `build.rs` has both halves and checks
+  them: a recipe whose group index is out of range, or that does not lead with
+  its system's main skill, is now a build failure naming the row. The two
+  assertions in `defs/mod.rs` are gone rather than kept beside it — a check in
+  two places drifts. Two coverage checks came with them, because "no bad rows"
+  is worth nothing if the rows were never opened: a table no header claims, and
+  a header whose table is empty, both fail the build too.
 - ~~**`Text::Cliloc(0)` is a null.**~~ **Not true, checked:** of the 11,448
   clilocs the craft tables generate, none is `0` — whatever `generate.cjs` did
   when this was written, the data it produces today has no missing
-  `TextDefinition` in it. The other half of the entry is real and stands:
-  `CraftSystemDef::needs_message` is `ClilocId(0)` on four systems of five, and
-  it is [`unenforced.md`](unenforced.md) S2's to fix. Recorded rather than
-  deleted because the entry sent a session looking for something that was not
-  there: **check a backlog claim against the code before planning around it.**
-- **`Recipe::amount` has a column and no data.** Every one of the 485 rows is 1;
-  the field exists for the stacking recipes (arrows, bolts, boards) that ServUO
-  expresses as `SetUseAllRes` plus an addon interaction, which is on the
-  crafting backlog above. Worth checking against `DefBowFletching` when that
-  table lands, rather than carrying a column nothing sets. *(Decided either way
-  in [`unenforced.md`](unenforced.md) S2 — the point is that it stops being
-  undecided, not which way it goes.)*
+  `TextDefinition` in it. The other half of the entry was real and is now fixed:
+  `CraftSystemDef::needs_message` is an `Option<ClilocId>`, `None` on the four
+  systems that need no workshop. Recorded rather than deleted because the entry
+  sent a session looking for something that was not there: **check a backlog
+  claim against the code before planning around it.**
+- ~~**`Recipe::amount` has a column and no data.**~~ **Decided: the column
+  stays**, with the reason in its doc. Every one of the 485 rows is 1, but
+  `craft::complete` already multiplies by it and the recipes that would use it
+  are `DefBowFletching`'s arrows and bolts — porting that table is adding data,
+  whereas dropping the field would mean the port had to put it back *and* touch
+  the craft path to do it.
 - **Three files are still over the 2k line.** `world/src/tick/tests.rs` is
   12,964 — by a wide margin the largest file in the repository, and the split
   mechanics in `architecture.md` are written for exactly this;

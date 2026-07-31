@@ -30,8 +30,8 @@ So the question this file asks about each item is not "is it correct today"
 
 | | the rule | what holds it today | what would notice |
 |---|---|---|---|
-| S1 | `restore_characters` runs before `restore_items` | two doc comments and the order of two lines in `run_shard` | nothing |
-| S2 | every recipe names a group that exists and leads with its system's skill | an assertion in a test | `cargo test`, after a bad row has already been committed |
+| S1 | `restore_characters` runs before `restore_items` | ~~two doc comments and the order of two lines in `run_shard`~~ the signature: `restore_items` takes what only `restore_characters` returns | the compiler |
+| S2 | every recipe names a group that exists and leads with its system's skill | ~~an assertion in a test~~ **`crafting/build.rs`** | `cargo check`, before the crate compiles |
 | S3 | closing a refused connection tears down six things in order | six doc comments, one per link | nothing |
 | S4 | the ground renderer's projection and visible set are correct | `tests/frame.rs`, behind `OPENSHARD_CLIENT` **and** a GPU | nothing, on any machine without both |
 
@@ -73,7 +73,7 @@ in the repository. See "Order" below.
 Each is a pull request. S1 and S2 are worth doing whether or not the rest
 follows.
 
-- [ ] **S1. The restore order stops being a comment.**
+- [x] **S1. The restore order stops being a comment.**
       `restore_characters` reserves the serials that `restore_items`' records
       point at as owners. Run them the other way round and a character's pack is
       filed under a serial the allocator is free to hand to something else — and
@@ -96,7 +96,38 @@ follows.
       what the type now says, or are deleted for repeating it; all four gates
       silent.
 
-- [ ] **S2. The craft tables fail the build, not the test run.**
+      **Done.** `World::restore_characters` returns `RestoredCharacters` — the
+      `HashSet<Serial>` it reserved, with a private field, so nothing else can
+      build one — and `restore_items` takes it by reference. The set is read,
+      not carried: `restore_items` uses it to tell a player's pack from an NPC's
+      gear for one `debug!` line, which is the only thing at boot that says the
+      packs found their owners.
+
+      Two things fell out that the stage did not name. `World::stored_characters`
+      existed for the boot log alone and the token now answers that better (it
+      counts what *this* restore brought back, not what the roster holds), so it
+      is gone and `Roster::saved` under it is `#[cfg(test)]` — its remaining
+      callers are three of the roster's own tests. And `boot::restore_characters`
+      returns the token even when the store cannot be read, restoring nothing:
+      an `Option` there would have put the ordering rule straight back into prose
+      by making the caller decide what "no characters" permits.
+
+      Tests: the four call sites that restore items without a store now say what
+      they mean — `tests::on_file` hands the token on, and the two that have no
+      characters at all call `restore_characters(Vec::new())` and say why in a
+      comment. No test-only constructor was added: an escape hatch inside the
+      crate that defines the order is the order back as a convention.
+
+      **The mobiles link is still prose.** `restore_items` must run before
+      `restore_mobiles`, which equips out of the inventories the items filed, and
+      `boot::restore`'s doc says so. It is the same shape one step further on and
+      the same fix would work (`restore_items` returning a token
+      `restore_mobiles` takes), at a cost this stage did not carry: eight test
+      sites restore mobiles alone. Worth doing, cheaper than it looks, and left
+      out of S1 because S1 said two functions and the shape is worth judging on
+      its own once.
+
+- [x] **S2. The craft tables fail the build, not the test run.**
       `defs/mod.rs` asserts that every recipe names a group that exists and
       leads with its system's own skill. Both are properties of the *data*, and
       `crafting/build.rs` is where a bad row should stop being a build. What
@@ -134,6 +165,37 @@ follows.
       braces (a check in two places drifts); `needs_message` is an `Option`;
       `Recipe::amount` is decided either way with the reason in its doc; the
       stale roadmap half is gone; all four gates silent.
+
+      **Done.** `SYSTEMS` is generated from `data/craft_systems.json` into
+      `OUT_DIR/systems.rs`; the two assertions are `build.rs::check`, verified to
+      fire by breaking a row four ways and reading the panic. `amount` stays,
+      with the reason in its doc. Four things worth carrying forward:
+
+      - **Two coverage checks came with the two real ones**, and they are the
+        reason the pair means anything: a `data/*.json` no header claims is a
+        table these checks never open — green, over nothing. So a trade with no
+        system, and a system whose table is empty, both fail the build too.
+      - **A build script can still emit a compile-time check.** The delay is
+        ServUO's 1.25 seconds and the tick rate is the engine's, so the data says
+        `delay_ms: 1250` and the generator writes `TICKS_PER_SECOND * 1250 /
+        1000` — plus a `const _: () = assert!(… % 1000 == 0)` beside it, because
+        a delay that is not a whole number of ticks would truncate silently. The
+        value belongs to the crate and the rule belongs to the data; emitting the
+        assertion is how both keep their half.
+      - **The "note before starting" was itself stale.** The roadmap already
+        carried the `Text::Cliloc(0)` correction, marked and kept deliberately.
+        Third stale backlog claim in three sessions, and the first one that was
+        stale in the direction of *already fixed*.
+      - **`NeedsRow::expr` said "484 rows of 485".** No recipe row carries a
+        `needs` at all — every workshop requirement in the data today is a
+        system's. Corrected in place.
+
+      Left behind: `chance.rs` finds the main skill with `.any()` while
+      `Recipe::skills` documents the first line as the one the chance is
+      interpolated over, and `build.rs` now enforces the stronger reading. The
+      scan could be `skills.first()`, which would delete the `main: Option<…>`
+      accumulator and the "no main-skill line is a malformed recipe" arm with it
+      — the build script has made that arm unreachable.
 
 - [ ] **S3. The teardown chain gets a test that walks it.**
       A refused connection is closed by a chain of six: `Sessions::close` drops
@@ -220,7 +282,7 @@ here and there is no reason to reproduce a mixed working tree on purpose.
 
 | Stage | State |
 | --- | --- |
-| S1 — restore order in the types | not started |
-| S2 — craft tables fail the build | not started |
+| S1 — restore order in the types | done — `RestoredCharacters` is the signature |
+| S2 — craft tables fail the build | done — `build.rs` reads both halves |
 | S3 — teardown chain, end to end | not started |
 | S4 — a `Map` without an install | not started |

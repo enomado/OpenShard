@@ -68,6 +68,13 @@ pub struct Recipe {
     pub resources: &'static [CraftRes],
     /// How many come out. More than one only for the things that stack — arrows,
     /// bolts, boards.
+    ///
+    /// **Every one of the 485 rows is 1 today**, and the column is kept rather
+    /// than dropped: [`craft`](crate::craft) multiplies by it and the recipes
+    /// that would use it are ServUO's `DefBowFletching`, which is not ported.
+    /// Porting fletching is adding a table, not widening a struct — dropping the
+    /// field would mean the port had to put it back and touch the craft path to
+    /// do it.
     pub amount: u16,
     /// A fixed hue for the result — ServUO's `SetItemHue`. Zero means the result
     /// takes the hue of the material it was made from, which is what makes a

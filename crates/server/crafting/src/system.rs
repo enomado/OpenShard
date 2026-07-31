@@ -145,7 +145,12 @@ pub struct CraftSystemDef {
     pub needs: Needs,
     /// The cliloc said when [`needs`](Self::needs) is not met — "You must be near
     /// an anvil and a forge to smith items."
-    pub needs_message: ClilocId,
+    ///
+    /// `None` for a system that demands no workshop, which is four of the five:
+    /// there is no message because the branch that would say it cannot be
+    /// reached. Not `ClilocId(0)` — zero is a number the client would look up,
+    /// so "absent" and "message zero" would be the same bits.
+    pub needs_message: Option<ClilocId>,
     /// The gump's left-hand column, indexed by [`Recipe::group`].
     pub groups: &'static [Text],
     /// Everything it can make.
