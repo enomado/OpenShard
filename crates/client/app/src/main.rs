@@ -42,12 +42,14 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
+mod crowd;
 mod link;
 mod shell;
 
+use crowd::{Crowd, Who};
 use openshard_client_net::session::{Pick, Plan};
 use openshard_client_net::view::WorldView;
-use openshard_client_render::animation::{AnimationClock, FRAME_DELAY};
+use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::Camera;
@@ -60,7 +62,7 @@ use openshard_client_render::{ground, statics};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 use openshard_protocol::version::ClientVersion;
-use openshard_protocol::wire::Hue;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::Anim;
 use openshard_uofiles::art::Art;
@@ -219,12 +221,13 @@ fn main() -> ExitCode {
         // to ask; the floor is the smallest thing this has to run on.
         control: Control::new(Camera::new(START, 1024, 768), 2048),
         zoom_limit_reported: false,
+        // 400 is the male human body. Its group and frame come from the crowd
+        // on the first redraw, which is also what decides that a placeholder
+        // nobody is walking stands.
         player: Mobile {
             at: start,
-            // 400 is the male human body and 4 is its standing group; the
-            // clock below picks the frame every redraw.
             body: 400,
-            group: 4,
+            group: openshard_uofiles::anim::BodyKind::of(400).standing(),
             facing: Direction::SouthEast,
             frame: 0,
             hue: Hue::NONE,
@@ -237,7 +240,7 @@ fn main() -> ExitCode {
         shell: None,
         link,
         facet_checked: false,
-        animation: AnimationClock::default(),
+        crowd: Crowd::default(),
         next_tick: Instant::now(),
         window: None,
     };
@@ -255,29 +258,6 @@ fn main() -> ExitCode {
 /// Half a tile's height per press, which is what the old "camera height" keys
 /// moved when a step of `z` was five units: `5 * Z_STEP` is 20 pixels.
 const PAGE_PIXELS: i32 = 20;
-
-/// The animation group a body that is doing nothing plays.
-///
-/// Every mobile stands here. Walking, running and everything else are groups of
-/// their own, and choosing between them wants a mobile's *history* — where it
-/// was on the previous packet — which `WorldView` deliberately does not keep.
-/// See the backlog in `docs/client.md`.
-const STANDING: u8 = 4;
-
-/// One of the server's mobiles, as the renderer wants it.
-///
-/// The frame is left at zero: the clock picks it in [`App::draw`], from however
-/// many the atlas turned out to hold.
-fn as_mobile(at: Point, body: openshard_protocol::wire::Graphic, facing: Facing, hue: Hue) -> Mobile {
-    Mobile {
-        at,
-        body: body.0,
-        group: STANDING,
-        facing: facing.direction,
-        frame: 0,
-        hue,
-    }
-}
 
 /// Why the client could not start.
 ///
@@ -394,12 +374,13 @@ struct App {
     /// animation reader, the frame atlas and the placement against a real
     /// install.
     player: Mobile,
-    /// Everyone else on screen, as `0x77` and `0x78` last described them.
+    /// Everyone else on screen, as `0x77` and `0x78` last described them, each
+    /// beside the serial the crowd's clocks are keyed by.
     ///
     /// Empty offline, and rebuilt whole from the [`WorldView`] on every update:
     /// the view is the record of what arrived and this is a projection of it,
     /// so there is nothing here to keep in step by hand.
-    others: Vec<Mobile>,
+    others: Vec<(Who, Mobile)>,
     /// Everything lying on the ground, as `0x1A` and `0x1D` last left it.
     ///
     /// A projection of the view like [`App::others`], and drawn through the
@@ -429,12 +410,13 @@ struct App {
     /// [`App::entered`]: once, because it cannot change without a `0xBF 0x08`
     /// nothing here reads yet.
     facet_checked: bool,
-    /// How long the player's body animation has played.
+    /// What everyone on screen was doing a moment ago: which animation each is
+    /// playing, and how far into it.
     ///
-    /// Real time, not the world tick — there is no world here to tick, and a
-    /// real client's own body animation is a wall-clock timer too: see
-    /// [`openshard_client_render::animation`].
-    animation: AnimationClock,
+    /// The layer above [`WorldView`] that ages what it sees — see `crowd.rs`.
+    /// Real time and not the world tick: there is no world here to tick, and a
+    /// real client's body animation is a wall-clock timer too.
+    crowd: Crowd,
     /// When the clock next advances a frame.
     next_tick: Instant,
     window: Option<Screen>,
@@ -579,7 +561,7 @@ impl ApplicationHandler<link::Update> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         if now >= self.next_tick {
-            self.animation.advance(FRAME_DELAY);
+            self.crowd.advance(FRAME_DELAY);
             self.next_tick += FRAME_DELAY;
             // A stall longer than one frame — the window minimised, the
             // machine asleep — re-arms from now rather than queuing up a
@@ -643,7 +625,6 @@ impl App {
         // server to say whether the step happened, so the body faces wherever
         // it was last sent. `client/net`'s `walk` is what will decide this once
         // the two are joined.
-        self.player.facing = facing;
         let (dx, dy) = facing.step();
         let x = (i32::from(self.player.at.x) + dx).clamp(0, self.map.width() as i32 - 1);
         let y = (i32::from(self.player.at.y) + dy).clamp(0, self.map.height() as i32 - 1);
@@ -653,7 +634,16 @@ impl App {
         // buffer is for and what looks exactly like a mobile that failed to
         // draw.
         let ground = self.map.land(x, y).map_or(self.player.at.z, |cell| cell.z);
-        self.player.at = Point::new(x, y, ground);
+        // Through the crowd like anyone else, so the placeholder walks when it
+        // walks and stands when it stops. `None` is who it is: no shard has
+        // named it, so it has no serial.
+        self.player = self.crowd.see(
+            None,
+            Point::new(x, y, ground),
+            Graphic(self.player.body),
+            Facing::walking(facing),
+            self.player.hue,
+        );
         // Offline the body is what the camera is locked to, exactly as the
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
@@ -733,7 +723,8 @@ impl App {
             }
         }
 
-        self.player = as_mobile(
+        self.player = self.crowd.see(
+            Some(view.player.serial),
             view.player.position,
             view.player.body,
             view.player.facing,
@@ -745,8 +736,22 @@ impl App {
         others.sort_unstable_by_key(|(serial, _)| serial.raw());
         self.others = others
             .into_iter()
-            .map(|(_, mobile)| as_mobile(mobile.position, mobile.body, mobile.facing, mobile.hue))
+            .map(|(serial, mobile)| {
+                let who = Some(*serial);
+                (
+                    who,
+                    self.crowd
+                        .see(who, mobile.position, mobile.body, mobile.facing, mobile.hue),
+                )
+            })
             .collect();
+        // Whoever the view no longer holds walked out of range, and their clock
+        // goes with them. Our own body is kept by its serial like anyone else's;
+        // the placeholder's `None` is gone the moment a shard names us, which is
+        // right — it was never a mobile.
+        self.crowd.retain(|who| {
+            who.is_some_and(|serial| serial == view.player.serial || view.mobiles.contains_key(&serial))
+        });
         // Sorted by serial for the same reason, and for one more: two items on
         // one tile at one height are drawn in the order they arrive here, so an
         // order that changed every frame would flicker.
@@ -812,15 +817,18 @@ impl App {
     /// cover what this frame needs" has to be one question. Asked twice, with
     /// the item half forgotten in one of them, the atlas would be rebuilt every
     /// frame an item was on screen and never hold it.
-    fn standing_graphics(&self) -> std::collections::BTreeSet<openshard_protocol::wire::Graphic> {
+    fn standing_graphics(&self) -> std::collections::BTreeSet<Graphic> {
         let mut wanted = statics::visible_graphics(&self.map, self.control.camera());
         wanted.extend(items::needed_graphics(&self.items));
         wanted
     }
 
-    fn drawn_mobiles(&self) -> Vec<Mobile> {
+    /// Everyone to draw, each beside the serial their clock is keyed by.
+    ///
+    /// Our own body first, and `None` for it while no shard has named us.
+    fn drawn_mobiles(&self) -> Vec<(Who, Mobile)> {
         let mut mobiles = Vec::with_capacity(self.others.len() + 1);
-        mobiles.push(self.player);
+        mobiles.push((self.view.as_ref().map(|view| view.player.serial), self.player));
         mobiles.extend_from_slice(&self.others);
         mobiles
     }
@@ -948,7 +956,12 @@ impl App {
         let statics = StaticAtlas::build(&self.art, self.standing_graphics()).map_err(StartupError::Atlas)?;
         // Every animation the mobiles on screen need. `&mut` because the
         // frames are read from the file rather than held in memory.
-        let wanted = mobiles::needed_animations(&self.drawn_mobiles());
+        let drawn: Vec<Mobile> = self
+            .drawn_mobiles()
+            .into_iter()
+            .map(|(_, mobile)| mobile)
+            .collect();
+        let wanted = mobiles::needed_animations(&drawn);
         let mobiles = AnimAtlas::build(&mut self.anim, wanted).map_err(StartupError::Atlas)?;
         Ok(Atlases {
             land,
@@ -1011,7 +1024,7 @@ impl App {
                 // packed for whoever was on screen facing whichever way when it
                 // was last built. A mobile turning, or a new one arriving, is
                 // the same miss as walking off the land atlas.
-                || drawn.iter().any(|mobile| {
+                || drawn.iter().any(|(_, mobile)| {
                     let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
                     window
                         .mobile_atlas
@@ -1062,13 +1075,14 @@ impl App {
         // everybody: a standing crowd animating in step is wrong and looks it,
         // and fixing it wants a clock per mobile, which wants a mobile that
         // survives between frames. See the backlog.
-        for mobile in &mut drawn {
+        for (who, mobile) in &mut drawn {
             let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
             let frame_count = window
                 .mobile_atlas
                 .frame_count(mobile.body, mobile.group, direction);
-            mobile.frame = self.animation.frame(frame_count);
+            mobile.frame = self.crowd.frame_for(*who, frame_count);
         }
+        let drawn: Vec<Mobile> = drawn.into_iter().map(|(_, mobile)| mobile).collect();
 
         let frame = match window.surface.get_current_texture() {
             // Suboptimal still draws: the surface wants reconfiguring, and the

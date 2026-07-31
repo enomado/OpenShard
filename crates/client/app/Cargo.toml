@@ -18,6 +18,10 @@ openshard-client-render.workspace = true
 # protocol itself — see `link.rs`.
 openshard-client-net.workspace = true
 openshard-protocol.workspace = true
+# For one constant: how long a step on foot takes, which is what decides when a
+# body that stopped hearing steps stops walking. Shared with the server rather
+# than guessed at again here.
+openshard-movement.workspace = true
 openshard-uofiles.workspace = true
 pollster = "0.4"
 # The dev HUD. `egui-wgpu` is the vendored port to wgpu 30 — see vendor/README.md
