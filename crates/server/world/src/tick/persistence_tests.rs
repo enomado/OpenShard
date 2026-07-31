@@ -84,10 +84,9 @@ fn a_shutdown_notice_reaches_the_world_and_nobody_on_the_way_into_it() {
     // it twice would answer the second question about an already-empty world.
     let sent: Vec<_> = world.drain_outbound().collect();
     assert!(
-        sent.iter()
-            .any(|out| out.connection == inside
-                && out.packet[0] == 0x1C
-                && String::from_utf8_lossy(&out.packet).contains("the shard is stopping")),
+        sent.iter().any(|out| out.connection == inside
+            && out.packet[0] == 0x1C
+            && String::from_utf8_lossy(&out.packet).contains("the shard is stopping")),
         "a player in the world is told why it is going"
     );
     assert!(
