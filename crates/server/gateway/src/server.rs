@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use openshard_protocol::version::ClientVersion;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -202,6 +202,72 @@ impl SessionIdFabric {
     }
 }
 
+/// The door a connection comes through, whoever opened it.
+///
+/// A [`ClientGatewayServer`] is this plus a listener, and the split is what lets
+/// a connection arrive from somewhere other than a socket: a test, or a client
+/// in this same process. What a `Gate` needs is an id to mint, somewhere to send
+/// the events, and a runtime to read on — nothing about *where* the bytes came
+/// from, which is the whole point.
+///
+/// # The runtime is captured, not borrowed from the caller
+///
+/// [`Gate::serve`] may be called from another runtime entirely — an in-process
+/// client dials from its own thread — and the connection must be read by the
+/// shard's, because that is the one that outlives the caller and the one whose
+/// events the world drains. So the handle is taken when the gate is built, which
+/// means [`Gate::new`] must be called inside the runtime that will serve.
+#[derive(Clone, Debug)]
+pub struct Gate {
+    events: ServerEventTx,
+    session_ids: SessionIdFabric,
+    /// Where connection tasks are spawned. See the note above.
+    reader: tokio::runtime::Handle,
+}
+
+impl Gate {
+    /// A gate with nothing in front of it, and the channel its events arrive on.
+    ///
+    /// # Panics
+    ///
+    /// If called outside a Tokio runtime: a gate with no runtime to read on
+    /// could accept a connection and never poll it, which is a hang rather than
+    /// an error — better said here, at the one line that can say it.
+    pub fn new() -> (Self, ServerEventRx) {
+        let (events, receiver) = server_event_channel();
+        (
+            Self {
+                events,
+                session_ids: SessionIdFabric::new(),
+                reader: tokio::runtime::Handle::current(),
+            },
+            receiver,
+        )
+    }
+
+    /// Serve `stream` as a client that arrived from `address`.
+    ///
+    /// Returns immediately with the id the connection will be known by; the
+    /// reading happens on the gate's own runtime. `address` is what the world is
+    /// told the client's address is — a real peer for an accepted socket, and a
+    /// stated one for anything else.
+    pub fn serve<S>(&self, stream: S, address: SocketAddr) -> ConnectionId
+    where
+        S: AsyncRead + AsyncWrite + Send + 'static,
+    {
+        let id = self.session_ids.next();
+        let events = self.events.clone();
+        self.reader.spawn(async move {
+            // A panic in here takes this connection down and nothing else.
+            // That is why the release profile does not set panic = "abort".
+            if let Err(error) = client_session_serve(id, address, stream, events).await {
+                debug!(%id, %error, "connection ended");
+            }
+        });
+        id
+    }
+}
+
 /// Accepts connections and drives a [`Connection`] for each.
 ///
 /// Events go onto a channel rather than through a callback: the world server
@@ -211,8 +277,7 @@ impl SessionIdFabric {
 #[derive(Debug)]
 pub struct ClientGatewayServer {
     listener: TcpListener,
-    events: ServerEventTx,
-    session_ids: SessionIdFabric,
+    gate: Gate,
 }
 
 impl ClientGatewayServer {
@@ -221,20 +286,22 @@ impl ClientGatewayServer {
     /// Returns the server and the channel its events arrive on.
     pub async fn bind(address: SocketAddr) -> io::Result<(Self, ServerEventRx)> {
         let listener = TcpListener::bind(address).await?;
-        let (events, receiver) = server_event_channel();
-        Ok((
-            Self {
-                listener,
-                events,
-                session_ids: SessionIdFabric::new(),
-            },
-            receiver,
-        ))
+        let (gate, receiver) = Gate::new();
+        Ok((Self { listener, gate }, receiver))
     }
 
     /// The address actually bound, which matters when port 0 was requested.
     pub fn local_address(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    /// The door this listener feeds, for a caller with a connection of its own.
+    ///
+    /// Cloned rather than borrowed because it outlives [`run`](Self::run), which
+    /// takes `self`: a shard that serves both a port and an in-process client
+    /// hands the gate to the second and the whole server to the first.
+    pub fn gate(&self) -> Gate {
+        self.gate.clone()
     }
 
     /// Accept forever, spawning a task per connection.
@@ -244,31 +311,32 @@ impl ClientGatewayServer {
         info!(address = ?self.local_address()?, "gateway listening");
         loop {
             let (stream, address) = self.listener.accept().await?;
-            let id = self.session_ids.next();
-            let events = self.events.clone();
-            tokio::spawn(async move {
-                // A panic in here takes this connection down and nothing else.
-                // That is why the release profile does not set panic = "abort".
-                if let Err(error) = client_session_serve(id, address, stream, events).await {
-                    debug!(%id, %error, "connection ended");
-                }
-            });
+            // Nagle batches small writes, and nearly everything a UO server
+            // sends is a small write that the client is waiting on. Latency
+            // beats packet count. Here rather than in `serve`, which is the one
+            // place a `TcpStream` is still a `TcpStream`.
+            stream.set_nodelay(true)?;
+            self.gate.serve(stream, address);
         }
     }
 }
 
 /// Drive one connection until it closes.
-async fn client_session_serve(
+///
+/// Generic over the stream, and not for the sake of a test double: an
+/// in-process client is a `DuplexStream` and a fuzzing one is whatever it likes,
+/// and every one of them must go through this same function or it is not the
+/// gateway that is being exercised.
+async fn client_session_serve<S>(
     id: ConnectionId,
     address: SocketAddr,
-    stream: TcpStream,
+    stream: S,
     events: ServerEventTx,
-) -> io::Result<()> {
-    // Nagle batches small writes, and nearly everything a UO server sends is a
-    // small write that the client is waiting on. Latency beats packet count.
-    stream.set_nodelay(true)?;
-
-    let (mut client_tcp_reader, mut client_tcp_writer) = stream.into_split();
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+{
+    let (mut client_tcp_reader, mut client_tcp_writer) = tokio::io::split(stream);
     let (to_client_tx, mut to_client_rx) = outbox_channel();
     let (control_tx, control_rx) = version_channel();
 
@@ -287,12 +355,20 @@ async fn client_session_serve(
     // server -> client loop. It ends on one of two things: the outbox being
     // dropped — which is how the server hangs up, there being no other "close" —
     // or a write failing, which means the client already has.
+    //
+    // The `shutdown` at the end is the hang-up itself, and it is written out
+    // rather than left to a drop. An `OwnedWriteHalf` closes its direction when
+    // it is dropped and `tokio::io::split`'s half does not, so the client's zero
+    // read — which the whole teardown chain below hangs on — would have arrived
+    // for a socket and never for anything else. One line, and it means the same
+    // thing for every stream.
     let mut writes = tokio::spawn(async move {
         while let Some(bytes) = to_client_rx.recv().await {
             if client_tcp_writer.write_all(&bytes).await.is_err() {
                 break;
             }
         }
+        let _ = client_tcp_writer.shutdown().await;
     });
 
     // client -> server loop, raced against the write half ending.
@@ -334,9 +410,9 @@ async fn client_session_serve(
 /// band (a game connection sends none itself), so the framer can size the packets
 /// whose length changed across eras. The two are raced: a version and a read are
 /// both things that can happen next, and neither may block the other.
-async fn read_loop(
+async fn read_loop<R: AsyncRead + Unpin>(
     id: ConnectionId,
-    reader: &mut tokio::net::tcp::OwnedReadHalf,
+    reader: &mut R,
     events: &ServerEventTx,
     mut control: VersionRx,
 ) -> Option<String> {
@@ -396,8 +472,10 @@ impl From<ConnectionError> for io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use openshard_protocol::seed::SEED_COMMAND;
+    use tokio::net::TcpStream;
+
+    use super::*;
 
     fn modern_seed() -> Vec<u8> {
         let mut bytes = vec![SEED_COMMAND];
@@ -544,6 +622,68 @@ mod tests {
             panic!("expected Disconnected");
         };
         assert!(reason.unwrap().contains("unknown packet"));
+    }
+
+    /// A stream that never went near a socket is served the same way.
+    ///
+    /// The point of the generic: an in-process client and, later, a fuzzing one
+    /// go through `client_session_serve` rather than around it, so what they
+    /// exercise is the gateway and not a second implementation of it.
+    #[tokio::test]
+    async fn a_gate_serves_a_stream_that_is_not_a_socket() {
+        let (gate, mut events) = Gate::new();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let served = gate.serve(server, "127.0.0.1:0".parse().unwrap());
+
+        let ServerEvent::Connected { id, outbox, .. } = events.recv().await.unwrap() else {
+            panic!("expected Connected first");
+        };
+        assert_eq!(id, served, "the id `serve` returned is the one the world hears");
+
+        let mut stream = modern_seed();
+        stream.extend_from_slice(&[0x73, 0x00]);
+        client.write_all(&stream).await.unwrap();
+
+        let ServerEvent::Received { event, .. } = events.recv().await.unwrap() else {
+            panic!("expected the seed");
+        };
+        assert!(matches!(event, Event::Seeded(_)));
+
+        outbox.send(vec![0x82, 0x03]).unwrap();
+        let mut received = [0u8; 2];
+        client.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, [0x82, 0x03], "and the answer comes back");
+    }
+
+    /// The hang-up reaches a client that is not a socket either.
+    ///
+    /// This is the assertion the explicit `shutdown` in the write loop exists
+    /// for: an `OwnedWriteHalf` closes its direction when dropped and a split
+    /// half does not, so without that line the zero read below never arrives and
+    /// an in-process client waits for a server that has already gone.
+    #[tokio::test]
+    async fn dropping_the_outbox_ends_a_stream_connection_too() {
+        let (gate, mut events) = Gate::new();
+        let (mut client, server) = tokio::io::duplex(4096);
+        gate.serve(server, "127.0.0.1:0".parse().unwrap());
+
+        let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
+            panic!("expected Connected");
+        };
+        outbox.send(vec![0x82, 0x03]).unwrap();
+        drop(outbox);
+
+        let mut denied = [0u8; 2];
+        client.read_exact(&mut denied).await.unwrap();
+        assert_eq!(denied, [0x82, 0x03], "the last packet lands before the close");
+        let mut trailing = Vec::new();
+        client.read_to_end(&mut trailing).await.unwrap();
+        assert!(trailing.is_empty(), "and the write half is shut");
+
+        let ServerEvent::Disconnected { reason, .. } = events.recv().await.unwrap() else {
+            panic!("the gateway never said the connection was gone");
+        };
+        assert_eq!(reason, None, "this end decided; that is a clean close");
     }
 
     #[tokio::test]

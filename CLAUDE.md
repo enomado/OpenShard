@@ -109,9 +109,14 @@ map. The rules:
   `Command`. Acting on a packet as it arrives would run world code on whatever
   thread Tokio picked, and two clients racing would produce a different world
   depending on which packet won.
-- **Protocol logic is sans-io.** Parsing and state machines take bytes and return
-  events — see `gateway::Connection` versus `gateway::Server`. What is hard here
-  is byte boundaries, and a real socket will not reproduce those on demand.
+- **Protocol logic is sans-io, and the transport is a parameter.** Parsing and
+  state machines take bytes and return events — see `gateway::Connection` versus
+  `gateway::Server`. What is hard here is byte boundaries, and a real socket will
+  not reproduce those on demand. One level up, neither end names TCP either: a
+  client opens its connections through a `Dial` and the gateway serves any
+  stream, so a shard and a client in one process talk through memory and still go
+  through the same login machine, the same framing and the same
+  `client_session_serve`. That is what a virtual player is built on.
 - **Never branch on `Era` for a protocol decision.** Ask
   `version.supports(Feature::X)`. Features did not land in era-sized batches —
   tooltips at 4.0.0a, stat locks at 4.0.1a, tooltip hashes at 4.0.5a, all inside

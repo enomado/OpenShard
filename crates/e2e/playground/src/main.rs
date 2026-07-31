@@ -4,21 +4,24 @@
 //! OPENSHARD_CLIENT="/path/to/Ultima Online Classic" cargo run -p openshard-playground
 //! ```
 //!
-//! One command instead of two, no port to pick and no config file to keep in
-//! step with one: the shard binds an ephemeral port, the window logs in to
-//! whatever it got, and closing the window ends both. Nothing else about the two
-//! ends changes — this is a real gateway, a real login conversation and a real
-//! pair of sockets on the loopback, because that is the only arrangement in
-//! which what runs here is what runs against ClassicUO.
+//! One command instead of two, and no network at all: **no port is bound and no
+//! socket is opened**. The client dials the shard through
+//! [`openshard_e2e_shard::in_process`], which is a pair of in-memory pipes, and
+//! closing the window ends both ends.
 //!
-//! # Why a loopback socket and not a channel
+//! # What that does and does not remove
 //!
-//! An in-memory duplex would be one fewer moving part, and it would also be a
-//! second transport that only this binary uses. Framing across read boundaries,
-//! the relay's second connection, and per-write compression are exactly what
-//! `client/net` and `gateway` are careful about, and a transport that skipped
-//! them would be quiet about the day one of them broke. The loopback costs a
-//! syscall per packet and tests the thing.
+//! Not the protocol. Both ends run exactly the code they run against ClassicUO
+//! — the client's framing and login machine, the relay's second connection,
+//! per-write compression, and the gateway's own `client_session_serve`. The
+//! transport is a type parameter on either side (`Dial` for the client, any
+//! stream for the gateway) and everything above it is untouched, which is the
+//! only arrangement where this is worth having: a second implementation that
+//! agreed with the first would be the thing that goes quietly out of step.
+//!
+//! What is gone is the kernel — segment boundaries, resets, and anything about
+//! timing that a real network decides. The socket tests in `crates/e2e/shard`
+//! cover that and stay where they are.
 //!
 //! # What this is not
 //!
@@ -52,17 +55,17 @@ fn main() -> ExitCode {
     // It costs a second copy of the facet in this process; a playground can
     // afford one, and `docs/client_versions.md` is the standing rule it obeys.
     let files = dir.to_string_lossy().into_owned();
-    let address = openshard_e2e_shard::spawn(move |bound| {
-        let mut config = openshard_e2e_shard::stock_config(bound);
+    let dial = openshard_e2e_shard::in_process::spawn(move |stated| {
+        let mut config = openshard_e2e_shard::stock_config(stated);
         config.world.client_files = files;
         config
     });
     eprintln!(
-        "shard listening on {address}; logging in as {}",
+        "shard up in this process; logging in as {}",
         openshard_e2e_shard::ACCOUNT
     );
 
     // On this thread, because `winit` requires the event loop to own the one it
     // was built on. The shard is the one that moved.
-    openshard_client_app::run(&dir, Some((address, openshard_e2e_shard::plan())))
+    openshard_client_app::run(&dir, Some((dial, openshard_e2e_shard::plan())))
 }

@@ -45,7 +45,6 @@
 //! against a facet nobody is serving.
 
 use std::fmt;
-use std::net::SocketAddrV4;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -58,6 +57,7 @@ mod shell;
 
 use crowd::{Crowd, Who};
 use openshard_client_net::session::Plan;
+use openshard_client_net::transport::Dial;
 use openshard_client_net::view::WorldView;
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
@@ -111,6 +111,11 @@ const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16)
 /// facet, the version claimed, where the camera starts — is a constant above,
 /// because none of it is a decision a caller has ever needed to make differently.
 ///
+/// A shard is a [`Dial`] and a [`Plan`] rather than an address and a plan: how
+/// the connection is opened is the caller's, which is what lets
+/// `crates/e2e/playground` hand over a shard in this same process. Nothing in
+/// this crate knows what a socket is any more; `client/net` does not either.
+///
 /// This is a `-> ExitCode` and not a `-> Result`, because every failure here is
 /// terminal for a *window*: no client files, no window system, no GPU. There is
 /// nothing a caller could do with a typed error except print it, and printing it
@@ -120,7 +125,7 @@ const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16)
 ///
 /// It must be called on the main thread: `winit` says so on macOS and iOS, and
 /// the event loop it builds is what enforces it.
-pub fn run(dir: &Path, shard: Option<(SocketAddrV4, Plan)>) -> ExitCode {
+pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> ExitCode {
     // Reading the whole facet takes a moment and a few hundred megabytes. That
     // is the shape `uofiles` has today — see the backlog in docs/client.md — and
     // it is honest to do it up front rather than to stall on the first frame.
@@ -203,15 +208,9 @@ pub fn run(dir: &Path, shard: Option<(SocketAddrV4, Plan)>) -> ExitCode {
     // Shared with the shard thread, which predicts the height of every step
     // from it: plain data, read by both and written by neither.
     let map = Arc::new(map);
-    let link = shard.map(|(address, plan)| {
-        eprintln!("logging in to {address} as {}", plan.account.0);
-        link::connect(
-            address,
-            plan,
-            VERSION,
-            Arc::clone(&map),
-            event_loop.create_proxy(),
-        )
+    let link = shard.map(|(dial, plan)| {
+        eprintln!("logging in as {}", plan.account.0);
+        link::connect(dial, plan, VERSION, Arc::clone(&map), event_loop.create_proxy())
     });
 
     let mut app = App {

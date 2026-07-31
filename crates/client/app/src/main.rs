@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use openshard_client_net::session::{Pick, Plan};
+use openshard_client_net::transport::Tcp;
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 
 /// Where a shard is, when one is asked for and no address is given.
@@ -54,5 +55,11 @@ fn main() -> ExitCode {
         eprintln!("set OPENSHARD_CLIENT to a client install directory");
         return ExitCode::FAILURE;
     };
-    openshard_client_app::run(&dir, plan_from_environment())
+    // A real client on a real network. `Tcp` is where the address goes: past
+    // this line nothing knows what a socket is.
+    let shard = plan_from_environment().map(|(address, plan)| {
+        eprintln!("logging in to {address}");
+        (Tcp::at(address), plan)
+    });
+    openshard_client_app::run(&dir, shard)
 }

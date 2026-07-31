@@ -44,6 +44,6 @@ mod server;
 
 pub use connection::{Connection, ConnectionError, Event, Packet, PacketError, RawPacket};
 pub use server::{
-    ClientGatewayServer, ConnectionId, OutboxRx, OutboxTx, ServerEvent, ServerEventRx, VersionRx, VersionTx,
-    outbox_channel, version_channel,
+    ClientGatewayServer, ConnectionId, Gate, OutboxRx, OutboxTx, ServerEvent, ServerEventRx, VersionRx,
+    VersionTx, outbox_channel, version_channel,
 };

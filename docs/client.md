@@ -112,27 +112,60 @@ and the tick all have better tests of their own; what is left for `e2e` is that
 two correct ends actually agree — which is exactly what caught the compression
 mistake above, on the first run.
 
-**And one command runs both ends.** `crates/e2e/playground` is that same
-arrangement with a window instead of assertions:
+**And one command runs both ends, with no network under them.**
+`crates/e2e/playground` is that same arrangement with a window instead of
+assertions:
 
 ```sh
 OPENSHARD_CLIENT=… cargo run -p openshard-playground
 ```
 
-A shard on an ephemeral port in a thread, the window logged in to whatever it
-bound, and both ending when the window closes — no port to pick, no config file
-to keep in step with one, and nothing to keep, because the world is in memory.
+A shard in a thread of its own, the window logged in to it, both ending
+together — and **no port bound and no socket opened**. The two are joined by
+`tokio::io::duplex`, a pair of in-memory pipes.
 
-Three things it deliberately does not do. It does not skip the socket: an
-in-memory duplex would be a second transport that only this binary uses, and
-read boundaries, the relay's second connection and per-write compression are
-precisely what `client/net` and `gateway` are careful about — a transport that
-went around them would be quiet the day one of them broke. It does not give the
-shard a different map: `world.client_files` is pointed at the same install the
-window reads, because the client predicts each step's `z` from its own copy of
-the facet and two ends reading different ground is a stream of `0x21` rollbacks
-that looks like a client bug. And it does not live in `client/app`, which is why
-that crate is now a library with a thin binary — the move
+### The transport is a parameter at both ends
+
+This is the part worth writing down, because it is not a shortcut for a
+playground: it is the seam a world driven by something other than a person needs.
+A virtual player walking, talking and being fuzzed at wants a connection per
+player and no file descriptors, no ports and no kernel timing — and it must
+exercise *this* login machine and *this* framing, not a second implementation
+that agrees with them.
+
+So each end names what it needs and nothing more:
+
+- **The client asks a `Dial`** (`crates/client/net/src/transport.rs`) for its two
+  connections. `Tcp` is a real client on a real network; `e2e`'s `InProcess`
+  hands back a pipe. Two methods rather than one, because the two connections are
+  not the same question: the first goes where the player said, the second goes
+  where the *server* said in its `0x8C` relay — and an in-process shard
+  advertises an address it never listens on, so it must be free to ignore the
+  second without guessing which call it was looking at. `Socket` became
+  `Socket<S>`; nothing above it changed.
+- **The gateway serves a stream** (`gateway::Gate`). `ClientGatewayServer` is now
+  that plus a listener, and `client_session_serve` is generic — so an in-process
+  client goes *through* the gateway rather than around it.
+
+One thing had to become explicit in the move. The write task used to close the
+connection by dropping an `OwnedWriteHalf`, whose `Drop` shuts the socket's write
+direction; `tokio::io::split`'s half does not, so the client's zero read — which
+the whole teardown chain hangs on — would have arrived for a socket and never for
+a pipe. The hang-up is now a `shutdown()` that is written down, and it means the
+same thing for every stream. Two tests in `gateway::server` pin it.
+
+What the pipes do *not* reproduce: segment boundaries, resets, Nagle, and a slow
+reader filling a kernel queue rather than blocking a writer. The socket tests in
+`crates/e2e/shard` cover those and stay exactly where they are —
+`tests/in_process.rs` is the same login again with the transport swapped, and
+its deadlines are there because a broken pipe arrangement hangs rather than
+refusing.
+
+Two smaller decisions. The shard is given the same install the window reads
+(`world.client_files`), because the client predicts each step's `z` from its own
+copy of the facet and two ends reading different ground is a stream of `0x21`
+rollbacks that looks like a client bug. And none of this lives in `client/app`,
+which is why that crate is now a library with a thin binary — the move
 `crates/server/server` already made, and for the same reason: something that
 wants a client should call one rather than build one.
 
@@ -144,14 +177,24 @@ Backlog it leaves behind:
   question the "a container is read whole into memory" item below is about. The
   honest fix is a `Map` that can be handed over rather than opened again, and
   M3b's `Arc<Map>` cache is where that belongs.
-- **Nothing tests that the playground boots.** `e2e/shard`'s tests cover the
-  shard and the login; what this binary adds — a config with `client_files` set,
-  and a window — is covered by running it. An `#[ignore]`d test that starts the
-  shard with a real install and enters the world *without* a window would cover
-  everything but the GPU, and needs `OPENSHARD_CLIENT` like the rest.
+- **Nothing tests that the playground boots.** `tests/in_process.rs` covers the
+  transport and `e2e/shard`'s others cover the wire; what the binary adds — a
+  config with `client_files` set, and a window — is covered by running it. An
+  `#[ignore]`d test that starts the in-process shard with a real install and
+  enters the world *without* a window would cover everything but the GPU.
+- **The in-process shard has no way to stop.** `in_process::spawn` hands back a
+  dialler and keeps the thread; nothing joins it, and the `Gate` it holds keeps
+  the event channel open, so `run_shard` never sees its input close. Right for a
+  playground that ends with the process, wrong for a test that wants to start
+  fifty worlds and drop them — which a fuzzing run does.
+- **A virtual player is now one type away.** `Dial` is the seam; what is missing
+  is something that drives `client/net` without a window — the walk, the speech,
+  and an oracle for what the world should have said. It belongs beside
+  `crates/e2e/playground` rather than inside it.
 - **It is the obvious place for M3b.** One process already holds a shard and a
-  client; two sessions against one shard is one more `spawn` of a connection,
-  and it would be a real test of "the files are loaded once per install".
+  client, and `InProcess` clones: two sessions against one shard is one more
+  dialler, and it would be a real test of "the files are loaded once per
+  install".
 
 ## M2 — `crates/common/uofiles`: the data files
 

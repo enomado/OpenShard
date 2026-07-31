@@ -31,17 +31,18 @@ that file. See [`style.md`](style.md).
 
 Running the shard: `cargo run -p openshard-server`.
 
-Running both ends at once — a shard on an ephemeral port and our own client
-logged in to it, in one process, ending together when the window closes:
+Running both ends at once — a shard and our own client logged in to it, in one
+process, with no port bound and no socket opened:
 
 ```sh
 OPENSHARD_CLIENT="/path/to/Ultima Online Classic" cargo run -p openshard-playground
 ```
 
-It keeps nothing: the world is in memory and goes away with the process, which
-is what makes it a playground rather than a way to run a shard. The sockets are
-real loopback sockets — see `crates/e2e/playground` for why an in-memory
-transport would be the wrong shortcut.
+The two ends are joined by a pair of in-memory pipes. Everything above the
+transport is the code that runs against ClassicUO — the transport itself is a
+parameter on both sides, `transport::Dial` for the client and any stream for
+`gateway::Gate`. It keeps nothing: the world is in memory and goes away with the
+process, which is what makes it a playground rather than a way to run a shard.
 
 ## No Rust toolchain? Install one without root
 

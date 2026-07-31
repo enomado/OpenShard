@@ -26,6 +26,8 @@
 //! What is left below is *how to start a shard*, with the one thing a caller
 //! legitimately differs on — the config — left to it.
 
+pub mod in_process;
+
 use std::net::{SocketAddr, SocketAddrV4};
 
 use openshard_client_net::session::{Pick, Plan};

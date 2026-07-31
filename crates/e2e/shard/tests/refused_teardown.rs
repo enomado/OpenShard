@@ -59,6 +59,7 @@ use openshard_protocol::identity::RawCharacterName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{RawCharacterSlot, RawClientIp};
 use openshard_protocol::world::CharacterPlay;
+use tokio::net::TcpStream;
 
 use openshard_e2e_shard::{CHARACTER, NYSTUL, WITNESS, plan, plan_for, shard, version};
 
@@ -76,7 +77,7 @@ const WAIT: Duration = Duration::from_secs(20);
 /// Checked before the first read, so a condition that is already true costs
 /// nothing. `what` names the thing being waited for, for the panic.
 async fn read_until(
-    socket: &mut Socket,
+    socket: &mut Socket<TcpStream>,
     view: &mut WorldView,
     what: &str,
     done: impl Fn(&WorldView) -> bool,
@@ -108,7 +109,7 @@ async fn read_until(
 /// making sense while the connection was still open is a different bug wearing
 /// this one's clothes, and `Err(_) => return` would report it as a teardown that
 /// worked.
-async fn read_until_closed(socket: &mut Socket, what: &str) {
+async fn read_until_closed(socket: &mut Socket<TcpStream>, what: &str) {
     tokio::time::timeout(WAIT, async {
         loop {
             match socket.next_event().await {
@@ -138,7 +139,7 @@ fn play_again() -> Vec<u8> {
 }
 
 /// Log in on `plan` and stand in the world, or say which client failed to.
-async fn enter(address: std::net::SocketAddrV4, plan: Plan, who: &str) -> (Socket, WorldView) {
+async fn enter(address: std::net::SocketAddrV4, plan: Plan, who: &str) -> (Socket<TcpStream>, WorldView) {
     tokio::time::timeout(WAIT, enter_world(address, plan, version()))
         .await
         .unwrap_or_else(|_| panic!("{who} did not finish logging in inside {WAIT:?}"))

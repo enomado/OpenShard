@@ -16,12 +16,11 @@
 //! a packet, and a packet must not wait for the window to be uncovered. So the
 //! socket gets a current-thread runtime of its own and the two exchange values.
 
-use std::net::SocketAddrV4;
 use std::sync::Arc;
 
 use openshard_client_net::connection::Event;
 use openshard_client_net::session::Plan;
-use openshard_client_net::transport::enter_world;
+use openshard_client_net::transport::{Dial, enter_world_with};
 use openshard_client_net::view::WorldView;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
@@ -71,8 +70,12 @@ impl Link {
 /// not send one — see [`Walk::step`]. Shared rather than loaded twice: it is a
 /// few hundred megabytes of plain data, read by both threads and written by
 /// neither.
-pub fn connect(
-    address: SocketAddrV4,
+///
+/// `dial` is how the connection is opened and the only thing here that knows
+/// what a socket is: `Tcp` for a shard on a network, and something else for one
+/// in this process. It is moved onto the thread, so it is `Send`.
+pub fn connect<D: Dial + Send + 'static>(
+    dial: D,
     plan: Plan,
     version: ClientVersion,
     map: Arc<Map>,
@@ -81,7 +84,7 @@ pub fn connect(
     let (steps, commands) = tokio::sync::mpsc::unbounded_channel();
     std::thread::Builder::new()
         .name("shard".to_owned())
-        .spawn(move || run(address, plan, version, &map, &proxy, commands))
+        .spawn(move || run(dial, plan, version, &map, &proxy, commands))
         // The thread is the connection; a client that could not spawn it has
         // nothing to fall back to, and the OS refusing a thread at startup is
         // not a condition worth a variant in `Update`.
@@ -91,8 +94,8 @@ pub fn connect(
 
 /// The thread body: one runtime, one login, then packets and steps until either
 /// end stops.
-fn run(
-    address: SocketAddrV4,
+fn run<D: Dial>(
+    dial: D,
     plan: Plan,
     version: ClientVersion,
     map: &Map,
@@ -107,21 +110,21 @@ fn run(
         }
     };
     runtime.block_on(async move {
-        let reason = play(address, plan, version, map, proxy, commands).await;
+        let reason = play(dial, plan, version, map, proxy, commands).await;
         report(proxy, Update::Lost(reason));
     });
 }
 
 /// Everything after the runtime exists, up to the reason it ended.
-async fn play(
-    address: SocketAddrV4,
+async fn play<D: Dial>(
+    dial: D,
     plan: Plan,
     version: ClientVersion,
     map: &Map,
     proxy: &EventLoopProxy<Update>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Facing>,
 ) -> String {
-    let (mut socket, mut view) = match enter_world(address, plan, version).await {
+    let (mut socket, mut view) = match enter_world_with(dial, plan, version).await {
         Ok(entered) => entered,
         Err(error) => return error.to_string(),
     };
