@@ -53,6 +53,7 @@ use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::Camera;
 use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::hue::HueRamp;
+use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::{ground, statics};
@@ -229,6 +230,7 @@ fn main() -> ExitCode {
             hue: Hue::NONE,
         },
         others: Vec::new(),
+        items: Vec::new(),
         view: None,
         connection: String::from("offline"),
         frame_time: std::time::Duration::ZERO,
@@ -398,12 +400,18 @@ struct App {
     /// the view is the record of what arrived and this is a projection of it,
     /// so there is nothing here to keep in step by hand.
     others: Vec<Mobile>,
+    /// Everything lying on the ground, as `0x1A` and `0x1D` last left it.
+    ///
+    /// A projection of the view like [`App::others`], and drawn through the
+    /// same atlas and the same pass as the map's own statics: an item's picture
+    /// is a static's picture. Two lists rather than one because the map's
+    /// furniture never moves and these come and go with every packet.
+    items: Vec<GroundItem>,
     /// The last thing the server said, whole.
     ///
     /// Kept only for the HUD's world window, which lists what has been decoded
-    /// and is otherwise invisible — the ground items in particular, which
-    /// nothing draws yet. The renderer reads [`App::player`] and
-    /// [`App::others`], which are projections of this.
+    /// with the serials the three projections above drop. The renderer reads
+    /// those.
     view: Option<Box<WorldView>>,
     /// What the connection is doing, for the status strip.
     connection: String,
@@ -739,13 +747,26 @@ impl App {
             .into_iter()
             .map(|(_, mobile)| as_mobile(mobile.position, mobile.body, mobile.facing, mobile.hue))
             .collect();
+        // Sorted by serial for the same reason, and for one more: two items on
+        // one tile at one height are drawn in the order they arrive here, so an
+        // order that changed every frame would flicker.
+        let mut items: Vec<_> = view.items.iter().collect();
+        items.sort_unstable_by_key(|(serial, _)| serial.raw());
+        self.items = items
+            .into_iter()
+            .map(|(_, item)| GroundItem {
+                at: item.position,
+                graphic: item.graphic,
+                hue: item.hue,
+            })
+            .collect();
         // The camera follows the body, which is what `0x20` is for — unless it
         // has been unlocked, in which case the eye is the mouse's and the body
         // is free to walk off the screen. `Home` puts it back.
         self.control.follow_body(view.player.position);
         self.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
-        // Whole, for the HUD's world window: the two projections above are what
-        // the renderer wants, and the ground items are in neither of them.
+        // Whole, for the HUD's world window: the three projections above are
+        // what the renderer wants, and none of them keeps a serial.
         self.view = Some(Box::new(view.clone()));
     }
 
@@ -784,6 +805,19 @@ impl App {
     }
 
     /// The player and everyone else, in one slice for the atlas and the pass.
+    /// Every graphic that stands on the ground and wants a sprite: the map's
+    /// statics, and what the server has dropped on top of them.
+    ///
+    /// One set, because one atlas serves both — and because "does the atlas
+    /// cover what this frame needs" has to be one question. Asked twice, with
+    /// the item half forgotten in one of them, the atlas would be rebuilt every
+    /// frame an item was on screen and never hold it.
+    fn standing_graphics(&self) -> std::collections::BTreeSet<openshard_protocol::wire::Graphic> {
+        let mut wanted = statics::visible_graphics(&self.map, self.control.camera());
+        wanted.extend(items::needed_graphics(&self.items));
+        wanted
+    }
+
     fn drawn_mobiles(&self) -> Vec<Mobile> {
         let mut mobiles = Vec::with_capacity(self.others.len() + 1);
         mobiles.push(self.player);
@@ -908,11 +942,10 @@ impl App {
         let land = LandAtlas::build(&self.art, wanted.iter().copied()).map_err(StartupError::Atlas)?;
         let texmaps =
             TexmapAtlas::build(&self.texmaps, &self.tiledata, wanted).map_err(StartupError::Atlas)?;
-        let statics = StaticAtlas::build(
-            &self.art,
-            statics::visible_graphics(&self.map, self.control.camera()),
-        )
-        .map_err(StartupError::Atlas)?;
+        // One atlas for both sprite sources standing on the ground: the map's
+        // statics and the server's items share an art file, so packing them
+        // apart would pack a floor tile twice.
+        let statics = StaticAtlas::build(&self.art, self.standing_graphics()).map_err(StartupError::Atlas)?;
         // Every animation the mobiles on screen need. `&mut` because the
         // frames are read from the file rather than held in memory.
         let wanted = mobiles::needed_animations(&self.drawn_mobiles());
@@ -965,7 +998,7 @@ impl App {
         // Repacked before the window is borrowed, and not inside the borrow: the
         // pack reads the whole of `self`, and the window is part of it.
         let wanted = ground::visible_graphics(&self.map, self.control.camera());
-        let wanted_statics = statics::visible_graphics(&self.map, self.control.camera());
+        let wanted_statics = self.standing_graphics();
         let mut drawn = self.drawn_mobiles();
         let stale = self.window.as_ref().is_some_and(|window| {
             wanted
@@ -1091,6 +1124,19 @@ impl App {
             &self.tiledata,
             &window.static_atlas,
         );
+        // Through the same pass as the map's statics, because they are the same
+        // atlas: one draw call binds one texture, and what covers what is the
+        // depth these carry rather than the order they are appended in.
+        let static_quads = {
+            let mut quads = static_quads;
+            quads.extend(items::collect(
+                &self.items,
+                self.control.camera(),
+                &self.tiledata,
+                &window.static_atlas,
+            ));
+            quads
+        };
         let mobile_quads = mobiles::collect(&drawn, self.control.camera(), &window.mobile_atlas);
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let target = Target {

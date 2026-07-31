@@ -37,6 +37,7 @@ pub mod control;
 pub mod depth;
 pub mod ground;
 pub mod hue;
+pub mod items;
 pub mod mobiles;
 pub mod renderer;
 pub mod sprite;

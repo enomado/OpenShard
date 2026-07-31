@@ -331,6 +331,25 @@ impl TileData {
         })
     }
 
+    /// Every tile, defined and unremarkable: no flags, no height, no name.
+    ///
+    /// For a caller that needs the *shape* of a tiledata and not the client's —
+    /// a renderer test about where a sprite lands, which is decided by the
+    /// sprite's own size and not by a flag. It is honest here in a way it would
+    /// not be for a test about flags: nothing in it is a guess at what the file
+    /// says, because it says nothing at all. Anything asserting on real flags
+    /// reads a real install, the way `tests/client_files.rs` does.
+    ///
+    /// The format is claimed to be the modern one, since there are no records
+    /// whose layout could disagree.
+    pub fn empty() -> Self {
+        Self {
+            land: vec![LandTile::default(); LAND_TILE_COUNT],
+            statics: vec![StaticTile::default(); STATIC_TILE_COUNT],
+            format: TileDataFormat::HighSeas,
+        }
+    }
+
     /// Which layout this file turned out to be in.
     pub const fn format(&self) -> TileDataFormat {
         self.format
