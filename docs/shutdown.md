@@ -304,6 +304,16 @@ on. The rest are independent.
   the timing: a *real* client whose `0x5D` is queued when the stop lands. That
   needs `Running::ask` below, and even then the window is a race rather than a
   state a test can hold still.
+- **`tests::connection()` hands back the same id every time,** so
+  `enter(&mut world, now)` twice is one connection entering twice and not two
+  players — the world's `players` map is keyed by connection, so the second
+  `Enter` quietly replaces the first. Every test that wants two says
+  `enter_as(.., ConnectionId::from_raw(n), ..)` and knows to; a test that
+  reaches for the shorter helper gets a scene with one connection in it and
+  assertions that pass. Found writing the `packets_for` test above, where the
+  `assert_ne!` on the two ids is the only reason it was noticed. The honest
+  shape is a counter — `connection()` minting a fresh id each call, with the
+  handful of tests that need a *known* id keeping `enter_as`.
 - **Nothing tests that the playground boots** — carried over from
   [`client.md`](client.md), and now with one more thing to get wrong, since the
   playground stops its shard after the window closes.
@@ -341,7 +351,10 @@ exists for — that `run_shard` returns only once the world is on disk — is
 finally asserted against a real file rather than believed.
 
 What is left is S7, an operator's stop from inside the world, and the backlog
-below. The oldest thing in it is now the unbounded `save_loop`: D2's force-exit
+above — three of whose entries are closed: `run_shard`'s argument list is one
+`Reins` shorter, `packets_for` answers about one connection without emptying the
+world, and what a shard says on its way out is written down by the client that
+hears it. The oldest thing in it is now the unbounded `save_loop`: D2's force-exit
 finally names what it costs — the writes and the rows the save task had not
 finished — but a store that never answers is still a shard that cannot be
 stopped politely. The commit that created this plan is the one that landed the stop
