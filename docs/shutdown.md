@@ -152,16 +152,27 @@ on. The rest are independent.
       before hanging up. That is the deadline path working, and it is written
       down in the test.
 
-- [ ] **S3. The world says why.** `World::announce(&str)` beside
+- [x] **S3. The world says why.** `World::announce(&str)` beside
       `cancel_all_trades` in `world/src/tick/persist.rs` — walk
       `WorldState::players`, `system_message` each — and in `run_shard`, after
-      the loop: announce, drain the outbound queue into the sessions, *then* let
-      the sessions go. The destructuring `let Shard { mut world, saves, .. }`
-      moves below that, because it is what drops them.
-      **DoD:** an end-to-end test in `crates/e2e/shard/tests/in_process.rs`: a
-      logged-in client is stopped on, and reads the line *and then* the close.
-      Asserting the order is the test — the presence alone would pass with the
-      flush in the wrong place on a fast machine.
+      the loop: `Shard::announce_shutdown`, which announces and flushes as one
+      call, *then* the destructuring `let Shard { mut world, saves, .. }`, which
+      is what drops the sessions. The flush is `Shard::flush_outbound`, lifted
+      out of `tick` rather than copied, so there is one loop that sends and not
+      two to keep in step.
+      **DoD (met):** `a_stop_tells_the_player_before_it_hangs_up` in
+      `crates/e2e/shard/tests/in_process.rs` reads events until the close and
+      asserts the line was among them — so the assertion is the *order*, not the
+      presence. Checked to fail with the flush moved before the announcement,
+      which is the one-line mistake it exists for.
+
+      **It also needed a decoder.** Our own client could not read `0x1C`:
+      `ServerPacket::decode` had no arm for it, so the notice arrived as
+      `Event::Undecoded` and the test could only have asserted on raw bytes. A
+      shard announcing something its own client cannot read is not a feature, so
+      `DecodePacket for SpokenMessage` is part of this step, with the two
+      sentinels (`0xFFFFFFFF` speaker, `0xFFFF` graphic) folded back to `None`
+      where the encoder folds them out.
 
 - [ ] **S4. `Running` raises what it currently prints.** The
       `std::thread::panicking()` guard of D7.
@@ -222,6 +233,14 @@ on. The rest are independent.
   started, signalled twice, and its exit status read — which is the out-of-process
   test this repository has otherwise avoided. Worth doing once the binary has any
   other reason to be driven from a test; not worth building the harness for alone.
+- **The client decodes `0x1C` and draws nothing with it.** S3 wrote the decoder
+  because the shutdown notice had to be readable; nothing in `WorldView` keeps
+  what was said, so a client built on it still has no journal. The next thing
+  that speaks to a player — a GM line, an NPC — will want the same, and the place
+  for it is `view.rs` beside the rest of what the server has shown.
+- **`Shard::announce_shutdown` is the only caller of `World::announce`.** A GM
+  broadcast is the obvious second, and S7's countdown is the third; until one of
+  them exists the method is a one-use seam and its shape is unproven.
 - **A stop mid-`Entering` is untested.** A client whose `Command::Enter` is
   queued when the stop arrives has no entity, so it gets no announcement — only
   the hang-up. That is correct, and nothing pins it.
@@ -231,9 +250,11 @@ on. The rest are independent.
 
 ## Status
 
-S1 and S2 are in: a shard under systemd is asked rather than killed, an operator
-with a wedged save has a way out that is not `SIGKILL`, and what the world queues
-on its way out now reaches the wire. S3 has its transport and is next. The commit that created this plan is the one that landed the stop
+S1, S2 and S3 are in: a shard under systemd is asked rather than killed, an
+operator with a wedged save has a way out that is not `SIGKILL`, what the world
+queues on its way out reaches the wire, and a player is told why their screen is
+about to go. S4 through S6 are the tests and the two remaining sharp edges, and
+they are independent of each other. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.

@@ -105,6 +105,23 @@ async fn save_loop(store: Arc<dyn Store>, mut snapshots: SnapshotRx, failures: F
 /// a bound worth having and a cadence not worth tuning.
 const KEY_SWEEP: Duration = openshard_login::auth::DEFAULT_TTL;
 
+/// What every player is told when the shard stops.
+///
+/// A constant and not a setting, deliberately: a message nobody can vary is a
+/// string, not a configuration. It becomes config on the day there is an operator
+/// command to schedule a stop and therefore something to vary it *with* — S7 of
+/// `docs/shutdown.md`.
+///
+/// It says the world is being saved because that is the part a player cares
+/// about: the difference between this and a crash is whether the last half hour
+/// still exists.
+///
+/// `pub` for one reason: the end-to-end test that a stopping shard says this
+/// before it hangs up asserts against the constant rather than a copy of the
+/// string, so changing the wording cannot quietly leave the test passing on text
+/// nobody sends.
+pub const SHUTDOWN_NOTICE: &str = "The shard is shutting down. Your character is being saved.";
+
 /// Everything the shard loop owns between ticks.
 ///
 /// One value rather than eight locals threaded through every helper. Each step of
@@ -147,15 +164,7 @@ impl Shard {
         for connection in self.phases.apply(&self.world, &mut self.sessions) {
             self.sessions.close(connection);
         }
-        for out in self.world.drain_outbound() {
-            if let Some(session) = self.sessions.get(out.connection) {
-                // A connection reaches the world only after its game
-                // login, so this is always a game connection and every
-                // packet leaves compressed. `send_packet` gates on the
-                // flag anyway, so it stays correct if that ever changes.
-                let _ = session.send_packet(out.packet);
-            }
-        }
+        self.flush_outbound();
         // Handed off, not awaited. The tick's job here is to stop
         // holding the only copy.
         for snapshot in self.world.drain_saves() {
@@ -166,6 +175,43 @@ impl Shard {
         // applied by a tick and leaves through this same path.
         if let Some(scripts) = self.scripts.as_mut() {
             scripts.pump(&mut self.world);
+        }
+    }
+
+    /// Tell every player the shard is going, and get the line onto the wire.
+    ///
+    /// Two statements that must not be separated, so they are one call. See D6 in
+    /// `docs/shutdown.md`: `announce` queues and `flush_outbound` sends, and a
+    /// stop that does the first without the second is a stop that says nothing —
+    /// silently, and in the one situation nobody re-runs by hand.
+    ///
+    /// Not a tick. The world is not advanced here: it has stopped, and what is
+    /// wanted is one packet per player, not another 50 ms of simulation on the
+    /// way out.
+    fn announce_shutdown(&mut self) {
+        self.world.announce(SHUTDOWN_NOTICE);
+        self.flush_outbound();
+    }
+
+    /// Hand everything the world has queued to the sessions it is addressed to.
+    ///
+    /// Its own method because the shutdown path needs it too, and needs it to be
+    /// the *same* one: the goodbye of `docs/shutdown.md` D6 is queued by the
+    /// world like any other packet, and a second copy of this loop written beside
+    /// the teardown would be a second thing to keep correct.
+    ///
+    /// A packet for a connection with no session is dropped, not an error: the
+    /// world may have addressed a client that was closed between the tick and
+    /// here.
+    fn flush_outbound(&mut self) {
+        for out in self.world.drain_outbound() {
+            if let Some(session) = self.sessions.get(out.connection) {
+                // A connection reaches the world only after its game
+                // login, so this is always a game connection and every
+                // packet leaves compressed. `send_packet` gates on the
+                // flag anyway, so it stays correct if that ever changes.
+                let _ = session.send_packet(out.packet);
+            }
         }
     }
 
@@ -296,8 +342,23 @@ pub async fn run_shard(
         }
     }
 
+    // The shard's last word, and then the hang-up — in that order, and the order
+    // is the whole of it.
+    //
+    // A clean stop looks from the client exactly like a crash unless somebody
+    // says otherwise, so the world tells every player what is happening while it
+    // still has sessions to say it through. The flush is welded to the
+    // announcement: `announce` only queues, and anything inserted between these
+    // two lines swallows the notice without failing anything — which is why the
+    // end-to-end test asserts the *order* and not merely the presence.
+    shard.announce_shutdown();
+
     // The loop is over, so the state it owned goes back to being the two things
     // shutdown needs: the world to sweep, and the channel to send the sweep down.
+    //
+    // Below the announcement on purpose: this is what drops the sessions, and
+    // dropping a session drops its outbox, which is what hangs the client up.
+    // Move it back above and the goodbye is written to nothing.
     let Shard { mut world, saves, .. } = shard;
 
     // Shutdown: one last full snapshot, then flush every queued write before the

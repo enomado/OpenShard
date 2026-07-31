@@ -203,7 +203,7 @@ impl ServerPacket {
             Self::TooltipRevision(_) => TooltipRevision::ID,
             Self::SkillsFull(_) => SkillsFull::ID,
             Self::SkillUpdate(_) => SkillUpdate::ID,
-            Self::SpokenMessage(_) => SpokenMessage::ID,
+            Self::SpokenMessage(_) => <SpokenMessage as EncodePacket>::ID,
             Self::LocalizedMessage(_) => LocalizedMessage::ID,
             Self::UnicodeMessage(_) => UnicodeMessage::ID,
             Self::ContextMenu(_) => ContextMenu::ID,
@@ -417,6 +417,9 @@ impl ServerPacket {
             <WalkReject as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::WalkReject)
                 .map_err(ServerDecodeError::WalkReject)?,
+            <SpokenMessage as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::SpokenMessage)
+                .map_err(ServerDecodeError::SpokenMessage)?,
             _ => return Ok(None),
         };
         Ok(Some(decoded))
@@ -459,6 +462,8 @@ pub enum ServerDecodeError {
     WalkAck(DecodeError),
     /// `0x21` did not decode.
     WalkReject(DecodeError),
+    /// `0x1C` did not decode.
+    SpokenMessage(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -478,6 +483,7 @@ impl fmt::Display for ServerDecodeError {
             Self::WorldItem(error) => ("0x1A world item", error),
             Self::WalkAck(error) => ("0x22 walk ack", error),
             Self::WalkReject(error) => ("0x21 walk reject", error),
+            Self::SpokenMessage(error) => ("0x1C spoken message", error),
         };
         write!(f, "{name}: {error}")
     }

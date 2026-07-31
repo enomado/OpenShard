@@ -19,6 +19,8 @@ use openshard_client_net::connection::Event;
 use openshard_client_net::transport::enter_world_with;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_server::shard::SHUTDOWN_NOTICE;
 
 use openshard_e2e_shard::{in_process, plan, stock_config, version};
 
@@ -124,5 +126,50 @@ async fn stopping_a_shard_ends_its_thread_and_hangs_up() {
     assert!(
         ended.is_ok(),
         "the client was left waiting on a shard that had stopped"
+    );
+}
+
+#[tokio::test]
+async fn a_stop_tells_the_player_before_it_hangs_up() {
+    // The manners, end to end. A clean stop used to be indistinguishable from
+    // the shard crashing — the screen freezes, the connection dies — and this is
+    // the one event in the engine that had nothing to say for itself.
+    //
+    // What is asserted is the *order*, and that is not pedantry: the notice is
+    // queued by the world and only reaches the wire when the outbound queue is
+    // drained into the sessions, and the sessions are what the hang-up drops.
+    // Anything inserted between the announcement and the flush — or the sessions
+    // let go one line too early — swallows the line without failing anything
+    // else. Checking only that the text arrived would pass on a machine fast
+    // enough for the bytes to win the race, and fail on someone else's.
+    let (dial, shard) = in_process::spawn(stock_config);
+
+    let (mut socket, _view) = tokio::time::timeout(WAIT, enter_world_with(dial, plan(), version()))
+        .await
+        .expect("the login conversation finished inside the deadline")
+        .expect("the client reached the world");
+
+    shard.stop();
+
+    let heard = tokio::time::timeout(WAIT, async {
+        let mut said = None;
+        loop {
+            match socket.next_event().await {
+                Ok(Some(Event::Packet(ServerPacket::SpokenMessage(line)))) => said = Some(line.text),
+                Ok(Some(_)) => continue, // whatever else was in flight
+                // The hang-up, and the end of the ordering assertion: anything
+                // still unheard at this point was never sent.
+                Ok(None) => return said,
+                Err(error) => panic!("the pipe failed rather than closing: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("the shard hung up inside the deadline");
+
+    assert_eq!(
+        heard.as_deref(),
+        Some(SHUTDOWN_NOTICE),
+        "a stopping shard says why, and says it before it goes"
     );
 }
