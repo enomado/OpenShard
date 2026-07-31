@@ -50,7 +50,8 @@ use openshard_client_net::view::WorldView;
 use openshard_client_render::animation::{AnimationClock, FRAME_DELAY};
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, WorldPixel};
+use openshard_client_render::camera::Camera;
+use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -213,12 +214,9 @@ fn main() -> ExitCode {
         tiledata,
         hue_ramp,
         anim,
-        camera: Camera::new(START, 1024, 768),
-        follow: Follow::Body,
-        drag: Drag::default(),
-        // Replaced by the device's own limit once there is one. WebGL2's floor
-        // until then, which is the smallest thing this has to run on.
-        max_texture: 2048,
+        // The device's own limit replaces WebGL2's floor once there is a device
+        // to ask; the floor is the smallest thing this has to run on.
+        control: Control::new(Camera::new(START, 1024, 768), 2048),
         zoom_limit_reported: false,
         player: Mobile {
             at: start,
@@ -255,38 +253,6 @@ fn main() -> ExitCode {
 /// Half a tile's height per press, which is what the old "camera height" keys
 /// moved when a step of `z` was five units: `5 * Z_STEP` is 20 pixels.
 const PAGE_PIXELS: i32 = 20;
-
-/// Whether the camera is tied to the body or the mouse.
-///
-/// It lives here and not in `Camera`: the camera does not know what a player is,
-/// and giving it one would put `client/net` inside `client/render`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Follow {
-    /// The eye is the body's, and the server moves it.
-    Body,
-    /// The eye is the mouse's, and the body may walk off screen.
-    Free,
-}
-
-/// What the mouse is doing to the camera.
-///
-/// The fraction is the reason this is a struct and not a flag. At zoom 2 a
-/// one-pixel drag is half a world pixel, and an eye that carried the fraction
-/// would put every sprite on a half-texel boundary for half of all camera
-/// positions — the same class of defect as the half-texel inset the atlases
-/// apply, spread across the whole frame instead of one edge. So the remainder
-/// is accumulated here, in the input handler, and only whole world pixels reach
-/// [`Camera::look_at_pixel`].
-#[derive(Clone, Copy, Default, Debug)]
-struct Drag {
-    /// Where the cursor was last seen, in physical pixels from the viewport's
-    /// top-left. Needed by the wheel, which is told a delta and not a position.
-    cursor: (i32, i32),
-    /// Whether the middle button is down.
-    panning: bool,
-    /// Viewport pixels dragged and not yet spent, numerator over the zoom's.
-    remainder: (i32, i32),
-}
 
 /// The animation group a body that is doing nothing plays.
 ///
@@ -407,21 +373,16 @@ struct App {
     /// The animations, open but not read: `anim.mul` is 195MB and frames come
     /// out of it a body at a time. `&mut` because reading one seeks the file.
     anim: Anim,
-    camera: Camera,
-    /// Whether the camera is following the body or the mouse.
-    follow: Follow,
-    /// What the mouse is doing to it, and the fraction of a world pixel a drag
-    /// has not yet paid for.
-    drag: Drag,
-    /// How far the ladder may be walked down before the offscreen texture is
-    /// larger than the GPU allows, and whether that has been said out loud.
+    /// The camera, who is allowed to move it, and what a drag has not yet spent.
     ///
-    /// WebGL2 guarantees only 2048 in each dimension and a 1080p window at
-    /// `1/2` wants more, so the ladder has a runtime end that depends on the
-    /// device. A silently truncated target draws a smaller world into a larger
+    /// All of it arithmetic, and all of it in `client/render` where it can be
+    /// reached by a test: this crate owns a window, a GPU and a `Map`, and none
+    /// of the three has anything to say about a wheel notch.
+    control: Control,
+    /// Whether the device's refusal to hold a zoom's image has been said out
+    /// loud. A silently truncated target draws a smaller world into a larger
     /// rect, which looks exactly like a bug in the projection — so it is
-    /// reported instead, once.
-    max_texture: u32,
+    /// reported, and once.
     zoom_limit_reported: bool,
     /// This client's own body.
     ///
@@ -527,8 +488,7 @@ impl ApplicationHandler<link::Update> for App {
                     window.config.width = size.width.max(1);
                     window.config.height = size.height.max(1);
                     window.surface.configure(&window.device, &window.config);
-                    self.camera.width = window.config.width;
-                    self.camera.height = window.config.height;
+                    self.control.resize(window.config.width, window.config.height);
                     // The world texture and the depth buffer follow the
                     // *camera's* size and not the window's, which are the same
                     // thing only at zoom 1. `draw` resizes them together.
@@ -554,8 +514,8 @@ impl ApplicationHandler<link::Update> for App {
                     // Page up and down lift the eye rather than the body,
                     // which is a pan: the map has no vertical axis to walk
                     // along, only a projection that folds `z` into `y`.
-                    KeyCode::PageUp => self.pan(0, PAGE_PIXELS),
-                    KeyCode::PageDown => self.pan(0, -PAGE_PIXELS),
+                    KeyCode::PageUp => self.control.pan(0, PAGE_PIXELS),
+                    KeyCode::PageDown => self.control.pan(0, -PAGE_PIXELS),
                     _ => self.step(code),
                 };
                 if changed {
@@ -572,9 +532,7 @@ impl ApplicationHandler<link::Update> for App {
                     (shell.viewport().x as i32, shell.viewport().y as i32)
                 });
                 let (x, y) = (position.x as i32 - origin.0, position.y as i32 - origin.1);
-                let (dx, dy) = (x - self.drag.cursor.0, y - self.drag.cursor.1);
-                self.drag.cursor = (x, y);
-                if self.drag.panning && self.pan(dx, dy) {
+                if self.control.cursor_moved(x, y) {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }
@@ -582,10 +540,7 @@ impl ApplicationHandler<link::Update> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == winit::event::MouseButton::Middle {
-                    self.drag.panning = state == ElementState::Pressed;
-                    // Whatever a previous drag was saving up is not owed to
-                    // this one.
-                    self.drag.remainder = (0, 0);
+                    self.control.set_panning(state == ElementState::Pressed);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -695,131 +650,53 @@ impl App {
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
         // questions, and `Home` is the answer to the second.
-        if self.follow == Follow::Body {
-            self.camera.look_at(self.player.at);
-        }
+        self.control.follow_body(self.player.at);
         true
     }
 
     /// Put the eye back on the body and lock it there.
-    ///
-    /// Snaps rather than eases. Easing wants a per-frame clock over a mobile
-    /// that survives between frames, which is what the "everything stands"
-    /// backlog item in `docs/client.md` is waiting for; both should be built
-    /// once.
     fn relock(&mut self) {
-        self.follow = Follow::Body;
-        self.camera.look_at(self.player.at);
+        self.control.relock(self.player.at);
     }
 
-    /// Move the eye by a drag, in viewport pixels, spending whole world pixels.
-    ///
-    /// Answers whether the eye actually moved: at zoom 4 most one-pixel drags
-    /// move nothing, and asking for a redraw for each of them would be a frame
-    /// per mouse report showing the same picture.
-    fn pan(&mut self, dx: i32, dy: i32) -> bool {
-        self.follow = Follow::Free;
-        let num = self.camera.zoom().numerator() as i32;
-        let den = self.camera.zoom().denominator() as i32;
-        // Viewport pixels times the denominator, kept as a numerator over
-        // `num`: the fraction stays here rather than in the eye.
-        let owed_x = self.drag.remainder.0 + dx * den;
-        let owed_y = self.drag.remainder.1 + dy * den;
-        // Towards zero, so the remainder keeps the sign of the debt and a drag
-        // back and forth ends where it started.
-        let (whole_x, whole_y) = (owed_x / num, owed_y / num);
-        self.drag.remainder = (owed_x - whole_x * num, owed_y - whole_y * num);
-        if whole_x == 0 && whole_y == 0 {
-            return false;
-        }
-        let eye = self.camera.eye();
-        // The world follows the cursor, so the eye goes the other way.
-        self.camera.look_at_pixel(WorldPixel {
-            x: eye.x - whole_x,
-            y: eye.y - whole_y,
-        });
-        true
-    }
-
-    /// Step the zoom back in until the world texture fits this device.
-    ///
-    /// [`App::zoom`] refuses a step that would not fit, and that is not the
-    /// whole of it: the offscreen image is `viewport / zoom`, so *growing the
-    /// window* at a zoom that fitted asks for a texture that does not. Nobody
-    /// zooms in that path, so the check has to live where the size is used and
-    /// not only where the zoom changes — without this, dragging a window wider
-    /// at `1/2` is a validation error from `world_texture` rather than a camera
-    /// that stops zooming out.
+    /// A viewport that grew may have taken the world texture past what the
+    /// device allows, which no zoom step asked for.
     fn fit_zoom_to_device(&mut self) {
-        while (self.camera.render_width() > self.max_texture
-            || self.camera.render_height() > self.max_texture)
-            && self.camera.zoom().scale_up() != self.camera.zoom()
-        {
-            let tighter = self.camera.zoom().scale_up();
-            if !self.zoom_limit_reported {
-                self.zoom_limit_reported = true;
-                eprintln!(
-                    "a {}x{} world texture is more than this GPU's {}: zooming in to {tighter}",
-                    self.camera.render_width(),
-                    self.camera.render_height(),
-                    self.max_texture,
-                );
-            }
-            // About the middle: this is not somebody's wheel, it is the device
-            // saying no, and there is no cursor that asked for it.
-            let (cx, cy) = (self.camera.width as i32 / 2, self.camera.height as i32 / 2);
-            self.camera.zoom_about(cx, cy, tighter);
+        if let Some(refusal) = self.control.fit_to_device() {
+            self.report_limit(format_args!(
+                "a {}x{} world texture at {} is more than this GPU's {}: zooming in to {}",
+                refusal.width, refusal.height, refusal.wanted, refusal.max, refusal.settled,
+            ));
         }
     }
 
-    /// One notch of the wheel, about the cursor.
+    /// One notch of the wheel, answering whether anything changed.
     ///
-    /// Answers whether anything changed: at either end of the ladder nothing
-    /// does, and zooming out can be refused by the GPU — see
-    /// [`App::max_texture`].
+    /// At either end of the ladder nothing does, and zooming out can be refused
+    /// by the device — which is said out loud rather than truncated.
     fn zoom(&mut self, inwards: bool) -> bool {
-        let wanted = if inwards {
-            self.camera.zoom().scale_up()
-        } else {
-            self.camera.zoom().scale_down()
-        };
-        if wanted == self.camera.zoom() {
-            return false;
-        }
-        // Locked to the body, the zoom is about the middle: an eye held to the
-        // cursor would be moved here and moved back by the next `WorldView`,
-        // which is a fight rather than a camera. Unlocked, it is about the
-        // cursor, which is the difference between a camera that feels placed
-        // and one that feels shoved.
-        let (anchor_x, anchor_y) = match self.follow {
-            Follow::Body => (self.camera.width as i32 / 2, self.camera.height as i32 / 2),
-            Follow::Free => self.drag.cursor,
-        };
-        // The offscreen image the new zoom would want, against what this device
-        // can allocate. Refused rather than truncated: a smaller world drawn
-        // into a larger rect looks like a projection bug and reads as one.
-        let mut probe = self.camera;
-        probe.zoom_about(anchor_x, anchor_y, wanted);
-        if probe.render_width() > self.max_texture || probe.render_height() > self.max_texture {
-            if !self.zoom_limit_reported {
-                self.zoom_limit_reported = true;
-                eprintln!(
-                    "{wanted} would want a {}x{} world texture and this GPU allows {}: staying at {}",
-                    probe.render_width(),
-                    probe.render_height(),
-                    self.max_texture,
-                    self.camera.zoom(),
-                );
+        match self.control.zoom(inwards) {
+            Ok(changed) => changed,
+            Err(refusal) => {
+                self.report_limit(format_args!(
+                    "{} would want a {}x{} world texture and this GPU allows {}: staying at {}",
+                    refusal.wanted, refusal.width, refusal.height, refusal.max, refusal.settled,
+                ));
+                false
             }
-            return false;
         }
-        self.camera = probe;
-        // A zoom about the cursor moves the eye, so it is a manual camera move
-        // like any other. Zooming while locked and staying locked would fight
-        // the next `WorldView`.
-        // The fraction a drag was saving up belongs to the old zoom.
-        self.drag.remainder = (0, 0);
-        true
+    }
+
+    /// Say what the device refused, once.
+    ///
+    /// Once, because the wheel is held down and a line per notch is a wall of
+    /// the same sentence — and because the second one tells nobody anything the
+    /// first did not.
+    fn report_limit(&mut self, message: std::fmt::Arguments<'_>) {
+        if !self.zoom_limit_reported {
+            self.zoom_limit_reported = true;
+            eprintln!("{message}");
+        }
     }
 
     /// Redraw from what the server has shown us.
@@ -865,9 +742,7 @@ impl App {
         // The camera follows the body, which is what `0x20` is for — unless it
         // has been unlocked, in which case the eye is the mouse's and the body
         // is free to walk off the screen. `Home` puts it back.
-        if self.follow == Follow::Body {
-            self.camera.look_at(view.player.position);
-        }
+        self.control.follow_body(view.player.position);
         self.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
         // Whole, for the HUD's world window: the two projections above are what
         // the renderer wants, and the ground items are in neither of them.
@@ -901,8 +776,8 @@ impl App {
             serial: self.view.as_ref().map(|view| view.player.serial.raw()),
             position: self.player.at,
             frame_time: self.frame_time,
-            camera: self.camera,
-            locked: self.follow == Follow::Body,
+            camera: *self.control.camera(),
+            locked: self.control.follow() == Follow::Body,
             mobiles,
             items,
         }
@@ -920,8 +795,8 @@ impl App {
         let attributes = Window::default_attributes()
             .with_title("OpenShard")
             .with_inner_size(winit::dpi::LogicalSize::new(
-                self.camera.width,
-                self.camera.height,
+                self.control.camera().width,
+                self.control.camera().height,
             ));
         let window = Arc::new(
             event_loop
@@ -975,9 +850,9 @@ impl App {
 
         // How far the zoom may be walked out. Asked once, because it is a
         // property of the device and not of the frame.
-        self.max_texture = device.limits().max_texture_dimension_2d;
-        self.camera.width = config.width;
-        self.camera.height = config.height;
+        self.control
+            .set_max_texture(device.limits().max_texture_dimension_2d);
+        self.control.resize(config.width, config.height);
 
         let atlases = self.build_atlases()?;
         let renderer = GroundRenderer::new(&device, &queue, format, &atlases.land, &atlases.texmaps);
@@ -986,8 +861,16 @@ impl App {
             SpriteRenderer::new(&device, &queue, format, atlases.mobiles.pixels(), &self.hue_ramp);
         // The world is drawn at 1:1 into a texture of the camera's render size,
         // which is the viewport only at zoom 1 — see `client/render`'s `blit`.
-        let world = blit::world_texture(&device, self.camera.render_width(), self.camera.render_height());
-        let depth = renderer::depth_texture(&device, self.camera.render_width(), self.camera.render_height());
+        let world = blit::world_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        let depth = renderer::depth_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
         let blit = Blit::new(&device, format);
         // The HUD, with the surface's own format: egui picks its fragment entry
         // point from whether that format is sRGB, and this one deliberately is
@@ -1021,12 +904,15 @@ impl App {
     /// this" one decision rather than two that could disagree. The statics are
     /// a different index space and therefore a set of their own.
     fn build_atlases(&mut self) -> Result<Atlases, StartupError> {
-        let wanted = ground::visible_graphics(&self.map, &self.camera);
+        let wanted = ground::visible_graphics(&self.map, self.control.camera());
         let land = LandAtlas::build(&self.art, wanted.iter().copied()).map_err(StartupError::Atlas)?;
         let texmaps =
             TexmapAtlas::build(&self.texmaps, &self.tiledata, wanted).map_err(StartupError::Atlas)?;
-        let statics = StaticAtlas::build(&self.art, statics::visible_graphics(&self.map, &self.camera))
-            .map_err(StartupError::Atlas)?;
+        let statics = StaticAtlas::build(
+            &self.art,
+            statics::visible_graphics(&self.map, self.control.camera()),
+        )
+        .map_err(StartupError::Atlas)?;
         // Every animation the mobiles on screen need. `&mut` because the
         // frames are read from the file rather than held in memory.
         let wanted = mobiles::needed_animations(&self.drawn_mobiles());
@@ -1062,10 +948,9 @@ impl App {
             if request.relock {
                 self.relock();
             } else if request.unlock {
-                self.follow = Follow::Free;
+                self.control.unlock();
             }
-            self.camera.width = viewport.width.max(1);
-            self.camera.height = viewport.height.max(1);
+            self.control.resize(viewport.width, viewport.height);
         }
         // A viewport that grew may have taken the world texture past what the
         // device allows, which no zoom step asked for.
@@ -1079,8 +964,8 @@ impl App {
         //
         // Repacked before the window is borrowed, and not inside the borrow: the
         // pack reads the whole of `self`, and the window is part of it.
-        let wanted = ground::visible_graphics(&self.map, &self.camera);
-        let wanted_statics = statics::visible_graphics(&self.map, &self.camera);
+        let wanted = ground::visible_graphics(&self.map, self.control.camera());
+        let wanted_statics = statics::visible_graphics(&self.map, self.control.camera());
         let mut drawn = self.drawn_mobiles();
         let stale = self.window.as_ref().is_some_and(|window| {
             wanted
@@ -1182,7 +1067,10 @@ impl App {
         // The image the world is drawn into. Its size is the camera's, so a
         // resize and a zoom step are the same event here — and recreating it is
         // the only thing either of them costs.
-        let (render_width, render_height) = (self.camera.render_width(), self.camera.render_height());
+        let (render_width, render_height) = (
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
         if window.world.width() != render_width || window.world.height() != render_height {
             window.world = blit::world_texture(&window.device, render_width, render_height);
             // Tested pixel for pixel against that image, so it is exactly its
@@ -1191,9 +1079,19 @@ impl App {
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let quads = ground::collect(&self.map, &self.camera, &window.atlas, &window.texmap_atlas);
-        let static_quads = statics::collect(&self.map, &self.camera, &self.tiledata, &window.static_atlas);
-        let mobile_quads = mobiles::collect(&drawn, &self.camera, &window.mobile_atlas);
+        let quads = ground::collect(
+            &self.map,
+            self.control.camera(),
+            &window.atlas,
+            &window.texmap_atlas,
+        );
+        let static_quads = statics::collect(
+            &self.map,
+            self.control.camera(),
+            &self.tiledata,
+            &window.static_atlas,
+        );
+        let mobile_quads = mobiles::collect(&drawn, self.control.camera(), &window.mobile_atlas);
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let target = Target {
             view: &world_view,
@@ -1233,7 +1131,7 @@ impl App {
             &mut encoder,
             &view,
             &world_view,
-            self.camera.zoom(),
+            self.control.camera().zoom(),
             viewport,
         );
         // The UI over it, with no depth attachment: the world's depth buffer

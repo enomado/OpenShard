@@ -33,6 +33,7 @@ pub mod animation;
 pub mod atlas;
 pub mod blit;
 pub mod camera;
+pub mod control;
 pub mod depth;
 pub mod ground;
 pub mod hue;
