@@ -40,11 +40,31 @@ use std::time::Duration;
 use openshard_client_render::animation::AnimationClock;
 use openshard_client_render::mobiles::{Glide, Mobile};
 use openshard_movement::{RUN_INTERVAL, WALK_INTERVAL};
-use openshard_protocol::direction::Facing;
+use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::serial::Serial;
+use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::BodyKind;
+
+/// How long a spoken line stays drawn above its speaker's head, once heard.
+///
+/// A fixed hold rather than one scaled by the message's length — which is what
+/// `Mobile.m_SpeechTime` does in the reference client — because nothing that
+/// reaches here carries an expiry: the wire's `0x1C` has none, and neither does
+/// [`openshard_protocol::speech::SpokenMessage`]. Long enough to read a short
+/// line before it is gone, and this is the one place to widen it once a real
+/// expiry exists.
+pub const SPEECH_HOLD: Duration = Duration::from_secs(5);
+
+/// One line, and when [`Crowd::hear`] recorded it.
+#[derive(Clone, Debug)]
+struct Speech {
+    text: String,
+    font: Font,
+    hue: Hue,
+    started: Duration,
+}
 
 /// How long a body keeps walking after the step that was last heard.
 ///
@@ -78,9 +98,55 @@ struct Step {
     from: Option<Point>,
     /// When it was heard, on [`Crowd::now`]'s clock.
     started: Duration,
-    /// How long it takes: [`WALK_HOLD`] or [`RUN_HOLD`], by the wire's own
-    /// running flag. Never zero, which is what lets [`Tracked::glide`] divide.
+    /// How long it takes — see [`glide_time`]. Never zero, which is what lets
+    /// [`Tracked::glide`] divide.
     takes: Duration,
+}
+
+/// How long to spend crossing a tile, given the pace the wire claims and how
+/// long ago the previous step was heard.
+///
+/// # Why the nominal length is not enough
+///
+/// A glide has to *end* exactly when the next step begins, or the walk is not
+/// continuous: finish early and the body stands on its tile until the next
+/// packet, finish late and the next step yanks it forward from wherever it had
+/// got to. Both read as a stutter once a tile, which is the whole complaint.
+///
+/// [`WALK_HOLD`] is how long a step takes in theory, and it is the right answer
+/// only for the first one. After that the *observed* gap between two steps is a
+/// far better prediction of the gap to the next: it already contains the round
+/// trip, the shard's own tick granularity, and — for everyone who is not this
+/// client — whatever pace that creature actually walks at, which for an NPC is
+/// nothing this end can look up. So the second step onwards is glided over the
+/// measured gap.
+///
+/// Believed only within half and double the nominal length. Outside that band
+/// the measurement is not a pace at all: a gap of four seconds is a body that
+/// had stopped and started again, and a gap of nothing is two steps arriving in
+/// one packet burst. Both are answered with the wire's own claim, which is at
+/// least a walking speed.
+fn glide_time(nominal: Duration, since: Option<Duration>) -> Duration {
+    match since {
+        Some(gap) if gap >= nominal / 2 && gap <= nominal * 2 => gap,
+        // Nothing worth measuring: a body that was standing, one heard from for
+        // the first time, or a gap that is not a pace.
+        _ => nominal,
+    }
+}
+
+/// How long a body keeps *playing* its walk after a step, given how long that
+/// step takes to cross its tile.
+///
+/// Half a step longer than the crossing. The two used to be one number, and that
+/// is a flicker: the hold expires the instant the body lands, so any latency at
+/// all leaves a frame or two of standing between two steps — and standing is a
+/// different animation group, so the walk's clock is restarted at frame zero
+/// every single tile. Half a step of slack costs a body that has genuinely
+/// stopped 200ms of walking on the spot, which nobody notices, and it is what
+/// the reference client's own `m_AnimationInterval` slack is for.
+fn animation_hold(takes: Duration) -> Duration {
+    takes * 3 / 2
 }
 
 /// One mobile's history: where it was, what it is playing, and since when.
@@ -88,6 +154,13 @@ struct Step {
 struct Tracked {
     /// Where the last packet put it.
     at: Point,
+    /// Which way it was last seen facing.
+    ///
+    /// Kept for one rule only: a facing change with no position change is a
+    /// turn, and a turn is a step that covers no ground — see [`Crowd::see`].
+    /// The run flag is not kept with it, because it belongs to the step being
+    /// taken rather than to the body.
+    facing: Direction,
     /// Which body it was last seen as. Kept because a walk that ends has to
     /// know what "standing" means, and a horse and a player stop into different
     /// group numbers — see [`BodyKind::standing`].
@@ -99,6 +172,13 @@ struct Tracked {
     /// `None` for a body that is standing. Not an "unknown": a standing body
     /// genuinely has no step to finish, which is what [`Option`] is for here.
     step: Option<Step>,
+    /// When the previous step was heard, kept after that step has finished.
+    ///
+    /// What the gap in [`glide_time`] is measured against, which is why it
+    /// outlives [`Tracked::step`]: the pace a body is walking at is a property
+    /// of the last two packets, not of the one still being drawn. `None` until a
+    /// body has been seen to move at all.
+    stepped_at: Option<Duration>,
     /// Its own animation clock.
     ///
     /// Per mobile, and reset when the group changes: one clock for everybody
@@ -121,19 +201,51 @@ pub type Who = Option<Serial>;
 #[derive(Clone, Debug, Default)]
 pub struct Crowd {
     tracked: HashMap<Who, Tracked>,
+    /// The last line each serial was heard saying, if it is still within
+    /// [`SPEECH_HOLD`]. Separate from `tracked`: the system talks (`who` is
+    /// `None` for it too, same as the offline placeholder) and a body nobody
+    /// has otherwise seen can still say something the moment it is heard from.
+    speech: HashMap<Who, Speech>,
     /// Real time since this crowd was built. Its own clock rather than an
     /// `Instant`, so every rule here can be tested by handing it durations.
     now: Duration,
+    /// Whose steps this client *commands* rather than merely hears about.
+    ///
+    /// Our own body, once a shard has named it — and nobody at all before that.
+    /// The distinction is a pace: see [`glide_time`], and [`Crowd::commanding`]
+    /// for why one measurement is right and the other is not.
+    commanded: Option<Who>,
 }
 
 impl Crowd {
+    /// Name the body this client walks itself.
+    ///
+    /// Everybody else's pace has to be *measured*, because nothing on the wire
+    /// says how fast a creature walks. Our own we already know: `steer.rs` sends
+    /// one step every hold and `client/net` predicts it here the same
+    /// millisecond, so the nominal length is not an estimate of that walk — it
+    /// is the walk. Measuring it anyway feeds the event loop's own wake jitter
+    /// into the crossing *length*, and consecutive gaps jitter in opposite
+    /// directions (late, then early), so the estimate is worse than the number
+    /// it replaced: the body arrives early, stands, and is yanked. The walk
+    /// oracle in `dst.rs` is what put a number on it.
+    pub fn commanding(&mut self, who: Who) {
+        self.commanded = Some(who);
+    }
+
     /// Move every clock forward, and stop whoever has finished their step.
     pub fn advance(&mut self, dt: Duration) {
         self.now += dt;
         let now = self.now;
         for tracked in self.tracked.values_mut() {
             tracked.clock.advance(dt);
-            if tracked.step.is_some_and(|step| now >= step.started + step.takes) {
+            // The *animation* outlives the crossing by half a step — see
+            // `animation_hold`. The glide itself ends on time; this is only what
+            // decides when the walk gives way to standing.
+            if tracked
+                .step
+                .is_some_and(|step| now >= step.started + animation_hold(step.takes))
+            {
                 tracked.step = None;
                 tracked.change_to(BodyKind::of(tracked.body).standing());
             }
@@ -148,14 +260,17 @@ impl Crowd {
     pub fn see(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue) -> Mobile {
         let kind = BodyKind::of(body.0);
         let now = self.now;
+        let commanded = self.commanded == Some(who);
         let tracked = self.tracked.entry(who).or_insert(Tracked {
             at,
+            facing: facing.direction,
             body: body.0,
             // A body first heard of is standing: it may well be mid-stride, but
             // the only thing that could say so is a previous packet and there
             // is none.
             group: kind.standing(),
             step: None,
+            stepped_at: None,
             clock: AnimationClock::default(),
         });
 
@@ -166,11 +281,22 @@ impl Crowd {
         if tracked.at != at {
             let from = tracked.at;
             tracked.at = at;
+            let nominal = if facing.running { RUN_HOLD } else { WALK_HOLD };
+            // Measured against the step before this one, so a walk that is
+            // already under way crosses each tile in exactly the time the last
+            // one took — which is what makes it continuous. See `glide_time`.
+            // Nothing to measure for the body we command — see
+            // [`Crowd::commanding`].
+            let since = match commanded {
+                true => None,
+                false => tracked.stepped_at.map(|heard| now.saturating_sub(heard)),
+            };
             tracked.step = Some(Step {
                 from: is_one_step(from, at).then_some(from),
                 started: now,
-                takes: if facing.running { RUN_HOLD } else { WALK_HOLD },
+                takes: glide_time(nominal, since),
             });
+            tracked.stepped_at = Some(now);
             let moving = match (facing.running, kind.running()) {
                 (true, Some(running)) => running,
                 // A running monster walks: `HighAnimationGroup` has no run, and
@@ -178,7 +304,21 @@ impl Crowd {
                 _ => kind.walking(),
             };
             tracked.change_to(moving);
+        } else if tracked.facing != facing.direction {
+            // A turn is a whole step in UO: it covers no ground, and it costs
+            // exactly as long as one that does. So it is not movement — the body
+            // above is deliberately not walked — but it *is* a pace sample, and
+            // recording it is what keeps the walk after a turn continuous.
+            //
+            // Found by the walk oracle in `dst.rs`: without this the gap the
+            // next step measures spans the turn as well, two holds rather than
+            // one, and `glide_time`'s band is just wide enough to believe it.
+            // The tile after a turn was then crossed at half speed — half a tile
+            // behind where the player had asked for the body to be — and the
+            // step after it yanked the body forward to catch up.
+            tracked.stepped_at = Some(now);
         }
+        tracked.facing = facing.direction;
         tracked.body = body.0;
 
         Mobile {
@@ -189,6 +329,46 @@ impl Crowd {
             frame: 0,
             hue,
             glide: tracked.glide(now),
+        }
+    }
+
+    /// Put a body somewhere without walking it there.
+    ///
+    /// What a rollback is: this client steps on its own prediction and the
+    /// server may refuse — a `0x21`, or a `0x20` that moves the body somewhere it
+    /// did not walk to. The tile it is put back on was never walked across, so
+    /// gliding into it would draw the character strolling backwards; and the gap
+    /// between the step and the refusal is not a pace, so the measurement
+    /// [`glide_time`] makes is dropped along with it.
+    ///
+    /// The animation is deliberately left alone: a walker whose third step is
+    /// refused is still walking, and restarting the group here would drop it to
+    /// standing for the one frame between the refusal and the next step.
+    pub fn snap(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue) -> Mobile {
+        let kind = BodyKind::of(body.0);
+        let tracked = self.tracked.entry(who).or_insert(Tracked {
+            at,
+            facing: facing.direction,
+            body: body.0,
+            group: kind.standing(),
+            step: None,
+            stepped_at: None,
+            clock: AnimationClock::default(),
+        });
+        tracked.at = at;
+        tracked.facing = facing.direction;
+        tracked.body = body.0;
+        tracked.step = None;
+        tracked.stepped_at = None;
+
+        Mobile {
+            at,
+            body: body.0,
+            group: tracked.group,
+            facing: facing.direction,
+            frame: 0,
+            hue,
+            glide: None,
         }
     }
 
@@ -234,6 +414,41 @@ impl Crowd {
     /// remember what it was doing while off screen would be inventing it.
     pub fn retain(&mut self, present: impl Fn(Who) -> bool) {
         self.tracked.retain(|who, _| present(*who));
+        self.speech.retain(|who, _| present(*who));
+    }
+
+    /// Record that `who` said `text`, replacing whatever they were saying
+    /// before.
+    ///
+    /// Not folded into [`Crowd::see`]: a `0x1C` and a `0x77` are different
+    /// packets that arrive on their own schedules, and a speaker does not have
+    /// to have moved for a line to be worth showing.
+    pub fn hear(&mut self, who: Who, text: String, font: Font, hue: Hue) {
+        let started = self.now;
+        self.speech.insert(
+            who,
+            Speech {
+                text,
+                font,
+                hue,
+                started,
+            },
+        );
+    }
+
+    /// What `who` is still saying, or `None` once [`SPEECH_HOLD`] has passed.
+    ///
+    /// Checked against the clock here rather than expired in [`Crowd::advance`]:
+    /// nothing downstream needs to know the *moment* a line goes stale, only
+    /// whether it still is one, and a lazy check is one fewer place that has to
+    /// agree with [`SPEECH_HOLD`].
+    pub fn speaking(&self, who: Who) -> Option<(&str, Font, Hue)> {
+        let speech = self.speech.get(&who)?;
+        (self.now.saturating_sub(speech.started) < SPEECH_HOLD).then_some((
+            speech.text.as_str(),
+            speech.font,
+            speech.hue,
+        ))
     }
 }
 
@@ -254,9 +469,16 @@ impl Tracked {
         // only ever moves forward, but a step heard *this* instant divides
         // zero by the step's length, which is the honest zero.
         let elapsed = now.saturating_sub(step.started);
+        // Arrived. Not a glide of progress 1.0, which is the same picture and a
+        // different answer to "is anybody mid-step": the window redraws at 60Hz
+        // for as long as one is, and the body would keep it there for the half
+        // step its animation goes on playing.
+        if elapsed >= step.takes {
+            return None;
+        }
         Some(Glide {
             from,
-            progress: (elapsed.as_secs_f32() / step.takes.as_secs_f32()).clamp(0.0, 1.0),
+            progress: elapsed.as_secs_f32() / step.takes.as_secs_f32(),
         })
     }
 }
@@ -493,7 +715,90 @@ mod tests {
         // sprite jumps the remaining pixels as the animation stops.
         crowd.advance(WALK_HOLD / 2);
         assert_eq!(crowd.glide_for(serial(1)), None);
+        // And it keeps *playing* the walk for half a step longer, which is what
+        // stops a body that is genuinely walking from standing for a frame
+        // between two steps. See `animation_hold`.
+        assert_eq!(step(&mut crowd, 11).group, 0, "still playing the walk");
+        crowd.advance(WALK_HOLD / 2);
         assert_eq!(step(&mut crowd, 11).group, 4, "standing");
+    }
+
+    /// The defect the split between the crossing and the animation was written
+    /// for: a walking client's steps arrive one step apart give or take the
+    /// round trip, and a hold of exactly one step expires in that gap — so the
+    /// body stands for a frame every tile, and standing is a different group,
+    /// which restarts the walk's clock at frame zero.
+    #[test]
+    fn a_step_that_arrives_late_does_not_drop_the_walk_to_standing() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            )
+        };
+        step(&mut crowd, 10);
+        step(&mut crowd, 11);
+        for x in 12..20u16 {
+            // A tenth of a step late, every step: the jitter of a real
+            // connection, and enough to have flickered.
+            crowd.advance(WALK_HOLD + WALK_HOLD / 10);
+            assert_eq!(step(&mut crowd, x).group, 0, "walking at tile {x}");
+        }
+    }
+
+    /// And a walk already under way crosses each tile in the time the last one
+    /// took, so a body whose steps arrive slower than the nominal rate glides
+    /// the whole way rather than arriving early and waiting.
+    #[test]
+    fn the_crossing_takes_as_long_as_the_last_step_did() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            );
+        };
+        step(&mut crowd, 10);
+        step(&mut crowd, 11);
+        // Half a step late. The next crossing is measured from it, so it takes
+        // one and a half steps and is still going when the one after arrives.
+        let gap = WALK_HOLD + WALK_HOLD / 2;
+        crowd.advance(gap);
+        step(&mut crowd, 12);
+        crowd.advance(gap - Duration::from_millis(1));
+        let glide = crowd.glide_for(serial(1)).expect("still crossing");
+        assert!(glide.progress > 0.99, "all but arrived: {}", glide.progress);
+        crowd.advance(Duration::from_millis(1));
+        assert_eq!(crowd.glide_for(serial(1)), None, "and arrived exactly on time");
+    }
+
+    /// A gap that is not a pace is not believed: a body that had stopped, or two
+    /// steps arriving in one burst, are glided at the rate the wire claims.
+    #[test]
+    fn a_gap_that_is_not_a_pace_falls_back_to_the_wires_own_rate() {
+        assert_eq!(glide_time(WALK_HOLD, None), WALK_HOLD);
+        assert_eq!(
+            glide_time(WALK_HOLD, Some(Duration::from_secs(30))),
+            WALK_HOLD,
+            "a body that had stopped and started again"
+        );
+        assert_eq!(
+            glide_time(WALK_HOLD, Some(Duration::from_millis(1))),
+            WALK_HOLD,
+            "two steps in one burst"
+        );
+        assert_eq!(
+            glide_time(WALK_HOLD, Some(WALK_HOLD + WALK_HOLD / 4)),
+            WALK_HOLD + WALK_HOLD / 4,
+            "and a plausible pace is taken at its word"
+        );
     }
 
     /// A running body crosses its tile in half the time, because it takes half
@@ -520,8 +825,53 @@ mod tests {
         assert_eq!(crowd.glide_for(serial(1)).expect("mid-step").progress, 0.5);
         crowd.advance(RUN_HOLD / 2);
         assert_eq!(crowd.glide_for(serial(1)), None, "and it is there");
+        crowd.advance(RUN_HOLD / 2);
         assert_eq!(run(&mut crowd, 11).group, 4, "standing, half a walk early");
         assert_eq!(RUN_HOLD * 2, WALK_HOLD, "ServUO's RunFoot against its WalkFoot");
+    }
+
+    /// A rollback is put, not walked: the tile the body is sent back to was
+    /// never crossed, so gliding into it would draw the character strolling
+    /// backwards a tile at a time for as long as a wall refuses it.
+    #[test]
+    fn a_refused_step_is_snapped_back_rather_than_glided() {
+        let mut crowd = Crowd::default();
+        let at = Point::new(10, 10, 0);
+        let facing = Facing::walking(Direction::East);
+        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        // The client predicts a step east and the server refuses it.
+        let stepped = crowd.see(
+            serial(1),
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+        );
+        assert!(stepped.glide.is_some(), "the prediction is walked into");
+        crowd.advance(WALK_HOLD / 4);
+
+        let back = crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        assert_eq!(back.at, at);
+        assert_eq!(back.glide, None, "and back is a jump");
+        assert_eq!(crowd.glide_for(serial(1)), None);
+        assert_eq!(back.group, 0, "still walking: the next step is already coming");
+
+        // The gap between a step and a refusal is not a pace, so the next step
+        // is glided at the wire's own rate rather than at a quarter of one.
+        crowd.advance(WALK_HOLD / 4);
+        crowd.see(
+            serial(1),
+            Point::new(10, 11, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+        );
+        crowd.advance(WALK_HOLD / 2);
+        assert_eq!(
+            crowd.glide_for(serial(1)).expect("mid-step").progress,
+            0.5,
+            "a full walk's crossing"
+        );
     }
 
     /// A jump of more than one tile is a teleport, and is not glided.
@@ -615,5 +965,50 @@ mod tests {
         // resuming a walk nobody watched.
         assert_eq!(crowd.frame_for(serial(1), 6), 0);
         assert_eq!(crowd.frame_for(serial(2), 6), 1);
+    }
+
+    /// A line is there the instant it is heard, and gone once the hold runs
+    /// out.
+    #[test]
+    fn a_line_is_spoken_and_then_expires() {
+        let mut crowd = Crowd::default();
+        crowd.hear(serial(1), "hello".to_string(), Font(0), Hue::NONE);
+        assert_eq!(crowd.speaking(serial(1)).map(|(text, ..)| text), Some("hello"));
+        crowd.advance(SPEECH_HOLD - Duration::from_millis(1));
+        assert!(crowd.speaking(serial(1)).is_some(), "not yet");
+        crowd.advance(Duration::from_millis(2));
+        assert!(crowd.speaking(serial(1)).is_none(), "and now it has");
+    }
+
+    /// A second line replaces the first rather than queuing behind it: only
+    /// one line is ever drawn over a head at a time.
+    #[test]
+    fn a_new_line_replaces_the_old_one_and_restarts_the_hold() {
+        let mut crowd = Crowd::default();
+        crowd.hear(serial(1), "first".to_string(), Font(0), Hue::NONE);
+        crowd.advance(SPEECH_HOLD - Duration::from_millis(1));
+        crowd.hear(serial(1), "second".to_string(), Font(0), Hue::NONE);
+        assert_eq!(crowd.speaking(serial(1)).map(|(text, ..)| text), Some("second"));
+        // The old line would have expired by now; the new one has its own
+        // clock and has not.
+        crowd.advance(Duration::from_millis(2));
+        assert_eq!(crowd.speaking(serial(1)).map(|(text, ..)| text), Some("second"));
+    }
+
+    /// Nobody not yet heard from is saying anything.
+    #[test]
+    fn a_serial_never_heard_is_not_speaking() {
+        let crowd = Crowd::default();
+        assert!(crowd.speaking(serial(1)).is_none());
+    }
+
+    /// `retain` forgets a stale line along with the rest of what a departed
+    /// mobile was doing.
+    #[test]
+    fn retain_forgets_speech_along_with_position() {
+        let mut crowd = Crowd::default();
+        crowd.hear(serial(1), "bye".to_string(), Font(0), Hue::NONE);
+        crowd.retain(|who| who != serial(1));
+        assert!(crowd.speaking(serial(1)).is_none());
     }
 }

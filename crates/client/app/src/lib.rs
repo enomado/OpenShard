@@ -15,9 +15,12 @@
 //! a shard and a window in one process — and which could not exist at all while
 //! the client was a binary, because nothing can depend on a `main`.
 //!
-//! Arrow keys walk a tile at a time. The wheel zooms about the cursor, a
-//! middle-drag pans, page up and down pan vertically, `Home` puts the camera
-//! back on the body and locks it there, and escape closes the window.
+//! Arrow keys walk a tile at a time, and shift runs. A right click is a move
+//! order — the body walks to that tile on its own, and holding the button steers
+//! it to wherever the cursor is; taking hold of the arrows cancels it. The wheel
+//! zooms about the cursor, a middle-drag pans, page up and down pan vertically,
+//! `Home` puts the camera back on the body and locks it there, and escape closes
+//! the window.
 //!
 //! # The panels
 //!
@@ -44,6 +47,7 @@
 //! needs no shard to look at a hillside, and it is the only one that runs
 //! against a facet nobody is serving.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 use std::process::ExitCode;
@@ -51,9 +55,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod crowd;
+/// The walk, held against an oracle. Tests only — see its module docs.
+#[cfg(test)]
+mod dst;
+mod gump;
 mod keys;
 mod link;
 mod shell;
+mod steer;
 
 /// Read a `.env` from the working directory or an ancestor of it, if there is
 /// one, so that the binaries' `env =` options have something to fall back to.
@@ -82,21 +91,24 @@ use openshard_client_net::session::Plan;
 use openshard_client_net::transport::Dial;
 use openshard_client_net::view::WorldView;
 use openshard_client_render::animation::FRAME_DELAY;
-use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
+use openshard_client_render::atlas::{AnimAtlas, AtlasError, FontAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
-use openshard_client_render::camera::Camera;
+use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
 use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::Anim;
 use openshard_uofiles::art::Art;
+use openshard_uofiles::font::AsciiFonts;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::TexMaps;
@@ -125,6 +137,13 @@ const VERSION: ClientVersion = ClientVersion::new(7, 0, 45, 65);
 /// monitor's: nothing here knows the refresh rate, and asking the surface would
 /// tie the animation to the present mode the adapter happened to offer.
 const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// How many of the shard's last lines the speech panel shows.
+///
+/// Small on purpose: this is not the journal — see [`shell::Hud::said`] — it is
+/// enough to read the answer to what was just typed. The journal itself is kept
+/// whole in the [`WorldView`], capped there, and M4 is what displays it.
+const SPEECH_LINES: usize = 6;
 
 /// Open a window on `dir`'s files, and log in to `shard` if one is given.
 ///
@@ -191,6 +210,30 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
     // Built once: `hues.mul` does not change while the camera walks, unlike
     // the sprite atlases it is bound alongside.
     let hue_ramp = HueRamp::build(&hues);
+    // `hues` itself is kept too, alongside the ramp built from it: the ramp is
+    // an RGBA8 texture for the GPU passes, and `gump.rs` wants the same table
+    // read as `Color16`s to pick a *solid* colour for hued text — see
+    // `gump::text_color`. Building a second reader of `hues.mul` to avoid
+    // holding both would be the duplication `docs/style.md` warns against, not
+    // less of it.
+    let fonts = match AsciiFonts::open(dir) {
+        Ok(fonts) => fonts,
+        Err(error) => {
+            eprintln!("opening fonts.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Built once, the same as the hue ramp: `fonts.mul` is ten faces of 224
+    // glyphs, all of them a few pixels, and there is no "visible set" of
+    // characters the way there is a visible set of graphics — any speech line
+    // can hold any of them.
+    let font_atlas = match FontAtlas::build(&fonts) {
+        Ok(atlas) => atlas,
+        Err(error) => {
+            eprintln!("packing fonts.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     eprintln!(
         "{} loaded: {}x{} tiles",
         map.facet_name(),
@@ -240,7 +283,9 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         art,
         texmaps,
         tiledata,
+        hues,
         hue_ramp,
+        font_atlas,
         anim,
         // The device's own limit replaces WebGL2's floor once there is a device
         // to ask; the floor is the smallest thing this has to run on.
@@ -266,11 +311,14 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         shell: None,
         link,
         facet_checked: false,
-        keys: keys::Held::default(),
+        steer: steer::Steering::default(),
+        aiming: false,
         crowd: Crowd::default(),
         next_tick: Instant::now(),
         last_advance: Instant::now(),
         window: None,
+        selected_tile: None,
+        covered: None,
     };
     match event_loop.run_app(&mut app) {
         Ok(()) => ExitCode::SUCCESS,
@@ -322,16 +370,140 @@ impl fmt::Display for StartupError {
     }
 }
 
-/// The three atlases one camera needs, packed together.
+/// Every picture a frame can sample, packed together.
 ///
-/// One value rather than a tuple because they are rebuilt together and used
+/// One value rather than four fields because they are grown together and used
 /// together: a frame drawn from a land atlas of one camera and a static atlas
 /// of another is a frame with things standing on ground that is not there.
+///
+/// # They grow; they are not rebuilt
+///
+/// An atlas used to be thrown away and packed again the moment the camera asked
+/// for a graphic it did not hold, which is a full re-read of the art plus three
+/// new pipelines — during a scroll, every few tiles, because a scroll is exactly
+/// what keeps introducing graphics. Now [`Atlases::grow`] adds what is new to
+/// what is already there and [`Atlases::upload`] sends the rows that changed.
+///
+/// The rebuild survives as the answer to *full* — see [`Atlases::grow`]'s note —
+/// which is the one thing growing cannot do for itself.
 struct Atlases {
     land: LandAtlas,
     texmaps: TexmapAtlas,
     statics: StaticAtlas,
     mobiles: AnimAtlas,
+}
+
+/// What a frame wants packed, gathered before anything is read from disk.
+///
+/// Three sets rather than three arguments, because they travel together
+/// everywhere and two of them are keyed by numbers that look alike: a land
+/// graphic and a static graphic are both a `Graphic` and are different index
+/// spaces, which is a mistake a positional argument list would accept in
+/// silence.
+#[derive(Default)]
+struct Wanted {
+    /// Land graphics, which feed the land atlas and the texture atlas both.
+    land: BTreeSet<Graphic>,
+    /// Static graphics: what the map has standing on the ground, and what the
+    /// server has dropped on top of it.
+    statics: BTreeSet<Graphic>,
+    /// Body, group and stored direction for everyone on screen.
+    animations: BTreeSet<(u16, u8, u8)>,
+}
+
+impl Atlases {
+    /// Pack a set from nothing.
+    ///
+    /// The startup path, and the recovery path: an atlas that has filled up is
+    /// replaced by one built for what is on screen *now*, which is where the
+    /// eviction lives. Growing has no other way to reclaim a graphic the camera
+    /// walked away from ten minutes ago, and rebuilding used to do it by
+    /// accident on every miss.
+    fn build(
+        art: &Art,
+        texmaps: &TexMaps,
+        tiledata: &TileData,
+        anim: &mut Anim,
+        wanted: &Wanted,
+    ) -> Result<Self, AtlasError> {
+        Ok(Self {
+            land: LandAtlas::build(art, wanted.land.iter().copied())?,
+            texmaps: TexmapAtlas::build(texmaps, tiledata, wanted.land.iter().copied())?,
+            statics: StaticAtlas::build(art, wanted.statics.iter().copied())?,
+            mobiles: AnimAtlas::build(anim, wanted.animations.iter().copied())?,
+        })
+    }
+
+    /// Add whatever of `wanted` is not packed yet, reading only that.
+    ///
+    /// A graphic already offered costs a lookup in a `BTreeSet` and no file
+    /// access at all — including one the client ships no art for, which is the
+    /// case that used to make "is the atlas stale" answer yes for ever.
+    ///
+    /// [`AtlasError::Full`] leaves the atlases holding whatever fitted, and the
+    /// caller is expected to throw them away and [`build`](Self::build) for the
+    /// current frame. That is not a lost cause: it is the eviction, and it is
+    /// the only thing that stops an atlas which only ever grows from filling up
+    /// and staying full.
+    fn grow(
+        &mut self,
+        art: &Art,
+        texmaps: &TexMaps,
+        tiledata: &TileData,
+        anim: &mut Anim,
+        wanted: &Wanted,
+    ) -> Result<(), AtlasError> {
+        // Both halves of a ground quad from the same set, in the same growth: a
+        // land graphic in one atlas and not the other draws a slope textured
+        // with the terrain next door.
+        self.land.add(art, wanted.land.iter().copied())?;
+        self.texmaps.add(texmaps, tiledata, wanted.land.iter().copied())?;
+        self.statics.add(art, wanted.statics.iter().copied())?;
+        self.mobiles.add(anim, wanted.animations.iter().copied())?;
+        Ok(())
+    }
+
+    /// Send whatever grew to the textures already bound.
+    ///
+    /// Nothing at all on the ordinary frame, and a band of rows on the frame a
+    /// camera crossed a tile — where this used to be three pipelines and 48MB.
+    fn upload(
+        &mut self,
+        queue: &wgpu::Queue,
+        ground: &GroundRenderer,
+        statics: &SpriteRenderer,
+        mobiles: &SpriteRenderer,
+    ) {
+        ground.upload_changes(queue, &mut self.land, &mut self.texmaps);
+        if let Some(rows) = self.statics.take_dirty() {
+            statics.upload_rows(queue, self.statics.pixels(), rows);
+        }
+        if let Some(rows) = self.mobiles.take_dirty() {
+            mobiles.upload_rows(queue, self.mobiles.pixels(), rows);
+        }
+    }
+}
+
+/// What a set of tile rectangles wants packed, gathered from field references.
+///
+/// Free rather than a method on `App` because the frame that needs it most is
+/// the one holding a `&mut` borrow of the window, where no `&self` method can be
+/// called — and threading the pieces explicitly is cheaper than splitting the
+/// struct to please the borrow checker.
+fn wanted_in(
+    map: &Map,
+    bands: impl IntoIterator<Item = TileBounds>,
+    items: &[GroundItem],
+    drawn: &[Mobile],
+) -> Wanted {
+    let mut wanted = Wanted::default();
+    for band in bands {
+        ground::graphics_in(map, band, &mut wanted.land);
+        statics::graphics_in(map, band, &mut wanted.statics);
+    }
+    wanted.statics.extend(items::needed_graphics(items));
+    wanted.animations.extend(mobiles::needed_animations(drawn));
+    wanted
 }
 
 /// Everything a window needs, built once the window exists.
@@ -355,21 +527,19 @@ struct Screen {
     /// [`Screen::world`]: it has to be exactly the size of the image it is
     /// tested against.
     depth: wgpu::Texture,
-    /// The graphics currently packed. Rebuilt when the camera moves somewhere
-    /// the atlas does not cover.
-    atlas: LandAtlas,
-    /// Their textures, packed the same way and rebuilt with them. The two are
-    /// always built from the same set of graphics, so one of them missing a
-    /// tile is the other one's business too.
-    texmap_atlas: TexmapAtlas,
-    /// The static sprites currently packed, rebuilt on the same trigger.
-    static_atlas: StaticAtlas,
     /// The pass that draws the mobiles, which is the statics pass again with
     /// another atlas bound: a sprite is a sprite, and the two differ only in
     /// where the quad goes.
     mobile_pass: SpriteRenderer,
-    /// The animation frames currently packed.
-    mobile_atlas: AnimAtlas,
+    /// Everything currently packed, grown as the camera walks into ground it
+    /// has not seen. Beside the passes rather than inside them because the CPU
+    /// side of an atlas is what builds a quad and the texture is what draws it.
+    atlases: Atlases,
+    /// The pass that draws overhead speech, bound to `App::font_atlas` once:
+    /// unlike `statics` and `mobile_pass`, nothing ever rebuilds it — the
+    /// glyph atlas it is bound to is the whole of `fonts.mul` and does not go
+    /// stale the way a camera-scoped atlas does.
+    text_pass: SpriteRenderer,
 }
 
 struct App {
@@ -378,9 +548,18 @@ struct App {
     art: Art,
     texmaps: TexMaps,
     tiledata: TileData,
+    /// Every hue the client ships, read as `hues.mul` stores it — a 32-step
+    /// `Color16` ramp per hue. `hue_ramp` beside it is the same table packed
+    /// for the GPU; this is what `gump.rs` reads to colour a `{ text }`
+    /// element, which wants one CPU-side `egui::Color32` and not a texture row.
+    hues: Hues,
     /// Every hue the client ships, packed once: unlike the sprite atlases it
     /// tints, nothing about it depends on where the camera is standing.
     hue_ramp: HueRamp,
+    /// Every glyph `fonts.mul` ships, packed once for the reason `hue_ramp` is:
+    /// nothing about it depends on the camera, and unlike a graphic there is no
+    /// "not currently visible" character to leave unpacked.
+    font_atlas: FontAtlas,
     /// The animations, open but not read: `anim.mul` is 195MB and frames come
     /// out of it a body at a time. `&mut` because reading one seeks the file.
     anim: Anim,
@@ -439,13 +618,17 @@ struct App {
     /// [`App::entered`]: once, because it cannot change without a `0xBF 0x08`
     /// nothing here reads yet.
     facet_checked: bool,
-    /// Which way the keyboard is asking to walk, and whether it is asking to
-    /// run.
+    /// Where the player is asking to walk — the arrows, and the tile the mouse
+    /// last sent the body to.
     ///
-    /// A step is not sent from the key event: the operating system's auto-repeat
-    /// is not a walking speed, and a shard refuses a flood of steps as a
-    /// speedhack. See `keys.rs`.
-    keys: keys::Held,
+    /// A step is not sent from the input event: the operating system's
+    /// auto-repeat is not a walking speed, a shard refuses a flood of steps as a
+    /// speedhack, and a mouse held over the ground reports a move a pixel. One
+    /// clock paces all of them. See `steer.rs`.
+    steer: steer::Steering,
+    /// Whether the right button is down, which is what makes dragging steer: the
+    /// destination is restated at every tile the cursor crosses while it is.
+    aiming: bool,
     /// What everyone on screen was doing a moment ago: which animation each is
     /// playing, and how far into it.
     ///
@@ -463,13 +646,41 @@ struct App {
     /// a stepping animation hides and a glide does not.
     last_advance: Instant,
     window: Option<Screen>,
+    /// The tile a left click last landed on, kept until the next click — see
+    /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
+    /// slide off the tile the moment the mouse does.
+    selected_tile: Option<(u16, u16)>,
+    /// The tile rectangle whose land and statics have been offered to the
+    /// atlases, or `None` when nothing has.
+    ///
+    /// The state the band walk in [`App::draw`] is built on, and the one thing
+    /// here that is wrong in silence: an atlas rebuilt behind this field's back
+    /// forgets graphics that this still claims were offered, and the tiles that
+    /// needed them simply stop being drawn — along one edge, at one camera
+    /// position. So it is set from exactly two places, both of which have just
+    /// finished packing, and cleared before anything that forgets.
+    covered: Option<TileBounds>,
 }
 
 impl ApplicationHandler<link::Update> for App {
     /// The shard thread had something to say.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, update: link::Update) {
+        // The crowd's clock first, and before the packet is folded in. A step is
+        // timestamped with `Crowd`'s own `now` — that is what the *next* step's
+        // crossing is measured against (`crowd::glide_time`) — and this handler
+        // used to fold packets in between two `advance` calls, so every step was
+        // recorded at the previous frame's instant: up to 16ms in the past
+        // mid-walk and up to a whole `FRAME_DELAY` for a body that had stopped.
+        // The measurement is a difference of two of those, so the error lands on
+        // the crossing *length*: the walk oracle in `dst.rs` caught a tile after
+        // a turn taking 416ms instead of 400, which is a body a frame behind
+        // itself and then yanked forward.
+        let now = Instant::now();
+        self.crowd
+            .advance(now.saturating_duration_since(self.last_advance));
+        self.last_advance = now;
         match update {
-            link::Update::World(view) => self.entered(&view),
+            link::Update::World { view, body } => self.entered(&view, body),
             // The window stays open: whatever is on screen is still the last
             // thing the server said, and closing it would take the reason with
             // it. The map viewer is what is left, which is a fair description
@@ -479,6 +690,16 @@ impl ApplicationHandler<link::Update> for App {
                 self.link = None;
                 return;
             }
+        }
+        // A step that arrives while nobody was moving finds the animation clock
+        // armed for the *standing* rate, up to a whole `FRAME_DELAY` away — so
+        // the first 80ms of the glide would be drawn frozen at its start, once
+        // per tile. Pulling the tick forward is what makes a walk continuous
+        // from its first frame; it is a `min` rather than an assignment because
+        // a clock already running at the glide rate is the earlier of the two.
+        let soon = now + GLIDE_INTERVAL;
+        if self.crowd.anyone_gliding() && self.next_tick > soon {
+            self.next_tick = soon;
         }
         if let Some(window) = self.window.as_ref() {
             window.window.request_redraw();
@@ -513,7 +734,8 @@ impl ApplicationHandler<link::Update> for App {
             // a panel should stop the character anyway, so letting go of
             // everything is both the fix and the behaviour.
             if matches!(event, WindowEvent::KeyboardInput { .. }) {
-                self.keys.clear();
+                self.steer.clear();
+                self.aiming = false;
             }
             if let Some(window) = self.window.as_ref() {
                 window.window.request_redraw();
@@ -544,9 +766,9 @@ impl ApplicationHandler<link::Update> for App {
                 // the operating system's repeat rate. See `keys.rs`.
                 if let Some(direction) = keys::Held::direction_of(code) {
                     let step = match event.state {
-                        ElementState::Pressed => self.keys.press(direction, Instant::now()),
+                        ElementState::Pressed => self.steer.press(direction, Instant::now()),
                         ElementState::Released => {
-                            self.keys.release(direction);
+                            self.steer.release(direction);
                             None
                         }
                     };
@@ -589,12 +811,16 @@ impl ApplicationHandler<link::Update> for App {
             // with, and a `KeyboardInput` for the shift itself would miss the
             // case of it going down between two steps.
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.keys.set_running(modifiers.state().shift_key());
+                self.steer.set_running(modifiers.state().shift_key());
             }
             // A window that loses focus never hears the key come up, and a
             // character that keeps walking into a wall while its player is in
-            // another window is not what the key meant.
-            WindowEvent::Focused(false) => self.keys.clear(),
+            // another window is not what the key meant. The destination goes
+            // with it, for the same reason: nobody is watching it be walked to.
+            WindowEvent::Focused(false) => {
+                self.steer.clear();
+                self.aiming = false;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 // Relative to the *viewport* and not the window: the camera's
                 // own centre is the viewport's, so a cursor measured from the
@@ -603,7 +829,15 @@ impl ApplicationHandler<link::Update> for App {
                     (shell.viewport().x as i32, shell.viewport().y as i32)
                 });
                 let (x, y) = (position.x as i32 - origin.0, position.y as i32 - origin.1);
-                if self.control.cursor_moved(x, y) {
+                let mut changed = self.control.cursor_moved(x, y);
+                // Held, the button steers rather than picking one tile: the
+                // destination follows the cursor, which is the walk-where-I-am-
+                // pointing every UO client has and every strategy game's
+                // move-order held down.
+                if self.aiming {
+                    changed |= self.walk_to_cursor();
+                }
+                if changed {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }
@@ -612,6 +846,26 @@ impl ApplicationHandler<link::Update> for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == winit::event::MouseButton::Middle {
                     self.control.set_panning(state == ElementState::Pressed);
+                }
+                // A left click selects the tile under the cursor for the Tile
+                // panel — reached here and not through egui, because `consumed`
+                // above already sent every click the UI wanted to it.
+                if button == winit::event::MouseButton::Left && state == ElementState::Pressed {
+                    self.selected_tile = self.pick_tile().map(|tile| (tile.x, tile.y));
+                    if let Some(window) = self.window.as_ref() {
+                        window.window.request_redraw();
+                    }
+                }
+                // And a right click is a move order: walk there, and keep
+                // walking there while the button is held. Left is spoken for by
+                // the Tile panel above, and the middle button pans.
+                if button == winit::event::MouseButton::Right {
+                    self.aiming = state == ElementState::Pressed;
+                    if self.aiming && self.walk_to_cursor() {
+                        if let Some(window) = self.window.as_ref() {
+                            window.window.request_redraw();
+                        }
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -641,12 +895,13 @@ impl ApplicationHandler<link::Update> for App {
     /// `Mobile.ProcessAnimation` poll.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        // A held arrow asks for a step every step's length. Here and not in the
-        // key event: the operating system repeats a held key at a rate that is
-        // not a walking speed, and the fast half of that is refused by the
-        // shard as a speedhack — which reads as the walk stuttering. See
-        // `keys.rs`.
-        if let Some(facing) = self.keys.due(now) {
+        // A held arrow — or a tile the mouse sent the body to — asks for a step
+        // every step's length. Here and not in the input event: the operating
+        // system repeats a held key at a rate that is not a walking speed, a
+        // mouse held over the ground reports a move a pixel, and the fast half
+        // of either is refused by the shard as a speedhack — which reads as the
+        // walk stuttering. See `steer.rs`.
+        if let Some(facing) = self.steer.due(now, self.player.at) {
             if self.walk(facing) {
                 if let Some(window) = self.window.as_ref() {
                     window.window.request_redraw();
@@ -683,7 +938,7 @@ impl ApplicationHandler<link::Update> for App {
             },
             None => self.next_tick,
         };
-        let deadline = match self.keys.deadline() {
+        let deadline = match self.steer.deadline() {
             Some(step) => deadline.min(step),
             None => deadline,
         };
@@ -737,6 +992,64 @@ impl App {
         // questions, and `Home` is the answer to the second.
         self.follow_player();
         true
+    }
+
+    /// Send the body to whatever tile the cursor is over, answering whether
+    /// anything on screen changed.
+    ///
+    /// The mouse's whole share of walking: a click names a destination and a
+    /// drag restates it, and `steer.rs` is what turns either into one step every
+    /// step's length. A cursor that is off the map or outside the world's
+    /// viewport names no tile and is left alone rather than treated as the
+    /// nearest one — a move order nobody gave is worse than one that did
+    /// nothing.
+    fn walk_to_cursor(&mut self) -> bool {
+        let Some(tile) = self.pick_tile() else {
+            return false;
+        };
+        match self.steer.go_to((tile.x, tile.y), self.player.at, Instant::now()) {
+            Some(facing) => {
+                // The marker under the destination has moved even when the step
+                // itself changes nothing on screen, so the redraw is not the
+                // step's to decide.
+                self.walk(facing);
+                true
+            }
+            None => true,
+        }
+    }
+
+    /// Say a line out loud, if there is a shard to hear it.
+    ///
+    /// Nothing is echoed locally. A shard sends every speaker their own words
+    /// back — that is what makes `0xAE` exist — so a client that also drew them
+    /// itself would show everything twice, and a line that never reached the
+    /// server would look exactly like one that did.
+    ///
+    /// Offline the line goes nowhere and says so in the log rather than
+    /// silently: the map viewer has nobody to talk to, and a chat box that
+    /// swallowed what was typed would read as a broken connection.
+    fn say(&mut self, line: String) {
+        match self.link.as_ref() {
+            Some(link) => link.say(line),
+            None => tracing::info!(%line, "nothing said: no shard is connected"),
+        }
+    }
+
+    /// Answer an open dialog and take it off the screen.
+    ///
+    /// The close is this end's, and it is why the view is touched here rather
+    /// than waiting for a packet: the server sends one `0xB0` and waits for one
+    /// `0xB1`, and nothing ever arrives to say the window is gone. See
+    /// [`WorldView::gump_closed`](openshard_client_net::view::WorldView::gump_closed).
+    fn answer_gump(&mut self, reply: link::GumpReply) {
+        let gump_id = openshard_protocol::gump::GumpId(reply.gump_id.0);
+        if let Some(link) = self.link.as_ref() {
+            link.answer_gump(reply);
+        }
+        if let Some(view) = self.view.as_mut() {
+            view.gump_closed(gump_id);
+        }
     }
 
     /// Put the eye back on the body and lock it there.
@@ -829,7 +1142,7 @@ impl App {
     /// A projection of the whole [`WorldView`], rebuilt each time rather than
     /// patched: the view is the record of what arrived, and anything kept in
     /// step with it by hand would be a second record that could disagree.
-    fn entered(&mut self, view: &WorldView) {
+    fn entered(&mut self, view: &WorldView, body: link::Body) {
         // The facet is chosen at startup and `0x1B` names only its size, so a
         // shard serving a different one draws this client the wrong ground with
         // no complaint from either end. Said once, because it is a
@@ -850,13 +1163,35 @@ impl App {
             }
         }
 
-        self.player = self.crowd.see(
-            Some(view.player.serial),
-            view.player.position,
-            view.player.body,
-            view.player.facing,
-            view.player.hue,
-        );
+        // Our own body is drawn where this end *predicted* it, not where the
+        // last ack put it: the step leaves the moment the player asks for it and
+        // the `0x22` confirming it arrives a round trip later, so a body drawn
+        // from the view stands still for the latency and then crosses its tile
+        // in a hurry. See `link::Body`.
+        //
+        // A correction is the one thing that is not walked into: the tile it
+        // puts the body back on was never crossed.
+        let me = Some(view.player.serial);
+        // Ours is the one body whose pace is not guessed at: we send its steps.
+        // Said every update rather than once, because the serial is the shard's
+        // to name and nothing here is told when it does.
+        self.crowd.commanding(me);
+        self.player = match body.corrected {
+            true => self.crowd.snap(
+                me,
+                body.predicted.position,
+                view.player.body,
+                body.predicted.facing,
+                view.player.hue,
+            ),
+            false => self.crowd.see(
+                me,
+                body.predicted.position,
+                view.player.body,
+                body.predicted.facing,
+                view.player.hue,
+            ),
+        };
         // Sorted by serial: a `HashMap`'s order is not one, and an atlas built
         // in a different order every frame is a rebuild every frame.
         let mut others: Vec<_> = view.mobiles.iter().collect();
@@ -893,6 +1228,24 @@ impl App {
             })
             .collect();
         self.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
+        // The newest line in the journal, heard once and hung over its
+        // speaker's head for a while — compared against the old view, still
+        // in `self.view` at this point, so a redraw that changed nothing else
+        // does not restart the hold on the same sentence. A system line
+        // (`serial: None`) has no mobile to hang over and is left for the
+        // HUD's world window instead, which is not built yet.
+        if let Some(latest) = view.journal.back() {
+            let already_heard = self
+                .view
+                .as_ref()
+                .is_some_and(|previous| previous.journal.back() == Some(latest));
+            if !already_heard {
+                if let Some(serial) = latest.serial {
+                    self.crowd
+                        .hear(Some(serial), latest.text.clone(), latest.font, latest.hue);
+                }
+            }
+        }
         // Whole, for the HUD's world window: the three projections above are
         // what the renderer wants, and none of them keeps a serial.
         self.view = Some(Box::new(view.clone()));
@@ -902,6 +1255,57 @@ impl App {
         // stored, because that is what says who we are, and the glide is keyed
         // by it.
         self.follow_player();
+    }
+
+    /// Common code for the two lookups in [`App::pick_tile`]: `unproject` hands
+    /// back a signed pair that may be off the map in any direction, and a
+    /// negative one is not expressible as the `u16` [`Map::land`] wants.
+    fn in_bounds(x: i32, y: i32, map: &Map) -> Option<(u16, u16)> {
+        if x < 0 || y < 0 || x as u32 >= map.width() || y as u32 >= map.height() {
+            return None;
+        }
+        Some((x as u16, y as u16))
+    }
+
+    /// Everything the Tile panel shows about one tile, read straight from the
+    /// map. Shared by the live hover and a click's frozen selection, so the two
+    /// can never disagree about what a tile contains.
+    fn tile_info(&self, x: u16, y: u16) -> shell::PickedTile {
+        let land = self.map.land(x, y);
+        let statics = self
+            .map
+            .statics_at(x, y)
+            .map(|item| (item.tile, item.z, item.hue))
+            .collect();
+        shell::PickedTile {
+            x,
+            y,
+            land: land.map(|cell| cell.tile),
+            land_z: land.map_or(0, |cell| cell.z),
+            statics,
+        }
+    }
+
+    /// What tile the cursor is over, read straight from the map.
+    ///
+    /// `unproject` needs the height the pixel is meant to be read at, and the
+    /// ground is not flat — so this picks once at the player's height to find
+    /// a candidate tile, then re-picks at *that* tile's own height, which is
+    /// exact wherever the two tiles agree and wrong only at a slope's edge,
+    /// same as the client's own click-to-walk.
+    fn pick_tile(&self) -> Option<shell::PickedTile> {
+        let (cursor_x, cursor_y) = self.control.cursor();
+        let world_px = self.control.camera().pick(cursor_x, cursor_y);
+        let mut z = self.player.at.z;
+        let (mut x, mut y) = camera::unproject(world_px, z);
+        if let Some((ux, uy)) = Self::in_bounds(x, y, &self.map) {
+            if let Some(cell) = self.map.land(ux, uy) {
+                z = cell.z;
+                (x, y) = camera::unproject(world_px, z);
+            }
+        }
+        let (x, y) = Self::in_bounds(x, y, &self.map)?;
+        Some(self.tile_info(x, y))
     }
 
     /// What the panels are allowed to know, gathered each frame.
@@ -935,21 +1339,31 @@ impl App {
             locked: self.control.follow() == Follow::Body,
             mobiles,
             items,
+            hover: self.pick_tile(),
+            selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
+            goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
+            gumps: self
+                .view
+                .as_ref()
+                .map(|view| view.gumps.clone())
+                .unwrap_or_default(),
+            said: self
+                .view
+                .as_ref()
+                .map(|view| {
+                    view.journal
+                        .iter()
+                        .rev()
+                        .take(SPEECH_LINES)
+                        .rev()
+                        .map(|line| match line.name.is_empty() {
+                            true => line.text.clone(),
+                            false => format!("{}: {}", line.name, line.text),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
-    }
-
-    /// The player and everyone else, in one slice for the atlas and the pass.
-    /// Every graphic that stands on the ground and wants a sprite: the map's
-    /// statics, and what the server has dropped on top of them.
-    ///
-    /// One set, because one atlas serves both — and because "does the atlas
-    /// cover what this frame needs" has to be one question. Asked twice, with
-    /// the item half forgotten in one of them, the atlas would be rebuilt every
-    /// frame an item was on screen and never hold it.
-    fn standing_graphics(&self) -> std::collections::BTreeSet<Graphic> {
-        let mut wanted = statics::visible_graphics(&self.map, self.control.camera());
-        wanted.extend(items::needed_graphics(&self.items));
-        wanted
     }
 
     /// Everyone to draw, each beside the serial their clock is keyed by.
@@ -963,12 +1377,25 @@ impl App {
     }
 
     fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<Screen, StartupError> {
-        let attributes = Window::default_attributes()
-            .with_title("OpenShard")
-            .with_inner_size(winit::dpi::LogicalSize::new(
+        // Physical pixels, not logical: a `LogicalSize` here would ask for the
+        // same *point* size on every monitor and come out small on a dense
+        // one, exactly backwards from what "respect the density" means. Sized
+        // off the monitor rather than the `Camera` default (1024x768, meant as
+        // a viewport floor, not a window request) so the window opens large on
+        // whatever screen it is on.
+        let attributes = Window::default_attributes().with_title("OpenShard");
+        let attributes = match event_loop.primary_monitor().map(|monitor| monitor.size()) {
+            Some(size) if size.width > 0 && size.height > 0 => {
+                attributes.with_inner_size(winit::dpi::PhysicalSize::new(
+                    (size.width as f32 * 0.9) as u32,
+                    (size.height as f32 * 0.9) as u32,
+                ))
+            }
+            _ => attributes.with_inner_size(winit::dpi::LogicalSize::new(
                 self.control.camera().width,
                 self.control.camera().height,
-            ));
+            )),
+        };
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -1025,7 +1452,12 @@ impl App {
             .set_max_texture(device.limits().max_texture_dimension_2d);
         self.control.resize(config.width, config.height);
 
-        let atlases = self.build_atlases()?;
+        let wanted = self.wanted_now();
+        let atlases = Atlases::build(&self.art, &self.texmaps, &self.tiledata, &mut self.anim, &wanted)
+            .map_err(StartupError::Atlas)?;
+        // What the atlases were built for, which is what the band walk in
+        // `draw` subtracts from on the next frame.
+        self.covered = Some(self.control.camera().visible_tiles());
         // The world passes draw into the world texture, so they take *its*
         // format and not the surface's — the two differ on an HDR display,
         // where the first non-sRGB surface format is `Rgba16Float`.
@@ -1048,6 +1480,15 @@ impl App {
             &queue,
             blit::WORLD_FORMAT,
             atlases.mobiles.pixels(),
+            &self.hue_ramp,
+        );
+        // Built once, unlike `statics` and `mobile_pass`: `font_atlas` is never
+        // rebuilt, so neither is what draws it.
+        let text_pass = SpriteRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            self.font_atlas.pixels(),
             &self.hue_ramp,
         );
         // The world is drawn at 1:1 into a texture of the camera's render size,
@@ -1079,45 +1520,61 @@ impl App {
             world,
             blit,
             depth,
-            atlas: atlases.land,
-            texmap_atlas: atlases.texmaps,
-            static_atlas: atlases.statics,
             mobile_pass,
-            mobile_atlas: atlases.mobiles,
+            atlases,
+            text_pass,
         })
     }
 
-    /// Pack what the camera can see: the flat land art, the textures its slopes
-    /// are stretched over, and the sprites of everything standing on it.
+    /// Everything on screen right now, whatever the atlases already hold.
     ///
-    /// One set of land graphics feeds the first two, which is what lets a quad
-    /// ask them the same question — and what makes "the atlas does not cover
-    /// this" one decision rather than two that could disagree. The statics are
-    /// a different index space and therefore a set of their own.
-    fn build_atlases(&mut self) -> Result<Atlases, StartupError> {
-        let wanted = ground::visible_graphics(&self.map, self.control.camera());
-        let land = LandAtlas::build(&self.art, wanted.iter().copied()).map_err(StartupError::Atlas)?;
-        let texmaps =
-            TexmapAtlas::build(&self.texmaps, &self.tiledata, wanted).map_err(StartupError::Atlas)?;
-        // One atlas for both sprite sources standing on the ground: the map's
-        // statics and the server's items share an art file, so packing them
-        // apart would pack a floor tile twice.
-        let statics = StaticAtlas::build(&self.art, self.standing_graphics()).map_err(StartupError::Atlas)?;
-        // Every animation the mobiles on screen need. `&mut` because the
-        // frames are read from the file rather than held in memory.
+    /// The whole-viewport walk, which is what a rebuild needs and what an
+    /// ordinary frame must not do: [`App::wanted_since`] is the frame's version
+    /// of the same question and walks only the band the camera crossed.
+    fn wanted_now(&self) -> Wanted {
+        self.wanted_in([self.control.camera().visible_tiles()])
+    }
+
+    /// What the camera has walked onto since `covered` was the visible
+    /// rectangle, plus everything that is not a question about the map at all.
+    ///
+    /// The saving this whole arrangement is for. A frame used to walk the
+    /// visible rectangle twice — once for the land graphics and once for the
+    /// statics — purely to ask whether the atlases were still good for it, which
+    /// is ~9,800 cells at 1080p against a camera that had moved one tile. The
+    /// bands [`TileBounds::difference`] hands back are that tile's worth of
+    /// cells.
+    ///
+    /// The invariant it rests on: every cell inside `covered` has already been
+    /// offered to the atlases, and an atlas never forgets what it was offered —
+    /// not even a graphic the client ships no art for. So a graphic can only be
+    /// new outside `covered`, and anything that *does* make an atlas forget has
+    /// to set `covered` back to `None` in the same breath.
+    fn wanted_since(&self, covered: Option<TileBounds>) -> Wanted {
+        let bounds = self.control.camera().visible_tiles();
+        let bands = match covered {
+            Some(covered) => bounds.difference(covered),
+            None => [Some(bounds), None, None, None],
+        };
+        self.wanted_in(bands.into_iter().flatten())
+    }
+
+    /// The graphics on some set of tiles, and everything that is on screen
+    /// regardless of where the camera is.
+    ///
+    /// Items the server has dropped and the bodies walking about are short lists
+    /// held in memory, so they are asked in full however small the bands are —
+    /// an item that arrives while the camera stands still is on no band at all.
+    /// They go into the *static* set deliberately: one atlas serves the map's
+    /// statics and the server's items, because a floor tile packed twice is a
+    /// floor tile twice.
+    fn wanted_in(&self, bands: impl IntoIterator<Item = TileBounds>) -> Wanted {
         let drawn: Vec<Mobile> = self
             .drawn_mobiles()
             .into_iter()
             .map(|(_, mobile)| mobile)
             .collect();
-        let wanted = mobiles::needed_animations(&drawn);
-        let mobiles = AnimAtlas::build(&mut self.anim, wanted).map_err(StartupError::Atlas)?;
-        Ok(Atlases {
-            land,
-            texmaps,
-            statics,
-            mobiles,
-        })
+        wanted_in(&self.map, bands, &self.items, &drawn)
     }
 
     fn draw(&mut self) {
@@ -1133,7 +1590,7 @@ impl App {
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {
-                let (request, output) = shell.run(window, &hud);
+                let (request, output) = shell.run(window, &hud, &self.hues);
                 let viewport = shell.viewport();
                 Some((request, output, viewport))
             }
@@ -1146,6 +1603,12 @@ impl App {
                 self.control.unlock();
             }
             self.control.resize(viewport.width, viewport.height);
+            if let Some(line) = request.say.clone() {
+                self.say(line);
+            }
+            if let Some(reply) = request.gump.clone() {
+                self.answer_gump(reply);
+            }
         }
         // A viewport that grew may have taken the world texture past what the
         // device allows, which no zoom step asked for.
@@ -1156,71 +1619,95 @@ impl App {
         // answer.
         self.follow_player();
 
-        // The atlases are built for what was visible when they were built, so a
-        // camera that has walked far enough will ask for a graphic they do not
-        // hold. Rebuilding whenever that happens is the simplest correct answer,
-        // and the ground is not what makes it expensive — statics will be, and
-        // that is when this deserves an eviction policy instead.
-        //
-        // Repacked before the window is borrowed, and not inside the borrow: the
-        // pack reads the whole of `self`, and the window is part of it.
-        let wanted = ground::visible_graphics(&self.map, self.control.camera());
-        let wanted_statics = self.standing_graphics();
+        // What the camera has walked onto since the atlases were last grown.
+        // Gathered before the window is borrowed, and not inside the borrow: it
+        // reads the whole of `self`, and the window is part of it.
+        let want = self.control.camera().visible_tiles();
+        let wanted = self.wanted_since(self.covered);
         let mut drawn = self.drawn_mobiles();
-        let stale = self.window.as_ref().is_some_and(|window| {
-            wanted
-                .iter()
-                .any(|graphic| window.atlas.region(*graphic).is_none())
-                || wanted_statics
-                    .iter()
-                    .any(|graphic| window.static_atlas.sprite(*graphic).is_none())
-                // The atlas holds one stored direction of one body at a time,
-                // packed for whoever was on screen facing whichever way when it
-                // was last built. A mobile turning, or a new one arriving, is
-                // the same miss as walking off the land atlas.
-                || drawn.iter().any(|(_, mobile)| {
-                    let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
-                    window
-                        .mobile_atlas
-                        .frame_count(mobile.body, mobile.group, direction)
-                        == 0
-                })
-        });
-        let repacked = stale.then(|| self.build_atlases());
 
         let Some(window) = self.window.as_mut() else {
             return;
         };
-        match repacked {
-            Some(Ok(atlases)) => {
-                window.renderer = GroundRenderer::new(
-                    &window.device,
-                    &window.queue,
-                    blit::WORLD_FORMAT,
-                    &atlases.land,
-                    &atlases.texmaps,
-                );
-                window.statics = SpriteRenderer::new(
-                    &window.device,
-                    &window.queue,
-                    blit::WORLD_FORMAT,
-                    atlases.statics.pixels(),
-                    &self.hue_ramp,
-                );
-                window.mobile_pass = SpriteRenderer::new(
-                    &window.device,
-                    &window.queue,
-                    blit::WORLD_FORMAT,
-                    atlases.mobiles.pixels(),
-                    &self.hue_ramp,
-                );
-                window.atlas = atlases.land;
-                window.texmap_atlas = atlases.texmaps;
-                window.static_atlas = atlases.statics;
-                window.mobile_atlas = atlases.mobiles;
+        // Grow rather than rebuild. What is new is added to the textures
+        // already bound, a band of rows at a time, and a frame where the camera
+        // stood still reads four `BTreeSet`s and touches no file and no GPU.
+        let grown = window
+            .atlases
+            .grow(&self.art, &self.texmaps, &self.tiledata, &mut self.anim, &wanted);
+        // Whatever was packed is uploaded, including on the way out of a failure:
+        // a growth that stopped part way still wrote pixels, and pixels the
+        // device has not been told about are sampled as whatever was there
+        // before. Cheap to do unconditionally — the band is empty when nothing
+        // grew — and it is one fewer path where an atlas and its texture can
+        // disagree.
+        window.atlases.upload(
+            &window.queue,
+            &window.renderer,
+            &window.statics,
+            &window.mobile_pass,
+        );
+        match grown {
+            Ok(()) => self.covered = Some(want),
+            // Full, and this is the eviction: pack an atlas for what is on
+            // screen now and throw away everything the camera has walked past.
+            // Costly and rare — where the old arrangement paid it every few
+            // tiles — and it is the *only* thing that reclaims space, so an
+            // atlas that only ever grew would eventually stay full for ever.
+            //
+            // The passes are rebuilt with it, because the texture a bind group
+            // points at is the one the old atlas was uploaded to.
+            Err(AtlasError::Full { .. }) => {
+                // `covered` is cleared first: a rebuild forgets, so the next
+                // frame may not assume anything about what the atlases hold.
+                // Set again below only if the rebuild succeeds.
+                self.covered = None;
+                match Atlases::build(
+                    &self.art,
+                    &self.texmaps,
+                    &self.tiledata,
+                    &mut self.anim,
+                    &wanted_in(
+                        &self.map,
+                        [self.control.camera().visible_tiles()],
+                        &self.items,
+                        &drawn.iter().map(|(_, mobile)| *mobile).collect::<Vec<_>>(),
+                    ),
+                ) {
+                    Ok(atlases) => {
+                        window.renderer = GroundRenderer::new(
+                            &window.device,
+                            &window.queue,
+                            blit::WORLD_FORMAT,
+                            &atlases.land,
+                            &atlases.texmaps,
+                        );
+                        window.statics = SpriteRenderer::new(
+                            &window.device,
+                            &window.queue,
+                            blit::WORLD_FORMAT,
+                            atlases.statics.pixels(),
+                            &self.hue_ramp,
+                        );
+                        window.mobile_pass = SpriteRenderer::new(
+                            &window.device,
+                            &window.queue,
+                            blit::WORLD_FORMAT,
+                            atlases.mobiles.pixels(),
+                            &self.hue_ramp,
+                        );
+                        window.atlases = atlases;
+                        self.covered = Some(want);
+                    }
+                    // One screen does not fit one atlas, which is a different
+                    // statement from "the atlas filled up": no eviction can help
+                    // and the frame draws with sprites missing. Named here
+                    // rather than hidden, and it is what the standing backlog
+                    // item about a failed repack is about.
+                    Err(error) => eprintln!("packing the art on screen: {error}"),
+                }
             }
-            Some(Err(error)) => eprintln!("repacking art: {error}"),
-            None => {}
+            Err(error) => eprintln!("growing the atlases: {error}"),
         }
 
         // Both time-varying halves of a mobile, filled in per frame rather than
@@ -1233,11 +1720,25 @@ impl App {
         for (who, mobile) in &mut drawn {
             let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
             let frame_count = window
-                .mobile_atlas
+                .atlases
+                .mobiles
                 .frame_count(mobile.body, mobile.group, direction);
             mobile.frame = self.crowd.frame_for(*who, frame_count);
             mobile.glide = self.crowd.glide_for(*who);
         }
+        // Whoever the crowd is still holding a line for, hung above whichever
+        // of `drawn`'s mobiles their serial belongs to. Read out here, before
+        // `who` is dropped below: a label with no mobile to anchor to has
+        // nothing to draw either way, so the two share the same "still on
+        // screen" question `mobiles::head_anchor` answers.
+        let speech: Vec<(ViewPixel, String, Font, Hue)> = drawn
+            .iter()
+            .filter_map(|(who, mobile)| {
+                let (text, font, hue) = self.crowd.speaking(*who)?;
+                let anchor = mobiles::head_anchor(mobile, self.control.camera(), &window.atlases.mobiles)?;
+                Some((anchor, text.to_string(), font, hue))
+            })
+            .collect();
         let drawn: Vec<Mobile> = drawn.into_iter().map(|(_, mobile)| mobile).collect();
 
         let frame = match window.surface.get_current_texture() {
@@ -1285,14 +1786,14 @@ impl App {
         let quads = ground::collect(
             &self.map,
             self.control.camera(),
-            &window.atlas,
-            &window.texmap_atlas,
+            &window.atlases.land,
+            &window.atlases.texmaps,
         );
         let static_quads = statics::collect(
             &self.map,
             self.control.camera(),
             &self.tiledata,
-            &window.static_atlas,
+            &window.atlases.statics,
         );
         // Through the same pass as the map's statics, because they are the same
         // atlas: one draw call binds one texture, and what covers what is the
@@ -1303,11 +1804,29 @@ impl App {
                 &self.items,
                 self.control.camera(),
                 &self.tiledata,
-                &window.static_atlas,
+                &window.atlases.statics,
             ));
             quads
         };
-        let mobile_quads = mobiles::collect(&drawn, self.control.camera(), &window.mobile_atlas);
+        let mobile_quads = mobiles::collect(&drawn, self.control.camera(), &window.atlases.mobiles);
+        let labels: Vec<Label<'_>> = speech
+            .iter()
+            .map(|(anchor, line, font, hue)| Label {
+                anchor: *anchor,
+                text: line.as_str(),
+                font: *font,
+                hue: *hue,
+                // Nearer than anything the world draws, rather than an
+                // `Order` of its own: speech reads as an overlay above
+                // whoever said it in every reference client, and there is no
+                // real case here of a wall in front of the speaker hiding it
+                // that a viewer would want honoured. Worth revisiting with a
+                // `depth::text_priority_z` alongside the mobile's own if that
+                // ever stops being true.
+                depth: 0.0,
+            })
+            .collect();
+        let text_quads = text::collect(&labels, &self.font_atlas);
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let target = Target {
             view: &world_view,
@@ -1330,6 +1849,9 @@ impl App {
         window
             .mobile_pass
             .render(&window.device, &window.queue, &mut encoder, target, &mobile_quads);
+        window
+            .text_pass
+            .render(&window.device, &window.queue, &mut encoder, target, &text_quads);
         // And the world onto the surface, which is where the zoom happens and
         // the only place it does. Into the rect the panels left free, so a
         // docked panel shrinks the world rather than covering it.

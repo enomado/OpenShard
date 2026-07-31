@@ -705,12 +705,13 @@ would not.
   `unproject(pick(cursor), z)` and is one line away; screen to *what you
   clicked* is the depth ordering read backwards, which is M5. Worth not
   designing around the easy half.
-- **Zoom-out makes the whole-atlas rebuild fire far more often.** The existing
-  item — "the atlas is rebuilt whole whenever the camera walks off it" — is
-  cheap because a screen holds a few dozen graphics. Four times the screen is
-  four times the graphics against a 2048 atlas that is also the browser's
-  guaranteed floor, so the eviction policy and the zoom-out limit are the same
-  question and should be answered together.
+- ~~**Zoom-out makes the whole-atlas rebuild fire far more often.**~~ There is
+  no whole-atlas rebuild on a miss any more — the atlases grow, and a zoom step
+  is one band of new tiles like any other camera move. What survives of this
+  entry is the half it was really about: four times the screen is four times the
+  graphics against a 2048 atlas that is also the browser's guaranteed floor, so
+  zooming out is still the fastest way to *fill* one. That now lands on the
+  eviction rather than on the frame rate.
 - **Picking is half-built the moment `to_world` exists.** Screen to *ground tile*
   is the inverse projection at a known `z`; screen to *what you clicked* is the
   depth ordering read backwards, and a static or a mobile in front of the ground
@@ -905,13 +906,32 @@ wrongly shared one draws a 5.x shard's world out of a 7.x shard's art.
 ## M4 — the gump layer
 
 The journal and the speech line, the status bar, the paperdoll, containers, and
-generic gumps: `0xB0` is already encoded by the server, so the client needs the
-decoder and a layout parser for it.
+generic gumps.
+
+**Partly built, ahead of the rest of M4**, because the shard's staff commands
+are unreachable without it: they are `.`-prefixed *speech*, and `.admin` is
+answered with a gump. What landed is the whole path and none of the art —
+
+- `0xAD` encodes (`UnicodeTalkRequest::encode`) and `0xB0` decodes; `0xB1`
+  encodes. Each is the direction the engine had never needed until it grew a
+  client of its own.
+- `protocol::gump::layout::parse` reads the layout language the builder next
+  door writes, and is tested against it element by element. Total: an unknown
+  keyword is an `Element::Unknown`, never a lost window.
+- `WorldView::gumps` holds what is open, and `gump_closed` is the one thing the
+  wire never says — a reply button closes a window client-side.
+- `client/app/src/gump.rs` draws a layout with egui's own widgets, and
+  `shell.rs` has a speech line. Both are the *dev HUD's* rendering, in the same
+  spirit as the rest of that file.
+
+What is still M4 proper: the gump art (`gumpart.mul`), which is why a
+`{ gumppic }` is drawn as a placeholder naming its graphic; hue lookup for gump
+text; and the journal, of which the speech strip is a six-line stand-in.
 
 ## M5 — interaction
 
 Single and double click (`0x09`, `0x06`), drag and drop (`0x07`, `0x08`),
-targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
+targeting (`0x6C`, `0x6B`), war mode. Speech (`0xAD`) landed early — see M4.
 
 ## Decisions to take before they are taken by accident
 
@@ -1043,11 +1063,11 @@ own understanding had written.
   Until statics are drawn this leaves black holes in the picture, which is
   honest, but it is worth checking whether `tiledata`'s flags name these
   explicitly before deciding whether the renderer should skip them.
-- **The atlas is rebuilt whole whenever the camera walks off it.**
-  `client/app` repacks and recreates the pipeline on a miss. Free for ground —
-  a screen holds a few dozen graphics of the 2,116 that fit — and not free once
-  statics share the atlas. The place to fix it is an eviction policy in
-  `LandAtlas`, once something needs one.
+- ~~**The atlas is rebuilt whole whenever the camera walks off it.**~~ It grows
+  instead: `LandAtlas::add` and its three neighbours pack what is new beside
+  what is there, and only the rows that changed are uploaded. The eviction this
+  entry asked for exists too, as the answer to an atlas that has filled up
+  rather than as the answer to a miss.
 - **`Map` cannot be built in memory, so the renderer has no offline tests.**
   *(Planned: [`unenforced.md`](unenforced.md) S4.)*
   Every assertion about `ground::collect` lives in `tests/frame.rs` behind
@@ -1174,24 +1194,27 @@ own understanding had written.
   because it is what `speech::Font` already names.
 
 - **A repack that fails is a `eprintln!` and a frame that draws anyway.**
-  `App::draw` rebuilds the atlases when the camera asks for a graphic they do not
-  hold, and on `Err` it prints and keeps the old ones
-  (`crates/client/app/src/lib.rs`, the `Some(Err(error))` arm). `StaticAtlas` is
-  one 2048-square shelf pack that returns `AtlasError::Full` rather than
-  truncating, so the first camera whose statics do not fit turns into a silent,
-  permanent "some sprites are missing" — and the sprites that survive are
-  whichever the *startup* camera happened to want. Measured against a real
-  install, the start tile (1495, 1629 on Felucca) sees 187 distinct static
-  graphics, and 136 tiles out it is 588: the miss is reachable by walking, not a
-  corner case. Whatever replaces it — a texture array, several atlases, an
-  eviction policy — the failure has to stop being a frame that renders.
-- **`stale` cannot become false when a visible static has no art.** The same
-  function calls the atlas stale if any wanted graphic is absent from it, and a
-  graphic the client ships no art for is never packed (`StaticAtlas::build`
-  skips it deliberately). So one such tile on screen repacks every atlas every
-  frame, forever. The set that was asked for and the set that could be answered
-  have to be distinguishable — the pack knows which graphics it skipped, and
-  nothing carries that out.
+  *Half answered — the atlases now evict, so "full" is recoverable.* When a
+  growth returns `AtlasError::Full`, `App::draw` packs an atlas for what is on
+  screen *now* and throws away everything the camera has walked past. That is
+  the eviction policy this entry asked for, and it was not optional: an atlas
+  that only ever grows has no other way to reclaim a graphic, where the old
+  rebuild-on-every-miss did it by accident. Measured against a real install, the
+  start tile (1495, 1629 on Felucca) sees 187 distinct static graphics and 136
+  tiles out it is 588, so the fill is reachable by walking rather than a corner
+  case. What is *still* an `eprintln!` and a frame that renders is the case
+  underneath it — one screen's statics not fitting one 2048 atlas, which no
+  eviction can help. That wants a texture array or several atlases, and it is a
+  different statement from "the atlas filled up".
+- ~~**`stale` cannot become false when a visible static has no art.**~~ Fixed,
+  and the fix is that the question is no longer asked. Every atlas records what
+  it was *offered*, not only what it packed (`StaticAtlas`'s `asked`), so a
+  graphic the client ships no art for is read once and skipped for ever after —
+  where before, one such tile on screen repacked every atlas on every frame,
+  because a graphic that cannot be packed is never packed. The staleness check
+  it fed is gone too: what a frame needs that the atlas has not seen is now a
+  question about the tiles the camera crossed, not about the graphics on screen.
+  See the entry on the four walks below.
 
 ## Backlog, found while joining the window to the wire
 
@@ -1257,12 +1280,148 @@ own understanding had written.
   the wrong bug to go looking for.
 
   So a direction is *held* rather than pressed, and the clock is ours:
-  `crates/client/app/src/keys.rs` sends one step every `WALK_HOLD`, or every
-  `RUN_HOLD` with shift down. The rate is the hold and not `common/movement`'s
-  interval on purpose — those are anti-speedhack *floors*, deliberately half the
-  real rate, and walking at the floor would move a body twice as fast as the
-  crowd glides it. Two releases that never arrive have to be caught for a held
-  key not to walk for ever: the window losing focus, and egui taking the event.
+  `crates/client/app/src/keys.rs` says which way the keyboard is pointing and
+  `steer.rs` sends one step every `WALK_HOLD`, or every `RUN_HOLD` with shift
+  down. The rate is the hold and not `common/movement`'s interval on purpose —
+  those are anti-speedhack *floors*, deliberately half the real rate, and walking
+  at the floor would move a body twice as fast as the crowd glides it. Two
+  releases that never arrive have to be caught for a held key not to walk for
+  ever: the window losing focus, and egui taking the event.
+
+- ~~**The mouse cannot walk.**~~ A right click is a move order: the body walks to
+  that tile on its own, and holding the button steers it to wherever the cursor
+  is — the strategy game's idiom and the 2D client's right-hold, which turn out
+  to be the same feature stated twice. Left stays the Tile panel's and the middle
+  button still pans.
+
+  What writing it decided: **the pace belongs to neither input.** A second timer
+  beside `keys.rs`'s would take two steps a beat the moment somebody nudged an
+  arrow while walking to a destination, so `steer.rs` owns *one* clock and the
+  two inputs are only sources of a direction — the keyboard winning, and a press
+  dropping the destination rather than queuing behind it. `keys.rs` is now the
+  arrow stack and nothing else.
+
+  The route is greedy — the straight-line direction, a step at a time — because
+  this end has no walkability to plan over: whether a step is allowed is the
+  server's answer, arriving as a `0x21`. So a wall is discovered by walking into
+  it, and what must not happen is walking into it for ever: a destination that
+  has not moved the body in four steps is given up on. **Planning around the wall
+  wants a `Terrain` over the client's own map**, which `common/movement`'s
+  `find_path` would then take as it stands — the trait is one required method and
+  the client already holds the map and `tiledata`. Worth doing, and not a reason
+  to have no click-to-walk until it exists.
+
+- ~~**The walk stuttered once a tile.**~~ Three causes, all of them in the same
+  400ms:
+
+  - **The glide's length was the nominal step and the steps do not arrive
+    nominally.** Finish early and the body stands on its tile waiting for the
+    next packet; finish late and that packet yanks it forward from wherever it
+    had got to. So a walk already under way crosses each tile in the time the
+    *last* crossing took (`crowd::glide_time`), believed only within half and
+    double the wire's own claim — outside that band the gap is not a pace but a
+    body that had stopped, or two steps in one burst. This is also the only thing
+    that can glide an NPC correctly: nothing on the wire says what pace a
+    creature walks at.
+  - **The animation hold was that same one number**, so it expired in the gap
+    between two steps — one frame of *standing*, which is a different group, so
+    the walk's clock restarted at frame zero every tile. The crossing and the
+    animation are two numbers now: `animation_hold` keeps the walk playing half a
+    step past the landing, and a body that has genuinely stopped walks on the
+    spot for 200ms that nobody notices.
+  - **The animation clock was armed at the standing rate when the step
+    arrived.** `FRAME_DELAY` is 80ms and a crowd where nobody is gliding waits
+    it out, so the first 80ms of every glide was drawn frozen at its start.
+    `App::user_event` pulls the tick forward to `GLIDE_INTERVAL` when the packet
+    it just folded in started somebody moving.
+
+- ~~**Our own body waited for the round trip.**~~ It is predicted now, which is
+  the fourth and largest share of that same stutter: a step used to be drawn when
+  the `0x22` acked it, so the body stood still for the latency, crossed its tile,
+  and stood still again — and the *jitter* of that latency, not the latency
+  itself, is what no interpolation can smooth out, because it moves the start of
+  each crossing rather than its length.
+
+  `Walk` already kept a `predicted` and deliberately refused to write it into the
+  `WorldView`; that refusal is right and stands. What was missing was a second
+  channel: `link::Update::World` now carries a `link::Body` — the prediction, and
+  whether it got there by a correction — beside the view, and the app draws the
+  body from *that* while everything else still reads the view. The ack becomes
+  invisible: it confirms a position the screen already has. Only a `0x21` or a
+  `0x20` changes anything, and it is a rollback.
+
+  Two things the rollback turned up:
+
+  - **A rollback must not be glided.** It is one tile, so the "more than one tile
+    is a teleport" rule does not catch it — and glided, a body refused by a wall
+    strolls *backwards* a tile every step. `Crowd::snap` puts it there instead,
+    and deliberately leaves the animation alone: a walker whose third step is
+    refused is still walking.
+  - **A rollback is not a pace sample.** The gap between a step and its refusal
+    is latency, and feeding it to `glide_time` would have the next crossing take
+    a quarter of a step. `snap` drops the measurement with the step.
+
+  What is deliberately *not* predicted: whether a step is allowed at all. That
+  needs every rule about statics, doors and mounts to agree exactly with the
+  server's, and being wrong about it costs a rollback where being wrong about a
+  height costs a few pixels. The server is the authority and the `0x21` is how it
+  says so.
+
+- ~~**Every unit of the walk is tested and the walk itself is not.**~~ It is now:
+  `crates/client/app/src/dst.rs` runs the whole path — `steer.rs`,
+  `client/net`'s `Walk`, a real `openshard_movement::Walker` for the shard, and
+  the `Crowd` — on a virtual clock, over a wire with latency, jitter and a wall
+  in it, and holds the position of the *sprite* against an oracle.
+
+  The oracle is the **intent** timeline: the body leaves the instant the key goes
+  down and crosses one tile per hold, for ever. It is built from the script of
+  inputs alone and knows exactly one rule of UO's, the turn, which is a whole
+  step that covers no ground. Everything under test is the **event** timeline —
+  when the loop woke, what the wire did — and the claim is that the second
+  reproduces the first. Not a tautology: every walking bug this client has had
+  is a divergence between those two sets of knots, and the harness found three
+  more that four green unit suites did not.
+
+  - **A turn stopped the pace measurement without being one.** `glide_time`
+    measures the gap since the last *position* change, and a turn changes no
+    position — so the step after a turn was measured across two holds, which the
+    band was just wide enough to believe, and the tile after every turn was
+    crossed at half speed. A turn records the pace sample now: it is a step in
+    UO, it just covers no ground.
+  - **The crowd's clock was a frame behind whenever a packet was folded into
+    it.** A step is timestamped with `Crowd`'s own `now`, and `user_event` folded
+    packets in between two `advance` calls — so every step was recorded at the
+    *previous* frame's instant, up to a whole `FRAME_DELAY` for a body that had
+    stopped. `glide_time` takes a difference of two of those, so the error landed
+    on the crossing's length. `user_event` advances the crowd before it folds.
+  - **The event loop's wake jitter accumulated into the walking speed.**
+    `steer.rs` armed the next step at `now + interval`, and the loop is woken by
+    the operating system whenever it gets round to it and never early. A few
+    milliseconds a step is a body a fifth of a tile behind after ten and a whole
+    tile behind after fifty, and nothing ever gives it back. The next step is
+    armed from the deadline that has just passed; a wake later than a whole step
+    is a stall rather than jitter and restarts the cadence, because those steps
+    are deliberately not banked.
+
+  One design decision came out of it: **the pace of our own body is not measured,
+  it is commanded** (`Crowd::commanding`). `glide_time` exists because nothing on
+  the wire says how fast a creature walks — but we send our own steps, so the
+  nominal hold is not an estimate of that walk, it *is* the walk. Measuring it
+  anyway feeds the loop's wake jitter into the crossing length, and consecutive
+  gaps jitter in opposite directions, so the estimate was worse than the constant
+  it replaced.
+
+- **The walk has no home.** Two of those three defects lived *between*
+  `App::user_event` and `App::about_to_wait` rather than in any of the four units
+  the walk is made of, and the harness had to copy those handlers' ten lines to
+  reach them — which is exactly the thing a test must not do, because a
+  divergence introduced into the copy is invisible to it. What is wanted is a
+  headless unit that owns the walk end to end: the steering clock, the
+  prediction, the crowd's clock and the order the three are touched in, driven by
+  `(now, input, update)` and answering `(steps to send, where the body is drawn,
+  when to come back)`. `App` becomes the window's adapter to it, and the oracle
+  drives the shipped code rather than a copy of it. Everything in this entry
+  argues for it; nothing here is a reason to have waited for it.
 
 - **The crowd cannot tell a mount from a body on foot, and a mount steps twice as
   fast.** `WALK_HOLD`/`RUN_HOLD` are the two on-foot rates; ServUO's other two,
@@ -1368,3 +1527,109 @@ Each is a seam the work made visible. None blocks the next milestone.
   reason per wire code because the wire has five, and the server collapsed
   fifteen into them. Nothing to fix on this side; worth remembering before
   anyone builds a UI that explains a failed login.
+
+## Backlog, found while giving the client a speech line and the gump reader
+
+- ~~**`0xAE` does not decode, so a client never sees its own words.**~~ Fixed.
+  `UnicodeMessage` decodes, and the journal is now `VecDeque<Heard>`: `0x1C` and
+  `0xAE` are one event in two encodings, so the journal holds a type that says
+  so rather than one of the two packets standing in for both. Both fold in
+  through the same cap. Nothing above `client/net` had to change for it — the
+  overhead speech and the HUD's strip read the same fields — which is the sign
+  the type was the right seam.
+- ~~**The gump reader ignores hue.**~~ Fixed for text: a `{ text }` or
+  `{ croppedtext }` hue is looked up in `hues.mul` and the label is drawn in it,
+  which is what makes `.admin`'s "lay the world down" verbs read green and its
+  "clear" verbs red. The column is ClassicUO's `HuesLoader.GetUnicodeFontColor`
+  — `ColorTable[8]`, cited beside the constant, and pinned by a test on a ramp
+  with a different colour in every column, so a wrong column reads as a wrong
+  colour rather than a plausible one. `Hue(0)` stays "no colour", not row zero.
+- **The gump reader draws no art.** `gumppic`, `tilepic` and `gumppictiled` are
+  still placeholders naming their graphic. For a menu of labelled buttons
+  nothing is lost; for a paperdoll or a shop everything is. The hue of *those*
+  elements is dropped with them — art is tinted per pixel through the ramp the
+  way statics are (`client/render/src/hue.rs`), not with the single solid
+  colour text takes, so it lands with the art and not before. M4.
+- ~~**A gump is drawn in points, not in the client's pixels.**~~ Withdrawn: this
+  was written as a bug and is a decision, now argued in `client/app/src/gump.rs`
+  and localized there. A layout's coordinates *are* the reference client's
+  pixels, but converting them to physical pixels would be wrong on both counts —
+  what is drawn here is egui widgets, whose text and padding are measured in
+  points, so scaling the coordinates alone pulls the rows together underneath
+  text that did not shrink with them; and the reference client predates display
+  scaling entirely, so "what it does" is nothing and copying that gives postage
+  stamps on a 4K screen. It stops being a decision the day gump *art* is drawn,
+  because a bitmap cannot be reinterpreted — and then one scale has to apply to
+  the coordinates **and** the font sizes together. Every layout number now
+  passes through `gump::point` or `gump::size`, which is where that day's change
+  goes.
+- **A radio group is every radio in the layout, not every radio on the page.**
+  `client/app/src/gump.rs` clears the other radios when one is set, across the
+  whole window: no dialog this engine draws has two groups, so nothing shows the
+  difference yet. The client's own rule is per page, and a pack's gump with two
+  groups on one page would answer with both set.
+- **`{ nodispose }` is not honoured and right-click dismisses nothing.** There
+  is no right-click dismissal on this side to suppress, so the flag is read and
+  dropped. It becomes real the moment the window gets one.
+- **The speech line has no history and no modes.** No up-arrow recall, and
+  everything is said as `TalkMode::Regular`: emote, whisper and yell are the
+  same packet with another mode byte, and there is nothing in the UI to pick one.
+
+## Backlog, found while chasing a slow debug build
+
+- ~~**A frame walks the visible rectangle four times.**~~ Twice now, and the two
+  that went were the expensive ones: `ground::visible_graphics` and
+  `statics::visible_graphics` walked ~9,800 cells at 1080p on every frame purely
+  to answer "is the atlas stale", against a camera that had moved one tile.
+  `TileBounds::difference` subtracts the rectangle the atlases were last grown
+  for from the one the camera wants and hands back the two or three thin bands
+  between them — a step of one tile is one row — and `ground::graphics_in` /
+  `statics::graphics_in` walk those. `App::covered` is the rectangle, and the
+  invariant it carries is positional: every cell inside it has been offered to
+  the atlases, so a graphic can only be new outside it. Which is why anything
+  that makes an atlas *forget* has to clear it in the same breath, and why the
+  rebuild path does.
+
+  The other two walks are `ground::collect` and `statics::collect`, which build
+  the quads and therefore have to see every visible cell. They are what the
+  entry below is about.
+- ~~**One new graphic at the edge of the view repacks every atlas.**~~ The
+  atlases grow instead. Each one keeps its allocator — the land grid's next
+  slot, the texture grid's cells, the shelf the sprites and the animation frames
+  are packed on — plus the set of keys it has been *offered*, and `add` reads
+  only what is genuinely new. What was written is recorded as a band of rows, so
+  the upload is `write_texture` over that band into the texture already bound
+  rather than three new `SpriteRenderer`s and 48MB: `Atlases::grow` then
+  `Atlases::upload`, and a frame where the camera stood still touches no file
+  and no GPU at all.
+
+  Two things that had to come with it. The packers lose their global sort — a
+  shelf is tallest-first *within one growth* now — which costs waste and not
+  correctness, and a single `pack` still lays out exactly as it did, which is
+  what keeps the frame tests exact. And growing needed an eviction, because
+  rebuilding on every miss *was* one: see the entry on a failed repack above.
+- **A growing shelf wastes more than a packed one, and nothing measures it.**
+  `StaticAtlas` and `AnimAtlas` sort tallest-first, which is what makes a shelf
+  worth using — and a growth can only sort *within itself*, so a frame that adds
+  one 12-pixel sprite starts a row that no 200-pixel tree can share. The waste
+  is bounded by the number of growths rather than by the art, and what it
+  decides is how soon the eviction fires. Nothing reports how full an atlas is,
+  so the first sign of this is a rebuild, which is invisible. A `used`/`capacity`
+  line in the camera panel would cost nothing and is the honest place to start.
+- **The dirty band is a bounding box, and one atlas can defeat it.**
+  `TexmapAtlas` allocates first-fit over a cell grid, so a growth that lands in
+  the first free cell near the top and another near the bottom widens the band
+  to almost the whole texture — a 16MB upload for two textures. The land grid
+  and the two shelves fill downwards and cannot do this. Worth a list of bands
+  rather than one, if a profile ever shows the texmap upload at all.
+- **`ground::visible_graphics` and `statics::visible_graphics` have no callers
+  outside their own tests.** They are the whole-viewport form of
+  `graphics_in`, which is what the app uses now. Either they are the public
+  spelling and `graphics_in` is the private one, or they should go — a `pub fn`
+  that only tests call is a decision nobody has taken.
+- **`visible_tiles` widens by the whole `z` range on both axes and then takes an
+  axis-aligned box.** `MAX_Z_LIFT` either way is 512 pixels of margin for a
+  mountain that is rarely there, and the bounding box of a rotated rectangle is
+  about twice its area — so most of the ~9,800 cells walked at 1080p are not on
+  screen. Correct and generous; worth measuring against a `u`/`v` walk if the
+  per-frame cost ever matters in release.
