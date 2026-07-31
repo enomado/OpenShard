@@ -33,7 +33,7 @@ So the question this file asks about each item is not "is it correct today"
 | S1 | `restore_characters` runs before `restore_items` | ~~two doc comments and the order of two lines in `run_shard`~~ the signature: `restore_items` takes what only `restore_characters` returns | the compiler |
 | S2 | every recipe names a group that exists and leads with its system's skill | ~~an assertion in a test~~ **`crafting/build.rs`** | `cargo check`, before the crate compiles |
 | S3 | closing a refused connection tears down six things in order | ~~six doc comments, one per link~~ **`e2e/shard/tests/refused_teardown.rs`**, which walks all six | `cargo test`, on any machine — and it found link 4 half-missing |
-| S4 | the ground renderer's projection and visible set are correct | `tests/frame.rs`, behind `OPENSHARD_CLIENT` **and** a GPU | nothing, on any machine without both |
+| S4 | the ground renderer's projection and visible set are correct | ~~`tests/frame.rs`, behind `OPENSHARD_CLIENT` **and** a GPU~~ **`ground.rs`'s own tests**, on a map built in memory | `cargo test`, on any machine |
 
 ## Decisions
 
@@ -282,7 +282,25 @@ follows.
         `TransportError::Io` count now; anything else panics. This is the same
         shape as the bug above — a thing that looks closed from one angle.
 
-- [ ] **S4. A `Map` can be built without a client install.**
+      Left behind, both found while looking for a second character to put in the
+      world:
+
+      - **Two connections on one account is neither allowed nor refused.**
+        Nothing in login, the world or the shard loop looks at whether an
+        account is already playing; the same character can be entered twice and
+        stands as two bodies with two serials. That may be the right answer — a
+        shard operator with two clients open is a normal thing — but it is
+        currently the answer by omission, which means no test would notice it
+        changing. Decide it and write it down where it is decided.
+      - **`client/net` cannot create a character.** `Login` answers the `0xA9`
+        character list with a `0x5D` and has no path for the `0x00` that would
+        make a new one, so a test needing a character the config does not ship
+        has to add it to the config. `CreateCharacter::encode` exists on the
+        protocol side; what is missing is the state machine's arm and the
+        `Plan` field that would choose it. It belongs with `docs/client.md`'s
+        milestones rather than here.
+
+- [x] **S4. A `Map` can be built without a client install.**
       Every assertion about `ground::collect` lives in `client/render/tests/
       frame.rs`, behind `OPENSHARD_CLIENT` and a GPU, because the only way to
       obtain a `Map` is to load one from a file. So the projection and the
@@ -302,6 +320,44 @@ follows.
       is honest about what a hand-built `Map` does not have (`Map::load`'s facet
       ambiguity, noted in `client.md`, is not made worse); all four gates
       silent.
+
+      **Done.** `Map::from_blocks(blocks_wide, blocks_down, |x, y| …)` asks a
+      closure for every tile by world coordinate and lays the cells out itself.
+      Seven tests in `ground.rs` now run with neither the client's files nor an
+      adapter: the visible set, the projection, the sort, the edge of the map,
+      and the two that were gated behind `OPENSHARD_CLIENT` before.
+
+      Four things worth carrying forward:
+
+      - **The size is in blocks, so the invalid case stopped existing.** A facet
+        is a whole number of 8×8 blocks; taking tiles would have meant a
+        `Result`, or an assertion, for a caller who cannot express the mistake
+        this way. The remaining `assert!` is about a facet too large for a `u16`
+        coordinate to reach, which is memory that exists to be unreachable.
+      - **The layout is checked by round trip, not by a second copy of the
+        formula.** `from_blocks` decides where a cell goes and `cell_index`
+        decides where it is read from — two separate walks of the same
+        column-major order — so building a map out of the loader's own fixture
+        and reading every tile back is what catches a transposition. Verified by
+        swapping the two block loops: the test names the first cell that moved.
+      - **The visible set has to be asserted as a set.** A count is green for a
+        walk that draws the wrong tiles as long as it draws the right number of
+        them, and a tile's screen position identifies it — `(x - y, x + y)`
+        recovers both coordinates — so the comparison is exact. Both halves of
+        the fixture are asserted to be real first: tiles with art and tiles
+        without.
+      - **Height must not move a quad, and that cannot be checked pairwise.**
+        Two frames of the same map at different heights come back in different
+        *orders*, because height is half the sort key; comparing the lists index
+        by index fails on a correct renderer. Compared by position instead.
+        Folding `cell.z` into the projection — the bug the comment there warns
+        about — fails four of the new tests.
+
+      Left behind: `Map::from_blocks` builds ground only, so `statics::collect`
+      is still install-gated. It is the same shape one step on — the constructor
+      would take an `IntoIterator<Item = StaticItem>` and file each into its
+      block — and it was left out because nothing needs it yet and an unused
+      parameter is a worse thing to carry than a missing one.
 
 ## Order
 
@@ -353,4 +409,4 @@ here and there is no reason to reproduce a mixed working tree on purpose.
 | S1 — restore order in the types | done — `RestoredCharacters` is the signature |
 | S2 — craft tables fail the build | done — `build.rs` reads both halves |
 | S3 — teardown chain, end to end | done — and it found link 4 half-missing |
-| S4 — a `Map` without an install | not started |
+| S4 — a `Map` without an install | done — `Map::from_blocks`, and the ground tests left the gate |
