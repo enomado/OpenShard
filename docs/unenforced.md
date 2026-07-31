@@ -36,6 +36,7 @@ So the question this file asks about each item is not "is it correct today"
 | S3 | closing a refused connection tears down six things in order | ~~six doc comments, one per link~~ **`e2e/shard/tests/refused_teardown.rs`**, which walks all six | `cargo test`, on any machine — and it found link 4 half-missing |
 | S4 | the ground renderer's projection and visible set are correct | ~~`tests/frame.rs`, behind `OPENSHARD_CLIENT` **and** a GPU~~ **`ground.rs`'s own tests**, on a map built in memory | `cargo test`, on any machine |
 | S5 | `restore_items` runs before `restore_mobiles` | ~~a doc comment on each and the order of two lines in `boot::restore`~~ the signature: `restore_mobiles` takes what only `restore_items` returns | the compiler |
+| S6 | ~~the config's characters are seeded after the store's~~ *there was no such rule* — but a character keeps its slot across a boot | ~~nothing, on two of three backends~~ `Store::characters` promising ascending serial, and three tests | `cargo test` — and a `MemoryStore` shard stops reshuffling every boot |
 
 ## Decisions
 
@@ -415,7 +416,80 @@ follows.
       two writers wins, not about a value one produces for the other — so a token
       would be a marker here, and the honest fix is probably `enrol_character`
       refusing to overwrite a described row, which is an invariant in the roster
-      rather than in the boot order.
+      rather than in the boot order. *Taken, and the guess was right about the
+      shape and wrong about the fact: S6.*
+
+- [x] **S6. The third link was never a link.**
+      S5 left `seed_configured_characters` as prose: it runs after
+      `restore_characters` so that a name in both the store and the config keeps
+      the row that describes it, and only `boot::restore`'s doc says so. S5 also
+      guessed the honest fix — `enrol_character` refusing to overwrite a described
+      row, an invariant in the roster rather than in the boot order.
+
+      **It already refused.** `Roster::enrol` returns early on a name that is on
+      the list and does not touch the entry; `Roster::remember` enrols first and
+      then describes, so a record arriving after a config seeding lands on the
+      entry the seeding made. The order genuinely does not decide which
+      description survives, and `enrolling_twice_leaves_one_character` had been
+      asserting one of the two directions since S5 of `connection_state.md`.
+      Fourth stale backlog claim in four stages, second one stale towards
+      *already fixed*, and this time the claim was the *reason* for a call order
+      rather than a to-do — a rule the code does not have, cited as why a line
+      sits where it sits. Checking the entry against the code is now cheap enough
+      to be a habit; S2 said so and this is the one that proves it.
+
+      **What the order did decide was the name's spelling**, which nothing had
+      noticed. An entry keeps whatever `CharacterName` first enrolled it, and
+      `characters()` hands that to `0xA9`. An operator with `characters =
+      ["lord british"]` in the config renamed a character the player created as
+      `Lord British` — silently, on the character screen, for as long as the
+      config seeding happened to run first. Probed before it was fixed: the test
+      failed with `left: "lord british"`. `remember` now takes the spelling off
+      the record, which is the one the character was created under, so both
+      directions of the order leave the same list. The rule is now true by
+      construction rather than by call order, and the boot doc says the order
+      decides a slot.
+
+      **And the slot it decides was not stable either.** Ask what the ordering
+      is *for* and it is the account's character list: the roster enrols in the
+      order the store hands rows over, `0xA9` draws that list, and `0x83` picks by
+      position in it. `Store::characters` said "Every character" and nothing about
+      order, and the three backends each did something different — SQLite's
+      `serial INTEGER PRIMARY KEY` is the rowid alias so a bare select was already
+      ascending and the rule *looked* held; PostgreSQL returned heap order, where
+      an `UPDATE` writes the tuple at the end, so **one logout moved that
+      character to the bottom of its own list on the next boot**; and
+      `MemoryStore` returned `HashMap` iteration order, a fresh shuffle every
+      process, on the backend a shard with no database actually runs. The trait
+      now promises ascending serial — creation order, and the only key all three
+      have — and all three obey it.
+
+      Three things worth carrying forward:
+
+      - **The bug was in the backend nobody tests against.** SQLite is what the
+        tests open and it was the one that happened to be right, so every gate in
+        the repository was green over a rule two of three implementations broke.
+        The Postgres test that would have failed only runs for someone with
+        `OPENSHARD_POSTGRES` set, which is the honest limit of it; the
+        `MemoryStore` one runs everywhere and needed eight characters to make an
+        accidental pass one arrangement in `8!`.
+      - **The SQLite test is labelled green-before-the-fix.** It would have passed
+        without the `ORDER BY`, and it says so in its own comment rather than
+        standing beside the other two as if it were evidence. What it pins is a
+        schema change — a serial that stops being the rowid — which is exactly the
+        drift that would otherwise reach a shard first.
+      - **An order-independent rule beats a documented order.** S1 and S5 made an
+        ordering into a signature because the second function needed a value the
+        first produced. Here there was no value, and the answer was not a weaker
+        version of the same fix but the opposite one: make both orders agree, and
+        the rule stops needing to be stated at all. A stage that cannot be moved a
+        whole step up D1's ladder is sometimes a stage whose rule should not
+        exist.
+
+      Left behind: `Store::items`, `mobiles` and the rest are still unordered, and
+      correctly so — nothing downstream shows them in a list a player indexes.
+      That is the reason the promise is on `characters` alone, and it is written
+      there so the next backend does not sort everything out of caution.
 
 ## Order
 
@@ -448,6 +522,11 @@ which the renderer work does not touch. The one thing it does contend for is the
 place every stage here contends for — `tick/tests.rs` — and only by three lines
 in it.
 
+**S6 came out of S5's "left behind" the same way**, and it is the first stage
+here that ended by deleting a rule rather than enforcing one. It sits in
+`world/tick/roster.rs` and the three `persistence` backends, and it touched
+`tick/tests.rs` not at all.
+
 ## Deliberately not in this plan
 
 - **`world/src/tick/tests.rs` is 12,964 lines** — the largest file in the
@@ -475,3 +554,4 @@ in it.
 | S3 — teardown chain, end to end | done — and it found link 4 half-missing |
 | S4 — a `Map` without an install | done — `Map::from_blocks`, and the ground tests left the gate |
 | S5 — the items→mobiles link | done — `RestoredItems`, the same signature one link on |
+| S6 — the config seeding | done — the rule did not exist; the slot order it hid does |

@@ -1119,6 +1119,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn characters_come_back_in_slot_order() {
+        // Green before the `ORDER BY` that this pins, and said so rather than
+        // presented as evidence: `serial INTEGER PRIMARY KEY` is the rowid alias,
+        // so a bare select here was already ascending and this backend is the
+        // reason the rule looked held. What it protects is the schema — a serial
+        // that stops being the rowid, or a plan that scans an index instead —
+        // where the drift would otherwise be silent and only on somebody's shard.
+        let store = SqliteStore::open_in_memory().expect("open");
+        for serial in [3u32, 1, 2] {
+            store
+                .save(&snapshot(vec![character(serial, 100)], vec![]))
+                .await
+                .expect("save");
+        }
+        let serials = store
+            .characters()
+            .await
+            .expect("read")
+            .iter()
+            .map(|record| record.serial.raw())
+            .collect::<Vec<_>>();
+        assert_eq!(serials, [1, 2, 3]);
+    }
+
+    #[tokio::test]
     async fn a_removal_takes_the_character_out() {
         let store = SqliteStore::open_in_memory().expect("open");
         store
