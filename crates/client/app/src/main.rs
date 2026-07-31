@@ -741,6 +741,37 @@ impl App {
         true
     }
 
+    /// Step the zoom back in until the world texture fits this device.
+    ///
+    /// [`App::zoom`] refuses a step that would not fit, and that is not the
+    /// whole of it: the offscreen image is `viewport / zoom`, so *growing the
+    /// window* at a zoom that fitted asks for a texture that does not. Nobody
+    /// zooms in that path, so the check has to live where the size is used and
+    /// not only where the zoom changes — without this, dragging a window wider
+    /// at `1/2` is a validation error from `world_texture` rather than a camera
+    /// that stops zooming out.
+    fn fit_zoom_to_device(&mut self) {
+        while (self.camera.render_width() > self.max_texture
+            || self.camera.render_height() > self.max_texture)
+            && self.camera.zoom().scale_up() != self.camera.zoom()
+        {
+            let tighter = self.camera.zoom().scale_up();
+            if !self.zoom_limit_reported {
+                self.zoom_limit_reported = true;
+                eprintln!(
+                    "a {}x{} world texture is more than this GPU's {}: zooming in to {tighter}",
+                    self.camera.render_width(),
+                    self.camera.render_height(),
+                    self.max_texture,
+                );
+            }
+            // About the middle: this is not somebody's wheel, it is the device
+            // saying no, and there is no cursor that asked for it.
+            let (cx, cy) = (self.camera.width as i32 / 2, self.camera.height as i32 / 2);
+            self.camera.zoom_about(cx, cy, tighter);
+        }
+    }
+
     /// One notch of the wheel, about the cursor.
     ///
     /// Answers whether anything changed: at either end of the ladder nothing
@@ -1036,6 +1067,9 @@ impl App {
             self.camera.width = viewport.width.max(1);
             self.camera.height = viewport.height.max(1);
         }
+        // A viewport that grew may have taken the world texture past what the
+        // device allows, which no zoom step asked for.
+        self.fit_zoom_to_device();
 
         // The atlases are built for what was visible when they were built, so a
         // camera that has walked far enough will ask for a graphic they do not

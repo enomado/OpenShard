@@ -276,6 +276,12 @@ everyone else walks around it.
 
 ## M3a — the camera, and a shell to look through
 
+**Built.** `OPENSHARD_CLIENT=… cargo run -p openshard-client-app` opens on
+Britain, the wheel zooms about the cursor, a middle-drag pans, `Home` re-locks
+the camera to the body, and the three panels are on screen. What follows is the
+design as it was argued, with the places the code went another way marked — each
+of them found by writing it.
+
 This client is deliberately not a copy of the client. The camera zooms, pans
 freely, and can be unlocked from the body; the interface is egui windows and
 panels rather than a wall of gumps. Those are decided together rather than one
@@ -307,6 +313,14 @@ this crate where a raw pair of `i32`s currently serves two masters. Neither gets
 `From` or `Into`: the only thing allowed to move between them is a camera, and
 a conversion that needs a camera is a method, not a coercion.
 
+**Built, and the third space is real but has no type.** `ViewPixel` is a pixel of
+the *image the world is drawn into* — the offscreen target, which is the viewport
+only at zoom 1. A viewport pixel is therefore a third thing, and it exists: the
+cursor arrives in one. It gets no newtype because it never travels —
+`Camera::pick(x, y) -> WorldPixel` takes one and the zoom is undone inside that
+call, so there is nothing to carry and nothing to confuse. A type for a value
+that is born and consumed in one expression buys nothing.
+
 The camera is then four things and one rule:
 
 ```rust
@@ -331,6 +345,21 @@ and the rule is that the two conversions are exact inverses:
 - `unproject(WorldPixel, z) -> (u16, u16)` is the named inverse of `project`,
   which exists implicitly inside `visible_tiles` today and is written out here
   because picking needs it and because a formula with no name gets a second copy.
+
+**Two of those came out differently, and both because the zoom is in the blit.**
+
+`to_view` and `to_world` have *no zoom in them at all*: they are
+`w - eye + half(image)` and its exact integer inverse. The formula above —
+`(w - eye) * zoom + half viewport` — would scale the geometry as well as the
+blit, drawing the world twice as large into a target that is already scaled. It
+also cannot be an exact inverse at `2/3`, so the round-trip property the "done
+when" asks for would have had to become a tolerance. The zoom enters exactly
+twice: in the size of the image (`Camera::render_width`) and in `Camera::pick`.
+
+`unproject` returns `(i32, i32)`, for the same reason `TileBounds` holds `i32`:
+world pixel space is unbounded, a pixel north of the map's corner *is* a negative
+tile, and a `u16` would have to clamp — which invents a tile rather than
+reporting one. The caller knows its map; this knows arithmetic.
 
 `eye` is private with `Camera::look_at`/`Camera::eye` either side of it, because
 "where the camera looks" is the one piece of state two writers already fight
@@ -385,6 +414,19 @@ invertible pair buys: hold `to_world(cursor)` fixed across the change and solve
 for the new eye. One line, and it is the difference between a camera that feels
 placed and one that feels shoved.
 
+**Except while locked, where it is about the centre.** An eye pinned to the
+cursor would be moved by the zoom and moved straight back by the next
+`WorldView`, which is a fight rather than a camera. Locked zooms about the
+middle, which is where the body is; unlocked zooms about the cursor.
+
+**And the device can refuse.** The clamp is not only on the way down the ladder:
+the image is `viewport / zoom`, so *growing the window* at a zoom that fitted
+asks for a texture that does not, and nobody zoomed. So the fit is checked where
+the size is used — `App::fit_zoom_to_device`, once per frame — and it steps the
+zoom back in rather than letting `world_texture` fail validation. Checking it
+only in the wheel handler passes every test anybody would write and breaks when
+a window is dragged wider.
+
 ### The lock
 
 ```rust
@@ -415,6 +457,13 @@ and giving it one would put `client/net` inside `client/render`.
 puts both in the graph and a `Device` from one is not a `Device` for the other.
 Downgrading is not free either — `Instance::new`, `CurrentSurfaceTexture` and
 `queue.present` are all wgpu 30 shapes here.
+
+**The port turned out to be four lines.** `RequestAdapterOptions` gained
+`apply_limit_buckets`, `VertexState::buffers` became a slice of `Option`,
+`AdapterInfo` gained `limit_bucket` and its `transient_saves_memory` became an
+`Option<bool>`. `renderer.rs` — the part that actually draws — needed one of
+them. Each is marked `wgpu 30:` in the vendored source and listed in
+`vendor/README.md`, which is also where the exit condition lives.
 
 So: **vendor `egui-wgpu`, port it to wgpu 30, and send the port upstream.** The
 vendored copy lives in a top-level `vendor/` directory rather than in
@@ -450,6 +499,13 @@ panels shrink the world and floating windows sit over it. The camera's `width`
 and `height` therefore stop meaning "the window" — which is already how resize
 works, so it is one more caller of a path that exists.
 
+**In egui 0.35 that rect comes from the root `Ui`.** The frame is
+`Context::run_ui(input, |ui| …)`, panels are `egui::Panel::top(id).show(ui, …)`
+inside it, and what is left is `ui.available_rect_before_wrap()` — there is no
+`CentralPanel` to ask. Windows still take the `Context`. The consequence is the
+same and the call is not, which is worth writing down once rather than
+rediscovering at the next version bump.
+
 The wait loop grows one term: `about_to_wait` currently re-arms from the
 animation clock, and egui asks for repaints of its own, so the deadline becomes
 the earlier of the two.
@@ -479,23 +535,46 @@ including: `to_world(to_view(w)) == w` over the whole ladder,
 on screen is inside the bounds" property re-run at each zoom, and a frame test
 that the blit at zoom 1 is texel-for-texel what the world pass drew.
 
+**All of the tests are.** The blit test is the load-bearing one: with the world
+drawn offscreen, every other pixel-exact assertion in `tests/frame.rs` is about
+an image the screen never shows unless the blit is the identity at 1:1 — a
+half-texel of sampling error, a flipped vertical axis or a filter left on all
+read as "slightly soft" on a screenshot and are exact there. It needs no client
+files, because a scene made of two gradient diamonds has the edges a flat wash
+would not.
+
 ## Backlog, found while planning the camera and the shell
 
-- **`ScreenPoint` is two spaces under one name.** World pixels come out of
-  `project` and viewport pixels out of `to_screen`, and the type cannot tell
-  them apart, so adding a zoom to one of them would silently mis-scale the
-  other. Splitting it is the first step of this milestone rather than a cleanup
-  after it.
-- **Two writers move the camera.** `App::entered` pins it to the player and
-  `App::step` walks it offline, and neither knows about the other. With a lock
-  they have to agree, which is the argument for `eye` being private.
-- **`depth::base_for` takes a tile and a free camera has none.** It gets the
-  eye's unprojected tile, which is fine — `DEPTH_TILES` is 512 either side and a
-  zoomed-out viewport spans a few hundred — but the slack is now a function of
-  the zoom rather than a constant, and the test that pins it should say so.
-- **`the_bounds_do_not_grow_without_limit` asserts a constant.** 40,000 tiles is
-  the bound at zoom 1; zoomed out it is four times the area. The test needs a
-  zoom-aware statement rather than a bigger number, or it stops being a bound.
+- ~~**`ScreenPoint` is two spaces under one name.**~~ Split into `WorldPixel`
+  and `ViewPixel`, neither with `From` or `Into`.
+- ~~**Two writers move the camera.**~~ `eye` is private and `look_at` is the one
+  door; `Follow` decides which writer may open it.
+- **`depth::base_for` takes a tile and a free camera has none.** It now gets the
+  eye's unprojected tile, and it takes `i32` because that tile may be off the
+  map. `DEPTH_TILES` is 512 either side and a zoomed-out viewport spans a few
+  hundred, so the margin holds — but the slack is now a function of the zoom
+  rather than a constant, and the test that pins it still does not say so.
+- ~~**`the_bounds_do_not_grow_without_limit` asserts a constant.**~~ Now
+  `the_bounds_do_not_grow_faster_than_the_image`, re-run at every rung against a
+  bound derived from the image's size. So is
+  `every_tile_that_lands_on_screen_is_inside_the_bounds`, whose "did anything
+  land on screen" floor had to become the image's area in tiles for the same
+  reason: a constant there is either a failure at 4x or an assertion about
+  nothing at 1/2x.
+- **The world texture and its depth buffer are recreated on every zoom step and
+  every resize.** Correct and not free — two allocations of a few megabytes on a
+  wheel notch. Nothing has measured whether it matters; a pool keyed by size
+  would be the answer if it does.
+- **Nothing in `client/app` is tested.** `pan`, `zoom`, `fit_zoom_to_device` and
+  the follow lock are ordinary arithmetic with ordinary edge cases — the drag's
+  remainder in particular, which is the thing most likely to be quietly wrong —
+  and none of it can be reached from a test today because `App` owns a `Map`, a
+  window and a GPU. The camera half of it would move to `client/render` with no
+  loss; the lock would want an `App` that can be built without a device.
+- **`Camera::pick` exists and nothing picks.** Screen to *ground tile* is
+  `unproject(pick(cursor), z)` and is one line away; screen to *what you
+  clicked* is the depth ordering read backwards, which is M5. Worth not
+  designing around the easy half.
 - **Zoom-out makes the whole-atlas rebuild fire far more often.** The existing
   item — "the atlas is rebuilt whole whenever the camera walks off it" — is
   cheap because a screen holds a few dozen graphics. Four times the screen is
