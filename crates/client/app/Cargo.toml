@@ -20,6 +20,12 @@ openshard-client-net.workspace = true
 openshard-protocol.workspace = true
 openshard-uofiles.workspace = true
 pollster = "0.4"
+# The dev HUD. `egui-wgpu` is the vendored port to wgpu 30 — see vendor/README.md
+# — and `default-features = false` because its default pulls `wgpu/default`,
+# which is every backend and the opposite of the explicit lists below.
+egui = "0.35"
+egui-winit = { version = "0.35", default-features = false }
+egui-wgpu = { version = "0.35", default-features = false }
 # `rt` for the shard thread's own current-thread runtime, `macros` for the
 # select! that reads the socket and the keyboard at once, `sync` for the channel
 # between them. No `net`: the sockets belong to `client/net`.

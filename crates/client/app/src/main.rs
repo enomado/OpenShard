@@ -6,8 +6,17 @@
 //! OPENSHARD_CLIENT="/path/to/Ultima Online Classic" cargo run -p openshard-client-app
 //! ```
 //!
-//! Arrow keys walk a tile at a time, page up and down change the camera's
-//! height, and escape closes it.
+//! Arrow keys walk a tile at a time. The wheel zooms about the cursor, a
+//! middle-drag pans, page up and down pan vertically, `Home` puts the camera
+//! back on the body and locks it there, and escape closes the window.
+//!
+//! # The panels
+//!
+//! egui, over the world: a status strip, a camera window and a list of what the
+//! [`WorldView`] is holding. A *dev* HUD and not this client's interface —
+//! whether that is egui or the `0xB0` gump layer is M4's decision and
+//! `shell.rs` is careful not to take it. What the panels leave free is the
+//! world's viewport, so docking one shrinks the world rather than covering it.
 //!
 //! # With a shard, and without one
 //!
@@ -34,6 +43,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod link;
+mod shell;
 
 use openshard_client_net::session::{Pick, Plan};
 use openshard_client_net::view::WorldView;
@@ -221,6 +231,10 @@ fn main() -> ExitCode {
             hue: Hue::NONE,
         },
         others: Vec::new(),
+        view: None,
+        connection: String::from("offline"),
+        frame_time: std::time::Duration::ZERO,
+        shell: None,
         link,
         facet_checked: false,
         animation: AnimationClock::default(),
@@ -423,6 +437,19 @@ struct App {
     /// the view is the record of what arrived and this is a projection of it,
     /// so there is nothing here to keep in step by hand.
     others: Vec<Mobile>,
+    /// The last thing the server said, whole.
+    ///
+    /// Kept only for the HUD's world window, which lists what has been decoded
+    /// and is otherwise invisible — the ground items in particular, which
+    /// nothing draws yet. The renderer reads [`App::player`] and
+    /// [`App::others`], which are projections of this.
+    view: Option<Box<WorldView>>,
+    /// What the connection is doing, for the status strip.
+    connection: String,
+    /// How long the last frame took. Wall clock, like the animation.
+    frame_time: std::time::Duration,
+    /// The dev HUD, once there is a window to put it on.
+    shell: Option<shell::Shell>,
     /// The shard, if this run logged in to one.
     ///
     /// `None` is the offline viewer, and it is what the keyboard asks: a step
@@ -478,6 +505,21 @@ impl ApplicationHandler<link::Update> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // The UI sees everything first, and what it takes reaches neither the
+        // camera nor the walk keys — otherwise a drag inside a panel pans the
+        // world underneath it. egui never claims a close or a resize, so
+        // returning here cannot swallow one.
+        let consumed = match (self.shell.as_mut(), self.window.as_ref()) {
+            (Some(shell), Some(screen)) => shell.on_window_event(&screen.window, &event),
+            _ => false,
+        };
+        if consumed {
+            if let Some(window) = self.window.as_ref() {
+                window.window.request_redraw();
+            }
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -523,7 +565,13 @@ impl ApplicationHandler<link::Update> for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let (x, y) = (position.x as i32, position.y as i32);
+                // Relative to the *viewport* and not the window: the camera's
+                // own centre is the viewport's, so a cursor measured from the
+                // window would zoom about a point half a panel away.
+                let origin = self.shell.as_ref().map_or((0, 0), |shell| {
+                    (shell.viewport().x as i32, shell.viewport().y as i32)
+                });
+                let (x, y) = (position.x as i32 - origin.0, position.y as i32 - origin.1);
                 let (dx, dy) = (x - self.drag.cursor.0, y - self.drag.cursor.1);
                 self.drag.cursor = (x, y);
                 if self.drag.panning && self.pan(dx, dy) {
@@ -580,7 +628,13 @@ impl ApplicationHandler<link::Update> for App {
                 window.window.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
+        // Two reasons for a frame, so two terms: the animation clock, and
+        // whatever the UI is animating. The deadline is the earlier.
+        let deadline = match self.shell.as_ref().map(shell::Shell::repaint_after) {
+            Some(after) => self.next_tick.min(now + after),
+            None => self.next_tick,
+        };
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }
 
@@ -783,6 +837,44 @@ impl App {
         if self.follow == Follow::Body {
             self.camera.look_at(view.player.position);
         }
+        self.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
+        // Whole, for the HUD's world window: the two projections above are what
+        // the renderer wants, and the ground items are in neither of them.
+        self.view = Some(Box::new(view.clone()));
+    }
+
+    /// What the panels are allowed to know, gathered each frame.
+    fn hud(&self) -> shell::Hud {
+        let (mobiles, items) = match self.view.as_ref() {
+            Some(view) => {
+                let mut mobiles: Vec<_> = view
+                    .mobiles
+                    .iter()
+                    .map(|(serial, mobile)| (serial.raw(), mobile.body.0, mobile.position))
+                    .collect();
+                // Sorted, so a `HashMap`'s iteration order does not reshuffle
+                // the list under the reader's eyes every frame.
+                mobiles.sort_unstable_by_key(|(serial, _, _)| *serial);
+                let mut items: Vec<_> = view
+                    .items
+                    .iter()
+                    .map(|(serial, item)| (serial.raw(), item.graphic.0, item.position))
+                    .collect();
+                items.sort_unstable_by_key(|(serial, _, _)| *serial);
+                (mobiles, items)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        shell::Hud {
+            connection: self.connection.clone(),
+            serial: self.view.as_ref().map(|view| view.player.serial.raw()),
+            position: self.player.at,
+            frame_time: self.frame_time,
+            camera: self.camera,
+            locked: self.follow == Follow::Body,
+            mobiles,
+            items,
+        }
     }
 
     /// The player and everyone else, in one slice for the atlas and the pass.
@@ -866,6 +958,10 @@ impl App {
         let world = blit::world_texture(&device, self.camera.render_width(), self.camera.render_height());
         let depth = renderer::depth_texture(&device, self.camera.render_width(), self.camera.render_height());
         let blit = Blit::new(&device, format);
+        // The HUD, with the surface's own format: egui picks its fragment entry
+        // point from whether that format is sRGB, and this one deliberately is
+        // not.
+        self.shell = Some(shell::Shell::new(&device, format, &window));
 
         Ok(Screen {
             window,
@@ -913,6 +1009,34 @@ impl App {
     }
 
     fn draw(&mut self) {
+        let started = Instant::now();
+
+        // The UI first, because what it leaves free is the world's viewport and
+        // therefore the size of everything below. A frame that laid its panels
+        // out after drawing the world would size the world from the previous
+        // frame's panels — which is right until the first resize.
+        // Gathered before the shell is borrowed: the HUD is a projection of the
+        // whole app and the shell is part of it.
+        let hud = self.hud();
+        let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
+        let ui = match (self.shell.as_mut(), painting.as_ref()) {
+            (Some(shell), Some(window)) => {
+                let (request, output) = shell.run(window, &hud);
+                let viewport = shell.viewport();
+                Some((request, output, viewport))
+            }
+            _ => None,
+        };
+        if let Some((request, _, viewport)) = &ui {
+            if request.relock {
+                self.relock();
+            } else if request.unlock {
+                self.follow = Follow::Free;
+            }
+            self.camera.width = viewport.width.max(1);
+            self.camera.height = viewport.height.max(1);
+        }
+
         // The atlases are built for what was visible when they were built, so a
         // camera that has walked far enough will ask for a graphic they do not
         // hold. Rebuilding whenever that happens is the simplest correct answer,
@@ -1059,23 +1183,40 @@ impl App {
             .mobile_pass
             .render(&window.device, &window.queue, &mut encoder, target, &mobile_quads);
         // And the world onto the surface, which is where the zoom happens and
-        // the only place it does. The whole surface is the viewport for now;
-        // when there are panels, the rect they leave free is what goes here.
-        window.blit.render(
-            &window.device,
-            &mut encoder,
-            &view,
-            &world_view,
-            self.camera.zoom(),
+        // the only place it does. Into the rect the panels left free, so a
+        // docked panel shrinks the world rather than covering it.
+        let viewport = ui.as_ref().map_or(
             ViewportRect {
                 x: 0,
                 y: 0,
                 width: window.config.width,
                 height: window.config.height,
             },
+            |(_, _, viewport)| *viewport,
         );
+        window.blit.render(
+            &window.device,
+            &mut encoder,
+            &view,
+            &world_view,
+            self.camera.zoom(),
+            viewport,
+        );
+        // The UI over it, with no depth attachment: the world's depth buffer
+        // ordered the world, and this is drawn on the result.
+        if let (Some(shell), Some((_, output, _))) = (self.shell.as_mut(), ui) {
+            shell.paint(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                &view,
+                output,
+                [window.config.width, window.config.height],
+            );
+        }
         window.queue.submit([encoder.finish()]);
         // Presentation moved onto the queue in wgpu 30; the texture is consumed.
         window.queue.present(frame);
+        self.frame_time = started.elapsed();
     }
 }
