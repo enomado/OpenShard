@@ -51,6 +51,20 @@ pub enum AtlasError {
         /// How many would have fitted, at best.
         capacity: usize,
     },
+    /// A sprite is bigger than the whole atlas, so no packing could hold it.
+    ///
+    /// Separate from [`Full`](Self::Full) because it is not a capacity problem:
+    /// the tallest static a client ships is around 250 pixels, so a sprite over
+    /// 2048 means the art was decoded wrongly rather than that too much was
+    /// asked for.
+    Oversized {
+        /// Which graphic.
+        graphic: Graphic,
+        /// How wide it claims to be.
+        width: u16,
+        /// How tall.
+        height: u16,
+    },
     /// The art container refused a graphic.
     Art(ArtError),
     /// The texture maps refused a texture.
@@ -63,6 +77,14 @@ impl fmt::Display for AtlasError {
             Self::Full { wanted, capacity } => {
                 write!(f, "{wanted} pictures do not fit in an atlas of {capacity}")
             }
+            Self::Oversized {
+                graphic,
+                width,
+                height,
+            } => write!(
+                f,
+                "{graphic:?} is {width}x{height}, which does not fit an atlas {ATLAS_SIDE} on a side",
+            ),
             Self::Art(source) => write!(f, "reading land art: {source}"),
             Self::TexMaps(source) => write!(f, "reading a land texture: {source}"),
         }
@@ -72,7 +94,7 @@ impl fmt::Display for AtlasError {
 impl std::error::Error for AtlasError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Full { .. } => None,
+            Self::Full { .. } | Self::Oversized { .. } => None,
             Self::Art(source) => Some(source),
             Self::TexMaps(source) => Some(source),
         }
@@ -415,6 +437,216 @@ impl TexmapAtlas {
     }
 }
 
+/// One packed static sprite: where it is, and how big it is.
+///
+/// The size travels with the region because a static's quad *is* its sprite —
+/// unlike ground, whose quad is 44 square whatever the art holds — so whoever
+/// places the quad needs the pixels, and reading them back out of a normalised
+/// region is a multiplication that can disagree with the one that produced it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Sprite {
+    /// Where to sample it.
+    pub region: Region,
+    /// Its width in pixels.
+    pub width: u16,
+    /// Its height in pixels.
+    pub height: u16,
+}
+
+/// Static art, packed into one texture.
+///
+/// The third atlas and the first irregular one: a static sprite is any size from
+/// a 2x2 pebble to a 250-pixel tree, so neither the land grid nor the texture
+/// map's cells apply. Shelf packing is what fits — sort by height, fill a row,
+/// start the next one below the tallest sprite in it — which is not optimal and
+/// does not need to be: a screen of Britain holds a few hundred distinct
+/// graphics and the waste is a few percent of one 2048 texture.
+///
+/// Keyed by the *static* graphic, which is `tiledata`'s static index and the
+/// number a `map`'s static item carries. That is a different index space from
+/// the land graphic [`LandAtlas`] is keyed by, and the two overlap numerically —
+/// which is exactly why they are separate atlases rather than one with a prefix.
+pub struct StaticAtlas {
+    sprites: BTreeMap<Graphic, Sprite>,
+    /// `ATLAS_SIDE * ATLAS_SIDE` RGBA8 pixels, row-major.
+    pixels: Vec<u8>,
+}
+
+impl fmt::Debug for StaticAtlas {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaticAtlas")
+            .field("graphics", &self.sprites.len())
+            .field("side", &ATLAS_SIDE)
+            .finish()
+    }
+}
+
+impl StaticAtlas {
+    /// Pack every graphic in `wanted` that the client actually ships.
+    ///
+    /// A graphic with no art is skipped rather than refused, the same way the
+    /// land atlas skips an empty land slot: a map naming a static the client has
+    /// no picture for is the file's business.
+    pub fn build(art: &Art, wanted: impl IntoIterator<Item = Graphic>) -> Result<Self, AtlasError> {
+        let wanted: BTreeSet<Graphic> = wanted.into_iter().collect();
+        let mut images = Vec::with_capacity(wanted.len());
+        for graphic in wanted {
+            if let Some(image) = art.static_art(graphic)? {
+                images.push((graphic, image));
+            }
+        }
+        Self::pack(images)
+    }
+
+    /// Pack sprites somebody else decoded, tallest first.
+    ///
+    /// Tallest first is what makes a shelf worth using at all: rows started by a
+    /// short sprite waste the whole difference under every tall one that lands
+    /// beside it. Deterministic given the same input — same order in, same
+    /// pixels out — which the frame tests depend on.
+    pub fn pack(images: impl IntoIterator<Item = (Graphic, Image)>) -> Result<Self, AtlasError> {
+        // Deduplicated and ordered by graphic first, so the sort below is a
+        // total order rather than "whichever the caller happened to yield
+        // first" — `sort_by_key` is stable and the tie-break is the graphic.
+        let images: BTreeMap<Graphic, Image> = images.into_iter().collect();
+        let wanted = images.len();
+        let mut order: Vec<(Graphic, Image)> = images.into_iter().collect();
+        order.sort_by_key(|(_, image)| std::cmp::Reverse(image.height()));
+
+        let side = ATLAS_SIDE as usize;
+        let mut pixels = vec![0u8; side * side * 4];
+        let mut sprites = BTreeMap::new();
+        let mut shelf = Shelf::default();
+
+        for (graphic, image) in order {
+            let (width, height) = (image.width(), image.height());
+            // A sprite wider or taller than the whole atlas cannot be packed at
+            // any offset. The client ships nothing near it — the tallest art is
+            // around 250 pixels — so this is a corrupt-file case rather than a
+            // capacity one, and it says which graphic.
+            if u32::from(width) > ATLAS_SIDE || u32::from(height) > ATLAS_SIDE {
+                return Err(AtlasError::Oversized {
+                    graphic,
+                    width,
+                    height,
+                });
+            }
+            let Some((origin_x, origin_y)) = shelf.take(u32::from(width), u32::from(height)) else {
+                return Err(AtlasError::Full {
+                    wanted,
+                    capacity: sprites.len(),
+                });
+            };
+
+            // Every pixel, transparent ones included: a static sprite genuinely
+            // has transparency — it is a picture with a shape, not a diamond
+            // with a known one — and the alpha channel is what the fragment
+            // shader discards on.
+            //
+            // Zero *is* absent here, which is the opposite of the rule for land
+            // art and is the client's own: `ArtLoader.ReadStaticArt` writes a
+            // run's pixel only `if (val != 0)`, leaving the rest of the buffer
+            // at zero alpha. So a zero inside a run and a column no run covered
+            // are the same thing to the client, and `Color16::TRANSPARENT` for
+            // both loses nothing.
+            for y in 0..height {
+                for x in 0..width {
+                    let color = image.pixel(x, y).expect("inside the image");
+                    let at =
+                        ((origin_y + u32::from(y)) as usize * side + (origin_x + u32::from(x)) as usize) * 4;
+                    let (r, g, b) = color.rgb8();
+                    pixels[at] = r;
+                    pixels[at + 1] = g;
+                    pixels[at + 2] = b;
+                    pixels[at + 3] = if color.is_transparent() { 0 } else { u8::MAX };
+                }
+            }
+
+            let atlas = ATLAS_SIDE as f32;
+            sprites.insert(
+                graphic,
+                Sprite {
+                    region: Region {
+                        u: origin_x as f32 / atlas,
+                        v: origin_y as f32 / atlas,
+                        du: f32::from(width) / atlas,
+                        dv: f32::from(height) / atlas,
+                    },
+                    width,
+                    height,
+                },
+            );
+        }
+
+        Ok(Self { sprites, pixels })
+    }
+
+    /// The atlas texture's side in pixels. Square, and the same as the others'.
+    pub const fn side() -> u32 {
+        ATLAS_SIDE
+    }
+
+    /// Its pixels, RGBA8 and row-major, ready for `write_texture`.
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// How many graphics landed in it.
+    pub fn len(&self) -> usize {
+        self.sprites.len()
+    }
+
+    /// Whether nothing did.
+    pub fn is_empty(&self) -> bool {
+        self.sprites.is_empty()
+    }
+
+    /// Where a graphic sits and how big it is, or `None` if it is not packed.
+    pub fn sprite(&self, graphic: Graphic) -> Option<Sprite> {
+        self.sprites.get(&graphic).copied()
+    }
+}
+
+/// A shelf packer: rows of sprites, each row as tall as its tallest member.
+///
+/// Deliberately not a general bin packer. Fed tallest-first — which
+/// [`StaticAtlas::pack`] guarantees — a shelf's waste is bounded by the height
+/// difference *within* a row, and sorted input keeps that small. A better
+/// packer would buy a few percent of one texture and cost a data structure
+/// nobody can check by hand.
+#[derive(Default)]
+struct Shelf {
+    /// Where the current row starts, from the top of the atlas.
+    top: u32,
+    /// How far along the current row is filled.
+    used: u32,
+    /// How tall the current row is, which the next one starts below.
+    height: u32,
+}
+
+impl Shelf {
+    /// Take a `width` x `height` box, or `None` when the atlas is full.
+    fn take(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+        if self.used + width > ATLAS_SIDE {
+            // The row is full: drop to the next one. Its height is this row's,
+            // which is the tallest sprite that landed in it.
+            self.top += self.height;
+            self.used = 0;
+            self.height = 0;
+        }
+        if self.top + height > ATLAS_SIDE {
+            return None;
+        }
+        let at = (self.used, self.top);
+        self.used += width;
+        // Tallest-first means this is only ever set by the row's first sprite,
+        // but a caller that fed us unsorted input would still get a correct
+        // atlas rather than an overlapping one.
+        self.height = self.height.max(height);
+        Some(at)
+    }
+}
+
 /// Which cells of the texture atlas are spoken for.
 ///
 /// A first-fit scan rather than a running index, because the two sizes cannot
@@ -576,6 +808,108 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A rectangle of one colour, for the shelf packer's tests.
+    fn sprite(width: u16, height: u16) -> Image {
+        Image::new(
+            width,
+            height,
+            vec![Color16(0x1F); usize::from(width) * usize::from(height)],
+        )
+    }
+
+    /// The property the shelf packer exists to give: every sprite gets its own
+    /// pixels. Overlap here is two statics sharing a picture, which reads as
+    /// corrupt art rather than as a packing bug.
+    #[test]
+    fn packed_sprites_never_overlap_and_never_leave_the_atlas() {
+        // Sizes that do not divide the atlas evenly, so a row's leftover is
+        // never zero and the wrap to the next shelf is exercised.
+        let images: Vec<(Graphic, Image)> = (0..300u16)
+            .map(|i| (Graphic(i), sprite(30 + i % 7, 20 + i % 11)))
+            .collect();
+        let atlas = StaticAtlas::pack(images.clone()).expect("300 small sprites fit");
+
+        let side = ATLAS_SIDE as usize;
+        let mut claimed = vec![None; side * side];
+        for (graphic, image) in images {
+            let packed = atlas.sprite(graphic).expect("packed");
+            assert_eq!((packed.width, packed.height), (image.width(), image.height()));
+            let x = (packed.region.u * ATLAS_SIDE as f32) as usize;
+            let y = (packed.region.v * ATLAS_SIDE as f32) as usize;
+            assert!(
+                x + usize::from(packed.width) <= side,
+                "{graphic:?} runs off the right"
+            );
+            assert!(
+                y + usize::from(packed.height) <= side,
+                "{graphic:?} runs off the bottom"
+            );
+            for row in y..y + usize::from(packed.height) {
+                for column in x..x + usize::from(packed.width) {
+                    let cell = &mut claimed[row * side + column];
+                    assert_eq!(*cell, None, "{graphic:?} overlaps {cell:?}");
+                    *cell = Some(graphic);
+                }
+            }
+        }
+    }
+
+    /// A static's shape is its alpha, and the alpha comes from the file's zero
+    /// pixels. The land atlas does the opposite — there a zero is black — so
+    /// this is the one place the two rules meet, and getting it backwards
+    /// either punches holes through solid art or draws every sprite's bounding
+    /// box as a black rectangle.
+    #[test]
+    fn a_zero_pixel_is_absent_and_everything_else_is_opaque() {
+        let mut pixels = vec![Color16(0x7C00); 4];
+        pixels[1] = Color16::TRANSPARENT;
+        let atlas = StaticAtlas::pack([(Graphic(1), Image::new(2, 2, pixels))]).expect("fits");
+        let packed = atlas.sprite(Graphic(1)).expect("packed");
+        let x = (packed.region.u * ATLAS_SIDE as f32) as usize;
+        let y = (packed.region.v * ATLAS_SIDE as f32) as usize;
+        let alpha = |column: usize, row: usize| {
+            atlas.pixels()[((y + row) * ATLAS_SIDE as usize + x + column) * 4 + 3]
+        };
+        assert_eq!(alpha(0, 0), u8::MAX);
+        assert_eq!(alpha(1, 0), 0, "a zero pixel is the sprite's shape, not a colour");
+        assert_eq!(alpha(0, 1), u8::MAX);
+    }
+
+    /// Tallest first, or a shelf wastes the difference under every tall sprite
+    /// that lands beside a short one. Stated as "the tall one is on the first
+    /// row", which is the observable consequence.
+    #[test]
+    fn the_tallest_sprite_starts_the_first_shelf() {
+        let atlas = StaticAtlas::pack([
+            (Graphic(1), sprite(40, 20)),
+            (Graphic(2), sprite(40, 200)),
+            (Graphic(3), sprite(40, 60)),
+        ])
+        .expect("three sprites fit");
+        assert_eq!(atlas.sprite(Graphic(2)).expect("packed").region.v, 0.0);
+        // And the shorter two share that row rather than starting their own.
+        assert_eq!(atlas.sprite(Graphic(3)).expect("packed").region.v, 0.0);
+        assert_eq!(atlas.sprite(Graphic(1)).expect("packed").region.v, 0.0);
+    }
+
+    /// A sprite bigger than the atlas is its own error, because it is not a
+    /// capacity problem: no packing of any kind could place it.
+    #[test]
+    fn a_sprite_larger_than_the_atlas_says_which_one_it_was() {
+        let huge = Image::new(
+            1,
+            ATLAS_SIDE as u16 + 1,
+            vec![Color16(1); ATLAS_SIDE as usize + 1],
+        );
+        assert!(matches!(
+            StaticAtlas::pack([(Graphic(7), huge)]),
+            Err(AtlasError::Oversized {
+                graphic: Graphic(7),
+                ..
+            })
+        ));
     }
 
     /// More textures than cells is an error rather than a silent drop: a tile

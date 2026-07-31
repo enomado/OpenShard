@@ -78,6 +78,36 @@ pub struct TileBounds {
     pub max_y: i32,
 }
 
+impl TileBounds {
+    /// The same rectangle with everything outside a map of this size removed.
+    ///
+    /// `None` when nothing is left, which happens for a camera looking off the
+    /// edge of a small facet — not an error, just an empty frame.
+    ///
+    /// Shared by the ground and the statics deliberately: they walk the same
+    /// cells, and two copies of "clamp the bounds to the map" is two chances to
+    /// draw a static on a tile whose ground was dropped.
+    pub fn clamp_to(
+        self,
+        width: u32,
+        height: u32,
+    ) -> Option<(std::ops::RangeInclusive<u16>, std::ops::RangeInclusive<u16>)> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let min_x = self.min_x.max(0) as u32;
+        let min_y = self.min_y.max(0) as u32;
+        let max_x = (self.max_x.max(0) as u32).min(width - 1);
+        let max_y = (self.max_y.max(0) as u32).min(height - 1);
+        if min_x > max_x || min_y > max_y {
+            return None;
+        }
+        // Every bound fits a `u16` because it was clamped to the map's size, and
+        // no facet is wider than 7,168 tiles.
+        Some((min_x as u16..=max_x as u16, min_y as u16..=max_y as u16))
+    }
+}
+
 /// What the view is looking at, and how big the window is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Camera {

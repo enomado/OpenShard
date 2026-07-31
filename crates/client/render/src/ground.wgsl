@@ -74,6 +74,10 @@ fn vs_main(
     // Per instance: its place in the texture atlas, the same way. A size of
     // zero means the tile has no texture map.
     @location(4) texmap: vec4<f32>,
+    // Per instance: where this tile sorts against everything else in the frame,
+    // statics included. Computed on the CPU — see `crate::depth` — because it
+    // is one ordering shared by two passes and neither may derive its own.
+    @location(5) depth: f32,
 ) -> VertexOut {
     let half = viewport.tile * 0.5;
     let is_flat = f32(all(heights == vec4<f32>(heights.x)));
@@ -114,7 +118,10 @@ fn vs_main(
     );
 
     var out: VertexOut;
-    out.clip = vec4<f32>(ndc, 0.0, 1.0);
+    // The whole tile shares one depth: a quad is one thing standing at one
+    // place in the order, and a per-vertex depth would let a slope's own
+    // corners sort against each other.
+    out.clip = vec4<f32>(ndc, depth, 1.0);
     out.uv = region.xy + local_uv * region.zw;
     out.is_flat = is_flat;
     // Corner to corner: the unit quad's own coordinates *are* the texture's.

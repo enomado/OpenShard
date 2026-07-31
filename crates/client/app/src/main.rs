@@ -17,10 +17,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use openshard_client_render::atlas::{LandAtlas, TexmapAtlas};
+use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
-use openshard_client_render::ground;
-use openshard_client_render::renderer::{GroundRenderer, Target};
+use openshard_client_render::renderer::{self, GroundRenderer, StaticRenderer, Target};
+use openshard_client_render::{ground, statics};
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
@@ -145,6 +145,17 @@ impl fmt::Display for StartupError {
     }
 }
 
+/// The three atlases one camera needs, packed together.
+///
+/// One value rather than a tuple because they are rebuilt together and used
+/// together: a frame drawn from a land atlas of one camera and a static atlas
+/// of another is a frame with things standing on ground that is not there.
+struct Atlases {
+    land: LandAtlas,
+    texmaps: TexmapAtlas,
+    statics: StaticAtlas,
+}
+
 /// Everything a window needs, built once the window exists.
 struct Screen {
     window: Arc<Window>,
@@ -153,6 +164,12 @@ struct Screen {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     renderer: GroundRenderer,
+    /// The pass that draws what stands on the ground.
+    statics: StaticRenderer,
+    /// The depth buffer the two passes share, which is what decides whether a
+    /// hillside covers the wall behind it. Recreated on resize: it has to be
+    /// exactly the size of the frame it is tested against.
+    depth: wgpu::Texture,
     /// The graphics currently packed. Rebuilt when the camera moves somewhere
     /// the atlas does not cover.
     atlas: LandAtlas,
@@ -160,6 +177,8 @@ struct Screen {
     /// always built from the same set of graphics, so one of them missing a
     /// tile is the other one's business too.
     texmap_atlas: TexmapAtlas,
+    /// The static sprites currently packed, rebuilt on the same trigger.
+    static_atlas: StaticAtlas,
 }
 
 struct App {
@@ -193,6 +212,10 @@ impl ApplicationHandler for App {
                     window.config.width = size.width.max(1);
                     window.config.height = size.height.max(1);
                     window.surface.configure(&window.device, &window.config);
+                    // The depth buffer is tested pixel for pixel against the
+                    // frame, so it is the frame's size or it is nothing.
+                    window.depth =
+                        renderer::depth_texture(&window.device, window.config.width, window.config.height);
                     self.camera.width = window.config.width;
                     self.camera.height = window.config.height;
                     window.window.request_redraw();
@@ -301,8 +324,10 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let (atlas, texmap_atlas) = self.build_atlases()?;
-        let renderer = GroundRenderer::new(&device, &queue, format, &atlas, &texmap_atlas);
+        let atlases = self.build_atlases()?;
+        let renderer = GroundRenderer::new(&device, &queue, format, &atlases.land, &atlases.texmaps);
+        let statics = StaticRenderer::new(&device, &queue, format, &atlases.statics);
+        let depth = renderer::depth_texture(&device, config.width, config.height);
 
         Ok(Screen {
             window,
@@ -311,22 +336,33 @@ impl App {
             queue,
             config,
             renderer,
-            atlas,
-            texmap_atlas,
+            statics,
+            depth,
+            atlas: atlases.land,
+            texmap_atlas: atlases.texmaps,
+            static_atlas: atlases.statics,
         })
     }
 
-    /// Pack what the camera can see, both ways: the flat art and the textures.
+    /// Pack what the camera can see: the flat land art, the textures its slopes
+    /// are stretched over, and the sprites of everything standing on it.
     ///
-    /// One set of graphics feeds both, which is what lets a quad ask them the
-    /// same question — and what makes "the atlas does not cover this" one
-    /// decision rather than two that could disagree.
-    fn build_atlases(&self) -> Result<(LandAtlas, TexmapAtlas), StartupError> {
+    /// One set of land graphics feeds the first two, which is what lets a quad
+    /// ask them the same question — and what makes "the atlas does not cover
+    /// this" one decision rather than two that could disagree. The statics are
+    /// a different index space and therefore a set of their own.
+    fn build_atlases(&self) -> Result<Atlases, StartupError> {
         let wanted = ground::visible_graphics(&self.map, &self.camera);
-        let atlas = LandAtlas::build(&self.art, wanted.iter().copied()).map_err(StartupError::Atlas)?;
+        let land = LandAtlas::build(&self.art, wanted.iter().copied()).map_err(StartupError::Atlas)?;
         let texmaps =
             TexmapAtlas::build(&self.texmaps, &self.tiledata, wanted).map_err(StartupError::Atlas)?;
-        Ok((atlas, texmaps))
+        let statics = StaticAtlas::build(&self.art, statics::visible_graphics(&self.map, &self.camera))
+            .map_err(StartupError::Atlas)?;
+        Ok(Atlases {
+            land,
+            texmaps,
+            statics,
+        })
     }
 
     fn draw(&mut self) {
@@ -339,10 +375,14 @@ impl App {
         // Repacked before the window is borrowed, and not inside the borrow: the
         // pack reads the whole of `self`, and the window is part of it.
         let wanted = ground::visible_graphics(&self.map, &self.camera);
+        let wanted_statics = statics::visible_graphics(&self.map, &self.camera);
         let stale = self.window.as_ref().is_some_and(|window| {
             wanted
                 .iter()
                 .any(|graphic| window.atlas.region(*graphic).is_none())
+                || wanted_statics
+                    .iter()
+                    .any(|graphic| window.static_atlas.sprite(*graphic).is_none())
         });
         let repacked = stale.then(|| self.build_atlases());
 
@@ -350,18 +390,25 @@ impl App {
             return;
         };
         match repacked {
-            Some(Ok((atlas, texmap_atlas))) => {
+            Some(Ok(atlases)) => {
                 window.renderer = GroundRenderer::new(
                     &window.device,
                     &window.queue,
                     window.config.format,
-                    &atlas,
-                    &texmap_atlas,
+                    &atlases.land,
+                    &atlases.texmaps,
                 );
-                window.atlas = atlas;
-                window.texmap_atlas = texmap_atlas;
+                window.statics = StaticRenderer::new(
+                    &window.device,
+                    &window.queue,
+                    window.config.format,
+                    &atlases.statics,
+                );
+                window.atlas = atlases.land;
+                window.texmap_atlas = atlases.texmaps;
+                window.static_atlas = atlases.statics;
             }
-            Some(Err(error)) => eprintln!("repacking land art: {error}"),
+            Some(Err(error)) => eprintln!("repacking art: {error}"),
             None => {}
         }
 
@@ -393,20 +440,26 @@ impl App {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let quads = ground::collect(&self.map, &self.camera, &window.atlas, &window.texmap_atlas);
+        let static_quads = statics::collect(&self.map, &self.camera, &self.tiledata, &window.static_atlas);
+        let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = Target {
+            view: &view,
+            depth: &depth_view,
+            width: window.config.width,
+            height: window.config.height,
+        };
         let mut encoder = window
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        window.renderer.render(
-            &window.device,
-            &window.queue,
-            &mut encoder,
-            Target {
-                view: &view,
-                width: window.config.width,
-                height: window.config.height,
-            },
-            &quads,
-        );
+        // Ground first, because it clears; statics after, into what it left.
+        // Which covers which is decided by the depth they share, not by this
+        // order — the order only decides who clears.
+        window
+            .renderer
+            .render(&window.device, &window.queue, &mut encoder, target, &quads);
+        window
+            .statics
+            .render(&window.device, &window.queue, &mut encoder, target, &static_quads);
         window.queue.submit([encoder.finish()]);
         // Presentation moved onto the queue in wgpu 30; the texture is consumed.
         window.queue.present(frame);

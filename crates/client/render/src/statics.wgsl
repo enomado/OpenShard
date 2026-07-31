@@ -1,0 +1,78 @@
+// The statics pass: one sprite-sized quad per static, drawn at its own scale.
+//
+// Simpler than the ground in every way that matters. A static has one picture,
+// one position and one height, so there is no shape to choose and nothing to
+// stretch: the quad is the sprite's own rectangle in viewport pixels, and a
+// texel is a pixel. What it does have, and ground does not, is transparency —
+// a sprite is a picture with a shape rather than a diamond with a known one, so
+// the fragment shader discards on alpha.
+//
+// Inside WebGL2's ceiling, like its neighbour: vertex-buffer instancing, one
+// uniform block, one sampled texture.
+//
+// The depth comes in per instance and is written whole. It is not derived here
+// because it is one ordering shared with the ground pass, and a second copy of
+// the formula is a second chance to disagree with it — see `crate::depth`.
+
+struct Viewport {
+    // Pixels across, and down.
+    size: vec2<f32>,
+    // Uniform blocks are sized in multiples of 16 bytes.
+    _padding: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> viewport: Viewport;
+@group(0) @binding(1) var atlas_texture: texture_2d<f32>;
+@group(0) @binding(2) var atlas_sampler: sampler;
+
+struct VertexOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(
+    // The unit quad: (0,0) top-left to (1,1) bottom-right, in screen axes this
+    // time rather than the map's.
+    @location(0) corner: vec2<f32>,
+    // Per instance: the sprite's top-left corner, in viewport pixels.
+    @location(1) origin: vec2<f32>,
+    // Per instance: its size in pixels.
+    @location(2) size: vec2<f32>,
+    // Per instance: where it sits in the atlas, as (u, v, du, dv).
+    @location(3) region: vec4<f32>,
+    // Per instance: where it sorts. Smaller is nearer.
+    @location(4) depth: f32,
+) -> VertexOut {
+    let pixel = origin + corner * size;
+
+    // Pixels to clip space, the same way the ground does it: `y` flips because
+    // the viewport counts down from the top and clip space counts up from the
+    // middle.
+    let ndc = vec2<f32>(
+        pixel.x / viewport.size.x * 2.0 - 1.0,
+        1.0 - pixel.y / viewport.size.y * 2.0,
+    );
+
+    var out: VertexOut;
+    out.clip = vec4<f32>(ndc, depth, 1.0);
+    // The quad is the sprite's own size in pixels, so the corner coordinates
+    // *are* the region's edges and a fragment's centre lands on a texel's
+    // centre. No half-texel inset: unlike a stretched land texture, nothing
+    // here samples the far edge of the region at a vertex.
+    out.uv = region.xy + corner * region.zw;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let color = textureSample(atlas_texture, atlas_sampler, in.uv);
+
+    // The sprite's shape. Discarding rather than blending is what keeps the
+    // pass independent of draw order — a discarded fragment writes no depth
+    // either, so the ground behind a tree's gaps stays visible.
+    if color.a < 0.5 {
+        discard;
+    }
+    return vec4<f32>(color.rgb, 1.0);
+}

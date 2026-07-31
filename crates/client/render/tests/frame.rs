@@ -12,10 +12,11 @@
 
 use std::path::PathBuf;
 
-use openshard_client_render::atlas::{LandAtlas, TexmapAtlas};
+use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
 use openshard_client_render::ground::{self, GroundQuad};
-use openshard_client_render::renderer::{GroundRenderer, Target};
+use openshard_client_render::renderer::{self, GroundRenderer, StaticRenderer, Target};
+use openshard_client_render::statics::{self, StaticQuad};
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
@@ -75,17 +76,36 @@ impl Frame {
     }
 }
 
-/// Draw `quads` into a `width` x `height` texture and read the result back.
+/// Draw ground into a `width` x `height` texture and read the result back.
 ///
-/// `width * 4` must be a multiple of 256: that is the row alignment a buffer
-/// copy demands, and padding it here would only hide the constraint from the
-/// callers, which choose their own sizes.
+/// The common case, and the one every test written before statics existed used.
 fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     atlas: &LandAtlas,
     texmaps: &TexmapAtlas,
     quads: &[GroundQuad],
+    width: u32,
+    height: u32,
+) -> Frame {
+    let empty = StaticAtlas::pack([]).expect("nothing always fits");
+    render_both(device, queue, atlas, texmaps, quads, &empty, &[], width, height)
+}
+
+/// Draw both passes into a `width` x `height` texture and read the result back.
+///
+/// `width * 4` must be a multiple of 256: that is the row alignment a buffer
+/// copy demands, and padding it here would only hide the constraint from the
+/// callers, which choose their own sizes.
+#[allow(clippy::too_many_arguments)]
+fn render_both(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    quads: &[GroundQuad],
+    static_atlas: &StaticAtlas,
+    static_quads: &[StaticQuad],
     width: u32,
     height: u32,
 ) -> Frame {
@@ -115,14 +135,23 @@ fn render(
         mapped_at_creation: false,
     });
 
+    // The depth buffer both passes share. Created here rather than inside the
+    // renderer because a test that could not hand the two passes the same one
+    // would not be testing the thing that makes them agree.
+    let depth = renderer::depth_texture(device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+
     let mut renderer = GroundRenderer::new(device, queue, format, atlas, texmaps);
+    let mut statics = StaticRenderer::new(device, queue, format, static_atlas);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target {
         view: &view,
+        depth: &depth_view,
         width,
         height,
     };
     renderer.render(device, queue, &mut encoder, target_view, quads);
+    statics.render(device, queue, &mut encoder, target_view, static_quads);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -196,6 +225,9 @@ fn a_lone_sprite_matches_the_art_it_came_from() {
         corners: [0.0; 4],
         region,
         texmap: None,
+        // Anything inside clip space: this frame holds one quad, so there is
+        // nothing for the depth test to decide.
+        depth: 0.5,
     }];
     let side = u32::from(LAND_TILE_SIZE);
     let empty = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -411,6 +443,7 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
             corners: [0.0; 4],
             region,
             texmap: Some(texmap),
+            depth: 0.5,
         },
         GroundQuad {
             // Its own corner raised and its neighbours level: a hillock, and
@@ -421,6 +454,7 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
             corners: [4.0, 0.0, 0.0, 0.0],
             region,
             texmap: Some(texmap),
+            depth: 0.5,
         },
     ];
     let frame = render(&device, &queue, &atlas, &texmaps, &quads, 256, 256);
@@ -457,6 +491,150 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
         textured_pixels > 1012,
         "the sloped tile covered only {textured_pixels} pixels; it should be a stretched diamond",
     );
+}
+
+/// A static sprite is drawn at its own size, in its own place, and its
+/// transparent pixels are not drawn at all.
+///
+/// The statics counterpart of the lone-sprite test, and it needs no client: the
+/// picture is made here, so the frame can be compared against it exactly. What
+/// it pins is the whole chain — the shelf packer put the sprite somewhere, the
+/// instance carried a rectangle and a region, and the shader sampled one texel
+/// per pixel. A sprite drawn at the wrong scale still looks like a sprite.
+#[test]
+fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    let (width, height) = (17u16, 23u16);
+
+    // A picture with a hole in it: the middle column is absent, which is what
+    // a sprite's shape is made of and what the pass has to discard rather than
+    // draw black.
+    let mut pixels = vec![Color16(0b0_00000_11111_00000); usize::from(width) * usize::from(height)];
+    for row in 0..usize::from(height) {
+        pixels[row * usize::from(width) + 8] = Color16::TRANSPARENT;
+    }
+    let art = Image::new(width, height, pixels.clone());
+    let atlas = StaticAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
+    let sprite = atlas.sprite(GRAPHIC).expect("packed");
+
+    let quads = [StaticQuad {
+        x: 10.0,
+        y: 20.0,
+        width: f32::from(sprite.width),
+        height: f32::from(sprite.height),
+        region: sprite.region,
+        depth: 0.5,
+    }];
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let frame = render_both(&device, &queue, &land, &texmaps, &[], &atlas, &quads, 128, 128);
+
+    let (green_r, green_g, green_b) = Color16(0b0_00000_11111_00000).rgb8();
+    let mut drawn = 0;
+    for y in 0..128u32 {
+        for x in 0..128u32 {
+            let got = frame.pixel(x, y);
+            let inside =
+                (10..10 + u32::from(width)).contains(&x) && (20..20 + u32::from(height)).contains(&y);
+            let transparent = inside && x - 10 == 8;
+            if !inside || transparent {
+                assert_eq!(got[3], 0, "({x}, {y}) should not have been drawn");
+                continue;
+            }
+            assert_eq!(
+                got,
+                [green_r, green_g, green_b, u8::MAX],
+                "({x}, {y}) is not the sprite's own pixel",
+            );
+            drawn += 1;
+        }
+    }
+    // Every pixel of the rectangle except the absent column, and nothing else:
+    // a sprite drawn at the wrong scale fails this even when every pixel it did
+    // draw was the right colour.
+    assert_eq!(drawn, usize::from(width - 1) * usize::from(height));
+}
+
+/// A hill in front hides a wall behind it.
+///
+/// The assertion the depth buffer exists for, and the one no pass order can
+/// satisfy: all the ground is drawn before any static, so without a shared
+/// depth every static would be in front of every tile. Both quads are built
+/// here rather than read from a map, because what is being checked is the
+/// *ordering*, and a real hillside would decide the geometry as well.
+#[test]
+fn ground_in_front_hides_a_static_behind_it() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    let green = Color16(0b0_00000_11111_00000);
+    let red = Color16(0b0_11111_00000_00000);
+
+    let side = usize::from(LAND_TILE_SIZE);
+    let land = LandAtlas::pack([(
+        GRAPHIC,
+        Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![green; side * side]),
+    )])
+    .expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([(GRAPHIC, Image::new(60, 60, vec![red; 60 * 60]))]).expect("fits");
+    let region = land.region(GRAPHIC).expect("packed");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+
+    // Same pixels on screen, and the ground is nearer. A wall standing behind
+    // a hill: the sprite's rectangle covers the tile's diamond entirely, so
+    // every pixel of the diamond is a pixel both quads want.
+    let ground = [GroundQuad {
+        x: 64.0,
+        y: 64.0,
+        corners: [0.0; 4],
+        region,
+        texmap: None,
+        depth: 0.4,
+    }];
+    let wall = [StaticQuad {
+        x: 64.0 - 30.0,
+        y: 64.0 - 30.0,
+        width: f32::from(sprite.width),
+        height: f32::from(sprite.height),
+        region: sprite.region,
+        depth: 0.6,
+    }];
+    let frame = render_both(
+        &device, &queue, &land, &texmaps, &ground, &statics, &wall, 128, 128,
+    );
+
+    let (green_r, green_g, green_b) = green.rgb8();
+    let mut ground_pixels = 0;
+    for y in 0..128u32 {
+        for x in 0..128u32 {
+            if frame.pixel(x, y) == [green_r, green_g, green_b, u8::MAX] {
+                ground_pixels += 1;
+            }
+        }
+    }
+    // The diamond, whole: not one of its pixels was overwritten by the static
+    // that came after it.
+    assert_eq!(ground_pixels, 1012, "the wall drew over the hill in front of it");
+
+    // And the reverse ordering does the opposite, or the assertion above is
+    // satisfied by a statics pass that draws nothing at all.
+    let front = [StaticQuad {
+        depth: 0.2,
+        ..wall[0]
+    }];
+    let frame = render_both(
+        &device, &queue, &land, &texmaps, &ground, &statics, &front, 128, 128,
+    );
+    let covered = (0..128u32)
+        .flat_map(|y| (0..128u32).map(move |x| (x, y)))
+        .filter(|&(x, y)| frame.pixel(x, y) == [green_r, green_g, green_b, u8::MAX])
+        .count();
+    assert_eq!(covered, 0, "a static in front left ground showing through");
 }
 
 /// The same camera twice is the same bytes.
@@ -514,6 +692,76 @@ fn the_same_camera_renders_the_same_frame() {
     assert_ne!(frames[0], other.pixels, "moving the camera changed nothing");
 }
 
+/// A screen of Britain with its statics on it: the buildings cover a real part
+/// of the frame, and the ground still covers all of it.
+///
+/// Two claims in one, and they are the two ways this layer fails as a whole.
+/// Statics covering nothing means the sprites, the atlas or the placement
+/// dropped everything and the frame is the old ground-only one; ground no
+/// longer covering the viewport means the depth buffer or the second pass took
+/// pixels away from it, which is a hole in the world rather than a wall.
+#[test]
+fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let map = Map::load_facet(&dir, 0).expect("Felucca");
+    let art = Art::open(&dir).expect("artLegacyMUL.uop");
+    let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+    let camera = Camera::new(Point::new(1495, 1629, 0), 768, 512);
+
+    let wanted = ground::visible_graphics(&map, &camera);
+    let land = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
+    let texmaps = texmap_atlas(&dir, wanted);
+    let quads = ground::collect(&map, &camera, &land, &texmaps);
+
+    let wanted_statics = statics::visible_graphics(&map, &camera);
+    let static_atlas = StaticAtlas::build(&art, wanted_statics).expect("a screen of statics fits");
+    let static_quads = statics::collect(&map, &camera, &tiledata, &static_atlas);
+    assert!(
+        static_quads.len() > 500,
+        "only {} statics in the middle of Britain",
+        static_quads.len(),
+    );
+
+    let ground_only = render(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &quads,
+        camera.width,
+        camera.height,
+    );
+    let frame = render_both(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &quads,
+        &static_atlas,
+        &static_quads,
+        camera.width,
+        camera.height,
+    );
+
+    // Still whole: every pixel drawn, exactly as with ground alone.
+    let total = (camera.width * camera.height) as usize;
+    assert_eq!(frame.drawn(), total, "the statics pass left holes in the world");
+
+    // And a real part of it changed. A tenth is a floor rather than a
+    // measurement — the point is that it is not a handful of pixels, which is
+    // what a placement off by a tile or an atlas that packed nothing produces.
+    let changed = (0..camera.height)
+        .flat_map(|y| (0..camera.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| frame.pixel(x, y) != ground_only.pixel(x, y))
+        .count();
+    assert!(
+        changed > total / 10,
+        "the statics changed only {changed} of {total} pixels",
+    );
+}
+
 /// Write a frame of Britain out as a picture, for a person to look at.
 ///
 /// Ignored: it is not an assertion, it is the eye. Every other test here counts
@@ -537,16 +785,24 @@ fn dump_a_frame_of_britain() {
     let art = Art::open(&dir).expect("artLegacyMUL.uop");
     let camera = Camera::new(Point::new(1495, 1629, 0), 768, 512);
 
+    let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
     let wanted = ground::visible_graphics(&map, &camera);
     let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
     let texmaps = texmap_atlas(&dir, wanted);
     let quads = ground::collect(&map, &camera, &atlas, &texmaps);
-    let frame = render(
+
+    let static_atlas =
+        StaticAtlas::build(&art, statics::visible_graphics(&map, &camera)).expect("statics fit");
+    let static_quads = statics::collect(&map, &camera, &tiledata, &static_atlas);
+
+    let frame = render_both(
         &device,
         &queue,
         &atlas,
         &texmaps,
         &quads,
+        &static_atlas,
+        &static_quads,
         camera.width,
         camera.height,
     );

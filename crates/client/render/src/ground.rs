@@ -12,6 +12,7 @@ use openshard_uofiles::map::Map;
 
 use crate::atlas::{LandAtlas, Region, TexmapAtlas};
 use crate::camera::Camera;
+use crate::depth;
 
 /// One ground quad: where it goes, how its corners stand, and what to sample.
 ///
@@ -43,17 +44,25 @@ pub struct GroundQuad {
     /// whatever shape its corners make. The shader is told by a zero size, which
     /// no real region can have.
     pub texmap: Option<Region>,
+    /// What hides it and what it hides: smaller is nearer. See [`crate::depth`].
+    ///
+    /// Ground is drawn before the statics, so within one frame this decides
+    /// nothing about the ground itself — tiles rarely overlap tiles. It decides
+    /// everything about the *other* pass: a hillside has to cover the wall
+    /// standing behind it, and the pass order alone would put every static in
+    /// front of every tile.
+    pub depth: f32,
 }
 
 impl GroundQuad {
     /// Bytes one quad occupies in the instance buffer.
     ///
-    /// Fourteen floats: position, the four corner heights, the land region and
-    /// the texture region. Written by hand rather than cast from a struct —
-    /// `bytemuck`'s derive emits `unsafe impl`, and this workspace denies
-    /// `unsafe_code` outright. Fourteen `to_le_bytes` is a cheaper price than an
-    /// exception to that rule.
-    pub const STRIDE: u64 = 14 * 4;
+    /// Fifteen floats: position, the four corner heights, the land region, the
+    /// texture region and the depth. Written by hand rather than cast from a
+    /// struct — `bytemuck`'s derive emits `unsafe impl`, and this workspace
+    /// denies `unsafe_code` outright. Fifteen `to_le_bytes` is a cheaper price
+    /// than an exception to that rule.
+    pub const STRIDE: u64 = 15 * 4;
 
     /// Append this quad to an instance buffer.
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -82,6 +91,7 @@ impl GroundQuad {
             texmap.v,
             texmap.du,
             texmap.dv,
+            self.depth,
         ] {
             out.extend_from_slice(&value.to_le_bytes());
         }
@@ -106,7 +116,8 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// no art for it, or the atlas was built for a different camera. Both are
 /// "nothing to draw here", and neither is worth failing a frame over.
 pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas, texmaps: &TexmapAtlas) -> Vec<GroundQuad> {
-    let mut quads: Vec<(i32, i32, GroundQuad)> = Vec::new();
+    let base = depth::base_for(camera.center.x, camera.center.y);
+    let mut quads: Vec<(depth::Order, GroundQuad)> = Vec::new();
 
     for_each_visible_cell(map, camera, |x, y, cell| {
         let Some(region) = atlas.region(Graphic(cell.tile)) else {
@@ -120,30 +131,32 @@ pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas, texmaps: &TexmapAt
         // own, and folding a representative height in here would count one of
         // them twice.
         let at = camera.to_screen(Point::new(x, y, 0));
+        // Where this tile sorts against everything else in the frame, statics
+        // included: `x + y` down the screen, and the client's own land priority
+        // — the tile's average height, less two — up it. The subtraction is
+        // what puts ground under the things standing on it; see `crate::depth`.
+        let order = depth::Order {
+            tile: i32::from(x) + i32::from(y),
+            priority_z: depth::land_priority_z(corners.map(|z| z as i32)),
+        };
         quads.push((
-            // Painter's order for ground: further from the camera first. Depth
-            // in UO is `x + y`, and height breaks the tie — a cliff face drawn
-            // after the ground below it is the whole reason this is sorted
-            // rather than emitted in scan order. Ground rarely overlaps ground,
-            // so this is nearly free today and is the seam the statics need.
-            i32::from(x) + i32::from(y),
-            // The tie-break is the tile's highest corner: at equal depth the
-            // tile that reaches further up the screen is the nearer one, and
-            // the flat `cell.z` stopped describing the tile the moment a tile
-            // became four heights.
-            corners.iter().copied().fold(f32::NEG_INFINITY, f32::max) as i32,
+            order,
             GroundQuad {
                 x: at.x as f32,
                 y: at.y as f32,
                 corners,
                 region,
                 texmap,
+                depth: order.to_depth(base),
             },
         ));
     });
 
-    quads.sort_by_key(|(depth, z, _)| (*depth, *z));
-    quads.into_iter().map(|(_, _, quad)| quad).collect()
+    // Back to front. The depth buffer is what actually decides overlap now, so
+    // this is here for determinism: the same camera has to produce the same
+    // instance buffer, byte for byte, or every frame test becomes a coin toss.
+    quads.sort_by_key(|(order, _)| *order);
+    quads.into_iter().map(|(_, quad)| quad).collect()
 }
 
 /// The heights of a tile's four corners, in [`GroundQuad::corners`] order.
@@ -184,17 +197,12 @@ fn for_each_visible_cell(
     camera: &Camera,
     mut each: impl FnMut(u16, u16, openshard_uofiles::map::LandCell),
 ) {
-    let bounds = camera.visible_tiles();
-    let min_x = bounds.min_x.max(0) as u32;
-    let min_y = bounds.min_y.max(0) as u32;
-    let max_x = (bounds.max_x.max(0) as u32).min(map.width().saturating_sub(1));
-    let max_y = (bounds.max_y.max(0) as u32).min(map.height().saturating_sub(1));
+    let Some((xs, ys)) = camera.visible_tiles().clamp_to(map.width(), map.height()) else {
+        return;
+    };
 
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            // Both fit a `u16` because they were clamped to the map's size, and
-            // no facet is wider than 7,168 tiles.
-            let (x, y) = (x as u16, y as u16);
+    for y in ys {
+        for x in xs.clone() {
             if let Some(cell) = map.land(x, y) {
                 each(x, y, cell);
             }
@@ -221,6 +229,7 @@ mod tests {
                 du: 0.125,
                 dv: 0.125,
             },
+            depth: 0.5,
             texmap: Some(Region {
                 u: 0.75,
                 v: 0.5,
@@ -258,12 +267,15 @@ mod tests {
                 dv: 0.021484375,
             },
             texmap: None,
+            depth: 0.25,
         };
         let mut out = Vec::new();
         quad.write(&mut out);
         assert_eq!(out.len() as u64, GroundQuad::STRIDE);
         assert_eq!(&out[48..52], &0.0f32.to_le_bytes(), "du");
         assert_eq!(&out[52..56], &0.0f32.to_le_bytes(), "dv");
+        // And the depth is the last float, after the texture region.
+        assert_eq!(&out[56..60], &0.25f32.to_le_bytes(), "depth");
     }
 
     /// The whole point of corner heights: a corner belongs to four tiles at
