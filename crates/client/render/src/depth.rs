@@ -134,6 +134,16 @@ pub fn static_priority_z(z: i8, tile: &StaticTile) -> i32 {
     priority_z
 }
 
+/// Where a mobile sorts on the tile it stands on.
+///
+/// `Chunk.AddGameObject`'s `Mobile` arm, which is one line: a mobile rises one
+/// above everything at its height. That is what puts a player in front of the
+/// floor tile under them and in front of a rug, and behind the wall of the tile
+/// in front — the tile part of the ordering, not this, is what does the second.
+pub fn mobile_priority_z(z: i8) -> i32 {
+    i32::from(z) + 1
+}
+
 #[cfg(test)]
 mod tests {
     use openshard_uofiles::tiledata::TileFlags;

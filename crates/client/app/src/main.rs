@@ -6,22 +6,27 @@
 //! OPENSHARD_CLIENT="/path/to/Ultima Online Classic" cargo run -p openshard-client-app
 //! ```
 //!
-//! Arrow keys walk the camera a tile at a time, page up and down change its
+//! Arrow keys walk a tile at a time, page up and down change the camera's
 //! height, and escape closes it. There is no connection yet: this draws the
-//! map's own ground, not a world a server has shown us. `WorldView` arrives when
-//! `client/net` and `client/render` are joined, and the camera then follows
-//! `0x20` instead of the keyboard.
+//! map's own ground and statics, not a world a server has shown us, and the one
+//! mobile on screen is a body standing where the camera looks rather than a
+//! character anybody logged in as. `WorldView` arrives when `client/net` and
+//! `client/render` are joined, and the camera then follows `0x20` instead of
+//! the keyboard.
 
 use std::fmt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
+use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
-use openshard_client_render::renderer::{self, GroundRenderer, StaticRenderer, Target};
+use openshard_client_render::mobiles::{self, Mobile};
+use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::{ground, statics};
+use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
+use openshard_uofiles::anim::Anim;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::TexMaps;
@@ -93,12 +98,38 @@ fn main() -> ExitCode {
     };
     event_loop.set_control_flow(ControlFlow::Wait);
 
+    let anim = match Anim::open(&dir) {
+        Ok(anim) => anim,
+        Err(error) => {
+            eprintln!("opening anim.idx and anim.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Where the character stands at boot: the camera's tile, at the height the
+    // ground there actually is.
+    let start = Point::new(
+        START.x,
+        START.y,
+        map.land(START.x, START.y).map_or(START.z, |cell| cell.z),
+    );
+
     let mut app = App {
         map,
         art,
         texmaps,
         tiledata,
+        anim,
         camera: Camera::new(START, 1024, 768),
+        player: Mobile {
+            at: start,
+            // 400 is the male human body and 4 is its standing group; frame 0
+            // because nothing here advances an animation yet.
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+        },
         window: None,
     };
     match event_loop.run_app(&mut app) {
@@ -154,6 +185,7 @@ struct Atlases {
     land: LandAtlas,
     texmaps: TexmapAtlas,
     statics: StaticAtlas,
+    mobiles: AnimAtlas,
 }
 
 /// Everything a window needs, built once the window exists.
@@ -165,7 +197,7 @@ struct Screen {
     config: wgpu::SurfaceConfiguration,
     renderer: GroundRenderer,
     /// The pass that draws what stands on the ground.
-    statics: StaticRenderer,
+    statics: SpriteRenderer,
     /// The depth buffer the two passes share, which is what decides whether a
     /// hillside covers the wall behind it. Recreated on resize: it has to be
     /// exactly the size of the frame it is tested against.
@@ -179,6 +211,12 @@ struct Screen {
     texmap_atlas: TexmapAtlas,
     /// The static sprites currently packed, rebuilt on the same trigger.
     static_atlas: StaticAtlas,
+    /// The pass that draws the mobiles, which is the statics pass again with
+    /// another atlas bound: a sprite is a sprite, and the two differ only in
+    /// where the quad goes.
+    mobile_pass: SpriteRenderer,
+    /// The animation frames currently packed.
+    mobile_atlas: AnimAtlas,
 }
 
 struct App {
@@ -186,7 +224,17 @@ struct App {
     art: Art,
     texmaps: TexMaps,
     tiledata: TileData,
+    /// The animations, open but not read: `anim.mul` is 195MB and frames come
+    /// out of it a body at a time. `&mut` because reading one seeks the file.
+    anim: Anim,
     camera: Camera,
+    /// The one mobile there is, until a server sends some.
+    ///
+    /// A real client draws what `0x77` and `0x78` told it about. This binary has
+    /// no connection, so it draws the character the camera is standing on — which
+    /// is enough to hold the animation reader, the frame atlas and the placement
+    /// against a real install, and is honest about being a placeholder.
+    player: Mobile,
     window: Option<Screen>,
 }
 
@@ -251,23 +299,50 @@ impl App {
     /// edge in UO is impossible, and a camera that wrapped would draw a seam
     /// between two sides of the world.
     fn step(&mut self, code: KeyCode) -> bool {
-        let (dx, dy, dz) = match code {
-            KeyCode::ArrowUp => (-1, -1, 0),
-            KeyCode::ArrowDown => (1, 1, 0),
-            KeyCode::ArrowLeft => (-1, 1, 0),
-            KeyCode::ArrowRight => (1, -1, 0),
-            KeyCode::PageUp => (0, 0, 5),
-            KeyCode::PageDown => (0, 0, -5),
+        // The four arrows are the four diagonals of the map, which are the four
+        // *straight* directions on screen: UO's grid is turned 45 degrees, so
+        // "up" is north-west and there is no key that moves one axis alone.
+        let facing = match code {
+            KeyCode::ArrowUp => Some(Direction::NorthWest),
+            KeyCode::ArrowDown => Some(Direction::SouthEast),
+            KeyCode::ArrowLeft => Some(Direction::SouthWest),
+            KeyCode::ArrowRight => Some(Direction::NorthEast),
+            _ => None,
+        };
+        let (dx, dy, dz) = match (facing, code) {
+            (Some(facing), _) => {
+                let (dx, dy) = facing.step();
+                (dx, dy, 0)
+            }
+            (None, KeyCode::PageUp) => (0, 0, 5),
+            (None, KeyCode::PageDown) => (0, 0, -5),
             _ => return false,
         };
+        if let Some(facing) = facing {
+            // Turning is a step here, as it is not in a real client: there is
+            // no server to say whether the step happened, so the body faces
+            // wherever it was last sent. `client/net`'s `walk` is what will
+            // decide this once the two are joined.
+            self.player.facing = facing;
+        }
         let x = (i32::from(self.camera.center.x) + dx).clamp(0, self.map.width() as i32 - 1);
         let y = (i32::from(self.camera.center.y) + dy).clamp(0, self.map.height() as i32 - 1);
         let z = (i32::from(self.camera.center.z) + dz).clamp(i8::MIN.into(), i8::MAX.into());
         self.camera.center = Point::new(x as u16, y as u16, z as i8);
+        // The player stands where the camera looks, until a server says
+        // otherwise: this binary has no connection yet. On the *ground* there,
+        // not at the camera's height — a mobile below the terrain is correctly
+        // hidden by it, which is what the depth buffer is for and what looks
+        // exactly like a mobile that failed to draw.
+        let ground = self
+            .map
+            .land(self.camera.center.x, self.camera.center.y)
+            .map_or(self.camera.center.z, |cell| cell.z);
+        self.player.at = Point::new(self.camera.center.x, self.camera.center.y, ground);
         true
     }
 
-    fn create_window(&self, event_loop: &ActiveEventLoop) -> Result<Screen, StartupError> {
+    fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<Screen, StartupError> {
         let attributes = Window::default_attributes()
             .with_title("OpenShard")
             .with_inner_size(winit::dpi::LogicalSize::new(
@@ -326,7 +401,8 @@ impl App {
 
         let atlases = self.build_atlases()?;
         let renderer = GroundRenderer::new(&device, &queue, format, &atlases.land, &atlases.texmaps);
-        let statics = StaticRenderer::new(&device, &queue, format, &atlases.statics);
+        let statics = SpriteRenderer::new(&device, &queue, format, atlases.statics.pixels());
+        let mobile_pass = SpriteRenderer::new(&device, &queue, format, atlases.mobiles.pixels());
         let depth = renderer::depth_texture(&device, config.width, config.height);
 
         Ok(Screen {
@@ -341,6 +417,8 @@ impl App {
             atlas: atlases.land,
             texmap_atlas: atlases.texmaps,
             static_atlas: atlases.statics,
+            mobile_pass,
+            mobile_atlas: atlases.mobiles,
         })
     }
 
@@ -351,17 +429,22 @@ impl App {
     /// ask them the same question — and what makes "the atlas does not cover
     /// this" one decision rather than two that could disagree. The statics are
     /// a different index space and therefore a set of their own.
-    fn build_atlases(&self) -> Result<Atlases, StartupError> {
+    fn build_atlases(&mut self) -> Result<Atlases, StartupError> {
         let wanted = ground::visible_graphics(&self.map, &self.camera);
         let land = LandAtlas::build(&self.art, wanted.iter().copied()).map_err(StartupError::Atlas)?;
         let texmaps =
             TexmapAtlas::build(&self.texmaps, &self.tiledata, wanted).map_err(StartupError::Atlas)?;
         let statics = StaticAtlas::build(&self.art, statics::visible_graphics(&self.map, &self.camera))
             .map_err(StartupError::Atlas)?;
+        // Every animation the mobiles on screen need. `&mut` because the
+        // frames are read from the file rather than held in memory.
+        let wanted = mobiles::needed_animations(std::slice::from_ref(&self.player));
+        let mobiles = AnimAtlas::build(&mut self.anim, wanted).map_err(StartupError::Atlas)?;
         Ok(Atlases {
             land,
             texmaps,
             statics,
+            mobiles,
         })
     }
 
@@ -398,15 +481,22 @@ impl App {
                     &atlases.land,
                     &atlases.texmaps,
                 );
-                window.statics = StaticRenderer::new(
+                window.statics = SpriteRenderer::new(
                     &window.device,
                     &window.queue,
                     window.config.format,
-                    &atlases.statics,
+                    atlases.statics.pixels(),
+                );
+                window.mobile_pass = SpriteRenderer::new(
+                    &window.device,
+                    &window.queue,
+                    window.config.format,
+                    atlases.mobiles.pixels(),
                 );
                 window.atlas = atlases.land;
                 window.texmap_atlas = atlases.texmaps;
                 window.static_atlas = atlases.statics;
+                window.mobile_atlas = atlases.mobiles;
             }
             Some(Err(error)) => eprintln!("repacking art: {error}"),
             None => {}

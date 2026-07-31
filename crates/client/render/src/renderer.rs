@@ -6,9 +6,10 @@
 //! application, and a test has no surface at all.
 
 use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
+
 use crate::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use crate::ground::GroundQuad;
-use crate::statics::StaticQuad;
+use crate::sprite::SpriteQuad;
 
 /// What an untouched pixel is left as.
 ///
@@ -424,14 +425,22 @@ impl GroundRenderer {
     }
 }
 
-/// Draws statics, into whatever the ground pass left behind.
+/// The side of every sprite atlas this pass can bind.
+///
+/// One number rather than a parameter: all three atlases here are the same
+/// square, because the ceiling is WebGL2's guaranteed `MAX_TEXTURE_SIZE` and
+/// not a choice any of them makes.
+pub const SPRITE_ATLAS_SIDE: u32 = StaticAtlas::side();
+
+/// Draws sprites — statics or mobiles — into whatever the ground pass left
+/// behind.
 ///
 /// Its own pipeline rather than a mode of [`GroundRenderer`]: the two share
 /// nothing but the projection — different atlas, different quad shape,
 /// different instance layout — and the one thing they do have to agree on, the
 /// ordering, is a number the CPU computes for both.
 #[derive(Debug)]
-pub struct StaticRenderer {
+pub struct SpriteRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
@@ -441,17 +450,23 @@ pub struct StaticRenderer {
     capacity: u64,
 }
 
-impl StaticRenderer {
+impl SpriteRenderer {
     /// Upload an atlas and build the pipeline for a target of `format`.
+    ///
+    /// `pixels` is any square RGBA8 atlas of [`SPRITE_ATLAS_SIDE`] — the
+    /// statics' or the mobiles' — because this pass does not care which: it
+    /// draws rectangles of somebody else's picture, and where they go is the
+    /// caller's arithmetic. Two atlases therefore mean two of these rather than
+    /// one that switches, since a draw call binds one texture either way.
     ///
     /// `format` should be a non-sRGB one, for the reason in the crate docs.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
-        atlas: &StaticAtlas,
+        pixels: &[u8],
     ) -> Self {
-        let view = upload(device, queue, "static atlas", StaticAtlas::side(), atlas.pixels());
+        let view = upload(device, queue, "sprite atlas", SPRITE_ATLAS_SIDE, pixels);
 
         // Nearest and clamped, exactly as the ground: UO art is pixel art, and
         // filtering it samples whatever was packed next door.
@@ -553,10 +568,10 @@ impl StaticRenderer {
                         }],
                     }),
                     // One instance per static. The layout is asserted in
-                    // `StaticQuad::write`'s test, which is the only thing
+                    // `SpriteQuad::write`'s test, which is the only thing
                     // linking this to the shader's `@location`s.
                     Some(wgpu::VertexBufferLayout {
-                        array_stride: StaticQuad::STRIDE,
+                        array_stride: SpriteQuad::STRIDE,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
                             wgpu::VertexAttribute {
@@ -646,7 +661,7 @@ impl StaticRenderer {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target: Target<'_>,
-        quads: &[StaticQuad],
+        quads: &[SpriteQuad],
     ) {
         let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
         for value in [target.width as f32, target.height as f32, 0.0, 0.0] {
@@ -658,7 +673,7 @@ impl StaticRenderer {
             self.capacity = (quads.len() as u64).next_power_of_two();
             self.instances = new_static_instance_buffer(device, self.capacity);
         }
-        let mut instance_bytes = Vec::with_capacity(quads.len() * StaticQuad::STRIDE as usize);
+        let mut instance_bytes = Vec::with_capacity(quads.len() * SpriteQuad::STRIDE as usize);
         for quad in quads {
             quad.write(&mut instance_bytes);
         }
@@ -708,7 +723,7 @@ const STATIC_UNIFORM_BYTES: u64 = 16;
 fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("static instances"),
-        size: quads * StaticQuad::STRIDE,
+        size: quads * SpriteQuad::STRIDE,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })

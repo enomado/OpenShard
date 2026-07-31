@@ -22,59 +22,10 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
-use crate::atlas::{Region, StaticAtlas};
+use crate::atlas::StaticAtlas;
 use crate::camera::{Camera, TILE_HEIGHT};
 use crate::depth;
-
-/// One static sprite: where it goes, how big it is, and what to sample.
-///
-/// The position is the sprite's top-left corner in viewport pixels, height
-/// already folded in — unlike a [`GroundQuad`](crate::ground::GroundQuad),
-/// whose corners the shader lifts individually. A static has one `z` and one
-/// picture, so there is nothing left for the shader to decide.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct StaticQuad {
-    /// Left edge, in viewport pixels.
-    pub x: f32,
-    /// Top edge, in viewport pixels.
-    pub y: f32,
-    /// The sprite's width in pixels. The quad is exactly this wide, so the art
-    /// is drawn at its own scale and a texel is a pixel.
-    pub width: f32,
-    /// Its height in pixels.
-    pub height: f32,
-    /// Where its sprite lives in the static atlas.
-    pub region: Region,
-    /// What it hides and what hides it: smaller is nearer. See [`crate::depth`].
-    pub depth: f32,
-}
-
-impl StaticQuad {
-    /// Bytes one quad occupies in the instance buffer.
-    ///
-    /// Nine floats: position, size, region, depth. Written by hand for the same
-    /// reason [`GroundQuad::STRIDE`](crate::ground::GroundQuad::STRIDE) is —
-    /// `bytemuck`'s derive emits `unsafe impl` and this workspace denies
-    /// `unsafe_code`.
-    pub const STRIDE: u64 = 9 * 4;
-
-    /// Append this quad to an instance buffer.
-    pub fn write(&self, out: &mut Vec<u8>) {
-        for value in [
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            self.region.u,
-            self.region.v,
-            self.region.du,
-            self.region.dv,
-            self.depth,
-        ] {
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-}
+use crate::sprite::SpriteQuad;
 
 /// Every distinct static graphic standing on the cells the camera can see.
 ///
@@ -100,9 +51,9 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// front, so that the same camera produces the same buffer byte for byte —
 /// which is what the frame tests assert on, and what a `HashMap` slipped in
 /// later would quietly take away.
-pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAtlas) -> Vec<StaticQuad> {
+pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAtlas) -> Vec<SpriteQuad> {
     let base = depth::base_for(camera.center.x, camera.center.y);
-    let mut quads: Vec<(depth::Order, u16, StaticQuad)> = Vec::new();
+    let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
     for_each_visible_static(map, camera, |item| {
         let graphic = Graphic(item.tile);
@@ -119,7 +70,7 @@ pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAt
         quads.push((
             order,
             item.tile,
-            StaticQuad {
+            SpriteQuad {
                 // Centred on the column, and standing on the diamond's bottom
                 // vertex. `>> 1` and not `/ 2.0`: an odd-width sprite lands half
                 // a pixel off centre in the client too, and rounding it the
@@ -170,31 +121,6 @@ fn for_each_visible_static(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The instance layout is a contract with a shader the compiler never sees.
-    #[test]
-    fn a_quad_writes_its_stride_and_nothing_more() {
-        let quad = StaticQuad {
-            x: 1.0,
-            y: 2.0,
-            width: 44.0,
-            height: 88.0,
-            region: Region {
-                u: 0.25,
-                v: 0.5,
-                du: 0.125,
-                dv: 0.25,
-            },
-            depth: 0.75,
-        };
-        let mut out = Vec::new();
-        quad.write(&mut out);
-        assert_eq!(out.len() as u64, StaticQuad::STRIDE);
-        assert_eq!(&out[..4], &1.0f32.to_le_bytes());
-        assert_eq!(&out[8..12], &44.0f32.to_le_bytes());
-        assert_eq!(&out[16..20], &0.25f32.to_le_bytes());
-        assert_eq!(&out[32..36], &0.75f32.to_le_bytes(), "depth is last");
-    }
 
     /// Where a sprite of a given size lands on a given tile, stated in numbers
     /// rather than by drawing it.

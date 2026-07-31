@@ -12,13 +12,18 @@
 
 use std::path::PathBuf;
 
-use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
+use openshard_client_render::atlas::FrameKey;
+use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
 use openshard_client_render::ground::{self, GroundQuad};
-use openshard_client_render::renderer::{self, GroundRenderer, StaticRenderer, Target};
-use openshard_client_render::statics::{self, StaticQuad};
+use openshard_client_render::mobiles::{self, Mobile};
+use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::sprite::SpriteQuad;
+use openshard_client_render::statics;
+use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
+use openshard_uofiles::anim::{Anim, AnimFrame};
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
 use openshard_uofiles::color::Color16;
 use openshard_uofiles::image::Image;
@@ -89,7 +94,19 @@ fn render(
     height: u32,
 ) -> Frame {
     let empty = StaticAtlas::pack([]).expect("nothing always fits");
-    render_both(device, queue, atlas, texmaps, quads, &empty, &[], width, height)
+    let no_mobiles = AnimAtlas::pack([]).expect("nothing always fits");
+    render_both(
+        device,
+        queue,
+        atlas,
+        texmaps,
+        quads,
+        &empty,
+        &[],
+        (no_mobiles.pixels(), &[]),
+        width,
+        height,
+    )
 }
 
 /// Draw both passes into a `width` x `height` texture and read the result back.
@@ -105,7 +122,8 @@ fn render_both(
     texmaps: &TexmapAtlas,
     quads: &[GroundQuad],
     static_atlas: &StaticAtlas,
-    static_quads: &[StaticQuad],
+    static_quads: &[SpriteQuad],
+    mobiles: (&[u8], &[SpriteQuad]),
     width: u32,
     height: u32,
 ) -> Frame {
@@ -142,7 +160,10 @@ fn render_both(
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
 
     let mut renderer = GroundRenderer::new(device, queue, format, atlas, texmaps);
-    let mut statics = StaticRenderer::new(device, queue, format, static_atlas);
+    let mut statics = SpriteRenderer::new(device, queue, format, static_atlas.pixels());
+    // The mobiles are the same pass again with another atlas bound, which is
+    // the whole of the difference between a static and a creature on the GPU.
+    let mut people = SpriteRenderer::new(device, queue, format, mobiles.0);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target {
         view: &view,
@@ -152,6 +173,7 @@ fn render_both(
     };
     renderer.render(device, queue, &mut encoder, target_view, quads);
     statics.render(device, queue, &mut encoder, target_view, static_quads);
+    people.render(device, queue, &mut encoder, target_view, mobiles.1);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -520,7 +542,7 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
     let atlas = StaticAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
     let sprite = atlas.sprite(GRAPHIC).expect("packed");
 
-    let quads = [StaticQuad {
+    let quads = [SpriteQuad {
         x: 10.0,
         y: 20.0,
         width: f32::from(sprite.width),
@@ -530,7 +552,19 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
     }];
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
-    let frame = render_both(&device, &queue, &land, &texmaps, &[], &atlas, &quads, 128, 128);
+    let none = AnimAtlas::pack([]).expect("nothing always fits");
+    let frame = render_both(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &atlas,
+        &quads,
+        (none.pixels(), &[]),
+        128,
+        128,
+    );
 
     let (green_r, green_g, green_b) = Color16(0b0_00000_11111_00000).rgb8();
     let mut drawn = 0;
@@ -596,7 +630,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         texmap: None,
         depth: 0.4,
     }];
-    let wall = [StaticQuad {
+    let wall = [SpriteQuad {
         x: 64.0 - 30.0,
         y: 64.0 - 30.0,
         width: f32::from(sprite.width),
@@ -604,8 +638,18 @@ fn ground_in_front_hides_a_static_behind_it() {
         region: sprite.region,
         depth: 0.6,
     }];
+    let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
-        &device, &queue, &land, &texmaps, &ground, &statics, &wall, 128, 128,
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &ground,
+        &statics,
+        &wall,
+        (none.pixels(), &[]),
+        128,
+        128,
     );
 
     let (green_r, green_g, green_b) = green.rgb8();
@@ -623,18 +667,145 @@ fn ground_in_front_hides_a_static_behind_it() {
 
     // And the reverse ordering does the opposite, or the assertion above is
     // satisfied by a statics pass that draws nothing at all.
-    let front = [StaticQuad {
+    let front = [SpriteQuad {
         depth: 0.2,
         ..wall[0]
     }];
     let frame = render_both(
-        &device, &queue, &land, &texmaps, &ground, &statics, &front, 128, 128,
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &ground,
+        &statics,
+        &front,
+        (none.pixels(), &[]),
+        128,
+        128,
     );
     let covered = (0..128u32)
         .flat_map(|y| (0..128u32).map(move |x| (x, y)))
         .filter(|&(x, y)| frame.pixel(x, y) == [green_r, green_g, green_b, u8::MAX])
         .count();
     assert_eq!(covered, 0, "a static in front left ground showing through");
+}
+
+/// A mobile is drawn from its own atlas, in front of the ground it stands on,
+/// and a mirrored facing is the same picture backwards.
+///
+/// The mirror is what needs a frame rather than an assertion on numbers: the
+/// region arithmetic is checked in `sprite`, but whether a *negative* region
+/// width actually samples backwards is the GPU's answer and not ours. A shader
+/// that clamped it instead would leave every west-facing creature looking east,
+/// which is a bug a screenshot of one direction cannot show.
+#[test]
+fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const BODY: u16 = 400;
+    let green = Color16(0b0_00000_11111_00000);
+    let red = Color16(0b0_11111_00000_00000);
+
+    // A two-pixel-wide frame: red on the left, green on the right. Mirrored,
+    // the two swap, and nothing else about the quad changes.
+    let frame = AnimFrame {
+        center_x: 1,
+        center_y: 0,
+        image: Image::new(2, 1, vec![red, green]),
+    };
+    let atlas = AnimAtlas::pack([(
+        FrameKey {
+            body: BODY,
+            group: 4,
+            direction: 1,
+            frame: 0,
+        },
+        frame,
+    )])
+    .expect("one frame fits");
+
+    // Ground under it, at the same tile: the mobile has to win, and the ground
+    // is what makes that a claim rather than a drawing on an empty frame.
+    let side = usize::from(LAND_TILE_SIZE);
+    let blue = Color16(0b0_00000_00000_11111);
+    let land = LandAtlas::pack([(
+        Graphic(1),
+        Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![blue; side * side]),
+    )])
+    .expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([]).expect("nothing always fits");
+    let camera = Camera::new(Point::new(100, 100, 0), 256, 256);
+
+    // The ground quad is built here rather than collected: `Map` cannot be
+    // constructed in memory — see the backlog in docs/client.md — and what this
+    // test needs is one tile under the mobile's feet at the depth `depth` would
+    // have given it.
+    let at = camera.to_screen(camera.center);
+    let ground = [GroundQuad {
+        x: at.x as f32,
+        y: at.y as f32,
+        corners: [0.0; 4],
+        region: land.region(Graphic(1)).expect("packed"),
+        texmap: None,
+        depth: openshard_client_render::depth::Order {
+            tile: 200,
+            priority_z: openshard_client_render::depth::land_priority_z([0; 4]),
+        }
+        .to_depth(openshard_client_render::depth::base_for(100, 100)),
+    }];
+
+    let colours = |facing| {
+        let quads = mobiles::collect(
+            &[Mobile {
+                at: camera.center,
+                body: BODY,
+                group: 4,
+                facing,
+                frame: 0,
+            }],
+            &camera,
+            &atlas,
+        );
+        assert_eq!(quads.len(), 1, "the frame is packed, so it draws");
+        let frame = render_both(
+            &device,
+            &queue,
+            &land,
+            &texmaps,
+            &ground,
+            &statics,
+            &[],
+            (atlas.pixels(), &quads),
+            256,
+            256,
+        );
+        // The two pixels the sprite covers, left and right.
+        let x = quads[0].x as u32;
+        let y = quads[0].y as u32;
+        (frame.pixel(x, y), frame.pixel(x + 1, y))
+    };
+
+    let (red_r, red_g, red_b) = red.rgb8();
+    let (green_r, green_g, green_b) = green.rgb8();
+    // South is stored direction 1 unflipped, East is the same picture mirrored.
+    assert_eq!(
+        colours(Direction::South),
+        (
+            [red_r, red_g, red_b, u8::MAX],
+            [green_r, green_g, green_b, u8::MAX]
+        ),
+        "the mobile is not drawn over the ground, or not from its own atlas",
+    );
+    assert_eq!(
+        colours(Direction::East),
+        (
+            [green_r, green_g, green_b, u8::MAX],
+            [red_r, red_g, red_b, u8::MAX]
+        ),
+        "a mirrored facing drew the picture the same way round",
+    );
 }
 
 /// The same camera twice is the same bytes.
@@ -733,6 +904,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         camera.width,
         camera.height,
     );
+    let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
         &device,
         &queue,
@@ -741,6 +913,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         &quads,
         &static_atlas,
         &static_quads,
+        (none.pixels(), &[]),
         camera.width,
         camera.height,
     );
@@ -795,6 +968,32 @@ fn dump_a_frame_of_britain() {
         StaticAtlas::build(&art, statics::visible_graphics(&map, &camera)).expect("statics fit");
     let static_quads = statics::collect(&map, &camera, &tiledata, &static_atlas);
 
+    // A character standing where the camera looks, facing each way in turn, so
+    // the picture shows both the placement and the mirrored facings.
+    let mut anim = Anim::open(&dir).expect("anim.idx and anim.mul");
+    let people: Vec<Mobile> = Direction::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, facing)| {
+            let (x, y) = (
+                camera.center.x - 3 + index as u16 % 4,
+                camera.center.y - 3 + index as u16 / 4,
+            );
+            Mobile {
+                // On the ground rather than at the camera's height: a mobile
+                // standing below the terrain is *correctly* hidden by it, which
+                // is what the first run of this dump showed.
+                at: Point::new(x, y, map.land(x, y).expect("inside the facet").z),
+                body: 400,
+                group: 4,
+                facing: *facing,
+                frame: 0,
+            }
+        })
+        .collect();
+    let mobile_atlas = AnimAtlas::build(&mut anim, mobiles::needed_animations(&people)).expect("a body fits");
+    let mobile_quads = mobiles::collect(&people, &camera, &mobile_atlas);
+
     let frame = render_both(
         &device,
         &queue,
@@ -803,6 +1002,7 @@ fn dump_a_frame_of_britain() {
         &quads,
         &static_atlas,
         &static_quads,
+        (mobile_atlas.pixels(), &mobile_quads),
         camera.width,
         camera.height,
     );

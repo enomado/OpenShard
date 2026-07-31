@@ -15,6 +15,7 @@
 //! where the readers are held against a shipped install rather than against a
 //! fixture they agree with by construction.
 
+pub mod anim;
 pub mod art;
 pub mod color;
 pub mod hues;

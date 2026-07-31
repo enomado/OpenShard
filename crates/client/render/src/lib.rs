@@ -33,5 +33,7 @@ pub mod atlas;
 pub mod camera;
 pub mod depth;
 pub mod ground;
+pub mod mobiles;
 pub mod renderer;
+pub mod sprite;
 pub mod statics;

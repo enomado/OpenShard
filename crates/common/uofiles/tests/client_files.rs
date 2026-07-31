@@ -16,6 +16,7 @@
 //! The install these numbers were taken from is client 7.0.116.0.
 
 use openshard_protocol::wire::{Graphic, Hue};
+use openshard_uofiles::anim::{Anim, BodyKind, DIRECTIONS};
 use openshard_uofiles::art::Art;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
@@ -679,5 +680,91 @@ fn a_land_tiles_texture_is_the_same_terrain_as_its_art() {
         matched * 2.0 < mismatched,
         "a tile's own texture ({matched:.2}) is barely closer to its art than a stranger's \
          ({mismatched:.2}); the texture id is being read from the wrong place",
+    );
+}
+
+/// A human body's standing animation exists, in every stored direction, and
+/// looks like a person.
+///
+/// The index into `anim.mul` is arithmetic — see `BodyKind` — and arithmetic is
+/// exactly what a fixture cannot check: the wrong base constant lands on
+/// another creature's frames, which decode perfectly and draw a plausible
+/// animal. What a shipped file can settle is that the numbers a *client* uses
+/// find a body where a human is supposed to be, at a size a human is.
+#[test]
+fn a_humans_standing_animation_is_where_the_index_says() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let mut anim = Anim::open(&dir).expect("a client ships anim.idx and anim.mul");
+
+    // 400 is the male human body, and 4 is `PeopleAnimationGroup.Stand`.
+    for direction in 0..DIRECTIONS {
+        let frames = anim
+            .frames(400, 4, direction)
+            .expect("a well-formed entry")
+            .unwrap_or_else(|| panic!("body 400 has no standing animation facing {direction}"));
+        assert!(
+            !frames.is_empty(),
+            "the standing animation facing {direction} decoded to no frames",
+        );
+
+        for (index, frame) in frames.iter().enumerate() {
+            let (width, height) = (frame.image.width(), frame.image.height());
+            // A person on a 44-pixel tile: taller than wide, and neither
+            // dimension anywhere near a full-screen picture. A wrong index
+            // constant lands on a dragon or on a piece of another frame, and
+            // both fail this before anything is drawn.
+            assert!(
+                (10..80).contains(&width) && (20..100).contains(&height),
+                "frame {index} facing {direction} is {width}x{height}, which is not a person",
+            );
+            // And it is mostly not there: a human silhouette leaves the
+            // corners of its own box empty. A frame that came out solid is a
+            // run placement that filled rows it should not have.
+            let drawn = frame
+                .image
+                .pixels()
+                .iter()
+                .filter(|color| !color.is_transparent())
+                .count();
+            let area = usize::from(width) * usize::from(height);
+            assert!(
+                drawn * 4 < area * 3 && drawn * 10 > area,
+                "frame {index} facing {direction} covers {drawn} of {area} pixels",
+            );
+        }
+    }
+}
+
+/// The index is mostly empty, and that is the file rather than a bug.
+///
+/// Worth an assertion because "no frames" is the answer this reader gives for
+/// every kind of failure — an out-of-range group, an absent body, a truncated
+/// entry — and a reader that had silently started returning it for *everything*
+/// would leave the suite above as the only thing standing between it and an
+/// empty world. This says the emptiness is where it belongs: bodies the client
+/// draws have frames, and the gaps between them do not.
+#[test]
+fn the_animation_index_is_sparse_but_the_bodies_that_exist_are_dense() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let anim = Anim::open(&dir).expect("anim.idx and anim.mul");
+
+    // Standing, facing 0, for every body the file could hold.
+    let present = (0..1000u16)
+        .filter(|body| {
+            let group = match BodyKind::of(*body) {
+                BodyKind::Monster => 1,
+                BodyKind::Animal => 2,
+                BodyKind::Human => 4,
+            };
+            anim.has_frames(*body, group, 0)
+        })
+        .count();
+    assert!(
+        (50..900).contains(&present),
+        "{present} of the first 1,000 bodies stand; the index is being read at the wrong stride",
     );
 }

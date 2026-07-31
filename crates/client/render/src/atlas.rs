@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use openshard_protocol::wire::Graphic;
+use openshard_uofiles::anim::{Anim, AnimError, AnimFrame};
 use openshard_uofiles::art::{Art, ArtError, LAND_TILE_SIZE, land_row};
 use openshard_uofiles::image::Image;
 use openshard_uofiles::texmaps::{TexMapError, TexMaps};
@@ -67,6 +68,8 @@ pub enum AtlasError {
     },
     /// The art container refused a graphic.
     Art(ArtError),
+    /// The animation files refused a body.
+    Anim(AnimError),
     /// The texture maps refused a texture.
     TexMaps(TexMapError),
 }
@@ -86,6 +89,7 @@ impl fmt::Display for AtlasError {
                 "{graphic:?} is {width}x{height}, which does not fit an atlas {ATLAS_SIDE} on a side",
             ),
             Self::Art(source) => write!(f, "reading land art: {source}"),
+            Self::Anim(source) => write!(f, "reading an animation: {source}"),
             Self::TexMaps(source) => write!(f, "reading a land texture: {source}"),
         }
     }
@@ -96,6 +100,7 @@ impl std::error::Error for AtlasError {
         match self {
             Self::Full { .. } | Self::Oversized { .. } => None,
             Self::Art(source) => Some(source),
+            Self::Anim(source) => Some(source),
             Self::TexMaps(source) => Some(source),
         }
     }
@@ -104,6 +109,12 @@ impl std::error::Error for AtlasError {
 impl From<ArtError> for AtlasError {
     fn from(source: ArtError) -> Self {
         Self::Art(source)
+    }
+}
+
+impl From<AnimError> for AtlasError {
+    fn from(source: AnimError) -> Self {
+        Self::Anim(source)
     }
 }
 
@@ -549,29 +560,12 @@ impl StaticAtlas {
             // at zero alpha. So a zero inside a run and a column no run covered
             // are the same thing to the client, and `Color16::TRANSPARENT` for
             // both loses nothing.
-            for y in 0..height {
-                for x in 0..width {
-                    let color = image.pixel(x, y).expect("inside the image");
-                    let at =
-                        ((origin_y + u32::from(y)) as usize * side + (origin_x + u32::from(x)) as usize) * 4;
-                    let (r, g, b) = color.rgb8();
-                    pixels[at] = r;
-                    pixels[at + 1] = g;
-                    pixels[at + 2] = b;
-                    pixels[at + 3] = if color.is_transparent() { 0 } else { u8::MAX };
-                }
-            }
+            copy_sprite(&mut pixels, &image, origin_x, origin_y);
 
-            let atlas = ATLAS_SIDE as f32;
             sprites.insert(
                 graphic,
                 Sprite {
-                    region: Region {
-                        u: origin_x as f32 / atlas,
-                        v: origin_y as f32 / atlas,
-                        du: f32::from(width) / atlas,
-                        dv: f32::from(height) / atlas,
-                    },
+                    region: region_at(origin_x, origin_y, width, height),
                     width,
                     height,
                 },
@@ -604,6 +598,246 @@ impl StaticAtlas {
     /// Where a graphic sits and how big it is, or `None` if it is not packed.
     pub fn sprite(&self, graphic: Graphic) -> Option<Sprite> {
         self.sprites.get(&graphic).copied()
+    }
+}
+
+/// Which picture of an animation this is.
+///
+/// A body alone is not a sprite: it is a body, an action, a facing and a moment
+/// in that action, and the file is indexed by exactly that tuple. Carried as one
+/// value so an atlas can be keyed by it — and so that a caller cannot pass the
+/// group where the direction goes, which the file would answer with somebody
+/// else's frames rather than with nothing.
+///
+/// The direction is the *stored* one, 0 to 4: the other three facings are
+/// mirrors of these and share their pictures, so they share an atlas entry too.
+/// Mirroring is [`SpriteQuad::mirrored`](crate::sprite::SpriteQuad::mirrored)
+/// and it happens where the quad is built.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct FrameKey {
+    /// The body id.
+    pub body: u16,
+    /// Which animation group — standing, walking, attacking.
+    pub group: u8,
+    /// The stored direction, 0 to 4.
+    pub direction: u8,
+    /// Which frame of that animation.
+    pub frame: u16,
+}
+
+/// One packed animation frame: where it is, how big, and where the feet are.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PackedFrame {
+    /// Where to sample it, and how big it is.
+    pub sprite: Sprite,
+    /// The frame's own centre offsets, carried through unchanged.
+    ///
+    /// They are not the middle of the picture and they are not the atlas's
+    /// business: a walking frame leans, and the lean lives in these two numbers
+    /// rather than in the pixels. See [`AnimFrame`].
+    pub center_x: i16,
+    /// The vertical half of the same pair.
+    pub center_y: i16,
+}
+
+/// Animation frames, packed into one texture.
+///
+/// The same shelf packing [`StaticAtlas`] uses, keyed by [`FrameKey`] instead of
+/// a graphic. Separate from the statics atlas rather than sharing one: a screen
+/// holds a few hundred static graphics and a handful of mobiles, they are
+/// rebuilt on completely different triggers — the camera moving against a
+/// creature turning — and a draw call binds one texture either way.
+pub struct AnimAtlas {
+    frames: BTreeMap<FrameKey, PackedFrame>,
+    /// `ATLAS_SIDE * ATLAS_SIDE` RGBA8 pixels, row-major.
+    pixels: Vec<u8>,
+}
+
+impl fmt::Debug for AnimAtlas {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AnimAtlas")
+            .field("frames", &self.frames.len())
+            .field("side", &ATLAS_SIDE)
+            .finish()
+    }
+}
+
+impl AnimAtlas {
+    /// Read and pack every frame of the bodies, groups and directions asked for.
+    ///
+    /// `wanted` is body-group-direction triples, each of which brings its whole
+    /// animation: a caller that wanted one frame of a walk would still have to
+    /// read the entry the others are in, so packing them all costs nothing but
+    /// atlas space and saves re-reading 195MB the moment the frame advances.
+    ///
+    /// A triple the client ships no animation for is skipped, not refused. Most
+    /// of the index is empty — see [`Anim`] — and a body without a group is the
+    /// ordinary case rather than a failure.
+    pub fn build(
+        anim: &mut Anim,
+        wanted: impl IntoIterator<Item = (u16, u8, u8)>,
+    ) -> Result<Self, AtlasError> {
+        // Sorted and deduplicated, so the same request always packs the same
+        // atlas — the frame tests depend on it, and so does not re-reading a
+        // body twice because the caller listed it twice.
+        let wanted: BTreeSet<(u16, u8, u8)> = wanted.into_iter().collect();
+        let mut images = Vec::new();
+        for (body, group, direction) in wanted {
+            let Some(frames) = anim.frames(body, group, direction)? else {
+                continue;
+            };
+            for (index, frame) in frames.into_iter().enumerate() {
+                // A blank frame is a real thing in these files, and it packs to
+                // nothing: an empty picture has no pixels to copy and no region
+                // worth handing back.
+                if frame.image.width() == 0 || frame.image.height() == 0 {
+                    continue;
+                }
+                images.push((
+                    FrameKey {
+                        body,
+                        group,
+                        direction,
+                        frame: index as u16,
+                    },
+                    frame,
+                ));
+            }
+        }
+        Self::pack(images)
+    }
+
+    /// Pack frames somebody else decoded.
+    ///
+    /// The way in that needs no client install, exactly as
+    /// [`StaticAtlas::pack`] is: a test hands this the pictures it chose and
+    /// then asserts on the pixels the frame comes back with.
+    pub fn pack(frames: impl IntoIterator<Item = (FrameKey, AnimFrame)>) -> Result<Self, AtlasError> {
+        let frames: BTreeMap<FrameKey, AnimFrame> = frames.into_iter().collect();
+        let wanted = frames.len();
+        let mut order: Vec<(FrameKey, AnimFrame)> = frames.into_iter().collect();
+        order.sort_by_key(|(_, frame)| std::cmp::Reverse(frame.image.height()));
+
+        let side = ATLAS_SIDE as usize;
+        let mut pixels = vec![0u8; side * side * 4];
+        let mut packed = BTreeMap::new();
+        let mut shelf = Shelf::default();
+
+        for (key, frame) in order {
+            let image = &frame.image;
+            let (width, height) = (image.width(), image.height());
+            if u32::from(width) > ATLAS_SIDE || u32::from(height) > ATLAS_SIDE {
+                return Err(AtlasError::Oversized {
+                    // Reported as the body, which is the only part of the key
+                    // a `Graphic` can carry and the part worth naming.
+                    graphic: Graphic(key.body),
+                    width,
+                    height,
+                });
+            }
+            let Some((origin_x, origin_y)) = shelf.take(u32::from(width), u32::from(height)) else {
+                return Err(AtlasError::Full {
+                    wanted,
+                    capacity: packed.len(),
+                });
+            };
+
+            copy_sprite(&mut pixels, image, origin_x, origin_y);
+            packed.insert(
+                key,
+                PackedFrame {
+                    sprite: Sprite {
+                        region: region_at(origin_x, origin_y, width, height),
+                        width,
+                        height,
+                    },
+                    center_x: frame.center_x,
+                    center_y: frame.center_y,
+                },
+            );
+        }
+
+        Ok(Self {
+            frames: packed,
+            pixels,
+        })
+    }
+
+    /// The atlas texture's side in pixels. Square, like every other atlas here.
+    pub const fn side() -> u32 {
+        ATLAS_SIDE
+    }
+
+    /// Its pixels, RGBA8 and row-major, ready for `write_texture`.
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// How many frames landed in it.
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Whether nothing did.
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// One frame, or `None` if it was never packed.
+    pub fn frame(&self, key: FrameKey) -> Option<PackedFrame> {
+        self.frames.get(&key).copied()
+    }
+
+    /// How many frames a body's animation has, as packed.
+    ///
+    /// What a caller needs to advance one: the count is the animation's, not a
+    /// constant, and asking the atlas rather than remembering it is what keeps
+    /// "frame 7 of a 6-frame walk" from being expressible.
+    pub fn frame_count(&self, body: u16, group: u8, direction: u8) -> u16 {
+        let first = FrameKey {
+            body,
+            group,
+            direction,
+            frame: 0,
+        };
+        let last = FrameKey {
+            body,
+            group,
+            direction,
+            frame: u16::MAX,
+        };
+        self.frames.range(first..=last).count() as u16
+    }
+}
+
+/// Copy a whole picture into an atlas, alpha from the file's own zeroes.
+///
+/// Shared by the two irregular atlases because they mean the same thing by a
+/// transparent pixel: absent. Ground is the exception — there a zero is black —
+/// and that copy stays in [`LandAtlas::pack`] where the diamond's shape is.
+fn copy_sprite(pixels: &mut [u8], image: &Image, origin_x: u32, origin_y: u32) {
+    let side = ATLAS_SIDE as usize;
+    for y in 0..image.height() {
+        for x in 0..image.width() {
+            let color = image.pixel(x, y).expect("inside the image");
+            let at = ((origin_y + u32::from(y)) as usize * side + (origin_x + u32::from(x)) as usize) * 4;
+            let (r, g, b) = color.rgb8();
+            pixels[at] = r;
+            pixels[at + 1] = g;
+            pixels[at + 2] = b;
+            pixels[at + 3] = if color.is_transparent() { 0 } else { u8::MAX };
+        }
+    }
+}
+
+/// The region a picture packed at a pixel origin occupies.
+fn region_at(origin_x: u32, origin_y: u32, width: u16, height: u16) -> Region {
+    let atlas = ATLAS_SIDE as f32;
+    Region {
+        u: origin_x as f32 / atlas,
+        v: origin_y as f32 / atlas,
+        du: f32::from(width) / atlas,
+        dv: f32::from(height) / atlas,
     }
 }
 
