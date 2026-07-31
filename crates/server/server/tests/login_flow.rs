@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
-use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, ServerEvent};
+use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, ServerEvent, Shutdown};
 use openshard_login::{DevAccounts, LoginServer, LoginSession, Outcome, Response, single_shard};
 use openshard_protocol::access::AccessLevel;
 use openshard_protocol::identity::{
@@ -35,7 +35,10 @@ use tokio::net::TcpStream;
 /// of what a client actually needs — which is precisely the seam this file
 /// exists to test.
 async fn shard() -> SocketAddr {
-    let (server, mut events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap())
+    // A stop nobody asks for: this shard lives as long as the test process, and
+    // the handle is dropped here rather than kept, which is exactly what a
+    // `Shutdown` that is never signalled means.
+    let (server, mut events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap(), Shutdown::new())
         .await
         .unwrap();
     let address = server.local_address().unwrap();

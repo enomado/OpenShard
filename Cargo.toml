@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
 members = ["crates/common/*", "crates/server/*", "crates/client/*", "crates/e2e/*"]
+# `vendor/` is third-party source, not one of the three groups, and its crates
+# are built through the patch below rather than as members. See vendor/README.md.
+exclude = ["vendor"]
+
+# `egui-wgpu 0.35` is on wgpu 29 and this client is on wgpu 30, and the two do
+# not mix: a `Device` from one is not a `Device` for the other. The vendored copy
+# is that crate with the four wgpu 30 changes applied, and it is temporary — see
+# vendor/README.md for the exit condition.
+[patch.crates-io]
+egui-wgpu = { path = "vendor/egui-wgpu" }
 
 [workspace.package]
 version = "0.0.1"
@@ -28,11 +38,13 @@ debug = false
 # Internal crates
 openshard-ai = { path = "crates/server/ai", version = "0.0.1" }
 openshard-chat = { path = "crates/server/chat", version = "0.0.1" }
+openshard-client-app = { path = "crates/client/app", version = "0.0.1" }
 openshard-client-net = { path = "crates/client/net", version = "0.0.1" }
 openshard-client-render = { path = "crates/client/render", version = "0.0.1" }
 openshard-combat = { path = "crates/server/combat", version = "0.0.1" }
 openshard-config = { path = "crates/common/config", version = "0.0.1" }
 openshard-crafting = { path = "crates/server/crafting", version = "0.0.1" }
+openshard-e2e-shard = { path = "crates/e2e/shard", version = "0.0.1" }
 openshard-entities = { path = "crates/common/entities", version = "0.0.1" }
 openshard-events = { path = "crates/common/events", version = "0.0.1" }
 openshard-gateway = { path = "crates/server/gateway", version = "0.0.1" }
@@ -60,6 +72,16 @@ anyhow = "1"
 deno_core = "0.408"
 async-trait = "0.1"
 bytes = "1"
+# The binaries' command lines. `env` is the feature that matters here: every
+# option a binary takes is also the environment variable it was taken from
+# before, so a shell that exports it and a shell that types it get the same run,
+# and `--help` is the one place both are written down.
+clap = { version = "4", features = ["derive", "env"] }
+# `.env` beside the workspace root, read before the command line is parsed. What
+# it holds is one operator's client install — a path that must never be
+# committed, which is why the file is in `.gitignore` and `.env.example` is the
+# version under review.
+dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

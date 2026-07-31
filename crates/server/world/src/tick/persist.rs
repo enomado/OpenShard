@@ -114,6 +114,32 @@ impl World {
         items::cancel_all_trades(&mut self.state);
     }
 
+    /// Say one line to every player in the world.
+    ///
+    /// For the shard's own voice, which is why it is here beside the rest of the
+    /// shutdown path rather than in a chat system: it is not somebody speaking,
+    /// and nothing about it is a gameplay rule. A stop that says nothing looks
+    /// from the client exactly like a crash — the screen freezes and the
+    /// connection dies — and every other visible thing this engine does says
+    /// something.
+    ///
+    /// Walking `players` and not the registry: a `Client` component can outlive
+    /// the connection that is playing it, and the player table is what the shard
+    /// itself considers to be in the world. `system_message` is what makes the
+    /// line the server's rather than a mobile's, and no new packet, era or
+    /// feature question comes with it.
+    ///
+    /// The packets go into the outbound queue like anything else, so they reach
+    /// the wire only when that queue is drained. On the shutdown path the drain
+    /// is the very next thing — see `run_shard`, where the order is welded and
+    /// tested.
+    pub fn announce(&mut self, text: &str) {
+        let players: Vec<EntityId> = self.state.players.values().copied().collect();
+        for player in players {
+            self.state.system_message(player, text);
+        }
+    }
+
     /// Take a snapshot now, whatever the cadence says.
     ///
     /// For shutdown, for a GM save command, and for tests that would rather not

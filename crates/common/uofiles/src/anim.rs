@@ -150,6 +150,51 @@ impl BodyKind {
         }
     }
 
+    /// Which group means "standing still" for this kind.
+    ///
+    /// The three group *numberings* are not the same list with different
+    /// lengths: they are three enumerations, and the same number means three
+    /// different actions. `HighAnimationGroup.Stand` is 1, `LowAnimationGroup`'s
+    /// is 2, `PeopleAnimationGroup`'s is 4 — so a client that stands everything
+    /// in group 4 stands a player, plays a *jab* on a monster
+    /// (`HighAnimationGroup.Attack1`) and *feeds* a horse
+    /// (`LowAnimationGroup.Unknown`, one past `Eat`). All three exist, so
+    /// nothing fails; it just plays the wrong picture forever.
+    pub const fn standing(self) -> u8 {
+        match self {
+            Self::Monster => 1,
+            Self::Animal => 2,
+            Self::Human => 4,
+        }
+    }
+
+    /// Which group means "walking".
+    ///
+    /// Zero in all three, which is the one coincidence between them — and the
+    /// reason it is written out anyway: a caller reading `walking()` beside
+    /// [`BodyKind::standing`] cannot conclude that the numbering is shared.
+    /// A human's is `WalkUnarmed`; what a weapon does to it is M4's problem,
+    /// since nothing here knows what anyone is holding.
+    pub const fn walking(self) -> u8 {
+        match self {
+            Self::Monster | Self::Animal | Self::Human => 0,
+        }
+    }
+
+    /// Which group means "running".
+    ///
+    /// `None` for a monster: `HighAnimationGroup` has no run at all — it goes
+    /// `Walk`, `Stand`, `Die1` — so a running monster keeps walking, which is
+    /// what the client draws too. An animal's is 1 and a human's is 2
+    /// (`RunUnarmed`).
+    pub const fn running(self) -> Option<u8> {
+        match self {
+            Self::Monster => None,
+            Self::Animal => Some(1),
+            Self::Human => Some(2),
+        }
+    }
+
     /// The first index block belonging to `body`.
     ///
     /// The three cases of `AnimationsLoader.CalculateOffset`, in blocks rather
@@ -513,6 +558,30 @@ mod tests {
             BodyKind::Human.base(401) - BodyKind::Human.base(400),
             usize::from(BodyKind::Human.groups()) * usize::from(DIRECTIONS),
         );
+    }
+
+    /// The three enumerations, at the three numbers a client actually picks.
+    ///
+    /// Pinned because the failure is silent in the worst way: every one of these
+    /// groups exists in every kind, so a wrong number draws a real animation of
+    /// the wrong action, forever, with nothing to catch. The values are
+    /// `HighAnimationGroup`, `LowAnimationGroup` and `PeopleAnimationGroup` in
+    /// `AnimationsLoader.cs`.
+    #[test]
+    fn the_three_kinds_number_their_groups_differently() {
+        assert_eq!(BodyKind::Monster.standing(), 1, "HighAnimationGroup.Stand");
+        assert_eq!(BodyKind::Animal.standing(), 2, "LowAnimationGroup.Stand");
+        assert_eq!(BodyKind::Human.standing(), 4, "PeopleAnimationGroup.Stand");
+        // Walking is the coincidence, and the reason standing is not.
+        for kind in [BodyKind::Monster, BodyKind::Animal, BodyKind::Human] {
+            assert_eq!(kind.walking(), 0);
+            // Whatever a kind names, it names inside its own table.
+            assert!(kind.standing() < kind.groups());
+            assert!(kind.running().is_none_or(|group| group < kind.groups()));
+        }
+        assert_eq!(BodyKind::Monster.running(), None, "High has no run");
+        assert_eq!(BodyKind::Animal.running(), Some(1));
+        assert_eq!(BodyKind::Human.running(), Some(2), "RunUnarmed");
     }
 
     /// Eight facings, five pictures, and the mirror is the whole difference.

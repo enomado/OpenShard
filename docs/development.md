@@ -31,6 +31,30 @@ that file. See [`style.md`](style.md).
 
 Running the shard: `cargo run -p openshard-server`.
 
+Running both ends at once — a shard and our own client logged in to it, in one
+process, with no port bound and no socket opened:
+
+```sh
+cargo run -p openshard-playground -- --client "/path/to/Ultima Online Classic"
+```
+
+Both client binaries take their options from the command line or from the
+environment, whichever is there — `--help` lists the two spellings side by side
+— and they read a `.env` from the workspace root before parsing, so the install
+can be named once. Copy [`.env.example`](../.env.example) to `.env` and fill it
+in; `.env` is ignored by git and stays that way, because a path to somebody's
+client install is not anyone else's. Then the command above is just
+
+```sh
+cargo run -p openshard-playground
+```
+
+The two ends are joined by a pair of in-memory pipes. Everything above the
+transport is the code that runs against ClassicUO — the transport itself is a
+parameter on both sides, `transport::Dial` for the client and any stream for
+`gateway::Gate`. It keeps nothing: the world is in memory and goes away with the
+process, which is what makes it a playground rather than a way to run a shard.
+
 ## No Rust toolchain? Install one without root
 
 `rustup` is unreachable from some sandboxes — `static.rust-lang.org` is blocked —

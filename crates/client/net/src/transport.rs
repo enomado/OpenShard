@@ -1,16 +1,27 @@
-//! The part that touches a socket, and decides nothing.
+//! The part that touches a stream, and decides nothing.
 //!
 //! Everything that can be got wrong about the protocol is in
 //! [`connection`](crate::connection) and [`session`](crate::session), where it
 //! can be tested without a port. What is left here is reading, writing, and the
-//! one thing a state machine cannot do for itself: open the second socket the
-//! relay names.
+//! one thing a state machine cannot do for itself: open the second connection
+//! the relay names.
+//!
+//! # Why the stream is a parameter
+//!
+//! A UO client dials a shard over TCP, and that is [`Tcp`]. It is not the only
+//! thing that will ever drive this crate: a shard in the same process has no
+//! reason to go out to the loopback and back, and a virtual player pushing
+//! states at a world for a fuzzing run has no reason to have a socket at all.
+//! Both want *this* login machine and *this* framing rather than a second copy
+//! that agrees with them, so the transport is a type parameter and the protocol
+//! is not.
 
+use std::io;
 use std::net::SocketAddrV4;
 
 use openshard_protocol::login::DenyReason;
 use openshard_protocol::version::ClientVersion;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::debug;
 
@@ -77,10 +88,59 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
-/// One socket, with the parser that reads it.
+/// How a client opens its connections to a shard.
+///
+/// Two per login, and they are not the same question: the first goes where the
+/// player said, the second goes where the *server* said in its `0x8C` relay.
+/// Splitting them is what lets an implementation ignore the relayed address —
+/// an in-process shard hands out an address it never listens on — without
+/// having to guess which of two calls it was looking at.
+///
+/// The implementations that matter: [`Tcp`], and whatever `crates/e2e` needs.
+pub trait Dial {
+    /// What comes back, and what [`Socket`] then reads.
+    type Stream: AsyncRead + AsyncWrite + Unpin;
+
+    /// The login connection, to wherever this dialler was pointed.
+    fn login(&mut self) -> impl std::future::Future<Output = io::Result<Self::Stream>> + Send;
+
+    /// The game connection, to the address the relay named.
+    fn game(
+        &mut self,
+        address: SocketAddrV4,
+    ) -> impl std::future::Future<Output = io::Result<Self::Stream>> + Send;
+}
+
+/// A real client on a real network: TCP, to the address it was given.
+#[derive(Clone, Copy, Debug)]
+pub struct Tcp {
+    /// Where the login server is. The game server's address comes off the wire.
+    login: SocketAddrV4,
+}
+
+impl Tcp {
+    /// Dial `address` for the login, and whatever it relays us to for the game.
+    pub fn at(address: SocketAddrV4) -> Self {
+        Self { login: address }
+    }
+}
+
+impl Dial for Tcp {
+    type Stream = TcpStream;
+
+    async fn login(&mut self) -> io::Result<TcpStream> {
+        TcpStream::connect(self.login).await
+    }
+
+    async fn game(&mut self, address: SocketAddrV4) -> io::Result<TcpStream> {
+        TcpStream::connect(address).await
+    }
+}
+
+/// One connection, with the parser that reads it.
 #[derive(Debug)]
-pub struct Socket {
-    stream: TcpStream,
+pub struct Socket<S> {
+    stream: S,
     connection: Connection,
     /// Events already parsed out of the last read, oldest first.
     ///
@@ -90,19 +150,25 @@ pub struct Socket {
     pending: std::collections::VecDeque<Event>,
 }
 
-impl Socket {
-    /// Connect, and read the stream as `kind`.
+impl Socket<TcpStream> {
+    /// Connect over TCP, and read the stream as `kind`.
     pub async fn connect(
         address: SocketAddrV4,
         kind: Stream,
         version: ClientVersion,
     ) -> Result<Self, TransportError> {
-        let stream = TcpStream::connect(address).await?;
-        Ok(Self {
+        Ok(Self::new(TcpStream::connect(address).await?, kind, version))
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Socket<S> {
+    /// Read an already-open stream as `kind`.
+    pub fn new(stream: S, kind: Stream, version: ClientVersion) -> Self {
+        Self {
             stream,
             connection: Connection::new(kind, version),
             pending: std::collections::VecDeque::new(),
-        })
+        }
     }
 
     /// Write bytes as they are. Framing already happened.
@@ -136,23 +202,32 @@ impl Socket {
     }
 }
 
-/// Log in and walk into the world.
-///
-/// Drives the whole conversation: the login socket, the relay, the game socket,
-/// the character list, and the `0x55` that says the client may draw. What comes
-/// back is the game socket — still open, now in the world — and what the server
-/// said about the character.
-///
-/// The login socket is dropped on the way, which is what a real client does:
-/// the server closes it behind the relay anyway.
+/// Log in over TCP and walk into the world. See [`enter_world_with`].
 pub async fn enter_world(
     address: SocketAddrV4,
     plan: Plan,
     version: ClientVersion,
-) -> Result<(Socket, WorldView), TransportError> {
+) -> Result<(Socket<TcpStream>, WorldView), TransportError> {
+    enter_world_with(Tcp::at(address), plan, version).await
+}
+
+/// Log in and walk into the world, over whatever `dial` opens.
+///
+/// Drives the whole conversation: the login connection, the relay, the game
+/// connection, the character list, and the `0x55` that says the client may draw.
+/// What comes back is the game connection — still open, now in the world — and
+/// what the server said about the character.
+///
+/// The login connection is dropped on the way, which is what a real client does:
+/// the server closes it behind the relay anyway.
+pub async fn enter_world_with<D: Dial>(
+    mut dial: D,
+    plan: Plan,
+    version: ClientVersion,
+) -> Result<(Socket<D::Stream>, WorldView), TransportError> {
     let mut login = Login::new(plan, version);
 
-    let mut socket = Socket::connect(address, Stream::Plain, version).await?;
+    let mut socket = Socket::new(dial.login().await?, Stream::Plain, version);
     socket.send(&login.open()).await?;
 
     // The login socket, up to the relay.
@@ -167,9 +242,9 @@ pub async fn enter_world(
         }
     };
 
-    // The game socket. Compressed from its first byte, and the auth key inside
-    // `opening` is the only thing that makes it this account's.
-    let mut socket = Socket::connect(endpoint, Stream::Compressed, version).await?;
+    // The game connection. Compressed from its first byte, and the auth key
+    // inside `opening` is the only thing that makes it this account's.
+    let mut socket = Socket::new(dial.game(endpoint).await?, Stream::Compressed, version);
     socket.send(&opening).await?;
 
     loop {
@@ -179,14 +254,24 @@ pub async fn enter_world(
         match step(&mut login, event)? {
             Some(Step::Send(bytes)) => socket.send(&bytes).await?,
             Some(Step::Entered(start)) => {
-                let view = WorldView::entered(start);
+                let mut view = WorldView::entered(start);
                 // Wait for the 0x55: a client that starts drawing before it is
                 // told to is a client drawing a world the server has not
                 // finished sending.
+                //
+                // And fold in everything that arrives in the meantime, because
+                // that window *is* the world being handed over — the player's
+                // own `0x20` and `0x78`, a `0x78` for everyone already on
+                // screen, the ground items. None of it is sent again, so a loop
+                // that only waited would reach `Playing` with an empty view and
+                // draw an empty world.
                 loop {
                     let Some(event) = socket.next_event().await? else {
                         return Err(TransportError::Closed { stage: login.stage() });
                     };
+                    if let Event::Packet(packet) = &event {
+                        view.apply(packet);
+                    }
                     if let Some(Step::Playing) = step(&mut login, event)? {
                         return Ok((socket, view));
                     }

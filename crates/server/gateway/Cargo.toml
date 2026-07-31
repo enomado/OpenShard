@@ -15,7 +15,7 @@ workspace = true
 openshard-protocol.workspace = true
 # Only the features the adapter actually uses. `tokio = "full"` would pull in
 # process spawning, signals and fs for a crate that opens one socket.
-tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "macros"] }
+tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "macros", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

@@ -22,10 +22,28 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
-use crate::atlas::StaticAtlas;
+use crate::atlas::{Sprite, StaticAtlas};
 use crate::camera::{Camera, TILE_HEIGHT};
 use crate::depth;
 use crate::sprite::SpriteQuad;
+
+/// Where a sprite standing on a tile lands, in viewport pixels.
+///
+/// The arithmetic in this module's own header, named so that it has one copy:
+/// a static read out of the map and an item the server put on the ground are
+/// the same picture standing the same way, and the second is
+/// [`crate::items`]. Centred on the tile's column, bottom edge on the
+/// diamond's bottom vertex — `View.DrawStatic`.
+pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> (f32, f32) {
+    let at = camera.to_screen(at);
+    (
+        // `>> 1` and not `/ 2.0`: an odd-width sprite lands half a pixel off
+        // centre in the client too, and rounding it the other way shifts every
+        // one of them against the ground.
+        (at.x - (i32::from(sprite.width) >> 1)) as f32,
+        (at.y + TILE_HEIGHT / 2 - i32::from(sprite.height)) as f32,
+    )
+}
 
 /// Every distinct static graphic standing on the cells the camera can see.
 ///
@@ -52,7 +70,8 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// which is what the frame tests assert on, and what a `HashMap` slipped in
 /// later would quietly take away.
 pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAtlas) -> Vec<SpriteQuad> {
-    let base = depth::base_for(camera.center.x, camera.center.y);
+    let (eye_x, eye_y) = camera.eye_tile();
+    let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
     for_each_visible_static(map, camera, |item| {
@@ -66,17 +85,13 @@ pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAt
         };
         // The cell's centre, height folded in: `to_screen` already lifts `z` by
         // four pixels a unit, which is the same lift the ground gets.
-        let at = camera.to_screen(Point::new(item.x, item.y, item.z));
+        let (x, y) = stand_on(camera, Point::new(item.x, item.y, item.z), &sprite);
         quads.push((
             order,
             item.tile,
             SpriteQuad {
-                // Centred on the column, and standing on the diamond's bottom
-                // vertex. `>> 1` and not `/ 2.0`: an odd-width sprite lands half
-                // a pixel off centre in the client too, and rounding it the
-                // other way shifts every one of them against the ground.
-                x: (at.x - (i32::from(sprite.width) >> 1)) as f32,
-                y: (at.y + TILE_HEIGHT / 2 - i32::from(sprite.height)) as f32,
+                x,
+                y,
                 width: f32::from(sprite.width),
                 height: f32::from(sprite.height),
                 region: sprite.region,

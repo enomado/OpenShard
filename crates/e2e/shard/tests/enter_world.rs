@@ -10,18 +10,17 @@
 //! logged into, and it keeps the test runnable on a machine that has no copy of
 //! the client's data.
 
-mod common;
-
 use std::time::Duration;
 
 use openshard_client_net::transport::enter_world;
 use openshard_protocol::identity::RawPlaintextPassword;
 
-use common::{plan, shard, version};
+use openshard_e2e_shard::{plan, shard, version};
 
 #[tokio::test]
 async fn a_client_logs_in_and_stands_in_the_world() {
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
 
     // A bound, rather than waiting forever: every step of this conversation is
     // one side waiting for the other, so the failure mode of a mismatch is a
@@ -41,6 +40,15 @@ async fn a_client_logs_in_and_stands_in_the_world() {
         view.map
     );
     assert_ne!(view.player.body.0, 0, "a body graphic was chosen");
+
+    // Everything between the `0x1B` and the `0x55` is the world being handed
+    // over, and it is never sent again. The equipment is what proves it landed:
+    // every character wears a backpack — see `tick::enter` — and the only packet
+    // that says so is the player's own `0x78`, inside that window.
+    assert!(
+        !view.player.equipment.is_empty(),
+        "the client kept what arrived before it was allowed to draw"
+    );
 }
 
 #[tokio::test]
@@ -49,7 +57,8 @@ async fn a_wrong_password_comes_back_as_a_refusal() {
     // reason it was given, not as a socket that closed. The shard sends `0x82`
     // and hangs up immediately after, so a client that only noticed the close
     // would lose the reason it had already been handed.
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
     let plan = openshard_client_net::session::Plan {
         password: RawPlaintextPassword("wrong".to_owned()),
         ..plan()

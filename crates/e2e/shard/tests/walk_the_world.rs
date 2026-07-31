@@ -15,8 +15,6 @@
 //! position it carries against the position the client derived on its own. The
 //! refusal is not the thing under test; it is the oracle.
 
-mod common;
-
 use std::time::Duration;
 
 use openshard_client_net::connection::Event;
@@ -26,11 +24,12 @@ use openshard_movement::WALK_BUFFER;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::world::Point;
 
-use common::{plan, shard, version};
+use openshard_e2e_shard::{plan, shard, version};
 
 #[tokio::test]
 async fn a_client_walks_and_the_shard_agrees_on_where_it_ended_up() {
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
     let entered = tokio::time::timeout(Duration::from_secs(20), enter_world(address, plan(), version()))
         .await
         .expect("the login conversation finished inside the timeout")
@@ -49,7 +48,10 @@ async fn a_client_walks_and_the_shard_agrees_on_where_it_ended_up() {
     // anything.
     let burst = WALK_BUFFER as usize + 10;
     for _ in 0..burst {
-        let request = walk.step(heading).expect("room on the map to walk");
+        // No ground function: this test is about the sequence seam, and the
+        // client here has no map of its own to predict a height from — the
+        // window is what loads one and hands it to `Walk`.
+        let request = walk.step(heading, |_, _| None).expect("room on the map to walk");
         socket.send(&request).await.expect("the shard is listening");
     }
 

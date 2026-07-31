@@ -14,9 +14,32 @@ description = "The client binary: a window, a surface, and a camera over the map
 # renderer testable offscreen and portable to a canvas.
 [dependencies]
 openshard-client-render.workspace = true
+# The wire. This binary owns the thread it runs on and nothing about the
+# protocol itself — see `link.rs`.
+openshard-client-net.workspace = true
 openshard-protocol.workspace = true
+# For one constant: how long a step on foot takes, which is what decides when a
+# body that stopped hearing steps stops walking. Shared with the server rather
+# than guessed at again here.
+openshard-movement.workspace = true
 openshard-uofiles.workspace = true
+# The binary's command line, and the `.env` its options fall back to. Only
+# `main.rs` uses them: the library takes an install and a plan, so a caller with
+# a shard of its own — `crates/e2e/playground` — parses nothing.
+clap.workspace = true
+dotenvy.workspace = true
 pollster = "0.4"
+# The dev HUD. `egui-wgpu` is the vendored port to wgpu 30 — see vendor/README.md
+# — and `default-features = false` because its default pulls `wgpu/default`,
+# which is every backend and the opposite of the explicit lists below.
+egui = "0.35"
+egui-winit = { version = "0.35", default-features = false }
+egui-wgpu = { version = "0.35", default-features = false }
+# `rt` for the shard thread's own current-thread runtime, `macros` for the
+# select! that reads the socket and the keyboard at once, `sync` for the channel
+# between them. No `net`: the sockets belong to `client/net`.
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+tracing.workspace = true
 winit = "0.30"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

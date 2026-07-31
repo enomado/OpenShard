@@ -12,19 +12,29 @@ publish = false
 [lints]
 workspace = true
 
-# No dependencies: nothing links against this crate, and its own `lib.rs` is a
-# doc comment. Everything it needs is a dev-dependency, used by the tests.
+# What it takes to start a shard and to say who logs in to it. These are
+# dependencies rather than dev-dependencies because `crates/e2e/playground`
+# links against this crate — it is the same shard with a window in front of it —
+# and a dev-dependency is not there for a sibling to use.
+#
+# Both ends of the wire are named here, which no other crate in the workspace may
+# do. That is the whole reason `crates/e2e/*` is its own group.
 [dependencies]
-
-[dev-dependencies]
 openshard-client-net.workspace = true
 openshard-config.workspace = true
 openshard-gateway.workspace = true
+openshard-protocol.workspace = true
+openshard-server.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+toml.workspace = true
+
+[dev-dependencies]
 # For `WALK_BUFFER` only: the burst that provokes the `0x21` this test needs as
 # an oracle has to be bigger than the pace budget, and a number written here
 # would stop being bigger the day the budget grew.
 openshard-movement.workspace = true
-openshard-protocol.workspace = true
-openshard-server.workspace = true
+# To reopen, from outside the shard, the database the shard wrote: `tests/
+# stop_saves.rs` is the only assertion anywhere that a stop actually saved. A
+# dev-dependency because the reading end is a test's, not the playground's.
+openshard-persistence.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
-toml.workspace = true

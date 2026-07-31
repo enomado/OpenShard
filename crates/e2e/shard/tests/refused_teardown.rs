@@ -42,14 +42,12 @@
 //! that one the expensive way.
 //!
 //! The witness is a *second account* playing a *second character*, which is why
-//! `common::config_for` appends one to the stock config. Two connections
+//! `openshard_e2e_shard::stock_config` appends one to the stock config. Two connections
 //! playing the one character the stock config ships does work today, and it is
 //! not a rule anybody wrote down — nothing refuses a second login on an account,
 //! and nothing promises not to. A fixture standing on that is a fixture that
 //! dies the day someone adds the check, in a test that has nothing to do with
 //! logging in twice.
-
-mod common;
 
 use std::time::Duration;
 
@@ -61,8 +59,9 @@ use openshard_protocol::identity::RawCharacterName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{RawCharacterSlot, RawClientIp};
 use openshard_protocol::world::CharacterPlay;
+use tokio::net::TcpStream;
 
-use common::{CHARACTER, NYSTUL, WITNESS, plan, plan_for, shard, version};
+use openshard_e2e_shard::{CHARACTER, NYSTUL, WITNESS, plan, plan_for, shard, version};
 
 /// How long any one step of this may take.
 ///
@@ -78,7 +77,7 @@ const WAIT: Duration = Duration::from_secs(20);
 /// Checked before the first read, so a condition that is already true costs
 /// nothing. `what` names the thing being waited for, for the panic.
 async fn read_until(
-    socket: &mut Socket,
+    socket: &mut Socket<TcpStream>,
     view: &mut WorldView,
     what: &str,
     done: impl Fn(&WorldView) -> bool,
@@ -110,7 +109,7 @@ async fn read_until(
 /// making sense while the connection was still open is a different bug wearing
 /// this one's clothes, and `Err(_) => return` would report it as a teardown that
 /// worked.
-async fn read_until_closed(socket: &mut Socket, what: &str) {
+async fn read_until_closed(socket: &mut Socket<TcpStream>, what: &str) {
     tokio::time::timeout(WAIT, async {
         loop {
             match socket.next_event().await {
@@ -140,7 +139,7 @@ fn play_again() -> Vec<u8> {
 }
 
 /// Log in on `plan` and stand in the world, or say which client failed to.
-async fn enter(address: std::net::SocketAddrV4, plan: Plan, who: &str) -> (Socket, WorldView) {
+async fn enter(address: std::net::SocketAddrV4, plan: Plan, who: &str) -> (Socket<TcpStream>, WorldView) {
     tokio::time::timeout(WAIT, enter_world(address, plan, version()))
         .await
         .unwrap_or_else(|_| panic!("{who} did not finish logging in inside {WAIT:?}"))
@@ -149,7 +148,8 @@ async fn enter(address: std::net::SocketAddrV4, plan: Plan, who: &str) -> (Socke
 
 #[tokio::test]
 async fn a_refused_entry_closes_the_socket_and_the_world_forgets_the_character() {
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
 
     // The witness first, so it is already standing there when the second client
     // arrives and is told about it by `0x78` rather than having to have been

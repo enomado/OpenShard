@@ -28,7 +28,7 @@ copy that goes stale silently, which is worse than no copy at all.
 | [`docs/client.md`](docs/client.md) | **Our own client**, milestone by milestone: what the protocol is missing in the client's direction, and what has to move out of `server/world` before anything draws. |
 | [`docs/client_versions.md`](docs/client_versions.md) | **Which clients exist and which are played.** What changes between versions in the files and on the wire, why server and client must read the same `.mul`, and how to obtain a set legally. |
 | [`docs/development.md`](docs/development.md) | The environment: the three commands, a toolchain without root, `target/` bloat, the `Cargo.lock` MSRV pin. |
-| **Living plans** — [`connection_state.md`](docs/connection_state.md) (what a connection is, and where its state lives), [`protocol_newtypes.md`](docs/protocol_newtypes.md), [`protocol_rewrite.md`](docs/protocol_rewrite.md) | A multi-session refactor each: the decisions numbered so one can be argued with alone, the steps, and **a backlog of what was found on the way and left undone**. A plan whose steps are all `[x]` is not finished — its backlog is where the next session in that area starts. Reality contradicting one of these is fixed in the same commit as the code. |
+| **Living plans** — [`connection_state.md`](docs/connection_state.md) (what a connection is, and where its state lives), [`shutdown.md`](docs/shutdown.md) (how a shard stops, and what it owes the player on the way out), [`protocol_newtypes.md`](docs/protocol_newtypes.md), [`protocol_rewrite.md`](docs/protocol_rewrite.md) | A multi-session refactor each: the decisions numbered so one can be argued with alone, the steps, and **a backlog of what was found on the way and left undone**. A plan whose steps are all `[x]` is not finished — its backlog is where the next session in that area starts. Reality contradicting one of these is fixed in the same commit as the code. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | What lands and how: branch, PR, review, merge commit. |
 
 ## Code style
@@ -109,9 +109,14 @@ map. The rules:
   `Command`. Acting on a packet as it arrives would run world code on whatever
   thread Tokio picked, and two clients racing would produce a different world
   depending on which packet won.
-- **Protocol logic is sans-io.** Parsing and state machines take bytes and return
-  events — see `gateway::Connection` versus `gateway::Server`. What is hard here
-  is byte boundaries, and a real socket will not reproduce those on demand.
+- **Protocol logic is sans-io, and the transport is a parameter.** Parsing and
+  state machines take bytes and return events — see `gateway::Connection` versus
+  `gateway::Server`. What is hard here is byte boundaries, and a real socket will
+  not reproduce those on demand. One level up, neither end names TCP either: a
+  client opens its connections through a `Dial` and the gateway serves any
+  stream, so a shard and a client in one process talk through memory and still go
+  through the same login machine, the same framing and the same
+  `client_session_serve`. That is what a virtual player is built on.
 - **Never branch on `Era` for a protocol decision.** Ask
   `version.supports(Feature::X)`. Features did not land in era-sized batches —
   tooltips at 4.0.0a, stat locks at 4.0.1a, tooltip hashes at 4.0.5a, all inside
@@ -120,8 +125,9 @@ map. The rules:
 - **`crates/common/*` is below the server.** `server/*` and `client/*` may depend
   on it and never on each other; anything both ends of the wire agree on lives in
   `crates/common/protocol`. The one place both ends may be named is
-  **`crates/e2e/*`**, which ships no code — only tests that need a real client
-  and a real shard in one process — and which nothing depends on.
+  **`crates/e2e/*`**, which ships nothing the engine depends on: the tests that
+  need a real client and a real shard in one process, the helper that starts
+  that shard, and `playground`, the binary that puts a window in front of it.
 
 ## What the client actually does
 

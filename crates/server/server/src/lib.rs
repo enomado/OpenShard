@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 use openshard_config::{Config, DEFAULT_TOML};
 use openshard_gateway::{
     ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, PacketError, ServerEvent, ServerEventRx,
-    VersionTx,
+    Shutdown, VersionTx,
 };
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Outcome, Response};
 use openshard_persistence::{AccountRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store};
@@ -77,6 +77,7 @@ use tracing::{debug, error, info, warn};
 
 pub mod boot;
 pub mod shard;
+pub mod stop;
 
 mod dispatch;
 mod scripting;
@@ -89,21 +90,30 @@ use boot::{load_config, load_world, open_store};
 use dispatch::{dispatch_world_packet, start_cities};
 use scripting::Scripts;
 use session::{PhaseSync, Session, Sessions};
-use shard::run_shard;
+use shard::{Reins, run_shard};
 use verify::{Verdict, Verifier};
 
 /// Where the config lives, relative to the working directory.
 pub const CONFIG_PATH: &str = "openshard.toml";
 
-/// Load the config, open the store, bind the port, and serve until the process
-/// ends.
+/// Load the config, open the store, bind the port, and serve until asked to stop.
 ///
 /// The binary's whole body, kept here so that what an operator starts and what
 /// a test could start are the same code.
+///
+/// Returns once the world has been saved: [`run_shard`] does not return before
+/// that, and neither does this.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(CONFIG_PATH)?;
 
-    let (gateway_server, events) = ClientGatewayServer::bind(config.server.listen).await?;
+    // One stop for the whole process — the listener, every connection, and the
+    // tick. It is made here rather than inside any of them, because a shard that
+    // stopped in pieces would be a shard whose parts each decided when to go.
+    // The tally beside it is what the save task owes the disk; the two are one
+    // value because they go to the same two places — see [`Reins`].
+    let reins = Reins::new();
+
+    let (gateway_server, events) = ClientGatewayServer::bind(config.server.listen, reins.shutdown()).await?;
     info!(
         shard = config.server.name,
         listen = %config.server.listen,
@@ -121,8 +131,23 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let world = load_world(&config)?;
     let store = open_store(&config).await?;
 
+    // A signal is the operator's way to ask, and this is the only place the
+    // process listens for one: the shard loop watches the same `Shutdown` a test
+    // would use, so a stop is one thing that happens rather than two paths that
+    // have to agree. Installing the handlers here rather than inside the spawned
+    // task is deliberate — see [`stop::install`]; until they are installed a
+    // `SIGTERM` kills the shard instead of stopping it.
+    match stop::install() {
+        Ok(signals) => {
+            tokio::spawn(stop::watch(signals, reins.clone()));
+        }
+        Err(error) => {
+            error!(%error, "cannot listen for stop signals; this shard will only stop when killed")
+        }
+    }
+
     tokio::spawn(gateway_server.run());
-    run_shard(events, &config, world, store).await;
+    run_shard(events, &config, world, store, reins).await;
 
     Ok(())
 }

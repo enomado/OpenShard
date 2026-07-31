@@ -1,0 +1,23 @@
+[package]
+name = "openshard-playground"
+description = "One process, both ends: a shard on an ephemeral port and a window logged in to it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Both ends of the wire, which only `crates/e2e/*` may name. The shard comes
+# through `openshard-e2e-shard` rather than from `openshard-server` directly:
+# starting one on an ephemeral port is a thing this workspace already knows how
+# to do, and a second copy of it here would be the one that goes stale.
+[dependencies]
+openshard-client-app.workspace = true
+openshard-e2e-shard.workspace = true
+clap.workspace = true
+tracing-subscriber.workspace = true

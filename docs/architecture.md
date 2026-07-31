@@ -65,12 +65,12 @@ Arrows are dependencies; they only ever point down.
 | `state` | Components, the `Sectors` spatial index, the `Regions` index of named areas, the seeded `Rng`, and the tables two or more systems read (`weapon`, `armor`, `harvest`, `craft`, `title`). The world's runtime *data*, below the systems that act on it, so each system can live in its own crate. Knows nothing of *when* state changes. |
 | `events` | `Events<E>`, `Cursor<E>`, `EventBus`. Machinery. Defines no game events. |
 | `protocol` | Versions, feature gates, the codec, framing, the login and world packets. |
-| `gateway` | The sans-io `Connection` and a thin Tokio `Server`. Finds packet boundaries; knows nothing of meaning. |
+| `gateway` | The sans-io `Connection`, and a thin Tokio adapter over it: `Gate` serves one stream, `ClientGatewayServer` is that plus a listener. Finds packet boundaries; knows nothing of meaning, and nothing of where a stream came from. |
 | `login` | `Accounts`, `AuthKeys`, and the sans-io `LoginServer`. |
 | `movement` | The walk handshake, the sequence rules, the pace limiter, and A* (`find_path`). `Terrain` is a trait it does not implement. |
 | `config` | TOML, validated at load. |
 | `server` | The shard: glue only — `boot` loads config/store/world, `shard` owns the accept loop and shutdown, `dispatch` turns packets into commands, `session` is per-connection state. A library with a four-line binary on top, so a test can *start a shard* by calling `run_shard` instead of building one out of process. |
-| `client/net` | The client's side of the wire: framing, decompression, the login conversation as a sans-io state machine, and a `WorldView` of what the server has shown. The mirror of `gateway` + `login`, and it depends on neither. See [`client.md`](client.md). |
+| `client/net` | The client's side of the wire: framing, decompression, the login conversation as a sans-io state machine, a `WorldView` of what the server has shown, and `Dial` — how a connection is opened, of which `Tcp` is one answer. The mirror of `gateway` + `login`, and it depends on neither. See [`client.md`](client.md). |
 | `world` | The tick, the client's file formats, `MapTerrain`, and the persistence journal. Owns `WorldState` and drives it. Orchestration, not rules — see the `tick/` layout below. |
 
 **The gameplay systems.** Each is a set of `fn(&mut WorldState)` in its own

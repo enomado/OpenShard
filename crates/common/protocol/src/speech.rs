@@ -275,6 +275,49 @@ impl EncodePacket for SpokenMessage {
     }
 }
 
+impl DecodePacket for SpokenMessage {
+    const ID: u8 = 0x1C;
+
+    /// The client's direction of `0x1C`, written because our own client has to
+    /// read what the shard says — and the first thing it has to read is the
+    /// shard telling it that it is going away (`docs/shutdown.md` S3).
+    ///
+    /// The two sentinels are folded back into `None` here, exactly as
+    /// [`serial_or_system`] and [`graphic_or_none`] fold them out: a message from
+    /// the system is not a message from mobile `0xFFFFFFFF`, and losing that
+    /// distinction in the decoder would mean the client had to know the sentinel
+    /// too.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let serial = match reader.u32()? {
+            SYSTEM_SERIAL => None,
+            // A speaker outside the serial ranges is not something to guess at:
+            // the sentinel is the *only* legal way to say "nobody said this".
+            raw => Some(Serial::new(raw).ok_or(DecodeError::UnknownValue {
+                field: "0x1C speaker serial",
+                value: raw,
+            })?),
+        };
+        let graphic = match reader.u16()? {
+            NO_GRAPHIC => None,
+            raw => Some(Graphic(raw)),
+        };
+        let mode = RawTalkMode(reader.u8()?).interpret();
+        let hue = Hue(reader.u16()?);
+        let font = Font(reader.u16()?);
+        let name = reader.fixed_string(NAME_LENGTH)?;
+        let text = reader.null_terminated_string()?;
+        Ok(Self {
+            serial,
+            graphic,
+            mode,
+            hue,
+            font,
+            name,
+            text,
+        })
+    }
+}
+
 /// `0xC1` — a **localized** message: the client looks the text up in its own
 /// `cliloc.enu` and draws it, so nothing but a number travels.
 ///
@@ -412,6 +455,7 @@ const fn graphic_or_none(graphic: Option<Graphic>) -> u16 {
 mod tests {
     use super::*;
     use crate::packet::{decode_packet, encode_packet};
+    use crate::server_packet::ServerPacket;
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -455,6 +499,61 @@ mod tests {
             args, expected,
             "the arguments are UTF-16 little-endian, not the big-endian 0xAE uses"
         );
+    }
+
+    /// The client's side of `0x1C`, round-tripped against our own encoder.
+    ///
+    /// Circular on its own, which is why the two sentinels are what it is really
+    /// about: the system's `0xFFFFFFFF` speaker and `0xFFFF` graphic go out as
+    /// `None` and must come back as `None`. A decoder that read them literally
+    /// would produce a message from mobile 4294967295, and every caller would
+    /// then have to know the sentinel — which is the knowledge the `Option`
+    /// exists to hold in one place.
+    #[test]
+    fn a_spoken_message_decodes_back_to_what_was_said() {
+        let said = SpokenMessage {
+            serial: None,
+            graphic: None,
+            mode: TalkMode::Regular,
+            hue: Hue(0x03B2),
+            font: Font(3),
+            name: "System".to_owned(),
+            text: "The shard is shutting down.".to_owned(),
+        };
+        let packet = encode_packet(&said, version());
+        assert_eq!(packet[0], 0x1C);
+
+        // Through `ServerPacket::decode` and not the bare `decode_packet`: this
+        // is a variable-length packet, so the two length bytes after the id have
+        // to be skipped, and that skip lives in the server-packet path a client
+        // actually uses.
+        let Some(ServerPacket::SpokenMessage(read)) = ServerPacket::decode(&packet, version()).unwrap()
+        else {
+            panic!("0x1C decoded as something else");
+        };
+        assert_eq!(read, said);
+        assert_eq!(read.serial, None, "the system talking is not mobile 0xFFFFFFFF");
+        assert_eq!(read.graphic, None, "and no body stands behind it");
+    }
+
+    /// A real speaker survives too — the branch the test above does not take.
+    #[test]
+    fn a_spoken_message_keeps_a_real_speaker() {
+        let said = SpokenMessage {
+            serial: Serial::new(0x0000_0123),
+            graphic: Some(Graphic(0x0190)),
+            mode: TalkMode::Emote,
+            hue: Hue(0x0022),
+            font: Font(3),
+            name: "Iolo".to_owned(),
+            text: "hail".to_owned(),
+        };
+        let packet = encode_packet(&said, version());
+        let Some(ServerPacket::SpokenMessage(read)) = ServerPacket::decode(&packet, version()).unwrap()
+        else {
+            panic!("0x1C decoded as something else");
+        };
+        assert_eq!(read, said);
     }
 
     #[test]

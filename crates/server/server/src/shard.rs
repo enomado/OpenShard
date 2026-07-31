@@ -1,34 +1,201 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::*;
+
+/// What the save task has been handed and has not finished writing.
+///
+/// # Why anything counts this
+///
+/// D2 of `docs/shutdown.md`: the second stop signal is a force-exit, and it owes
+/// the operator a line naming what their impatience cost. Without this the line
+/// can only say that the save did not finish, which is the one thing they
+/// already know — they are the ones who did not wait.
+///
+/// # It is a number for a log line, and nothing branches on it
+///
+/// Hence [`Ordering::Relaxed`] throughout, and hence two counters read one after
+/// the other rather than one lock: no data is published through these, and a
+/// reader that catches the pair mid-update reports a count that was true a
+/// moment earlier. That is the correct amount of care for a diagnostic, and
+/// paying more for it would suggest something depends on it.
+///
+/// A write that is *in flight* is counted as unwritten, because at a force-exit
+/// that is what it is: `store.save` has not returned, so whether the rows landed
+/// is exactly the question nobody can answer.
+#[derive(Debug, Clone, Default)]
+pub struct Unwritten(Arc<UnwrittenCounts>);
+
+#[derive(Debug, Default)]
+struct UnwrittenCounts {
+    writes: AtomicUsize,
+    rows: AtomicUsize,
+}
+
+impl Unwritten {
+    /// Nothing queued and nothing written yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many snapshots have been handed over and not yet written.
+    ///
+    /// One snapshot is one `Store::save`, which is one transaction — so this is
+    /// the number of *writes* D2 promises to name.
+    pub fn writes(&self) -> usize {
+        self.0.writes.load(Ordering::Relaxed)
+    }
+
+    /// How many rows are inside those snapshots.
+    ///
+    /// Beside [`Unwritten::writes`] because "three writes" tells an operator
+    /// nothing about what they lost and "three writes, 12,000 rows" tells them
+    /// whether it was a quiet minute or a full sweep.
+    pub fn rows(&self) -> usize {
+        self.0.rows.load(Ordering::Relaxed)
+    }
+
+    /// One more snapshot is outstanding.
+    fn queued(&self, rows: usize) {
+        self.0.writes.fetch_add(1, Ordering::Relaxed);
+        self.0.rows.fetch_add(rows, Ordering::Relaxed);
+    }
+
+    /// One fewer is: the store answered, or the snapshot never reached the queue
+    /// at all. Both are "nothing is waiting on it any more", which is the only
+    /// thing this counts.
+    ///
+    /// Always paired with a [`Unwritten::queued`] of the same `rows`, which is
+    /// what keeps the subtraction from going below zero — and it is raised
+    /// first, in [`SnapshotTx::send`], so a save task that finishes a snapshot
+    /// before its sender returns cannot subtract from a count that has not been
+    /// added to yet.
+    fn cleared(&self, rows: usize) {
+        self.0.writes.fetch_sub(1, Ordering::Relaxed);
+        self.0.rows.fetch_sub(rows, Ordering::Relaxed);
+    }
+}
+
+/// What the outside world holds of a running shard: the one word that stops it,
+/// and the tally of what its save task still owes the disk.
+///
+/// # Why they travel together
+///
+/// They are already handed to the same two places. [`run_shard`] watches the
+/// word and counts into the tally; `stop::watch` says the word on the first
+/// signal and reads the tally on the second. Neither may live *inside* the
+/// shard, and for one reason: the force-exit of `docs/shutdown.md` D2 has to
+/// work at the moment `run_shard` is not going to return, so what reads the
+/// tally cannot be owned by the thing that is stuck.
+///
+/// A caller with no way to force-exit — every test — builds one with
+/// [`Reins::new`] or [`Reins::over`] and never looks at it. That is the point of
+/// the type: it was two arguments passed blind, and a signature stops being
+/// readable long before it stops compiling.
+///
+/// Cloning hands out another hold on the same shard, the way cloning a
+/// [`Shutdown`] does; there is no owner among the clones.
+#[derive(Debug, Clone)]
+pub struct Reins {
+    shutdown: Shutdown,
+    unwritten: Unwritten,
+}
+
+impl Reins {
+    /// A shard nobody has asked to stop, owing nothing.
+    pub fn new() -> Self {
+        Self::over(Shutdown::new())
+    }
+
+    /// The same, over a [`Shutdown`] that already exists.
+    ///
+    /// For a caller that made the stop before the shard — the binary, which
+    /// binds the gateway with it, and the e2e harness, whose `Running` holds it
+    /// so a test can stop a shard it handed away.
+    pub fn over(shutdown: Shutdown) -> Self {
+        Self {
+            shutdown,
+            unwritten: Unwritten::new(),
+        }
+    }
+
+    /// The word that stops this shard. A clone, like every other hold on it.
+    pub fn shutdown(&self) -> Shutdown {
+        self.shutdown.clone()
+    }
+
+    /// The tally of what the save task has been handed and not written.
+    pub fn unwritten(&self) -> Unwritten {
+        self.unwritten.clone()
+    }
+}
+
+impl Default for Reins {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Sender half of the tick's outbound-snapshot channel. Only the tick loop in
 /// `run_shard` ever has a snapshot to hand off, so this stays private to the
 /// module rather than a bare `UnboundedSender` some unrelated `Snapshot`
 /// producer could be handed by mistake.
+///
+/// It carries the [`Unwritten`] tally because this is the only place a snapshot
+/// enters the queue: counting here rather than at each call site is the same
+/// argument as marking persistence dirty from the event bus — a `queued()`
+/// beside every `send` works, and then one is forgotten.
 #[derive(Debug, Clone)]
-pub(crate) struct SnapshotTx(mpsc::UnboundedSender<Snapshot>);
+pub(crate) struct SnapshotTx {
+    snapshots: mpsc::UnboundedSender<Snapshot>,
+    unwritten: Unwritten,
+}
 
 impl SnapshotTx {
     // Boxed: a bare `SendError<Snapshot>` carries a whole `Snapshot` by value,
     // which is the failure case's problem alone — the caller here only ever
     // checks `is_err()` and never wants that weight on the stack.
     fn send(&self, snapshot: Snapshot) -> Result<(), Box<mpsc::error::SendError<Snapshot>>> {
-        self.0.send(snapshot).map_err(Box::new)
+        // Counted before the send, and only kept if the send took it: a snapshot
+        // the channel refused was never handed over, so it is not outstanding
+        // work — it is work that went nowhere, and the receiver that would have
+        // decremented it is gone.
+        let rows = snapshot.len();
+        self.unwritten.queued(rows);
+        self.snapshots.send(snapshot).map_err(|error| {
+            self.unwritten.cleared(rows);
+            Box::new(error)
+        })
     }
 }
 
 /// Receiver half of [`SnapshotTx`], drained by [`save_loop`].
+///
+/// It carries the same [`Unwritten`] the sender does — one tally, counted up on
+/// one side and down on the other.
 #[derive(Debug)]
-pub(crate) struct SnapshotRx(mpsc::UnboundedReceiver<Snapshot>);
+pub(crate) struct SnapshotRx {
+    snapshots: mpsc::UnboundedReceiver<Snapshot>,
+    unwritten: Unwritten,
+}
 
 impl SnapshotRx {
     async fn recv(&mut self) -> Option<Snapshot> {
-        self.0.recv().await
+        self.snapshots.recv().await
     }
 }
 
-fn snapshot_channel() -> (SnapshotTx, SnapshotRx) {
+fn snapshot_channel(unwritten: Unwritten) -> (SnapshotTx, SnapshotRx) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (SnapshotTx(tx), SnapshotRx(rx))
+    (
+        SnapshotTx {
+            snapshots: tx,
+            unwritten: unwritten.clone(),
+        },
+        SnapshotRx {
+            snapshots: rx,
+            unwritten,
+        },
+    )
 }
 
 /// Sender half of the save task's failure-signal channel — a save failed and
@@ -94,6 +261,11 @@ async fn save_loop(store: Arc<dyn Store>, mut snapshots: SnapshotRx, failures: F
                 let _ = failures.send();
             }
         }
+        // After the store has answered, and whichever way it answered: a write
+        // that failed is not going to be retried from here, so nothing is
+        // waiting on it any more. It is out of the tally for the same reason it
+        // is out of the queue.
+        snapshots.unwritten.cleared(rows);
     }
 }
 
@@ -104,6 +276,23 @@ async fn save_loop(store: Arc<dyn Store>, mut snapshots: SnapshotRx, failures: F
 /// Sweeping on the key's own lifetime means one lives at most twice that, which is
 /// a bound worth having and a cadence not worth tuning.
 const KEY_SWEEP: Duration = openshard_login::auth::DEFAULT_TTL;
+
+/// What every player is told when the shard stops.
+///
+/// A constant and not a setting, deliberately: a message nobody can vary is a
+/// string, not a configuration. It becomes config on the day there is an operator
+/// command to schedule a stop and therefore something to vary it *with* — S7 of
+/// `docs/shutdown.md`.
+///
+/// It says the world is being saved because that is the part a player cares
+/// about: the difference between this and a crash is whether the last half hour
+/// still exists.
+///
+/// `pub` for one reason: the end-to-end test that a stopping shard says this
+/// before it hangs up asserts against the constant rather than a copy of the
+/// string, so changing the wording cannot quietly leave the test passing on text
+/// nobody sends.
+pub const SHUTDOWN_NOTICE: &str = "The shard is shutting down. Your character is being saved.";
 
 /// Everything the shard loop owns between ticks.
 ///
@@ -147,15 +336,7 @@ impl Shard {
         for connection in self.phases.apply(&self.world, &mut self.sessions) {
             self.sessions.close(connection);
         }
-        for out in self.world.drain_outbound() {
-            if let Some(session) = self.sessions.get(out.connection) {
-                // A connection reaches the world only after its game
-                // login, so this is always a game connection and every
-                // packet leaves compressed. `send_packet` gates on the
-                // flag anyway, so it stays correct if that ever changes.
-                let _ = session.send_packet(out.packet);
-            }
-        }
+        self.flush_outbound();
         // Handed off, not awaited. The tick's job here is to stop
         // holding the only copy.
         for snapshot in self.world.drain_saves() {
@@ -166,6 +347,43 @@ impl Shard {
         // applied by a tick and leaves through this same path.
         if let Some(scripts) = self.scripts.as_mut() {
             scripts.pump(&mut self.world);
+        }
+    }
+
+    /// Tell every player the shard is going, and get the line onto the wire.
+    ///
+    /// Two statements that must not be separated, so they are one call. See D6 in
+    /// `docs/shutdown.md`: `announce` queues and `flush_outbound` sends, and a
+    /// stop that does the first without the second is a stop that says nothing —
+    /// silently, and in the one situation nobody re-runs by hand.
+    ///
+    /// Not a tick. The world is not advanced here: it has stopped, and what is
+    /// wanted is one packet per player, not another 50 ms of simulation on the
+    /// way out.
+    fn announce_shutdown(&mut self) {
+        self.world.announce(SHUTDOWN_NOTICE);
+        self.flush_outbound();
+    }
+
+    /// Hand everything the world has queued to the sessions it is addressed to.
+    ///
+    /// Its own method because the shutdown path needs it too, and needs it to be
+    /// the *same* one: the goodbye of `docs/shutdown.md` D6 is queued by the
+    /// world like any other packet, and a second copy of this loop written beside
+    /// the teardown would be a second thing to keep correct.
+    ///
+    /// A packet for a connection with no session is dropped, not an error: the
+    /// world may have addressed a client that was closed between the tick and
+    /// here.
+    fn flush_outbound(&mut self) {
+        for out in self.world.drain_outbound() {
+            if let Some(session) = self.sessions.get(out.connection) {
+                // A connection reaches the world only after its game
+                // login, so this is always a game connection and every
+                // packet leaves compressed. `send_packet` gates on the
+                // flag anyway, so it stays correct if that ever changes.
+                let _ = session.send_packet(out.packet);
+            }
         }
     }
 
@@ -181,13 +399,30 @@ impl Shard {
     }
 }
 
-/// Drive login and the world until the gateway stops.
+/// Drive login and the world until the shard is stopped or the gateway goes.
 ///
 /// One task owns both. That is not a limitation: the world is deliberately
 /// single-threaded — a deterministic tick is the whole point — and login is a
 /// state machine that does no work worth parallelising. Async lives in the
 /// gateway's tasks, on the far side of the channel.
-pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World, store: Arc<dyn Store>) {
+///
+/// # Stopping
+///
+/// `reins` is what the caller keeps of this shard, and both halves of it are the
+/// caller's deliberately — see [`Reins`]. The stop inside it is the same
+/// [`Shutdown`] the gateway was built with, so that the door closes and the tick
+/// ends on one word rather than two; what happens after that word is heard is
+/// below the loop — the trades, the last snapshot, and the save task awaited to
+/// the end. **This function returns only once the world is on disk**, which is
+/// what makes it something a caller may wait for.
+pub async fn run_shard(
+    mut events: ServerEventRx,
+    config: &Config,
+    world: World,
+    store: Arc<dyn Store>,
+    reins: Reins,
+) {
+    let shutdown = reins.shutdown();
     // `Config::validate` (run by `Config::load`, which every `Config` reaching
     // here has been through) refuses an IPv6 `server.advertise`, so this is
     // always `Some` in practice.
@@ -195,7 +430,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
         .advertise_v4()
         .expect("Config::validate rejects an IPv6 server.advertise");
 
-    let (saves, snapshots) = snapshot_channel();
+    let (saves, snapshots) = snapshot_channel(reins.unwritten());
     let (failed, mut failures) = failure_channel();
     let (verifier, mut verdicts) = Verifier::new();
 
@@ -257,9 +492,16 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
 
             _ = key_sweep.tick() => shard.expire_keys(),
 
-            // Ctrl-C: leave the loop and save the world on the way out, rather than
-            // dying with the last save cadence's worth of play unwritten.
-            _ = tokio::signal::ctrl_c() => {
+            // A stop was asked for — Ctrl-C in the binary, a handle in a test.
+            // Leave the loop and save the world on the way out, rather than dying
+            // with the last save cadence's worth of play unwritten.
+            //
+            // Nothing here has to be done first: the gateway heard the same word
+            // and is hanging up on its own connections, and a packet that arrives
+            // in this same moment is queued into a tick that will not run. What
+            // matters is that the world below is written, and that is what
+            // follows the loop.
+            () = shutdown.requested() => {
                 info!("shutdown requested; saving the world");
                 break;
             }
@@ -274,8 +516,31 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
         }
     }
 
+    // From here to the last line is everything a stop actually costs: the
+    // goodbye, the sweep of a whole world, and however many writes were already
+    // queued behind it. The log goes quiet across all of it, so it is timed — an
+    // operator setting a stop timeout (systemd's `TimeoutStopSec`, and the
+    // patience of whoever is holding Ctrl-C) has nothing else to set it from, and
+    // the number they need is this one and not the wall clock of a whole run.
+    let stopping = Instant::now();
+
+    // The shard's last word, and then the hang-up — in that order, and the order
+    // is the whole of it.
+    //
+    // A clean stop looks from the client exactly like a crash unless somebody
+    // says otherwise, so the world tells every player what is happening while it
+    // still has sessions to say it through. The flush is welded to the
+    // announcement: `announce` only queues, and anything inserted between these
+    // two lines swallows the notice without failing anything — which is why the
+    // end-to-end test asserts the *order* and not merely the presence.
+    shard.announce_shutdown();
+
     // The loop is over, so the state it owned goes back to being the two things
     // shutdown needs: the world to sweep, and the channel to send the sweep down.
+    //
+    // Below the announcement on purpose: this is what drops the sessions, and
+    // dropping a session drops its outbox, which is what hangs the client up.
+    // Move it back above and the goodbye is written to nothing.
     let Shard { mut world, saves, .. } = shard;
 
     // Shutdown: one last full snapshot, then flush every queued write before the
@@ -296,7 +561,7 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
     if let Err(error) = save_task.await {
         error!(%error, "the save task did not finish cleanly on shutdown");
     }
-    info!("world saved; shutting down");
+    info!(took = ?stopping.elapsed(), "world saved; shutting down");
 }
 
 /// Whether the relay is about to send this client somewhere it cannot get back
@@ -611,6 +876,8 @@ mod tests {
 
     use openshard_protocol::world::CharacterPlay;
 
+    use openshard_persistence::SCHEMA_VERSION;
+
     use super::*;
     use crate::testing::{at_character_screen, login_server, lord_british};
 
@@ -731,6 +998,100 @@ mod tests {
         ));
         assert_eq!(world.queued(), 1, "the entry is queued");
         assert!(session.in_world(), "and the gate is open for what follows");
+    }
+
+    /// A snapshot worth three rows, built out of removals alone.
+    ///
+    /// Deliberately not a character: what is being counted is `Snapshot::len`,
+    /// and three serials say that in one line where three `CharacterRecord`
+    /// fixtures would say it in thirty and invite a reader to look for meaning
+    /// in them.
+    fn three_rows(tick: u64) -> Snapshot {
+        Snapshot {
+            tick,
+            schema: SCHEMA_VERSION,
+            characters: Vec::new(),
+            removed: vec![1, 2, 3],
+            inventories: Vec::new(),
+            ground: None,
+            spawners: None,
+            mobiles: None,
+            decorations: None,
+            regions: None,
+            world: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_is_unwritten_until_the_store_has_answered_for_it() {
+        // The number D2's force-exit names. Without it the second signal can
+        // only say that the save did not finish — which the operator knows,
+        // being the one who did not wait — and the difference between a stop
+        // that cost nothing and one that dropped a full sweep is invisible.
+        let unwritten = Unwritten::new();
+        let (saves, snapshots) = snapshot_channel(unwritten.clone());
+        let (failed, _failures) = failure_channel();
+
+        // Handed over with nothing draining the queue: this is exactly the
+        // state a shard is in when its store is slow and the operator is
+        // impatient.
+        saves.send(three_rows(1)).expect("the receiver is alive");
+        saves.send(three_rows(2)).expect("the receiver is alive");
+        assert_eq!(unwritten.writes(), 2, "two transactions are outstanding");
+        assert_eq!(unwritten.rows(), 6, "and six rows are inside them");
+
+        // Dropping the sender is what ends `save_loop`, so awaiting it here
+        // runs it to the end of the queue rather than forever.
+        drop(saves);
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        save_loop(store, snapshots, failed).await;
+
+        assert_eq!(unwritten.writes(), 0, "nothing is owed once the store answered");
+        assert_eq!(unwritten.rows(), 0, "and no rows are left behind in the count");
+    }
+
+    #[test]
+    fn a_snapshot_the_channel_refused_is_not_owed_by_anybody() {
+        // A send that fails means the save task is gone — it panicked, or the
+        // shutdown tail already dropped the receiver — so nothing will ever
+        // clear that snapshot from the tally. Counting it would make the
+        // force-exit line grow a permanent phantom backlog, and an operator
+        // reading "3 writes abandoned" every time would learn to ignore it.
+        let unwritten = Unwritten::new();
+        let (saves, snapshots) = snapshot_channel(unwritten.clone());
+        drop(snapshots);
+
+        assert!(saves.send(three_rows(1)).is_err(), "the receiver is gone");
+        assert_eq!(
+            unwritten.writes(),
+            0,
+            "a snapshot nobody took is not outstanding work"
+        );
+        assert_eq!(unwritten.rows(), 0);
+    }
+
+    #[test]
+    fn reins_over_a_stop_hold_that_stop_and_not_a_new_one() {
+        // The one thing `Reins::over` exists for: the caller already made the
+        // `Shutdown` — it went to the gateway, and a test's `Running` keeps a
+        // clone to stop the shard with — so the reins must be another hold on
+        // *that* stop. A `Shutdown::new()` inside here would compile, run, and
+        // leave every caller with a stop word the shard cannot hear.
+        let shutdown = Shutdown::new();
+        let reins = Reins::over(shutdown.clone());
+
+        shutdown.stop();
+        assert!(
+            reins.shutdown().is_stopping(),
+            "the reins hold the caller's stop, not one of their own"
+        );
+
+        // And a clone is a hold on the same tally, which is what makes it safe
+        // for the signal watcher and the shard to be handed one each.
+        let elsewhere = reins.clone();
+        reins.unwritten().queued(3);
+        assert_eq!(elsewhere.unwritten().writes(), 1, "one write is outstanding");
+        assert_eq!(elsewhere.unwritten().rows(), 3, "and it carries three rows");
     }
 
     #[test]

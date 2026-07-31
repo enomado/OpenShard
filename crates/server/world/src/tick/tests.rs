@@ -43,8 +43,45 @@ pub(super) fn world() -> World {
     World::new(START)
 }
 
+/// The first id of the band [`connection`] mints from.
+///
+/// Deliberately far above every connection id written by hand in these tests —
+/// the largest is `1000`, the loner in `interest_tests` — so a minted id can
+/// never *be* one a test also wrote as a literal. That is the property, not the
+/// number: a test that says `enter_as(.., ConnectionId::from_raw(2), ..)` beside
+/// an `enter` must get two connections, and it would silently get one if the
+/// counter ever wandered into the small numbers.
+const MINTED_CONNECTIONS: u64 = 1 << 20;
+
+thread_local! {
+    /// How many ids [`connection`] has minted on this thread.
+    ///
+    /// Thread-local rather than a process-wide atomic because libtest gives each
+    /// test its own thread in a parallel run, so the sequence a test sees is its
+    /// own and does not depend on what else happened to be running. Nothing may
+    /// depend on the *values*, though: with `--test-threads=1` libtest runs on
+    /// the main thread and the counter is shared by every test in the binary.
+    /// Uniqueness is what is promised here, and uniqueness holds either way
+    /// because the counter only ever goes up.
+    static MINTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A connection id nobody else has.
+///
+/// This used to hand back `ConnectionId::from_raw(1)` every time, which made
+/// `enter(&mut world, now)` twice one connection entering twice rather than two
+/// players — `WorldState::players` is keyed by connection, so the second `Enter`
+/// quietly replaced the first, and the assertions about "the other player" ran
+/// against a scene with one player in it and passed.
+///
+/// A test that needs a *known* id — one it will name again in a packet, or match
+/// against a literal — says `enter_as` and keeps its own.
 pub(super) fn connection() -> ConnectionId {
-    ConnectionId::from_raw(1)
+    MINTED.with(|minted| {
+        let next = minted.get() + 1;
+        minted.set(next);
+        ConnectionId::from_raw(MINTED_CONNECTIONS + next)
+    })
 }
 
 /// Whether nobody at all has anything on their cursor.
@@ -140,7 +177,10 @@ pub(super) fn authenticate(world: &mut World, connection: ConnectionId, now: Ins
 /// character screen — which is the only way a real `0x83` ever arrives, since the
 /// connection playing a character is not the one deleting it.
 pub(super) fn delete_slot(world: &mut World, slot: u32, now: Instant) -> ConnectionId {
-    let screen = ConnectionId::from_raw(99);
+    // Minted rather than a literal: the caller is already playing on a
+    // connection of its own, and a helper that picked a fixed number would be
+    // one collision away from deleting from the connection it means to test.
+    let screen = connection();
     authenticate(world, screen, now);
     world.queue(Command::DeleteCharacter {
         connection: screen,
@@ -182,13 +222,32 @@ pub(super) fn enter_gm(world: &mut World, now: Instant) -> ConnectionId {
     connection
 }
 
-/// Every packet the last tick produced for one connection.
+/// Every packet the last tick produced for one connection, leaving the rest of
+/// the queue where it was.
+///
+/// The partition is the point. This used to drain the whole outbound queue and
+/// filter it, so two calls in a row were not two questions: the first emptied
+/// the world and the second answered about nothing — silently, and with an
+/// assertion that passed. In a test with one connection the two behaviours are
+/// indistinguishable, which is exactly why it survived in dozens of them; the
+/// first test with two connections is where it turns a green run into a proof
+/// of nothing.
 pub(super) fn packets_for(world: &mut World, connection: ConnectionId) -> Vec<Vec<u8>> {
-    world
-        .drain_outbound()
-        .filter(|out| out.connection == connection)
-        .map(|out| out.packet)
-        .collect()
+    let mut asked_about = Vec::new();
+    let mut everyone_else = Vec::new();
+    for out in world.drain_outbound() {
+        if out.connection == connection {
+            asked_about.push(out.packet);
+        } else {
+            everyone_else.push(out);
+        }
+    }
+    // Several tests assert on the order a connection was sent things in, so the
+    // packets left behind keep theirs: the drain emptied the queue and nothing
+    // can have queued anything since, so writing them back is the identity on
+    // the connections this call did not ask about.
+    world.state.outbox = everyone_else;
+    asked_about
 }
 
 /// Put an entity somewhere directly, as if it had walked there.
@@ -218,6 +277,82 @@ pub(super) fn walk(sequence: u8, direction: Direction) -> WalkRequest {
 pub(super) fn serial_of(world: &World, connection: ConnectionId) -> Serial {
     let entity = world.state.players[&connection];
     world.state.registry.serial_of(entity).unwrap()
+}
+
+#[test]
+fn entering_twice_through_the_helper_is_two_players_and_not_one() {
+    // What `connection()` minting a fresh id each call is for. It used to hand
+    // back `1` every time, so this test's two `enter`s were one connection
+    // entering twice: `players` is keyed by connection, the second `Enter`
+    // replaced the first, and a scene meant to hold two players held one — with
+    // every assertion about "the other player" passing against it.
+    //
+    // Both halves are asserted. The ids being different is the mechanism; the
+    // world holding two players is the consequence, and it is the consequence
+    // the tests that reach for this helper actually rely on.
+    let now = Instant::now();
+    let mut world = world();
+    let first = enter(&mut world, now);
+    let second = enter(&mut world, now);
+
+    assert_ne!(first, second, "two calls, two connections");
+    assert_eq!(world.player_count(), 2, "and two players in the world, not one");
+    assert_ne!(
+        world.state.players[&first], world.state.players[&second],
+        "each driving a character of its own"
+    );
+}
+
+#[test]
+fn a_minted_connection_is_never_one_a_test_wrote_by_hand() {
+    // The band of `MINTED_CONNECTIONS`, pinned. Tests routinely say
+    // `enter(&mut world, now)` and then `enter_as(.., ConnectionId::from_raw(2),
+    // ..)` for the second player; if a minted id ever landed on a small literal
+    // the two would be one connection again, and this time invisibly, because
+    // the helper would look like it was doing its job.
+    //
+    // `1000` is the largest hand-written id in this crate's tests — the loner in
+    // `interest_tests`. The assertion is the gap, not the constant.
+    for _ in 0..8 {
+        assert!(
+            connection().get() > 1000,
+            "a minted id must sit above every id these tests write as a literal"
+        );
+    }
+}
+
+#[test]
+fn asking_what_one_connection_was_sent_leaves_the_other_its_own() {
+    // `packets_for` is a question, and two of them in a row are two answers.
+    // The trap this closes is the version that drained the whole queue and
+    // filtered: the first call emptied the world and the second answered
+    // "nothing", which reads exactly like a connection the world never spoke
+    // to — silently, and with a passing assertion.
+    //
+    // Both halves are asserted, because the negative one alone would be green
+    // in a world where nothing reaches anybody.
+    let now = Instant::now();
+    let mut world = world();
+    // Named rather than minted: this test is about two *particular* connections
+    // and reads better naming them, and the ids being distinct is asserted below
+    // either way.
+    let alice = enter_as(&mut world, ConnectionId::from_raw(1), now);
+    let bob = enter_as(&mut world, ConnectionId::from_raw(2), now);
+    assert_ne!(alice, bob, "two connections, not one asked about twice");
+
+    let to_alice = packets_for(&mut world, alice);
+    assert!(!to_alice.is_empty(), "entering the world says something to alice");
+
+    let to_bob = packets_for(&mut world, bob);
+    assert!(
+        !to_bob.is_empty(),
+        "and asking about alice did not take bob's answer"
+    );
+
+    assert!(
+        packets_for(&mut world, alice).is_empty(),
+        "what was answered for is gone: the queue is emptied of what it hands back"
+    );
 }
 
 #[test]
@@ -10564,8 +10699,9 @@ fn entering_a_character_boot_already_knew_does_not_list_it_twice() {
     let admin = AccountName("admin".to_owned());
     assert_eq!(world.characters(&admin).len(), 1, "boot put it on the list");
 
+    let connection = connection();
     world.queue(Command::Enter(Entering {
-        connection: connection(),
+        connection,
         version: ClientVersion::TOL,
         account: admin.clone(),
         name: CharacterName("Lord British".to_owned()),
@@ -10578,7 +10714,7 @@ fn entering_a_character_boot_already_knew_does_not_list_it_twice() {
     assert_eq!(
         world
             .registry()
-            .serial_of(world.state.players[&connection()])
+            .serial_of(world.state.players[&connection])
             .unwrap()
             .raw(),
         0x0000_0202,
@@ -10703,10 +10839,15 @@ fn one_facet_at_the_same_spot_does_see() {
 
 #[test]
 fn entering_twice_on_one_connection_is_ignored() {
+    // "One connection" is now said rather than inherited: this test used two
+    // bare `enter`s back when `connection()` handed back the same id every
+    // time, so its subject was an accident of the helper. `enter_as` with a
+    // named id is the same scene, stated.
     let mut world = world();
     let now = Instant::now();
-    enter(&mut world, now);
-    enter(&mut world, now);
+    let one = ConnectionId::from_raw(1);
+    enter_as(&mut world, one, now);
+    enter_as(&mut world, one, now);
     assert_eq!(world.player_count(), 1);
 }
 
