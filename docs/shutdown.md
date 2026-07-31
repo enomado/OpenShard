@@ -304,16 +304,30 @@ on. The rest are independent.
   the timing: a *real* client whose `0x5D` is queued when the stop lands. That
   needs `Running::ask` below, and even then the window is a race rather than a
   state a test can hold still.
-- **`tests::connection()` hands back the same id every time,** so
-  `enter(&mut world, now)` twice is one connection entering twice and not two
-  players — the world's `players` map is keyed by connection, so the second
-  `Enter` quietly replaces the first. Every test that wants two says
-  `enter_as(.., ConnectionId::from_raw(n), ..)` and knows to; a test that
-  reaches for the shorter helper gets a scene with one connection in it and
-  assertions that pass. Found writing the `packets_for` test above, where the
-  `assert_ne!` on the two ids is the only reason it was noticed. The honest
-  shape is a counter — `connection()` minting a fresh id each call, with the
-  handful of tests that need a *known* id keeping `enter_as`.
+- ~~**`tests::connection()` hands back the same id every time.**~~ Fixed in the
+  shape the entry sketched: a counter, `connection()` minting a fresh id each
+  call, and the tests that need a *known* id keeping `enter_as`. Two decisions
+  worth knowing. The counter is **thread-local**, not a process-wide atomic, so
+  the sequence a test sees is its own in a parallel run — but nothing may depend
+  on the values, because `--test-threads=1` runs every test on one thread and
+  shares the counter; uniqueness is what is promised, and it holds either way.
+  And minted ids come from a band far above every id these tests write by hand
+  (`MINTED_CONNECTIONS`, `1 << 20`; the largest literal is the `1000` loner in
+  `interest_tests`), because the common scene is an `enter` beside an
+  `enter_as(.., from_raw(2), ..)` and a minted id that landed on a literal would
+  put the two back into one connection — invisibly this time, with the helper
+  looking like it was working.
+  `entering_twice_through_the_helper_is_two_players_and_not_one` pins the
+  mechanism and the consequence (two ids, and two players in the world), and
+  `a_minted_connection_is_never_one_a_test_wrote_by_hand` pins the gap rather
+  than the constant. Checked to fail with the counter held at one value.
+
+  **One test in the crate was living off the conflation.**
+  `entering_twice_on_one_connection_is_ignored` said its subject with two bare
+  `enter`s, so "one connection" was an accident of the helper rather than
+  something the test stated; it now names the id with `enter_as`. It was the only
+  one, out of thirty-odd call sites — the rest bind what `connection()` hands
+  back to a local and never asked for the id twice.
 - **Nothing tests that the playground boots** — carried over from
   [`client.md`](client.md), and now with one more thing to get wrong, since the
   playground stops its shard after the window closes.
@@ -351,9 +365,10 @@ exists for — that `run_shard` returns only once the world is on disk — is
 finally asserted against a real file rather than believed.
 
 What is left is S7, an operator's stop from inside the world, and the backlog
-above — three of whose entries are closed: `run_shard`'s argument list is one
+above — four of whose entries are closed: `run_shard`'s argument list is one
 `Reins` shorter, `packets_for` answers about one connection without emptying the
-world, and what a shard says on its way out is written down by the client that
+world, `tests::connection()` mints a connection rather than naming the same one
+forever, and what a shard says on its way out is written down by the client that
 hears it. The oldest thing in it is now the unbounded `save_loop`: D2's force-exit
 finally names what it costs — the writes and the rows the save task had not
 finished — but a store that never answers is still a shard that cannot be
