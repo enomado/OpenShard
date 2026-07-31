@@ -77,6 +77,7 @@ use tracing::{debug, error, info, warn};
 
 pub mod boot;
 pub mod shard;
+pub mod stop;
 
 mod dispatch;
 mod scripting;
@@ -95,7 +96,7 @@ use verify::{Verdict, Verifier};
 /// Where the config lives, relative to the working directory.
 pub const CONFIG_PATH: &str = "openshard.toml";
 
-/// Load the config, open the store, bind the port, and serve until Ctrl-C.
+/// Load the config, open the store, bind the port, and serve until asked to stop.
 ///
 /// The binary's whole body, kept here so that what an operator starts and what
 /// a test could start are the same code.
@@ -128,22 +129,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let world = load_world(&config)?;
     let store = open_store(&config).await?;
 
-    // Ctrl-C is the operator's way to ask, and this is the only place the
-    // process listens for it: the shard loop watches the same `Shutdown` a test
+    // A signal is the operator's way to ask, and this is the only place the
+    // process listens for one: the shard loop watches the same `Shutdown` a test
     // would use, so a stop is one thing that happens rather than two paths that
-    // have to agree. A signal that cannot be listened for is worth saying out
-    // loud — the shard still runs, but the only way left to end it is to kill
-    // it, which is the save this whole arrangement exists to avoid losing.
-    let signalled = shutdown.clone();
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Ctrl-C");
-                signalled.stop();
-            }
-            Err(error) => error!(%error, "cannot listen for Ctrl-C; this shard will only stop when killed"),
+    // have to agree. Installing the handlers here rather than inside the spawned
+    // task is deliberate — see [`stop::install`]; until they are installed a
+    // `SIGTERM` kills the shard instead of stopping it.
+    match stop::install() {
+        Ok(signals) => {
+            tokio::spawn(stop::watch(signals, shutdown.clone()));
         }
-    });
+        Err(error) => {
+            error!(%error, "cannot listen for stop signals; this shard will only stop when killed")
+        }
+    }
 
     tokio::spawn(gateway_server.run());
     run_shard(events, &config, world, store, shutdown).await;

@@ -115,18 +115,26 @@ let the payload reach the test harness.
 Each is a pull request. S2 must precede S3 — the notice needs a wire to travel
 on. The rest are independent.
 
-- [ ] **S1. `SIGTERM` stops a shard, and a second signal exits it.** A new
-      `crates/server/server/src/stop.rs`: `watch(shutdown: Shutdown)`, spawned by
-      `run()` in place of the inline `ctrl_c` task. On unix it selects Ctrl-C
-      against `signal(SignalKind::terminate())`; elsewhere it is Ctrl-C alone.
-      After the first, it keeps waiting, and the second exits with a non-zero
-      code — see D2, including the line the first one prints.
-      **DoD:** a unix-only test that installs the watcher, sends itself
-      `SIGTERM` (`kill -TERM $(std::process::id())` through `std::process`, so no
-      new dependency), and sees the `Shutdown` flip inside a deadline. The
-      registration must be in place before the signal is sent, or the default
-      disposition kills the test process — which is itself the thing to be
-      careful about, so the test says so.
+- [x] **S1. `SIGTERM` stops a shard, and a second signal exits it.**
+      `crates/server/server/src/stop.rs`: `install() -> io::Result<Signals>` and
+      `watch(signals, shutdown)`, replacing the inline `ctrl_c` task in `run()`.
+      On unix `Signals` holds an installed `SIGINT` and `SIGTERM` stream and
+      selects between them; elsewhere it is Ctrl-C alone. After the first, it
+      keeps waiting, and the second exits with `2` — see D2, including the line
+      the first one prints.
+
+      Installation is a separate, synchronous step rather than the first line of
+      the spawned task, which is a change from how this step was first written.
+      Until the handler is installed, `SIGTERM`'s default disposition kills the
+      process, so `spawn(watch(..))` followed by anything that could signal is a
+      window in which the shard dies instead of stopping — in the binary as well
+      as in the test. The two streams are also held across the first signal: one
+      created fresh for the second wait would be deaf to a signal delivered
+      between them.
+      **DoD (met):** `stop::tests::a_sigterm_asks_the_shard_to_stop`, unix-only,
+      sends itself `SIGTERM` (`kill -TERM` through `std::process`, so no new
+      dependency) and sees the `Shutdown` flip inside a deadline. It installs
+      before it signals, and says why.
 
 - [ ] **S2. A stop drains the outbox before it hangs up.** In
       `client_session_serve`, the shutdown arm stops reading and awaits the write
@@ -201,6 +209,11 @@ on. The rest are independent.
   force-exit is the mitigation, not the fix: a store that never returns leaves
   the shard in a state where the only honest thing left is to say which snapshots
   were abandoned. That means the save task counting what it has not written.
+- **The force-exit of D2 is untested, and structurally hard to test.** The second
+  signal ends the process, so proving it takes a child process — the shard binary
+  started, signalled twice, and its exit status read — which is the out-of-process
+  test this repository has otherwise avoided. Worth doing once the binary has any
+  other reason to be driven from a test; not worth building the harness for alone.
 - **A stop mid-`Entering` is untested.** A client whose `Command::Enter` is
   queued when the stop arrives has no entity, so it gets no announcement — only
   the hang-up. That is correct, and nothing pins it.
@@ -210,7 +223,9 @@ on. The rest are independent.
 
 ## Status
 
-Not started. The commit that created this plan is the one that landed the stop
+S1 is in: a shard under systemd is asked rather than killed, and an operator with
+a wedged save has a way out that is not `SIGKILL`. S2 is next, and S3 cannot
+start before it. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.
