@@ -1480,6 +1480,60 @@ own understanding had written.
   the art shimmers inside the sprite. Worth measuring before doing — the two
   clock defects above were the visible share of this complaint.
 
+- **The picture and the truth are the same number, and they should not be.**
+  This is one mechanism from modern third-person and isometric action games —
+  Diablo, Path of Exile and everything shaped like them — and it is the answer to
+  three separate complaints here. Those games are continuous where UO is a grid,
+  but the part worth taking is not the continuity, it is the *split*:
+
+  - An entity has an **authoritative** position — what the server said, plus
+    whatever the client has predicted on top — and a **drawn** position, which is
+    the authoritative one plus an error that is decaying toward zero. Everything
+    that is not the picture reads the authoritative one: the depth order, what
+    the body can walk behind, what the camera says is on screen.
+  - A correction never moves the picture. It moves the authoritative position at
+    once and *puts the difference into the error*, which then shrinks with a
+    half-life of something like 100–150ms. The body is where the server says it
+    is immediately, and it arrives there smoothly. Unreal calls this
+    `NetworkSmoothingMode`/`SmoothCorrection`, Source calls it `cl_smooth` with a
+    `cl_smoothtime` of a tenth of a second, and every engine has one.
+  - The error is **bounded**: past a threshold the correction is a teleport and is
+    snapped, because sliding a body across half a facet is a stranger picture than
+    the jump it hides. The same rule the crowd already applies to a move of more
+    than one tile.
+  - The decay is **frame-rate independent**: a half-life and `0.5^(dt/half)`, not
+    a per-frame `lerp(a, b, 0.1)`, which is a different curve at 30fps and 144.
+
+  For us that is a drift in world pixels on `Mobile`, set by `Crowd::snap` from
+  where the body was actually drawn, decayed in `Crowd::advance`, and added in
+  `mobiles::world_position` — where the camera reads it too, so both follow. It
+  replaces "a rollback must not be glided" with something better than either
+  answer: the tile the body was put back on is still never *walked* across, but
+  the picture is not yanked either. It also absorbs whatever jitter is left in
+  the arrival of a step, which is the same defect wearing a different hat.
+
+- **The eye follows `z` exactly, and a staircase bobs.** The second thing those
+  games all do: the camera is a *smoother over* the character, per axis, with
+  different time constants — the horizontal tight or exact, the height loose,
+  a few hundred milliseconds, because terrain height is the axis that steps. A
+  camera locked to the character's exact height turns every stair into a jolt of
+  the whole world, and no isometric game since about 2005 ships that.
+
+  Cheap here, and independent of everything else: `Control` keeps the eye's
+  height as an `f32`, pulls it toward the height the body is drawn at with a
+  half-life around 300ms, and lifts the eye by the difference times
+  `camera::Z_STEP`. The horizontal axis stays exact for now — a lagging eye on
+  the walking axis is a separate decision with its own feel, and it is not what
+  the stairs complaint is about. `Home` and `relock` stay instant: a rubber band
+  on a deliberate jump is a bug, not a feel.
+
+- **A fractional world, eventually.** With the two above done, what is left of the
+  judder is the whole-pixel eye, and the fix is the one modern pixel-art engines
+  use: keep the camera's position fractional, give the *ground* the remainder,
+  and snap *sprites* to whole pixels so their art does not shimmer. Worth doing
+  for zoom, where one world pixel is two screen pixels or more. Last, because it
+  touches every quad and the two above touch a dozen lines each.
+
 - **Nothing is predicted about whether a step is allowed, so a wall is a
   rollback.** This is the largest remaining gap against the reference, and it is
   what "the client does not respect being pushed back" and "obstacles are not
