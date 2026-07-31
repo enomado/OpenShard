@@ -29,8 +29,9 @@ pub struct RawPacket(pub(crate) Vec<u8>);
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Packet {
     /// Decoded by [`LoginStagePacket::decode`]. Routed to `login.handle`,
-    /// except for `CreateCharacter`/`DeleteCharacter`, which the server
-    /// intercepts first.
+    /// except for the character screen's three —
+    /// `CreateCharacter`/`DeleteCharacter`/`PlayCharacter` — which the server
+    /// intercepts first and turns into world commands.
     Login(LoginStagePacket),
     /// Decoded by [`ClientPacket::decode`]. Routed to `dispatch`.
     World(ClientPacket),
@@ -40,7 +41,7 @@ pub enum Packet {
 /// behind it did not parse.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PacketError {
-    /// A known login id (`0x80`/`0xA0`/`0x91`/`0xBD`/`0x00`/`0xF8`/`0x83`)
+    /// A known login id (`0x80`/`0xA0`/`0x91`/`0xBD`/`0x00`/`0xF8`/`0x83`/`0x5D`)
     /// whose body did not decode.
     Login(ClientLoginDecodeError),
     /// A known world id whose body did not decode.

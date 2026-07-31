@@ -28,13 +28,6 @@ use super::*;
 /// all; it closes the connection at the routing step instead.
 pub(crate) fn dispatch_world_packet(packet: ClientPacket, id: ConnectionId) -> Option<Command> {
     match packet {
-        // Routed before the gate, by `handle_world_packet`: `0x5D` is the
-        // character screen's packet rather than the world's — the one thing a
-        // connection *outside* the world may send — and the only one that needs
-        // the account this connection authenticated as.
-        ClientPacket::CharacterPlay(_) => {
-            unreachable!("0x5D is routed by handle_world_packet, before the gate")
-        }
         ClientPacket::Walk(request) => Some(Command::Walk {
             connection: id,
             request,

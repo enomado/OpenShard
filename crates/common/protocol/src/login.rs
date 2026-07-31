@@ -50,7 +50,7 @@ use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength, decode_packet};
 use crate::version::ClientVersion;
 use crate::wire::{AuthKey, ClilocId, RawCharacterSlot};
-use crate::world::{CreateCharacter, Facet, Point};
+use crate::world::{CharacterPlay, CreateCharacter, Facet, Point};
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
 pub const ACCOUNT_NAME_LENGTH: usize = 30;
@@ -1103,6 +1103,20 @@ pub enum LoginStagePacket {
     /// `0x83` — character deletion. Crosses the same login/world line as
     /// [`Self::CreateCharacter`], for the same reason.
     DeleteCharacter(DeleteCharacter),
+    /// `0x5D` — the character the client picked off the list, and the packet
+    /// that starts the world.
+    ///
+    /// The third of the character screen's, beside [`Self::CreateCharacter`] and
+    /// [`Self::DeleteCharacter`], and it is here for the reason the seam is drawn
+    /// where it is: everything before a character is in the world belongs to the
+    /// screen, whoever ends up acting on it. It was a [`ClientPacket`] until the
+    /// backlog of `docs/connection_state.md` caught up with it, which left the
+    /// world's dispatcher with one arm it could never legitimately reach and an
+    /// `unreachable!` standing in for the invariant. On this side of the split
+    /// that arm cannot be written.
+    ///
+    /// [`ClientPacket`]: crate::client_packet::ClientPacket
+    PlayCharacter(CharacterPlay),
 }
 
 impl LoginStagePacket {
@@ -1140,6 +1154,9 @@ impl LoginStagePacket {
             DeleteCharacter::ID => decode_packet(packet, version)
                 .map(Self::DeleteCharacter)
                 .map_err(ClientLoginDecodeError::DeleteCharacter),
+            CharacterPlay::ID => decode_packet(packet, version)
+                .map(Self::PlayCharacter)
+                .map_err(ClientLoginDecodeError::PlayCharacter),
             _ => Ok(Self::Unknown(id)),
         }
     }
@@ -1164,6 +1181,8 @@ pub enum ClientLoginDecodeError {
     CreateCharacter(DecodeError),
     /// `0x83` did not decode.
     DeleteCharacter(DecodeError),
+    /// `0x5D` did not decode.
+    PlayCharacter(DecodeError),
 }
 
 #[cfg(test)]

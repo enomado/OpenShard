@@ -23,7 +23,7 @@ use crate::target::TargetResponse;
 use crate::trade::SecureTradeAction;
 use crate::vendor::{BuyReply, SellReply};
 use crate::version::ClientVersion;
-use crate::world::{CharacterPlay, WalkRequest};
+use crate::world::WalkRequest;
 
 /// `0xD1` from the client is a bare notification — "log me out" — with no
 /// body to decode. Kept private: nothing outside [`ClientPacket::decode`]
@@ -34,8 +34,6 @@ const LOGOUT_REQUEST_ID: u8 = 0xD1;
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ClientPacket {
-    /// `0x5D` — character select.
-    CharacterPlay(CharacterPlay),
     /// `0x02` — a movement request.
     Walk(WalkRequest),
     /// `0xD1` — "Log Out" on the paperdoll.
@@ -110,9 +108,6 @@ impl ClientPacket {
             .first()
             .expect("packet is empty: caller skipped framing, which never produces one");
         match id {
-            CharacterPlay::ID => decode_packet(packet, version)
-                .map(Self::CharacterPlay)
-                .map_err(ClientDecodeError::CharacterPlay),
             WalkRequest::ID => decode_packet(packet, version)
                 .map(Self::Walk)
                 .map_err(ClientDecodeError::Walk),
@@ -210,8 +205,6 @@ impl ClientPacket {
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ClientDecodeError {
-    /// `0x5D` did not decode.
-    CharacterPlay(DecodeError),
     /// `0x02` did not decode.
     Walk(DecodeError),
     /// `0x34` did not decode.
@@ -311,11 +304,26 @@ mod tests {
 
     #[test]
     fn a_malformed_known_id_is_an_error() {
-        // 0x5D (character select) is Fixed(73); five bytes never decodes.
-        let bytes = [0x5D, 0, 0, 0, 0];
+        // 0x02 (walk) is Fixed(7); three bytes never decodes.
+        let bytes = [0x02, 0, 0];
         assert!(matches!(
             ClientPacket::decode(&bytes, version()),
-            Err(ClientDecodeError::CharacterPlay(_))
+            Err(ClientDecodeError::Walk(_))
+        ));
+    }
+
+    #[test]
+    fn character_select_is_not_a_world_packet() {
+        // `0x5D` is the character screen's, and it is decoded by
+        // `LoginStagePacket` — see its `PlayCharacter`. Reaching this decoder at
+        // all means the split in `RawPacket::parse_packet` was bypassed, so what
+        // comes back is an id this half has no handler for rather than a packet
+        // the world's dispatcher could be handed. That is the property the arm
+        // this replaced could only state in an `unreachable!` two crates away.
+        let bytes = [0x5Du8; 73];
+        assert!(matches!(
+            ClientPacket::decode(&bytes, version()),
+            Ok(ClientPacket::Unknown { id: 0x5D, .. })
         ));
     }
 

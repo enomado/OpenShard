@@ -188,13 +188,15 @@ follows.
       phase is matched once, in `handle_world_packet`, which queues what comes
       back — the rule `roadmap.md` §2 asks for on the character screen, applied
       to the whole dispatcher.
-      `0x5D` moved out to `dispatch::play_character` and is routed *before* the
-      gate: it is the one packet a connection outside the world may send, and
-      the only one that needed the roster and the account's access. That is what
-      leaves the gate a single `if` and the dispatcher total.
+      `0x5D` moved out of the dispatcher and was routed *before* the gate: it is
+      the one packet a connection outside the world may send, and the only one
+      that needed the roster and the account's access. That is what leaves the
+      gate a single `if` and the dispatcher total. *(It is not a world packet at
+      all any more — the backlog entry on `ClientPacket` below says where it
+      went.)*
       Guarded by `a_world_packet_from_outside_the_world_becomes_no_command`,
       `the_same_packet_becomes_a_command_once_the_connection_is_in` and
-      `the_character_screen_packet_is_the_one_the_gate_does_not_stop` in
+      `the_character_screen_packet_never_meets_the_gate` in
       `server/src/shard.rs`. They assert on `World::queued`, added for them: a
       refused packet's whole story is that no work was created, and every other
       observation of the world is downstream of a tick that would have had
@@ -441,18 +443,28 @@ will read it.
   allocator is free to hand to something else. Both `restore_*` docs state the
   order and `run_shard` obeys it, but nothing in the types does.
 
-- **`ClientPacket` mixes the character screen in with the world.** S3 left one
-  `unreachable!` behind: `0x5D` is a `ClientPacket` variant that
-  `dispatch_world_packet` can never legitimately see, because the caller matches
-  it out first. The invariant is real but it lives in a `match` arm in another
-  file, which is exactly the shape this whole plan is trying to delete. The fix
-  is at the decode seam — `parse_packet` already splits `Packet::Login` from
-  `Packet::World`, and `0x5D` belongs on the screen side of that split with
-  `0x00`/`0xF8` and `0x83`, at which point the arm cannot be written at all. Not
-  done here because it moves a public protocol enum for what is today a one-line
-  comment, and it was left to S5 to carry — which S5 did not: the `unreachable!`
-  is still at `server/src/dispatch.rs:36`, now with no later step scheduled to
-  pass through it.
+- ~~**`ClientPacket` mixes the character screen in with the world.**~~ Fixed, at
+  the decode seam the entry pointed at. S3 left one `unreachable!` behind: `0x5D`
+  was a `ClientPacket` variant that `dispatch_world_packet` could never
+  legitimately see, because `handle_world_packet` matched it out first. The
+  invariant was real and lived in a `match` arm in another file, which is exactly
+  the shape this plan is trying to delete.
+
+  `0x5D` is a `LoginStagePacket::PlayCharacter` now, beside `0x00`/`0xF8` and
+  `0x83`, so `RawPacket::parse_packet` routes it to `handle_login_packet` with
+  the screen's other two and the world's dispatcher never sees it. The arm cannot
+  be written: there is no variant to write it about. `handle_world_packet` is
+  down to the gate and the queue, which is what S3 said it was and what it has
+  only now become.
+
+  The struct stays in `protocol::world` — that is where the conversation it opens
+  is drawn, and `CreateCharacter`'s body lives there too. What moved is which
+  half of the split claims the id.
+
+  Guarded by `character_select_is_not_a_world_packet` in `protocol`, which asserts
+  the world decoder now answers `Unknown` for `0x5D` rather than a packet the
+  dispatcher could be handed, and by
+  `the_character_screen_packet_never_meets_the_gate` in `server/src/shard.rs`.
 - ~~**`Accounts::verify` is the slow path, still reachable.**~~ Fixed, and not the
   way this entry proposed. S6 split the trait into `credential` (a lookup) and
   `CredentialCheck::run` (the hash), and left `verify` as a provided method that

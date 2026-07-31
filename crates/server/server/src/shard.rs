@@ -368,6 +368,29 @@ fn handle_login_packet(
             });
             true
         }
+        LoginStagePacket::PlayCharacter(play) => {
+            // The screen's third packet, and the one that ends the screen.
+            // Everything it needs beyond the name — whose account this is, what
+            // authority it plays with, which client it is — is on the
+            // connection's row in the world, put there at the hand-off.
+            //
+            // The phase moves here rather than on the `PlayerEntered` that
+            // follows: this *is* a request to enter, and everything the client
+            // sends next must be queued behind the entry rather than dropped by
+            // the world gate. See `WorldPhase::Entering`.
+            session.enter_world();
+            // Tell the gateway framer this client's version now, before any
+            // in-world packet whose length depends on it (the drop packet). The
+            // game connection never stated its version; this is the
+            // auth-key-linked one the login carried across. Character select is
+            // the last quiet moment before world traffic starts.
+            let _ = session.control.send(session.login.version());
+            world.queue(Command::PlayCharacter {
+                connection: id,
+                name: play.name,
+            });
+            true
+        }
         login_packet => {
             // The game login is the seam Sphere calls CONNECT_GAME: from here
             // on, this connection's every server->client packet is
@@ -391,8 +414,7 @@ fn handle_login_packet(
     }
 }
 
-/// Route a decoded world packet: pick the character screen's `0x5D` out of it,
-/// then gate everything else on the connection's phase and queue what the
+/// Gate a decoded world packet on the connection's phase and queue what the
 /// dispatcher makes of it.
 ///
 /// # The one gate
@@ -401,6 +423,13 @@ fn handle_login_packet(
 /// repeat — see that function's doc, and `docs/connection_state.md` S3. It is
 /// here rather than there because this is the last place that still holds the
 /// session: past it, a packet is only a packet.
+///
+/// Every packet reaching this function is a world packet and nothing else. The
+/// character screen's three, `0x5D` included, are [`LoginStagePacket`]s and go to
+/// [`handle_login_packet`]; that used to be a fourth arm here, matched out before
+/// the gate, with an `unreachable!` in the dispatcher standing in for the
+/// invariant. The split at the decode seam is the same statement, made where it
+/// cannot be forgotten.
 ///
 /// The dropped packet is not named in the log. `ClientPacket`'s `Debug` carries
 /// bodies — a `0x03` would put whatever the player typed in the log — and a
@@ -412,32 +441,6 @@ fn handle_world_packet(
     packet: ClientPacket,
     id: ConnectionId,
 ) -> bool {
-    // `0x5D` is the one packet a connection outside the world may send, and it
-    // is what puts it inside. Everything it needs beyond the name — whose account
-    // this is, what authority it plays with, which client it is — is on the
-    // connection's row in the world, put there at the hand-off.
-    let packet = match packet {
-        ClientPacket::CharacterPlay(play) => {
-            // The phase moves here rather than on the `PlayerEntered` that
-            // follows: this *is* a request to enter, and everything the client
-            // sends next must be queued behind the entry rather than dropped by
-            // the gate below. See `WorldPhase::Entering`.
-            session.enter_world();
-            // Tell the gateway framer this client's version now, before any
-            // in-world packet whose length depends on it (the drop packet). The
-            // game connection never stated its version; this is the
-            // auth-key-linked one the login carried across. Character select is
-            // the last quiet moment before world traffic starts.
-            let _ = session.control.send(session.login.version());
-            world.queue(Command::PlayCharacter {
-                connection: id,
-                name: play.name,
-            });
-            return true;
-        }
-        packet => packet,
-    };
-
     if !session.in_world() {
         debug!(%id, "a world packet from a connection that is not in the world");
         return true;
@@ -568,6 +571,9 @@ impl Shard {
                                 PacketError::Login(ClientLoginDecodeError::DeleteCharacter(error)) => {
                                     warn!(%id, %error, "malformed delete-character");
                                 }
+                                PacketError::Login(ClientLoginDecodeError::PlayCharacter(error)) => {
+                                    warn!(%id, %error, "malformed character-select");
+                                }
                                 PacketError::Login(other) => {
                                     warn!(%id, ?other, "malformed login packet");
                                 }
@@ -658,8 +664,8 @@ mod tests {
     }
 
     /// The `0x5D` a client sends when it picks [`lord_british`] off the list.
-    fn picking_lord_british() -> ClientPacket {
-        ClientPacket::CharacterPlay(CharacterPlay {
+    fn picking_lord_british() -> LoginStagePacket {
+        LoginStagePacket::PlayCharacter(CharacterPlay {
             name: RawCharacterName(lord_british().0),
             slot: RawCharacterSlot(0),
             client_ip: RawClientIp(0),
@@ -701,20 +707,25 @@ mod tests {
     }
 
     #[test]
-    fn the_character_screen_packet_is_the_one_the_gate_does_not_stop() {
+    fn the_character_screen_packet_never_meets_the_gate() {
         // `0x5D` arrives from a connection that is by definition outside the
-        // world — it is what puts it in — so it is routed before the gate. Route
-        // it after and a shard accepts no logins at all, silently: the client
-        // waits on "logging into shard" and this end says nothing.
+        // world — it is what puts it in — so it is not a world packet at all: the
+        // decode seam hands it to `handle_login_packet` beside the screen's other
+        // two. Route it past the gate instead and a shard accepts no logins at
+        // all, silently: the client waits on "logging into shard" and this end
+        // says nothing.
         let mut login = login_server();
         let mut world = World::new((1363, 1600));
+        let (verifier, _verdicts) = Verifier::new();
         let id = ConnectionId::from_raw(1);
         let (mut session, _wire) = at_character_screen(&mut login, Instant::now());
         assert!(!session.in_world(), "the fixture is on the character screen");
 
-        assert!(handle_world_packet(
+        assert!(handle_login_packet(
             &mut session,
+            &mut login,
             &mut world,
+            &verifier,
             picking_lord_british(),
             id
         ));

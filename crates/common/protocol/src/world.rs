@@ -71,11 +71,19 @@ impl fmt::Display for Point {
 // -- 0x5D character play --------------------------------------------------
 
 /// `0x5D` — the client picks a character from the list. 73 bytes.
+///
+/// Laid out here because this is where the conversation it opens is drawn, and
+/// decoded on the other side of the split: it is a
+/// [`LoginStagePacket::PlayCharacter`](crate::login::LoginStagePacket::PlayCharacter),
+/// the last of the character screen's three, beside `0x00`/`0xF8` and `0x83`
+/// whose bodies also live in this module. Nothing about a connection that sends
+/// one is in the world yet.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CharacterPlay {
     /// The character's name, echoed from the 0xA9 list, not yet checked
     /// against the account's actual list — see [`RawCharacterName`]'s module
-    /// docs; the lookup at the seam (`dispatch::play_character`) is the check.
+    /// docs; the lookup in the world (`tick::screen::play_character`) is the
+    /// check.
     pub name: RawCharacterName,
     /// Which slot, zero-based, into the list the server sent. Class D: the
     /// seam looks the character up by name, not by slot. See [`RawCharacterSlot`].
