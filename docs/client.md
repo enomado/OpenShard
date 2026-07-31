@@ -117,8 +117,15 @@ mistake above, on the first run.
 assertions:
 
 ```sh
-OPENSHARD_CLIENT=… cargo run -p openshard-playground
+cargo run -p openshard-playground -- --client "/path/to/Ultima Online Classic"
 ```
+
+Every option is also the `OPENSHARD_*` variable it used to be, and a `.env` at
+the workspace root is read before the command line, so in practice the install
+is named once in `.env` (copied from `.env.example`, and never committed) and
+the command is `cargo run -p openshard-playground`. `--help` is where both
+spellings are written down; `--account` and `--character` pick which of the
+stock development accounts to play.
 
 A shard in a thread of its own, the window logged in to it, both ending
 together — and **no port bound and no socket opened**. The two are joined by
@@ -300,8 +307,8 @@ is why `Anim::frames` takes `&mut self`. The browser is the reason the rest of
 `uofiles` will follow.
 
 **The ground half is done.** `crates/client/render` draws it and
-`crates/client/app` puts it in a window: `OPENSHARD_CLIENT=… cargo run -p
-openshard-client-app` opens on Britain and the arrow keys walk the camera. The
+`crates/client/app` puts it in a window: `cargo run -p openshard-client-app --
+--client …` opens on Britain and the arrow keys walk the camera. The
 crate is `wgpu`, and it is browser-shaped on purpose — WebGL2's ceiling, no
 compute, no storage buffers, instancing through vertex buffers, every device
 request `async`, and a 2048 atlas because that is the only texture size WebGL2
@@ -372,8 +379,7 @@ everyone else on screen — with the arrow keys sending a `0x02` each and the
 camera following the body the server confirms:
 
 ```sh
-OPENSHARD_CLIENT=… OPENSHARD_ACCOUNT=admin OPENSHARD_PASSWORD=… \
-    cargo run -p openshard-client-app
+cargo run -p openshard-client-app -- --client … --account admin --password …
 ```
 
 Without an account it stays the offline map viewer it was, which is the only
@@ -395,7 +401,7 @@ everyone else walks around it.
 
 ## M3a — the camera, and a shell to look through
 
-**Built.** `OPENSHARD_CLIENT=… cargo run -p openshard-client-app` opens on
+**Built.** `cargo run -p openshard-client-app -- --client …` opens on
 Britain, the wheel zooms about the cursor, a middle-drag pans, `Home` re-locks
 the camera to the body, and the three panels are on screen. What follows is the
 design as it was argued, with the places the code went another way marked — each
@@ -646,7 +652,7 @@ building them in egui now would decide M4 without arguing it.
 
 ### Done when
 
-`OPENSHARD_CLIENT=… cargo run -p openshard-client-app` opens on Britain, the
+`cargo run -p openshard-client-app -- --client …` opens on Britain, the
 wheel zooms about the cursor, a middle-drag pans, `Home` re-locks the camera to
 the body, and the three panels are on screen. `cargo test --workspace` is green,
 including: `to_world(to_view(w)) == w` over the whole ladder,

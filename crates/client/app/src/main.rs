@@ -73,8 +73,8 @@ fn plan(cli: &Cli) -> Option<Plan> {
 
 fn main() -> ExitCode {
     // Before the command line is parsed, because what the file holds is the
-    // environment those `env =` options fall back to. Absent is not an error.
-    dotenvy::dotenv().ok();
+    // environment those `env =` options fall back to.
+    openshard_client_app::load_env();
     let cli = Cli::parse();
 
     // A real client on a real network. `Tcp` is where the address goes: past

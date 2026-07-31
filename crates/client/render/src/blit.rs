@@ -225,6 +225,17 @@ impl Blit {
     }
 }
 
+/// The format of the texture the world is drawn into.
+///
+/// Every pipeline that draws into that texture — ground, statics, mobiles —
+/// must be built with *this* format and never with the surface's. The two are
+/// not the same value: a surface may offer `Rgba16Float` first among its
+/// non-sRGB formats (an HDR display does), and a pipeline built for it fails
+/// validation at `set_pipeline` against a pass whose attachment is this
+/// texture. Only the blit and the HUD, which draw to the surface itself, take
+/// the surface's format.
+pub const WORLD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
 /// Create the texture the world is drawn into, at a camera's render size.
 ///
 /// Here rather than in the caller because the format and the usage are this
@@ -244,7 +255,7 @@ pub fn world_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         dimension: wgpu::TextureDimension::D2,
         // `Rgba8Unorm`, like every other texture here: the world passes write
         // the art's own bytes and this carries them to the surface unconverted.
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: WORLD_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
             // So a test can read the world image back and compare it with what

@@ -699,6 +699,103 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
     }
 }
 
+/// The world passes draw into the world texture on a surface that is not
+/// `Rgba8Unorm`.
+///
+/// The surface's format and the world texture's are two different values, and
+/// the frame here is the arrangement that makes them differ: an HDR display
+/// offers `Rgba16Float` first among its non-sRGB formats, and a world pipeline
+/// built from the surface's format instead of `blit::WORLD_FORMAT` fails
+/// validation at `set_pipeline` — the whole client dies on the first frame with
+/// nothing drawn. Nothing is read back: the assertion is that the submission
+/// validates at all, and a mismatch panics inside `wgpu` before it returns.
+#[test]
+fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (64, 64);
+    let world = openshard_client_render::blit::world_texture(&device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(&device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // A sprite made here rather than read from a client, and one real quad: a
+    // pass handed nothing returns before it binds its pipeline, which is the
+    // one step this test is about.
+    const GRAPHIC: Graphic = Graphic(1);
+    let art = Image::new(8, 8, vec![Color16(0b0_00000_11111_00000); 64]);
+    let atlas = StaticAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
+    let sprite = atlas.sprite(GRAPHIC).expect("packed");
+    let quads = [SpriteQuad {
+        x: 4.0,
+        y: 4.0,
+        width: f32::from(sprite.width),
+        height: f32::from(sprite.height),
+        region: sprite.region,
+        depth: 0.5,
+        hue: 0,
+    }];
+    let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
+    let mut sprites = SpriteRenderer::new(
+        &device,
+        &queue,
+        openshard_client_render::blit::WORLD_FORMAT,
+        atlas.pixels(),
+        &hue_ramp,
+    );
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    sprites.render(
+        &device,
+        &queue,
+        &mut encoder,
+        Target {
+            view: &world_view,
+            depth: &depth_view,
+            width,
+            height,
+        },
+        &quads,
+    );
+
+    // The stand-in for the HDR surface, in the format the blit and the HUD —
+    // and only they — are built for.
+    let surface_format = wgpu::TextureFormat::Rgba16Float;
+    let surface = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: surface_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+    let blit = Blit::new(&device, surface_format);
+    blit.render(
+        &device,
+        &mut encoder,
+        &surface_view,
+        &world_view,
+        Zoom::ONE,
+        ViewportRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting on our own submission");
+}
+
 /// A static sprite is drawn at its own size, in its own place, and its
 /// transparent pixels are not drawn at all.
 ///

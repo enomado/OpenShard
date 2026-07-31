@@ -55,6 +55,28 @@ mod keys;
 mod link;
 mod shell;
 
+/// Read a `.env` from the working directory or an ancestor of it, if there is
+/// one, so that the binaries' `env =` options have something to fall back to.
+///
+/// Call it before parsing a command line — that is the whole of the contract —
+/// and from every binary that puts a window on a client install, which is why
+/// it lives here rather than in one of them: `crates/e2e/playground` starts the
+/// same client from the same `.env`.
+///
+/// **A missing file is not a failure and a malformed one is.** The two are one
+/// `Result` in `dotenvy` and collapsing them with `.ok()` is how a quoting
+/// mistake becomes "set OPENSHARD_CLIENT" from a shell where it *is* set: a
+/// path with a space in it needs quotes, and without them the whole file is
+/// dropped without a word. The line is printed rather than returned, because
+/// the caller has not built anything to fail out of yet.
+pub fn load_env() {
+    match dotenvy::dotenv() {
+        Ok(_) => {}
+        Err(error) if error.not_found() => {}
+        Err(error) => eprintln!("ignoring .env: {error}"),
+    }
+}
+
 use crowd::{Crowd, Who};
 use openshard_client_net::session::Plan;
 use openshard_client_net::transport::Dial;
@@ -649,8 +671,16 @@ impl ApplicationHandler<link::Update> for App {
         // whatever the UI is animating, and the next step a held key is owed.
         // The deadline is the earliest — a loop that slept past the step would
         // walk at whatever rate it happened to wake at.
+        // `checked_add`, because a still UI asks for eternity
+        // (`Duration::MAX`, see `Shell::repaint_after`) and `now + MAX`
+        // overflows the instant rather than meaning "never". An overflow is
+        // exactly the case where the UI wants no frame of its own, so it falls
+        // back to the animation clock.
         let deadline = match self.shell.as_ref().map(shell::Shell::repaint_after) {
-            Some(after) => self.next_tick.min(now + after),
+            Some(after) => match now.checked_add(after) {
+                Some(ui) => self.next_tick.min(ui),
+                None => self.next_tick,
+            },
             None => self.next_tick,
         };
         let deadline = match self.keys.deadline() {
@@ -996,10 +1026,30 @@ impl App {
         self.control.resize(config.width, config.height);
 
         let atlases = self.build_atlases()?;
-        let renderer = GroundRenderer::new(&device, &queue, format, &atlases.land, &atlases.texmaps);
-        let statics = SpriteRenderer::new(&device, &queue, format, atlases.statics.pixels(), &self.hue_ramp);
-        let mobile_pass =
-            SpriteRenderer::new(&device, &queue, format, atlases.mobiles.pixels(), &self.hue_ramp);
+        // The world passes draw into the world texture, so they take *its*
+        // format and not the surface's — the two differ on an HDR display,
+        // where the first non-sRGB surface format is `Rgba16Float`.
+        let renderer = GroundRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            &atlases.land,
+            &atlases.texmaps,
+        );
+        let statics = SpriteRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            atlases.statics.pixels(),
+            &self.hue_ramp,
+        );
+        let mobile_pass = SpriteRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            atlases.mobiles.pixels(),
+            &self.hue_ramp,
+        );
         // The world is drawn at 1:1 into a texture of the camera's render size,
         // which is the viewport only at zoom 1 — see `client/render`'s `blit`.
         let world = blit::world_texture(
@@ -1146,21 +1196,21 @@ impl App {
                 window.renderer = GroundRenderer::new(
                     &window.device,
                     &window.queue,
-                    window.config.format,
+                    blit::WORLD_FORMAT,
                     &atlases.land,
                     &atlases.texmaps,
                 );
                 window.statics = SpriteRenderer::new(
                     &window.device,
                     &window.queue,
-                    window.config.format,
+                    blit::WORLD_FORMAT,
                     atlases.statics.pixels(),
                     &self.hue_ramp,
                 );
                 window.mobile_pass = SpriteRenderer::new(
                     &window.device,
                     &window.queue,
-                    window.config.format,
+                    blit::WORLD_FORMAT,
                     atlases.mobiles.pixels(),
                     &self.hue_ramp,
                 );

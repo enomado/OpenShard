@@ -70,9 +70,9 @@ struct Cli {
 
 fn main() -> ExitCode {
     // Before the command line is parsed, because what the file holds is the
-    // environment those `env =` options fall back to. Absent is not an error:
-    // exporting the variables, or typing the flags, is the same run.
-    dotenvy::dotenv().ok();
+    // environment those `env =` options fall back to. Exporting the variables,
+    // or typing the flags, is the same run.
+    openshard_client_app::load_env();
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
