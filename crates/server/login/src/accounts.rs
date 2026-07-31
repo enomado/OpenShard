@@ -21,8 +21,8 @@ use crate::password;
 /// nonce, nothing. That is the client's fault and cannot be fixed server-side.
 /// What *can* be fixed is what happens next: an implementation of this trait
 /// must compare against a slow password hash (argon2, bcrypt, scrypt) and must
-/// never persist the plaintext. [`verify`](Accounts::verify) taking the
-/// plaintext is unavoidable; storing it is not.
+/// never persist the plaintext. [`CredentialCheck::run`] taking the plaintext is
+/// unavoidable; storing it is not.
 ///
 /// # Parameters borrow the typed newtype
 ///
@@ -56,26 +56,6 @@ pub trait Accounts {
         account: &RawAccountName,
         password: &RawPlaintextPassword,
     ) -> Result<Credential, DenyReason>;
-
-    /// The whole check, hash comparison included, on the caller's own thread.
-    ///
-    /// For a caller with nothing to stall: tests, tools, a fixture. The shard
-    /// deliberately does not use it — [`LoginServer::handle`] hands the slow half
-    /// back so the loop can run it somewhere the tick is not waiting on it. See
-    /// [`Credential`].
-    ///
-    /// [`LoginServer::handle`]: crate::LoginServer::handle
-    fn verify(
-        &self,
-        account: &RawAccountName,
-        password: &RawPlaintextPassword,
-    ) -> Result<AccountName, DenyReason> {
-        let (account, check) = self.credential(account, password)?.against(password.clone());
-        match check.run() {
-            PasswordVerdict::Matched => Ok(account),
-            PasswordVerdict::Rejected => Err(DenyReason::BadPassword),
-        }
-    }
 
     /// The authority the account's characters play with — what staff commands
     /// they may run. Defaults to [`AccessLevel::Player`] so a store that has no
@@ -320,6 +300,34 @@ impl Accounts for DevAccounts {
 mod tests {
     use super::*;
 
+    /// Both halves of a login, run here, on this thread.
+    ///
+    /// This was a provided method on [`Accounts`] until the backlog of
+    /// `docs/connection_state.md` caught up with it: it is precisely the call the
+    /// shard must never make — argon2 on the caller's thread, tens of a 50 ms
+    /// tick — and a doc comment saying so was all that stood in the way. Nothing
+    /// outside these tests ever called it, so it is a test helper now. A shard
+    /// cannot reach it, and the rule is a fact about where the code lives rather
+    /// than a request to obey one.
+    ///
+    /// The tests below want it because a test has nothing to stall, and because
+    /// what most of them are about — an unknown account, a blocked one, a name no
+    /// client could have sent — is decided by the lookup half and would read the
+    /// same either way. The two that are about the split itself,
+    /// `the_lookup_stops_short_of_the_password` and `the_check_is_what_decides`,
+    /// deliberately do not use this.
+    fn verify(
+        store: &DevAccounts,
+        account: &RawAccountName,
+        password: &RawPlaintextPassword,
+    ) -> Result<AccountName, DenyReason> {
+        let (account, check) = store.credential(account, password)?.against(password.clone());
+        match check.run() {
+            PasswordVerdict::Matched => Ok(account),
+            PasswordVerdict::Rejected => Err(DenyReason::BadPassword),
+        }
+    }
+
     fn store() -> DevAccounts {
         DevAccounts::new()
             .with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"))
@@ -330,7 +338,8 @@ mod tests {
     #[test]
     fn accepts_the_right_password() {
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("admin"),
                 &RawPlaintextPassword::new("hunter2")
             ),
@@ -341,14 +350,19 @@ mod tests {
     #[test]
     fn rejects_the_wrong_password() {
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("admin"),
                 &RawPlaintextPassword::new("hunter3")
             ),
             Err(DenyReason::BadPassword)
         );
         assert_eq!(
-            store().verify(&RawAccountName::new("admin"), &RawPlaintextPassword::new("")),
+            verify(
+                &store(),
+                &RawAccountName::new("admin"),
+                &RawPlaintextPassword::new("")
+            ),
             Err(DenyReason::BadPassword)
         );
     }
@@ -428,7 +442,8 @@ mod tests {
     #[test]
     fn rejects_an_unknown_account() {
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("nobody"),
                 &RawPlaintextPassword::new("hunter2")
             ),
@@ -441,11 +456,16 @@ mod tests {
         // Order matters: telling a banned account its password was right is a
         // small thing, but there is no reason to.
         assert_eq!(
-            store().verify(&RawAccountName::new("banned"), &RawPlaintextPassword::new("x")),
+            verify(
+                &store(),
+                &RawAccountName::new("banned"),
+                &RawPlaintextPassword::new("x")
+            ),
             Err(DenyReason::Blocked)
         );
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("banned"),
                 &RawPlaintextPassword::new("wrong")
             ),
@@ -458,14 +478,16 @@ mod tests {
         // The client does not round-trip case reliably, and no player expects
         // "Admin" and "admin" to be different accounts.
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("ADMIN"),
                 &RawPlaintextPassword::new("hunter2")
             ),
             Ok(AccountName::new("ADMIN"))
         );
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("AdMiN"),
                 &RawPlaintextPassword::new("hunter2")
             ),
@@ -476,7 +498,8 @@ mod tests {
     #[test]
     fn passwords_are_case_sensitive() {
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("admin"),
                 &RawPlaintextPassword::new("HUNTER2")
             ),
@@ -490,17 +513,26 @@ mod tests {
         // a bug upstream. Either way it must not reach the store.
         let long = "x".repeat(ACCOUNT_NAME_LENGTH + 1);
         assert_eq!(
-            store().verify(&RawAccountName::new(&long), &RawPlaintextPassword::new("x")),
+            verify(
+                &store(),
+                &RawAccountName::new(&long),
+                &RawPlaintextPassword::new("x")
+            ),
             Err(DenyReason::MalformedAccount)
         );
         assert_eq!(
-            store().verify(&RawAccountName::new(""), &RawPlaintextPassword::new("x")),
+            verify(
+                &store(),
+                &RawAccountName::new(""),
+                &RawPlaintextPassword::new("x")
+            ),
             Err(DenyReason::MalformedAccount)
         );
 
         let long_password = "x".repeat(PASSWORD_LENGTH + 1);
         assert_eq!(
-            store().verify(
+            verify(
+                &store(),
                 &RawAccountName::new("admin"),
                 &RawPlaintextPassword::new(&long_password)
             ),
@@ -541,7 +573,8 @@ mod tests {
         let store =
             DevAccounts::new().with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"));
         assert_eq!(
-            store.verify(
+            verify(
+                &store,
                 &RawAccountName::new("admin"),
                 &RawPlaintextPassword::new("hunter2")
             ),
@@ -560,7 +593,8 @@ mod tests {
         let phc = password::hash(&PlaintextPassword::new("secret"));
         let store = DevAccounts::new().with_credential(&AccountName::new("returning"), &phc);
         assert_eq!(
-            store.verify(
+            verify(
+                &store,
                 &RawAccountName::new("returning"),
                 &RawPlaintextPassword::new("secret")
             ),

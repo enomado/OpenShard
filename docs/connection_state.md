@@ -449,13 +449,23 @@ will read it.
   comment, and it was left to S5 to carry — which S5 did not: the `unreachable!`
   is still at `server/src/dispatch.rs:36`, now with no later step scheduled to
   pass through it.
-- **`Accounts::verify` is the slow path, still reachable.** S6 split the trait
-  into `credential` (a lookup) and `CredentialCheck::run` (the hash), and left
-  `verify` as a provided method that does both — for fixtures, tools, and the
-  three test loops that have nothing to stall. It is exactly the call that must
-  never appear in the shard again, and nothing but a doc comment says so. A
-  clippy `disallowed_methods` entry would say it in the build; it is not there
-  because the lint's config is per-workspace and this would be its first entry.
+- ~~**`Accounts::verify` is the slow path, still reachable.**~~ Fixed, and not the
+  way this entry proposed. S6 split the trait into `credential` (a lookup) and
+  `CredentialCheck::run` (the hash), and left `verify` as a provided method that
+  did both — argon2 on the caller's thread, which is exactly the call that must
+  never appear in the shard again, with nothing but a doc comment saying so. The
+  entry asked for a clippy `disallowed_methods` line; what it got instead is the
+  method not existing.
+
+  The reason to prefer that is what a grep for the call sites turned up: every
+  one of them was in `accounts.rs`'s own test module. The "fixtures and tools"
+  the doc comment justified it with are not in this repository, and the three
+  test loops of the finding below run `CredentialCheck::run` themselves rather
+  than going through the trait. So `verify` is a private helper in that test
+  module now, taking the store as an argument the way a free function does. A
+  lint would have said "do not call this"; a helper the shard's crates cannot
+  name says it without a lint config, and without the `#[allow]` that each of the
+  fourteen honest test call sites would have needed.
 - **Three test loops resolve a verification by hand.** `login/src/session.rs`'s
   `drive`, `server/src/testing.rs`'s `drive`, and the fake shard in
   `server/tests/login_flow.rs` each write `match handle { Reply => …, Verify =>
