@@ -268,11 +268,16 @@ on. The rest are independent.
   other reason to be driven from a test; not worth building the harness for alone.
   What the line *says* is testable and tested — see `Unwritten` in `shard.rs`;
   what is not is that the process leaves with code 2 when it says it.
-- **The client decodes `0x1C` and draws nothing with it.** S3 wrote the decoder
-  because the shutdown notice had to be readable; nothing in `WorldView` keeps
-  what was said, so a client built on it still has no journal. The next thing
-  that speaks to a player — a GM line, an NPC — will want the same, and the place
-  for it is `view.rs` beside the rest of what the server has shown.
+- ~~**The client decodes `0x1C` and keeps nothing.**~~ `WorldView::journal` now
+  holds what was said, oldest first and capped at `JOURNAL_LINES` — a bound
+  rather than a `Vec`, because the client this is for stays logged in and
+  nothing ever asks it to forget. Two decisions worth knowing: the whole `0x1C`
+  is kept rather than a trimmed line, so there is no second type to reconcile;
+  and a `0x1B` restart replaces everything *except* the journal, because a
+  restart says what is on screen is stale and unsays nothing that was said.
+  That last one is `a_restart_replaces_the_world_and_unsays_nothing`, checked to
+  fail. **Drawing it is still M4** in [`client.md`](client.md) — this is the
+  record, not the window.
 - **`Shard::announce_shutdown` is the only caller of `World::announce`.** A GM
   broadcast is the obvious second, and S7's countdown is the third; until one of
   them exists the method is a one-use seam and its shape is unproven.

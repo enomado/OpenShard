@@ -7,10 +7,11 @@
 //!
 //! It grows with the decoders. `0x1B`, `0x20`, `0x1D`, `0x77`, `0x78` and
 //! `0x1A` are decoded, so the player, every other mobile and every ground item
-//! this client has been shown are held here. `0x11` (a mobile's paperdoll
-//! numbers) decodes too, but is not folded in below: it is status-bar data, not
-//! a position or an appearance, and belongs with whatever eventually models the
-//! status bar rather than with a record of what is on screen.
+//! this client has been shown are held here, and `0x1C` is kept as a journal of
+//! what has been said to it. `0x11` (a mobile's paperdoll numbers) decodes too,
+//! but is not folded in below: it is status-bar data, not a position or an
+//! appearance, and belongs with whatever eventually models the status bar rather
+//! than with a record of what is on screen.
 //!
 //! Two of those packets can name the client's own serial, and neither means
 //! what it means about anybody else: a `0x78` about ourselves is the paperdoll
@@ -18,14 +19,24 @@
 //! not a move at all. Both are routed by serial in [`WorldView::apply`], so
 //! [`WorldView::mobiles`] holds only *other* mobiles, as its docs promise.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use openshard_protocol::direction::Facing;
 use openshard_protocol::mobile::{Equipment, Notoriety, StatusFlags};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::speech::SpokenMessage;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{MapSize, PlayerStart, Point};
+
+/// How many lines of speech the journal keeps.
+///
+/// A bound rather than a `Vec` that grows forever, because the thing this is
+/// built for is a client that stays logged in: a virtual player standing in a
+/// town square hears every line said near it, and nothing ever asks it to
+/// forget. The number is what a scrollback is worth reading, not a memory
+/// budget — the oldest line is dropped, silently, which is what a journal does.
+pub const JOURNAL_LINES: usize = 256;
 
 /// The client's own character, as the server last described it.
 ///
@@ -116,6 +127,18 @@ pub struct WorldView {
     pub mobiles: HashMap<Serial, Mobile>,
     /// Every ground item this client has been shown, by serial.
     pub items: HashMap<Serial, Item>,
+    /// What has been said to this client, oldest first, capped at
+    /// [`JOURNAL_LINES`].
+    ///
+    /// The whole `0x1C` and not a trimmed line: one packet is one entry here,
+    /// so there is nothing for a second type to reconcile, and a renderer that
+    /// wants the hue and the font it was told to draw in still has them.
+    ///
+    /// It is history, not state — which is why nothing removes from it except
+    /// the cap. The first thing it holds, and the reason it exists at all, is
+    /// the shard saying it is going away (`docs/shutdown.md` S3): a client that
+    /// could decode that line and then dropped it was told and did not listen.
+    pub journal: VecDeque<SpokenMessage>,
 }
 
 impl WorldView {
@@ -135,7 +158,22 @@ impl WorldView {
             map: start.map,
             mobiles: HashMap::new(),
             items: HashMap::new(),
+            journal: VecDeque::new(),
         }
+    }
+
+    /// Write down a line the server said, dropping the oldest if the journal is
+    /// full.
+    ///
+    /// Separate from [`apply`](Self::apply) only so the cap has one place to
+    /// live: everything that speaks to a client arrives as `0x1C` today, and
+    /// whatever else learns to (a cliloc, an overhead message) lands here too
+    /// rather than growing a second bound to keep in step.
+    fn heard(&mut self, line: SpokenMessage) {
+        if self.journal.len() == JOURNAL_LINES {
+            self.journal.pop_front();
+        }
+        self.journal.push_back(line);
     }
 
     /// Record a step of the player's own that the server has confirmed.
@@ -173,10 +211,24 @@ impl WorldView {
             // a move — so taking it wholesale is right: whatever the server
             // says now replaces what we thought, everyone else included.
             ServerPacket::PlayerStart(start) => {
-                let fresh = Self::entered(*start);
+                let mut fresh = Self::entered(*start);
+                // The journal crosses the restart, alone. Everything else here
+                // is what the client believes is on screen, and a `0x1B` says
+                // all of it is stale; the journal is what the client was
+                // *told*, and restarting a session unsays none of it. A shard
+                // that announced a stop and then sent one more `0x1B` would
+                // otherwise have erased the announcement.
+                std::mem::swap(&mut fresh.journal, &mut self.journal);
                 let changed = *self != fresh;
                 *self = fresh;
                 changed
+            }
+            // Speech, a system line, an NPC — all one packet, all one journal.
+            ServerPacket::SpokenMessage(line) => {
+                self.heard(line.clone());
+                // Always a change: the same sentence said twice is two lines in
+                // a journal, unlike a position that is set twice to one tile.
+                true
             }
             ServerPacket::PlayerUpdate(update) => {
                 let fresh = Player {
@@ -309,6 +361,96 @@ mod tests {
             layer: openshard_protocol::wire::Layer(0x05),
             hue: Hue(0x0021),
         }
+    }
+
+    fn said(text: &str) -> SpokenMessage {
+        // What `WorldState::system_message` builds: no speaker, no body behind
+        // it. The shutdown notice is exactly this line.
+        SpokenMessage {
+            serial: None,
+            graphic: None,
+            mode: openshard_protocol::speech::TalkMode::Regular,
+            hue: Hue(0x0035),
+            font: openshard_protocol::speech::Font::DEFAULT,
+            name: "System".to_owned(),
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn what_the_server_says_is_written_down_in_the_order_it_was_said() {
+        // The client could decode `0x1C` and kept nothing, so a shard that
+        // announced its stop was talking to something that heard and forgot.
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&ServerPacket::SpokenMessage(said("the shard is stopping"))));
+        assert!(
+            view.apply(&ServerPacket::SpokenMessage(said("the shard is stopping"))),
+            "the same sentence twice is two lines: a journal is not a state to settle on"
+        );
+        assert!(view.apply(&ServerPacket::SpokenMessage(said("goodbye"))));
+
+        let lines: Vec<&str> = view.journal.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(
+            lines,
+            ["the shard is stopping", "the shard is stopping", "goodbye"],
+            "oldest first, and nothing merged"
+        );
+    }
+
+    #[test]
+    fn the_journal_forgets_its_oldest_line_and_nothing_else() {
+        // A virtual player in a town square hears speech for as long as it
+        // stands there, and nothing ever asks it to forget — so the bound is
+        // what keeps a long session from being a leak.
+        let mut view = WorldView::entered(start());
+        for line in 0..JOURNAL_LINES + 2 {
+            view.apply(&ServerPacket::SpokenMessage(said(&line.to_string())));
+        }
+
+        assert_eq!(view.journal.len(), JOURNAL_LINES, "the cap holds");
+        assert_eq!(
+            view.journal
+                .front()
+                .expect("a full journal has a first line")
+                .text,
+            "2",
+            "the two oldest lines went, and in that order"
+        );
+        assert_eq!(
+            view.journal.back().expect("a full journal has a last line").text,
+            (JOURNAL_LINES + 1).to_string(),
+            "and the newest is still the newest"
+        );
+    }
+
+    #[test]
+    fn a_restart_replaces_the_world_and_unsays_nothing() {
+        // A `0x1B` says everything on screen is stale, and it says nothing
+        // about what the client was told: the journal is history, not state.
+        // The case this is for is the announcement of `docs/shutdown.md` S3
+        // followed by one more entry packet.
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::MobileIncoming(MobileIncoming {
+            serial: other(),
+            body: Graphic(0x0190),
+            position: Point::new(1476, 1770, 20),
+            facing: start().facing,
+            hue: Hue::NONE,
+            flags: StatusFlags::NONE,
+            notoriety: Notoriety::Innocent,
+            equipment: Vec::new(),
+        }));
+        view.apply(&ServerPacket::SpokenMessage(said("the shard is stopping")));
+
+        let elsewhere = PlayerStart {
+            position: Point::new(1000, 1000, -10),
+            ..start()
+        };
+        assert!(view.apply(&ServerPacket::PlayerStart(elsewhere)));
+
+        assert!(view.mobiles.is_empty(), "what was on screen is stale and gone");
+        let lines: Vec<&str> = view.journal.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(lines, ["the shard is stopping"], "what was said still stands");
     }
 
     #[test]
