@@ -17,13 +17,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use openshard_client_render::atlas::LandAtlas;
+use openshard_client_render::atlas::{LandAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
 use openshard_client_render::ground;
 use openshard_client_render::renderer::{GroundRenderer, Target};
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
+use openshard_uofiles::texmaps::TexMaps;
+use openshard_uofiles::tiledata::TileData;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -59,6 +61,22 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The two files a slope needs: the square textures, and the table that says
+    // which of them a land graphic uses.
+    let texmaps = match TexMaps::open(&dir) {
+        Ok(texmaps) => texmaps,
+        Err(error) => {
+            eprintln!("opening texmaps.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let tiledata = match TileData::load(dir.join("tiledata.mul")) {
+        Ok(tiledata) => tiledata,
+        Err(error) => {
+            eprintln!("opening tiledata.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     eprintln!(
         "{} loaded: {}x{} tiles",
         map.facet_name(),
@@ -78,6 +96,8 @@ fn main() -> ExitCode {
     let mut app = App {
         map,
         art,
+        texmaps,
+        tiledata,
         camera: Camera::new(START, 1024, 768),
         window: None,
     };
@@ -136,11 +156,17 @@ struct Screen {
     /// The graphics currently packed. Rebuilt when the camera moves somewhere
     /// the atlas does not cover.
     atlas: LandAtlas,
+    /// Their textures, packed the same way and rebuilt with them. The two are
+    /// always built from the same set of graphics, so one of them missing a
+    /// tile is the other one's business too.
+    texmap_atlas: TexmapAtlas,
 }
 
 struct App {
     map: Map,
     art: Art,
+    texmaps: TexMaps,
+    tiledata: TileData,
     camera: Camera,
     window: Option<Screen>,
 }
@@ -275,8 +301,8 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let atlas = self.build_atlas()?;
-        let renderer = GroundRenderer::new(&device, &queue, format, &atlas);
+        let (atlas, texmap_atlas) = self.build_atlases()?;
+        let renderer = GroundRenderer::new(&device, &queue, format, &atlas, &texmap_atlas);
 
         Ok(Screen {
             window,
@@ -286,37 +312,57 @@ impl App {
             config,
             renderer,
             atlas,
+            texmap_atlas,
         })
     }
 
-    fn build_atlas(&self) -> Result<LandAtlas, StartupError> {
-        LandAtlas::build(&self.art, ground::visible_graphics(&self.map, &self.camera))
-            .map_err(StartupError::Atlas)
+    /// Pack what the camera can see, both ways: the flat art and the textures.
+    ///
+    /// One set of graphics feeds both, which is what lets a quad ask them the
+    /// same question — and what makes "the atlas does not cover this" one
+    /// decision rather than two that could disagree.
+    fn build_atlases(&self) -> Result<(LandAtlas, TexmapAtlas), StartupError> {
+        let wanted = ground::visible_graphics(&self.map, &self.camera);
+        let atlas = LandAtlas::build(&self.art, wanted.iter().copied()).map_err(StartupError::Atlas)?;
+        let texmaps =
+            TexmapAtlas::build(&self.texmaps, &self.tiledata, wanted).map_err(StartupError::Atlas)?;
+        Ok((atlas, texmaps))
     }
 
     fn draw(&mut self) {
+        // The atlases are built for what was visible when they were built, so a
+        // camera that has walked far enough will ask for a graphic they do not
+        // hold. Rebuilding whenever that happens is the simplest correct answer,
+        // and the ground is not what makes it expensive — statics will be, and
+        // that is when this deserves an eviction policy instead.
+        //
+        // Repacked before the window is borrowed, and not inside the borrow: the
+        // pack reads the whole of `self`, and the window is part of it.
+        let wanted = ground::visible_graphics(&self.map, &self.camera);
+        let stale = self.window.as_ref().is_some_and(|window| {
+            wanted
+                .iter()
+                .any(|graphic| window.atlas.region(*graphic).is_none())
+        });
+        let repacked = stale.then(|| self.build_atlases());
+
         let Some(window) = self.window.as_mut() else {
             return;
         };
-
-        // The atlas is built for what was visible when it was built, so a camera
-        // that has walked far enough will ask for a graphic it does not hold.
-        // Rebuilding whenever that happens is the simplest correct answer, and
-        // the ground is not what makes it expensive — statics will be, and that
-        // is when this deserves an eviction policy instead.
-        let wanted = ground::visible_graphics(&self.map, &self.camera);
-        if wanted
-            .iter()
-            .any(|graphic| window.atlas.region(*graphic).is_none())
-        {
-            match LandAtlas::build(&self.art, wanted) {
-                Ok(atlas) => {
-                    window.renderer =
-                        GroundRenderer::new(&window.device, &window.queue, window.config.format, &atlas);
-                    window.atlas = atlas;
-                }
-                Err(error) => eprintln!("repacking land art: {error}"),
+        match repacked {
+            Some(Ok((atlas, texmap_atlas))) => {
+                window.renderer = GroundRenderer::new(
+                    &window.device,
+                    &window.queue,
+                    window.config.format,
+                    &atlas,
+                    &texmap_atlas,
+                );
+                window.atlas = atlas;
+                window.texmap_atlas = texmap_atlas;
             }
+            Some(Err(error)) => eprintln!("repacking land art: {error}"),
+            None => {}
         }
 
         let frame = match window.surface.get_current_texture() {
@@ -346,7 +392,7 @@ impl App {
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let quads = ground::collect(&self.map, &self.camera, &window.atlas);
+        let quads = ground::collect(&self.map, &self.camera, &window.atlas, &window.texmap_atlas);
         let mut encoder = window
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

@@ -541,7 +541,11 @@ mod tests {
         // past for this reader's whole life. Reading it one byte out gives a
         // plausible id for every tile in the game and textures the ground with
         // somebody else's terrain — a picture, and the wrong one.
-        assert_eq!(water.texture, TextureId(0x1234), "texture id right after the flags");
+        assert_eq!(
+            water.texture,
+            TextureId(0x1234),
+            "texture id right after the flags"
+        );
 
         let wall = data.static_tile(0);
         assert_eq!(wall.name, "wooden wall", "name at 21, not 20");

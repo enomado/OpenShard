@@ -357,14 +357,22 @@ impl TexmapAtlas {
                 }
             }
 
+            // Half a texel in on every side, which is ClassicUO's
+            // `CalculateHalfPixelUVs` and is not a nicety. A sloped quad's corner
+            // texture coordinates are the region's own edges, and an edge is the
+            // boundary *between* two texels: at `u + du` the sample lands on the
+            // first texel of whatever was packed next door. Inset, the four
+            // corners sample texel centres — 0.5 and side-0.5 — so the picture is
+            // its own and nothing bleeds along the two far edges of every tile.
             let atlas = ATLAS_SIDE as f32;
+            let half = 0.5 / atlas;
             regions.insert(
                 graphic,
                 Region {
-                    u: origin_x as f32 / atlas,
-                    v: origin_y as f32 / atlas,
-                    du: f32::from(image.width()) / atlas,
-                    dv: f32::from(image.height()) / atlas,
+                    u: origin_x as f32 / atlas + half,
+                    v: origin_y as f32 / atlas + half,
+                    du: f32::from(image.width()) / atlas - 2.0 * half,
+                    dv: f32::from(image.height()) / atlas - 2.0 * half,
                 },
             );
         }
@@ -393,7 +401,11 @@ impl TexmapAtlas {
         self.regions.is_empty()
     }
 
-    /// Where a graphic's texture sits, or `None` if it has none.
+    /// Where to sample a graphic's texture, or `None` if it has none.
+    ///
+    /// Where to *sample*, not where it sits: the region is half a texel inside
+    /// the texture on every side, because a quad's corners sample the region's
+    /// edges and an edge belongs to two texels. See [`TexmapAtlas::pack`].
     ///
     /// `None` is the common answer and means "draw this tile from its art",
     /// which is what the client does with a tile whose texture is missing — see
@@ -486,18 +498,45 @@ mod tests {
         let big = atlas.region(Graphic(2)).expect("packed");
         let small = atlas.region(Graphic(1)).expect("packed");
         let atlas_side = ATLAS_SIDE as f32;
-        assert_eq!(big.du * atlas_side, 128.0, "a 128 texture covers 128 pixels");
-        assert_eq!(small.du * atlas_side, 64.0);
+        // A texture of `n` pixels spans the centres of `n` texels, which is
+        // `n - 1` apart: the half-texel inset, stated in pixels.
+        assert_eq!(
+            big.du * atlas_side,
+            127.0,
+            "a 128 texture spans 128 texel centres"
+        );
+        assert_eq!(small.du * atlas_side, 63.0);
 
         // Largest first, so the 128 owns the corner and the 64 is beside it
         // rather than inside it.
-        assert_eq!((big.u, big.v), (0.0, 0.0));
+        assert_eq!((big.u * atlas_side, big.v * atlas_side), (0.5, 0.5));
         assert!(
             small.u * atlas_side >= 128.0 || small.v * atlas_side >= 128.0,
             "the 64 landed at ({}, {}), inside the block the 128 took",
             small.u * atlas_side,
             small.v * atlas_side,
         );
+    }
+
+    /// The inset samples the texture's own first and last texel, and nothing
+    /// beyond them. Without it a quad's far corners sample the neighbour packed
+    /// next door — a one-texel fringe along two edges of every sloped tile,
+    /// which reads as terrain and is somebody else's.
+    #[test]
+    fn a_regions_corners_sample_the_first_and_last_texel_of_its_own_texture() {
+        let atlas = TexmapAtlas::pack([
+            (Graphic(1), texture(64, Color16(1))),
+            (Graphic(2), texture(64, Color16(2))),
+        ])
+        .expect("two textures fit");
+        let region = atlas.region(Graphic(1)).expect("packed");
+        let side = ATLAS_SIDE as f32;
+
+        // What the shader computes at the quad's two extreme corners, in texels.
+        let first = region.u * side;
+        let last = (region.u + region.du) * side;
+        assert_eq!(first.floor(), 0.0);
+        assert_eq!(last.floor(), 63.0, "the far corner is not the neighbour's texel");
     }
 
     /// Every region has to be inside the texture and disjoint from every other,
@@ -520,15 +559,18 @@ mod tests {
         for (graphic, image) in images {
             let region = atlas.region(graphic).expect("packed");
             let side = ATLAS_SIDE as f32;
+            // Back out the half-texel inset: the texel the region starts on is
+            // the pixel the texture was packed at.
             let (x, y) = ((region.u * side) as u32, (region.v * side) as u32);
-            assert_eq!(region.du * side, f32::from(image.width()));
+            assert_eq!(region.du * side + 1.0, f32::from(image.width()));
             assert!(x + u32::from(image.width()) <= ATLAS_SIDE);
             assert!(y + u32::from(image.height()) <= ATLAS_SIDE);
             assert_eq!((x % TEXMAP_CELL, y % TEXMAP_CELL), (0, 0), "off the cell grid");
 
             for cy in 0..u32::from(image.height()) / TEXMAP_CELL {
                 for cx in 0..u32::from(image.width()) / TEXMAP_CELL {
-                    let cell = ((y / TEXMAP_CELL + cy) * TEXMAP_CELLS_PER_ROW + x / TEXMAP_CELL + cx) as usize;
+                    let cell =
+                        ((y / TEXMAP_CELL + cy) * TEXMAP_CELLS_PER_ROW + x / TEXMAP_CELL + cx) as usize;
                     assert_eq!(claimed[cell], None, "{graphic:?} overlaps {:?}", claimed[cell]);
                     claimed[cell] = Some(graphic);
                 }
@@ -544,9 +586,6 @@ mod tests {
         let images: Vec<(Graphic, Image)> = (0..TEXMAP_CELLS as u16 + 1)
             .map(|i| (Graphic(i), texture(64, Color16(1))))
             .collect();
-        assert!(matches!(
-            TexmapAtlas::pack(images),
-            Err(AtlasError::Full { .. })
-        ));
+        assert!(matches!(TexmapAtlas::pack(images), Err(AtlasError::Full { .. })));
     }
 }

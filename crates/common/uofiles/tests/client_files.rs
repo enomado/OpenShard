@@ -19,6 +19,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::art::Art;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
+use openshard_uofiles::texmaps::{TEXTURE_COUNT, TexMaps, TextureId};
 use openshard_uofiles::tiledata::{LAND_TILE_COUNT, TileData, TileDataFormat};
 
 /// The client directory, or `None` to skip.
@@ -569,5 +570,114 @@ fn a_static_sprite_is_the_size_its_own_header_claims() {
     assert!(
         drawn < 44 * 60,
         "a sprite that fills its whole box is not run-length encoded"
+    );
+}
+
+#[test]
+fn every_texture_the_client_ships_is_one_of_the_two_squares() {
+    // Totality over the texture index, the same sweep the art gets. The size is
+    // not in the entry — it follows from the length — so a length this reader
+    // does not recognise has to be an error rather than a texture read at the
+    // wrong side, which is a picture and looks like corrupt terrain.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let texmaps = TexMaps::open(&dir).expect("a client ships texidx.mul and texmaps.mul");
+
+    let (mut small, mut large) = (0, 0);
+    for id in 0..TEXTURE_COUNT as u16 {
+        let Some(image) = texmaps
+            .texture(TextureId(id))
+            .unwrap_or_else(|e| panic!("texture {id}: {e}"))
+        else {
+            continue;
+        };
+        assert_eq!(image.width(), image.height(), "texture {id} is not square");
+        match image.width() {
+            64 => small += 1,
+            128 => large += 1,
+            side => panic!("texture {id} came out {side} on a side"),
+        }
+        assert_eq!(image.pixels().len(), usize::from(image.width()).pow(2));
+    }
+
+    // 3,561 and 555 on 7.0.116.0. Both sizes have to be there: a reader that
+    // took every entry for a 64 would decode the small ones perfectly and
+    // quietly read a quarter of each large one.
+    assert!(small > 3000, "only {small} small textures");
+    assert!(large > 400, "only {large} large textures");
+    assert_eq!(texmaps.present(), small + large);
+}
+
+#[test]
+fn a_land_tiles_texture_is_the_same_terrain_as_its_art() {
+    // The assertion that pins the `texture` field's offset in `tiledata`, and the
+    // only one that can. Read two bytes early or late, every land tile still
+    // names *a* texture and the ground is still textured — with somebody else's
+    // terrain, which looks like a seasonal variant rather than like a bug.
+    //
+    // The two pictures of one tile are drawn from the same terrain, so their
+    // average colours are close. That is not a threshold anyone can defend on
+    // its own, so it is not one: the same measurement is taken against a
+    // *shifted* pairing, and the claim is that the real pairing is much closer
+    // than a wrong one. A file, and not a number chosen here, decides.
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).unwrap();
+    let texmaps = TexMaps::open(&dir).unwrap();
+    let tiles = tiledata().expect("client_dir() said there is one");
+
+    /// The mean colour of everything drawn, as 0..=31 per channel.
+    fn mean(image: &openshard_uofiles::image::Image) -> (f64, f64, f64) {
+        let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
+        for pixel in image.pixels().iter().filter(|p| !p.is_transparent()) {
+            r += u64::from(pixel.red());
+            g += u64::from(pixel.green());
+            b += u64::from(pixel.blue());
+            n += 1;
+        }
+        let n = n.max(1) as f64;
+        (r as f64 / n, g as f64 / n, b as f64 / n)
+    }
+
+    fn distance(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
+        (a.0 - b.0).abs() + (a.1 - b.1).abs() + (a.2 - b.2).abs()
+    }
+
+    // Every land graphic that has both pictures, in index order.
+    let mut pairs = Vec::new();
+    for id in 0..LAND_TILE_COUNT as u16 {
+        let texture = tiles.land(id).texture;
+        let (Some(land), Some(texture)) = (art.land(Graphic(id)).unwrap(), texmaps.texture(texture).unwrap())
+        else {
+            continue;
+        };
+        pairs.push((mean(&land), mean(&texture)));
+    }
+    assert!(
+        pairs.len() > 2000,
+        "only {} land tiles have both an art tile and a texture",
+        pairs.len()
+    );
+
+    let matched: f64 = pairs.iter().map(|(art, tex)| distance(*art, *tex)).sum::<f64>() / pairs.len() as f64;
+    // The control: the same textures against the wrong tiles. Rotating by a
+    // third keeps every picture in the comparison, so the two numbers differ
+    // only in *which* texture went with which tile.
+    let shift = pairs.len() / 3;
+    let mismatched: f64 = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, (art, _))| distance(*art, pairs[(i + shift) % pairs.len()].1))
+        .sum::<f64>()
+        / pairs.len() as f64;
+
+    // On 7.0.116.0 the real pairing averages 5.5 and the shifted one 18.4,
+    // across 3,806 tiles that have both pictures.
+    assert!(
+        matched * 2.0 < mismatched,
+        "a tile's own texture ({matched:.2}) is barely closer to its art than a stranger's \
+         ({mismatched:.2}); the texture id is being read from the wrong place",
     );
 }

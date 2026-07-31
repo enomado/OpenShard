@@ -91,7 +91,18 @@ mod tests {
 
     #[test]
     fn a_pixel_outside_the_rectangle_is_none_and_not_a_wrap() {
-        let image = Image::new(2, 3, vec![Color16(1), Color16(2), Color16(3), Color16(4), Color16(5), Color16(6)]);
+        let image = Image::new(
+            2,
+            3,
+            vec![
+                Color16(1),
+                Color16(2),
+                Color16(3),
+                Color16(4),
+                Color16(5),
+                Color16(6),
+            ],
+        );
         assert_eq!(image.pixel(1, 2), Some(Color16(6)));
         // The trap this catches: `y * width + x` happily addresses (2, 0) as
         // (0, 1), so a missing bounds check reads the next row rather than

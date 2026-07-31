@@ -270,8 +270,14 @@ mod tests {
     }
 
     /// An index of `entries`, each `(offset, length)`, and the data to match.
-    fn synthetic(entries: &[(u32, u32)], data: Vec<u8>) -> (ScratchDir, TexMaps) {
-        let dir = ScratchDir::new("synthetic");
+    ///
+    /// `name` is the caller's, and it has to be unique: the tests run in
+    /// parallel, and two of them sharing a scratch directory means one deletes
+    /// the other's files halfway through — which fails as "the index says the
+    /// texture is there and the data file disagrees", the exact shape of the bug
+    /// these tests are about.
+    fn synthetic(name: &str, entries: &[(u32, u32)], data: Vec<u8>) -> (ScratchDir, TexMaps) {
+        let dir = ScratchDir::new(name);
         let mut index = Vec::new();
         for (offset, length) in entries {
             index.extend_from_slice(&offset.to_le_bytes());
@@ -295,7 +301,7 @@ mod tests {
     #[test]
     fn a_texture_is_read_row_major_at_the_side_its_length_names() {
         let data = small_texture();
-        let (_dir, maps) = synthetic(&[(0, 0), (0, data.len() as u32)], data);
+        let (_dir, maps) = synthetic("row-major", &[(0, 0), (0, data.len() as u32)], data);
 
         // Entry 0 is empty on the real client too, which is what makes "texture
         // id 0" mean "no texture" without anything saying so.
@@ -314,7 +320,7 @@ mod tests {
     fn the_two_sides_are_told_apart_by_length_alone() {
         let large = LARGE_SIDE as usize * LARGE_SIDE as usize * 2;
         let data = vec![0u8; large];
-        let (_dir, maps) = synthetic(&[(0, 0), (0, large as u32)], data);
+        let (_dir, maps) = synthetic("two-sides", &[(0, 0), (0, large as u32)], data);
         let image = maps.texture(TextureId(1)).unwrap().expect("present");
         assert_eq!(image.width(), LARGE_SIDE);
     }
@@ -323,14 +329,14 @@ mod tests {
     fn a_length_that_is_neither_square_is_refused_rather_than_guessed() {
         // ClassicUO reads anything that is not 0x2000 as a 128 square, which on
         // a truncated file walks off the end of it. Neither size is a guess here.
-        let (_dir, maps) = synthetic(&[(0, 1024)], vec![0u8; 1024]);
+        let (_dir, maps) = synthetic("odd-length", &[(0, 1024)], vec![0u8; 1024]);
         assert!(maps.texture(TextureId(0)).is_err());
     }
 
     #[test]
     fn an_entry_pointing_past_the_data_is_refused_rather_than_panicking() {
         let small = SMALL_SIDE as usize * SMALL_SIDE as usize * 2;
-        let (_dir, maps) = synthetic(&[(8, small as u32)], vec![0u8; small]);
+        let (_dir, maps) = synthetic("past-the-end", &[(8, small as u32)], vec![0u8; small]);
         assert!(maps.has(TextureId(0)), "the index claims it is there");
         assert!(maps.texture(TextureId(0)).is_err(), "and the data is not");
     }
@@ -350,7 +356,7 @@ mod tests {
     fn an_id_past_the_end_of_the_index_is_absent_and_not_a_panic() {
         // Every id came out of `tiledata`, which is a `u16` and describes a
         // client that may not be this one.
-        let (_dir, maps) = synthetic(&[(0, 0)], Vec::new());
+        let (_dir, maps) = synthetic("out-of-range", &[(0, 0)], Vec::new());
         assert!(!maps.has(TextureId(u16::MAX)));
         assert_eq!(maps.texture(TextureId(u16::MAX)).unwrap(), None);
         assert_eq!(maps.texture(TextureId(TEXTURE_COUNT as u16)).unwrap(), None);
@@ -359,7 +365,7 @@ mod tests {
     #[test]
     fn a_marked_absent_entry_is_absent_however_it_is_marked() {
         // Both spellings the files use: the sentinel offset, and a zero length.
-        let (_dir, maps) = synthetic(&[(NO_OFFSET, 8192), (0, 0)], vec![0u8; 8192]);
+        let (_dir, maps) = synthetic("absent", &[(NO_OFFSET, 8192), (0, 0)], vec![0u8; 8192]);
         assert!(!maps.has(TextureId(0)));
         assert!(!maps.has(TextureId(1)));
         assert_eq!(maps.present(), 0);

@@ -119,10 +119,10 @@ The move first: `map`, `uop`, `tiledata`, and the format-reading half of
 world crate keeps the gameplay built on top of them.
 
 Then the readers a renderer needs and a server never did: `hues`, `art` (land
-and static), `gumpart`, `anim` with `animdata`, `unifont`, `cliloc`, `multi`,
-`texmaps`, `light`, `radarcol`, `sound`, `verdata`. In that order the first
-picture needs hues, land art, and the tiledata and map readers that already
-exist.
+and static), `texmaps`, `gumpart`, `anim` with `animdata`, `unifont`, `cliloc`,
+`multi`, `light`, `radarcol`, `sound`, `verdata`. In that order the first picture
+needs hues, land art, and the tiledata and map readers that already exist; the
+first *hillside* needs `texmaps` as well.
 
 No client files enter this repository, now or ever. Tests read
 `OPENSHARD_CLIENT` and skip when it is unset.
@@ -155,6 +155,38 @@ run: `visible_tiles` was widened for `z` in only one direction, which loses a
 band of ground wherever the terrain goes negative, and the atlas treated a black
 pixel as a transparent one. Neither would have been visible on a screenshot.
 
+**A slope is textured from `texmaps.mul`**, which is the difference between
+terrain and a 44×44 diamond pulled out of shape. The art tile is drawn for level
+ground; on a steep quad it smears, and the client does not use it there at all —
+it takes a square 64×64 or 128×128 picture from `texmaps.mul` and maps it corner
+to corner onto whatever the four heights make. Which corner is which is
+ClassicUO's `DrawStretchedLand`, and it is the identity: the quad's top vertex is
+the texture's top-left. `crates/common/uofiles/src/texmaps.rs` reads the pair,
+and `tiledata`'s land entry — whose texture id this reader had been skipping past
+for its whole life — is what says which texture belongs to which tile.
+
+Nothing in either file relates a land graphic to a texture id, so reading that
+field two bytes out gives *a* texture for every tile and the ground comes out
+textured with somebody else's terrain: a picture, and one that reads as a
+seasonal variant rather than as a bug. The test is a comparison rather than a
+threshold — a tile's own texture and its own art have close average colours, and
+the same measurement against a shifted pairing is three times worse (5.5 against
+18.4 across 3,806 tiles). A file decides, not a number somebody chose.
+
+Two things the half-texel inset is not: a nicety, and ours. A quad's corner
+texture coordinates *are* the region's edges, and an edge is the boundary between
+two texels — so at `u + du` the sample lands on the first texel of whatever was
+packed next door, a one-texel fringe of the wrong terrain along two edges of
+every sloped tile. The frame test caught it on its first run. ClassicUO insets
+by half a texel in `CalculateHalfPixelUVs` for the same reason.
+
+Where we knowingly differ from the client: a tile whose graphic has **no**
+texture. The client refuses to stretch such a tile at all and draws it flat,
+seams and all; we stretch it and texture it with the art, because the geometry
+here is watertight by construction and giving that up would put the holes back.
+`Land.ApplyStretch` is the reference, and the backlog has the rest of what it
+does that we do not.
+
 **Ground is stretched over its four corner heights**, which is the difference
 between terrain and a mosaic of flat diamonds. A land cell stores one height and
 it belongs to the diamond's *top* corner; the other three are the neighbours'.
@@ -165,8 +197,7 @@ viewport in gaps. A tile whose four corners agree keeps the old path exactly: it
 is drawn as the art's own square with the diamond cut out by alpha, so the
 texel-for-texel comparison still holds where it can. The choice between the two
 shapes is made in the shader from the heights themselves, so it cannot disagree
-with them. What is still approximate is the *texture* on a slope — see the
-backlog.
+with them.
 
 Deliberately not done here: **hue**. Ground carries no hue — `LandCell` has a
 graphic and a height and nothing else — so the hue table has no consumer until
@@ -243,9 +274,9 @@ own understanding had written.
   walkable, water, or a floor — which is what the test asserts instead.
 - ~~**`hues` and `art` are missing.**~~ Written. `hues.mul` is 3,000 ramps of 32
   colours; `artLegacyMUL.uop` holds the land diamonds and the run-length encoded
-  statics in one index space. What is still missing: `gumpart`, `anim`,
-  `unifont`, `cliloc`, `multi`, `texmaps`, `light`, `radarcol`, `sound`,
-  `verdata`. The first picture no longer needs any of them.
+  statics in one index space. `texmaps` followed, for the slopes. What is still
+  missing: `gumpart`, `anim`, `unifont`, `cliloc`, `multi`, `light`, `radarcol`,
+  `sound`, `verdata`. The first picture no longer needs any of them.
 - **Gump art is deflated and nothing here can inflate it.** Every one of
   `gumpartLegacyMUL.uop`'s 5,556 entries has compression flag 3, where the map
   and art containers have none. `UopError::Compressed` says so rather than
@@ -259,25 +290,47 @@ own understanding had written.
   engine claims to support old clients, so this needs an old install rather than
   confidence.
 - **A container is read whole into memory.** `Uop::open` holds all 155MB of the
-  art. Harmless for a shard, which never opens it, and not obviously right for a
-  renderer holding several containers at once. The place to fix it is
-  `Uop::open`, once something actually draws.
+  art and `TexMaps::open` another 45MB. Harmless for a shard, which never opens
+  either, and not obviously right for a renderer holding several at once — the
+  client app now reads 200MB of pictures before its first frame. The place to fix
+  it is `Uop::open` and `TexMaps::from_files`, and the browser is the deadline:
+  neither can call `std::fs` there anyway.
 
 ## Backlog, found while drawing the ground
 
-- **A sloped tile is textured with the stretched land sprite, not `texmaps.mul`.**
-  The geometry is right — ground is stretched over its four corner heights, and
-  Britain now covers every pixel — but the texture on a slope is the 44×44 art
-  diamond pulled onto that shape, which smears on anything steep. The client
-  takes a square texture from `texmaps.mul` instead and maps it corner to corner.
-  That reader does not exist: a new format, its own index, its own tests against
-  the real files. Nothing about the geometry has to move for it; only where the
-  sloped path gets its texture coordinates and which texture it binds.
-- **A `tiledata` flag may force a tile flat.** The client can be told to ignore a
-  tile's four corners and draw it as the plain sprite. `ground.wgsl` decides
-  purely from the heights being equal, which is right for terrain and possibly
-  wrong for whatever that flag marks. Read it out of the file before believing
-  its name — `findings.md` on tiledata flags.
+- ~~**A sloped tile is textured with the stretched land sprite, not
+  `texmaps.mul`.**~~ Read and drawn. `uofiles::texmaps` reads the
+  `texidx.mul`/`texmaps.mul` pair — 4,116 squares of 64 or 128, and the *length*
+  is what says which — and `TexmapAtlas` packs them on a 64-pixel cell grid,
+  where a 128 takes a 2×2 block. Both atlases are keyed by the land graphic, so a
+  quad asks them the same question.
+- ~~**A `tiledata` flag may force a tile flat.**~~ Answered, and it is not a
+  flag. `Land.ApplyStretch` stretches a tile only when it *has* a texture and is
+  not wet; `IsStretched` is initialised to `TexID == 0 && IsWet` and then read as
+  "do not". So "no texture" is the whole of the rule, and `WATER` is the only
+  flag in it.
+- **The client stretches a wider neighbourhood than we do.** `ApplyStretch` sets
+  `IsStretched` from the four corner *normals*, each of which reads the tile
+  beyond the corner — so a tile whose own four corners agree is still stretched,
+  and therefore textured, when a neighbour differs. `ground.wgsl` decides from
+  the four corners alone, so such a tile is drawn from its art here. The shapes
+  agree exactly (a flat quad is the diamond), so this is a difference in
+  *texture* along the edge of every slope, and closing it means computing the
+  normals — which is also what lighting will need.
+- **Nothing computes a normal, so nothing is lit.** The client shades stretched
+  land from the four corner normals it already has. Ours is flat-lit, which is
+  right for a first picture and stops being right beside a real client's
+  screenshot.
+- **`TexTerr.def` is not read.** The client remaps texture entries through it
+  (`2500 {3} 1645` — entry 2500 is entry 3, hued), which matters for a land tile
+  whose texture id lands in the aliased range and has no entry of its own. Such
+  a tile falls back to its art here. The `.def` format is shared with several
+  other files, so whoever needs the first of them writes the reader.
+- **The stretched-art fallback has no half-texel inset.** Where a sloped tile has
+  no texture it samples the land atlas at the diamond's own coordinates, and the
+  bottom vertex lands exactly on `v + dv` — one texel into the sprite packed
+  below it. One vertex of one triangle pair, so it is a hairline rather than a
+  fringe, and the fix is the same inset `TexmapAtlas` already applies.
 - **Void land tiles are drawn as black diamonds.** Under a building the map's
   ground is a "nothing here" graphic that the real client covers with statics.
   Until statics are drawn this leaves black holes in the picture, which is
@@ -292,7 +345,11 @@ own understanding had written.
   Every assertion about `ground::collect` lives in `tests/frame.rs` behind
   `OPENSHARD_CLIENT` and a GPU, because the only way to get a `Map` is to load
   one from a file. A constructor taking cells — or a small fixture facet — would
-  let the projection and the visible-set logic be tested with neither.
+  let the projection and the visible-set logic be tested with neither. Both
+  atlases now take pictures directly (`LandAtlas::pack`, `TexmapAtlas::pack`), so
+  the *art* half of that no longer needs an install: the test that a slope is
+  drawn from its texture and a level tile from its art is green with no client at
+  all. The map is what is left.
 - **Nothing reads `Feature` or the client version yet.** The renderer draws what
   the files hold. That is right for ground, and it stops being right at the
   first packet the client draws from.

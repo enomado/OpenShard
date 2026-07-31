@@ -272,11 +272,21 @@ fn level_ground_covers_every_pixel() {
         }
     }
 
-    let atlas = LandAtlas::build(&art, ground::visible_graphics(&map, &camera)).expect("fits");
-    let quads = ground::collect(&map, &camera, &atlas);
+    let wanted = ground::visible_graphics(&map, &camera);
+    let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
+    let texmaps = texmap_atlas(&dir, wanted);
+    let quads = ground::collect(&map, &camera, &atlas, &texmaps);
     assert!(!quads.is_empty(), "the sea is made of land tiles too");
 
-    let frame = render(&device, &queue, &atlas, &quads, camera.width, camera.height);
+    let frame = render(
+        &device,
+        &queue,
+        &atlas,
+        &texmaps,
+        &quads,
+        camera.width,
+        camera.height,
+    );
     let total = (camera.width * camera.height) as usize;
     assert_eq!(
         frame.drawn(),
@@ -315,8 +325,10 @@ fn hilly_ground_covers_every_pixel() {
 
     // Britain, near the bank: the ground here runs from z = -15 to z = 25.
     let camera = Camera::new(Point::new(1495, 1629, 0), 768, 512);
-    let atlas = LandAtlas::build(&art, ground::visible_graphics(&map, &camera)).expect("fits");
-    let quads = ground::collect(&map, &camera, &atlas);
+    let wanted = ground::visible_graphics(&map, &camera);
+    let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
+    let texmaps = texmap_atlas(&dir, wanted);
+    let quads = ground::collect(&map, &camera, &atlas, &texmaps);
 
     // Every cell the camera can see became a quad: the client ships art for all
     // of them, so a missing quad would mean the atlas or the lookup lost one.
@@ -336,12 +348,114 @@ fn hilly_ground_covers_every_pixel() {
         .count();
     assert!(sloped > 100, "only {sloped} of {} quads slope", quads.len());
 
-    let frame = render(&device, &queue, &atlas, &quads, camera.width, camera.height);
+    // And most of those slopes are textured rather than falling back to the
+    // stretched art, or the texture path is being exercised by nothing.
+    let textured = quads
+        .iter()
+        .filter(|quad| quad.corners.iter().any(|z| *z != quad.corners[0]) && quad.texmap.is_some())
+        .count();
+    assert!(
+        textured * 2 > sloped,
+        "only {textured} of {sloped} sloped tiles have a texture map",
+    );
+
+    let frame = render(
+        &device,
+        &queue,
+        &atlas,
+        &texmaps,
+        &quads,
+        camera.width,
+        camera.height,
+    );
     let total = (camera.width * camera.height) as usize;
     assert_eq!(
         frame.drawn(),
         total,
         "hilly ground left holes: the corner heights do not meet",
+    );
+}
+
+/// A sloped tile is drawn from its texture map, and a level one from its art.
+///
+/// The one assertion that says the branch in `ground.wgsl` is on the *heights*
+/// and reads the *right* atlas. Both pictures are made here rather than read
+/// from a client, and they are told apart by colour alone: green art, red
+/// texture. Nothing subtler is needed and nothing subtler would survive a
+/// reader's understanding writing both sides of the comparison — which is
+/// exactly the trap `uofiles` fell into.
+#[test]
+fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    let green = Color16(0b0_00000_11111_00000);
+    let red = Color16(0b0_11111_00000_00000);
+
+    let side = usize::from(LAND_TILE_SIZE);
+    let art = Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![green; side * side]);
+    let texture = Image::new(64, 64, vec![red; 64 * 64]);
+    let atlas = LandAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([(GRAPHIC, texture)]).expect("one texture fits");
+    let region = atlas.region(GRAPHIC).expect("packed");
+    let texmap = texmaps.region(GRAPHIC).expect("packed");
+
+    // Two tiles in one frame, far enough apart not to touch: one level, one
+    // over four different corner heights. Same graphic, same regions — only the
+    // heights differ, which is the whole claim.
+    let quads = [
+        GroundQuad {
+            x: 64.0,
+            y: 128.0,
+            corners: [0.0; 4],
+            region,
+            texmap: Some(texmap),
+        },
+        GroundQuad {
+            // Its own corner raised and its neighbours level: a hillock, and
+            // the one direction that makes the quad *bigger* than the diamond
+            // rather than shearing it into something smaller.
+            x: 192.0,
+            y: 128.0,
+            corners: [4.0, 0.0, 0.0, 0.0],
+            region,
+            texmap: Some(texmap),
+        },
+    ];
+    let frame = render(&device, &queue, &atlas, &texmaps, &quads, 256, 256);
+
+    let (mut art_pixels, mut textured_pixels) = (0, 0);
+    for y in 0..256 {
+        for x in 0..256 {
+            let pixel = frame.pixel(x, y);
+            if pixel[3] == 0 {
+                continue;
+            }
+            // The left half is the level tile and the right half the slope, so
+            // a colour on the wrong side is a tile drawn from the wrong atlas.
+            let expected = if x < 128 { green } else { red };
+            let (r, g, b) = expected.rgb8();
+            assert_eq!(
+                pixel,
+                [r, g, b, u8::MAX],
+                "({x}, {y}) was drawn from the wrong atlas",
+            );
+            if x < 128 {
+                art_pixels += 1;
+            } else {
+                textured_pixels += 1;
+            }
+        }
+    }
+
+    // A level tile is the art's diamond, exactly as the lone-sprite test pins
+    // it. Anything else here and the comparison above was made against an empty
+    // frame.
+    assert_eq!(art_pixels, 1012, "the level tile is not the art's diamond");
+    assert!(
+        textured_pixels > 1012,
+        "the sloped tile covered only {textured_pixels} pixels; it should be a stretched diamond",
     );
 }
 
@@ -362,17 +476,88 @@ fn the_same_camera_renders_the_same_frame() {
 
     let mut frames = Vec::new();
     for _ in 0..2 {
-        let atlas = LandAtlas::build(&art, ground::visible_graphics(&map, &camera)).expect("fits");
-        let quads = ground::collect(&map, &camera, &atlas);
-        frames.push(render(&device, &queue, &atlas, &quads, camera.width, camera.height).pixels);
+        let wanted = ground::visible_graphics(&map, &camera);
+        let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
+        let texmaps = texmap_atlas(&dir, wanted);
+        let quads = ground::collect(&map, &camera, &atlas, &texmaps);
+        frames.push(
+            render(
+                &device,
+                &queue,
+                &atlas,
+                &texmaps,
+                &quads,
+                camera.width,
+                camera.height,
+            )
+            .pixels,
+        );
     }
     assert_eq!(frames[0], frames[1]);
 
     // And a different camera is a different frame — otherwise the assertion
     // above is satisfied by a renderer that draws nothing at all.
     let moved = Camera::new(Point::new(1497, 1629, 0), 768, 512);
-    let atlas = LandAtlas::build(&art, ground::visible_graphics(&map, &moved)).expect("fits");
-    let quads = ground::collect(&map, &moved, &atlas);
-    let other = render(&device, &queue, &atlas, &quads, moved.width, moved.height);
+    let wanted = ground::visible_graphics(&map, &moved);
+    let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
+    let texmaps = texmap_atlas(&dir, wanted);
+    let quads = ground::collect(&map, &moved, &atlas, &texmaps);
+    let other = render(
+        &device,
+        &queue,
+        &atlas,
+        &texmaps,
+        &quads,
+        moved.width,
+        moved.height,
+    );
     assert_ne!(frames[0], other.pixels, "moving the camera changed nothing");
+}
+
+/// Write a frame of Britain out as a picture, for a person to look at.
+///
+/// Ignored: it is not an assertion, it is the eye. Every other test here counts
+/// pixels, and counting is what catches a sprite sampled one texel over — it is
+/// not what catches ground that is the right shape and the wrong terrain. Run it
+/// with a client and look:
+///
+/// ```sh
+/// OPENSHARD_CLIENT=… cargo test -p openshard-client-render --test frame -- \
+///     --ignored dump_a_frame
+/// ```
+///
+/// Plain PPM so that nothing has to be added to the workspace to write it.
+#[test]
+#[ignore = "writes a picture for a person, and asserts nothing"]
+fn dump_a_frame_of_britain() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let map = Map::load_facet(&dir, 0).expect("Felucca");
+    let art = Art::open(&dir).expect("artLegacyMUL.uop");
+    let camera = Camera::new(Point::new(1495, 1629, 0), 768, 512);
+
+    let wanted = ground::visible_graphics(&map, &camera);
+    let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
+    let texmaps = texmap_atlas(&dir, wanted);
+    let quads = ground::collect(&map, &camera, &atlas, &texmaps);
+    let frame = render(
+        &device,
+        &queue,
+        &atlas,
+        &texmaps,
+        &quads,
+        camera.width,
+        camera.height,
+    );
+
+    let mut ppm = format!("P6\n{} {}\n255\n", camera.width, camera.height).into_bytes();
+    for pixel in frame.pixels.chunks_exact(4) {
+        ppm.extend_from_slice(&pixel[..3]);
+    }
+    let path = std::env::var_os("OPENSHARD_FRAME_DUMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("britain.ppm"));
+    std::fs::write(&path, ppm).expect("writing the frame");
+    eprintln!("wrote {}", path.display());
 }

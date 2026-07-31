@@ -135,7 +135,33 @@ still covers 100%, so a level-ground test says nothing about it.
 land sprite is what the client draws when the four corners share a height; on a
 slope it binds a square texture from `texmaps.mul` and maps it corner to corner,
 because stretching the art diamond onto a steep quad smears it. Two shapes and
-two texture sources, chosen per tile.
+two texture sources, chosen per tile. Corner to corner is the identity — the
+quad's top vertex takes the texture's top-left, the right vertex its top-right —
+which is `_cornerOffsetX/Y` in ClassicUO's `DrawStretchedLand`.
+
+**Which texture is not the land graphic.** It is a separate id in `tiledata`'s
+land entry, two bytes between the flags and the name, in an index space of its
+own. Nothing relates the two numbers, so reading that field at the wrong offset
+still names *a* texture for every tile in the game: the ground comes out textured
+with somebody else's terrain, which reads as a seasonal variant rather than as a
+bug. The size is not stored either — 64 or 128 is decided by the entry's
+*length*, and ClassicUO reads anything that is not `0x2000` as a 128.
+
+**No texture means the client never stretches the tile at all.** `IsStretched` is
+initialised to `TexID == 0 && IsWet` and then read as "do not", and
+`ApplyStretch` gives up immediately when the texture entry is empty — so a tile
+with no texture is drawn as a flat diamond however the ground around it stands,
+seams and all, and water is never stretched. The decision is also made over a
+wider neighbourhood than the tile's own four corners: it comes from the four
+corner *normals*, each of which reads a cell beyond the corner.
+
+**A quad's corner texture coordinates need a half-texel inset.** A region's edge
+is the boundary *between* two texels, so a vertex at `u + du` samples the first
+texel of whatever is packed next door in an atlas — a one-texel fringe of foreign
+terrain along two edges of every stretched tile. ClassicUO insets by half a texel
+in `CalculateHalfPixelUVs`, which makes the four corners sample the texture's own
+first and last texel centres. This does not arise for a tile drawn 1:1 from its
+own sprite, which is why it appears exactly when stretching starts.
 
 **No client files are in this repository and none ever will be.** They are
 copyrighted and they are not ours to redistribute. `world.client_files` points
