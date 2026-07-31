@@ -821,11 +821,17 @@ own understanding had written.
   `AnimationClock`, so a crowd standing still breathes in unison — which is
   wrong and looks it. A clock per mobile needs a mobile that survives between
   frames, and today the whole list is rebuilt from the view on every update.
-- **Ground items are decoded, held, and not drawn.** `WorldView::items` fills
-  up from `0x1A` and the renderer never sees it: a static sprite is placed from
-  the map's `staidx`, and an item from the server has no cell to be read out of.
-  It is the same `SpriteRenderer` with a different source of quads —
-  `statics::collect` is the shape to follow.
+- ~~**Ground items are decoded, held, and not drawn.**~~ Drawn.
+  `crates/client/render/src/items.rs` is two of the existing collectors put
+  together: an item's picture is a static's, and its source is a mobile's — a
+  list somebody else built out of what arrived on the wire. The placement has
+  one copy, `statics::stand_on`, and one atlas serves both, because a floor tile
+  packed twice is a floor tile twice. What that made visible: "does the atlas
+  cover this frame" has to be *one* question — asked twice with the item half
+  forgotten in one of them, the atlas is rebuilt every frame an item is on
+  screen and never holds it, which is a stutter rather than an error.
+  Deliberately not done: an item's *amount*. A pile of 500 gold is one sprite
+  here, where the client picks a different graphic per size band.
 - **The facet is a startup constant and `0x1B` only carries a size.** The app
   loads Felucca and compares the shard's map size once, warning when they
   differ rather than following. Following means decoding `0xBF 0x08` and
