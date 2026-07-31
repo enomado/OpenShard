@@ -1444,11 +1444,91 @@ own understanding had written.
   `WorldPixel` and a step east crosses 22 of them in 400ms, so at 60Hz the ground
   moves 1, 1, 0, 1 pixels a frame rather than 0.92 — a half-pixel wobble at zoom
   1 and a whole one at zoom 2, which is the last quantisation left in a walk.
+
+  **Worth knowing before changing it: ClassicUO does not solve this, it has the
+  same quantisation.** `Mobile.Offset` is three `sbyte`s and
+  `GameSceneDrawingSorting.UpdateDrawPosition` builds the scene's origin out of
+  `int`s (`winGameCenterX -= (int) Player.Offset.X`), so the reference client
+  everyone calls smooth is also stepping the ground a whole pixel at a time. Its
+  `Renderer/Camera.cs` keeps floats and lerps — but only for the *peek* offset
+  and the zoom, and `Camera.Transform` casts to `int` at the end. So a fractional
+  world is ours to invent rather than ours to copy, and the reason to want it is
+  zoom: at 2× a whole world pixel is two screen pixels, which is the case where
+  the judder is actually visible. The cost is that a sprite quad on a fractional
+  boundary samples its atlas unevenly and the art shimmers inside the sprite,
+  which is why pixel-art engines that do this snap *sprites* to whole pixels and
+  let only the ground carry the remainder.
+
+- **The camera tracks `z` exactly, and stairs bob.** A step up is four world
+  pixels of vertical (`camera::project`'s `Z_STEP`), and the eye follows every
+  one of them. ClassicUO does the same thing —
+  `winGameCenterY = ... + (Player.Z << 2)` plus the interpolated `Offset.Z`, no
+  damping anywhere — so a bobbing camera on a staircase is what UO looks like,
+  not a defect we introduced. Damping it is a deliberate improvement and it is
+  cheap: the eye already takes a `WorldPixel`, so a critically-damped follow on
+  the vertical axis alone (spring, or a first-order lag with a time constant
+  around a step) leaves the horizontal walk exactly as it is. It has to be
+  *bounded* — an eye that lags a recall or a teleport is worse than one that
+  bobs — which is the same "more than one tile is not glided" rule the crowd
+  already has. `Camera::eye` is an integer
+  `WorldPixel` and a step east crosses 22 of them in 400ms, so at 60Hz the ground
+  moves 1, 1, 0, 1 pixels a frame rather than 0.92 — a half-pixel wobble at zoom
+  1 and a whole one at zoom 2, which is the last quantisation left in a walk.
   Fixing it means a fractional eye whose remainder is applied to the ground
   diamonds and the sprite quads (both are already `f32` at the GPU), and it is
   not free: a sprite quad on a fractional boundary samples its atlas unevenly, so
   the art shimmers inside the sprite. Worth measuring before doing — the two
   clock defects above were the visible share of this complaint.
+
+- **Nothing is predicted about whether a step is allowed, so a wall is a
+  rollback.** This is the largest remaining gap against the reference, and it is
+  what "the client does not respect being pushed back" and "obstacles are not
+  walked around" both come down to. What ClassicUO does, from the clone:
+
+  - **It never asks for a step it knows is illegal.** `PlayerMobile.Walk` calls
+    `Pathfinder.CanWalk` before it queues anything and returns `false` if the
+    ground refuses — so walking into a wall produces *no packet at all* and no
+    rollback. The body walks on the spot, which is what a player expects, rather
+    than lurching a tile and being pulled back.
+  - **A refusal stops the walking.** `WalkerManager.DenyWalk` clears the step
+    queue, resets the sequence, forces the position, and
+    `SyncServerDirection()`s the facing; a `0x22` for a sequence it is not
+    waiting on sets `WalkingFailed` and sends a resync — and `WalkingFailed` is
+    the *first* condition in `Walk`, so nothing more is sent until the resync
+    lands.
+  - **The queue is capped.** `Constants.MAX_STEP_COUNT = 5` unconfirmed steps,
+    and `Walk` refuses to add a sixth. Ours caps nothing on purpose (`Walk::in_flight`
+    says so), which is fine while the shard is the only limit and wrong the
+    moment the shard stops answering.
+  - **Click-to-walk is A\*.** `Pathfinder.FindPath` with
+    `PATHFINDER_MAX_NODES = 10000` and a Chebyshev heuristic, over the same
+    `CanWalk`. Ours is greedy-with-a-stall-counter, which is the honest thing to
+    do with no terrain and the wrong thing to keep once there is one.
+
+  We can do better than the reference here rather than copy it: ClassicUO
+  re-implements UO's walkability in the client and can therefore *disagree* with
+  the shard, while `openshard_movement::Terrain` is one trait both ends already
+  speak and `crates/server/world/src/terrain.rs`'s `MapTerrain` implements it out
+  of `Map` + `TileData` and nothing else — no world state, no server crate. Moving
+  it below `server/` (it is `common/*` material sitting in the wrong group, and
+  `crates/common/movement` already owns the trait) gives the client the shard's
+  own rules, byte for byte. Then, in order:
+
+  1. `MapTerrain` moves to `common`, with the server importing it from its new
+     home. No behaviour changes; the test suite that pins its Sphere and RunUO
+     arithmetic moves with it.
+  2. `Walk::step` gains the terrain and refuses locally, exactly where its doc
+     comment currently explains why it does not. That comment stops being true
+     the moment the two ends share an implementation, which was its own premise.
+  3. `steer.rs`'s greedy route becomes `openshard_movement::find_path` — already
+     A\* with a Chebyshev heuristic over the same `Terrain` — and `STUCK_STEPS`
+     stops being the only answer to a wall.
+  4. A rollback tells `Steering`, which it currently does not: the facing it
+     believes it asked for (`Steering::asked`) survives a `0x21` that turned the
+     body somewhere else, and the step after a rollback is then mis-timed as a
+     turn or mis-timed as not one. `link::Body::corrected` already carries the
+     event to `App`; it just has nowhere to go from there.
+  5. A cap on steps in flight, with the reference's five as the number.
 
 - **The walk has no home.** Two of those three defects lived *between*
   `App::user_event` and `App::about_to_wait` rather than in any of the four units
