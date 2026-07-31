@@ -52,7 +52,8 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// which is what the frame tests assert on, and what a `HashMap` slipped in
 /// later would quietly take away.
 pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAtlas) -> Vec<SpriteQuad> {
-    let base = depth::base_for(camera.center.x, camera.center.y);
+    let (eye_x, eye_y) = camera.eye_tile();
+    let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
     for_each_visible_static(map, camera, |item| {

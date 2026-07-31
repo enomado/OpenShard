@@ -116,7 +116,8 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// no art for it, or the atlas was built for a different camera. Both are
 /// "nothing to draw here", and neither is worth failing a frame over.
 pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas, texmaps: &TexmapAtlas) -> Vec<GroundQuad> {
-    let base = depth::base_for(camera.center.x, camera.center.y);
+    let (eye_x, eye_y) = camera.eye_tile();
+    let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, GroundQuad)> = Vec::new();
 
     for_each_visible_cell(map, camera, |x, y, cell| {

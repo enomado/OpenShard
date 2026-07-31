@@ -82,7 +82,8 @@ pub fn needed_animations(mobiles: &[Mobile]) -> Vec<(u16, u8, u8)> {
 /// arrived. Both are "nothing to draw", and neither is worth failing a frame
 /// over — the alternative is a creature drawn from another creature's picture.
 pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas) -> Vec<SpriteQuad> {
-    let base = depth::base_for(camera.center.x, camera.center.y);
+    let (eye_x, eye_y) = camera.eye_tile();
+    let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
     for mobile in mobiles {

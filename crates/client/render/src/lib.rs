@@ -31,6 +31,7 @@
 
 pub mod animation;
 pub mod atlas;
+pub mod blit;
 pub mod camera;
 pub mod depth;
 pub mod ground;

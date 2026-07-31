@@ -81,8 +81,13 @@ impl Order {
 }
 
 /// The tile depth a camera centre sits at — the `base` for [`Order::to_depth`].
-pub fn base_for(x: u16, y: u16) -> i32 {
-    i32::from(x) + i32::from(y)
+///
+/// `i32` and not `u16`: a free camera is a pixel and not a tile, so the tile it
+/// is over comes from [`crate::camera::unproject`] and may be off the map
+/// entirely. That is harmless here — the base only says where the middle of the
+/// depth range is, and `DEPTH_TILES` is 512 either side of it.
+pub fn base_for(x: i32, y: i32) -> i32 {
+    x + y
 }
 
 /// Where a land tile sorts.

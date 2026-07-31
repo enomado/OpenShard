@@ -1,4 +1,4 @@
-//! Where a tile lands on the screen.
+//! Where a tile lands on the screen, and how to get back.
 //!
 //! UO's world is a square grid seen from a fixed diagonal, so the projection is
 //! two multiplications and no matrix at all. Every number here is the client's,
@@ -8,6 +8,34 @@
 //! the tile four pixels. Change one of them and the art stops meeting itself at
 //! the seams — which is visible only as a shimmer along the diagonals, not as an
 //! error, so the values are pinned by tests rather than trusted.
+//!
+//! # Three spaces, and a type for two of them
+//!
+//! - **Tile space** — [`Point`], the server's, and the only one that goes on the
+//!   wire.
+//! - **World pixels** — [`WorldPixel`], what [`project`] returns. The origin is
+//!   tile `(0, 0, 0)`, it is unbounded in both directions, and no camera is in
+//!   it at all.
+//! - **View pixels** — [`ViewPixel`], where a thing lands in the image the world
+//!   is drawn into. Origin at its top-left.
+//!
+//! The two pixel spaces are the same two `i32`s and two different meanings, so
+//! they are two types: adding a zoom to one of them while the other still means
+//! the first is the kind of mistake a shared type cannot catch. Neither gets
+//! `From` or `Into` — the only thing allowed to move between them is a
+//! [`Camera`], and a conversion that needs a camera is a method.
+//!
+//! # Where the zoom is, and where it is not
+//!
+//! It is not here, apart from the size of the image. The world is drawn at 1:1
+//! into an offscreen target of `ceil(viewport / zoom)` and *that* is blitted into
+//! the viewport, so every quad, every atlas region and every pixel-exact
+//! assertion downstream keeps meaning what it meant. [`ViewPixel`] is a pixel of
+//! that offscreen image, which at zoom 1 is the viewport itself.
+//!
+//! The one place a viewport pixel enters is the cursor, and it leaves in the
+//! same call — [`Camera::pick`] takes one and hands back a [`WorldPixel`]. That
+//! is why the third space has no type: nothing carries it.
 
 use openshard_protocol::world::Point;
 
@@ -32,31 +60,166 @@ pub const Z_STEP: i32 = 4;
 /// whose *ground position* is below the viewport can still be drawn inside it.
 const MAX_Z_LIFT: i32 = 128 * Z_STEP;
 
-/// A position in pixels. The origin is wherever the caller's space begins —
-/// world space for [`project`], the viewport's top-left for [`Camera::to_screen`].
+/// A position in the world's own pixel space.
 ///
-/// `y` grows downwards, as it does in every window system and in the art.
+/// The origin is tile `(0, 0, 0)` and it is unbounded in both directions: `x`
+/// goes negative for anything east of the north corner. `y` grows downwards, as
+/// it does in every window system and in the art.
+///
+/// It is the camera's job to turn this into somewhere in an image.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct ScreenPoint {
+pub struct WorldPixel {
     /// Rightwards.
     pub x: i32,
     /// Downwards.
     pub y: i32,
 }
 
-/// Where the centre of a tile's diamond falls in world screen space.
+/// A position in the image the world is drawn into, from its top-left corner.
 ///
-/// World screen space has its origin at tile `(0, 0, 0)` and is unbounded in
-/// both directions: `x` goes negative for anything east of the north corner.
-/// It is the camera's job to turn this into somewhere in a window.
-pub fn project(point: Point) -> ScreenPoint {
+/// Outside it is ordinary and not an error — most of what a camera projects
+/// lands off the edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ViewPixel {
+    /// Rightwards.
+    pub x: i32,
+    /// Downwards.
+    pub y: i32,
+}
+
+/// Where the centre of a tile's diamond falls in world pixel space.
+pub fn project(point: Point) -> WorldPixel {
     // Widened before subtracting: `x - y` is negative across half the map, and
     // both are `u16` on the wire.
     let x = i32::from(point.x);
     let y = i32::from(point.y);
-    ScreenPoint {
+    WorldPixel {
         x: (x - y) * HALF_WIDTH,
         y: (x + y) * HALF_HEIGHT - i32::from(point.z) * Z_STEP,
+    }
+}
+
+/// Which tile a world pixel falls on, given the height to read it at.
+///
+/// The named inverse of [`project`], and exact: `project` is a linear map with
+/// determinant `2 * HALF_WIDTH * HALF_HEIGHT`, so `x` and `y` come back out of
+/// `x - y` and `x + y` with nothing lost. `z` has to be supplied because the
+/// projection folds it into the vertical axis — a pixel on the screen is a whole
+/// column of tiles at different heights, which is the entire difficulty of
+/// picking and is why this takes the height rather than guessing one.
+///
+/// Tiles come back as `i32` and not `u16` for the same reason [`TileBounds`]
+/// holds `i32`: world pixel space is unbounded, so a pixel north of the map's
+/// corner has a negative tile, and clamping here would invent one. The caller
+/// knows its map; this knows arithmetic.
+pub fn unproject(at: WorldPixel, z: i8) -> (i32, i32) {
+    // Undo the lift first, and the rest is `u = x - y`, `v = x + y` scaled by a
+    // half tile: `a + b` is `44x` and `b - a` is `44y`.
+    let a = at.x;
+    let b = at.y + i32::from(z) * Z_STEP;
+    // Rounded to the nearest tile rather than floored, so a pixel one short of a
+    // centre names the tile it is nearly on. `div_euclid` because the numerator
+    // is negative across half the map and truncation would round towards the
+    // origin from one side and away from it on the other.
+    (
+        (a + b + HALF_WIDTH).div_euclid(TILE_WIDTH),
+        (b - a + HALF_HEIGHT).div_euclid(TILE_HEIGHT),
+    )
+}
+
+/// How far the world is magnified, as an exact ratio.
+///
+/// A fraction from a fixed ladder and not an `f32`, for three reasons and the
+/// third decides it: [`Camera`] is `Copy + Eq` and several tests compare
+/// cameras, which a float field takes away; the offscreen target's size has to
+/// come out the same integer every frame or the world is reallocated on rounding
+/// noise; and a ladder is what a wheel notch wants anyway.
+///
+/// The numerator and denominator are private and the only way along the ladder
+/// is [`Zoom::scale_up`] and [`Zoom::scale_down`], so a zoom off the end of it
+/// is not expressible.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Zoom {
+    /// An index into [`LADDER`]. The value itself is never arithmetic.
+    step: u8,
+}
+
+/// Every zoom the wheel can reach, magnifying left to right.
+///
+/// Below 1 the world is minified and the offscreen target grows, which is what
+/// [`Camera::render_width`] and the GPU's texture limit have to agree about.
+const LADDER: [(u32, u32); 9] = [
+    (1, 2),
+    (2, 3),
+    (3, 4),
+    (1, 1),
+    (4, 3),
+    (3, 2),
+    (2, 1),
+    (3, 1),
+    (4, 1),
+];
+
+/// Where `1:1` sits in [`LADDER`].
+const ONE_STEP: u8 = 3;
+
+impl Zoom {
+    /// One world pixel to one viewport pixel.
+    pub const ONE: Self = Self { step: ONE_STEP };
+
+    /// The magnification's numerator: viewport pixels per `den` world pixels.
+    pub const fn numerator(self) -> u32 {
+        LADDER[self.step as usize].0
+    }
+
+    /// Its denominator.
+    pub const fn denominator(self) -> u32 {
+        LADDER[self.step as usize].1
+    }
+
+    /// One notch in, stopping at the top of the ladder.
+    pub const fn scale_up(self) -> Self {
+        let step = if self.step + 1 < LADDER.len() as u8 {
+            self.step + 1
+        } else {
+            self.step
+        };
+        Self { step }
+    }
+
+    /// One notch out, stopping at the bottom.
+    pub const fn scale_down(self) -> Self {
+        let step = if self.step > 0 { self.step - 1 } else { self.step };
+        Self { step }
+    }
+
+    /// Whether this is the widest view the ladder offers.
+    pub const fn is_widest(self) -> bool {
+        self.step == 0
+    }
+
+    /// How many world pixels a run of `viewport` pixels covers, rounded up.
+    ///
+    /// Up, because the offscreen image is blitted at exactly this ratio and a
+    /// short image would leave a strip of the viewport undrawn. Rounding up
+    /// instead spills a fraction of a pixel past the edges, where it is clipped.
+    const fn world_pixels(self, viewport: u32) -> u32 {
+        let (num, den) = LADDER[self.step as usize];
+        // At least one pixel: a zero-sized viewport is a minimised window, not
+        // an error, and a texture of zero width is.
+        let pixels = viewport.div_ceil(num).saturating_mul(den);
+        if pixels == 0 { 1 } else { pixels }
+    }
+}
+
+impl std::fmt::Display for Zoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (num, den) = LADDER[self.step as usize];
+        if den == 1 {
+            write!(f, "{num}x")
+        } else {
+            write!(f, "{num}/{den}x")
+        }
     }
 }
 
@@ -108,51 +271,159 @@ impl TileBounds {
     }
 }
 
-/// What the view is looking at, and how big the window is.
+/// What the view is looking at, how magnified, and how big the viewport is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Camera {
-    /// The tile at the centre of the viewport. The client follows `0x20`.
-    pub center: Point,
-    /// Viewport width in pixels.
+    /// Where the middle of the viewport looks.
+    ///
+    /// Pixels and not a tile: a tile is 44 pixels across and a drag is one pixel
+    /// at a time. Whole world pixels, too — an eye carrying a fraction would put
+    /// every sprite on a half-texel boundary for half of all camera positions,
+    /// so a drag accumulates its remainder in the input handler and commits
+    /// whole pixels here.
+    ///
+    /// Private, because "where the camera looks" is the one piece of state two
+    /// writers fight over: the thing that pins it to the player, and the thing
+    /// that pans it. [`Camera::look_at`] is the one door.
+    eye: WorldPixel,
+    zoom: Zoom,
+    /// The viewport's width in *physical* pixels — the rect the UI leaves free,
+    /// which is not the window.
     pub width: u32,
-    /// Viewport height in pixels.
+    /// Its height, likewise.
     pub height: u32,
 }
 
 impl Camera {
-    /// A camera on a tile, for a viewport of this size.
-    pub const fn new(center: Point, width: u32, height: u32) -> Self {
+    /// A camera on a tile, unmagnified, for a viewport of this size.
+    pub fn new(center: Point, width: u32, height: u32) -> Self {
         Self {
-            center,
+            eye: project(center),
+            zoom: Zoom::ONE,
             width,
             height,
         }
     }
 
-    /// Where a tile's centre falls inside the viewport, in pixels from its
-    /// top-left corner. Outside the viewport is ordinary and not an error.
-    pub fn to_screen(&self, point: Point) -> ScreenPoint {
-        let origin = project(self.center);
-        let at = project(point);
-        ScreenPoint {
-            x: at.x - origin.x + self.width as i32 / 2,
-            y: at.y - origin.y + self.height as i32 / 2,
+    /// Where the middle of the viewport looks.
+    pub fn eye(&self) -> WorldPixel {
+        self.eye
+    }
+
+    /// Look at a world pixel.
+    pub fn look_at_pixel(&mut self, eye: WorldPixel) {
+        self.eye = eye;
+    }
+
+    /// Look at a tile — its centre, height and all.
+    pub fn look_at(&mut self, center: Point) {
+        self.eye = project(center);
+    }
+
+    /// The tile the eye is over, read at ground level.
+    ///
+    /// What [`crate::depth`] wants for its `base`: the ordering is centred on
+    /// the camera so the visible frame sits where the depth buffer has
+    /// resolution to spare, and `z` does not matter to that at all — it moves
+    /// the answer by a tile or two out of a margin of five hundred.
+    pub fn eye_tile(&self) -> (i32, i32) {
+        unproject(self.eye, 0)
+    }
+
+    /// The magnification.
+    pub fn zoom(&self) -> Zoom {
+        self.zoom
+    }
+
+    /// The width of the image the world is drawn into, in world pixels.
+    ///
+    /// Bigger than the viewport when minifying, smaller when magnifying. This is
+    /// the offscreen texture's size, and the GPU's `max_texture_dimension_2d` is
+    /// what bounds how far the ladder can be walked down — see the caller that
+    /// clamps it.
+    pub fn render_width(&self) -> u32 {
+        self.zoom.world_pixels(self.width)
+    }
+
+    /// The height of that image.
+    pub fn render_height(&self) -> u32 {
+        self.zoom.world_pixels(self.height)
+    }
+
+    /// Where a world pixel lands in the drawn image.
+    pub fn to_view(&self, at: WorldPixel) -> ViewPixel {
+        ViewPixel {
+            x: at.x - self.eye.x + self.render_width() as i32 / 2,
+            y: at.y - self.eye.y + self.render_height() as i32 / 2,
         }
     }
 
-    /// Every tile that could land inside the viewport, over-covered.
-    ///
-    /// The inverse of [`project`] is exact — `x - y` and `x + y` recover `x` and
-    /// `y` — but only for a known `z`, and `z` is what is stored per tile and
-    /// therefore unknown until the tile is read. So the vertical span is widened
-    /// by the whole range `z` can lift a tile through, and by one tile for the
-    /// sprite's own size. The result is a superset, which is the safe direction.
-    pub fn visible_tiles(&self) -> TileBounds {
-        let origin = project(self.center);
-        let half_w = self.width as i32 / 2;
-        let half_h = self.height as i32 / 2;
+    /// And back. The exact inverse of [`Camera::to_view`] — integers throughout,
+    /// because the zoom is not in either of them.
+    pub fn to_world(&self, at: ViewPixel) -> WorldPixel {
+        WorldPixel {
+            x: at.x - self.render_width() as i32 / 2 + self.eye.x,
+            y: at.y - self.render_height() as i32 / 2 + self.eye.y,
+        }
+    }
 
-        // The viewport's rectangle in world screen space, grown by a tile so a
+    /// Where a tile's centre falls in the drawn image, in pixels from its
+    /// top-left corner. Outside it is ordinary and not an error.
+    pub fn to_screen(&self, point: Point) -> ViewPixel {
+        self.to_view(project(point))
+    }
+
+    /// What world pixel the cursor is over, given where it is in the viewport.
+    ///
+    /// The one place a *viewport* pixel is spoken about, and it does not escape:
+    /// the zoom is undone here and a world pixel comes out. Lossy in the
+    /// magnifying direction by construction — several viewport pixels share one
+    /// world pixel at zoom 4 — which is the honest answer, since the world has
+    /// no finer position to name.
+    pub fn pick(&self, x: i32, y: i32) -> WorldPixel {
+        let den = self.zoom.denominator() as i32;
+        let num = self.zoom.numerator() as i32;
+        // About the centre, because that is where the blit is anchored: the
+        // offscreen image is drawn over the viewport rect whole, so the two
+        // centres coincide whatever the rounding did to the edges.
+        let dx = (x - self.width as i32 / 2) * den / num;
+        let dy = (y - self.height as i32 / 2) * den / num;
+        WorldPixel {
+            x: self.eye.x + dx,
+            y: self.eye.y + dy,
+        }
+    }
+
+    /// Change the magnification, keeping whatever is under the cursor there.
+    ///
+    /// The whole reason the inverse exists. Hold `pick(cursor)` fixed across the
+    /// change and solve for the new eye — one line, and it is the difference
+    /// between a camera that feels placed and one that feels shoved.
+    pub fn zoom_about(&mut self, cursor_x: i32, cursor_y: i32, zoom: Zoom) {
+        let before = self.pick(cursor_x, cursor_y);
+        self.zoom = zoom;
+        let after = self.pick(cursor_x, cursor_y);
+        self.eye = WorldPixel {
+            x: self.eye.x + before.x - after.x,
+            y: self.eye.y + before.y - after.y,
+        };
+    }
+
+    /// Every tile that could land inside the drawn image, over-covered.
+    ///
+    /// The inverse of [`project`] is exact — see [`unproject`] — but only for a
+    /// known `z`, and `z` is what is stored per tile and therefore unknown until
+    /// the tile is read. So the vertical span is widened by the whole range `z`
+    /// can lift a tile through, and by one tile for the sprite's own size. The
+    /// result is a superset, which is the safe direction.
+    ///
+    /// Zoomed out this covers more, because the image it is covering *is*
+    /// bigger: nothing here reads the zoom, only the size it produced.
+    pub fn visible_tiles(&self) -> TileBounds {
+        let half_w = self.render_width() as i32 / 2;
+        let half_h = self.render_height() as i32 / 2;
+
+        // The image's rectangle in world pixel space, grown by a tile so a
         // diamond straddling the edge still counts, and by the `z` range in
         // *both* directions. Both, because `z` is signed and the two cases look
         // nothing alike: a mountain lifts a tile whose ground position is below
@@ -160,10 +431,10 @@ impl Camera {
         // the viewport down into it. Widening only downwards passes every test
         // written at `z = 0` and loses a band of ground the moment the ground
         // goes negative.
-        let left = origin.x - half_w - TILE_WIDTH;
-        let right = origin.x + half_w + TILE_WIDTH;
-        let top = origin.y - half_h - TILE_HEIGHT - MAX_Z_LIFT;
-        let bottom = origin.y + half_h + TILE_HEIGHT + MAX_Z_LIFT;
+        let left = self.eye.x - half_w - TILE_WIDTH;
+        let right = self.eye.x + half_w + TILE_WIDTH;
+        let top = self.eye.y - half_h - TILE_HEIGHT - MAX_Z_LIFT;
+        let bottom = self.eye.y + half_h + TILE_HEIGHT + MAX_Z_LIFT;
 
         // `u = x - y` and `v = x + y`, in tiles. Dividing rounds towards zero,
         // which shrinks the range on the negative side, so each bound is pushed
@@ -192,13 +463,13 @@ mod tests {
     /// no longer tiles, so they are written out rather than derived.
     #[test]
     fn a_step_moves_half_a_tile_on_each_axis() {
-        assert_eq!(project(Point::new(0, 0, 0)), ScreenPoint { x: 0, y: 0 });
+        assert_eq!(project(Point::new(0, 0, 0)), WorldPixel { x: 0, y: 0 });
         // East: right and down.
-        assert_eq!(project(Point::new(1, 0, 0)), ScreenPoint { x: 22, y: 22 });
+        assert_eq!(project(Point::new(1, 0, 0)), WorldPixel { x: 22, y: 22 });
         // South: left and down.
-        assert_eq!(project(Point::new(0, 1, 0)), ScreenPoint { x: -22, y: 22 });
+        assert_eq!(project(Point::new(0, 1, 0)), WorldPixel { x: -22, y: 22 });
         // Both: straight down one full tile, and back to the same column.
-        assert_eq!(project(Point::new(1, 1, 0)), ScreenPoint { x: 0, y: 44 });
+        assert_eq!(project(Point::new(1, 1, 0)), WorldPixel { x: 0, y: 44 });
     }
 
     #[test]
@@ -212,57 +483,248 @@ mod tests {
         );
     }
 
+    /// The inverse is an inverse — over the whole `z` range, because that is the
+    /// axis it has to be told about and therefore the one that can be wired up
+    /// wrongly and still pass at `z = 0`.
     #[test]
-    fn the_camera_puts_its_own_tile_in_the_middle() {
-        let camera = Camera::new(Point::new(1000, 1000, 5), 800, 600);
-        assert_eq!(camera.to_screen(camera.center), ScreenPoint { x: 400, y: 300 });
-    }
-
-    /// The property that matters: `visible_tiles` may over-cover, but it may
-    /// never miss. Anything `to_screen` puts inside the viewport has to be in
-    /// the bounds — checked by walking tiles and projecting them, which is the
-    /// other formula, so agreement is evidence and not a restatement.
-    #[test]
-    fn every_tile_that_lands_on_screen_is_inside_the_bounds() {
-        let camera = Camera::new(Point::new(1000, 1000, 0), 800, 600);
-        let bounds = camera.visible_tiles();
-
-        let mut on_screen = 0;
-        for x in 900..1100u16 {
-            for y in 900..1100u16 {
-                for z in [-120i8, -10, 0, 10, 120] {
+    fn unproject_undoes_project() {
+        for x in [0u16, 1, 2, 511, 1495, 6143] {
+            for y in [0u16, 1, 3, 512, 1629, 4095] {
+                for z in [i8::MIN, -37, -1, 0, 1, 44, i8::MAX] {
                     let point = Point::new(x, y, z);
-                    let at = camera.to_screen(point);
-                    let inside =
-                        at.x >= 0 && at.x < camera.width as i32 && at.y >= 0 && at.y < camera.height as i32;
-                    if !inside {
-                        continue;
-                    }
-                    on_screen += 1;
-                    assert!(
-                        i32::from(x) >= bounds.min_x
-                            && i32::from(x) <= bounds.max_x
-                            && i32::from(y) >= bounds.min_y
-                            && i32::from(y) <= bounds.max_y,
-                        "{point} lands at {at:?} but {bounds:?} excludes it",
+                    assert_eq!(
+                        unproject(project(point), z),
+                        (i32::from(x), i32::from(y)),
+                        "{point} did not come back",
                     );
                 }
             }
         }
+    }
 
-        // A pass with nothing on screen would assert nothing at all, and would
-        // stay green through any change to either formula.
-        assert!(on_screen > 1000, "only {on_screen} tiles landed on screen");
+    /// A pixel that is not a tile centre names the tile it is nearest, and the
+    /// north-west of the map is where truncation would have named a different
+    /// one — which is the whole reason for `div_euclid`.
+    #[test]
+    fn unproject_rounds_to_the_nearest_tile_on_both_sides_of_the_origin() {
+        // A few pixels either side of a centre still name that tile.
+        let centre = project(Point::new(100, 100, 0));
+        for (dx, dy) in [(0, 0), (5, 0), (-5, 0), (0, 5), (0, -5), (-10, -10)] {
+            let near = WorldPixel {
+                x: centre.x + dx,
+                y: centre.y + dy,
+            };
+            assert_eq!(unproject(near, 0), (100, 100), "{near:?}");
+        }
+        // North of tile (0, 0) is a negative tile, and it is reported as one
+        // rather than clamped into the map.
+        let above = WorldPixel { x: 0, y: -44 };
+        assert_eq!(unproject(above, 0), (-1, -1));
+    }
+
+    #[test]
+    fn the_camera_puts_its_own_tile_in_the_middle() {
+        let camera = Camera::new(Point::new(1000, 1000, 5), 800, 600);
+        assert_eq!(
+            camera.to_screen(Point::new(1000, 1000, 5)),
+            ViewPixel { x: 400, y: 300 }
+        );
+    }
+
+    /// The rule the whole camera hangs on. Checked at every rung, because the
+    /// image's size changes with the zoom and a half that used the viewport's
+    /// would agree with the other half only at 1:1.
+    #[test]
+    fn to_world_is_the_inverse_of_to_view_at_every_zoom() {
+        let mut camera = Camera::new(Point::new(1495, 1629, 0), 1024, 768);
+        let mut zoom = Zoom::ONE;
+        while !zoom.is_widest() {
+            zoom = zoom.scale_down();
+        }
+        loop {
+            camera.zoom = zoom;
+            for at in [
+                WorldPixel { x: 0, y: 0 },
+                camera.eye(),
+                WorldPixel { x: -12_345, y: 6 },
+                WorldPixel {
+                    x: 100_000,
+                    y: -70_000,
+                },
+            ] {
+                assert_eq!(camera.to_world(camera.to_view(at)), at, "at {zoom}");
+            }
+            let next = zoom.scale_up();
+            if next == zoom {
+                break;
+            }
+            zoom = next;
+        }
+    }
+
+    /// The ladder is walked, not indexed: nothing outside it is reachable.
+    #[test]
+    fn the_zoom_ladder_has_two_ends() {
+        let mut zoom = Zoom::ONE;
+        for _ in 0..20 {
+            zoom = zoom.scale_up();
+        }
+        assert_eq!((zoom.numerator(), zoom.denominator()), (4, 1));
+        assert!(!zoom.is_widest());
+        for _ in 0..20 {
+            zoom = zoom.scale_down();
+        }
+        assert_eq!((zoom.numerator(), zoom.denominator()), (1, 2));
+        assert!(zoom.is_widest());
+    }
+
+    /// Zoomed out the offscreen image is bigger than the viewport, zoomed in
+    /// smaller, and never short — a short image leaves a strip of the viewport
+    /// with nothing blitted into it.
+    #[test]
+    fn the_drawn_image_covers_the_viewport_at_every_zoom() {
+        let mut camera = Camera::new(Point::new(1000, 1000, 0), 1024, 768);
+        let mut zoom = Zoom::ONE;
+        while !zoom.is_widest() {
+            zoom = zoom.scale_down();
+        }
+        loop {
+            camera.zoom = zoom;
+            let (num, den) = (zoom.numerator(), zoom.denominator());
+            assert!(
+                camera.render_width() * num >= camera.width * den,
+                "{zoom} leaves {}px short of {}",
+                camera.render_width(),
+                camera.width,
+            );
+            // And not wastefully long: one world pixel of slack at most.
+            assert!(
+                camera.render_width() * num < (camera.width + num) * den,
+                "{zoom} overshoots"
+            );
+            let next = zoom.scale_up();
+            if next == zoom {
+                break;
+            }
+            zoom = next;
+        }
+    }
+
+    /// Zooming holds the cursor still. Not exactly — a world pixel is coarser
+    /// than a viewport pixel when magnified, so the answer is only as precise as
+    /// the space it is expressed in — but within one world pixel at every rung,
+    /// which is what "feels placed" means.
+    #[test]
+    fn zooming_keeps_what_is_under_the_cursor_under_it() {
+        let mut camera = Camera::new(Point::new(1495, 1629, 0), 1024, 768);
+        let (cx, cy) = (200, 700);
+        let before = camera.pick(cx, cy);
+        let mut zoom = camera.zoom();
+        for _ in 0..8 {
+            zoom = zoom.scale_up();
+            camera.zoom_about(cx, cy, zoom);
+            let after = camera.pick(cx, cy);
+            assert!(
+                (after.x - before.x).abs() <= 1 && (after.y - before.y).abs() <= 1,
+                "{zoom}: {before:?} drifted to {after:?}",
+            );
+        }
+    }
+
+    /// The property that matters: `visible_tiles` may over-cover, but it may
+    /// never miss. Anything `to_screen` puts inside the image has to be in the
+    /// bounds — checked by walking tiles and projecting them, which is the other
+    /// formula, so agreement is evidence and not a restatement.
+    ///
+    /// Re-run at every rung of the ladder, because the image the bounds cover
+    /// grows with it.
+    #[test]
+    fn every_tile_that_lands_on_screen_is_inside_the_bounds() {
+        let mut camera = Camera::new(Point::new(1000, 1000, 0), 800, 600);
+        let mut zoom = Zoom::ONE;
+        while !zoom.is_widest() {
+            zoom = zoom.scale_down();
+        }
+        loop {
+            camera.zoom = zoom;
+            let bounds = camera.visible_tiles();
+            let (width, height) = (camera.render_width() as i32, camera.render_height() as i32);
+
+            let mut on_screen = 0;
+            for x in 900..1100u16 {
+                for y in 900..1100u16 {
+                    for z in [-120i8, -10, 0, 10, 120] {
+                        let point = Point::new(x, y, z);
+                        let at = camera.to_screen(point);
+                        if at.x < 0 || at.x >= width || at.y < 0 || at.y >= height {
+                            continue;
+                        }
+                        on_screen += 1;
+                        assert!(
+                            i32::from(x) >= bounds.min_x
+                                && i32::from(x) <= bounds.max_x
+                                && i32::from(y) >= bounds.min_y
+                                && i32::from(y) <= bounds.max_y,
+                            "at {zoom}, {point} lands at {at:?} but {bounds:?} excludes it",
+                        );
+                    }
+                }
+            }
+
+            // A pass with nothing on screen would assert nothing at all, and
+            // would stay green through any change to either formula. The floor
+            // is the image's own area in tiles — one diamond covers
+            // `TILE_WIDTH * HALF_HEIGHT` pixels — because a magnified image
+            // genuinely holds fewer tiles and a constant here would either fail
+            // at 4x or assert nothing at 1/2x.
+            let floor = width as i64 * height as i64 / (TILE_WIDTH * HALF_HEIGHT) as i64;
+            assert!(
+                i64::from(on_screen) > floor,
+                "at {zoom}, only {on_screen} tiles landed on screen, against {floor}",
+            );
+            let next = zoom.scale_up();
+            if next == zoom {
+                break;
+            }
+            zoom = next;
+        }
     }
 
     /// And the over-covering has to stay bounded, or "superset" becomes an
-    /// excuse for drawing the map. At 800x600 the viewport holds roughly
-    /// 800*600/(44*22) ~ 500 tiles; the `z` slack widens that a lot, but not
-    /// without limit.
+    /// excuse for drawing the map.
+    ///
+    /// A constant would not do it: zoomed out the image is four times the area,
+    /// so the bound has to be a statement about the image's size rather than a
+    /// number that happens to hold at 1:1. This is that statement, derived from
+    /// the formula's own terms — the `u` and `v` spans it computes, converted to
+    /// a square of tiles — with a tile of slack per bound for the roundings.
     #[test]
-    fn the_bounds_do_not_grow_without_limit() {
-        let bounds = Camera::new(Point::new(1000, 1000, 0), 800, 600).visible_tiles();
-        let tiles = (bounds.max_x - bounds.min_x + 1) as i64 * (bounds.max_y - bounds.min_y + 1) as i64;
-        assert!(tiles < 40_000, "{bounds:?} covers {tiles} tiles");
+    fn the_bounds_do_not_grow_faster_than_the_image() {
+        let mut camera = Camera::new(Point::new(1000, 1000, 0), 800, 600);
+        let mut zoom = Zoom::ONE;
+        while !zoom.is_widest() {
+            zoom = zoom.scale_down();
+        }
+        loop {
+            camera.zoom = zoom;
+            let bounds = camera.visible_tiles();
+            let tiles = (bounds.max_x - bounds.min_x + 1) as i64 * (bounds.max_y - bounds.min_y + 1) as i64;
+
+            let u_span = (camera.render_width() as i64 + 2 * TILE_WIDTH as i64) / HALF_WIDTH as i64 + 4;
+            let v_span = (camera.render_height() as i64 + 2 * TILE_HEIGHT as i64 + 2 * MAX_Z_LIFT as i64)
+                / HALF_HEIGHT as i64
+                + 4;
+            let side = (u_span + v_span) / 2 + 4;
+            assert!(
+                tiles <= side * side,
+                "at {zoom}, {bounds:?} covers {tiles} tiles against {}",
+                side * side,
+            );
+            let next = zoom.scale_up();
+            if next == zoom {
+                break;
+            }
+            zoom = next;
+        }
     }
 }

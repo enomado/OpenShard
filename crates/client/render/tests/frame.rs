@@ -14,7 +14,8 @@ use std::path::PathBuf;
 
 use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
-use openshard_client_render::camera::Camera;
+use openshard_client_render::blit::{Blit, ViewportRect};
+use openshard_client_render::camera::{Camera, Zoom};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::{self, Mobile};
@@ -523,6 +524,181 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
     );
 }
 
+/// Read an RGBA8 texture back into a [`Frame`].
+///
+/// `width * 4` must be a multiple of 256, the row alignment a buffer copy
+/// demands. Split out of [`render_both`] because the blit test reads two
+/// textures — the world image and the surface it was blitted onto — and
+/// comparing them is the whole assertion.
+fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Frame {
+    let (width, height) = (texture.width(), texture.height());
+    assert_eq!(width * 4 % 256, 0, "a row copy has to be 256-byte aligned");
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size: u64::from(width) * u64::from(height) * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping a buffer this test just wrote");
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting on our own submission");
+    let pixels = slice
+        .get_mapped_range()
+        .expect("the map completed above")
+        .to_vec();
+    readback.unmap();
+    Frame { width, pixels }
+}
+
+/// At zoom 1 the blit is a copy, byte for byte.
+///
+/// The property every pixel-exact assertion in this file depends on now that the
+/// world is drawn offscreen and stretched onto the surface: if the blit is not
+/// the identity at 1:1, then every other test here is measuring an image the
+/// screen never shows. A half-texel of sampling error, a flipped vertical axis
+/// or a filter left on all read as "slightly soft" on a screenshot and are exact
+/// here.
+///
+/// No client files: the scene is two coloured diamonds made in memory, which is
+/// enough to have edges — a flat field of one colour would survive any of those
+/// mistakes.
+#[test]
+fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    let side = usize::from(LAND_TILE_SIZE);
+    let art = Image::new(
+        LAND_TILE_SIZE,
+        LAND_TILE_SIZE,
+        (0..side * side)
+            // A gradient rather than a wash: a filter left on averages
+            // neighbours, and neighbours that differ are what makes that
+            // visible.
+            .map(|at| Color16(((at % 31) as u16) << 10 | ((at / 31 % 31) as u16) << 5 | 1))
+            .collect(),
+    );
+    let atlas = LandAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let region = atlas.region(GRAPHIC).expect("packed");
+    let quads: Vec<GroundQuad> = [(40.0, 40.0), (150.0, 96.0)]
+        .into_iter()
+        .map(|(x, y)| GroundQuad {
+            x,
+            y,
+            corners: [0.0; 4],
+            region,
+            texmap: None,
+            depth: 0.5,
+        })
+        .collect();
+
+    let (width, height) = (256, 256);
+    let world = openshard_client_render::blit::world_texture(&device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(&device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut ground_pass = GroundRenderer::new(&device, &queue, format, &atlas, &texmaps);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    ground_pass.render(
+        &device,
+        &queue,
+        &mut encoder,
+        Target {
+            view: &world_view,
+            depth: &depth_view,
+            width,
+            height,
+        },
+        &quads,
+    );
+    queue.submit([encoder.finish()]);
+
+    // The surface stands in for a window: same size, so a zoom of 1 asks the
+    // blit for exactly the identity.
+    let surface = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+    let blit = Blit::new(&device, format);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    blit.render(
+        &device,
+        &mut encoder,
+        &surface_view,
+        &world_view,
+        Zoom::ONE,
+        ViewportRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+    );
+    queue.submit([encoder.finish()]);
+
+    let drawn = read_back(&device, &queue, &world);
+    let blitted = read_back(&device, &queue, &surface);
+
+    // The scene has to be worth comparing. Two diamonds of a gradient cover a
+    // couple of thousand pixels of a 65,536-pixel frame, and an empty frame
+    // would compare equal to another empty frame.
+    assert!(
+        drawn.drawn() > 2000,
+        "the world image holds only {} drawn pixels",
+        drawn.drawn(),
+    );
+    for y in 0..height {
+        for x in 0..width {
+            assert_eq!(
+                blitted.pixel(x, y),
+                drawn.pixel(x, y),
+                "({x}, {y}) came out of the blit changed",
+            );
+        }
+    }
+}
+
 /// A static sprite is drawn at its own size, in its own place, and its
 /// transparent pixels are not drawn at all.
 ///
@@ -949,13 +1125,14 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
     .expect("one sprite fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
     let statics = StaticAtlas::pack([]).expect("nothing always fits");
-    let camera = Camera::new(Point::new(100, 100, 0), 256, 256);
+    let centre = Point::new(100, 100, 0);
+    let camera = Camera::new(centre, 256, 256);
 
     // The ground quad is built here rather than collected: `Map` cannot be
     // constructed in memory — see the backlog in docs/client.md — and what this
     // test needs is one tile under the mobile's feet at the depth `depth` would
     // have given it.
-    let at = camera.to_screen(camera.center);
+    let at = camera.to_screen(centre);
     let ground = [GroundQuad {
         x: at.x as f32,
         y: at.y as f32,
@@ -972,7 +1149,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
     let colours = |facing| {
         let quads = mobiles::collect(
             &[Mobile {
-                at: camera.center,
+                at: centre,
                 body: BODY,
                 group: 4,
                 facing,
@@ -1170,7 +1347,8 @@ fn dump_a_frame_of_britain() {
     };
     let map = Map::load_facet(&dir, 0).expect("Felucca");
     let art = Art::open(&dir).expect("artLegacyMUL.uop");
-    let camera = Camera::new(Point::new(1495, 1629, 0), 768, 512);
+    let centre = Point::new(1495, 1629, 0);
+    let camera = Camera::new(centre, 768, 512);
 
     let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
     let wanted = ground::visible_graphics(&map, &camera);
@@ -1189,10 +1367,7 @@ fn dump_a_frame_of_britain() {
         .iter()
         .enumerate()
         .map(|(index, facing)| {
-            let (x, y) = (
-                camera.center.x - 3 + index as u16 % 4,
-                camera.center.y - 3 + index as u16 / 4,
-            );
+            let (x, y) = (centre.x - 3 + index as u16 % 4, centre.y - 3 + index as u16 / 4);
             Mobile {
                 // On the ground rather than at the camera's height: a mobile
                 // standing below the terrain is *correctly* hidden by it, which
