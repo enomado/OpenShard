@@ -191,10 +191,34 @@ Other Rust work on the same client, worth reading before reinventing a wheel:
 
 - [broker0/path_server](https://github.com/broker0/path_server) — a UO server
   in Rust.
+- [broker0/ungine7](https://github.com/broker0/ungine7) — the same author's
+  later Rust workspace (MIT): packet definitions, protocol detection and
+  encryption, client data-file parsers, and server-side world/movement
+  systems, plus example servers, clients and proxies. Research-oriented and
+  early, but it covers the same wire and the same file formats we do.
 - [AngryLawyer/uo-rust-libs](https://github.com/AngryLawyer/uo-rust-libs) —
   Rust libraries for the client's data files (`.mul` / `.uop` art, map,
   tiledata); the same ground `crates/server/world` covers.
 
 ## Licence
 
-This project is licensed under the GNU General Public License v3.0
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. This is the convention of the Rust ecosystem, and it is what
+every crate in the workspace has always declared: MIT alone carries no patent
+grant, and Apache-2.0 alone is incompatible with GPLv2 code, so offering both
+leaves the choice with whoever uses this.
+
+Copyleft was considered and dropped. A shard operator runs the server rather
+than distributing it, so the GPL's condition is never triggered and the licence
+buys nothing in this niche; meanwhile it casts doubt over whether a TypeScript
+script pack loaded into the embedded V8 is a derivative work — which is exactly
+the ecosystem the Community Pack exists to grow — and it puts
+`crates/common/protocol` out of reach of every neighbouring project on this
+wire.
+
+Unless you state otherwise, any contribution you intentionally submit for
+inclusion in this work is dual-licensed as above, with no additional terms.
