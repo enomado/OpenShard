@@ -43,6 +43,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod crowd;
+mod keys;
 mod link;
 mod shell;
 
@@ -257,6 +258,7 @@ fn main() -> ExitCode {
         shell: None,
         link,
         facet_checked: false,
+        keys: keys::Held::default(),
         crowd: Crowd::default(),
         next_tick: Instant::now(),
         last_advance: Instant::now(),
@@ -429,6 +431,13 @@ struct App {
     /// [`App::entered`]: once, because it cannot change without a `0xBF 0x08`
     /// nothing here reads yet.
     facet_checked: bool,
+    /// Which way the keyboard is asking to walk, and whether it is asking to
+    /// run.
+    ///
+    /// A step is not sent from the key event: the operating system's auto-repeat
+    /// is not a walking speed, and a shard refuses a flood of steps as a
+    /// speedhack. See `keys.rs`.
+    keys: keys::Held,
     /// What everyone on screen was doing a moment ago: which animation each is
     /// playing, and how far into it.
     ///
@@ -491,6 +500,13 @@ impl ApplicationHandler<link::Update> for App {
             _ => false,
         };
         if consumed {
+            // A key the UI took is a key this will never hear come up, and a
+            // held direction that is never released walks for ever. Typing into
+            // a panel should stop the character anyway, so letting go of
+            // everything is both the fix and the behaviour.
+            if matches!(event, WindowEvent::KeyboardInput { .. }) {
+                self.keys.clear();
+            }
             if let Some(window) = self.window.as_ref() {
                 window.window.request_redraw();
             }
@@ -512,12 +528,32 @@ impl ApplicationHandler<link::Update> for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != ElementState::Pressed {
-                    return;
-                }
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
                 };
+                // An arrow is *held*, not pressed: while it is down a step is
+                // due every step's length, and that clock is ours rather than
+                // the operating system's repeat rate. See `keys.rs`.
+                if let Some(direction) = keys::Held::direction_of(code) {
+                    let step = match event.state {
+                        ElementState::Pressed => self.keys.press(direction, Instant::now()),
+                        ElementState::Released => {
+                            self.keys.release(direction);
+                            None
+                        }
+                    };
+                    if let Some(facing) = step {
+                        if self.walk(facing) {
+                            if let Some(window) = self.window.as_ref() {
+                                window.window.request_redraw();
+                            }
+                        }
+                    }
+                    return;
+                }
+                if event.state != ElementState::Pressed {
+                    return;
+                }
                 if code == KeyCode::Escape {
                     event_loop.exit();
                     return;
@@ -532,7 +568,7 @@ impl ApplicationHandler<link::Update> for App {
                     // along, only a projection that folds `z` into `y`.
                     KeyCode::PageUp => self.control.pan(0, PAGE_PIXELS),
                     KeyCode::PageDown => self.control.pan(0, -PAGE_PIXELS),
-                    _ => self.step(code),
+                    _ => false,
                 };
                 if changed {
                     if let Some(window) = self.window.as_ref() {
@@ -540,6 +576,17 @@ impl ApplicationHandler<link::Update> for App {
                     }
                 }
             }
+            // Shift is the whole of "run", and it arrives here rather than as a
+            // key: `ModifiersChanged` is what winit reports a held modifier
+            // with, and a `KeyboardInput` for the shift itself would miss the
+            // case of it going down between two steps.
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.keys.set_running(modifiers.state().shift_key());
+            }
+            // A window that loses focus never hears the key come up, and a
+            // character that keeps walking into a wall while its player is in
+            // another window is not what the key meant.
+            WindowEvent::Focused(false) => self.keys.clear(),
             WindowEvent::CursorMoved { position, .. } => {
                 // Relative to the *viewport* and not the window: the camera's
                 // own centre is the viewport's, so a cursor measured from the
@@ -586,6 +633,18 @@ impl ApplicationHandler<link::Update> for App {
     /// `Mobile.ProcessAnimation` poll.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
+        // A held arrow asks for a step every step's length. Here and not in the
+        // key event: the operating system repeats a held key at a rate that is
+        // not a walking speed, and the fast half of that is refused by the
+        // shard as a speedhack — which reads as the walk stuttering. See
+        // `keys.rs`.
+        if let Some(facing) = self.keys.due(now) {
+            if self.walk(facing) {
+                if let Some(window) = self.window.as_ref() {
+                    window.window.request_redraw();
+                }
+            }
+        }
         if now >= self.next_tick {
             // Whatever really passed — see `App::last_advance`. A stall longer
             // than a frame, the window minimised or the machine asleep, moves
@@ -600,59 +659,44 @@ impl ApplicationHandler<link::Update> for App {
                 window.window.request_redraw();
             }
         }
-        // Two reasons for a frame, so two terms: the animation clock, and
-        // whatever the UI is animating. The deadline is the earlier.
+        // Three reasons to come back, so three terms: the animation clock,
+        // whatever the UI is animating, and the next step a held key is owed.
+        // The deadline is the earliest — a loop that slept past the step would
+        // walk at whatever rate it happened to wake at.
         let deadline = match self.shell.as_ref().map(shell::Shell::repaint_after) {
             Some(after) => self.next_tick.min(now + after),
             None => self.next_tick,
+        };
+        let deadline = match self.keys.deadline() {
+            Some(step) => deadline.min(step),
+            None => deadline,
         };
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }
 
 impl App {
-    /// Move the camera, answering whether anything changed.
+    /// Take a step, answering whether anything on screen changed.
     ///
     /// Movement is clamped to the map rather than wrapped: walking off the north
     /// edge in UO is impossible, and a camera that wrapped would draw a seam
     /// between two sides of the world.
-    fn step(&mut self, code: KeyCode) -> bool {
+    fn walk(&mut self, facing: Facing) -> bool {
         // Connected, the keyboard moves nothing: it asks. The body goes where
         // the `0x22` says it went, which is the whole point of the walk
         // handshake — a client that stepped locally and corrected later would
         // be predicting, and the prediction lives in `Walk` where it can be
-        // rolled back. Page up and down are a camera control the protocol has
-        // no packet for, so they do nothing here.
+        // rolled back.
         if let Some(link) = self.link.as_ref() {
-            let facing = match code {
-                KeyCode::ArrowUp => Direction::NorthWest,
-                KeyCode::ArrowDown => Direction::SouthEast,
-                KeyCode::ArrowLeft => Direction::SouthWest,
-                KeyCode::ArrowRight => Direction::NorthEast,
-                _ => return false,
-            };
-            link.step(Facing::walking(facing));
+            link.step(facing);
             return false;
         }
 
-        // The four arrows are the four diagonals of the map, which are the four
-        // *straight* directions on screen: UO's grid is turned 45 degrees, so
-        // "up" is north-west and there is no key that moves one axis alone.
-        let facing = match code {
-            KeyCode::ArrowUp => Some(Direction::NorthWest),
-            KeyCode::ArrowDown => Some(Direction::SouthEast),
-            KeyCode::ArrowLeft => Some(Direction::SouthWest),
-            KeyCode::ArrowRight => Some(Direction::NorthEast),
-            _ => None,
-        };
-        let Some(facing) = facing else {
-            return false;
-        };
         // Turning is a step here, as it is not in a real client: there is no
         // server to say whether the step happened, so the body faces wherever
         // it was last sent. `client/net`'s `walk` is what will decide this once
         // the two are joined.
-        let (dx, dy) = facing.step();
+        let (dx, dy) = facing.direction.step();
         let x = (i32::from(self.player.at.x) + dx).clamp(0, self.map.width() as i32 - 1);
         let y = (i32::from(self.player.at.y) + dy).clamp(0, self.map.height() as i32 - 1);
         let (x, y) = (x as u16, y as u16);
@@ -668,7 +712,7 @@ impl App {
             None,
             Point::new(x, y, ground),
             Graphic(self.player.body),
-            Facing::walking(facing),
+            facing,
             self.player.hue,
         );
         // Offline the body is what the camera is locked to, exactly as the

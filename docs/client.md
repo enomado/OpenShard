@@ -1050,6 +1050,26 @@ own understanding had written.
   A move of more than one tile is not glided at all: a gate, a recall or a `0x22`
   putting a mispredicted body back would otherwise slide the character across
   half a facet over 400ms, which is a stranger picture than the teleport it hides.
+- ~~**Nothing ever asks to run.**~~ Shift does. Everything downstream of the
+  wire's running bit was already built — the server's `WalkPace` charges
+  `RUN_INTERVAL`, `Crowd` holds and glides a runner for `RUN_HOLD`, and
+  `BodyKind::running` picks the group — and the only thing missing was a client
+  that set the bit. What writing it turned up is that **the pace is input, not
+  output**: a step used to be sent from the key event, which made the operating
+  system's auto-repeat the walking speed — half a second of nothing, then thirty
+  steps a second, and the fast half is exactly what `WalkPace` refuses as a
+  speedhack, so the shard answers `0x21` and the body is pulled back. That reads
+  as the walk stuttering rather than as the client asking for too much, which is
+  the wrong bug to go looking for.
+
+  So a direction is *held* rather than pressed, and the clock is ours:
+  `crates/client/app/src/keys.rs` sends one step every `WALK_HOLD`, or every
+  `RUN_HOLD` with shift down. The rate is the hold and not `common/movement`'s
+  interval on purpose — those are anti-speedhack *floors*, deliberately half the
+  real rate, and walking at the floor would move a body twice as fast as the
+  crowd glides it. Two releases that never arrive have to be caught for a held
+  key not to walk for ever: the window losing focus, and egui taking the event.
+
 - **The crowd cannot tell a mount from a body on foot, and a mount steps twice as
   fast.** `WALK_HOLD`/`RUN_HOLD` are the two on-foot rates; ServUO's other two,
   `WalkMount` (200ms) and `RunMount` (100ms), have nothing here to select them —
