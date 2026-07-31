@@ -1123,6 +1123,75 @@ own understanding had written.
   pipeline built twice, which is the cost of a draw call binding one texture. If
   a third sprite layer arrives — equipment — it is worth asking whether one
   atlas keyed by a tagged id beats three of these.
+- ~~**The labels still are not drawn.**~~ They are now, above whoever the
+  crowd last heard from. `crates/common/uofiles::font::AsciiFonts` reads
+  `fonts.mul`; `crate::atlas::FontAtlas` packs every glyph it defines — all
+  ten faces, unconditionally, because unlike a graphic there is no "not
+  currently visible" character — into a fixed grid cell-sized to the tallest
+  one packed, the way the backlog entry below guessed. `crate::text::collect`
+  turns a line into glyph quads, left to right by each glyph's own width
+  (`fonts.mul` carries no kerning table) and centred on an anchor rather than
+  left-aligned to it, drawn through the same `SpriteRenderer` and `statics.wgsl`
+  as everything else: font pixels are grey and a wire hue replaces them exactly
+  the way a partial hue replaces a static's, so no shader of its own was
+  needed. `crates/client/app/src/crowd.rs` gained the other half — `Crowd::hear`
+  and `Crowd::speaking`, a serial's last line and when it arrived — and
+  `App::entered` calls `hear` once per new journal tail line, matched to a
+  drawn mobile through `mobiles::head_anchor`, the top-centre of exactly the
+  rectangle `mobiles::collect` would draw for it (refactored out from under
+  both so the two cannot disagree about where a body's head is).
+
+  Three corners cut, each because the wire does not yet carry what a correct
+  answer needs:
+  - **`fonts.mul` is still unconfirmed against a shipped file.** No client
+    install was on hand while writing either the reader or the atlas above
+    it, so — alone among `uofiles`'s readers — it has no counterpart in
+    `tests/client_files.rs`, and the byte layout is the widely-documented
+    community format rather than a fact this crate has confirmed on real
+    bytes. First thing to do with a client tree in hand.
+  - **The hold is a flat five seconds, not the message's own length.** The
+    reference client's `Mobile.m_SpeechTime` grows with the text; nothing
+    that reaches here — not the wire's `0x1C`, not `SpokenMessage` — carries
+    an expiry, so `crowd::SPEECH_HOLD` is a constant standing in for one.
+    Threading a real duration through means deciding whether it is computed
+    at the packet boundary or carried on the wire, which is `client/net`'s
+    question and not this pass's.
+  - **A label is always drawn nearest, not depth-tested against the world.**
+    `Label::depth` is wired but `client/app` always hands it `0.0`: there is
+    no `depth::text_priority_z` the way there is a `mobile_priority_z`, so a
+    line is never hidden by a wall in front of its speaker. Reads right for
+    every case tried so far — overhead text is an overlay in the reference
+    client too — and is the thing to revisit first if that stops being true.
+  - **Only the newest journal line is ever heard.** `App::entered` compares
+    `view.journal.back()` against the previous view's, so two speakers
+    between one `WorldView` update and the next share one slot and the
+    older one's line never appears, however briefly. The journal itself
+    drops nothing — this is a gap in what gets a bubble, not in what gets
+    remembered.
+
+  `unifont.mul` — the Unicode faces gump text and gump title bars use — is a
+  separate reader again and is not started; `fonts.mul` was picked first
+  because it is what `speech::Font` already names.
+
+- **A repack that fails is a `eprintln!` and a frame that draws anyway.**
+  `App::draw` rebuilds the atlases when the camera asks for a graphic they do not
+  hold, and on `Err` it prints and keeps the old ones
+  (`crates/client/app/src/lib.rs`, the `Some(Err(error))` arm). `StaticAtlas` is
+  one 2048-square shelf pack that returns `AtlasError::Full` rather than
+  truncating, so the first camera whose statics do not fit turns into a silent,
+  permanent "some sprites are missing" — and the sprites that survive are
+  whichever the *startup* camera happened to want. Measured against a real
+  install, the start tile (1495, 1629 on Felucca) sees 187 distinct static
+  graphics, and 136 tiles out it is 588: the miss is reachable by walking, not a
+  corner case. Whatever replaces it — a texture array, several atlases, an
+  eviction policy — the failure has to stop being a frame that renders.
+- **`stale` cannot become false when a visible static has no art.** The same
+  function calls the atlas stale if any wanted graphic is absent from it, and a
+  graphic the client ships no art for is never packed (`StaticAtlas::build`
+  skips it deliberately). So one such tile on screen repacks every atlas every
+  frame, forever. The set that was asked for and the set that could be answered
+  have to be distinguishable — the pack knows which graphics it skipped, and
+  nothing carries that out.
 
 ## Backlog, found while joining the window to the wire
 

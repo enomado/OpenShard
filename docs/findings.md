@@ -163,6 +163,24 @@ in `CalculateHalfPixelUVs`, which makes the four corners sample the texture's ow
 first and last texel centres. This does not arise for a tile drawn 1:1 from its
 own sprite, which is why it appears exactly when stretching starts.
 
+**Doors are not in the map, and neither are shop signs.** A `.mul` static cannot
+move, and a door has to open, so the client's files contain almost none: across
+400x400 tiles covering the whole of Britain — 87,191 statics — there is exactly
+**one** tile whose tiledata name is `door`. Signs split in two: the *post* is a
+static (49 of them in the same rectangle, `metal signpost` / `wooden signpost`),
+while the hanging board naming the shop is not there at all. Both are server-side
+decoration, placed as items with `Drawn` + `Position` and drawn by `0x1A` — see
+`world/tick/decor.rs`, which already carries doors and containers.
+
+Worth knowing because of how it fails: a client rendering the map alone shows
+cannons (49 tiles), fountains (31) and every wall and roof, so the scene looks
+complete, and what is missing is exactly the furniture a player reads as part of
+the building. The conclusion "our static renderer drops small sprites" is the
+natural one and it is wrong. The population comes from the Community Pack's
+`felucca/_generated/deco.js` — 18,832 statics, 638 doors, 5,598 containers,
+converted once out of ServUO's `Data/Decoration/**.cfg` and `Data/signs.cfg` —
+and it lands through the `.admin` "Decorate Felucca" button.
+
 **No client files are in this repository and none ever will be.** They are
 copyrighted and they are not ours to redistribute. `world.client_files` points
 at whatever install the operator already has; the tests that need one read
