@@ -596,6 +596,126 @@ would not.
   panel next to the lock, is the cheap answer; the lock key already exists so
   this is polish rather than a hole.
 
+## M3b — many characters at once
+
+This client holds **sessions, plural**: several characters logged in from one
+process, a character select to say which one is on screen, a map of the whole
+facet to say where they all are, and the keyboard driving one of them or all of
+them at once, the way a strategy game drives a group.
+
+It is written down here, before M4, because it decides what "the client's state"
+means. Everything the gump layer builds — a journal, a paperdoll, a container —
+belongs to *a* character, and a status bar built against `App`'s fields rather
+than against a session is a status bar that has to be written twice.
+
+### One copy of the files, N of everything downstream of a socket
+
+The whole design is that split, and it is not a preference: `App` holds a facet
+of a few hundred megabytes plus `Art`, `TexMaps`, `TileData`, `HueRamp` and
+`Anim` — 200MB of pictures read before the first frame. Ten sessions holding ten
+of those is not a client. So the client's own data is loaded once and shared, and
+everything that comes off a socket is per session and shared with nobody:
+
+- **Shared, immutable, `Arc`.** `Map`, `Art`, `TexMaps`, `TileData`, `HueRamp`.
+  The precedent exists — the facet is already an `Arc<Map>` handed to the shard
+  thread so `Walk::step` can predict a height. `Anim` is the exception and the
+  awkward one: `Anim::frames` takes `&mut self` because reading a frame seeks the
+  file, so it is shared behind a lock or it is read behind the atlas that already
+  caches what it produced.
+- **Per session, and never merged.** The connection, the `WorldView`, the
+  `Walk`, the `Crowd`, the eye. `Walk` in particular: the step sequence and the
+  fastwalk key are properties of *one* connection, and a shared one would ack the
+  wrong session's step and desynchronise every character but one. This is the
+  same rule the server lives by from the other side.
+
+### What assumes one today
+
+All of it, and none of it deeply. `App` (`crates/client/app/src/main.rs`) holds
+one `link: Option<Link>`, one `crowd: Crowd`, one `control: Control`, one
+`player`, one `others`, one `items`, one `view`, one `connection` string. The
+window is woken with an `Update` that names no session, because there is only
+one to name.
+
+The shape that replaces it:
+
+- A `Session` — the link, the last `WorldView`, the crowd, the projections the
+  renderer reads, and the account it logged in as. `App` holds a list of them and
+  which one is drawn.
+- `Update` becomes `(SessionId, Update)`, and `EventLoopProxy` carries the pair.
+  A `Lost` is then one session ending, not the client ending — which is already
+  what `link.rs` promises ("the window stays open on one of these") and cannot
+  currently deliver, because there is nothing left to look at.
+- **One runtime, N tasks — not N threads.** `link.rs` argues for a thread
+  because the event loop blocks on the compositor and the runtime blocks on the
+  socket. That argument buys *one* thread, not one per character: ten idle
+  sockets do not want ten current-thread runtimes. The seam stays exactly where
+  it is — a thread that is not the event loop — and the connections become tasks
+  on it.
+
+### Only what is drawn needs a renderer
+
+The saving that makes the whole thing cheap. A session nobody is looking at
+needs its `WorldView` and its `Crowd` — both plain data, both advanced by
+packets and a clock — and no GPU state at all. The atlases, the world texture,
+the depth buffer and the three passes belong to the *view*, of which there is
+one, or two if a split screen ever happens.
+
+This matters because the atlas is the tightest resource here already: it is
+rebuilt whole whenever the camera walks off it, WebGL2 guarantees only 2048, and
+zooming out was already making that fire more often. N simultaneous worlds would
+turn an open question into a wall. N connections against one atlas does not.
+
+### Where everybody is: the facet map
+
+"Control several at once" is unusable without one picture that shows all of
+them, and it is nearly free: one pixel per tile from `radarcol.mul` — still
+unread, on the missing-readers list — plus a marker per session. It is an egui
+image and shares nothing with the isometric renderer, which is what makes it
+cheap. It also answers the standing backlog item that a free camera can lose the
+character entirely, for every character at once.
+
+### The keyboard, and who hears it
+
+Three modes, and they are the same question the camera lock already asks:
+
+- the drawn session only, which is what happens today;
+- a selected group;
+- everyone.
+
+Broadcasting a step is N independent `0x02`s with N sequences, whose acks come
+back interleaved and are folded per session. Nothing is shared and nothing is
+synchronised — the client does not decide that two characters stepped together,
+it decides that one key sent two packets. Anything cleverer (formation, waiting
+for the slowest) is a layer above this and must not be built into the fan-out.
+
+### Two things that stop being backlog and become blocking
+
+- **The facet is a startup constant.** Two sessions may stand on different
+  facets, so the single `Arc<Map>` becomes a cache keyed by facet, loaded on
+  demand and shared by whoever is on it. `0xBF 0x08` is what says a session
+  moved between them.
+- **A whole `WorldView` is cloned per changed packet.** One standing character
+  makes this invisible; ten characters beside a bank multiply it by ten, and the
+  clone is of the map of every mobile each of them can see. Worth measuring
+  before the count goes up, not after.
+
+### What the shard permits is the shard's business
+
+Each session is its own account and its own pair of sockets. A shard may refuse
+several connections from one account or one address, and whether it should is
+the operator's rule, not this client's — what this client owes is to report the
+refusal *per session*, so one login failing is one row in the character select
+and not the client giving up.
+
+### Done when
+
+Two accounts log in from one process, the character select switches which one is
+drawn, the arrows drive the drawn one or all of them, and the facet map shows
+every body. `cargo test --workspace` is green, including a test with neither a
+window nor a GPU that two sessions share one facet — `Arc::ptr_eq`, because "the
+files are loaded once" is the one property the whole milestone rests on and it
+regresses silently.
+
 ## M4 — the gump layer
 
 The journal and the speech line, the status bar, the paperdoll, containers, and
@@ -609,6 +729,11 @@ targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
 
 ## Decisions to take before they are taken by accident
 
+- **The client is multi-session.** Several characters logged in from one
+  process, one of them drawn, all of them drivable — see M3b. It is a decision
+  and not a feature, because it says the client's data files are loaded once and
+  everything downstream of a socket is per session, and retrofitting that means
+  auditing every field `App` holds. The same argument as multi-era on the server.
 - **Crates.** `crates/client/net`, `crates/client/render`, `crates/client/app`,
   plus `crates/common/uofiles`. The direction rule stands: a client crate
   depends on `common`, never on `server`.
@@ -886,12 +1011,16 @@ own understanding had written.
   loads Felucca and compares the shard's map size once, warning when they
   differ rather than following. Following means decoding `0xBF 0x08` and
   reloading the facet, and the reload is the interesting half: `Map::load_facet`
-  reads a few hundred megabytes.
+  reads a few hundred megabytes. **M3b makes this blocking**: two sessions may
+  stand on two facets, so the single shared `Arc<Map>` has to become a cache
+  keyed by facet.
 - **A whole `WorldView` is cloned per changed packet.** Fine for the handful a
   standing character receives, and not fine beside a crowded bank: the thread
   clones the map of every mobile to say that one of them turned. The answer is
   probably not a delta protocol between the two threads but a shared snapshot
-  the window reads — worth measuring before deciding.
+  the window reads — worth measuring before deciding, and **M3b multiplies it by
+  the number of sessions**, so the measurement should happen before the count
+  goes up rather than after.
 - ~~**`z` still drifts on a hill, and now it is visible.**~~ Fixed by handing
   `Walk::step` the ground as a function of a tile; the window shares the facet
   it already loaded with the shard thread through an `Arc`, since it is plain
