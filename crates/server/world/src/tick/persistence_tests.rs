@@ -1,4 +1,4 @@
-use super::tests::{START, delete_slot, enter, enter_as, walk};
+use super::tests::{START, authenticate, delete_slot, enter, enter_as, walk, world};
 use super::*;
 use openshard_gateway::ConnectionId;
 use openshard_movement::WALK_INTERVAL;
@@ -38,6 +38,62 @@ fn only_snapshot(world: &mut World) -> Option<Snapshot> {
     let mut saves: Vec<_> = world.drain_saves().collect();
     assert!(saves.len() <= 1, "one tick, one snapshot");
     saves.pop()
+}
+
+/// The shutdown notice reaches everyone the world considers to be in it, and
+/// stops there.
+///
+/// The second half is the point. A connection that has authenticated and not
+/// yet picked a character — or has picked one and is waiting for the tick that
+/// creates it — has no entity, so there is nobody to say anything *to*: it gets
+/// the hang-up and no line, which is correct and was pinned nowhere. `announce`
+/// walks `players` rather than the registry, and the two differ exactly here;
+/// walking anything wider would either address a connection with no body or
+/// speak to `Client` components that outlived the connections playing them.
+///
+/// `docs/shutdown.md` D4 and its backlog entry, "a stop mid-`Entering` is
+/// untested".
+#[test]
+fn a_shutdown_notice_reaches_the_world_and_nobody_on_the_way_into_it() {
+    let mut world = world();
+    let now = Instant::now();
+    let inside = enter(&mut world, now);
+    // Authenticated, on the character screen, no entity: the state a connection
+    // is in for the whole of the login conversation after its password checks
+    // out, and the one a stop can land in the middle of.
+    let arriving = ConnectionId::from_raw(77);
+    authenticate(&mut world, arriving, now);
+    // Everything the two logins produced, so that what is left is the
+    // announcement. One drain: `drain_outbound` empties the queue, so a second
+    // call would be reading an already-empty world rather than a second
+    // connection's mail.
+    //
+    // The screen's own packets are asserted on the way past, because without
+    // that the second assertion below would hold for a connection the world
+    // simply cannot address — it would pass where `announce` is right and
+    // equally where nothing works at all.
+    let before: Vec<_> = world.drain_outbound().collect();
+    assert!(
+        before.iter().any(|out| out.connection == arriving),
+        "the character screen answered this connection, so the world can reach it"
+    );
+
+    world.announce("the shard is stopping");
+
+    // One drain, then partitioned: `drain_outbound` empties the queue, so asking
+    // it twice would answer the second question about an already-empty world.
+    let sent: Vec<_> = world.drain_outbound().collect();
+    assert!(
+        sent.iter()
+            .any(|out| out.connection == inside
+                && out.packet[0] == 0x1C
+                && String::from_utf8_lossy(&out.packet).contains("the shard is stopping")),
+        "a player in the world is told why it is going"
+    );
+    assert!(
+        !sent.iter().any(|out| out.connection == arriving),
+        "a connection with no character is told nothing: there is no body to speak to"
+    );
 }
 
 #[test]

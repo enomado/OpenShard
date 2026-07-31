@@ -290,9 +290,15 @@ on. The rest are independent.
   test is written against the trait and would run against either; what is missing
   is a way to have a server in CI, which is a decision about CI and not about this
   plan.
-- **A stop mid-`Entering` is untested.** A client whose `Command::Enter` is
-  queued when the stop arrives has no entity, so it gets no announcement — only
-  the hang-up. That is correct, and nothing pins it.
+- **A stop mid-`Entering` is pinned in the world and not end to end.** That a
+  connection with no entity is told nothing — it gets the hang-up and no line —
+  is now a test beside `World::announce`
+  (`a_shutdown_notice_reaches_the_world_and_nobody_on_the_way_into_it`), with
+  the character list asserted on the way past so the negative half cannot pass
+  for a connection the world could not address at all. What is still missing is
+  the timing: a *real* client whose `0x5D` is queued when the stop lands. That
+  needs `Running::ask` below, and even then the window is a race rather than a
+  state a test can hold still.
 - **Nothing tests that the playground boots** — carried over from
   [`client.md`](client.md), and now with one more thing to get wrong, since the
   playground stops its shard after the window closes.
