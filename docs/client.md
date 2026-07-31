@@ -856,26 +856,24 @@ own understanding had written.
   clones the map of every mobile to say that one of them turned. The answer is
   probably not a delta protocol between the two threads but a shared snapshot
   the window reads — worth measuring before deciding.
-- **`z` still drifts on a hill, and now it is visible.** The client's `Walk`
-  has no map (see below), so a step predicts the height it started at, and the
-  body is drawn at that height until a `0x20` or a `0x21` corrects it. Standing
-  a body below the terrain is exactly what a mobile that failed to draw looks
-  like. `uofiles` is now on the client's side of the wall, so the fix — handing
-  `Walk` the map, or asking the map at draw time — is finally available.
+- ~~**`z` still drifts on a hill, and now it is visible.**~~ Fixed by handing
+  `Walk::step` the ground as a function of a tile; the window shares the facet
+  it already loaded with the shard thread through an `Arc`, since it is plain
+  data read by both and written by neither. Deliberately the *ground* and not
+  `movement::Terrain`: this predicts a height and must not predict a refusal —
+  whether a step is allowed is the server's answer, and deciding it here would
+  need every rule about statics, doors and mounts to agree exactly. What is
+  still flat: a step onto a *floor* — a building's second storey is a static,
+  not land, and the height predicted for it is the ground underneath.
 
 ## Backlog, found while building M0, M1 and M1a
 
 Each is a seam the work made visible. None blocks the next milestone.
 
-- **A walking client has no map, so `z` never changes under it.**
-  `openshard_movement::intend` carries the height over unchanged — height is
-  the terrain's answer and neither end of `intend` has terrain — so
-  `client_net::walk::Walk` predicts a flat world. The server, which does read
-  the map, lands the step wherever the ground is, and says nothing: `0x22`
-  carries no position. A client walking up a hill therefore drifts in `z` until
-  a `0x20` or a `0x21` corrects it. The fix is the map, which is M2; until then
-  the drift is documented rather than papered over, because a guessed height
-  would be indistinguishable from a real one.
+- ~~**A walking client has no map, so `z` never changes under it.**~~ It has
+  one now: the height is an argument to `Walk::step`, and `|_, _| None` is what
+  a caller without a map passes — the e2e walk test, which is about the sequence
+  seam. See the entry above.
 - ~~**`enter_world` drops everything between `0x1B` and `0x55`.**~~ Applied.
   That window *is* the world being handed over — the player's own `0x20` and
   `0x78`, a `0x78` for everyone already on screen, the ground items — and none
