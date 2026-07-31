@@ -41,6 +41,15 @@ async fn a_client_logs_in_and_stands_in_the_world() {
         view.map
     );
     assert_ne!(view.player.body.0, 0, "a body graphic was chosen");
+
+    // Everything between the `0x1B` and the `0x55` is the world being handed
+    // over, and it is never sent again. The equipment is what proves it landed:
+    // every character wears a backpack — see `tick::enter` — and the only packet
+    // that says so is the player's own `0x78`, inside that window.
+    assert!(
+        !view.player.equipment.is_empty(),
+        "the client kept what arrived before it was allowed to draw"
+    );
 }
 
 #[tokio::test]

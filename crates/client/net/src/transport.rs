@@ -179,14 +179,24 @@ pub async fn enter_world(
         match step(&mut login, event)? {
             Some(Step::Send(bytes)) => socket.send(&bytes).await?,
             Some(Step::Entered(start)) => {
-                let view = WorldView::entered(start);
+                let mut view = WorldView::entered(start);
                 // Wait for the 0x55: a client that starts drawing before it is
                 // told to is a client drawing a world the server has not
                 // finished sending.
+                //
+                // And fold in everything that arrives in the meantime, because
+                // that window *is* the world being handed over — the player's
+                // own `0x20` and `0x78`, a `0x78` for everyone already on
+                // screen, the ground items. None of it is sent again, so a loop
+                // that only waited would reach `Playing` with an empty view and
+                // draw an empty world.
                 loop {
                     let Some(event) = socket.next_event().await? else {
                         return Err(TransportError::Closed { stage: login.stage() });
                     };
+                    if let Event::Packet(packet) = &event {
+                        view.apply(packet);
+                    }
                     if let Some(Step::Playing) = step(&mut login, event)? {
                         return Ok((socket, view));
                     }

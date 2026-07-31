@@ -473,13 +473,20 @@ Each is a seam the work made visible. None blocks the next milestone.
   a `0x20` or a `0x21` corrects it. The fix is the map, which is M2; until then
   the drift is documented rather than papered over, because a guessed height
   would be indistinguishable from a real one.
-- **`enter_world` drops everything between `0x1B` and `0x55`.** It builds the
-  `WorldView` from the entry packet and then reads until the `0x55`, without
-  applying anything that arrives in between — and that window is exactly where
-  a shard sends the player's own `0x20`, the `0x78` for everyone already on
-  screen, and the ground items. Harmless for a login test, wrong for a client
-  that wants to draw the moment it is allowed to. The loop needs to `apply`
-  what it reads, not skip it.
+- ~~**`enter_world` drops everything between `0x1B` and `0x55`.**~~ Applied.
+  That window *is* the world being handed over — the player's own `0x20` and
+  `0x78`, a `0x78` for everyone already on screen, the ground items — and none
+  of it is sent again, so the loop that waited for permission to draw was
+  discarding what it was going to draw. What it exposed is that two of those
+  packets name the client's *own* serial and mean something different when they
+  do: a `0x78` about ourselves is the one paperdoll a shard ever sends us (the
+  reveal pass shows a mobile to everyone except itself), so it dresses
+  `Player`, which now carries an equipment list and is no longer `Copy`; a
+  `0x77` about ourselves is not a move at all and is dropped, because acting on
+  it would fight `Walk`'s prediction. Both are routed by serial, which is what
+  keeps `WorldView::mobiles` the *other* mobiles it claims to be. The e2e test
+  asserts the backpack every character wears, since the only packet that
+  mentions it lives inside that window.
 - **Nothing on the client models a status bar, and two packets are waiting for
   one.** `MobileStatus` (`0x11`) decodes and is deliberately not folded into
   `WorldView`; `WalkAck`'s notoriety reaches the caller through

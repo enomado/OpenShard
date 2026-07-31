@@ -11,6 +11,12 @@
 //! numbers) decodes too, but is not folded in below: it is status-bar data, not
 //! a position or an appearance, and belongs with whatever eventually models the
 //! status bar rather than with a record of what is on screen.
+//!
+//! Two of those packets can name the client's own serial, and neither means
+//! what it means about anybody else: a `0x78` about ourselves is the paperdoll
+//! a shard sends exactly once at world entry, and a `0x77` about ourselves is
+//! not a move at all. Both are routed by serial in [`WorldView::apply`], so
+//! [`WorldView::mobiles`] holds only *other* mobiles, as its docs promise.
 
 use std::collections::HashMap;
 
@@ -22,7 +28,11 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{MapSize, PlayerStart, Point};
 
 /// The client's own character, as the server last described it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Not `Copy`: it carries the equipment list, which is a `Vec`. That is the
+/// price of the one packet a client hears about its own paperdoll from — see
+/// [`Player::equipment`].
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Player {
     /// The serial everything else addresses this character by.
     pub serial: Serial,
@@ -38,6 +48,13 @@ pub struct Player {
     pub position: Point,
     /// Which way it faces, and whether it is running.
     pub facing: Facing,
+    /// What it is wearing, including the backpack it must be able to open.
+    ///
+    /// `0x1B` carries no equipment and neither does `0x20`, so this is empty
+    /// until the server sends this client a `0x78` naming *its own* serial —
+    /// which a shard does exactly once, at world entry, because the pass that
+    /// reveals a mobile sends it to everyone except itself.
+    pub equipment: Vec<Equipment>,
 }
 
 /// Another mobile, as `0x77` or `0x78` last described it.
@@ -113,6 +130,7 @@ impl WorldView {
                 flags: StatusFlags::NONE,
                 position: start.position,
                 facing: start.facing,
+                equipment: Vec::new(),
             },
             map: start.map,
             mobiles: HashMap::new(),
@@ -168,11 +186,21 @@ impl WorldView {
                     flags: update.flags,
                     position: update.position,
                     facing: update.facing,
+                    // `0x20` is a position and an appearance, never a paperdoll:
+                    // keeping what the `0x78` said is the difference between a
+                    // client that still knows its backpack and one that forgets
+                    // it the first time the server nudges the body.
+                    equipment: self.player.equipment.clone(),
                 };
                 let changed = self.player != fresh;
                 self.player = fresh;
                 changed
             }
+            // A `0x77` naming this client's own serial is not a move of it: the
+            // client's body is moved by `0x20` and by its own acked steps, and
+            // acting on this one would fight the prediction in `Walk`. See
+            // `openshard_protocol::mobile::MobileMove`.
+            ServerPacket::MobileMove(step) if step.serial == self.player.serial => false,
             ServerPacket::MobileMove(step) => {
                 // A move never touches what a mobile is wearing; keep whatever
                 // 0x78 last said, or nothing if this is the first we have seen
@@ -193,6 +221,24 @@ impl WorldView {
                 };
                 let changed = self.mobiles.get(&step.serial) != Some(&fresh);
                 self.mobiles.insert(step.serial, fresh);
+                changed
+            }
+            // The one `0x78` a client is sent about itself, and the only place
+            // it learns what it is wearing. It goes to the player rather than
+            // into `mobiles`, which is never keyed by our own serial: a body in
+            // both would be drawn twice, once at each end's idea of where it is.
+            ServerPacket::MobileIncoming(incoming) if incoming.serial == self.player.serial => {
+                let fresh = Player {
+                    serial: self.player.serial,
+                    body: incoming.body,
+                    hue: incoming.hue,
+                    flags: incoming.flags,
+                    position: incoming.position,
+                    facing: incoming.facing,
+                    equipment: incoming.equipment.clone(),
+                };
+                let changed = self.player != fresh;
+                self.player = fresh;
                 changed
             }
             ServerPacket::MobileIncoming(incoming) => {
@@ -330,6 +376,63 @@ mod tests {
             view.player_stepped(Point::new(1475, 1769, 20), Facing::walking(Direction::East)),
             "a turn moves nobody and is still a change"
         );
+    }
+
+    #[test]
+    fn our_own_0x78_dresses_the_player_instead_of_adding_a_mobile() {
+        // The shard sends this once, at world entry, and it is the only packet
+        // that tells a client what it is wearing — the reveal pass shows a
+        // mobile to everyone but itself. Filed under `mobiles` it would be a
+        // second body at the player's own serial, drawn twice.
+        let mut view = WorldView::entered(start());
+        let mine = MobileIncoming {
+            serial: view.player.serial,
+            body: Graphic(0x0190),
+            position: start().position,
+            facing: start().facing,
+            hue: Hue(0x83EA),
+            flags: StatusFlags::NONE,
+            notoriety: Notoriety::Innocent,
+            equipment: vec![shirt()],
+        };
+        assert!(view.apply(&ServerPacket::MobileIncoming(mine.clone())));
+        assert!(view.mobiles.is_empty(), "we are not one of the others");
+        assert_eq!(view.player.equipment, vec![shirt()]);
+        assert_eq!(view.player.hue, Hue(0x83EA));
+        assert!(
+            !view.apply(&ServerPacket::MobileIncoming(mine)),
+            "the same packet twice changes nothing"
+        );
+
+        // And a 0x20 afterwards must not undress us: it carries a body and a
+        // position, and no paperdoll at all.
+        view.apply(&ServerPacket::PlayerUpdate(PlayerUpdate {
+            serial: view.player.serial,
+            body: Graphic(0x0190),
+            hue: Hue(0x83EA),
+            flags: StatusFlags::NONE,
+            position: Point::new(1476, 1770, 20),
+            facing: Facing::walking(Direction::North),
+        }));
+        assert_eq!(view.player.equipment, vec![shirt()]);
+    }
+
+    #[test]
+    fn our_own_0x77_moves_nothing() {
+        // Sphere's warning, from the client's side: 0x77 cannot move the body
+        // the client is predicting for. Acting on one would fight `Walk`.
+        let mut view = WorldView::entered(start());
+        assert!(!view.apply(&ServerPacket::MobileMove(MobileMove {
+            serial: view.player.serial,
+            body: Graphic(0x0190),
+            position: Point::new(1000, 1000, 0),
+            facing: Facing::walking(Direction::North),
+            hue: Hue::NONE,
+            flags: StatusFlags::NONE,
+            notoriety: Notoriety::Innocent,
+        })));
+        assert_eq!(view.player.position, start().position);
+        assert!(view.mobiles.is_empty());
     }
 
     #[test]
