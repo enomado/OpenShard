@@ -23,6 +23,11 @@ openshard-protocol.workspace = true
 # than guessed at again here.
 openshard-movement.workspace = true
 openshard-uofiles.workspace = true
+# The binary's command line, and the `.env` its options fall back to. Only
+# `main.rs` uses them: the library takes an install and a plan, so a caller with
+# a shard of its own — `crates/e2e/playground` — parses nothing.
+clap.workspace = true
+dotenvy.workspace = true
 pollster = "0.4"
 # The dev HUD. `egui-wgpu` is the vendored port to wgpu 30 — see vendor/README.md
 # — and `default-features = false` because its default pulls `wgpu/default`,

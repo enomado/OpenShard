@@ -1,8 +1,12 @@
 //! A shard and a window, in one process:
 //!
 //! ```sh
-//! OPENSHARD_CLIENT="/path/to/Ultima Online Classic" cargo run -p openshard-playground
+//! cargo run -p openshard-playground -- --client "/path/to/Ultima Online Classic"
 //! ```
+//!
+//! Every option is also an environment variable, so the install can be named
+//! once — exported, or written into a `.env` beside the workspace root, which
+//! this binary reads before it parses anything. `--help` lists both spellings.
 //!
 //! One command instead of two, and no network at all: **no port is bound and no
 //! socket is opened**. The client dials the shard through
@@ -34,17 +38,48 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+/// One process, both ends: a shard in a thread and a window logged in to it.
+///
+/// Each option carries the environment variable it also answers to. The
+/// defaults are the stock development shard's own account and character —
+/// `openshard_e2e_shard` ships them and this binary does not invent a second
+/// set, because a name typed here that the config does not have fails at the
+/// character list with nothing to say why.
+#[derive(Debug, Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// The client install both ends read.
+    #[arg(short, long, env = "OPENSHARD_CLIENT", value_name = "DIR")]
+    client: PathBuf,
+
+    /// The account to log in as.
+    #[arg(short, long, env = "OPENSHARD_ACCOUNT", default_value = openshard_e2e_shard::ACCOUNT)]
+    account: String,
+
+    /// The character to play.
+    #[arg(long, env = "OPENSHARD_CHARACTER", default_value = openshard_e2e_shard::CHARACTER)]
+    character: String,
+
+    /// The `tracing` filter, in `RUST_LOG` syntax.
+    #[arg(long, env = "RUST_LOG", default_value = "info", value_name = "FILTER")]
+    log: String,
+}
+
 fn main() -> ExitCode {
+    // Before the command line is parsed, because what the file holds is the
+    // environment those `env =` options fall back to. Absent is not an error:
+    // exporting the variables, or typing the flags, is the same run.
+    dotenvy::dotenv().ok();
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(EnvFilter::try_new(&cli.log).unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
-    let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(PathBuf::from) else {
-        eprintln!("set OPENSHARD_CLIENT to a client install directory");
-        return ExitCode::FAILURE;
-    };
+    let dir = cli.client;
 
     // The shard reads the same install the window does, and that is not a
     // convenience: `world.client_files` is what gives the server a map, and
@@ -61,13 +96,14 @@ fn main() -> ExitCode {
         config
     });
     eprintln!(
-        "shard up in this process; logging in as {}",
-        openshard_e2e_shard::ACCOUNT
+        "shard up in this process; logging in as {} to play {}",
+        cli.account, cli.character
     );
 
     // On this thread, because `winit` requires the event loop to own the one it
     // was built on. The shard is the one that moved.
-    let code = openshard_client_app::run(&dir, Some((dial, openshard_e2e_shard::plan())));
+    let plan = openshard_e2e_shard::plan_for(&cli.account, &cli.character);
+    let code = openshard_client_app::run(&dir, Some((dial, plan)));
 
     // The window is gone, so the shard is asked to stop and waited for. It keeps
     // nothing — the world is in memory and goes away with it — but the wait is
