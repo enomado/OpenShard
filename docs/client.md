@@ -565,12 +565,17 @@ would not.
   every resize.** Correct and not free — two allocations of a few megabytes on a
   wheel notch. Nothing has measured whether it matters; a pool keyed by size
   would be the answer if it does.
-- **Nothing in `client/app` is tested.** `pan`, `zoom`, `fit_zoom_to_device` and
-  the follow lock are ordinary arithmetic with ordinary edge cases — the drag's
-  remainder in particular, which is the thing most likely to be quietly wrong —
-  and none of it can be reached from a test today because `App` owns a `Map`, a
-  window and a GPU. The camera half of it would move to `client/render` with no
-  loss; the lock would want an `App` that can be built without a device.
+- ~~**Nothing in `client/app` is tested.**~~ The arithmetic moved:
+  `crates/client/render/src/control.rs` is the camera, who may move it, and the
+  fraction of a world pixel a drag has not yet spent, with thirteen tests and no
+  device anywhere near them. The lock came with it — `follow_body` is the rule
+  `App::step` and `App::entered` used to write out as an `if` each — and the
+  device's refusal became a `TooLarge` value the caller prints, because a
+  renderer with a stderr cannot be run twice in one process. Writing the tests
+  found one defect: `fit_to_device` had no exit at the top of the ladder, so a
+  viewport larger than `max_texture_dimension_2d` — which no zoom can answer —
+  spun. What is still untested in `client/app` is the glue: which egui rect
+  becomes the viewport, and when a redraw is asked for.
 - **`Camera::pick` exists and nothing picks.** Screen to *ground tile* is
   `unproject(pick(cursor), z)` and is one line away; screen to *what you
   clicked* is the depth ordering read backwards, which is M5. Worth not
