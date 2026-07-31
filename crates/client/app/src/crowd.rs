@@ -17,6 +17,15 @@
 //! and it is one full step on foot rather than a number chosen to look right —
 //! a body that took a step less than a step ago has not finished it.
 //!
+//! # And a step is a distance, not a jump
+//!
+//! The same history answers the other half: a step that has been running for
+//! half its length is a body half a tile along, and drawing it on the tile the
+//! packet named teleports it 44 pixels. So the step carries what it left and
+//! when, and [`Crowd::glide_for`] turns that into the fraction
+//! [`openshard_client_render::mobiles::Glide`] wants. The pixels are the
+//! renderer's; the clock is here.
+//!
 //! # Why it lives here and not in `client/render`
 //!
 //! It reads `client/net`'s view and produces `client/render`'s `Mobile`. Putting
@@ -29,8 +38,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use openshard_client_render::animation::AnimationClock;
-use openshard_client_render::mobiles::Mobile;
-use openshard_movement::WALK_INTERVAL;
+use openshard_client_render::mobiles::{Glide, Mobile};
+use openshard_movement::{RUN_INTERVAL, WALK_INTERVAL};
 use openshard_protocol::direction::Facing;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{Graphic, Hue};
@@ -46,6 +55,34 @@ use openshard_uofiles::anim::BodyKind;
 /// animations; much longer and it moonwalks on after it has stopped.
 pub const WALK_HOLD: Duration = Duration::from_millis(2 * WALK_INTERVAL.as_millis() as u64);
 
+/// The same, for a body the wire says is running.
+///
+/// [`RUN_INTERVAL`] doubled for the reason [`WALK_HOLD`] doubles its own: the
+/// intervals in `common/movement` are anti-speedhack *floors*, deliberately half
+/// the real rate, and ServUO's `RunFoot` is this. It has to be the real rate and
+/// not the floor, because it is also how long the glide takes — held for twice
+/// the step, a runner would be a whole tile behind itself and would jump forward
+/// half a tile every time the next step arrived.
+pub const RUN_HOLD: Duration = Duration::from_millis(2 * RUN_INTERVAL.as_millis() as u64);
+
+/// A step in progress: where it came from, when it started, and how long it
+/// takes.
+#[derive(Clone, Copy, Debug)]
+struct Step {
+    /// The tile stepped off, or `None` when the move was not a step at all.
+    ///
+    /// Absent for a jump of more than one tile — a gate, a recall, a `0x22`
+    /// putting a mispredicted body back. Interpolating one of those slides the
+    /// character across the map over the length of a step, which is a far
+    /// stranger picture than the teleport it is hiding.
+    from: Option<Point>,
+    /// When it was heard, on [`Crowd::now`]'s clock.
+    started: Duration,
+    /// How long it takes: [`WALK_HOLD`] or [`RUN_HOLD`], by the wire's own
+    /// running flag. Never zero, which is what lets [`Tracked::glide`] divide.
+    takes: Duration,
+}
+
 /// One mobile's history: where it was, what it is playing, and since when.
 #[derive(Clone, Copy, Debug)]
 struct Tracked {
@@ -57,11 +94,11 @@ struct Tracked {
     body: u16,
     /// Which animation group is playing.
     group: u8,
-    /// When the walk this body is playing stops, on [`Crowd::now`]'s clock.
+    /// The step it is in the middle of.
     ///
     /// `None` for a body that is standing. Not an "unknown": a standing body
-    /// genuinely has no walk to end, which is what [`Option`] is for here.
-    walking_until: Option<Duration>,
+    /// genuinely has no step to finish, which is what [`Option`] is for here.
+    step: Option<Step>,
     /// Its own animation clock.
     ///
     /// Per mobile, and reset when the group changes: one clock for everybody
@@ -96,8 +133,8 @@ impl Crowd {
         let now = self.now;
         for tracked in self.tracked.values_mut() {
             tracked.clock.advance(dt);
-            if tracked.walking_until.is_some_and(|until| now >= until) {
-                tracked.walking_until = None;
+            if tracked.step.is_some_and(|step| now >= step.started + step.takes) {
+                tracked.step = None;
                 tracked.change_to(BodyKind::of(tracked.body).standing());
             }
         }
@@ -118,7 +155,7 @@ impl Crowd {
             // the only thing that could say so is a previous packet and there
             // is none.
             group: kind.standing(),
-            walking_until: None,
+            step: None,
             clock: AnimationClock::default(),
         });
 
@@ -127,8 +164,13 @@ impl Crowd {
         // every step too, so treating it as movement would keep everyone
         // walking forever.
         if tracked.at != at {
+            let from = tracked.at;
             tracked.at = at;
-            tracked.walking_until = Some(now + WALK_HOLD);
+            tracked.step = Some(Step {
+                from: is_one_step(from, at).then_some(from),
+                started: now,
+                takes: if facing.running { RUN_HOLD } else { WALK_HOLD },
+            });
             let moving = match (facing.running, kind.running()) {
                 (true, Some(running)) => running,
                 // A running monster walks: `HighAnimationGroup` has no run, and
@@ -146,6 +188,7 @@ impl Crowd {
             facing: facing.direction,
             frame: 0,
             hue,
+            glide: tracked.glide(now),
         }
     }
 
@@ -158,6 +201,28 @@ impl Crowd {
         self.tracked
             .get(&who)
             .map_or(0, |tracked| tracked.clock.frame(frame_count))
+    }
+
+    /// How far into its step this body is, if it is in one.
+    ///
+    /// Asked every frame and not only when a packet arrives, which is the whole
+    /// point: a glide read once and stored would freeze at whatever it was when
+    /// the `0x77` landed, and the body would jump a tile on the next one — the
+    /// teleport this exists to remove, arriving 400ms late.
+    pub fn glide_for(&self, who: Who) -> Option<Glide> {
+        self.tracked.get(&who)?.glide(self.now)
+    }
+
+    /// Whether anybody is part way through a step.
+    ///
+    /// What the window asks to decide how often to redraw: a crowd standing
+    /// still changes a pixel once every `FRAME_DELAY` and one mid-step changes
+    /// several every frame. A glide drawn on the animation clock arrives in
+    /// five visible jumps, which is the teleport it exists to remove.
+    pub fn anyone_gliding(&self) -> bool {
+        self.tracked
+            .values()
+            .any(|tracked| tracked.glide(self.now).is_some())
     }
 
     /// Forget everyone not in this set.
@@ -180,6 +245,31 @@ impl Tracked {
             self.clock = AnimationClock::default();
         }
     }
+
+    /// Where between two tiles this body is, at a moment on the crowd's clock.
+    fn glide(&self, now: Duration) -> Option<Glide> {
+        let step = self.step?;
+        let from = step.from?;
+        // Saturating rather than asserted: `now` is the crowd's own clock and
+        // only ever moves forward, but a step heard *this* instant divides
+        // zero by the step's length, which is the honest zero.
+        let elapsed = now.saturating_sub(step.started);
+        Some(Glide {
+            from,
+            progress: (elapsed.as_secs_f32() / step.takes.as_secs_f32()).clamp(0.0, 1.0),
+        })
+    }
+}
+
+/// Whether a move of one tile is what happened, in the distance UO measures.
+///
+/// Chebyshev, because the grid's eight directions are all one step: a diagonal
+/// moves both axes and is no further than a straight one. Anything longer is a
+/// teleport wearing a step's clothes.
+fn is_one_step(from: Point, to: Point) -> bool {
+    let dx = i32::from(to.x) - i32::from(from.x);
+    let dy = i32::from(to.y) - i32::from(from.y);
+    dx.abs().max(dy.abs()) <= 1
 }
 
 #[cfg(test)]
@@ -371,6 +461,137 @@ mod tests {
             Hue::NONE,
         );
         assert_eq!(crowd.frame_for(serial(1), 6), 0, "the walk starts at its start");
+    }
+
+    /// A step is walked across, not jumped: the glide starts on the tile left
+    /// behind and reaches the new one exactly when the walk ends.
+    #[test]
+    fn a_step_is_glided_across_and_ends_on_its_tile() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::SouthEast),
+                Hue::NONE,
+            )
+        };
+        assert_eq!(step(&mut crowd, 10).glide, None, "standing still is not a step");
+
+        let stepped = step(&mut crowd, 11);
+        let glide = stepped.glide.expect("mid-step");
+        assert_eq!(glide.from, Point::new(10, 10, 0), "from where it was");
+        assert_eq!(glide.progress, 0.0, "and it has not moved yet");
+
+        crowd.advance(WALK_HOLD / 4);
+        assert_eq!(crowd.glide_for(serial(1)).expect("still stepping").progress, 0.25);
+        crowd.advance(WALK_HOLD / 4);
+        assert_eq!(crowd.glide_for(serial(1)).expect("still stepping").progress, 0.5);
+        // The instant the walk ends the body is on its tile and has no step
+        // left to be part of the way through — the two have to agree, or the
+        // sprite jumps the remaining pixels as the animation stops.
+        crowd.advance(WALK_HOLD / 2);
+        assert_eq!(crowd.glide_for(serial(1)), None);
+        assert_eq!(step(&mut crowd, 11).group, 4, "standing");
+    }
+
+    /// A running body crosses its tile in half the time, because it takes half
+    /// as long to take the step.
+    ///
+    /// The hold and the glide are one number for exactly this reason: held for
+    /// a walk's length, a runner would still be half a tile back when the next
+    /// step arrived and would jump forward to catch up, every step.
+    #[test]
+    fn a_runner_glides_in_half_the_time() {
+        let mut crowd = Crowd::default();
+        let run = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::running(Direction::SouthEast),
+                Hue::NONE,
+            )
+        };
+        run(&mut crowd, 10);
+        run(&mut crowd, 11);
+        crowd.advance(RUN_HOLD / 2);
+        assert_eq!(crowd.glide_for(serial(1)).expect("mid-step").progress, 0.5);
+        crowd.advance(RUN_HOLD / 2);
+        assert_eq!(crowd.glide_for(serial(1)), None, "and it is there");
+        assert_eq!(run(&mut crowd, 11).group, 4, "standing, half a walk early");
+        assert_eq!(RUN_HOLD * 2, WALK_HOLD, "ServUO's RunFoot against its WalkFoot");
+    }
+
+    /// A jump of more than one tile is a teleport, and is not glided.
+    ///
+    /// A gate, a recall, or a `0x22` putting a mispredicted body back: sliding
+    /// smoothly across half a facet takes the same 400ms as a step and looks
+    /// far stranger than the teleport it is hiding.
+    #[test]
+    fn a_teleport_is_not_glided() {
+        let mut crowd = Crowd::default();
+        let go = |crowd: &mut Crowd, x: u16, y: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, y, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::SouthEast),
+                Hue::NONE,
+            )
+        };
+        go(&mut crowd, 10, 10);
+        // A diagonal is one step: both axes move, and UO measures Chebyshev.
+        assert!(go(&mut crowd, 11, 11).glide.is_some(), "a diagonal is a step");
+        assert_eq!(go(&mut crowd, 1500, 1500).glide, None, "and this is not");
+        assert_eq!(crowd.glide_for(serial(1)), None);
+    }
+
+    /// The window redraws fast only while there is something to redraw fast
+    /// for, and a teleport is not one: it moves the body once, in one frame.
+    #[test]
+    fn only_a_step_asks_the_window_for_frames() {
+        let mut crowd = Crowd::default();
+        let go = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::NorthEast),
+                Hue::NONE,
+            );
+        };
+        go(&mut crowd, 10);
+        assert!(!crowd.anyone_gliding(), "standing still");
+        go(&mut crowd, 11);
+        assert!(crowd.anyone_gliding(), "mid-step");
+        crowd.advance(WALK_HOLD);
+        assert!(!crowd.anyone_gliding(), "arrived");
+        go(&mut crowd, 900);
+        assert!(!crowd.anyone_gliding(), "a teleport is drawn once and done");
+    }
+
+    /// Turning on the spot moves nothing, so there is nothing to glide across.
+    #[test]
+    fn a_turn_is_not_glided() {
+        let mut crowd = Crowd::default();
+        let at = Point::new(10, 10, 0);
+        crowd.see(
+            serial(1),
+            at,
+            Graphic(PLAYER),
+            Facing::walking(Direction::South),
+            Hue::NONE,
+        );
+        let turned = crowd.see(
+            serial(1),
+            at,
+            Graphic(PLAYER),
+            Facing::walking(Direction::North),
+            Hue::NONE,
+        );
+        assert_eq!(turned.glide, None);
     }
 
     /// Whoever the view no longer holds is forgotten, or the map grows for as

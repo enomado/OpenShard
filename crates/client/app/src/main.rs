@@ -91,6 +91,13 @@ const VERSION: ClientVersion = ClientVersion::new(7, 0, 45, 65);
 /// Where a shard is, when one is asked for and no address is given.
 const DEFAULT_SHARD: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 2593);
 
+/// How often to redraw while somebody is mid-step. See [`App::redraw_interval`].
+///
+/// Roughly a 60Hz display, and deliberately a number of our own rather than the
+/// monitor's: nothing here knows the refresh rate, and asking the surface would
+/// tie the animation to the present mode the adapter happened to offer.
+const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
 /// The login this run was asked to make, if it was asked for one.
 ///
 /// The account is what decides: a client with no account has nobody to log in
@@ -240,6 +247,7 @@ fn main() -> ExitCode {
             facing: Direction::SouthEast,
             frame: 0,
             hue: Hue::NONE,
+            glide: None,
         },
         others: Vec::new(),
         items: Vec::new(),
@@ -251,6 +259,7 @@ fn main() -> ExitCode {
         facet_checked: false,
         crowd: Crowd::default(),
         next_tick: Instant::now(),
+        last_advance: Instant::now(),
         window: None,
     };
     match event_loop.run_app(&mut app) {
@@ -429,6 +438,13 @@ struct App {
     crowd: Crowd,
     /// When the clock next advances a frame.
     next_tick: Instant,
+    /// When it last did.
+    ///
+    /// The crowd is moved by *measured* time and not by the interval that was
+    /// waited for: `WaitUntil` is a floor and the compositor overshoots it, so a
+    /// clock fed the nominal step would run slow by however much it did — which
+    /// a stepping animation hides and a glide does not.
+    last_advance: Instant,
     window: Option<Screen>,
 }
 
@@ -566,19 +582,20 @@ impl ApplicationHandler<link::Update> for App {
     ///
     /// `winit`'s idiomatic timer: `ControlFlow::WaitUntil` sleeps the event
     /// loop rather than spinning it, and returning here every
-    /// `animation::FRAME_DELAY` is what stands in for a real client's own
+    /// [`App::redraw_interval`] is what stands in for a real client's own
     /// `Mobile.ProcessAnimation` poll.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         if now >= self.next_tick {
-            self.crowd.advance(FRAME_DELAY);
-            self.next_tick += FRAME_DELAY;
-            // A stall longer than one frame — the window minimised, the
-            // machine asleep — re-arms from now rather than queuing up a
-            // burst of catch-up redraws for time nobody watched.
-            if self.next_tick < now {
-                self.next_tick = now;
-            }
+            // Whatever really passed — see `App::last_advance`. A stall longer
+            // than a frame, the window minimised or the machine asleep, moves
+            // the clock the whole way rather than queuing a burst of catch-up
+            // redraws for time nobody watched: a body that was walking through
+            // it has long since arrived.
+            self.crowd
+                .advance(now.saturating_duration_since(self.last_advance));
+            self.last_advance = now;
+            self.next_tick = now + self.redraw_interval();
             if let Some(window) = self.window.as_ref() {
                 window.window.request_redraw();
             }
@@ -658,13 +675,53 @@ impl App {
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
         // questions, and `Home` is the answer to the second.
-        self.control.follow_body(self.player.at);
+        self.follow_player();
         true
     }
 
     /// Put the eye back on the body and lock it there.
     fn relock(&mut self) {
         self.control.relock(self.player.at);
+    }
+
+    /// How long until the next frame is worth drawing.
+    ///
+    /// Two rates, because there are two reasons for a frame and they are an
+    /// order of magnitude apart. A body's animation steps once every
+    /// [`FRAME_DELAY`] and nothing between two of those changes a pixel, so 80ms
+    /// is the whole cost of standing still. A *glide* moves a body a couple of
+    /// pixels at a time, and drawn on the animation clock it would arrive in
+    /// five visible jumps — which is the teleport it exists to remove, in
+    /// instalments.
+    ///
+    /// [`GLIDE_INTERVAL`] and not `ControlFlow::Poll`: polling is a busy loop
+    /// unless the surface's present mode happens to block, and the present mode
+    /// is whatever the adapter offered first.
+    fn redraw_interval(&self) -> std::time::Duration {
+        if self.crowd.anyone_gliding() {
+            GLIDE_INTERVAL
+        } else {
+            FRAME_DELAY
+        }
+    }
+
+    /// Who the crowd knows our own body as.
+    ///
+    /// Our serial once a shard has named us, and `None` for the offline
+    /// placeholder — see [`Who`].
+    fn me(&self) -> Who {
+        self.view.as_ref().map(|view| view.player.serial)
+    }
+
+    /// Point the eye at our own body, wherever the glide has it this instant.
+    ///
+    /// Called every frame and not only when a step arrives: the glide moves the
+    /// body a few pixels per frame, and an eye that moved a tile at a time would
+    /// jerk the whole world under it. Reads the crowd's clock straight, so it is
+    /// also what keeps the eye and the sprite from disagreeing by a frame.
+    fn follow_player(&mut self) {
+        self.player.glide = self.crowd.glide_for(self.me());
+        self.control.follow_body(mobiles::world_position(&self.player));
     }
 
     /// A viewport that grew may have taken the world texture past what the
@@ -775,14 +832,16 @@ impl App {
                 hue: item.hue,
             })
             .collect();
-        // The camera follows the body, which is what `0x20` is for — unless it
-        // has been unlocked, in which case the eye is the mouse's and the body
-        // is free to walk off the screen. `Home` puts it back.
-        self.control.follow_body(view.player.position);
         self.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
         // Whole, for the HUD's world window: the three projections above are
         // what the renderer wants, and none of them keeps a serial.
         self.view = Some(Box::new(view.clone()));
+        // The camera follows the body, which is what `0x20` is for — unless it
+        // has been unlocked, in which case the eye is the mouse's and the body
+        // is free to walk off the screen. `Home` puts it back. After the view is
+        // stored, because that is what says who we are, and the glide is keyed
+        // by it.
+        self.follow_player();
     }
 
     /// What the panels are allowed to know, gathered each frame.
@@ -838,7 +897,7 @@ impl App {
     /// Our own body first, and `None` for it while no shard has named us.
     fn drawn_mobiles(&self) -> Vec<(Who, Mobile)> {
         let mut mobiles = Vec::with_capacity(self.others.len() + 1);
-        mobiles.push((self.view.as_ref().map(|view| view.player.serial), self.player));
+        mobiles.push((self.me(), self.player));
         mobiles.extend_from_slice(&self.others);
         mobiles
     }
@@ -1011,6 +1070,11 @@ impl App {
         // A viewport that grew may have taken the world texture past what the
         // device allows, which no zoom step asked for.
         self.fit_zoom_to_device();
+        // And the eye goes where the body is *this frame*, before anything asks
+        // the camera what is visible: a step arrives once and is then walked
+        // across for the next 400ms, so every frame in between has a different
+        // answer.
+        self.follow_player();
 
         // The atlases are built for what was visible when they were built, so a
         // camera that has walked far enough will ask for a graphic they do not
@@ -1079,18 +1143,20 @@ impl App {
             None => {}
         }
 
-        // The clock picks the frame from how many the atlas actually packed —
-        // asking the atlas rather than remembering the count is what keeps
-        // "frame 7 of a 6-frame walk" from being expressible. One clock for
-        // everybody: a standing crowd animating in step is wrong and looks it,
-        // and fixing it wants a clock per mobile, which wants a mobile that
-        // survives between frames. See the backlog.
+        // Both time-varying halves of a mobile, filled in per frame rather than
+        // per packet: the crowd is the only thing that knows what a clock has
+        // done since the `0x77` landed, and `self.player`/`self.others` were
+        // built when it did. The frame comes from how many the atlas actually
+        // packed — asking the atlas rather than remembering the count is what
+        // keeps "frame 7 of a 6-frame walk" from being expressible — and the
+        // glide is how far into its step the body has walked.
         for (who, mobile) in &mut drawn {
             let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
             let frame_count = window
                 .mobile_atlas
                 .frame_count(mobile.body, mobile.group, direction);
             mobile.frame = self.crowd.frame_for(*who, frame_count);
+            mobile.glide = self.crowd.glide_for(*who);
         }
         let drawn: Vec<Mobile> = drawn.into_iter().map(|(_, mobile)| mobile).collect();
 

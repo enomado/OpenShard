@@ -1155,6 +1155,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
                 facing,
                 frame: 0,
                 hue: openshard_protocol::wire::Hue::NONE,
+                glide: None,
             }],
             &camera,
             &atlas,
@@ -1378,6 +1379,7 @@ fn dump_a_frame_of_britain() {
                 facing: *facing,
                 frame: 0,
                 hue: openshard_protocol::wire::Hue::NONE,
+                glide: None,
             }
         })
         .collect();

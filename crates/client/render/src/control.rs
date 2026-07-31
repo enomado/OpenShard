@@ -132,9 +132,11 @@ impl Control {
 
     /// Put the eye back on the body and lock it there.
     ///
-    /// Snaps rather than eases. Easing wants a per-frame clock over a mobile that
-    /// survives between frames, which is what the "everything stands" backlog
-    /// item in `docs/client.md` is waiting for; both should be built once.
+    /// Snaps rather than eases, and deliberately: this is the answer to a camera
+    /// that has been dragged somewhere else entirely, so there is no step to
+    /// interpolate across — easing it would be a second kind of motion, over a
+    /// distance nothing bounds. A body's own step is [`Control::follow_body`],
+    /// which glides.
     pub fn relock(&mut self, at: Point) {
         self.follow = Follow::Body;
         self.camera.look_at(at);
@@ -150,9 +152,15 @@ impl Control {
     /// The one rule the lock exists for, and the reason it is a method rather
     /// than an `if` at each call site: `App::step` and `App::entered` are two
     /// writers of the same eye, and a third would forget.
-    pub fn follow_body(&mut self, at: Point) {
+    ///
+    /// A world pixel and not a tile, because a body between two tiles is where
+    /// the eye has to be: a camera that only moved when a `0x77` arrived would
+    /// jump the whole world a tile at a time under a character gliding smoothly
+    /// across it — which is worse than the teleport the glide removed, since it
+    /// is the *world* that jerks. `mobiles::world_position` is what to hand it.
+    pub fn follow_body(&mut self, at: WorldPixel) {
         if self.follow == Follow::Body {
-            self.camera.look_at(at);
+            self.camera.look_at_pixel(at);
         }
     }
 
@@ -428,7 +436,7 @@ mod tests {
     fn the_body_moves_the_eye_only_while_locked() {
         let mut control = control();
         assert_eq!(control.follow(), Follow::Body);
-        control.follow_body(Point::new(200, 200, 0));
+        control.follow_body(crate::camera::project(Point::new(200, 200, 0)));
         assert_eq!(
             control.camera().eye(),
             crate::camera::project(Point::new(200, 200, 0))
@@ -437,7 +445,7 @@ mod tests {
         control.pan(30, 30);
         assert_eq!(control.follow(), Follow::Free, "a hand on the camera unlocks it");
         let free = control.camera().eye();
-        control.follow_body(Point::new(300, 300, 0));
+        control.follow_body(crate::camera::project(Point::new(300, 300, 0)));
         assert_eq!(control.camera().eye(), free, "the body no longer drags the eye");
 
         control.relock(Point::new(300, 300, 0));

@@ -831,10 +831,46 @@ own understanding had written.
   *turn* is not a step, which is what a layer watching the facing instead of the
   position would get wrong while passing every other test.
 
-  Still not done: **the glide.** A step is a teleport of one tile, and smoothing
-  it wants a sub-tile offset the renderer's `Mobile` has no field for — world
-  pixels between two tiles, interpolated over the same `WALK_HOLD`. The history
-  it needs now exists.
+- ~~**A step is a teleport of one tile.**~~ Glided. `Mobile` carries a `Glide` —
+  the tile stepped off and how far along the body is — and
+  `mobiles::world_position` hangs the sprite between the two projections.
+  Everything else still reads `Mobile::at`: the depth order is the *destination*
+  tile, or a body would change sides of a wall halfway through a step. Three
+  things it turned up, each of which the glide alone would have looked wrong
+  without:
+
+  - **The eye has to glide too.** `Control::follow_body` took a tile, so a
+    character sliding smoothly across the world had the whole world jumping a
+    tile at a time underneath it — worse than the teleport, because it is the
+    *ground* that jerks. It takes a `WorldPixel` now, and there is still one door
+    to the eye.
+  - **The hold is also the step's length, so it is not one number.** A runner
+    steps every 200ms — ServUO's `RunFoot`, `RUN_INTERVAL` doubled the way
+    `WALK_HOLD` doubles `WALK_INTERVAL` — and glided over a walk's 400ms it would
+    be half a tile behind itself and jump forward at every step. `RUN_HOLD` is
+    the wire's own running flag applied to both.
+  - **The window redrew on the animation clock**, 80ms, which is right when the
+    only thing that changes is a frame index and gives a glide five visible jumps
+    instead of a slide. `App::redraw_interval` has two rates and
+    `Crowd::anyone_gliding` picks between them; the crowd is advanced by
+    *measured* time now rather than by the interval that was waited for, since
+    `WaitUntil` is a floor and a stepping animation hides the overshoot where a
+    glide does not.
+
+  A move of more than one tile is not glided at all: a gate, a recall or a `0x22`
+  putting a mispredicted body back would otherwise slide the character across
+  half a facet over 400ms, which is a stranger picture than the teleport it hides.
+- **The crowd cannot tell a mount from a body on foot, and a mount steps twice as
+  fast.** `WALK_HOLD`/`RUN_HOLD` are the two on-foot rates; ServUO's other two,
+  `WalkMount` (200ms) and `RunMount` (100ms), have nothing here to select them —
+  the mount is not on `0x77` at all, it is an equipment layer on `0x78`. So a
+  mounted mobile is held and glided at half the speed it is really moving, which
+  looks exactly like the runner case above. This wants the same `MobileView`
+  layering the "equipment, mounts and corpses" entry does, and should land with it.
+- **`Home` still snaps.** `Control::relock` takes a tile and jumps the eye to it;
+  the next frame's `follow_body` then puts it back on the glided pixel. Harmless
+  and visible for one frame — the snap is deliberate, the *inconsistency* between
+  the two doors is not.
 - ~~**Ground items are decoded, held, and not drawn.**~~ Drawn.
   `crates/client/render/src/items.rs` is two of the existing collectors put
   together: an item's picture is a static's, and its source is a mobile's — a
