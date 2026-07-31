@@ -137,6 +137,49 @@ Then statics, then mobiles, then the labels — and with them UO's draw order,
 which is the part of a UO renderer that is actually hard. The camera follows
 `0x20`, and blocks load around the player.
 
+**Statics and mobiles are drawn.** `crates/client/render` has three passes now:
+the ground, and two sprite passes that differ only in where the quad goes —
+`statics::collect` from the map's own `staidx`, `mobiles::collect` from a list
+somebody else built. `crates/common/uofiles/src/anim.rs` reads the frames the
+second one draws.
+
+**What decides overlap is a depth buffer, not a draw order.** This is the part
+worth writing down. Ground is drawn whole before any static, so painter's order
+*within* a pass says nothing about the pass next door: without a shared depth,
+every wall would be in front of every hill. So all three passes compute one
+ordering on the CPU — `crates/client/render/src/depth.rs` — and all three test
+it, which makes the pass order decide nothing but who clears.
+
+The ordering is ClassicUO's, taken apart rather than copied.
+`Chunk.AddGameObject` gives ground its average height less two, a static its
+own height with one down for a background tile and one up for anything with a
+height, and a mobile one above everything; `View.CalculateDepthZ` folds that
+together with `x + y` into `(x + y) + (127 + z) * 0.01f`. That float form
+overflows into the next tile at large `z`, so what is kept here is the integer
+pair — sorted tile first — normalised around the camera, which puts the visible
+frame where a 24-bit buffer has resolution to spare. A step of one priority is
+1e-6 apart where the buffer resolves 6e-8, and `depth.rs` asserts the margin
+rather than trusting it.
+
+**A static sprite's zero pixel is absent; a land sprite's is black.** Opposite
+rules in two files, and both are the client's: `ArtLoader.ReadStaticArt` writes
+a run's pixel only `if (val != 0)`. Getting it backwards on statics draws every
+sprite's bounding box as a rectangle.
+
+**A mobile is placed from its frame, not from its tile.** Five directions are
+stored and three are mirrors of them, so half of every creature is drawn
+backwards — and flipping a picture moves its anchor to the other edge:
+`MobileView.Draw` is `x -= flipped ? width - center_x : center_x`, `y -= height
++ center_y`. Using `center_x` for both makes every west-facing creature stand a
+body's width from where it is. The flip itself costs nothing: a region with a
+negative width samples its own texels backwards, which is asserted on a real
+GPU rather than argued about.
+
+`anim.mul` is 195MB and is the first reader here that does **not** read its
+container into memory — the index is held and frames are read on demand, which
+is why `Anim::frames` takes `&mut self`. The browser is the reason the rest of
+`uofiles` will follow.
+
 **The ground half is done.** `crates/client/render` draws it and
 `crates/client/app` puts it in a window: `OPENSHARD_CLIENT=… cargo run -p
 openshard-client-app` opens on Britain and the arrow keys walk the camera. The
@@ -342,6 +385,7 @@ own understanding had written.
   statics share the atlas. The place to fix it is an eviction policy in
   `LandAtlas`, once something needs one.
 - **`Map` cannot be built in memory, so the renderer has no offline tests.**
+  *(Planned: [`unenforced.md`](unenforced.md) S4.)*
   Every assertion about `ground::collect` lives in `tests/frame.rs` behind
   `OPENSHARD_CLIENT` and a GPU, because the only way to get a `Map` is to load
   one from a file. A constructor taking cells — or a small fixture facet — would
@@ -353,6 +397,68 @@ own understanding had written.
 - **Nothing reads `Feature` or the client version yet.** The renderer draws what
   the files hold. That is right for ground, and it stops being right at the
   first packet the client draws from.
+
+## Backlog, found while drawing the statics and the mobiles
+
+- ~~**Nothing is hued.**~~ Statics and mobiles are now, from a real
+  `HueRamp` (`crates/client/render/src/hue.rs`) built once from `hues.mul` and
+  bound alongside every sprite atlas. No second texture carries the palette
+  index: the atlas already stores each texel's red channel widened to eight
+  bits — `Color16::rgb8`, the same widening every other reader here uses — and
+  `statics.wgsl` recovers the file's 5-bit index from it exactly with
+  `round(r * 31.0)`, because that widening is a bijection on 0..=31. A full hue
+  replaces the pixel outright; a partial one (the wire hue's own top bit) only
+  where the sampled pixel is genuinely grey (`r == g == b`). Not done:
+  `tiledata`'s own `PartialHue` flag, which forces the same grey-only rule on
+  an item regardless of what the wire hue asks — nothing in `crate::atlas`
+  carries a tiledata reference for a static's sprite yet, so this needs a
+  second graphic to test against before it is worth wiring in.
+- ~~**Nothing animates.**~~ Given a clock. `crates/client/render/src/animation.rs`'s
+  `AnimationClock` advances by real time and picks a frame out of however many
+  the atlas actually packed, looping over the animation's own length rather than
+  a constant. What times it turned out not to be `animdata.mul` — that file
+  times an *animated static* (`AnimatedStaticsManager`, a torch or a fire) and a
+  spell *effect* graphic (`GameEffect`), each cycling a short run of consecutive
+  graphic ids, and neither is a mobile's body. `Mobile.ProcessAnimation` reads
+  `Constants.CHARACTER_ANIMATION_DELAY` instead: a fixed 80ms, unscaled unless a
+  server explicitly set the animation with its own interval byte (`0x6E`/`0xE2`)
+  — and that constant, not the file, is what `FRAME_DELAY` cites. `client/app`
+  also did not draw the mobile pass at all until now: the atlas and pipeline
+  existed and nothing called `mobile_pass.render`.
+- **The clock assumes a packed animation has no gaps.** `AnimAtlas::build`
+  keeps a frame's own index and only drops the entry when the frame is blank,
+  so a blank frame in the *middle* of a real group — which the file format
+  allows, see `AnimFrame`'s own docs — leaves a hole in the key space that
+  `frame_count` does not report. `AnimationClock::frame` cycles `0..frame_count`
+  assuming those are the packed indices, so a caller unlucky enough to hit such
+  a body would have the mobile vanish for one tick rather than loop cleanly.
+  Body 400 group 4 does not hit this, which is why the clock does not
+  compensate for it; the fix is `AnimAtlas` exposing the actual packed indices
+  rather than a count, whenever a body that needs it turns up.
+- **Equipment, mounts and corpses are not drawn.** `MobileView` layers a body,
+  its clothes and what it is riding, each from its own animation, and this draws
+  the body alone. That is the next thing a real character needs and it is
+  entirely additional: layers are more sprites at the same depth.
+- **`anim2` through `anim5` are openable and not addressable.** `Anim::from_files`
+  takes a pair, but the index arithmetic implemented is the first file's, and the
+  others re-base the three body kinds differently. Left undone rather than
+  guessed: a wrong base reads a real creature's frames.
+- **The UOP animations are not read at all.** A modern install ships both
+  `anim.mul` and `AnimationFrame1.uop`, and the client prefers the UOP where a
+  body exists in it. Everything a human needs is in the `.mul` on 7.0.116.0, so
+  this is not blocking — but a body added after the `.mul` stopped being updated
+  would be missing here and present in ClassicUO, which is a confusing way to
+  find out.
+- **A mobile's own `z` is the caller's problem, and getting it wrong looks like
+  a bug in the renderer.** A body at the camera's height rather than the
+  ground's is *correctly* hidden by the terrain in front of it, which is
+  indistinguishable from a mobile that failed to draw — it cost a debugging pass
+  here. Whatever eventually feeds `WorldView` into this will get the height from
+  the server and be fine; `client/app` reads it from the map.
+- **Two sprite passes mean two atlases and two pipelines.** They are the same
+  pipeline built twice, which is the cost of a draw call binding one texture. If
+  a third sprite layer arrives — equipment — it is worth asking whether one
+  atlas keyed by a tagged id beats three of these.
 
 ## Backlog, found while building M0, M1 and M1a
 

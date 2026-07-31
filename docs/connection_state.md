@@ -370,7 +370,8 @@ will read it.
   that is not an oversight left half-done: a handler holds a `&mut Session` while
   it queues into the world, which the compiler splits across fields and refuses
   across a `&mut self`.
-- **Closing a refused connection relies on a chain nothing states.**
+- **Closing a refused connection relies on a chain nothing states.** *(Planned:
+  [`unenforced.md`](unenforced.md) S3.)*
   `Sessions::close` drops the session, which drops the outbox, which ends the
   gateway's write task, which closes the socket, which makes the gateway emit
   `Disconnected`, which queues `Command::Disconnect` so the world lets go of
@@ -437,11 +438,18 @@ will read it.
   instead. That is the honest rendering — a reader of the public docs cannot
   follow a link to something they cannot use — and it keeps
   `rustdoc::private_intra_doc_links` quiet.
-- **`restore_characters` must run before `restore_items`, and only a doc says
-  so.** The serials it reserves are the owners the item records point at; run
-  them the other way round and a character's pack is filed under a serial the
-  allocator is free to hand to something else. Both `restore_*` docs state the
-  order and `run_shard` obeys it, but nothing in the types does.
+- ~~**`restore_characters` must run before `restore_items`, and only a doc says
+  so.**~~ Fixed by [`unenforced.md`](unenforced.md) S1. `restore_characters`
+  returns a `RestoredCharacters` — the set of serials it reserved, with a private
+  field — and `restore_items` takes one, so the order is the signature and the
+  pair cannot be swapped without a type error. The set is read rather than
+  carried: it is what lets the items' restore tell a player's pack from an NPC's
+  gear.
+
+  The link after it is still prose: `restore_items` must run before
+  `restore_mobiles`, which equips out of the inventories the items filed. Same
+  shape, same fix, and the reason it is not done is eight test sites that restore
+  mobiles alone — recorded in that plan's S1 rather than here.
 
 - ~~**`ClientPacket` mixes the character screen in with the world.**~~ Fixed, at
   the decode seam the entry pointed at. S3 left one `unreachable!` behind: `0x5D`
@@ -602,6 +610,13 @@ belong in the backlog above, however they were discovered.
 
 ## Status
 
-S1 through S7 have landed. Findings are recorded in
-[`roadmap.md` §2](roadmap.md) under "A connection's state is kept in two tables
-that must agree".
+**S1 through S7 have landed, and the backlog above is what is left of this plan.**
+It is the live list, not an appendix: each entry names the file it is in and what
+acting on it would cost, and entries are struck through in the commit that fixes
+them rather than deleted, so the reasoning that was wrong stays readable beside
+the reasoning that replaced it.
+
+[`roadmap.md` §2](roadmap.md), under "A connection's state is kept in two tables
+that must agree", is where this plan was argued for. Its five findings are all
+closed and it points back here for what is open — do not treat the two as two
+lists.

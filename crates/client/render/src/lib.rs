@@ -29,7 +29,13 @@
 //! that comes out of the frame — which would make an exact assertion in a test
 //! impossible and replace it with a tolerance nobody can justify.
 
+pub mod animation;
 pub mod atlas;
 pub mod camera;
+pub mod depth;
 pub mod ground;
+pub mod hue;
+pub mod mobiles;
 pub mod renderer;
+pub mod sprite;
+pub mod statics;

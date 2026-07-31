@@ -117,6 +117,7 @@ pub use command::{
 };
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
+pub use persist::{RestoredCharacters, RestoredItems};
 use roster::Roster;
 
 // `Outbound`, `FacetState`, `HeldItem` and `Origin` are the world's runtime
@@ -460,19 +461,17 @@ impl World {
         self.saves.drain(..)
     }
 
-    /// How many stored characters the world has on file, for the boot log.
-    pub fn stored_characters(&self) -> usize {
-        self.roster.saved()
-    }
-
     /// Put a character on an account's list without recording anything about it.
     ///
     /// For the config-seeded characters at boot: `[[accounts]] characters` names
     /// characters that exist and that nothing has ever saved, which is exactly
-    /// what the roster's `None` record means. Call after
-    /// [`restore_characters`](Self::restore_characters), so a name the store also
-    /// has keeps the row that describes it — the enrolment is idempotent and the
-    /// order only decides which call is the no-op.
+    /// what the roster's `None` record means.
+    ///
+    /// Safe to call before or after [`restore_characters`](Self::restore_characters):
+    /// the enrolment is idempotent, an entry already on the list is not touched,
+    /// and a record describes an entry however late the enrolment was — including
+    /// the character's spelling, which the config names but does not get to
+    /// change. The order decides the slot and nothing else.
     pub fn enrol_character(&mut self, account: &AccountName, name: &CharacterName) {
         self.roster.enrol(account, name);
     }

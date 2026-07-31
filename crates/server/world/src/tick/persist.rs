@@ -14,6 +14,59 @@ use openshard_state::components::{
     effect,
 };
 
+/// The serials [`World::restore_characters`] reserved, and the proof it ran.
+///
+/// Boot restores in one order that works: characters, then items. The serials
+/// the characters' restore reserves are the owners the item records point at, so
+/// running them the other way round files a character's pack under a serial the
+/// allocator is free to hand to something else. Nothing fails, then or later —
+/// the pack is simply somewhere else, and the first to notice is a player.
+///
+/// The order used to be two doc comments and the order of two lines in
+/// `run_shard`. It is a signature now: only `restore_characters` can build one of
+/// these, and `restore_items` will not compile without it. The set is real rather
+/// than a marker — it is exactly the serials whose ownership the second restore
+/// depends on, and it is what lets that restore tell a player's pack from an
+/// NPC's gear.
+#[derive(Debug)]
+pub struct RestoredCharacters {
+    /// Every serial the restore spoke for. Private: what a caller may do with
+    /// this value is hand it to `restore_items`.
+    reserved: HashSet<Serial>,
+}
+
+impl RestoredCharacters {
+    /// How many characters came back from the store.
+    pub fn count(&self) -> usize {
+        self.reserved.len()
+    }
+}
+
+/// The inventories [`World::restore_items`] filed under a mobile, and the proof
+/// it ran.
+///
+/// The same shape as [`RestoredCharacters`], one step further along the boot
+/// order: a mobile is equipped out of the inventory the items' restore filed
+/// under its serial, so running the mobiles first leaves every NPC and every
+/// vendor naked — and, again, nothing fails. The items are in the world, filed
+/// under a serial nothing will ever ask for, and the first to notice is a player
+/// buying from a vendor with no stock.
+///
+/// So `restore_mobiles` takes one of these and only `restore_items` can build
+/// one. The set is what the second restore actually depends on: the owners that
+/// are not characters, which is to say the mobiles that have gear waiting. It is
+/// read for the boot log — a filed inventory no restored mobile claims is the
+/// failure this order exists to prevent, and counting it is the only place at
+/// boot that would say so.
+#[derive(Debug)]
+pub struct RestoredItems {
+    /// Owners whose inventory was filed and who are not among the restored
+    /// characters — every one of them a mobile, since an item's owner is the
+    /// mobile at the top of whatever it is nested in. Private: what a caller may
+    /// do with this value is hand it to `restore_mobiles`.
+    mobile_owners: HashSet<Serial>,
+}
+
 impl World {
     // -- persistence -------------------------------------------------------
 
@@ -872,8 +925,7 @@ impl World {
     /// Two things per row, and they are the same two the world does on every
     /// logout: reserve the serial so a character created later cannot take it,
     /// and file where the character was, so playing it puts it back there. Call
-    /// once, before anyone connects and before [`restore_items`], which files
-    /// inventories under these serials.
+    /// once, before anyone connects.
     ///
     /// A row also says the character *exists*, and since S5 of
     /// `docs/connection_state.md` this is where that is recorded — the account's
@@ -882,32 +934,68 @@ impl World {
     /// `[[accounts]] characters` is folded in beside it by
     /// [`enrol_character`](World::enrol_character) afterwards.
     ///
-    /// [`restore_items`]: World::restore_items
-    pub fn restore_characters(&mut self, records: Vec<CharacterRecord>) {
+    /// The return value is what [`restore_items`](World::restore_items) needs and
+    /// the only way to obtain it — see [`RestoredCharacters`] for why the order
+    /// is a signature rather than a paragraph.
+    pub fn restore_characters(&mut self, records: Vec<CharacterRecord>) -> RestoredCharacters {
+        let mut reserved = HashSet::with_capacity(records.len());
         for record in records {
             self.reserve_serial(record.serial);
+            reserved.insert(record.serial);
             self.roster.remember(record);
         }
+        RestoredCharacters { reserved }
     }
 
     /// Bring saved items back from the store at boot.
     ///
     /// Reserves every item's serial so a live spawn cannot take it, places the
-    /// loose ground items now, and files each character's carried items away by
-    /// owner for [`enter`](Self::enter) to equip when that character logs in. Call
-    /// once, after the map is loaded and before anyone connects.
-    pub fn restore_items(&mut self, records: Vec<ItemRecord>) {
+    /// loose ground items now, and files each carried item away by owner for
+    /// [`enter`](Self::enter) to equip when that character logs in — or, when the
+    /// owner is an NPC or a vendor, for [`restore_mobiles`](Self::restore_mobiles)
+    /// to equip out of the same map. Call once, after the map is loaded and
+    /// before anyone connects.
+    ///
+    /// Takes the [`RestoredCharacters`] the characters' restore hands back,
+    /// because the serials that restore reserved are the owners these records
+    /// point at, and returns the [`RestoredItems`] that
+    /// [`restore_mobiles`](Self::restore_mobiles) needs for the same reason one
+    /// step on.
+    pub fn restore_items(
+        &mut self,
+        records: Vec<ItemRecord>,
+        characters: &RestoredCharacters,
+    ) -> RestoredItems {
         for record in &records {
             self.reserve_serial(record.serial);
         }
+        // Split for the log and for the token: everything filed is filed the same
+        // way, but the count is the one thing at boot that says whether the packs
+        // found their owners — a pack under a serial no character claims is
+        // invisible otherwise, which is the failure this ordering exists to
+        // prevent — and the owners that are *not* characters are the mobiles
+        // whose gear the next restore equips.
+        let mut packs = 0usize;
+        let mut ground = 0usize;
+        let mut mobile_owners = HashSet::new();
         for record in records {
             match record.owner {
-                None => self.place_ground_item(&record),
+                None => {
+                    ground += 1;
+                    self.place_ground_item(&record);
+                }
                 Some(owner) => {
+                    if characters.reserved.contains(&owner) {
+                        packs += 1;
+                    } else {
+                        mobile_owners.insert(owner);
+                    }
                     self.pending_inventories.entry(owner).or_default().push(record);
                 }
             }
         }
+        debug!(ground, packs, "items restored");
+        RestoredItems { mobile_owners }
     }
 
     /// Put one restored item on the ground, bound to its saved serial.
@@ -1114,9 +1202,10 @@ impl World {
 
     /// Bring the world's NPC mobiles back from the store at boot — each exactly
     /// as saved, wounded or well, at the tile it stood on, with its gear and a
-    /// vendor's stock equipped from the already-restored item records. Call after
+    /// vendor's stock equipped from the already-restored item records. Runs after
     /// [`restore_items`](Self::restore_items), which filed each mobile's inventory
-    /// under its serial, and before anyone connects.
+    /// under its serial — that is what the [`RestoredItems`] argument is, and it
+    /// is the only way to obtain one — and before anyone connects.
     ///
     /// The component list mirrors `npc::spawn` — the record-to-component
     /// conversion is exactly the seam this module exists to hold (see
@@ -1125,7 +1214,12 @@ impl World {
     /// `MobileSpawned` is announced (the pack stocked this vendor in its first
     /// life; the stock is in the save), and a fresh stock crate is not equipped
     /// (the saved one is restored with the rest of the inventory).
-    pub fn restore_mobiles(&mut self, records: Vec<MobileRecord>) {
+    pub fn restore_mobiles(&mut self, records: Vec<MobileRecord>, items: &RestoredItems) {
+        // What the token is read for: an inventory filed under a serial no
+        // restored mobile claims is gear that exists, is bound, and is reachable
+        // by nobody — the shape of failure this ordering prevents, and at boot
+        // this count is the only thing that would say it had happened.
+        let mut equipped = 0usize;
         for record in records {
             let serial = record.serial;
             let entity = self.state.registry.spawn();
@@ -1325,7 +1419,9 @@ impl World {
                 );
             }
             // Its gear and stock were filed by `restore_items` under this serial.
-            self.restore_inventory(record.serial);
+            if self.restore_inventory(record.serial) {
+                equipped += 1;
+            }
             // And say it is back. Not a `MobileSpawned` — see `MobileRestored` for
             // why the two must not be one event — but not silence either, or every
             // rule bound to this NPC by whoever placed it stays unbound for the
@@ -1342,6 +1438,11 @@ impl World {
                 home: record.npc_home.map_or(position, |(x, y, z)| Point::new(x, y, z)),
             });
         }
+        // `equipped` counts the mobiles that found gear; the token counts the
+        // gear that was filed for one. They are equal on a healthy boot, and the
+        // difference is inventories nobody came for.
+        let unclaimed = items.mobile_owners.len().saturating_sub(equipped);
+        debug!(equipped, unclaimed, "mobiles restored");
     }
 
     /// Re-lay the saved decoration at boot: statics, doors (their open/shut state

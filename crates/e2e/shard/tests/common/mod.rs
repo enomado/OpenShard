@@ -20,16 +20,24 @@ pub fn version() -> ClientVersion {
 
 /// The account the stock config ships with, and which these tests log in as.
 pub const ACCOUNT: &str = "admin";
-/// Its password, likewise from the stock config.
+/// Its password, and the one every account below is given: they are all
+/// development accounts and none of them is testing a password.
 pub const PASSWORD: &str = "hunter2";
 /// The character on it.
 pub const CHARACTER: &str = "Lord British";
 
-/// The stock config, pointed at `address`.
+/// A second account, added by [`config_for`] — see there for why it is not a
+/// second character on [`ACCOUNT`].
+pub const WITNESS: &str = "witness";
+/// The character on it.
+pub const NYSTUL: &str = "Nystul";
+
+/// The stock config, pointed at `address`, plus the one account a test cannot
+/// get from it.
 ///
-/// Nothing is added to it: the shipped config already carries the development
-/// account this logs in as, and a test that invented its own would stop
-/// noticing when that changed.
+/// The stock account is not replaced or invented: the shipped config already
+/// carries the development account these tests log in as, and a test that made
+/// up its own would stop noticing when that changed.
 ///
 /// The port matters twice — the shard listens on it, and the `0x8C` relay tells
 /// the client to dial `advertise`. Get the second wrong and the client
@@ -47,6 +55,16 @@ fn config_for(address: SocketAddr) -> Config {
             &format!("advertise = \"127.0.0.1:{port}\""),
         );
 
+    // The second account, for the tests that need two players in the world at
+    // once. Appended rather than given to `admin` as a second character: two
+    // characters on one account would rest on the shard letting one account hold
+    // two connections, which nothing states and nothing enforces — an accident
+    // to build a fixture on. A whole `[[accounts]]` table at the end of the file
+    // is a complete table wherever the sections above it move to.
+    let text = format!(
+        "{text}\n[[accounts]]\nname = \"{WITNESS}\"\npassword = \"{PASSWORD}\"\ncharacters = [\"{NYSTUL}\"]\n"
+    );
+
     let config: Config = toml::from_str(&text).expect("the stock config parses");
     assert_eq!(
         config.server.listen.port(),
@@ -63,6 +81,13 @@ fn config_for(address: SocketAddr) -> Config {
             account.name == ACCOUNT && account.characters.iter().any(|name| name == CHARACTER)
         }),
         "the stock config no longer ships {ACCOUNT} with {CHARACTER}"
+    );
+    assert!(
+        config.accounts.iter().any(|account| {
+            account.name == WITNESS && account.characters.iter().any(|name| name == NYSTUL)
+        }),
+        "the appended account did not come back out of the parse: the shape of an \
+         [[accounts]] table changed"
     );
     config
 }
@@ -114,10 +139,18 @@ pub fn shard() -> SocketAddrV4 {
 
 /// Log in as the stock account and play its character.
 pub fn plan() -> Plan {
+    plan_for(ACCOUNT, CHARACTER)
+}
+
+/// Log in as `account` and play the character called `character`.
+///
+/// The password is [`PASSWORD`] whoever the account is — see it for why there is
+/// no parameter for one.
+pub fn plan_for(account: &str, character: &str) -> Plan {
     Plan {
-        account: RawAccountName(ACCOUNT.to_owned()),
+        account: RawAccountName(account.to_owned()),
         password: RawPlaintextPassword(PASSWORD.to_owned()),
         shard: Pick::First,
-        character: Pick::Named(CHARACTER.to_owned()),
+        character: Pick::Named(character.to_owned()),
     }
 }

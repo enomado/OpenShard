@@ -284,8 +284,10 @@ async fn client_session_serve(
         return Ok(()); // The world server is gone; nothing to serve.
     }
 
-    // server -> client loop
-    let writes = tokio::spawn(async move {
+    // server -> client loop. It ends on one of two things: the outbox being
+    // dropped — which is how the server hangs up, there being no other "close" —
+    // or a write failing, which means the client already has.
+    let mut writes = tokio::spawn(async move {
         while let Some(bytes) = to_client_rx.recv().await {
             if client_tcp_writer.write_all(&bytes).await.is_err() {
                 break;
@@ -293,9 +295,34 @@ async fn client_session_serve(
         }
     });
 
-    // client -> server loop
-    let reason = read_loop(id, &mut client_tcp_reader, &events, control_rx).await;
+    // client -> server loop, raced against the write half ending.
+    //
+    // # Why the race, and what it cost to leave out
+    //
+    // Dropping the outbox shuts down the *write* half — that is `OwnedWriteHalf`'s
+    // `Drop`, and it is enough for the client to read zero bytes and know it has
+    // been hung up on. It is not enough for this end: a socket whose peer has not
+    // closed its own half is still open, so `read_loop` went on awaiting a read
+    // that would never come, and no `Disconnected` was ever emitted.
+    //
+    // Which made the server's own hang-up depend on the client answering it. A
+    // real client closes, so the chain completed and everything looked right. One
+    // that does not — a hung process, a dropped route, anything holding the socket
+    // half-open — left the world holding the character of a connection the shard
+    // had already forgotten: visible to everyone, standing there, undeletable,
+    // for as long as the socket lingered. Found by
+    // `crates/e2e/shard/tests/refused_teardown.rs`, which walks the whole chain
+    // and is where its six links are written down.
+    //
+    // `None` is the right reason: this end decided, and that is a clean close.
+    let reason = tokio::select! {
+        reason = read_loop(id, &mut client_tcp_reader, &events, control_rx) => reason,
+        _ = &mut writes => None,
+    };
 
+    // Either the read loop ended and the write task is still waiting on an outbox
+    // nobody will send to again, or the race above already resolved the other way.
+    // Aborting covers both, and dropping the reader with it takes the socket down.
     writes.abort();
     let _ = events.send(ServerEvent::Disconnected { id, reason });
     Ok(())
@@ -396,9 +423,15 @@ mod tests {
         let (address, mut events) = start().await;
         let mut client = TcpStream::connect(address).await.unwrap();
 
-        let ServerEvent::Connected { id, .. } = events.recv().await.unwrap() else {
+        // The outbox is held for as long as the connection is meant to live.
+        // Dropping it is how a server hangs up — see
+        // [`dropping_the_outbox_ends_the_connection_without_the_client_answering`]
+        // — so a test double that let it go would be closing the socket it is
+        // about to read from.
+        let ServerEvent::Connected { id, outbox, .. } = events.recv().await.unwrap() else {
             panic!("expected Connected first");
         };
+        let _outbox = outbox;
 
         let mut stream = modern_seed();
         stream.extend_from_slice(&[0x73, 0x00]);
@@ -435,7 +468,10 @@ mod tests {
     async fn a_clean_close_reports_no_reason() {
         let (address, mut events) = start().await;
         let client = TcpStream::connect(address).await.unwrap();
-        let ServerEvent::Connected { .. } = events.recv().await.unwrap() else {
+        // Held, so that the close under test is unambiguously the client's:
+        // dropping this would hang up from the other end and the assertion below
+        // would hold for the wrong reason.
+        let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
             panic!("expected Connected");
         };
         drop(client);
@@ -444,15 +480,53 @@ mod tests {
             panic!("expected Disconnected");
         };
         assert_eq!(reason, None, "hanging up is not an error");
+        drop(outbox);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_outbox_ends_the_connection_without_the_client_answering() {
+        // The server's own hang-up, and the half of it that used to be missing.
+        // Dropping the outbox shuts the write half, so the client reads zero
+        // bytes and knows — but this end went on awaiting a read from a socket
+        // the client had every right to keep open, and never said `Disconnected`.
+        // Which meant the shard's teardown chain stopped one link short and the
+        // world kept the character of a connection nobody was holding any more.
+        //
+        // So the client here deliberately does *not* close: it reads its zero
+        // bytes and keeps its own half open, which is exactly the case a
+        // well-behaved client hid.
+        let (address, mut events) = start().await;
+        let mut client = TcpStream::connect(address).await.unwrap();
+        let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
+            panic!("expected Connected");
+        };
+
+        outbox.send(vec![0x82, 0x03]).unwrap(); // login denied, then the close
+        drop(outbox);
+
+        let mut denied = [0u8; 2];
+        client.read_exact(&mut denied).await.unwrap();
+        assert_eq!(denied, [0x82, 0x03], "the last packet lands before the close");
+        let mut trailing = Vec::new();
+        client.read_to_end(&mut trailing).await.unwrap();
+        assert!(trailing.is_empty(), "and the write half is shut");
+
+        let ServerEvent::Disconnected { reason, .. } = events.recv().await.unwrap() else {
+            panic!("the gateway never said the connection was gone");
+        };
+        assert_eq!(reason, None, "this end decided; that is a clean close");
     }
 
     #[tokio::test]
     async fn a_protocol_violation_drops_the_connection() {
         let (address, mut events) = start().await;
         let mut client = TcpStream::connect(address).await.unwrap();
-        let ServerEvent::Connected { .. } = events.recv().await.unwrap() else {
+        // Held: the reason under test is the protocol violation, and a dropped
+        // outbox would close the connection first and report none.
+        let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
             panic!("expected Connected");
         };
+        let _outbox = outbox;
 
         let mut stream = modern_seed();
         stream.extend_from_slice(&[0x01]); // no such client packet

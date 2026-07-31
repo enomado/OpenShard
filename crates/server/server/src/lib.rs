@@ -69,8 +69,8 @@ use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 use openshard_world::tick::screen::CharacterScreen;
 use openshard_world::{
-    Command, Gameplay, MapTerrain, PlayerEntered, PlayerLeaving, PlayerLeft, PlayerRefused, StatLock,
-    TICK_INTERVAL, World,
+    Command, Gameplay, MapTerrain, PlayerEntered, PlayerLeaving, PlayerLeft, PlayerRefused,
+    RestoredCharacters, RestoredItems, StatLock, TICK_INTERVAL, World,
 };
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, error, info, warn};

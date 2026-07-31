@@ -244,6 +244,71 @@ impl Map {
         Self::from_bytes(&source_path, bytes, statics, Some(facet))
     }
 
+    /// Build a facet from cells already in memory, with no file anywhere.
+    ///
+    /// `cell` is asked for every tile by world coordinate, and where that lands
+    /// in the block-ordered array is this function's business rather than the
+    /// caller's. That is the point of it: the column-major order this module's
+    /// header is about is the easiest thing here to get backwards, and a caller
+    /// assembling `cells` itself would be a second place to get it wrong.
+    ///
+    /// The size is given in **blocks**, so a facet that is not a whole number of
+    /// blocks — which no reader in this file could parse — cannot be asked for.
+    ///
+    /// # What a map built this way does not have
+    ///
+    /// No statics: [`Map::statics_at`] is empty everywhere and
+    /// [`Map::static_count`] is zero, exactly as for a [`Map::load`] that was
+    /// given no `statics` paths.
+    ///
+    /// And no facet identity. A size nobody ships is an ordinary thing to ask
+    /// for here, so [`Map::facet_name`] may honestly answer "unknown facet".
+    /// This does not inherit [`Map::load`]'s Malas/Ter Mur ambiguity, and cannot:
+    /// there is no block count to deduce a shape from, because the caller said
+    /// what the shape is.
+    ///
+    /// # Panics
+    ///
+    /// If the facet would be wider or taller than a `u16` coordinate can reach.
+    /// Every tile past that is one [`Map::land`] could never be asked about, so
+    /// such a map is memory that exists to be unreachable; the largest facet a
+    /// client ships is 7,168 tiles across.
+    pub fn from_blocks(
+        blocks_wide: u32,
+        blocks_down: u32,
+        mut cell: impl FnMut(u16, u16) -> LandCell,
+    ) -> Self {
+        let (width, height) = (blocks_wide * BLOCK_SIZE, blocks_down * BLOCK_SIZE);
+        let reach = u32::from(u16::MAX) + 1;
+        assert!(
+            width <= reach && height <= reach,
+            "a {width}x{height} facet is larger than a u16 coordinate reaches",
+        );
+
+        let blocks = (blocks_wide * blocks_down) as usize;
+        let mut cells = Vec::with_capacity(blocks * CELLS_PER_BLOCK);
+        // The order the file is in, and the order `cell_index` reads back:
+        // blocks column-major, cells within a block row-major.
+        for block_x in 0..blocks_wide {
+            for block_y in 0..blocks_down {
+                for y in 0..BLOCK_SIZE {
+                    for x in 0..BLOCK_SIZE {
+                        let x = (block_x * BLOCK_SIZE + x) as u16;
+                        let y = (block_y * BLOCK_SIZE + y) as u16;
+                        cells.push(cell(x, y));
+                    }
+                }
+            }
+        }
+
+        Self {
+            width,
+            height,
+            cells,
+            statics: vec![Vec::new(); blocks],
+        }
+    }
+
     /// `facet` is the facet number when the caller knows it, and is what breaks
     /// the Malas/Ter Mur tie described in this module's header.
     fn from_bytes(
@@ -725,5 +790,68 @@ mod tests {
         assert_eq!((map.width(), map.height()), (1448, 1448));
         assert_eq!(map.facet_name(), "Tokuno");
         assert_eq!(map.static_count(), 0);
+    }
+
+    /// A facet built in memory holds the same map as one filled from the file.
+    ///
+    /// The round trip is the whole point: [`Map::from_blocks`] decides where a
+    /// cell goes and [`Map::cell_index`] decides where it is read back from, and
+    /// they are two separate walks of the same column-major order written in two
+    /// places. Get either nesting backwards and the map is transposed — which
+    /// parses perfectly, draws plausibly, and is the failure this module's header
+    /// is about.
+    ///
+    /// The fixture is [`map_16x16`], whose cells are laid out the way the loader
+    /// lays them out: straight down the file. So agreement here is agreement with
+    /// the file, without needing a facet-sized one on disk.
+    #[test]
+    fn a_facet_built_in_memory_is_laid_out_like_a_loaded_one() {
+        let from_file = map_16x16();
+        let built = Map::from_blocks(2, 2, |x, y| from_file.land(x, y).expect("inside the fixture"));
+
+        assert_eq!((built.width(), built.height()), (16, 16));
+        for y in 0..16u16 {
+            for x in 0..16u16 {
+                assert_eq!(
+                    built.land(x, y),
+                    from_file.land(x, y),
+                    "({x}, {y}) is a different cell in the two maps"
+                );
+            }
+        }
+        // The fixture's tiles are all distinct, so the comparison above could not
+        // have passed on a map that happens to be uniform.
+        let distinct: std::collections::HashSet<u16> = (0..16u16)
+            .flat_map(|y| (0..16u16).map(move |x| (x, y)))
+            .map(|(x, y)| built.land(x, y).unwrap().tile)
+            .collect();
+        assert_eq!(distinct.len(), 16 * 16);
+    }
+
+    /// Every tile is asked for, once, by world coordinate — which is the contract
+    /// the callback rests on and the reason a caller never sees a block.
+    #[test]
+    fn building_asks_for_each_tile_exactly_once() {
+        let mut asked = Vec::new();
+        let map = Map::from_blocks(3, 2, |x, y| {
+            asked.push((x, y));
+            LandCell::default()
+        });
+
+        assert_eq!(asked.len(), 24 * 16);
+        let unique: std::collections::HashSet<(u16, u16)> = asked.iter().copied().collect();
+        assert_eq!(unique.len(), asked.len(), "a tile was asked for twice");
+        for y in 0..16u16 {
+            for x in 0..24u16 {
+                assert!(unique.contains(&(x, y)), "({x}, {y}) was never asked for");
+            }
+        }
+
+        // And the map it hands back is bare ground of the size that was asked
+        // for, whether or not any facet is that shape.
+        assert_eq!((map.width(), map.height()), (24, 16));
+        assert_eq!(map.facet_name(), "unknown facet");
+        assert_eq!(map.static_count(), 0);
+        assert_eq!(map.statics_at(0, 0).count(), 0);
     }
 }

@@ -76,6 +76,12 @@ impl Roster {
     ///
     /// Nothing is recorded about *where* the character is; that arrives with the
     /// first [`remember`](Self::remember).
+    ///
+    /// An entry that is already there is not touched at all — not its record, not
+    /// its spelling. That, and `remember` adopting the record's spelling, is what
+    /// holds the rule `boot::restore` used to hold by call order alone: a name in
+    /// both the store and the config keeps the row that describes it *and* the
+    /// name it was created under, whichever of the two ran first.
     pub(super) fn enrol(&mut self, account: &AccountName, name: &CharacterName) {
         let characters = self.0.entry(account.normalized()).or_default();
         if characters
@@ -97,6 +103,16 @@ impl Roster {
     /// a name nothing enrolled is the enrolment being late, not the record being
     /// wrong. The account and name come off the record rather than from the
     /// caller, so a record cannot be filed under the wrong name.
+    ///
+    /// A record also carries the *spelling* — the case the player typed when the
+    /// character was created — and that spelling wins over whatever the entry was
+    /// enrolled under. Config's `[[accounts]] characters` names a character that
+    /// exists; it does not get to rename it, and an operator writing
+    /// `lord british` in a `.toml` must not change what `0xA9` shows. Adopting it
+    /// here is what makes this order-independent: `enrol` before `remember` and
+    /// `remember` before `enrol` leave the same list, so the boot order decides
+    /// nothing about *which* character description survives. See
+    /// [`enrol`](Self::enrol) for the half that says the record is never lost.
     pub(super) fn remember(&mut self, record: CharacterRecord) {
         self.enrol(&record.account, &record.name);
         let characters = self
@@ -107,6 +123,7 @@ impl Roster {
             .iter_mut()
             .find(|entry| entry.name.normalized() == record.name.normalized())
             .expect("enrol just put this character on the list");
+        entry.name = record.name.clone();
         entry.saved = Some(record);
     }
 
@@ -164,12 +181,15 @@ impl Roster {
             .unwrap_or_default()
     }
 
-    /// How many characters have a saved record, for the boot log.
+    /// How many characters have a saved record.
     ///
-    /// Not how many exist: what the log is reporting is how much of the world
-    /// came back out of the database, and a character that exists with nothing
-    /// recorded came from config, not from a store the boot read.
-    pub(super) fn saved(&self) -> usize {
+    /// Test-only, and it used to be the boot log's: the log now counts what
+    /// `World::restore_characters` hands back, which is the same number said by
+    /// the thing that did the restoring. What is left is this module's own tests
+    /// asking whether a record exists at all — "not how many exist", because a
+    /// character enrolled from config has never been written down.
+    #[cfg(test)]
+    fn saved(&self) -> usize {
         self.0
             .values()
             .flatten()
@@ -327,6 +347,46 @@ mod tests {
             roster
                 .get(&AccountName::new("admin"), &CharacterName::new("Lord British"))
                 .map(|record| record.serial),
+            Some(Serial::new(7).unwrap()),
+            "and the late enrolment did not wipe what was known"
+        );
+    }
+
+    #[test]
+    fn the_boot_order_decides_nothing_about_a_character_in_both_halves() {
+        // The rule `boot::restore` states in prose: a name in both the store and
+        // the config keeps the row that describes it. It is asserted here from
+        // both sides, because the prose only ever held one of them.
+        //
+        // The record survives either way — `enrol` never touches an entry that is
+        // there. The *spelling* did not: an operator who wrote `lord british` in
+        // the config renamed a character the player created as `Lord British`,
+        // for as long as the config seeding happened to run first. `remember`
+        // adopting the record's name is what makes both directions equal.
+        let played = |roster: &Roster| roster.characters(&AccountName::new("admin"))[0].name.clone();
+        let described = |roster: &Roster| {
+            roster
+                .get(&AccountName::new("admin"), &CharacterName::new("Lord British"))
+                .map(|record| record.serial)
+        };
+
+        let mut store_first = Roster::new();
+        store_first.remember(record("admin", "Lord British", Serial::new(7).unwrap()));
+        store_first.enrol(&AccountName::new("admin"), &CharacterName::new("lord british"));
+
+        let mut config_first = Roster::new();
+        config_first.enrol(&AccountName::new("admin"), &CharacterName::new("lord british"));
+        config_first.remember(record("admin", "Lord British", Serial::new(7).unwrap()));
+
+        assert_eq!(played(&store_first), CharacterName::new("Lord British"));
+        assert_eq!(
+            played(&config_first),
+            CharacterName::new("Lord British"),
+            "the config names a character that exists; it does not rename it"
+        );
+        assert_eq!(described(&store_first), Some(Serial::new(7).unwrap()));
+        assert_eq!(
+            described(&config_first),
             Some(Serial::new(7).unwrap()),
             "and the late enrolment did not wipe what was known"
         );

@@ -228,9 +228,24 @@ pub(crate) struct Restored {
 /// The order is the whole reason this is a function and not seven calls in the
 /// shard loop: characters before items, because the serials `restore_characters`
 /// reserves are the owners the item records point at; items before mobiles,
-/// because a mobile is equipped out of the inventories the items filed; the
-/// config's characters after the store's, so a name on both keeps the row that
-/// describes it. Each function's own doc says why it sits where it does.
+/// because a mobile is equipped out of the inventories the items filed. Each
+/// function's own doc says why it sits where it does.
+///
+/// Neither of those two is only said any more: `restore_items` takes the
+/// [`RestoredCharacters`] that only `restore_characters` can hand back and
+/// returns the [`RestoredItems`] that `restore_mobiles` will not compile
+/// without, so neither pair can be swapped without a type error.
+///
+/// **The config's characters used to be the third of those and are not a rule at
+/// all.** This doc claimed they had to come after the store's so that a name in
+/// both kept the row that describes it — and the roster had never behaved
+/// otherwise: `Roster::enrol` does not touch an entry that is there, and
+/// `Roster::remember` describes an entry however late it was enrolled. The one
+/// thing the order really decided was the *spelling* shown by `0xA9`, which the
+/// roster now takes off the record rather than off whichever call ran first, so
+/// that is order-independent too. `seed_configured_characters` sits here because
+/// a stored character should hold the lower slot, and nothing worse than a slot
+/// order rides on it. `unenforced.md` S6 has the argument.
 ///
 /// Nothing here is fatal. A store that cannot be read is logged at each step and
 /// the shard comes up with whatever it did get: a shard that refuses to start
@@ -239,10 +254,10 @@ pub(crate) struct Restored {
 pub(crate) async fn restore(store: &dyn Store, config: &Config, world: World) -> Restored {
     let accounts = load_accounts(store, config).await;
     let mut world = world;
-    restore_characters(store, &mut world).await;
+    let characters = restore_characters(store, &mut world).await;
     seed_configured_characters(config, &mut world);
-    restore_items(store, &mut world).await;
-    restore_mobiles(store, &mut world).await;
+    let items = restore_items(store, &mut world, &characters).await;
+    restore_mobiles(store, &mut world, &items).await;
     restore_decorations(store, &mut world).await;
     restore_spawners(store, &mut world).await;
     restore_regions(store, &mut world).await;
@@ -304,18 +319,26 @@ async fn load_accounts(store: &dyn Store, config: &Config) -> DevAccounts {
 /// `docs/connection_state.md` the roster is what holds each. The accounts keep
 /// credentials and authority — what a login is about — and nothing that a
 /// character screen would read.
-async fn restore_characters(store: &dyn Store, world: &mut World) {
+/// A store that cannot be read is not a reason to skip the items: the restore
+/// still ran, with nothing in it, and the token says so. Returning an `Option`
+/// here would put the ordering rule back in prose — the caller would have to know
+/// that "no characters" still permits items.
+async fn restore_characters(store: &dyn Store, world: &mut World) -> RestoredCharacters {
     match store.characters().await {
         Ok(characters) => {
-            world.restore_characters(characters);
-            if world.stored_characters() > 0 {
+            let restored = world.restore_characters(characters);
+            if restored.count() > 0 {
                 info!(
-                    characters = world.stored_characters(),
+                    characters = restored.count(),
                     "restored the world from the database"
                 );
             }
+            restored
         }
-        Err(error) => error!(%error, "could not read saved characters; starting with none"),
+        Err(error) => {
+            error!(%error, "could not read saved characters; starting with none");
+            world.restore_characters(Vec::new())
+        }
     }
 }
 
@@ -324,9 +347,13 @@ async fn restore_characters(store: &dyn Store, world: &mut World) {
 /// The other half of who exists, beside the store's rows. A configured character
 /// that has never been played has nothing saved anywhere — no serial, no
 /// position — so all this records is that it exists; entering it spawns a fresh
-/// one at the start city. Called after [`restore_characters`], so a name the
-/// store also has keeps the row that describes it rather than being re-added as
-/// undescribed.
+/// one at the start city.
+///
+/// Called after [`restore_characters`] for the slots and nothing else: a name in
+/// both halves is one entry either way, described either way, and spelled the way
+/// it was created either way — see `World::enrol_character`. Running after means
+/// the characters somebody has actually played hold the lower slots, which is the
+/// order their player already knows.
 fn seed_configured_characters(config: &Config, world: &mut World) {
     for account in &config.accounts {
         for character in &account.characters {
@@ -337,34 +364,46 @@ fn seed_configured_characters(config: &Config, world: &mut World) {
 
 /// Bring back saved items: the world reserves their serials, drops the loose
 /// ground clutter back where it lay, and files each character's carried
-/// inventory to re-equip when it logs in. Called after `restore_characters`,
-/// so their serials are already reserved and an item can point at the
-/// container it was in.
-async fn restore_items(store: &dyn Store, world: &mut World) {
+/// inventory to re-equip when it logs in. It takes the characters' restore as an
+/// argument rather than trusting a comment about call order — the serials that
+/// restore reserved are the owners these records point at — and hands the same
+/// kind of token on to the mobiles.
+///
+/// A store that cannot be read restores nothing and still returns the token, for
+/// the reason [`restore_characters`] does: an `Option` here would make the caller
+/// decide what "no items" permits, which is the ordering rule back in prose.
+async fn restore_items(
+    store: &dyn Store,
+    world: &mut World,
+    characters: &RestoredCharacters,
+) -> RestoredItems {
     match store.items().await {
         Ok(items) => {
             if !items.is_empty() {
                 info!(items = items.len(), "restored saved items");
             }
-            world.restore_items(items);
+            world.restore_items(items, characters)
         }
-        Err(error) => error!(%error, "could not read saved items; starting with none"),
+        Err(error) => {
+            error!(%error, "could not read saved items; starting with none");
+            world.restore_items(Vec::new(), characters)
+        }
     }
 }
 
 /// Bring back the world's NPC mobiles — townsfolk, vendors, creatures — each
-/// exactly as saved. Called after `restore_items`, so each mobile's gear and
-/// stock is already filed under its serial for `World::restore_mobiles` to
-/// equip. This is the whole-world model: the pack seeds a fresh world once (a
-/// staff Populate), and from then on the save is the truth — nothing respawns
-/// at boot.
-async fn restore_mobiles(store: &dyn Store, world: &mut World) {
+/// exactly as saved. Takes the items' restore rather than a comment about call
+/// order: each mobile's gear and stock is already filed under its serial for
+/// `World::restore_mobiles` to equip, and the token is what says so. This is the
+/// whole-world model: the pack seeds a fresh world once (a staff Populate), and
+/// from then on the save is the truth — nothing respawns at boot.
+async fn restore_mobiles(store: &dyn Store, world: &mut World, items: &RestoredItems) {
     match store.mobiles().await {
         Ok(mobiles) => {
             if !mobiles.is_empty() {
                 info!(mobiles = mobiles.len(), "restored the world's mobiles");
             }
-            world.restore_mobiles(mobiles);
+            world.restore_mobiles(mobiles, items);
         }
         Err(error) => error!(%error, "could not read saved mobiles; starting with none"),
     }

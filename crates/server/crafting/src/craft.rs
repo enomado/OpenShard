@@ -76,8 +76,11 @@ enum Blocked {
     Spent,
     /// It is not on the crafter's person.
     NotCarried,
-    /// The workshop is not here.
-    NoWorkshop(ClilocId),
+    /// The workshop is not here. The message is the *system's*, and a system
+    /// that wants no workshop of its own has none — a recipe can add a
+    /// requirement its system did not have, and then there is nothing written
+    /// down to say. Silence beats cliloc zero, which the client would look up.
+    NoWorkshop(Option<ClilocId>),
 }
 
 /// The tool and workshop gates — ServUO's `CanCraft`, less the recipe's own.
@@ -115,10 +118,10 @@ fn can_craft(
 /// Say why a craft was refused.
 fn say(state: &mut WorldState, crafter: EntityId, blocked: Blocked) {
     let cliloc = match blocked {
-        Blocked::NoTool => return,
+        Blocked::NoTool | Blocked::NoWorkshop(None) => return,
         Blocked::Spent => TOOL_WORN_OUT,
         Blocked::NotCarried => TOOL_NOT_ON_PERSON,
-        Blocked::NoWorkshop(cliloc) => cliloc,
+        Blocked::NoWorkshop(Some(cliloc)) => cliloc,
     };
     state.localized_message(crafter, cliloc, "");
 }

@@ -494,7 +494,7 @@ impl Store for PgStore {
                 "SELECT serial, account, name, body, hue, facet, x, y, z, facing, \
                  strength, dexterity, intelligence, skills, effects, dead, fame, karma, murders, \
                  quests, done_quests, stat_locks \
-                 FROM characters",
+                 FROM characters ORDER BY serial",
                 &[],
             )
             .await
@@ -1019,6 +1019,40 @@ mod tests {
         assert_eq!(characters.len(), 1);
         assert_eq!(characters[0].serial, Serial::new(1).unwrap());
         assert_eq!(characters[0].x, 100);
+    }
+
+    #[tokio::test]
+    async fn a_logout_does_not_move_a_character_down_the_list() {
+        // The backend the slot-order rule was found on. A bare `SELECT` here is
+        // heap order, and an `UPDATE` in PostgreSQL writes a new tuple at the end
+        // of the heap — so saving one character, which is what a logout does,
+        // moved it to the bottom of its own account's list on the next boot. The
+        // second save below is that logout, and it is what makes this test able
+        // to fail: without it the rows come back in insertion order and an
+        // unordered read looks correct.
+        let _guard = LOCK.lock().await;
+        let Some(store) = fresh().await else {
+            return;
+        };
+        for serial in [1u32, 2, 3] {
+            store
+                .save(&snapshot(vec![character(serial, 100)], vec![]))
+                .await
+                .expect("save");
+        }
+        store
+            .save(&snapshot(vec![character(1, 200)], vec![]))
+            .await
+            .expect("the first character logs out");
+
+        let serials = store
+            .characters()
+            .await
+            .expect("read")
+            .iter()
+            .map(|record| record.serial.raw())
+            .collect::<Vec<_>>();
+        assert_eq!(serials, [1, 2, 3]);
     }
 
     #[tokio::test]
