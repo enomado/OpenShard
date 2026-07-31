@@ -69,7 +69,15 @@ pub(super) fn nothing_is_held(world: &World) -> bool {
 /// Everything but the serial, the spot and the look is what
 /// `CharacterSheet::starting()` describes, so a character restored through here
 /// is the same one the hand-built `StoredCharacter` fixtures used to be.
-pub(super) fn on_file(world: &mut World, serial: Serial, position: Point, appearance: Appearance) {
+/// Hands back what `World::restore_characters` does, because a test that goes on
+/// to restore items needs it — that is the whole point of the token, and a test
+/// is not exempt from the order it states.
+pub(super) fn on_file(
+    world: &mut World,
+    serial: Serial,
+    position: Point,
+    appearance: Appearance,
+) -> RestoredCharacters {
     world.restore_characters(vec![CharacterRecord {
         serial,
         account: AccountName("admin".to_owned()),
@@ -93,7 +101,7 @@ pub(super) fn on_file(world: &mut World, serial: Serial, position: Point, appear
         murders: 0,
         quests: Vec::new(),
         done_quests: Vec::new(),
-    }]);
+    }])
 }
 
 /// Hand a connection over to the world as "admin", the way the shard loop does
@@ -7992,13 +8000,13 @@ fn a_characters_inventory_survives_a_logout_and_restore() {
 
     // A fresh shard: reserve the serials, load the items, play the character.
     let mut shard = world();
-    on_file(
+    let characters = on_file(
         &mut shard,
         char_serial,
         Point::new(1500, 1000, 0),
         Appearance::default_human(),
     );
-    shard.restore_items(records);
+    shard.restore_items(records, &characters);
     let conn_b = connection();
     shard.queue(Command::Enter(Entering {
         connection: conn_b,
@@ -8090,13 +8098,13 @@ fn a_spellbook_keeps_its_spells_across_a_logout_and_restore() {
     home.tick(now);
 
     let mut shard = world();
-    on_file(
+    let characters = on_file(
         &mut shard,
         char_serial,
         Point::new(1500, 1000, 0),
         Appearance::default_human(),
     );
-    shard.restore_items(records);
+    shard.restore_items(records, &characters);
     let conn_b = connection();
     shard.queue(Command::Enter(Entering {
         connection: conn_b,
@@ -8327,9 +8335,12 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         .collect();
     items.extend(snapshot.ground.clone().unwrap_or_default());
 
-    // The restart: a fresh world restored from the records alone.
+    // The restart: a fresh world restored from the records alone. No characters
+    // are on file — the owners here are a vendor and its stock crate — but the
+    // restore still runs in its order, and says so by handing the token over.
     let mut shard = world();
-    shard.restore_items(items);
+    let characters = shard.restore_characters(Vec::new());
+    shard.restore_items(items, &characters);
     shard.restore_mobiles(mobiles);
 
     let vendor = shard

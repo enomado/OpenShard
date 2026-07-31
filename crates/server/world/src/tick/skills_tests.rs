@@ -355,7 +355,11 @@ fn a_corpses_story_comes_back_after_a_restart() {
 
     // A fresh world restoring that save has the same body with the same story.
     let mut reborn = super::tests::world();
-    reborn.restore_items(vec![saved]);
+    // A corpse lies on the ground and owns nobody's serial, so the characters'
+    // restore has nothing to bring back — it still runs first, which is what the
+    // token it hands to `restore_items` is for.
+    let characters = reborn.restore_characters(Vec::new());
+    reborn.restore_items(vec![saved], &characters);
     let (corpse, _) = reborn
         .state
         .registry

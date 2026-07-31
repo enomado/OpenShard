@@ -14,6 +14,34 @@ use openshard_state::components::{
     effect,
 };
 
+/// The serials [`World::restore_characters`] reserved, and the proof it ran.
+///
+/// Boot restores in one order that works: characters, then items. The serials
+/// the characters' restore reserves are the owners the item records point at, so
+/// running them the other way round files a character's pack under a serial the
+/// allocator is free to hand to something else. Nothing fails, then or later —
+/// the pack is simply somewhere else, and the first to notice is a player.
+///
+/// The order used to be two doc comments and the order of two lines in
+/// `run_shard`. It is a signature now: only `restore_characters` can build one of
+/// these, and `restore_items` will not compile without it. The set is real rather
+/// than a marker — it is exactly the serials whose ownership the second restore
+/// depends on, and it is what lets that restore tell a player's pack from an
+/// NPC's gear.
+#[derive(Debug)]
+pub struct RestoredCharacters {
+    /// Every serial the restore spoke for. Private: what a caller may do with
+    /// this value is hand it to `restore_items`.
+    reserved: HashSet<Serial>,
+}
+
+impl RestoredCharacters {
+    /// How many characters came back from the store.
+    pub fn count(&self) -> usize {
+        self.reserved.len()
+    }
+}
+
 impl World {
     // -- persistence -------------------------------------------------------
 
@@ -872,8 +900,7 @@ impl World {
     /// Two things per row, and they are the same two the world does on every
     /// logout: reserve the serial so a character created later cannot take it,
     /// and file where the character was, so playing it puts it back there. Call
-    /// once, before anyone connects and before [`restore_items`], which files
-    /// inventories under these serials.
+    /// once, before anyone connects.
     ///
     /// A row also says the character *exists*, and since S5 of
     /// `docs/connection_state.md` this is where that is recorded — the account's
@@ -882,32 +909,56 @@ impl World {
     /// `[[accounts]] characters` is folded in beside it by
     /// [`enrol_character`](World::enrol_character) afterwards.
     ///
-    /// [`restore_items`]: World::restore_items
-    pub fn restore_characters(&mut self, records: Vec<CharacterRecord>) {
+    /// The return value is what [`restore_items`](World::restore_items) needs and
+    /// the only way to obtain it — see [`RestoredCharacters`] for why the order
+    /// is a signature rather than a paragraph.
+    pub fn restore_characters(&mut self, records: Vec<CharacterRecord>) -> RestoredCharacters {
+        let mut reserved = HashSet::with_capacity(records.len());
         for record in records {
             self.reserve_serial(record.serial);
+            reserved.insert(record.serial);
             self.roster.remember(record);
         }
+        RestoredCharacters { reserved }
     }
 
     /// Bring saved items back from the store at boot.
     ///
     /// Reserves every item's serial so a live spawn cannot take it, places the
-    /// loose ground items now, and files each character's carried items away by
-    /// owner for [`enter`](Self::enter) to equip when that character logs in. Call
-    /// once, after the map is loaded and before anyone connects.
-    pub fn restore_items(&mut self, records: Vec<ItemRecord>) {
+    /// loose ground items now, and files each carried item away by owner for
+    /// [`enter`](Self::enter) to equip when that character logs in — or, when the
+    /// owner is an NPC or a vendor, for [`restore_mobiles`](Self::restore_mobiles)
+    /// to equip out of the same map. Call once, after the map is loaded and
+    /// before anyone connects.
+    ///
+    /// Takes the [`RestoredCharacters`] the characters' restore hands back,
+    /// because the serials that restore reserved are the owners these records
+    /// point at.
+    pub fn restore_items(&mut self, records: Vec<ItemRecord>, characters: &RestoredCharacters) {
         for record in &records {
             self.reserve_serial(record.serial);
         }
+        // Split only for the log: both halves are filed the same way, and the
+        // count is the one thing at boot that says whether the packs found their
+        // owners — a pack under a serial no character claims is invisible
+        // otherwise, which is the failure this ordering exists to prevent.
+        let mut packs = 0usize;
+        let mut ground = 0usize;
         for record in records {
             match record.owner {
-                None => self.place_ground_item(&record),
+                None => {
+                    ground += 1;
+                    self.place_ground_item(&record);
+                }
                 Some(owner) => {
+                    if characters.reserved.contains(&owner) {
+                        packs += 1;
+                    }
                     self.pending_inventories.entry(owner).or_default().push(record);
                 }
             }
         }
+        debug!(ground, packs, "items restored");
     }
 
     /// Put one restored item on the ground, bound to its saved serial.

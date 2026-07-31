@@ -117,6 +117,7 @@ pub use command::{
 };
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
+pub use persist::RestoredCharacters;
 use roster::Roster;
 
 // `Outbound`, `FacetState`, `HeldItem` and `Origin` are the world's runtime
@@ -458,11 +459,6 @@ impl World {
     /// answer being "write it to a disk in Frankfurt".
     pub fn drain_saves(&mut self) -> std::vec::Drain<'_, Snapshot> {
         self.saves.drain(..)
-    }
-
-    /// How many stored characters the world has on file, for the boot log.
-    pub fn stored_characters(&self) -> usize {
-        self.roster.saved()
     }
 
     /// Put a character on an account's list without recording anything about it.

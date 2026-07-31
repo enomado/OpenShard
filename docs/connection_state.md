@@ -438,12 +438,18 @@ will read it.
   instead. That is the honest rendering — a reader of the public docs cannot
   follow a link to something they cannot use — and it keeps
   `rustdoc::private_intra_doc_links` quiet.
-- **`restore_characters` must run before `restore_items`, and only a doc says
-  so.** *(Planned: [`unenforced.md`](unenforced.md) S1.)*
-  The serials it reserves are the owners the item records point at; run
-  them the other way round and a character's pack is filed under a serial the
-  allocator is free to hand to something else. Both `restore_*` docs state the
-  order and `run_shard` obeys it, but nothing in the types does.
+- ~~**`restore_characters` must run before `restore_items`, and only a doc says
+  so.**~~ Fixed by [`unenforced.md`](unenforced.md) S1. `restore_characters`
+  returns a `RestoredCharacters` — the set of serials it reserved, with a private
+  field — and `restore_items` takes one, so the order is the signature and the
+  pair cannot be swapped without a type error. The set is read rather than
+  carried: it is what lets the items' restore tell a player's pack from an NPC's
+  gear.
+
+  The link after it is still prose: `restore_items` must run before
+  `restore_mobiles`, which equips out of the inventories the items filed. Same
+  shape, same fix, and the reason it is not done is eight test sites that restore
+  mobiles alone — recorded in that plan's S1 rather than here.
 
 - ~~**`ClientPacket` mixes the character screen in with the world.**~~ Fixed, at
   the decode seam the entry pointed at. S3 left one `unreachable!` behind: `0x5D`

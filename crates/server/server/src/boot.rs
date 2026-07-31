@@ -232,6 +232,12 @@ pub(crate) struct Restored {
 /// config's characters after the store's, so a name on both keeps the row that
 /// describes it. Each function's own doc says why it sits where it does.
 ///
+/// The first of those three is no longer only said: `restore_items` takes the
+/// [`RestoredCharacters`] that only `restore_characters` can hand back, so the
+/// pair cannot be swapped without a type error. The other two are still prose —
+/// `unenforced.md` S1 has the argument, and the mobiles link is the same shape
+/// one step further on.
+///
 /// Nothing here is fatal. A store that cannot be read is logged at each step and
 /// the shard comes up with whatever it did get: a shard that refuses to start
 /// because one table is unreadable helps nobody, and the alternative to a
@@ -239,9 +245,9 @@ pub(crate) struct Restored {
 pub(crate) async fn restore(store: &dyn Store, config: &Config, world: World) -> Restored {
     let accounts = load_accounts(store, config).await;
     let mut world = world;
-    restore_characters(store, &mut world).await;
+    let characters = restore_characters(store, &mut world).await;
     seed_configured_characters(config, &mut world);
-    restore_items(store, &mut world).await;
+    restore_items(store, &mut world, &characters).await;
     restore_mobiles(store, &mut world).await;
     restore_decorations(store, &mut world).await;
     restore_spawners(store, &mut world).await;
@@ -304,18 +310,26 @@ async fn load_accounts(store: &dyn Store, config: &Config) -> DevAccounts {
 /// `docs/connection_state.md` the roster is what holds each. The accounts keep
 /// credentials and authority — what a login is about — and nothing that a
 /// character screen would read.
-async fn restore_characters(store: &dyn Store, world: &mut World) {
+/// A store that cannot be read is not a reason to skip the items: the restore
+/// still ran, with nothing in it, and the token says so. Returning an `Option`
+/// here would put the ordering rule back in prose — the caller would have to know
+/// that "no characters" still permits items.
+async fn restore_characters(store: &dyn Store, world: &mut World) -> RestoredCharacters {
     match store.characters().await {
         Ok(characters) => {
-            world.restore_characters(characters);
-            if world.stored_characters() > 0 {
+            let restored = world.restore_characters(characters);
+            if restored.count() > 0 {
                 info!(
-                    characters = world.stored_characters(),
+                    characters = restored.count(),
                     "restored the world from the database"
                 );
             }
+            restored
         }
-        Err(error) => error!(%error, "could not read saved characters; starting with none"),
+        Err(error) => {
+            error!(%error, "could not read saved characters; starting with none");
+            world.restore_characters(Vec::new())
+        }
     }
 }
 
@@ -337,16 +351,16 @@ fn seed_configured_characters(config: &Config, world: &mut World) {
 
 /// Bring back saved items: the world reserves their serials, drops the loose
 /// ground clutter back where it lay, and files each character's carried
-/// inventory to re-equip when it logs in. Called after `restore_characters`,
-/// so their serials are already reserved and an item can point at the
-/// container it was in.
-async fn restore_items(store: &dyn Store, world: &mut World) {
+/// inventory to re-equip when it logs in. It takes the characters' restore as an
+/// argument rather than trusting a comment about call order — the serials that
+/// restore reserved are the owners these records point at.
+async fn restore_items(store: &dyn Store, world: &mut World, characters: &RestoredCharacters) {
     match store.items().await {
         Ok(items) => {
             if !items.is_empty() {
                 info!(items = items.len(), "restored saved items");
             }
-            world.restore_items(items);
+            world.restore_items(items, characters);
         }
         Err(error) => error!(%error, "could not read saved items; starting with none"),
     }

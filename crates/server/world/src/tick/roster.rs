@@ -164,12 +164,15 @@ impl Roster {
             .unwrap_or_default()
     }
 
-    /// How many characters have a saved record, for the boot log.
+    /// How many characters have a saved record.
     ///
-    /// Not how many exist: what the log is reporting is how much of the world
-    /// came back out of the database, and a character that exists with nothing
-    /// recorded came from config, not from a store the boot read.
-    pub(super) fn saved(&self) -> usize {
+    /// Test-only, and it used to be the boot log's: the log now counts what
+    /// `World::restore_characters` hands back, which is the same number said by
+    /// the thing that did the restoring. What is left is this module's own tests
+    /// asking whether a record exists at all — "not how many exist", because a
+    /// character enrolled from config has never been written down.
+    #[cfg(test)]
+    fn saved(&self) -> usize {
         self.0
             .values()
             .flatten()
