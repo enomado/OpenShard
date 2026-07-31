@@ -2474,20 +2474,24 @@ long as both existed. Resolved in favour of the metadata; the reasoning is the
   the release artefacts should generate a third-party notices file rather than
   leaving this to be remembered.
 
-### Stopping a shard — the mechanism is done, the manners are planned
+### Stopping a shard — the mechanism and the manners are done
 
 A shard stops on one `gateway::Shutdown`, cloned into the accept loop, every
 connection task and the tick; `run_shard` returns only once the last snapshot is
 written. The design and the order of events are in
 [`docs/client.md`](client.md), under "Stopping is one word".
 
-**What is left is a plan of its own: [`docs/shutdown.md`](shutdown.md).** Four
-things that stop is not yet — only Ctrl-C is listened for, so `SIGTERM` under
-systemd kills rather than asks; bytes queued at the stop are dropped; the player
-is told nothing and a clean stop looks like a crash; and a shard thread that dies
-in a test is a printed line rather than a failure. The decisions, the order to do
-them in (S2 before S3 — the notice needs a wire to travel on) and what each one
-owes as a test are there, not here.
+**The manners are a plan of its own: [`docs/shutdown.md`](shutdown.md), S1–S6,
+all in.** `SIGTERM` asks rather than kills, so a shard under systemd saves; a
+second signal is a force-exit for an operator whose store has wedged; bytes
+already queued reach the wire before the hang-up; the player is told why; a gate
+that has been asked to stop serves nobody; a shard thread that dies in a test
+fails that test; and the claim the whole tail exists for is asserted against a
+real SQLite file rather than believed.
+
+What is left there is S7 — an operator's stop from inside the world, a GM command
+with a countdown — and the plan's own backlog, which is where the next session in
+this area starts.
 
 ## 9. The client — planned, see [`docs/client.md`](client.md)
 
