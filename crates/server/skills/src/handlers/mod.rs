@@ -42,7 +42,7 @@ use openshard_gateway::ConnectionId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
-use openshard_protocol::wire::CursorId;
+use openshard_protocol::wire::{ClilocId, CursorId};
 use openshard_state::components::{Client, HearsGhosts, Position};
 use openshard_state::{Skill, TargetPurpose, WorldState, in_range};
 
@@ -55,7 +55,7 @@ use openshard_state::{Skill, TargetPurpose, WorldState, in_range};
 /// Evaluation as far as you can see a body (10).
 struct Ask {
     /// The cliloc the client is prompted with — "Whom shall I examine?".
-    prompt: u32,
+    prompt: ClilocId,
     /// How far the answer may be, in tiles. Re-checked server-side when it lands.
     range: u32,
 }
@@ -65,18 +65,18 @@ struct Ask {
 /// A skill absent from this table has no core cursor behaviour yet.
 #[rustfmt::skip]
 const ASKS: &[(Skill, Ask)] = &[
-    (Skill::Anatomy,   Ask { prompt: 500_321, range: 8 }),  // Whom shall I examine?
-    (Skill::EvalInt,   Ask { prompt: 500_906, range: 8 }),  // What do you wish to evaluate?
-    (Skill::ArmsLore,  Ask { prompt: 500_349, range: 2 }),  // What item do you wish to get information about?
-    (Skill::ItemId,    Ask { prompt: 500_343, range: 8 }),  // What do you wish to appraise and identify?
-    (Skill::Forensics, Ask { prompt: 501_000, range: 10 }), // Show me the crime.
-    (Skill::TasteId,   Ask { prompt: 502_807, range: 2 }),  // What would you like to taste?
-    (Skill::Poisoning, Ask { prompt: 502_137, range: 2 }),  // Select the poison you wish to use
-    (Skill::Begging,   Ask { prompt: 500_397, range: 2 }),  // To whom do you wish to grovel?
-    (Skill::RemoveTrap, Ask { prompt: 502_368, range: 2 }), // Which trap will you attempt to disarm?
-    (Skill::Stealing,  Ask { prompt: 502_698, range: stealth::STEAL_RANGE }), // What do you wish to steal?
-    (Skill::AnimalTaming, Ask { prompt: 502_789, range: taming::TAME_RANGE }), // Tame which animal?
-    (Skill::AnimalLore, Ask { prompt: 500_328, range: 8 }), // What animal should I look at?
+    (Skill::Anatomy,   Ask { prompt: ClilocId(500_321), range: 8 }),  // Whom shall I examine?
+    (Skill::EvalInt,   Ask { prompt: ClilocId(500_906), range: 8 }),  // What do you wish to evaluate?
+    (Skill::ArmsLore,  Ask { prompt: ClilocId(500_349), range: 2 }),  // What item do you wish to get information about?
+    (Skill::ItemId,    Ask { prompt: ClilocId(500_343), range: 8 }),  // What do you wish to appraise and identify?
+    (Skill::Forensics, Ask { prompt: ClilocId(501_000), range: 10 }), // Show me the crime.
+    (Skill::TasteId,   Ask { prompt: ClilocId(502_807), range: 2 }),  // What would you like to taste?
+    (Skill::Poisoning, Ask { prompt: ClilocId(502_137), range: 2 }),  // Select the poison you wish to use
+    (Skill::Begging,   Ask { prompt: ClilocId(500_397), range: 2 }),  // To whom do you wish to grovel?
+    (Skill::RemoveTrap, Ask { prompt: ClilocId(502_368), range: 2 }), // Which trap will you attempt to disarm?
+    (Skill::Stealing,  Ask { prompt: ClilocId(502_698), range: stealth::STEAL_RANGE }), // What do you wish to steal?
+    (Skill::AnimalTaming, Ask { prompt: ClilocId(502_789), range: taming::TAME_RANGE }), // Tame which animal?
+    (Skill::AnimalLore, Ask { prompt: ClilocId(500_328), range: 8 }), // What animal should I look at?
 ];
 
 /// The ask for a skill id, if the core raises a cursor for it.
@@ -158,11 +158,11 @@ pub fn expire_ghost_contact(state: &mut WorldState) {
 /// Returns a theft to carry out, if the skill was Stealing and it resolved: moving
 /// an item into a pack is `items`' door and turning a thief criminal is `combat`'s,
 /// so this decides and the tick applies — the split `ai::think_one` uses.
-pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -> Outcome {
+pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: Option<Serial>) -> Outcome {
     // The bard skills judge their own reach, which widens with the skill, so they
     // are not in the fixed table.
     if let Some(skill @ (Skill::Peacemaking | Skill::Provocation | Skill::Discordance)) = Skill::from_id(id) {
-        let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+        let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
             return Outcome::default();
         };
         if !within(state, actor, target, bard::bard_range(state, actor, id)) {
@@ -178,7 +178,7 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: u32) -
     let Some(ask) = ask_for(id) else {
         return Outcome::default();
     };
-    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
         return Outcome::default();
     };
     // Checked server-side even though the cursor was raised with a range: the range
@@ -234,10 +234,16 @@ pub struct Outcome {
 ///
 /// The reach is the same as the first ask's, and re-checked here for the same
 /// reason: a `0x6C` range is the client's courtesy, never the judge.
-pub fn on_second_target(state: &mut WorldState, actor: EntityId, id: u8, first: EntityId, target: u32) {
+pub fn on_second_target(
+    state: &mut WorldState,
+    actor: EntityId,
+    id: u8,
+    first: EntityId,
+    target: Option<Serial>,
+) {
     if Skill::from_id(id) == Some(Skill::Provocation) {
         let range = bard::bard_range(state, actor, id);
-        if let Some(victim) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) {
+        if let Some(victim) = target.and_then(|s| state.registry.entity_of(s)) {
             if within(state, actor, victim, range) {
                 bard::provoke_second(state, actor, first, victim);
             }
@@ -247,7 +253,7 @@ pub fn on_second_target(state: &mut WorldState, actor: EntityId, id: u8, first: 
     let Some(ask) = ask_for(id) else {
         return;
     };
-    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
     if !within(state, actor, target, ask.range) {
@@ -268,9 +274,9 @@ pub fn on_item_target(
     actor: EntityId,
     id: u8,
     item: EntityId,
-    target: u32,
+    target: Option<Serial>,
 ) -> (Option<BandageStarted>, Option<LockpickBroke>) {
-    let Some(target) = Serial::new(target).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
         return (None, None);
     };
     if !within(state, actor, target, bandage::HEAL_RANGE) {
@@ -315,16 +321,14 @@ pub(super) fn within(state: &WorldState, a: EntityId, b: EntityId, range: u32) -
 /// Put up a cursor that must pick an object, remembering which skill asked, and
 /// prompt the asker with the skill's own line. Returns whether a cursor went up —
 /// a creature has none, and a skill that cannot ask has not started.
-pub(super) fn raise_cursor(state: &mut WorldState, actor: EntityId, id: u8, prompt: u32) -> bool {
+pub(super) fn raise_cursor(state: &mut WorldState, actor: EntityId, id: u8, prompt: ClilocId) -> bool {
     let Some(&Client { connection, .. }) = state.registry.get::<Client>(actor) else {
         return false; // a creature has no cursor to raise
     };
     let Some(serial) = state.registry.serial_of(actor) else {
         return false;
     };
-    state
-        .pending_targets
-        .insert(actor, TargetPurpose::Skill { skill: id });
+    state.raise_target(actor, TargetPurpose::Skill { skill: id });
     state.localized_message(actor, prompt, "");
     send_object_cursor(state, connection, serial.raw());
     true

@@ -29,8 +29,9 @@ pub struct RawPacket(pub(crate) Vec<u8>);
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Packet {
     /// Decoded by [`LoginStagePacket::decode`]. Routed to `login.handle`,
-    /// except for `CreateCharacter`/`DeleteCharacter`, which the server
-    /// intercepts first.
+    /// except for the character screen's three —
+    /// `CreateCharacter`/`DeleteCharacter`/`PlayCharacter` — which the server
+    /// intercepts first and turns into world commands.
     Login(LoginStagePacket),
     /// Decoded by [`ClientPacket::decode`]. Routed to `dispatch`.
     World(ClientPacket),
@@ -40,7 +41,7 @@ pub enum Packet {
 /// behind it did not parse.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PacketError {
-    /// A known login id (`0x80`/`0xA0`/`0x91`/`0xBD`/`0x00`/`0xF8`/`0x83`)
+    /// A known login id (`0x80`/`0xA0`/`0x91`/`0xBD`/`0x00`/`0xF8`/`0x83`/`0x5D`)
     /// whose body did not decode.
     Login(ClientLoginDecodeError),
     /// A known world id whose body did not decode.
@@ -287,7 +288,10 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
+    use openshard_protocol::{
+        seed::{RawSeedValue, SEED_COMMAND},
+        version::ClientVersion,
+    };
 
     /// A well-formed new-style seed for 7.0.45.65.
     fn modern_seed() -> Vec<u8> {
@@ -327,7 +331,7 @@ mod tests {
         connection.receive(&[192, 168, 0, 1]);
         let events = drain(&mut connection).unwrap();
         assert!(matches!(&events[0], Event::Seeded(seed)
-            if seed.value == 0xC0A8_0001 && seed.version.is_none()));
+            if seed.value == RawSeedValue(0xC0A8_0001) && seed.version.is_none()));
     }
 
     #[test]

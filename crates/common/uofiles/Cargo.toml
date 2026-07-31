@@ -1,0 +1,15 @@
+[package]
+name = "openshard-uofiles"
+description = "Readers for the client's data files: the map, tiledata, and the UOP container format."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openshard-protocol.workspace = true

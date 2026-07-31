@@ -18,6 +18,7 @@
 //! internal shape to the on-disk format forever.
 
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::serial::Serial;
 use serde::{Deserialize, Serialize};
 
 /// (De)serialize an [`AccountName`] as the bare string, no wrapper object.
@@ -52,6 +53,62 @@ mod character_name {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<CharacterName, D::Error> {
         String::deserialize(d).map(CharacterName)
+    }
+}
+
+/// (De)serialize a [`Serial`] as the bare wire integer, no wrapper object.
+///
+/// The database has always stored these as plain `u32` columns; wrapping the
+/// Rust-side field in a checked newtype must not move the on-disk shape, so
+/// this writes and reads exactly the integer [`Serial::raw`] returns. A value
+/// read back that fails [`Serial::new`] is a corrupt row, not an absent one —
+/// every field this is used on is a serial that was valid when saved — so
+/// deserialization errors out rather than silently defaulting to something
+/// that would address a different object.
+mod serial {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::Serial;
+
+    pub fn serialize<S: Serializer>(value: &Serial, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u32(value.raw())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Serial, D::Error> {
+        let raw = u32::deserialize(d)?;
+        Serial::new(raw).ok_or_else(|| D::Error::custom(format!("not a valid serial: {raw:#010X}")))
+    }
+}
+
+/// (De)serialize an `Option<Serial>` as the bare wire integer, `0` for `None`.
+///
+/// Matches the sentinel this crate already used for "no object" before the
+/// field was typed: a ground item's `owner`, an NPC's absent `spawned_by`, and
+/// the rest were `u32` `0`, and the on-disk shape stays that same `0` — only
+/// the Rust-side type changes, from a magic number to an absent [`Serial`].
+mod optional_serial {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::Serial;
+
+    pub fn serialize<S: Serializer>(value: &Option<Serial>, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(serial) => s.serialize_u32(serial.raw()),
+            None => s.serialize_u32(0),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Serial>, D::Error> {
+        let raw = u32::deserialize(d)?;
+        if raw == 0 {
+            Ok(None)
+        } else {
+            Serial::new(raw)
+                .map(Some)
+                .ok_or_else(|| D::Error::custom(format!("not a valid serial: {raw:#010X}")))
+        }
     }
 }
 
@@ -185,7 +242,8 @@ pub struct AccountRecord {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CharacterRecord {
     /// The wire serial. Stable across restarts; see the type docs.
-    pub serial: u32,
+    #[serde(with = "serial")]
+    pub serial: Serial,
     /// Which account it belongs to.
     #[serde(with = "account_name")]
     pub account: AccountName,
@@ -281,8 +339,8 @@ pub struct QuestRecord {
     #[serde(default)]
     pub failed: bool,
     /// The serial of the NPC that gave it, if it is still known.
-    #[serde(default)]
-    pub giver: Option<u32>,
+    #[serde(default, with = "optional_serial")]
+    pub giver: Option<Serial>,
 }
 
 /// A finished quest and its cooldown.
@@ -387,7 +445,8 @@ pub enum ItemLocation {
     /// Inside a container, by the container's serial and the slot in its gump.
     Contained {
         /// The container it is in, by serial.
-        container: u32,
+        #[serde(with = "serial")]
+        container: Serial,
         /// Column in the gump.
         x: u16,
         /// Row in the gump.
@@ -398,7 +457,8 @@ pub enum ItemLocation {
     /// Worn on a mobile, at a layer.
     Equipped {
         /// The wearer's serial.
-        mobile: u32,
+        #[serde(with = "serial")]
+        mobile: Serial,
         /// The equipment layer.
         layer: u8,
     },
@@ -413,17 +473,19 @@ pub enum ItemLocation {
 /// character's is: change it and every reference to the old one dangles. It is
 /// saved and reserved on the way back in.
 ///
-/// `owner` is the character whose inventory this belongs to, or `0` for a loose
-/// ground item that belongs to no one — the key a store replaces a whole
-/// inventory by. `container_gump` is `Some` when the item is *itself* a container,
-/// carrying the window the client opens for it, so a bag inside a bag comes back
-/// openable.
+/// `owner` is the character whose inventory this belongs to, or `None` for a
+/// loose ground item that belongs to no one (`0` on disk) — the key a store
+/// replaces a whole inventory by. `container_gump` is `Some` when the item is
+/// *itself* a container, carrying the window the client opens for it, so a bag
+/// inside a bag comes back openable.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct ItemRecord {
     /// The wire serial. Stable across restarts; see the type docs.
-    pub serial: u32,
-    /// The character whose inventory this is in, or `0` for a ground item.
-    pub owner: u32,
+    #[serde(with = "serial")]
+    pub serial: Serial,
+    /// The character whose inventory this is in, or `None` for a ground item.
+    #[serde(with = "optional_serial")]
+    pub owner: Option<Serial>,
     /// The item graphic.
     pub graphic: u16,
     /// The item hue.
@@ -535,7 +597,8 @@ pub struct RunebookEntryData {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct PetData {
     /// Whose it is, by wire serial.
-    pub owner: u32,
+    #[serde(with = "serial")]
+    pub owner: Serial,
     /// How many follower slots it fills.
     pub slots: u8,
     /// What it was last told: 0 follow, 1 come, 2 stay, 3 guard, 4 attack, 5 stop.
@@ -543,8 +606,8 @@ pub struct PetData {
     /// when the enum gains a variant.
     pub order: u8,
     /// Whom that order was about, for an attack.
-    #[serde(default)]
-    pub order_target: Option<u32>,
+    #[serde(default, with = "optional_serial")]
+    pub order_target: Option<Serial>,
 }
 
 /// A corpse's story, as saved — a plain mirror of the world's `Corpse` component.
@@ -667,7 +730,8 @@ pub struct SpawnerRecord {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct MobileRecord {
     /// The wire serial. Stable across restarts, like a character's.
-    pub serial: u32,
+    #[serde(with = "serial")]
+    pub serial: Serial,
     /// The body graphic.
     pub body: u16,
     /// The body hue.
@@ -747,6 +811,12 @@ pub struct MobileRecord {
     pub npc_wander: u8,
     /// The spawn region that maintains it, if one does — restored so the region
     /// counts it and does not spawn over it.
+    ///
+    /// Not a [`Serial`]: it is `SpawnedBy`'s index into the world's spawner
+    /// list (`SpawnerRecord::id`), a namespace of its own that starts at `0` —
+    /// a value `Serial::new` would reject outright. Converting this field
+    /// alongside the others in the sweep was the wrong call; it stays a bare
+    /// `u32`.
     pub spawned_by: Option<u32>,
     /// Every timed effect working through it — poison and the rest.
     #[serde(default)]
@@ -801,7 +871,8 @@ pub struct DoorState {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct DecorationRecord {
     /// The wire serial. Stable across restarts.
-    pub serial: u32,
+    #[serde(with = "serial")]
+    pub serial: Serial,
     /// The graphic as it stands now (a door's current leaf).
     pub graphic: u16,
     /// Its hue.
@@ -898,7 +969,8 @@ pub struct WorldRecord {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Inventory {
     /// The character serial these items belong to.
-    pub owner: u32,
+    #[serde(with = "serial")]
+    pub owner: Serial,
     /// Every item worn or contained under that character, at any nesting depth.
     pub items: Vec<ItemRecord>,
 }
@@ -920,19 +992,19 @@ mod tests {
                 z: -5,
             },
             ItemLocation::Contained {
-                container: 0x4000_0001,
+                container: Serial::new(0x4000_0001).unwrap(),
                 x: 40,
                 y: 65,
                 grid: 3,
             },
             ItemLocation::Equipped {
-                mobile: 0x0000_0001,
+                mobile: Serial::new(0x0000_0001).unwrap(),
                 layer: 0x15,
             },
         ] {
             let record = ItemRecord {
-                serial: 0x4000_0002,
-                owner: 0x0000_0001,
+                serial: Serial::new(0x4000_0002).unwrap(),
+                owner: Some(Serial::new(0x0000_0001).unwrap()),
                 graphic: 0x0E75,
                 hue: 0,
                 amount: 1,
@@ -979,7 +1051,7 @@ mod tests {
         // accident is a field that comes back as its default, and a character
         // that loads with a default position is standing in the ocean.
         let record = CharacterRecord {
-            serial: 0x0000_0001,
+            serial: Serial::new(0x0000_0001).unwrap(),
             account: AccountName::new("admin"),
             name: CharacterName::new("Alpha"),
             body: 0x0190,
@@ -1020,7 +1092,7 @@ mod tests {
                 progress: vec![3],
                 seconds: vec![0],
                 failed: false,
-                giver: Some(0x4000_0001),
+                giver: Some(Serial::new(0x4000_0001).unwrap()),
             }],
             done_quests: vec![DoneQuestRecord {
                 key: "silk_gather".into(),
@@ -1046,7 +1118,7 @@ mod tests {
         // dungeons at negative heights, and a character saved at z=-40 that
         // loads at z=216 is somewhere else entirely.
         let record = CharacterRecord {
-            serial: 1,
+            serial: Serial::new(1).unwrap(),
             account: AccountName::new("admin"),
             name: CharacterName::new("Alpha"),
             body: 0x0190,

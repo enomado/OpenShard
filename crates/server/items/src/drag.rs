@@ -12,18 +12,21 @@ pub(crate) const ITEM_REACH: u32 = 3;
 /// means the lift path below would happily take them, and a player standing next to
 /// a shopkeeper could pull the hair off its head onto their cursor. ServUO marks the
 /// same items `Movable = false`; this is that, at the one door a lift comes through.
-pub const FIXED_LAYERS: &[u8] = &[0x0B, 0x10];
+pub const FIXED_LAYERS: &[Layer] = &[Layer(0x0B), Layer(0x10)];
 
 /// Lift an item onto a client's cursor. See `Command::PickUpItem`.
-pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, amount: u16) {
+pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: RawSerial, amount: u16) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    if state.held.contains_key(&connection) {
+    if state.held_of(connection).is_some() {
         reject_drag(state, connection, DragCancelReason::AlreadyHolding);
         return;
     }
-    let Some(item_serial) = Serial::new(serial) else {
+    // The seam, and a refusal rather than silence: a lift the server will not
+    // do is answered with a `0x27`, or the client keeps the item on its cursor
+    // for ever.
+    let Some(item_serial) = serial.validate() else {
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     };
@@ -33,7 +36,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
     };
     // Only a thing with a graphic is an item. A mobile has none, so this
     // rejects trying to pick up a person.
-    if !state.registry.has::<Graphic>(item) {
+    if !state.registry.has::<Drawn>(item) {
         reject_drag(state, connection, DragCancelReason::CannotLift);
         return;
     }
@@ -94,7 +97,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         state.registry.remove::<Position>(item);
         // Off the ground, off the decay clock.
         state.registry.remove::<Decays>(item);
-        state.held.insert(
+        state.hold(
             connection,
             HeldItem {
                 entity: item,
@@ -121,7 +124,7 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
         note_looter(state, contained.container, player);
         tell_watchers_removed_except(state, contained.container, item_serial, Some(connection));
         state.registry.remove::<Contained>(item);
-        state.held.insert(
+        state.hold(
             connection,
             HeldItem {
                 entity: item,
@@ -139,16 +142,11 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
                     continue;
                 }
                 if let Some(&Client { connection: to, .. }) = state.registry.get::<Client>(watcher) {
-                    state.send_packet(
-                        to,
-                        &ServerPacket::Remove(Remove {
-                            serial: item_serial.raw(),
-                        }),
-                    );
+                    state.send_packet(to, &ServerPacket::Remove(Remove { serial: item_serial }));
                 }
             }
         }
-        state.held.insert(
+        state.hold(
             connection,
             HeldItem {
                 entity: item,
@@ -169,28 +167,49 @@ pub fn pick_up(state: &mut WorldState, connection: ConnectionId, serial: u32, am
 }
 
 /// Put a client's held item down. See `Command::DropItem`.
+///
+/// The destination arrives already interpreted — which of the three the client
+/// asked for, and its position read in the space that destination uses. Nothing
+/// in this crate re-derives it from a serial, which is what used to make a
+/// gump offset and a map tile the same `Point`.
 pub fn drop_item(
     state: &mut WorldState,
     connection: ConnectionId,
-    serial: u32,
-    position: Point,
-    container: u32,
+    serial: RawSerial,
+    destination: DropDestination,
 ) {
-    let Some(held) = state.held.get(&connection).copied() else {
+    let Some(held) = state.held_of(connection) else {
         // Nothing on the cursor — a stray 0x08, nothing to bounce.
         return;
     };
     // The serial has to be the thing actually held; a mismatch is a confused
     // client, and the safe answer is to give it back what it was holding.
-    if state.registry.serial_of(held.entity) != Serial::new(serial) {
+    if state.registry.serial_of(held.entity) != serial.validate() {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
     }
 
-    if container != DROP_TO_GROUND {
-        drop_onto_item(state, connection, held, position, container);
-        return;
-    }
+    let position = match destination {
+        DropDestination::Ground(position) => position,
+        DropDestination::Item { item, at } => {
+            drop_onto_serial(state, connection, held, at, item);
+            return;
+        }
+        // A mobile is dropped *on*, not into, and the packet's position means
+        // nothing — `drop_onto_serial` reaches the equip and trade arms without
+        // one, so the gump point it takes for the container case is a default
+        // no arm below reads.
+        DropDestination::Mobile(mobile) => {
+            drop_onto_serial(state, connection, held, GumpPoint::new(0, 0), mobile);
+            return;
+        }
+        // The client named nothing. It is still holding the item, so it is owed
+        // the bounce it would get for a target it cannot reach.
+        DropDestination::Nowhere => {
+            bounce(state, connection, held, DragCancelReason::Other);
+            return;
+        }
+    };
 
     // Onto the ground: within reach of the player, on the player's facet.
     let Some(&player) = state.players.get(&connection) else {
@@ -206,23 +225,25 @@ pub fn drop_item(
         return;
     }
 
-    state.held.remove(&connection);
+    state.take_held(connection);
     place_on_ground(state, held.entity, position, state.facet_of(player).0);
-    debug!(serial, "dropped on the ground");
+    debug!(serial = serial.0, "dropped on the ground");
 }
 
 /// Put a held item into a container. See `Command::DropItem`.
+///
+/// `at` is where in the container's gump the client let go — gump space, not
+/// world tiles. The `0x08` carries both meanings in one field and
+/// [`DropDestination`] is where they part company, so by the time a serial
+/// reaches this function the question has already been answered and there is
+/// nothing here to convert.
 pub fn drop_into_container(
     state: &mut WorldState,
     connection: ConnectionId,
     held: HeldItem,
-    position: Point,
-    container: u32,
+    at: GumpPoint,
+    container_serial: Serial,
 ) {
-    let Some(container_serial) = Serial::new(container) else {
-        bounce(state, connection, held, DragCancelReason::Other);
-        return;
-    };
     let Some(container_entity) = state.registry.entity_of(container_serial) else {
         bounce(state, connection, held, DragCancelReason::Other);
         return;
@@ -244,42 +265,46 @@ pub fn drop_into_container(
         return;
     }
 
-    // In it goes. The drop's `x`/`y` are gump coordinates, not world tiles.
     let grid = item_count(state, container_serial);
-    state.held.remove(&connection);
+    state.take_held(connection);
     state.registry.insert(
         held.entity,
         Contained {
             container: container_serial,
-            x: position.x,
-            y: position.y,
-            grid,
+            position: at,
+            grid: GridSlot(grid),
         },
     );
     // Tell the client, whose gump is open, that the item is now inside.
-    if let (Some(&Client { version, .. }), Some(record)) = (
-        state.registry.get::<Client>(player),
-        contained_record(state, held.entity),
-    ) {
-        state.send(connection, encode_add_to_container(record, container, version));
+    if let (Some(version), Some(record)) =
+        (state.version_of(connection), contained_record(state, held.entity))
+    {
+        state.send(
+            connection,
+            encode_add_to_container(record, container_serial, version),
+        );
     }
     // And everyone else looking into the same container, which is what makes an
     // offer visible across a trade window.
     tell_watchers_updated_except(state, container_serial, held.entity, Some(connection));
-    debug!(container, "dropped into a container");
+    debug!(%container_serial, "dropped into a container");
 }
 
-/// A drop onto another item *or another player*: into it if it is a container,
-/// merged with it if it is an identical stack, offered as a trade if it is
-/// somebody, refused otherwise.
-pub fn drop_onto_item(
+/// A drop onto something the client named by serial — an item *or another
+/// player*: into it if it is a container, merged with it if it is an identical
+/// stack, offered as a trade if it is somebody, refused otherwise.
+///
+/// `at` is a gump point and only the container arm reads it. A drop onto a
+/// mobile has no meaningful position at all, which is why
+/// [`DropDestination::Mobile`] does not carry one.
+pub fn drop_onto_serial(
     state: &mut WorldState,
     connection: ConnectionId,
     held: HeldItem,
-    position: Point,
-    target_serial: u32,
+    at: GumpPoint,
+    target_serial: Serial,
 ) {
-    let target = Serial::new(target_serial).and_then(|s| state.registry.entity_of(s));
+    let target = state.registry.entity_of(target_serial);
     match target {
         Some(target) if state.registry.has::<Spellbook>(target) => {
             drop_scroll_on_book(state, connection, held, target);
@@ -288,7 +313,7 @@ pub fn drop_onto_item(
             drop_onto_runebook(state, connection, held, target);
         }
         Some(target) if state.registry.has::<Container>(target) => {
-            drop_into_container(state, connection, held, position, target_serial);
+            drop_into_container(state, connection, held, at, target_serial);
         }
         Some(target) if can_stack(state, held.entity, target) => {
             merge_onto(state, connection, held, target);
@@ -320,7 +345,7 @@ fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: He
         bounce(state, connection, held, DragCancelReason::OutOfRange);
         return;
     }
-    let graphic = state.registry.get::<Graphic>(held.entity).map(|g| g.id);
+    let graphic = state.registry.get::<Drawn>(held.entity).map(|g| g.id);
 
     // A Recall scroll recharges it — ServUO's `Runebook.OnDragDrop`.
     if graphic.and_then(scroll_spell) == Some(RECALL_SPELL) {
@@ -342,7 +367,7 @@ fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: He
         owned.charges += taken as u8;
         state.registry.insert(book, owned);
         if taken >= held_amount {
-            state.held.remove(&connection);
+            state.take_held(connection);
             state.registry.despawn(held.entity);
         } else {
             // Put the remainder back where it came from, still a pile.
@@ -386,7 +411,7 @@ fn drop_onto_runebook(state: &mut WorldState, connection: ConnectionId, held: He
         owned.default_entry = Some(0);
     }
     state.registry.insert(book, owned);
-    state.held.remove(&connection);
+    state.take_held(connection);
     state.registry.despawn(held.entity);
     state.system_message(player, "You bind the rune into the book.");
     tell_watchers_updated(state, book_serial, book);
@@ -401,7 +426,7 @@ const RECALL_SPELL: u8 = 31;
 fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: HeldItem, book: EntityId) {
     let spell = state
         .registry
-        .get::<Graphic>(held.entity)
+        .get::<Drawn>(held.entity)
         .and_then(|g| scroll_spell(g.id));
     let (Some(spell), Some(&player), Some(book_serial)) = (
         spell,
@@ -423,13 +448,13 @@ fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: H
     }
     mask.learn(spell);
     state.registry.insert(book, mask);
-    state.held.remove(&connection);
+    state.take_held(connection);
     state.registry.despawn(held.entity);
     // Refresh the open book so the new spell appears at once.
     state.send_packet(
         connection,
         &ServerPacket::SpellbookContent(SpellbookContent {
-            serial: book_serial.raw(),
+            serial: book_serial,
             graphic: SPELLBOOK_GRAPHIC,
             offset: 1,
             content: mask.0,
@@ -441,7 +466,7 @@ fn drop_scroll_on_book(state: &mut WorldState, connection: ConnectionId, held: H
 /// Put a held item back where it was lifted and tell the client the drag is
 /// off, so it stops showing the item on the cursor.
 pub fn bounce(state: &mut WorldState, connection: ConnectionId, held: HeldItem, reason: DragCancelReason) {
-    state.held.remove(&connection);
+    state.take_held(connection);
     restore(state, held);
     reject_drag(state, connection, reason);
 }

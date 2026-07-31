@@ -23,7 +23,9 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
+use crate::wire::ClilocId;
 
 /// Builder for a `0xD6` Object Property List (the "MegaCliloc" packet).
 ///
@@ -49,12 +51,12 @@ impl PropertyList {
     /// Start a list for `serial`. The hash field is written as zero and patched
     /// once every entry is in.
     #[must_use]
-    pub fn new(serial: u32) -> Self {
+    pub fn new(serial: Serial) -> Self {
         let mut writer = PacketWriter::with_capacity(64);
         writer.u8(Self::ID);
         writer.u16(0); // length, patched in `finish`
         writer.u16(1); // constant
-        writer.u32(serial);
+        writer.u32(serial.raw());
         writer.u16(0); // constant
         writer.u32(0); // revision hash, patched in `finish`
         Self { writer, hash: 0 }
@@ -71,9 +73,9 @@ impl PropertyList {
 
     /// A cliloc with no arguments — a bare localized string (an item's tiledata
     /// name, `1020000 + graphic`).
-    pub fn add(&mut self, cliloc: u32) {
-        self.add_hash(cliloc);
-        self.writer.u32(cliloc);
+    pub fn add(&mut self, cliloc: ClilocId) {
+        self.add_hash(cliloc.0);
+        self.writer.u32(cliloc.0);
         self.writer.u16(0); // no argument bytes
     }
 
@@ -81,10 +83,10 @@ impl PropertyList {
     /// the templated names — cliloc `1050045` (`~1_PREFIX~~2_NAME~~3_SUFFIX~`)
     /// with a mobile's name, cliloc `1050039` (`~1_NUMBER~ ~2_ITEMNAME~`) with a
     /// stack's amount.
-    pub fn add_args(&mut self, cliloc: u32, arguments: &str) {
-        self.add_hash(cliloc);
+    pub fn add_args(&mut self, cliloc: ClilocId, arguments: &str) {
+        self.add_hash(cliloc.0);
         self.add_hash(string_hash(arguments));
-        self.writer.u32(cliloc);
+        self.writer.u32(cliloc.0);
         // UTF-16 little-endian, no terminator; the length is the byte count.
         let mut bytes = Vec::with_capacity(arguments.len() * 2);
         for unit in arguments.encode_utf16() {
@@ -116,8 +118,14 @@ impl PropertyList {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TooltipRevision {
     /// The object this revision is for.
-    pub serial: u32,
+    pub serial: Serial,
     /// The same hash [`PropertyList::finish`] returned for it.
+    ///
+    /// Bare by decision, and not by any of N3's four classes: it is neither
+    /// client input nor a value this crate names elsewhere — it is an opaque
+    /// accumulator the *server* computes ([`PropertyList::add_hash`]) and only
+    /// the *client* ever reads back, which is class D's shape reversed. See
+    /// "Amendments forced by N7" in `docs/protocol_newtypes.md`.
     pub hash: u32,
 }
 
@@ -126,7 +134,7 @@ impl EncodePacket for TooltipRevision {
     const LENGTH: PacketLength = PacketLength::Fixed(9);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
         out.u32(self.hash);
     }
 }
@@ -136,8 +144,10 @@ impl EncodePacket for TooltipRevision {
 /// a run of four-byte serials.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PropertyQueryRequest {
-    /// The objects whose tooltips are wanted, by serial.
-    pub serials: Vec<u32>,
+    /// The objects whose tooltips are wanted, by serial, exactly as sent — one
+    /// the client cannot see, or that names nothing, is simply skipped at the
+    /// seam (`World::query_properties`), never refused.
+    pub serials: Vec<RawSerial>,
 }
 
 impl DecodePacket for PropertyQueryRequest {
@@ -149,7 +159,7 @@ impl DecodePacket for PropertyQueryRequest {
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let mut serials = Vec::new();
         while reader.rest().len() >= 4 {
-            serials.push(reader.u32()?);
+            serials.push(RawSerial(reader.u32()?));
         }
         Ok(Self { serials })
     }
@@ -180,8 +190,8 @@ mod tests {
 
     #[test]
     fn a_property_list_lays_out_its_header_and_terminator() {
-        let mut list = PropertyList::new(0x0000_1234);
-        list.add(1_020_000 + 0x0EED); // an item's tiledata-name cliloc
+        let mut list = PropertyList::new(Serial::new(0x0000_1234).unwrap());
+        list.add(ClilocId(1_020_000 + 0x0EED)); // an item's tiledata-name cliloc
         let (bytes, hash) = list.finish();
 
         assert_eq!(bytes[0], 0xD6);
@@ -212,8 +222,8 @@ mod tests {
     #[test]
     fn arguments_are_utf16_little_endian() {
         // The reason this is not the 0xAE speech encoder: OPL args are LE.
-        let mut list = PropertyList::new(1);
-        list.add_args(1_050_045, " \tHi\t ");
+        let mut list = PropertyList::new(Serial::new(1).unwrap());
+        list.add_args(ClilocId(1_050_045), " \tHi\t ");
         let (bytes, _) = list.finish();
         // Find the arg run: header 15 bytes, then cliloc (4) + arg-len (2).
         let arg_len = u16::from_be_bytes([bytes[19], bytes[20]]) as usize;
@@ -227,12 +237,12 @@ mod tests {
 
     #[test]
     fn the_opl_info_carries_the_list_hash() {
-        let mut list = PropertyList::new(0x0000_00AB);
-        list.add_args(1_050_045, " \tLord British\t ");
+        let mut list = PropertyList::new(Serial::new(0x0000_00AB).unwrap());
+        list.add_args(ClilocId(1_050_045), " \tLord British\t ");
         let (_, hash) = list.finish();
         let info = encode_packet(
             &TooltipRevision {
-                serial: 0x0000_00AB,
+                serial: Serial::new(0x0000_00AB).unwrap(),
                 hash,
             },
             version(),
@@ -253,14 +263,21 @@ mod tests {
             bytes.extend_from_slice(&serial.to_be_bytes());
         }
         let request: PropertyQueryRequest = decode_packet(&bytes, version()).unwrap();
-        assert_eq!(request.serials, vec![0x1111_1111, 0x2222_2222, 0x3333_3333]);
+        assert_eq!(
+            request.serials,
+            vec![
+                RawSerial(0x1111_1111),
+                RawSerial(0x2222_2222),
+                RawSerial(0x3333_3333)
+            ]
+        );
     }
 
     #[test]
     fn the_hash_changes_when_the_name_changes() {
         let of = |name: &str| {
-            let mut list = PropertyList::new(1);
-            list.add_args(1_050_045, name);
+            let mut list = PropertyList::new(Serial::new(1).unwrap());
+            list.add_args(ClilocId(1_050_045), name);
             list.finish().1
         };
         assert_ne!(of(" \tArthur\t "), of(" \tGuinevere\t "));

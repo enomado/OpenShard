@@ -12,16 +12,17 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::{ClilocId, RawSkillId};
 use openshard_state::components::{Casting, Ghost, SkillCooldown};
 use openshard_state::{WorldState, skill};
 
 /// "That skill cannot be used directly." — the client's own line for a skill with
 /// no button behaviour.
-const CANNOT_USE_DIRECTLY: u32 = 500_014;
+const CANNOT_USE_DIRECTLY: ClilocId = ClilocId(500_014);
 
 /// "You must wait a few moments to use another skill." — ServUO's
 /// `Mobile.SendSkillMessage`.
-const MUST_WAIT: u32 = 500_118;
+const MUST_WAIT: ClilocId = ClilocId(500_118);
 
 /// A player asked to use a skill from the window.
 ///
@@ -52,15 +53,16 @@ pub const DEFAULT_SKILL_DELAY_TICKS: u64 = openshard_state::TICKS_PER_SECOND;
 /// inside another use's cooldown is refused out loud, and a use during a cast is
 /// refused unless the skill is one of the few allowed mid-cast (Spirit Speak, and
 /// only it).
-pub fn use_skill_button(state: &mut WorldState, entity: EntityId, id: u8) -> bool {
+pub fn use_skill_button(state: &mut WorldState, entity: EntityId, id: RawSkillId) -> bool {
     // A ghost has no hands. ServUO's `CheckAlive` says nothing either — there is
     // no message for this, the button simply does not work.
     if state.registry.has::<Ghost>(entity) {
         return false;
     }
-    let Some(info) = skill::info(id) else {
+    let Some(info) = skill::info(id.0) else {
         return false; // an id past the table: a client sending noise
     };
+    let id = id.0; // checked: every use below already has a table entry behind it
     let now = state.ticks;
     let waiting = state
         .registry

@@ -40,27 +40,27 @@ use openshard_state::{Trade, TradeSide};
 pub const TRADE_RANGE: u32 = 2;
 
 /// The escrow container's art — ServUO's `SecureTradeContainer`, item `0x1E5E`.
-pub const TRADE_CONTAINER_GRAPHIC: u16 = 0x1E5E;
+pub const TRADE_CONTAINER_GRAPHIC: Graphic = Graphic(0x1E5E);
 
 /// The layer an escrow is worn on: ServUO's `Layer.SecureTrade`.
 ///
 /// Past the `0x13` equip path's own ceiling, so no client can put anything here
 /// or take anything off it. Nothing is drawn on it either — see [`TradeWindow`].
-pub const TRADE_LAYER: u8 = 0x1E;
+pub const TRADE_LAYER: Layer = Layer(0x1E);
 
 /// The gump an escrow reports as a container.
 ///
 /// Never opened: the client draws the trade window itself off the `0x6F`, and
 /// the two container serials only name its halves. It is set because a
 /// [`Container`] carries one, not because anything reads it.
-const TRADE_CONTAINER_GUMP: u16 = 0x003C;
+const TRADE_CONTAINER_GUMP: Graphic = Graphic(0x003C);
 
 /// "You cannot trade with someone who is dragging something."
-const CLILOC_PARTNER_IS_DRAGGING: u32 = 1_062_727;
+const CLILOC_PARTNER_IS_DRAGGING: ClilocId = ClilocId(1_062_727);
 /// "That person is already involved in a trade."
-const CLILOC_THEY_ARE_TRADING: u32 = 1_062_779;
+const CLILOC_THEY_ARE_TRADING: ClilocId = ClilocId(1_062_779);
 /// "You are already trading with someone else!"
-const CLILOC_YOU_ARE_TRADING: u32 = 1_062_781;
+const CLILOC_YOU_ARE_TRADING: ClilocId = ClilocId(1_062_781);
 
 /// Whether `entity` is a player: a body with a client behind it.
 ///
@@ -120,10 +120,14 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
         if state.trades[index].involves(target) {
             let container = state.trades[index]
                 .sides_for(player)
-                .map(|(mine, _)| mine.container_serial.raw());
+                .map(|(mine, _)| mine.container_serial);
             match container {
                 Some(container) => {
-                    drop_into_container(state, connection, held, Point::default(), container);
+                    // Nobody dragged this onto a gump: the item goes into the
+                    // escrow because the trade is already open, so there is no
+                    // cursor position to honour and the origin is the honest
+                    // answer.
+                    drop_into_container(state, connection, held, GumpPoint::new(0, 0), container);
                 }
                 None => bounce(state, connection, held, DragCancelReason::Other),
             }
@@ -147,7 +151,7 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
             return;
         }
     };
-    if state.held.contains_key(&partner_connection) {
+    if state.held_of(partner_connection).is_some() {
         state.localized_message(player, CLILOC_PARTNER_IS_DRAGGING, "");
         bounce(state, connection, held, DragCancelReason::Other);
         return;
@@ -190,8 +194,10 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
 
     let index = state.trades.len() - 1;
     draw_window(state, index);
-    // And in goes what was dropped, through the ordinary door.
-    drop_into_container(state, connection, held, Point::default(), mine.1.raw());
+    // And in goes what was dropped, through the ordinary door — at the origin
+    // of the escrow's gump, for the reason above: the drop was onto a person,
+    // and the packet's position never meant a point in this window.
+    drop_into_container(state, connection, held, GumpPoint::new(0, 0), mine.1);
     debug!("a secure trade opened");
 }
 
@@ -203,7 +209,7 @@ fn new_escrow(state: &mut WorldState, player: EntityId) -> Option<(EntityId, Ser
         mobile,
         TRADE_CONTAINER_GRAPHIC,
         TRADE_CONTAINER_GUMP,
-        0,
+        Hue(0),
         TRADE_LAYER,
     )?;
     state.registry.insert(entity, TradeWindow);
@@ -233,14 +239,14 @@ fn draw_window(state: &mut WorldState, index: usize) {
             .get::<Name>(other.player)
             .map(|name| name.0.clone())
             .unwrap_or_default();
-        let updates = encode_trade_update(side.container_serial.raw(), false, false);
+        let updates = encode_trade_update(side.container_serial, false, false);
         state.send(side.connection, updates.clone());
         state.send(
             side.connection,
             encode_trade_open(
-                partner_serial.raw(),
-                side.container_serial.raw(),
-                other.container_serial.raw(),
+                partner_serial,
+                side.container_serial,
+                other.container_serial,
                 &name,
             ),
         );
@@ -259,25 +265,25 @@ fn send_checks(state: &mut WorldState, index: usize) {
     let (from, to) = (trade.from.clone(), trade.to.clone());
     state.send(
         from.connection,
-        encode_trade_update(from.container_serial.raw(), from.accepted, to.accepted),
+        encode_trade_update(from.container_serial, from.accepted, to.accepted),
     );
     state.send(
         to.connection,
-        encode_trade_update(to.container_serial.raw(), to.accepted, from.accepted),
+        encode_trade_update(to.container_serial, to.accepted, from.accepted),
     );
 }
 
 /// The client ticked or unticked its checkbox. When both are ticked the goods
 /// change hands.
-pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container: u32, accepted: bool) {
+pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container: RawSerial, accepted: bool) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(container) = Serial::new(container) else {
+    let Some(container) = container.validate() else {
         return;
     };
     // The reply must name a window this side actually drew, and one this player
-    // is a party to — the `open_quest_gumps` rule, for the same reason.
+    // is a party to — the `Connection::quest_gump` rule, for the same reason.
     let Some(index) = trade_of_container(state, container) else {
         return;
     };
@@ -359,9 +365,8 @@ fn hand_over(state: &mut WorldState, items: &[EntityId], receiver: EntityId) {
                     item,
                     Contained {
                         container: pack,
-                        x: 0,
-                        y: 0,
-                        grid,
+                        position: GumpPoint::new(0, 0),
+                        grid: GridSlot(grid),
                     },
                 );
                 tell_watchers_updated(state, pack, item);
@@ -417,7 +422,7 @@ fn close(state: &mut WorldState, index: usize) {
     // Each client is told about *its own* half — ServUO's `Close`, which sends
     // one packet per side. The client shuts the whole window on it.
     for side in [&trade.from, &trade.to] {
-        state.send(side.connection, encode_trade_close(side.container_serial.raw()));
+        state.send(side.connection, encode_trade_close(side.container_serial));
         state.open_containers.remove(&side.container_serial);
         despawn_escrow(state, side.container);
     }
@@ -431,13 +436,13 @@ fn despawn_escrow(state: &mut WorldState, container: EntityId) {
 /// The client shut its window: end the trade it names.
 ///
 /// The container has to name a window this side drew *and* one this player is a
-/// party to — the `open_quest_gumps` rule, so a `0x6F` naming somebody else's
+/// party to — the `Connection::quest_gump` rule, so a `0x6F` naming somebody else's
 /// trade cannot end it.
-pub fn cancel_by_container(state: &mut WorldState, connection: ConnectionId, container: u32) {
+pub fn cancel_by_container(state: &mut WorldState, connection: ConnectionId, container: RawSerial) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(container) = Serial::new(container) else {
+    let Some(container) = container.validate() else {
         return;
     };
     let Some(index) = trade_of_container(state, container) else {

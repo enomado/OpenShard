@@ -14,6 +14,8 @@
 //! script speaks — is the price of that decoupling, and it is cheap.
 
 use openshard_events::Cursor;
+use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_scripting::{Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine};
 use openshard_world::events::{
     AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileSpawned, PlayerEntered, PlayerLeft,
@@ -135,7 +137,7 @@ impl Scripts {
             for e in bus.read(&mut self.restored) {
                 events.push(ScriptEvent::MobileRestored {
                     serial: e.serial.raw(),
-                    body: e.body,
+                    body: e.body.0,
                     // `home`, not `at`: a pack binds by the tile an NPC was placed
                     // on, and a townsperson with a routine is not standing on it
                     // when the save is taken. See `ScriptEvent::MobileRestored`.
@@ -173,7 +175,7 @@ impl Scripts {
             for e in bus.read(&mut self.died) {
                 events.push(ScriptEvent::MobileDied {
                     serial: e.serial.raw(),
-                    body: e.body,
+                    body: e.body.0,
                     killer: e.killer.map_or(0, |k| k.raw()),
                 });
             }
@@ -195,7 +197,9 @@ impl Scripts {
                 events.push(ScriptEvent::SpellCast {
                     serial: e.serial.raw(),
                     spell: e.spell,
-                    target: e.target,
+                    // Out through the same serialization seam the commands come
+                    // in by: a spell with no mark is the script's `0`.
+                    target: e.target.map_or(0, Serial::raw),
                     success: e.success,
                 });
             }
@@ -208,28 +212,28 @@ impl Scripts {
             for e in bus.read(&mut self.item_used) {
                 events.push(ScriptEvent::ItemUsed {
                     item: e.item.raw(),
-                    graphic: e.graphic,
+                    graphic: e.graphic.0,
                     by: e.by.raw(),
                 });
             }
             for e in bus.read(&mut self.mobile_used) {
                 events.push(ScriptEvent::MobileUsed {
                     mobile: e.mobile.raw(),
-                    body: e.body,
+                    body: e.body.0,
                     by: e.by.raw(),
                 });
             }
             for e in bus.read(&mut self.items_taken) {
                 events.push(ScriptEvent::ItemsTaken {
                     player: e.player.raw(),
-                    graphic: e.graphic,
+                    graphic: e.graphic.0,
                     taken: e.taken,
                 });
             }
             for e in bus.read(&mut self.corpse) {
                 events.push(ScriptEvent::CorpseCreated {
                     corpse: e.corpse.raw(),
-                    body: e.body,
+                    body: e.body.0,
                 });
             }
             for e in bus.read(&mut self.admin) {
@@ -246,11 +250,14 @@ impl Scripts {
                 });
             }
             for e in bus.read(&mut self.gump) {
+                // The script bridge is a serialization seam, so this is where
+                // the pack's own ids stop being types and become JSON numbers —
+                // the same unwrapping a SQL bind or the wire itself does.
                 events.push(ScriptEvent::GumpAnswered {
                     serial: e.serial.raw(),
-                    gump_id: e.gump_id,
-                    button: e.button,
-                    switches: e.switches.clone(),
+                    gump_id: e.gump_id.0,
+                    button: e.button.0,
+                    switches: e.switches.iter().map(|switch| switch.0).collect(),
                     text: e.text_entries.clone(),
                 });
             }
@@ -273,7 +280,12 @@ impl Scripts {
         }
 
         for command in self.engine.take_commands() {
-            world.queue(into_world(command));
+            // A command naming a serial nothing can have is dropped here rather
+            // than queued: the tick would have looked it up and found nothing,
+            // silently. See `script_serial`.
+            if let Some(command) = into_world(command) {
+                world.queue(command);
+            }
         }
 
         match self.engine.reload_if_changed() {
@@ -287,11 +299,39 @@ impl Scripts {
     }
 }
 
+/// A serial a script named, or `None` if the number addresses nothing.
+///
+/// The script bridge is a serialization seam like SQL or the wire, so this is
+/// where a JSON number becomes a [`Serial`] — the same place `Command::Speak`'s
+/// hue is made. Unlike a hue, the conversion can fail: `0` and everything past
+/// the item pool are not serials, and `Serial::new` refuses them.
+///
+/// A refusal is logged and the whole command dropped. Before this the number
+/// travelled to the tick as a bare `u32`, was refused there by the same
+/// `Serial::new`, and the command did nothing with nothing said — a pack bug
+/// that looked exactly like a mobile that had logged out.
+fn script_serial(serial: u32) -> Option<Serial> {
+    let made = Serial::new(serial);
+    if made.is_none() {
+        warn!(
+            serial = format!("0x{serial:08X}"),
+            "gameplay script named a serial nothing can have; command dropped"
+        );
+    }
+    made
+}
+
 /// Turn a script's command into the world's. The one place the two vocabularies
 /// meet, and the seam where §6 will grow: a new script command lands here.
-fn into_world(command: ScriptCommand) -> Command {
-    match command {
-        ScriptCommand::Move { serial, direction } => Command::Step { serial, direction },
+///
+/// `None` when the script named a serial that addresses nothing — see
+/// [`script_serial`]. Every other command is total.
+fn into_world(command: ScriptCommand) -> Option<Command> {
+    Some(match command {
+        ScriptCommand::Move { serial, direction } => Command::Step {
+            serial: script_serial(serial)?,
+            direction,
+        },
         ScriptCommand::SpawnItem {
             graphic,
             hue,
@@ -302,8 +342,8 @@ fn into_world(command: ScriptCommand) -> Command {
             z,
             facet,
         } => Command::SpawnItem {
-            graphic,
-            hue,
+            graphic: Graphic(graphic),
+            hue: Hue(hue),
             amount,
             stackable,
             position: openshard_protocol::world::Point::new(x, y, z),
@@ -318,9 +358,9 @@ fn into_world(command: ScriptCommand) -> Command {
             z,
             facet,
         } => Command::SpawnContainer {
-            graphic,
-            gump,
-            hue,
+            graphic: Graphic(graphic),
+            gump: Graphic(gump),
+            hue: Hue(hue),
             position: openshard_protocol::world::Point::new(x, y, z),
             facet,
         },
@@ -353,8 +393,8 @@ fn into_world(command: ScriptCommand) -> Command {
             equipment,
             skills,
         } => Command::SpawnMobile {
-            body,
-            hue,
+            body: Graphic(body),
+            hue: Hue(hue),
             hits,
             notoriety,
             damage,
@@ -379,9 +419,18 @@ fn into_world(command: ScriptCommand) -> Command {
             night_home: night_home.map(|(x, y, z)| openshard_protocol::world::Point::new(x, y, z)),
             banker,
             vendor,
+            // The script bridge is a serialization seam like SQL or the wire, so
+            // the JSON number becomes a `Layer` here — `docs/protocol_newtypes.md`
+            // N3 amendment 9, the same place `Command::Speak`'s hue is made.
             equipment: equipment
                 .into_iter()
-                .map(|w| (w.graphic, w.layer, w.hue))
+                .map(|w| {
+                    (
+                        Graphic(w.graphic),
+                        openshard_protocol::wire::Layer(w.layer),
+                        Hue(w.hue),
+                    )
+                })
                 .collect(),
             skills,
         },
@@ -391,12 +440,18 @@ fn into_world(command: ScriptCommand) -> Command {
             damage_type,
             by,
         } => Command::Damage {
-            serial,
+            serial: script_serial(serial)?,
             amount,
             damage_type,
-            by,
+            // Zero is the script's word for unattributed, and `Serial::new`
+            // already answers `None` to it — no log line, because absence here
+            // is a value the caller may mean.
+            by: Serial::new(by),
         },
-        ScriptCommand::Heal { serial, amount } => Command::Heal { serial, amount },
+        ScriptCommand::Heal { serial, amount } => Command::Heal {
+            serial: script_serial(serial)?,
+            amount,
+        },
         ScriptCommand::CastSpell {
             serial,
             spell,
@@ -408,15 +463,17 @@ fn into_world(command: ScriptCommand) -> Command {
             pack,
             reagents,
         } => Command::CastSpell {
-            serial,
+            serial: script_serial(serial)?,
             spell,
-            target,
+            // A spell that needs neither a target nor reagents says so with a
+            // zero, which `Serial::new` reads as absent.
+            target: Serial::new(target),
             mana,
             min_skill,
             max_skill,
             skill,
-            pack,
-            reagents,
+            pack: Serial::new(pack),
+            reagents: reagents.into_iter().map(|(g, n)| (Graphic(g), n)).collect(),
         },
         ScriptCommand::SetStats {
             serial,
@@ -424,19 +481,23 @@ fn into_world(command: ScriptCommand) -> Command {
             dexterity,
             intelligence,
         } => Command::SetStats {
-            serial,
+            serial: script_serial(serial)?,
             strength,
             dexterity,
             intelligence,
         },
-        ScriptCommand::SetSkill { serial, skill, value } => Command::SetSkill { serial, skill, value },
+        ScriptCommand::SetSkill { serial, skill, value } => Command::SetSkill {
+            serial: script_serial(serial)?,
+            skill,
+            value,
+        },
         ScriptCommand::SetWeapon {
             serial,
             speed,
             min,
             max,
         } => Command::SetWeapon {
-            serial,
+            serial: script_serial(serial)?,
             speed,
             min,
             max,
@@ -446,7 +507,7 @@ fn into_world(command: ScriptCommand) -> Command {
             level,
             charges,
         } => Command::SetPoison {
-            serial,
+            serial: script_serial(serial)?,
             level,
             charges,
         },
@@ -456,20 +517,28 @@ fn into_world(command: ScriptCommand) -> Command {
             min_skill,
             max_skill,
         } => Command::UseSkill {
-            serial,
+            serial: script_serial(serial)?,
             skill,
             min_skill,
             max_skill,
         },
-        ScriptCommand::Speak { serial, hue, text } => Command::Speak { serial, hue, text },
-        ScriptCommand::Control { serial } => Command::Control { serial },
+        // The script boundary is a serialization seam like the wire or SQL: a JSON
+        // number becomes the newtype here and stays one from here in.
+        ScriptCommand::Speak { serial, hue, text } => Command::Speak {
+            serial: script_serial(serial)?,
+            hue: Hue(hue),
+            text,
+        },
+        ScriptCommand::Control { serial } => Command::Control {
+            serial: script_serial(serial)?,
+        },
         ScriptCommand::StockVendor { serial, stock } => Command::StockVendor {
-            serial,
+            serial: script_serial(serial)?,
             stock: stock
                 .into_iter()
                 .map(|line| openshard_world::StockLine {
-                    graphic: line.graphic,
-                    hue: line.hue,
+                    graphic: Graphic(line.graphic),
+                    hue: Hue(line.hue),
                     amount: line.amount,
                     price: line.price,
                     name: line.name,
@@ -483,13 +552,16 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
             stackable,
         } => Command::AddLoot {
-            container,
-            graphic,
-            hue,
+            container: script_serial(container)?,
+            graphic: Graphic(graphic),
+            hue: Hue(hue),
             amount,
             stackable,
         },
-        ScriptCommand::ConsumeItem { serial, amount } => Command::ConsumeItem { serial, amount },
+        ScriptCommand::ConsumeItem { serial, amount } => Command::ConsumeItem {
+            serial: script_serial(serial)?,
+            amount,
+        },
         ScriptCommand::RegisterSpawner {
             x,
             y,
@@ -514,8 +586,8 @@ fn into_world(command: ScriptCommand) -> Command {
                 creatures
                     .into_iter()
                     .map(|c| openshard_world::spawner::CreatureTemplate {
-                        body: c.body,
-                        hue: c.hue,
+                        body: Graphic(c.body),
+                        hue: Hue(c.hue),
                         hits: c.hits,
                         notoriety: c.notoriety,
                         damage: c.damage,
@@ -585,8 +657,8 @@ fn into_world(command: ScriptCommand) -> Command {
                 .into_iter()
                 .map(|s| {
                     (
-                        s.graphic,
-                        s.hue,
+                        Graphic(s.graphic),
+                        Hue(s.hue),
                         openshard_protocol::world::Point::new(s.x, s.y, s.z),
                     )
                 })
@@ -595,8 +667,8 @@ fn into_world(command: ScriptCommand) -> Command {
                 .into_iter()
                 .map(|d| openshard_world::DecorDoor {
                     key_value: d.key_value,
-                    closed: d.closed,
-                    open: d.open,
+                    closed: Graphic(d.closed),
+                    open: Graphic(d.open),
                     offset_x: d.offset_x,
                     offset_y: d.offset_y,
                     position: openshard_protocol::world::Point::new(d.x, d.y, d.z),
@@ -606,9 +678,9 @@ fn into_world(command: ScriptCommand) -> Command {
                 .into_iter()
                 .map(|c| openshard_world::DecorContainer {
                     key_value: c.key_value,
-                    graphic: c.graphic,
-                    gump: c.gump,
-                    hue: c.hue,
+                    graphic: Graphic(c.graphic),
+                    gump: Graphic(c.gump),
+                    hue: Hue(c.hue),
                     position: openshard_protocol::world::Point::new(c.x, c.y, c.z),
                 })
                 .collect(),
@@ -635,10 +707,9 @@ fn into_world(command: ScriptCommand) -> Command {
             layout,
             lines,
         } => Command::ShowGump {
-            serial,
-            gump_id,
-            x,
-            y,
+            serial: script_serial(serial)?,
+            gump_id: openshard_protocol::gump::GumpId(gump_id),
+            at: openshard_protocol::gump::GumpPoint::new(i32::from(x), i32::from(y)),
             layout,
             lines,
         },
@@ -654,13 +725,26 @@ fn into_world(command: ScriptCommand) -> Command {
         ScriptCommand::RegisterQuests { quests } => Command::RegisterQuests {
             quests: quests.into_iter().filter_map(quest_def).collect(),
         },
-        ScriptCommand::BindQuestGiver { serial, keys } => Command::BindQuestGiver { serial, keys },
-        ScriptCommand::MakeEscortable { serial, destination } => {
-            Command::MakeEscortable { serial, destination }
-        }
-        ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump { serial, gump_id },
-        ScriptCommand::Message { serial, text } => Command::Message { serial, text },
-        ScriptCommand::PlaySound { serial, sound } => Command::PlaySound { serial, sound },
+        ScriptCommand::BindQuestGiver { serial, keys } => Command::BindQuestGiver {
+            serial: script_serial(serial)?,
+            keys,
+        },
+        ScriptCommand::MakeEscortable { serial, destination } => Command::MakeEscortable {
+            serial: script_serial(serial)?,
+            destination,
+        },
+        ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump {
+            serial: script_serial(serial)?,
+            gump_id: openshard_protocol::gump::GumpId(gump_id),
+        },
+        ScriptCommand::Message { serial, text } => Command::Message {
+            serial: script_serial(serial)?,
+            text,
+        },
+        ScriptCommand::PlaySound { serial, sound } => Command::PlaySound {
+            serial: script_serial(serial)?,
+            sound: openshard_protocol::wire::SoundId(sound),
+        },
         ScriptCommand::GiveItem {
             serial,
             graphic,
@@ -668,9 +752,9 @@ fn into_world(command: ScriptCommand) -> Command {
             amount,
             stackable,
         } => Command::GiveItem {
-            serial,
-            graphic,
-            hue,
+            serial: script_serial(serial)?,
+            graphic: Graphic(graphic),
+            hue: Hue(hue),
             amount,
             stackable,
         },
@@ -679,11 +763,11 @@ fn into_world(command: ScriptCommand) -> Command {
             graphic,
             amount,
         } => Command::TakeItem {
-            serial,
-            graphic,
+            serial: script_serial(serial)?,
+            graphic: Graphic(graphic),
             amount,
         },
-    }
+    })
 }
 
 /// One trade's speech, from the pack's wire-primitive form to the engine's.
@@ -729,13 +813,13 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
     for objective in quest.objectives {
         let kind = match objective.kind.as_str() {
             "slay" | "kill" => ObjectiveKind::Slay {
-                body: objective.target,
+                body: Graphic(objective.target),
             },
             "obtain" | "collect" => ObjectiveKind::Obtain {
-                graphic: objective.target,
+                graphic: Graphic(objective.target),
             },
             "deliver" => ObjectiveKind::Deliver {
-                graphic: objective.target,
+                graphic: Graphic(objective.target),
                 to: objective.destination.clone(),
             },
             "escort" => ObjectiveKind::Escort {
@@ -766,8 +850,8 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
                 RewardKind::Gold(reward.gold)
             } else {
                 RewardKind::Item {
-                    graphic: reward.graphic,
-                    hue: reward.hue,
+                    graphic: Graphic(reward.graphic),
+                    hue: Hue(reward.hue),
                     amount: reward.amount.max(1),
                     stackable: reward.stackable,
                 }
@@ -796,9 +880,13 @@ fn quest_def(quest: openshard_scripting::ScriptQuest) -> Option<openshard_world:
 mod tests {
     use super::*;
     use openshard_gateway::ConnectionId;
+    use openshard_protocol::containers::UseRequest;
     use openshard_protocol::identity::{AccountName, CharacterName};
+    use openshard_protocol::serial::RawSerial;
+    use openshard_protocol::speech::{RawFont, RawTalkMode};
+    use openshard_protocol::wire::RawHue;
+    use openshard_protocol::world::Facet;
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-    use openshard_world::components::Facet;
     use openshard_world::{Character, Entering, Position};
     use std::time::Instant;
 
@@ -960,7 +1048,7 @@ mod tests {
             .expect("the script spawned a container");
         world.queue(Command::DoubleClick {
             connection: ConnectionId::from_raw(1),
-            serial: container,
+            request: UseRequest::Use(RawSerial(container)),
         });
         world.tick(now);
 
@@ -989,8 +1077,8 @@ mod tests {
         let mut scripts = Scripts::load(script.path(), &world).expect("script loads");
 
         world.queue(Command::SpawnMobile {
-            body: 0x0190,
-            hue: 0,
+            body: Graphic(0x0190),
+            hue: Hue(0),
             hits: 5,
             notoriety: 5,
             damage: 5,
@@ -1019,7 +1107,7 @@ mod tests {
         let mob = world
             .registry()
             .query::<openshard_world::Hitpoints>()
-            .filter_map(|(entity, _)| world.registry().serial_of(entity).map(|s| s.raw()))
+            .filter_map(|(entity, _)| world.registry().serial_of(entity))
             .next()
             .expect("the creature exists");
 
@@ -1027,7 +1115,7 @@ mod tests {
             serial: mob,
             amount: 100,
             damage_type: 0,
-            by: 0,
+            by: None,
         });
         world.tick(now); // the creature dies, MobileDied is emitted
         scripts.pump(&mut world); // the script hears it and queues the loot
@@ -1036,7 +1124,7 @@ mod tests {
         assert!(
             world
                 .registry()
-                .query::<openshard_world::Graphic>()
+                .query::<openshard_world::Drawn>()
                 .next()
                 .is_some(),
             "the script dropped an item when the creature died"
@@ -1063,8 +1151,8 @@ mod tests {
         // A pure creature: no brain of its own (sight 0, no wander), so nothing but
         // the script's onTick can move it.
         world.queue(Command::SpawnMobile {
-            body: 0x0190,
-            hue: 0,
+            body: Graphic(0x0190),
+            hue: Hue(0),
             hits: 5,
             notoriety: 5,
             damage: 0,
@@ -1163,7 +1251,7 @@ mod tests {
         assert!(
             world
                 .registry()
-                .query::<openshard_world::Graphic>()
+                .query::<openshard_world::Drawn>()
                 .next()
                 .is_some(),
             "the successful skill use produced its reward"
@@ -1209,13 +1297,13 @@ mod tests {
             .registry()
             .query::<openshard_world::Client>()
             .next()
-            .map(|(e, _)| world.registry().serial_of(e).unwrap().raw())
+            .map(|(e, _)| world.registry().serial_of(e).unwrap())
             .expect("the player");
         let (target_entity, target) = world
             .registry()
             .query::<openshard_world::Hitpoints>()
             .find(|(e, _)| !world.registry().has::<openshard_world::Client>(*e))
-            .map(|(e, _)| (e, world.registry().serial_of(e).unwrap().raw()))
+            .map(|(e, _)| (e, world.registry().serial_of(e).unwrap()))
             .expect("the spawned target");
 
         // Cast at it (as a client or AI would); the script's SpellCast handler
@@ -1223,12 +1311,12 @@ mod tests {
         world.queue(Command::CastSpell {
             serial: caster,
             spell: 18, // a fireball, say
-            target,
+            target: Some(target),
             mana: 10,
             min_skill: 0,
             max_skill: 0,
             skill: 1,
-            pack: 0,
+            pack: None,
             reagents: Vec::new(),
         });
         world.tick(now); // mana paid, skill rolled, SpellCast emitted
@@ -1329,9 +1417,9 @@ mod tests {
 
         world.queue(Command::Say {
             connection,
-            mode: 0,
-            hue: 0,
-            font: 3,
+            mode: RawTalkMode(0),
+            hue: RawHue(0),
+            font: RawFont(3),
             text: "ping".to_owned(),
         });
         world.tick(now); // the player says it, MobileSpoke emitted

@@ -32,12 +32,16 @@
 //!
 //! [`AccountLogin`], [`SelectShard`], [`GameServerLogin`] and
 //! [`ClientVersionReport`] only ever arrive over the wire — this server never
-//! sends one. Their `encode()` exists purely to build test fixtures, so it is a
-//! plain inherent method rather than [`EncodePacket`]: that trait is for the
-//! packets this server actually sends, where [`crate::server_packet::ServerPacket`]
-//! is the only thing allowed to call it.
+//! sends one, so `encode()` is a plain inherent method rather than
+//! [`EncodePacket`]: that trait is for the packets this server actually sends,
+//! where [`crate::server_packet::ServerPacket`] is the only thing allowed to
+//! call it. `AccountLogin`, `SelectShard` and `GameServerLogin` are what
+//! `crates/client/net`'s login state machine (`session.rs`) sends for real now;
+//! only [`ClientVersionReport::encode`] is still test-fixtures only, waiting on
+//! the client announcing its own version.
 
-use std::net::Ipv4Addr;
+use std::fmt;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
@@ -45,8 +49,8 @@ use crate::feature::Feature;
 use crate::identity::{CharacterName, RawAccountName, RawPlaintextPassword};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength, decode_packet};
 use crate::version::ClientVersion;
-use crate::wire::AuthKey;
-use crate::world::CreateCharacter;
+use crate::wire::{AuthKey, ClilocId, RawCharacterSlot};
+use crate::world::{CharacterPlay, CreateCharacter, Facet, Point};
 
 /// Width of an account name field. Sphere's `MAX_ACCOUNT_NAME_SIZE`.
 pub const ACCOUNT_NAME_LENGTH: usize = 30;
@@ -86,7 +90,8 @@ impl DecodePacket for AccountLogin {
 }
 
 impl AccountLogin {
-    /// Encode a whole 0x80 packet. Test fixtures only — see the module docs.
+    /// Encode a whole 0x80 packet. What `crates/client/net`'s login state
+    /// machine sends for real — see the module docs.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(62);
         writer.u8(Self::ID);
@@ -169,6 +174,25 @@ impl DenyReason {
             | Self::ShardFull => 0x04,
         }
     }
+
+    /// Read a wire code back, as a client must.
+    ///
+    /// Not the inverse of [`wire_code`](Self::wire_code) and cannot be: that
+    /// function is deliberately many-to-one, so what comes back is the one
+    /// reason of each group the client can actually distinguish. A client that
+    /// wants the real reason has to be told it some other way — there is no
+    /// wire form for it.
+    #[must_use]
+    pub const fn from_wire_code(code: u8) -> Option<Self> {
+        match code {
+            0x00 => Some(Self::NoAccount),
+            0x01 => Some(Self::InUse),
+            0x02 => Some(Self::Blocked),
+            0x03 => Some(Self::BadPassword),
+            0x04 => Some(Self::Other),
+            _ => None,
+        }
+    }
 }
 
 /// `0x82` — refuse a login. 2 bytes.
@@ -187,15 +211,77 @@ impl EncodePacket for LoginDenied {
     }
 }
 
+impl DecodePacket for LoginDenied {
+    const ID: u8 = 0x82;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let code = reader.u8()?;
+        DenyReason::from_wire_code(code)
+            .map(|reason| Self { reason })
+            .ok_or(DecodeError::UnknownValue {
+                field: "0x82 deny code",
+                value: u32::from(code),
+            })
+    }
+}
+
 // -- 0xA8 shard list ------------------------------------------------------
 
+/// How full a shard is, as a percentage the client will render: 0 to 100.
+///
+/// The client draws anything above 100 as garbage, so 100 is a *protocol*
+/// ceiling and not a matter of taste — which is why this is a type with a
+/// private field rather than a `u8` the encoder repairs on its way out. The
+/// encoder used to hold the byte down with `.min(100)`, applying the client's
+/// rule at the last possible moment instead of where the number is chosen;
+/// with the invariant on the type there is nothing left for the encoder to
+/// check, and an operator reporting real fullness cannot route around it.
+///
+/// Clamped rather than refused, because every source of the number — an
+/// operator's config, a population count over a cap that may itself have
+/// changed — is a quantity that is *meant* to saturate at "full", and refusing
+/// would mean a shard vanishing from the list over a rounding error. That is
+/// the opposite trade from [`RawShardIndex::validate`], where a wrong number
+/// names a different shard.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct PercentFull(u8);
+
+impl PercentFull {
+    /// Nobody on: the value a shard advertises until it counts its players.
+    pub const EMPTY: Self = Self(0);
+
+    /// The largest value the client renders as a percentage.
+    pub const FULL: Self = Self(100);
+
+    /// This many percent, held to the client's ceiling.
+    #[must_use]
+    pub const fn clamped(percent: u8) -> Self {
+        Self(if percent > 100 { 100 } else { percent })
+    }
+
+    /// The byte to write, already inside the client's range by construction.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+
 /// One shard in the 0xA8 list.
+///
+/// # Why `timezone` stays a bare integer
+///
+/// It is the case N2 amendment 3 settled for the status bar's numbers: a
+/// quantity, not an id, with no protocol rule about its range and only one
+/// place it is ever written — a struct literal that names it. See the
+/// allowlist in `docs/protocol_newtypes.md`. `percent_full` looked like the
+/// same case and is not: 100 is a ceiling the *client* imposes, so the rule
+/// lives in [`PercentFull`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ShardEntry {
     /// Shard name. Truncated to 32 bytes on the wire.
     pub name: String,
-    /// How full, 0–100. The client renders anything above 100 as garbage.
-    pub percent_full: u8,
+    /// How full, 0–100.
+    pub percent_full: PercentFull,
     /// Timezone, as the client's own oddity: hours west of GMT.
     pub timezone: u8,
     /// Where to reach it.
@@ -250,7 +336,7 @@ impl EncodePacket for ShardList {
             // the list from one here and subtracts on the way back.
             out.u16((index + 1) as u16);
             out.fixed_string(&shard.name, SHARD_NAME_LENGTH);
-            out.u8(shard.percent_full.min(100));
+            out.u8(shard.percent_full.raw());
             out.u8(shard.timezone);
 
             let octets = shard.address.octets();
@@ -263,41 +349,138 @@ impl EncodePacket for ShardList {
     }
 }
 
+impl DecodePacket for ShardList {
+    const ID: u8 = 0xA8;
+
+    /// The reverse of the encoder, byte order included — and the byte order is
+    /// the whole difficulty. A client reading these octets in the wrong order
+    /// dials a plausible address and simply never arrives; see the type's docs
+    /// for why the reversal is right and why Sphere's comments say otherwise.
+    ///
+    /// The index each entry carries is not kept: it is the position in the list
+    /// plus one, and a `0xA0` answers with that position — so keeping it would
+    /// be storing the index of a `Vec` inside the `Vec`.
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
+        let reversed_ip = version.supports(Feature::ReversedShardIp);
+        reader.skip(1)?; // system info flag, 0xFF
+        let count = reader.u16()? as usize;
+        let mut shards = Vec::with_capacity(count.min(MAX_SHARDS));
+        for _ in 0..count {
+            reader.skip(2)?; // the one-based index, which is the position
+            let name = reader.fixed_string(SHARD_NAME_LENGTH)?;
+            // A shard list is only ever decoded by a client, and a hostile or
+            // buggy server can put anything in this byte. Clamping here rather
+            // than refusing keeps the entry — the shard is still reachable —
+            // and is the same rule the encoder no longer has to apply.
+            let percent_full = PercentFull::clamped(reader.u8()?);
+            let timezone = reader.u8()?;
+            let octets = reader.bytes(4)?;
+            let address = if reversed_ip {
+                Ipv4Addr::new(octets[3], octets[2], octets[1], octets[0])
+            } else {
+                Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3])
+            };
+            shards.push(ShardEntry {
+                name,
+                percent_full,
+                timezone,
+                address,
+            });
+        }
+        Ok(Self { shards })
+    }
+}
+
 // -- 0xA0 select shard ----------------------------------------------------
+
+/// A shard pick exactly as a client's `0xA0` sent it: one-based, matching the
+/// numbering [`ShardList`] wrote, and not yet checked against the list that
+/// actually went out.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawShardIndex(pub u16);
+
+impl RawShardIndex {
+    /// The shard this names, out of the `offered` the `0xA8` listed.
+    ///
+    /// Two ways to be wrong and they are not the same mistake, so the error
+    /// says which. Zero is the wire's own impossibility — `0xA8` numbers from
+    /// one — and a naive `index - 1` on a `u16` zero wraps to 65535 and reads
+    /// far past the list; past the end is a client answering a list this
+    /// connection never sent.
+    pub const fn validate(self, offered: usize) -> Result<ShardIndex, InvalidShardIndex> {
+        if self.0 == 0 {
+            return Err(InvalidShardIndex::Zero);
+        }
+        let index = self.0 as usize - 1;
+        if index < offered {
+            Ok(ShardIndex(index))
+        } else {
+            Err(InvalidShardIndex::PastEnd {
+                index: self.0,
+                offered,
+            })
+        }
+    }
+}
+
+/// A shard the list actually offered: an index into it, counted from zero.
+///
+/// The one-based wire form is undone here and nowhere else, which is the point
+/// of the type — a `usize` because indexing the list is all it is ever for.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct ShardIndex(pub usize);
+
+/// A `0xA0` picked a shard the `0xA8` did not offer.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum InvalidShardIndex {
+    /// Index `0`, which the one-based wire numbering never produces.
+    Zero,
+    /// Past the end of the list that was sent.
+    PastEnd {
+        /// The one-based index the client sent.
+        index: u16,
+        /// How many shards the list actually held.
+        offered: usize,
+    },
+}
+
+impl fmt::Display for InvalidShardIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => f.write_str("shard index 0, but the list is numbered from one"),
+            Self::PastEnd { index, offered } => {
+                write!(f, "shard {index} was picked from a list of {offered}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InvalidShardIndex {}
 
 /// `0xA0` — the client picks a shard. 3 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SelectShard {
     /// The index the client chose, as sent — one-based, matching 0xA8.
-    pub index: u16,
+    pub index: RawShardIndex,
 }
 
 impl DecodePacket for SelectShard {
     const ID: u8 = 0xA0;
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
-        Ok(Self { index: reader.u16()? })
+        Ok(Self {
+            index: RawShardIndex(reader.u16()?),
+        })
     }
 }
 
 impl SelectShard {
-    /// The zero-based index into the list that was sent.
-    ///
-    /// Returns `None` for index 0, which is out of range: this is untrusted
-    /// input and a naive `index - 1` underflows.
-    pub const fn slot(self) -> Option<usize> {
-        if self.index == 0 {
-            None
-        } else {
-            Some(self.index as usize - 1)
-        }
-    }
-
-    /// Encode a whole 0xA0 packet. Test fixtures only — see the module docs.
+    /// Encode a whole 0xA0 packet. What `crates/client/net`'s login state
+    /// machine sends for real — see the module docs.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(3);
         writer.u8(Self::ID);
-        writer.u16(self.index);
+        writer.u16(self.index.0);
         writer.into_bytes()
     }
 }
@@ -326,10 +509,12 @@ impl SelectShard {
 /// The shifts undo an endianness the value never had. Trace it, do not read it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Relay {
-    /// Where the game server is.
-    pub address: Ipv4Addr,
-    /// Which port.
-    pub port: u16,
+    /// Where the game server is: address and port, which the wire carries
+    /// adjacently and every caller already holds together — the login server's
+    /// `game_address` is a `SocketAddrV4` that was being taken apart at this
+    /// call site and put back together here. One field, so a relay cannot be
+    /// built naming one shard's address and another's port.
+    pub endpoint: SocketAddrV4,
     /// The key the client must present back on the game connection.
     pub auth_key: AuthKey,
 }
@@ -339,9 +524,25 @@ impl EncodePacket for Relay {
     const LENGTH: PacketLength = PacketLength::Fixed(11);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.bytes(&self.address.octets());
-        out.u16(self.port);
+        out.bytes(&self.endpoint.ip().octets());
+        out.u16(self.endpoint.port());
         out.u32(self.auth_key.0);
+    }
+}
+
+impl DecodePacket for Relay {
+    const ID: u8 = 0x8C;
+
+    /// Octets in order, on every version — the opposite of [`ShardList`], in
+    /// the same conversation, about the same address.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let octets = reader.bytes(4)?;
+        let address = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+        let port = reader.u16()?;
+        Ok(Self {
+            endpoint: SocketAddrV4::new(address, port),
+            auth_key: AuthKey(reader.u32()?),
+        })
     }
 }
 
@@ -371,7 +572,8 @@ impl DecodePacket for GameServerLogin {
 }
 
 impl GameServerLogin {
-    /// Encode a whole 0x91 packet. Test fixtures only — see the module docs.
+    /// Encode a whole 0x91 packet. What `crates/client/net`'s login state
+    /// machine sends for real — see the module docs.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(65);
         writer.u8(Self::ID);
@@ -398,12 +600,15 @@ pub struct StartLocation {
     pub area: String,
     /// The specific spot, e.g. "Castle Britannia".
     pub name: String,
-    /// Where the character appears.
-    pub position: (i32, i32, i32),
+    /// Where the character appears. The wire widens each coordinate to a full
+    /// dword here — unlike every other position on the wire, which is
+    /// [`Point`]'s own `u16`/`u16`/`i8` — but the value named is the same map
+    /// coordinate, so decode narrows it back down.
+    pub position: Point,
     /// Which map.
-    pub map: i32,
+    pub map: Facet,
     /// Cliloc id for the description. Ignored by clients before 7.0.13.0.
-    pub description_cliloc: i32,
+    pub description_cliloc: ClilocId,
 }
 
 /// The minimum number of character slots the list must contain.
@@ -412,41 +617,85 @@ pub struct StartLocation {
 /// and mis-render a shorter list. Sphere calls this `MINCLIVER_PADCHARLIST`.
 pub const MIN_CHARACTER_SLOTS: usize = 5;
 
-/// Character-list (`0xA9`) flag: the client may open **context menus** (the
-/// `0xBF` popup). ClassicUO's `CharacterListFlags.CLF_CONTEXT_MENU`; it sets
-/// `ClientFeatures.PopupEnabled` from this bit — *this* packet, not the `0xB9`.
-pub const CLF_CONTEXT_MENU: u32 = 0x08;
-
-/// Character-list (`0xA9`) flag: the client may use **AoS object tooltips**
-/// (OPL). ClassicUO's `CLF_PALADIN_NECROMANCER_TOOLTIPS`; it sets
-/// `ClientFeatures.TooltipsEnabled` from this bit (plus its own client-version
-/// check, so the server just needs to offer it). This is what makes a modern
-/// client send `0xD6` tooltip requests at all — the flag lives in the character
-/// list, not in `0xB9`.
-pub const CLF_TOOLTIPS: u32 = 0x20;
-
-/// The `0xB9` SupportedFeatures mask that turns on AoS: ServUO's `FeatureFlags`
-/// `T2A|UOR|UOTD|LBR|AOS` (`0x1F`). The AOS bit (`0x10`) is what makes a modern
-/// client use object tooltips and context menus; the lower expansion bits ride
-/// along as the core-expansion default and a 2D client ignores the ones it does
-/// not use. Left out is `LiveAccount` (`0x8000`), which would ask for a sixth
-/// character slot the list is not sized for.
-pub const AOS_FEATURE_FLAGS: u32 = 0x1F;
-
-/// The `0xB9` mask for Samurai Empire: AoS plus `SE` (`0x40`). ServUO's
-/// `FeatureFlags.ExpansionSE`, again without `LiveAccount`.
-pub const SE_FEATURE_FLAGS: u32 = AOS_FEATURE_FLAGS | 0x40;
-
-/// The `0xB9` mask for Mondain's Legacy: SE plus `ML` (`0x80`) and `NinthAge`
-/// (`0x200`, the custom-house tiles ML shipped). ServUO's
-/// `FeatureFlags.ExpansionML`, without `LiveAccount`.
+/// The `0xA9` character-list capability mask.
 ///
-/// **This is what makes the client draw the paperdoll's Quest button.** A client
-/// told the shard is AoS has no quest system to show a button for, so the button
-/// is simply absent — and a server that answers `0xD7`/`0x32` perfectly will
-/// still look broken, because nothing ever sends one. The same goes for the
-/// Guild button beside it.
-pub const ML_FEATURE_FLAGS: u32 = SE_FEATURE_FLAGS | 0x80 | 0x200;
+/// # Not the `0xB9` mask, and the two are one typo apart
+///
+/// Login sends two capability dwords a few bytes apart, they overlap in
+/// subject — both are about whether the client behaves like an AoS client —
+/// and until N6 both were a bare `u32` sitting in adjacent fields of
+/// `openshard_login::LoginServer`. Swapping them compiled and produced a shard
+/// whose clients drew no tooltips for reasons nothing logged. They are two
+/// types now: this one and [`SupportedFeatures`].
+///
+/// This is the mask ClassicUO actually keys its `ClientFeatures` on.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct CharacterListFlags(pub u32);
+
+impl CharacterListFlags {
+    /// Advertise nothing: a modern client stays on the classic single-click
+    /// name path.
+    pub const NONE: Self = Self(0);
+
+    /// The client may open **context menus** (the `0xBF` popup). ClassicUO's
+    /// `CharacterListFlags.CLF_CONTEXT_MENU`; it sets
+    /// `ClientFeatures.PopupEnabled` from this bit — *this* packet, not the
+    /// `0xB9`.
+    pub const CONTEXT_MENU: Self = Self(0x08);
+
+    /// The client may use **AoS object tooltips** (OPL). ClassicUO's
+    /// `CLF_PALADIN_NECROMANCER_TOOLTIPS`; it sets
+    /// `ClientFeatures.TooltipsEnabled` from this bit (plus its own
+    /// client-version check, so the server just needs to offer it). This is
+    /// what makes a modern client send `0xD6` tooltip requests at all — the
+    /// flag lives in the character list, not in `0xB9`.
+    pub const TOOLTIPS: Self = Self(0x20);
+
+    /// Both masks. A named method rather than a `BitOr` impl, on N2 amendment
+    /// 8's argument: an operator on a newtype is the same invisible coercion
+    /// `Deref` is.
+    #[must_use]
+    pub const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+/// The `0xB9` SupportedFeatures mask: which expansion feature sets the client
+/// should turn on. ServUO's `FeatureFlags`.
+///
+/// Distinct from [`CharacterListFlags`] — see its docs for what that confusion
+/// costs — and from [`Feature`], which is this crate's question about what a
+/// *version* can do. This one is a claim the shard makes about itself.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct SupportedFeatures(pub u32);
+
+impl SupportedFeatures {
+    /// Advertise nothing at all: no `0xB9` is sent.
+    pub const NONE: Self = Self(0);
+
+    /// Age of Shadows: ServUO's `T2A|UOR|UOTD|LBR|AOS` (`0x1F`). The AOS bit
+    /// (`0x10`) is what makes a modern client use object tooltips and context
+    /// menus; the lower expansion bits ride along as the core-expansion default
+    /// and a 2D client ignores the ones it does not use. Left out is
+    /// `LiveAccount` (`0x8000`), which would ask for a sixth character slot the
+    /// list is not sized for.
+    pub const AOS: Self = Self(0x1F);
+
+    /// Samurai Empire: AoS plus `SE` (`0x40`). ServUO's
+    /// `FeatureFlags.ExpansionSE`, again without `LiveAccount`.
+    pub const SE: Self = Self(Self::AOS.0 | 0x40);
+
+    /// Mondain's Legacy: SE plus `ML` (`0x80`) and `NinthAge` (`0x200`, the
+    /// custom-house tiles ML shipped). ServUO's `FeatureFlags.ExpansionML`,
+    /// without `LiveAccount`.
+    ///
+    /// **This is what makes the client draw the paperdoll's Quest button.** A
+    /// client told the shard is AoS has no quest system to show a button for,
+    /// so the button is simply absent — and a server that answers `0xD7`/`0x32`
+    /// perfectly will still look broken, because nothing ever sends one. The
+    /// same goes for the Guild button beside it.
+    pub const ML: Self = Self(Self::SE.0 | 0x80 | 0x200);
+}
 
 /// `0xB9` — the SupportedFeatures mask, sent before the character list.
 ///
@@ -474,15 +723,28 @@ pub const ML_FEATURE_FLAGS: u32 = SE_FEATURE_FLAGS | 0x80 | 0x200;
 /// since 6.0.14.2) read a four-byte mask; older ones two. Mirrors ServUO's
 /// `SupportedFeatures` / `NetState.ExtendedSupportedFeatures`.
 #[must_use]
-pub fn encode_supported_features(flags: u32, extended: bool) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(5);
+pub fn encode_supported_features(flags: SupportedFeatures, extended: bool) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(supported_features_length(extended).minimum());
     writer.u8(0xB9);
     if extended {
-        writer.u32(flags);
+        writer.u32(flags.0);
     } else {
-        writer.u16(flags as u16);
+        writer.u16(flags.0 as u16);
     }
+    debug_assert_eq!(writer.len(), supported_features_length(extended).minimum());
     writer.into_bytes()
+}
+
+/// How [`encode_supported_features`] is framed, for the mask width it was
+/// written with.
+///
+/// Kept beside the encoder for the same reason as the encoder's own docs give
+/// for not being an `EncodePacket`: the size is a function of the client, and a
+/// framer on the other end has to reach the same answer from the same rule
+/// rather than from a copy of the number.
+#[must_use]
+pub fn supported_features_length(extended: bool) -> PacketLength {
+    PacketLength::Fixed(if extended { 5 } else { 3 })
 }
 
 /// `0xA9` — the character list and starting cities.
@@ -495,8 +757,8 @@ pub struct CharacterList {
     pub characters: Vec<CharacterEntry>,
     /// The starting cities offered at character creation.
     pub starts: Vec<StartLocation>,
-    /// The client-capability mask; see [`CLF_CONTEXT_MENU`], [`CLF_TOOLTIPS`].
-    pub flags: u32,
+    /// The client-capability mask; see [`CharacterListFlags`].
+    pub flags: CharacterListFlags,
 }
 
 impl EncodePacket for CharacterList {
@@ -529,11 +791,14 @@ impl EncodePacket for CharacterList {
                 // everything after it.
                 out.fixed_string(&start.area, 32);
                 out.fixed_string(&start.name, 32);
-                out.i32(start.position.0);
-                out.i32(start.position.1);
-                out.i32(start.position.2);
-                out.i32(start.map);
-                out.i32(start.description_cliloc);
+                out.i32(i32::from(start.position.x));
+                out.i32(i32::from(start.position.y));
+                out.i32(i32::from(start.position.z));
+                // Both fields are dwords on the wire and the client reads them
+                // signed; `u32` writes the same four big-endian bytes for every
+                // value either type can hold, so the frame is unchanged.
+                out.u32(u32::from(start.map.0));
+                out.u32(start.description_cliloc.0);
                 out.u32(0);
             } else {
                 out.fixed_string(&start.area, 31);
@@ -542,8 +807,72 @@ impl EncodePacket for CharacterList {
         }
 
         if version.supports(Feature::CharacterListFlags) {
-            out.u32(self.flags);
+            out.u32(self.flags.0);
         }
+    }
+}
+
+impl DecodePacket for CharacterList {
+    const ID: u8 = 0xA9;
+
+    /// # Only the modern form
+    ///
+    /// Before 7.0.13.0 ([`Feature::ExtraStartInfo`]) a starting city is a name
+    /// and an area and nothing else — no position, no map, no cliloc. There is
+    /// no honest [`StartLocation`] to build from that, and filling the missing
+    /// fields with zeros would hand a caller three coordinates that look chosen.
+    /// So the old form says it is not decoded; a client this engine ships with
+    /// never sees it, and one that did would want to know.
+    ///
+    /// # Empty slots come back as empty slots
+    ///
+    /// The list is padded to [`MIN_CHARACTER_SLOTS`] on the way out, so what
+    /// arrives is five slots however many characters exist. Decoding gives back
+    /// exactly what is on the wire, empty names included — this is a record of
+    /// what the server said, and "slot three is empty" is something it said.
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
+        if !version.supports(Feature::ExtraStartInfo) {
+            return Err(DecodeError::Unsupported {
+                packet: <Self as DecodePacket>::ID,
+                form: "the pre-7.0.13.0 start list, which carries no coordinates",
+            });
+        }
+
+        let slots = reader.u8()? as usize;
+        let mut characters = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            let name = reader.fixed_string(CHARACTER_NAME_LENGTH)?;
+            reader.skip(PASSWORD_LENGTH)?; // the vestigial password field
+            characters.push(CharacterEntry {
+                name: CharacterName(name),
+            });
+        }
+
+        let start_count = reader.u8()? as usize;
+        let mut starts = Vec::with_capacity(start_count);
+        for _ in 0..start_count {
+            reader.skip(1)?; // the index, which is the position in this list
+            let area = reader.fixed_string(32)?;
+            let name = reader.fixed_string(32)?;
+            let position = Point::new(reader.i32()? as u16, reader.i32()? as u16, reader.i32()? as i8);
+            let map = Facet(reader.u32()? as u8);
+            let description_cliloc = ClilocId(reader.u32()?);
+            reader.skip(4)?; // the trailing zero dword
+            starts.push(StartLocation {
+                area,
+                name,
+                position,
+                map,
+                description_cliloc,
+            });
+        }
+
+        let flags = CharacterListFlags(reader.u32()?);
+        Ok(Self {
+            characters,
+            starts,
+            flags,
+        })
     }
 }
 
@@ -567,8 +896,11 @@ fn write_character_slot(writer: &mut PacketWriter, name: &str) {
 /// this does the same, so only the slot survives decoding.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DeleteCharacter {
-    /// The slot to delete, as an index into the character list.
-    pub slot: u32,
+    /// The slot to delete, as the client named it — an index into the list it
+    /// was last sent, and the one place a [`RawCharacterSlot`] is actually
+    /// read. [`RawCharacterSlot::validate`] is what turns it into a slot the
+    /// account has.
+    pub slot: RawCharacterSlot,
 }
 
 impl DecodePacket for DeleteCharacter {
@@ -576,7 +908,7 @@ impl DecodePacket for DeleteCharacter {
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         reader.skip(PASSWORD_LENGTH)?; // vestigial password field
-        let slot = reader.u32()?;
+        let slot = RawCharacterSlot(reader.u32()?);
         // The trailing client IP is unused.
         Ok(Self { slot })
     }
@@ -771,6 +1103,20 @@ pub enum LoginStagePacket {
     /// `0x83` — character deletion. Crosses the same login/world line as
     /// [`Self::CreateCharacter`], for the same reason.
     DeleteCharacter(DeleteCharacter),
+    /// `0x5D` — the character the client picked off the list, and the packet
+    /// that starts the world.
+    ///
+    /// The third of the character screen's, beside [`Self::CreateCharacter`] and
+    /// [`Self::DeleteCharacter`], and it is here for the reason the seam is drawn
+    /// where it is: everything before a character is in the world belongs to the
+    /// screen, whoever ends up acting on it. It was a [`ClientPacket`] until the
+    /// backlog of `docs/connection_state.md` caught up with it, which left the
+    /// world's dispatcher with one arm it could never legitimately reach and an
+    /// `unreachable!` standing in for the invariant. On this side of the split
+    /// that arm cannot be written.
+    ///
+    /// [`ClientPacket`]: crate::client_packet::ClientPacket
+    PlayCharacter(CharacterPlay),
 }
 
 impl LoginStagePacket {
@@ -808,6 +1154,9 @@ impl LoginStagePacket {
             DeleteCharacter::ID => decode_packet(packet, version)
                 .map(Self::DeleteCharacter)
                 .map_err(ClientLoginDecodeError::DeleteCharacter),
+            CharacterPlay::ID => decode_packet(packet, version)
+                .map(Self::PlayCharacter)
+                .map_err(ClientLoginDecodeError::PlayCharacter),
             _ => Ok(Self::Unknown(id)),
         }
     }
@@ -832,6 +1181,8 @@ pub enum ClientLoginDecodeError {
     CreateCharacter(DecodeError),
     /// `0x83` did not decode.
     DeleteCharacter(DecodeError),
+    /// `0x5D` did not decode.
+    PlayCharacter(DecodeError),
 }
 
 #[cfg(test)]
@@ -839,6 +1190,7 @@ mod tests {
     use super::*;
     use crate::error::WrongPacket;
     use crate::packet::{client_packet_length, encode_packet};
+    use crate::wire::{CharacterSlot, InvalidCharacterSlot};
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -857,7 +1209,7 @@ mod tests {
     fn shard(name: &str, address: [u8; 4]) -> ShardEntry {
         ShardEntry {
             name: name.to_owned(),
-            percent_full: 10,
+            percent_full: PercentFull::clamped(10),
             timezone: 5,
             address: Ipv4Addr::from(address),
         }
@@ -938,8 +1290,76 @@ mod tests {
         assert_eq!(bytes.len(), 39, "the table and the wire form must agree");
         assert_eq!(
             decode_packet::<DeleteCharacter>(&bytes, version()).unwrap().slot,
-            3
+            RawCharacterSlot(3)
         );
+    }
+
+    /// N9's pair for `RawCharacterSlot`: the slot a `0x83` names is three
+    /// well-formed dwords whatever number it holds, so it decodes, and the
+    /// refusal happens at promotion — where the list it indexes is in hand.
+    /// Refused and not clamped: clamping would delete *some* character.
+    #[test]
+    fn a_delete_naming_a_slot_the_account_lacks_decodes_and_is_refused() {
+        let mut bytes = vec![DeleteCharacter::ID];
+        bytes.extend(std::iter::repeat_n(0u8, PASSWORD_LENGTH));
+        bytes.extend_from_slice(&7u32.to_be_bytes());
+        bytes.extend_from_slice(&[192, 168, 0, 1]);
+
+        let decoded = decode_packet::<DeleteCharacter>(&bytes, version()).unwrap();
+        assert_eq!(decoded.slot, RawCharacterSlot(7), "the dword survives decoding");
+        assert_eq!(
+            decoded.slot.validate(5),
+            Err(InvalidCharacterSlot { slot: 7, held: 5 }),
+            "five characters means slots 0..5"
+        );
+        assert_eq!(decoded.slot.validate(8), Ok(CharacterSlot(7)));
+
+        // An empty account has no slot at all, zero included — the check is a
+        // count, so it does not need a separate "is the list empty" branch.
+        assert!(RawCharacterSlot(0).validate(0).is_err());
+        assert_eq!(RawCharacterSlot(0).validate(1), Ok(CharacterSlot(0)));
+    }
+
+    /// The bits are the client's, ported from ClassicUO and ServUO, and a
+    /// constant with the wrong value fails silently: the client simply never
+    /// sends the request the flag was supposed to enable. Pinned here per
+    /// CLAUDE.md — a flag's value belongs in a test beside the constant.
+    #[test]
+    fn the_two_capability_masks_keep_their_ported_bits() {
+        assert_eq!(CharacterListFlags::CONTEXT_MENU.0, 0x08);
+        assert_eq!(CharacterListFlags::TOOLTIPS.0, 0x20);
+        assert_eq!(
+            CharacterListFlags::TOOLTIPS
+                .with(CharacterListFlags::CONTEXT_MENU)
+                .0,
+            0x28
+        );
+        assert_eq!(CharacterListFlags::NONE.0, 0);
+
+        // ServUO's FeatureFlags: T2A|UOR|UOTD|LBR|AOS, then SE, then ML plus
+        // NinthAge. Each expansion contains the one before it.
+        assert_eq!(SupportedFeatures::AOS.0, 0x1F);
+        assert_eq!(SupportedFeatures::SE.0, 0x5F);
+        assert_eq!(SupportedFeatures::ML.0, 0x2DF);
+        for (wider, narrower) in [
+            (SupportedFeatures::SE, SupportedFeatures::AOS),
+            (SupportedFeatures::ML, SupportedFeatures::SE),
+        ] {
+            assert_eq!(
+                wider.0 & narrower.0,
+                narrower.0,
+                "{wider:?} must contain {narrower:?}"
+            );
+        }
+        // `LiveAccount` asks for a sixth character slot the list is not sized
+        // for, so no mask here may carry it.
+        for mask in [
+            SupportedFeatures::AOS,
+            SupportedFeatures::SE,
+            SupportedFeatures::ML,
+        ] {
+            assert_eq!(mask.0 & 0x8000, 0, "{mask:?} must not advertise LiveAccount");
+        }
     }
 
     #[test]
@@ -1098,17 +1518,56 @@ mod tests {
         );
     }
 
+    /// The client renders anything above 100 as garbage, so no `ShardEntry`
+    /// can be built holding such a value — the ceiling is applied where the
+    /// number is chosen, not repaired on the way out. `100` and everything
+    /// below it survives untouched: a clamp that also moved legal values would
+    /// be a rescale, and the operator's number would stop meaning what it says.
     #[test]
-    fn shard_list_clamps_a_nonsense_fullness() {
+    fn percent_full_cannot_hold_a_value_the_client_would_draw_as_garbage() {
+        assert_eq!(PercentFull::clamped(0).raw(), 0);
+        assert_eq!(PercentFull::clamped(99).raw(), 99);
+        assert_eq!(PercentFull::clamped(100).raw(), 100, "100 is legal, not clamped");
+        assert_eq!(
+            PercentFull::clamped(101).raw(),
+            100,
+            "one over is the first clamp"
+        );
+        assert_eq!(PercentFull::clamped(250).raw(), 100);
+        assert_eq!(PercentFull::EMPTY.raw(), 0);
+        assert_eq!(PercentFull::FULL.raw(), 100);
+    }
+
+    /// And the wire agrees: a nonsense number cannot reach the client through
+    /// the encoder, and one arriving *from* a server cannot leave the decoder.
+    #[test]
+    fn shard_list_carries_only_a_renderable_fullness() {
         let mut entry = shard("Britannia", [10, 0, 0, 1]);
-        entry.percent_full = 250;
+        entry.percent_full = PercentFull::clamped(250);
         let bytes = encode_packet(&ShardList { shards: vec![entry] }, ClientVersion::TOL);
         assert_eq!(bytes[40], 100, "the client renders >100 as garbage");
+
+        // Through `ServerPacket::decode`, which is the client's own route in:
+        // `decode_packet` reads the *client* length table and 0xA8 is not in it.
+        let mut forged = bytes.clone();
+        forged[40] = 250;
+        let Ok(Some(crate::server_packet::ServerPacket::ShardList(decoded))) =
+            crate::server_packet::ServerPacket::decode(&forged, ClientVersion::TOL)
+        else {
+            panic!("a shard list must decode as one");
+        };
+        assert_eq!(
+            decoded.shards[0].percent_full,
+            PercentFull::FULL,
+            "a server's nonsense byte is clamped, not carried into the client"
+        );
     }
 
     #[test]
     fn select_shard_round_trips() {
-        let select = SelectShard { index: 1 };
+        let select = SelectShard {
+            index: RawShardIndex(1),
+        };
         let bytes = select.encode();
         assert_eq!(bytes.len(), 3);
         assert_eq!(
@@ -1116,14 +1575,43 @@ mod tests {
             Some(PacketLength::Fixed(3))
         );
         assert_eq!(decode_packet::<SelectShard>(&bytes, version()).unwrap(), select);
-        assert_eq!(select.slot(), Some(0), "the wire is one-based");
+        assert_eq!(
+            select.index.validate(1),
+            Ok(ShardIndex(0)),
+            "the wire is one-based"
+        );
     }
 
+    /// N9's pair for `RawShardIndex`: an index the list never offered decodes
+    /// cleanly — it is three well-formed bytes — and is refused at promotion,
+    /// which is where a refusal belongs. Both ways of being wrong, because
+    /// they are different bugs: zero is the wire's own impossibility and used
+    /// to be checked in the packet, past-the-end used to be checked a hundred
+    /// lines away in `openshard_login`. One promotion, both refusals.
     #[test]
-    fn select_shard_zero_does_not_underflow() {
-        // Untrusted input: `index - 1` on a u16 zero would wrap to 65535 and
-        // index far out of the shard list.
-        assert_eq!(SelectShard { index: 0 }.slot(), None);
+    fn a_shard_index_the_list_never_offered_decodes_and_is_refused() {
+        for index in [0u16, 2, 99, u16::MAX] {
+            let bytes = SelectShard {
+                index: RawShardIndex(index),
+            }
+            .encode();
+            let decoded = decode_packet::<SelectShard>(&bytes, version())
+                .unwrap_or_else(|error| panic!("{index} must decode, not {error:?}"));
+            assert_eq!(decoded.index, RawShardIndex(index), "the byte survives decoding");
+            assert!(
+                decoded.index.validate(1).is_err(),
+                "{index} is not one of the one shard that was offered"
+            );
+        }
+
+        // Zero says which of the two it is, because a naive `index - 1` on a
+        // u16 zero wraps to 65535 and reads far past the list.
+        assert_eq!(RawShardIndex(0).validate(4), Err(InvalidShardIndex::Zero));
+        assert_eq!(
+            RawShardIndex(5).validate(4),
+            Err(InvalidShardIndex::PastEnd { index: 5, offered: 4 })
+        );
+        assert_eq!(RawShardIndex(4).validate(4), Ok(ShardIndex(3)), "the last shard");
     }
 
     #[test]
@@ -1141,8 +1629,7 @@ mod tests {
         // Hence the address. This test is that log line.
         let bytes = encode_packet(
             &Relay {
-                address: Ipv4Addr::new(192, 168, 11, 6),
-                port: 2593,
+                endpoint: SocketAddrV4::new(Ipv4Addr::new(192, 168, 11, 6), 2593),
                 auth_key: AuthKey(0xDEAD_BEEF),
             },
             version(),
@@ -1169,8 +1656,7 @@ mod tests {
         );
         let relay = encode_packet(
             &Relay {
-                address,
-                port: 2593,
+                endpoint: SocketAddrV4::new(address, 2593),
                 auth_key: AuthKey(0),
             },
             modern,
@@ -1192,8 +1678,7 @@ mod tests {
         ] {
             let bytes = encode_packet(
                 &Relay {
-                    address: Ipv4Addr::new(192, 168, 11, 6),
-                    port: 2593,
+                    endpoint: SocketAddrV4::new(Ipv4Addr::new(192, 168, 11, 6), 2593),
                     auth_key: AuthKey(0),
                 },
                 version,
@@ -1231,7 +1716,7 @@ mod tests {
             &CharacterList {
                 characters,
                 starts: Vec::new(),
-                flags: 0,
+                flags: CharacterListFlags::NONE,
             },
             ClientVersion::TOL,
         );
@@ -1254,7 +1739,7 @@ mod tests {
             &CharacterList {
                 characters,
                 starts: Vec::new(),
-                flags: 0,
+                flags: CharacterListFlags::NONE,
             },
             old,
         );
@@ -1266,15 +1751,15 @@ mod tests {
         let starts = vec![StartLocation {
             area: "Britain".to_owned(),
             name: "Castle Britannia".to_owned(),
-            position: (1475, 1774, 0),
-            map: 0,
-            description_cliloc: 1075072,
+            position: Point::new(1475, 1774, 0),
+            map: Facet(0),
+            description_cliloc: ClilocId(1_075_072),
         }];
 
         let list = CharacterList {
             characters: Vec::new(),
             starts,
-            flags: 0,
+            flags: CharacterListFlags::NONE,
         };
         let modern = encode_packet(&list, ClientVersion::new(7, 0, 13, 0));
         let ancient = encode_packet(&list, ClientVersion::new(7, 0, 12, 255));
@@ -1292,7 +1777,7 @@ mod tests {
         let list = CharacterList {
             characters: Vec::new(),
             starts: Vec::new(),
-            flags: 0xAABB_CCDD,
+            flags: CharacterListFlags(0xAABB_CCDD),
         };
         let with_flags = encode_packet(&list, ClientVersion::new(1, 26, 0, 1));
         let without = encode_packet(&list, ClientVersion::new(1, 26, 0, 0));

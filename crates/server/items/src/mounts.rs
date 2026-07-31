@@ -5,7 +5,7 @@ use openshard_state::components::{Aggression, Brain, Heading, Hitpoints, Movemen
 
 /// The layer a mount item rides on — the client draws whoever wears one as
 /// mounted. `0x19`, the classic mount layer.
-pub const MOUNT_LAYER: u8 = 0x19;
+pub const MOUNT_LAYER: Layer = Layer(0x19);
 
 /// How close a rider must stand to swing up.
 const MOUNT_REACH: u32 = 2;
@@ -26,7 +26,7 @@ pub fn try_mount(state: &mut WorldState, player: EntityId, target: EntityId, tar
     let Some(&Body { id: body, hue }) = state.registry.get::<Body>(target) else {
         return false;
     };
-    let Some(mount_graphic) = mount_item_for(body.0) else {
+    let Some(mount_graphic) = mount_item_for(body) else {
         return false;
     };
     if state.registry.has::<Client>(target)
@@ -53,13 +53,12 @@ pub fn try_mount(state: &mut WorldState, player: EntityId, target: EntityId, tar
         return false;
     };
     // The saddle takes the creature's own colour, so a dyed horse still looks
-    // dyed once ridden. `.0` because the item `Graphic` component is a pair of
-    // raw `u16`s where `Body` is a wire `Graphic`/`Hue`.
+    // dyed once ridden.
     state.registry.insert(
         item,
-        Graphic {
+        Drawn {
             id: mount_graphic,
-            hue: hue.0,
+            hue,
         },
     );
     state.registry.insert(
@@ -108,12 +107,7 @@ pub fn dismount(state: &mut WorldState, player: EntityId) {
     if let Some(item_serial) = state.registry.serial_of(item) {
         for watcher in equip_audience(state, player) {
             if let Some(&Client { connection, .. }) = state.registry.get::<Client>(watcher) {
-                state.send_packet(
-                    connection,
-                    &ServerPacket::Remove(Remove {
-                        serial: item_serial.raw(),
-                    }),
-                );
+                state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item_serial }));
             }
         }
     }

@@ -15,16 +15,20 @@
 use super::tests::{START, enter, packets_for, world};
 use super::*;
 use openshard_movement::Terrain;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
+use openshard_protocol::serial::RawSerial;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_state::Skill;
 use openshard_state::components::{Contained, Harvesting, Tool};
 use openshard_state::harvest::{HarvestKind, LOG_GRAPHIC, ORE_GRAPHIC, SAND_GRAPHIC, TileSource, definition};
 
 /// A pickaxe, ServUO's `Pickaxe`.
-const PICKAXE: u16 = 0x0E86;
+const PICKAXE: Graphic = Graphic(0x0E86);
 /// A hatchet — a weapon that is also a lumberjack's tool, which is the point.
-const HATCHET: u16 = 0x0F43;
+const HATCHET: Graphic = Graphic(0x0F43);
 /// A fishing pole.
-const POLE: u16 = 0x0DC0;
+const POLE: Graphic = Graphic(0x0DC0);
 
 /// A mountain face's land tile, the first row of ServUO's mining table.
 const MOUNTAIN: u16 = 220;
@@ -68,19 +72,24 @@ fn ground(world: &mut World, land: u16, static_at: Option<(u16, i8)>) {
 ///
 /// Through `spawn_with_serial` and `apply_core_defaults`, the same door a vendor's
 /// shelf uses — so the uses on it are the ones a bought tool would have.
-fn give_tool(world: &mut World, connection: ConnectionId, graphic: u16) -> EntityId {
+fn give_tool(world: &mut World, connection: ConnectionId, graphic: Graphic) -> EntityId {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = items::backpack_of(&world.state, owner).expect("a backpack");
     let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(item, Graphic { id: graphic, hue: 0 });
+    world.state.registry.insert(
+        item,
+        Drawn {
+            id: graphic,
+            hue: Hue(0),
+        },
+    );
     world.state.registry.insert(
         item,
         Contained {
             container: backpack,
-            x: 20,
-            y: 20,
-            grid: 0,
+            position: GumpPoint::new(20, 20),
+            grid: GridSlot(0),
         },
     );
     items::apply_core_defaults(&mut world.state, item, graphic);
@@ -90,7 +99,7 @@ fn give_tool(world: &mut World, connection: ConnectionId, graphic: u16) -> Entit
 /// Give the player a skill outright, so a roll is a sure thing.
 fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) {
     let entity = world.state.players[&connection];
-    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let serial = world.state.registry.serial_of(entity).unwrap();
     world.queue(Command::SetSkill {
         serial,
         skill: skill.id(),
@@ -116,10 +125,10 @@ fn swing_at(
     graphic: u16,
     now: Instant,
 ) {
-    let tool_serial = world.state.registry.serial_of(tool).unwrap().raw();
+    let tool_serial = world.state.registry.serial_of(tool).unwrap();
     world.queue(Command::DoubleClick {
         connection,
-        serial: tool_serial,
+        request: UseRequest::Use(RawSerial(tool_serial.raw())),
     });
     world.tick(now);
     let cursor_id = {
@@ -132,11 +141,7 @@ fn swing_at(
             cursor_id: openshard_protocol::wire::CursorId(cursor_id),
             object: openshard_protocol::serial::Serial::new(0),
             location: Point::new(START.0 + dx, START.1, 0),
-            graphic: if graphic == 0 {
-                None
-            } else {
-                Some(openshard_protocol::wire::Graphic(graphic))
-            },
+            graphic: (graphic != 0).then_some(Graphic(graphic)),
             cancelled: false,
         },
     });
@@ -144,7 +149,7 @@ fn swing_at(
 }
 
 /// How many of `graphic` are in the player's backpack, across every pile.
-fn carried(world: &World, connection: ConnectionId, graphic: u16) -> u32 {
+fn carried(world: &World, connection: ConnectionId, graphic: Graphic) -> u32 {
     let player = world.state.players[&connection];
     let Some(owner) = world.state.registry.serial_of(player) else {
         return 0;
@@ -161,7 +166,7 @@ fn carried(world: &World, connection: ConnectionId, graphic: u16) -> u32 {
             world
                 .state
                 .registry
-                .get::<Graphic>(*item)
+                .get::<Drawn>(*item)
                 .is_some_and(|g| g.id == graphic)
         })
         .map(|(item, _)| {
@@ -474,7 +479,7 @@ fn a_half_used_tool_and_a_half_played_lute_both_survive_a_restart() {
     let player = enter(&mut world, now);
     let pick = give_tool(&mut world, player, PICKAXE);
     world.state.registry.insert(pick, Tool { uses_left: 17 });
-    let lute = give_tool(&mut world, player, 0x0EB3); // not a tool; the branch below sets it
+    let lute = give_tool(&mut world, player, Graphic(0x0EB3)); // not a tool; the branch below sets it
     world
         .state
         .registry
@@ -490,7 +495,7 @@ fn a_half_used_tool_and_a_half_played_lute_both_survive_a_restart() {
         .filter_map(|item| item.uses.map(|uses| (item.graphic, uses)))
         .collect();
     assert!(
-        saved.contains(&(PICKAXE, 17)),
+        saved.contains(&(PICKAXE.0, 17)),
         "the pickaxe's swings were not saved: {saved:?}"
     );
     assert!(

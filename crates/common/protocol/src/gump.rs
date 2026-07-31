@@ -11,10 +11,221 @@
 //! `0xDD`, and ClassicUO and the modern 2D client both still render `0xB0`, so the
 //! compression is a later optimisation, not a requirement.
 
+use std::fmt;
+
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::Serial;
 use crate::version::ClientVersion;
+use crate::wire::ClilocId;
+
+/// Which dialog: the id the server gives a gump and the client echoes back in
+/// its `0xB1`, so a reply can be routed to whoever drew the window.
+///
+/// Server-chosen in every direction — the client only ever repeats one — so a
+/// `GumpId` in hand means *this shard named this dialog*. What arrives off the
+/// wire is a [`RawGumpId`] until a handler says it is one of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct GumpId(pub u32);
+
+/// A dialog id exactly as a client's `0xB1` echoed it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawGumpId(pub u32);
+
+impl RawGumpId {
+    /// The dialog this answers, when it is one of the `offered` — the ids the
+    /// asking handler drew.
+    ///
+    /// `docs/protocol_newtypes.md` N5's "is this one I offered", and the reason
+    /// the argument is a list: the quest system draws two windows and claims a
+    /// reply for either. An `Option` rather than a typed error, on
+    /// `RawSerial::validate`'s licence: every handler in the router asks in
+    /// turn, and all but one of them legitimately answer "not mine" — a reply
+    /// for no engine dialog at all belongs to the script pack and is forwarded,
+    /// not refused.
+    #[must_use]
+    pub fn validate(self, offered: &[GumpId]) -> Option<GumpId> {
+        offered.iter().copied().find(|id| id.0 == self.0)
+    }
+}
+
+/// The id a layout gives one of its buttons — what comes back when it is
+/// pressed. Server-chosen, like [`GumpId`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct ButtonId(pub u32);
+
+impl ButtonId {
+    /// The id the client's own close box reports: `0`.
+    ///
+    /// A layout may deliberately hand this to a button of its own — the quest
+    /// window's `X` does — and then the two are the same answer by
+    /// construction, which is what ServUO's `Buttons.Close = 0` means too.
+    ///
+    /// [`UNUSED`](Self::UNUSED) is this same `0` saying something else, and the
+    /// two are the only meanings the value carries. A *third* would be one too
+    /// many: at that point the type wants to be an enum with a `Reply(u32)` arm
+    /// rather than a newtype with named zeroes, because three names for one
+    /// value is a discriminant nobody wrote down. See
+    /// `docs/protocol_newtypes.md` N5.
+    pub const CLOSE_BOX: Self = Self(0);
+
+    /// What a [`GumpButton::Page`] button puts in the id field: nothing.
+    ///
+    /// A page button is handled inside the client — it flips a page and sends
+    /// no `0xB1` at all — so its id is never read by anyone. The same `0` as
+    /// [`CLOSE_BOX`](Self::CLOSE_BOX) and a different statement, which is why
+    /// it has its own name: ServUO writes `0` here too, and reading that as
+    /// "the close box" would be a coincidence mistaken for a meaning.
+    pub const UNUSED: Self = Self(0);
+}
+
+/// A button id exactly as a client's `0xB1` sent it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawButtonId(pub u32);
+
+impl RawButtonId {
+    /// What the player did — total, and the point of the type.
+    ///
+    /// Every one of the 2³² values is either the close box or a button id, so
+    /// nothing can be refused here; what the split removes is the bare `0`
+    /// that three handlers were each comparing against by hand. The same shape
+    /// as `DoubleClick::interpret` (N4): one field carrying a value *and* an
+    /// answer, told apart once.
+    ///
+    /// Whether the id is one the *layout* actually drew is a different
+    /// question, and a per-window one — the craft window's ids are computed
+    /// (`kind + index * 7`) where the quest log's are a table plus a row
+    /// offset — so it stays in each handler's `match`, which is where it has
+    /// always been.
+    #[inline]
+    #[must_use]
+    pub const fn interpret(self) -> GumpAnswer {
+        match self.0 {
+            0 => GumpAnswer::Closed,
+            id => GumpAnswer::Pressed(ButtonId(id)),
+        }
+    }
+}
+
+/// What a `0xB1` says the player did with the window.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum GumpAnswer {
+    /// The close box: dismissed without choosing.
+    Closed,
+    /// A button was pressed, by the id the layout gave it.
+    Pressed(ButtonId),
+}
+
+/// The id a layout gives a checkbox or a radio button. The client returns the
+/// ids of the ones left *on* when a reply button is pressed.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct SwitchId(pub u32);
+
+/// A switch id exactly as a client's `0xB1` sent it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawSwitchId(pub u32);
+
+impl RawSwitchId {
+    /// The switch this names, when the group that was drawn had `offered` of
+    /// them, numbered from zero.
+    ///
+    /// Every switch group this engine draws is numbered that way — a radio per
+    /// destination, a yes and a no — so the count is the whole domain, and a
+    /// group's *length* is the one thing a handler always still has when the
+    /// reply arrives. Refused rather than clamped, for
+    /// [`crate::context::RawContextMenuIndex::validate`]'s reason: picking a
+    /// neighbouring row is worse than picking none.
+    pub const fn validate(self, offered: usize) -> Result<SwitchId, InvalidSwitchId> {
+        if (self.0 as usize) < offered {
+            Ok(SwitchId(self.0))
+        } else {
+            Err(InvalidSwitchId { id: self.0, offered })
+        }
+    }
+}
+
+/// A `0xB1` naming a switch the gump it answers does not have.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct InvalidSwitchId {
+    /// The id the client sent.
+    pub id: u32,
+    /// How many switches the group actually had.
+    pub offered: usize,
+}
+
+impl fmt::Display for InvalidSwitchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "switch {} was set in a group of {}", self.id, self.offered)
+    }
+}
+
+impl std::error::Error for InvalidSwitchId {}
+
+/// A point in the client's gump space: pixels, with the origin at the top left
+/// of whatever the coordinate is measured against.
+///
+/// A pair and not two numbers, for `MapSize`'s and `Vitals`' reason (N1/N2):
+/// both halves are read and written together, and half a position is not a
+/// smaller one, it is a window in the wrong place. Signed because the layout
+/// language allows it — the quest frame puts an element at `x = -16`, and
+/// formatting that through an unsigned type sends `4294967280` and the client
+/// drops the whole layout.
+///
+/// The same space is measured from two origins: [`GumpDisplay`] positions a
+/// window on the screen, and `containers::ContainedItem` positions an icon
+/// inside a container's art. The wire widths differ (four bytes and two), the
+/// space does not.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct GumpPoint {
+    /// Pixels from the left.
+    pub x: i32,
+    /// Pixels from the top.
+    pub y: i32,
+}
+
+impl GumpPoint {
+    /// A point, from its two halves.
+    #[must_use]
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
+
+/// The value a client keys an open gump on and echoes back in its `0xB1`.
+///
+/// Opaque the way [`CursorId`](crate::wire::CursorId) is: the server picks it,
+/// the client repeats it, and nothing about the number itself means anything.
+/// This engine keys a window on the mobile it was drawn for, so
+/// [`GumpKey::on`] is how one is usually made — but that is a convention and
+/// not the field's meaning. ServUO puts `Gump.Serial` here, a per-instance
+/// counter that is never an object, and `AnimalLore` keys its window on its own
+/// dialog id. So this is deliberately not a [`Serial`]: `0` is legal and means
+/// a standalone dialog, which no serial can say.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct GumpKey(pub u32);
+
+impl GumpKey {
+    /// A dialog belonging to nothing in the world. ServUO passes `0` for these
+    /// too; some clients will not answer a `0xB1` for one, so a window that
+    /// wants a reply should be keyed on something.
+    pub const STANDALONE: Self = Self(0);
+
+    /// The key a window drawn for `object` takes — this engine's convention.
+    #[must_use]
+    pub const fn on(object: Serial) -> Self {
+        Self(object.raw())
+    }
+}
+
+/// A gump key exactly as a client's `0xB1` echoed it.
+///
+/// Class D in `docs/protocol_newtypes.md`'s table, and so it has no promotion:
+/// nothing reads it. A reply is routed by its [`RawGumpId`] alone, and each
+/// handler then matches against the context it remembers drawing — which is a
+/// stronger check than the echo could be, since the client chose what to echo.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawGumpKey(pub u32);
 
 /// The client's white, in the 15-bit colour a gump element takes.
 pub const GUMP_WHITE: u32 = 0x7FFF;
@@ -190,7 +401,7 @@ impl GumpLayout {
         pressed: u32,
         kind: GumpButton,
         param: u32,
-        id: u32,
+        id: ButtonId,
     ) {
         self.element(
             "button",
@@ -201,14 +412,14 @@ impl GumpLayout {
                 i64::from(pressed),
                 kind.code(),
                 i64::from(param),
-                i64::from(id),
+                i64::from(id.0),
             ],
         );
     }
 
     /// A radio button. Only one per group may be on; the client returns the
     /// `switch_id` of whichever is set when a reply button is pressed.
-    pub fn radio(&mut self, x: i32, y: i32, off: u32, on: u32, initial: bool, switch_id: u32) {
+    pub fn radio(&mut self, x: i32, y: i32, off: u32, on: u32, initial: bool, switch_id: SwitchId) {
         self.element(
             "radio",
             &[
@@ -217,13 +428,13 @@ impl GumpLayout {
                 i64::from(off),
                 i64::from(on),
                 i64::from(initial),
-                i64::from(switch_id),
+                i64::from(switch_id.0),
             ],
         );
     }
 
     /// A checkbox. Like [`radio`](Self::radio), but independent of its neighbours.
-    pub fn check(&mut self, x: i32, y: i32, off: u32, on: u32, initial: bool, switch_id: u32) {
+    pub fn check(&mut self, x: i32, y: i32, off: u32, on: u32, initial: bool, switch_id: SwitchId) {
         self.element(
             "checkbox",
             &[
@@ -232,7 +443,7 @@ impl GumpLayout {
                 i64::from(off),
                 i64::from(on),
                 i64::from(initial),
-                i64::from(switch_id),
+                i64::from(switch_id.0),
             ],
         );
     }
@@ -322,7 +533,7 @@ impl GumpLayout {
         y: i32,
         width: i32,
         height: i32,
-        cliloc: u32,
+        cliloc: ClilocId,
         background: bool,
         scrollbar: bool,
     ) {
@@ -333,7 +544,7 @@ impl GumpLayout {
                 i64::from(y),
                 i64::from(width),
                 i64::from(height),
-                i64::from(cliloc),
+                i64::from(cliloc.0),
                 i64::from(background),
                 i64::from(scrollbar),
             ],
@@ -347,7 +558,7 @@ impl GumpLayout {
         y: i32,
         width: i32,
         height: i32,
-        cliloc: u32,
+        cliloc: ClilocId,
         color: u32,
         background: bool,
         scrollbar: bool,
@@ -359,7 +570,7 @@ impl GumpLayout {
                 i64::from(y),
                 i64::from(width),
                 i64::from(height),
-                i64::from(cliloc),
+                i64::from(cliloc.0),
                 i64::from(background),
                 i64::from(scrollbar),
                 i64::from(color),
@@ -377,7 +588,7 @@ impl GumpLayout {
         y: i32,
         width: i32,
         height: i32,
-        cliloc: u32,
+        cliloc: ClilocId,
         args: &str,
         color: u32,
         background: bool,
@@ -393,7 +604,7 @@ impl GumpLayout {
                 i64::from(background),
                 i64::from(scrollbar),
                 i64::from(color),
-                i64::from(cliloc),
+                i64::from(cliloc.0),
             ],
         );
         let brace = self.layout.pop();
@@ -474,9 +685,10 @@ impl GumpLayout {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CloseGump {
     /// Which dialog to close.
-    pub gump_id: u32,
-    /// What the closed gump reports as its answer. ServUO passes `0`.
-    pub button: u32,
+    pub gump_id: GumpId,
+    /// What the closed gump reports as its answer. ServUO passes
+    /// [`ButtonId::CLOSE_BOX`], and so does every caller here.
+    pub button: ButtonId,
 }
 
 impl EncodePacket for CloseGump {
@@ -486,8 +698,8 @@ impl EncodePacket for CloseGump {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u16(13);
         out.u16(0x04);
-        out.u32(self.gump_id);
-        out.u32(self.button);
+        out.u32(self.gump_id.0);
+        out.u32(self.button.0);
     }
 }
 
@@ -500,14 +712,12 @@ impl EncodePacket for CloseGump {
 /// LINE }` picks `lines[LINE]`), sent as big-endian UTF-16.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GumpDisplay {
-    /// The context the gump belongs to (a mobile, an item, or `0` standalone).
-    pub serial: u32,
+    /// What the client keys the open window on, and echoes back.
+    pub serial: GumpKey,
     /// Which dialog — echoed back in the `0xB1`.
-    pub gump_id: u32,
-    /// Screen x.
-    pub x: i32,
-    /// Screen y.
-    pub y: i32,
+    pub gump_id: GumpId,
+    /// Where the window opens on the screen.
+    pub at: GumpPoint,
     /// The gump command string — see [`GumpLayout::finish`].
     pub layout: String,
     /// The strings the layout refers to by index.
@@ -519,10 +729,10 @@ impl EncodePacket for GumpDisplay {
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
-        out.u32(self.gump_id);
-        out.u32(self.x as u32);
-        out.u32(self.y as u32);
+        out.u32(self.serial.0);
+        out.u32(self.gump_id.0);
+        out.u32(self.at.x as u32);
+        out.u32(self.at.y as u32);
 
         // The layout is ASCII with a byte-count prefix; the client reads exactly
         // that many bytes, so no terminator is needed.
@@ -549,15 +759,23 @@ impl EncodePacket for GumpDisplay {
 /// choosing. Otherwise it is the id the layout gave the button that was clicked.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GumpResponse {
-    /// The context serial the gump was opened on.
-    pub serial: u32,
-    /// Which dialog answered — the `gump_id` the server sent.
-    pub gump_id: u32,
-    /// The button pressed; `0` means the gump was closed without a choice.
-    pub button: u32,
+    /// The key the gump was opened under, echoed back. Never read — see
+    /// [`RawGumpKey`].
+    pub serial: RawGumpKey,
+    /// Which dialog answered — the `gump_id` the server sent, as echoed.
+    pub gump_id: RawGumpId,
+    /// The button pressed, or the close box. See [`RawButtonId::interpret`].
+    pub button: RawButtonId,
     /// The ids of the switches (checkboxes, radio buttons) left *on*.
-    pub switches: Vec<u32>,
+    pub switches: Vec<RawSwitchId>,
     /// Text fields, as `(field id, contents)`.
+    ///
+    /// Both halves stay untyped, and the reason is that nothing in the engine
+    /// reads them: every window it draws answers with buttons and switches, and
+    /// a text field only ever appears in a *pack* gump, so the id is one the
+    /// pack chose and the check "is this a field I drew" is the pack's to make,
+    /// above the script bridge. The engine types what the engine reads —
+    /// `docs/protocol_newtypes.md`, N5's amendments.
     pub text_entries: Vec<(u16, String)>,
 }
 
@@ -567,14 +785,14 @@ impl DecodePacket for GumpResponse {
     /// `decode_packet` has already skipped the length field for a `Variable`
     /// id — see its doc comment — so this starts straight at the serial.
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
-        let serial = reader.u32()?;
-        let gump_id = reader.u32()?;
-        let button = reader.u32()?;
+        let serial = RawGumpKey(reader.u32()?);
+        let gump_id = RawGumpId(reader.u32()?);
+        let button = RawButtonId(reader.u32()?);
 
         let switch_count = reader.u32()? as usize;
         let mut switches = Vec::with_capacity(switch_count.min(64));
         for _ in 0..switch_count {
-            switches.push(reader.u32()?);
+            switches.push(RawSwitchId(reader.u32()?));
         }
 
         let text_count = reader.u32()? as usize;
@@ -613,7 +831,7 @@ mod tests {
         // The exact bytes the admin gump has been hand-writing, from the builder.
         let mut layout = GumpLayout::new();
         layout.background(0, 0, 200, 200, 5054);
-        layout.button(10, 10, 4005, 4007, GumpButton::Reply, 0, 1);
+        layout.button(10, 10, 4005, 4007, GumpButton::Reply, 0, ButtonId(1));
         assert_eq!(
             layout.finish().0,
             "{ resizepic 0 0 5054 200 200 }{ button 10 10 4005 4007 1 0 1 }"
@@ -679,7 +897,17 @@ mod tests {
     #[test]
     fn a_localized_line_with_arguments_ends_in_its_argument_run() {
         let mut layout = GumpLayout::new();
-        layout.html_localized_args(98, 140, 312, 16, 1_074_782, "Britain", GUMP_WHITE, false, false);
+        layout.html_localized_args(
+            98,
+            140,
+            312,
+            16,
+            ClilocId(1_074_782),
+            "Britain",
+            GUMP_WHITE,
+            false,
+            false,
+        );
         assert_eq!(
             layout.finish().0,
             "{ xmfhtmltok 98 140 312 16 0 0 32767 1074782 @Britain@ }"
@@ -690,8 +918,8 @@ mod tests {
     fn a_close_gump_names_its_dialog_and_button() {
         let bytes = encode_packet(
             &CloseGump {
-                gump_id: 0x0051_0001,
-                button: 0,
+                gump_id: GumpId(0x0051_0001),
+                button: ButtonId::CLOSE_BOX,
             },
             version(),
         );
@@ -713,10 +941,9 @@ mod tests {
         let (string, lines) = layout.finish();
         let bytes = encode_packet(
             &GumpDisplay {
-                serial: 0,
-                gump_id: 0x0051_0001,
-                x: 75,
-                y: 25,
+                serial: GumpKey::STANDALONE,
+                gump_id: GumpId(0x0051_0001),
+                at: GumpPoint::new(75, 25),
                 layout: string.to_owned(),
                 lines: lines.to_vec(),
             },
@@ -731,8 +958,8 @@ mod tests {
         // The resign dialog is radios plus one OK button: without the switch ids
         // the answer is "OK" with no idea what was chosen.
         let mut layout = GumpLayout::new();
-        layout.radio(100, 100, 0x25F8, 0x25FB, false, 0);
-        layout.radio(100, 120, 0x25F8, 0x25FB, true, 1);
+        layout.radio(100, 100, 0x25F8, 0x25FB, false, SwitchId(0));
+        layout.radio(100, 120, 0x25F8, 0x25FB, true, SwitchId(1));
         assert_eq!(
             layout.finish().0,
             "{ radio 100 100 9720 9723 0 0 }{ radio 100 120 9720 9723 1 1 }"
@@ -749,18 +976,17 @@ mod tests {
         p[1..3].copy_from_slice(&len.to_be_bytes());
 
         let got: GumpResponse = decode_packet(&p, version()).unwrap();
-        assert_eq!(got.button, 1);
-        assert_eq!(got.switches, vec![1], "which radio was set");
+        assert_eq!(got.button.interpret(), GumpAnswer::Pressed(ButtonId(1)));
+        assert_eq!(got.switches, vec![RawSwitchId(1)], "which radio was set");
     }
 
     #[test]
     fn a_gump_declares_its_own_length_and_id() {
         let bytes = encode_packet(
             &GumpDisplay {
-                serial: 0,
-                gump_id: 0x00AD_0001,
-                x: 50,
-                y: 40,
+                serial: GumpKey::STANDALONE,
+                gump_id: GumpId(0x00AD_0001),
+                at: GumpPoint::new(50, 40),
                 layout: "{ resizepic 0 0 5054 200 200 }{ button 10 10 4005 4007 1 0 1 }".to_owned(),
                 lines: vec!["Spawn".to_owned()],
             },
@@ -781,10 +1007,9 @@ mod tests {
         // "Ok" is two code units; each is a big-endian u16.
         let bytes = encode_packet(
             &GumpDisplay {
-                serial: 0,
-                gump_id: 1,
-                x: 0,
-                y: 0,
+                serial: GumpKey::STANDALONE,
+                gump_id: GumpId(1),
+                at: GumpPoint::new(0, 0),
                 layout: "{ page 0 }".to_owned(),
                 lines: vec!["Ok".to_owned()],
             },
@@ -816,10 +1041,10 @@ mod tests {
         p[1..3].copy_from_slice(&len.to_be_bytes());
 
         let got: GumpResponse = decode_packet(&p, version()).unwrap();
-        assert_eq!(got.serial, 0x1234);
-        assert_eq!(got.gump_id, 0x00AD_0001);
-        assert_eq!(got.button, 3);
-        assert_eq!(got.switches, vec![7]);
+        assert_eq!(got.serial, RawGumpKey(0x1234));
+        assert_eq!(got.gump_id, RawGumpId(0x00AD_0001));
+        assert_eq!(got.button, RawButtonId(3));
+        assert_eq!(got.switches, vec![RawSwitchId(7)]);
         assert_eq!(got.text_entries, vec![(2, "Hi".to_owned())]);
     }
 
@@ -835,7 +1060,66 @@ mod tests {
         p[1..3].copy_from_slice(&len.to_be_bytes());
 
         let got: GumpResponse = decode_packet(&p, version()).unwrap();
-        assert_eq!(got.button, 0, "the close box");
+        assert_eq!(got.button.interpret(), GumpAnswer::Closed, "the close box");
         assert!(got.switches.is_empty());
+    }
+
+    #[test]
+    fn every_button_a_client_can_send_interprets() {
+        // Class B is total or it is not class B. `0` is the close box and
+        // everything else is an id; there is no third answer, including at the
+        // ends.
+        assert_eq!(RawButtonId(0).interpret(), GumpAnswer::Closed);
+        assert_eq!(RawButtonId(1).interpret(), GumpAnswer::Pressed(ButtonId(1)));
+        assert_eq!(
+            RawButtonId(u32::MAX).interpret(),
+            GumpAnswer::Pressed(ButtonId(u32::MAX)),
+            "a button id no layout drew is still a press; whether it was offered \
+             is the handler's match, not this"
+        );
+    }
+
+    #[test]
+    fn a_reply_for_a_dialog_this_side_never_drew_names_none_of_them() {
+        // N9's pair for the gump id. The forged reply decodes — a `0xB1` is a
+        // well-formed packet whichever number it carries — and then names no
+        // dialog the asking handler offered.
+        let quest = GumpId(0x0051_0001);
+        let resign = GumpId(0x0051_0002);
+        assert_eq!(RawGumpId(0x0051_0002).validate(&[quest, resign]), Some(resign));
+        assert_eq!(
+            RawGumpId(0x00AD_0001).validate(&[quest, resign]),
+            None,
+            "the admin menu's id is not the quest system's to answer"
+        );
+        assert_eq!(RawGumpId(0).validate(&[quest]), None);
+    }
+
+    #[test]
+    fn a_switch_no_group_offered_decodes_cleanly_and_is_refused() {
+        // N9's pair for the switches. A `0xB1` claiming radio 9 of a
+        // three-destination list must not select destination 9 — nor
+        // destination 2, which is what clamping would do.
+        let mut p = vec![0xB1u8, 0, 0];
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&5u32.to_be_bytes());
+        p.extend_from_slice(&1u32.to_be_bytes()); // a reply button
+        p.extend_from_slice(&1u32.to_be_bytes()); // one switch on
+        p.extend_from_slice(&9u32.to_be_bytes()); // ...id 9
+        p.extend_from_slice(&0u32.to_be_bytes()); // no text
+        let len = u16::try_from(p.len()).unwrap();
+        p[1..3].copy_from_slice(&len.to_be_bytes());
+
+        let got: GumpResponse = decode_packet(&p, version()).unwrap();
+        assert_eq!(got.switches, vec![RawSwitchId(9)], "the id arrives intact");
+        assert_eq!(
+            got.switches[0].validate(3),
+            Err(InvalidSwitchId { id: 9, offered: 3 })
+        );
+        assert_eq!(
+            RawSwitchId(2).validate(3),
+            Ok(SwitchId(2)),
+            "the last row of three"
+        );
     }
 }

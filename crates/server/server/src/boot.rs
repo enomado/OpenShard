@@ -6,7 +6,7 @@ use super::*;
 /// means the first thing a new operator sees is the file they need to edit, with
 /// the `advertise` warning in it, instead of a shard that works on their laptop
 /// and nowhere else for reasons nobody wrote down.
-pub(crate) fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
     if !Path::new(path).exists() {
         std::fs::write(path, DEFAULT_TOML)?;
         info!(path, "no config found; wrote the default");
@@ -30,7 +30,7 @@ pub(crate) fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Erro
 /// Opening the database can fail, and that is fatal: a shard told to persist that
 /// cannot is not a shard anyone wants started in memory by surprise, losing
 /// everything at the next stop.
-pub(crate) async fn open_store(config: &Config) -> Result<Arc<dyn Store>, Box<dyn std::error::Error>> {
+pub async fn open_store(config: &Config) -> Result<Arc<dyn Store>, Box<dyn std::error::Error>> {
     let target = config.persistence.database.trim();
     if target.is_empty() {
         warn!(
@@ -132,23 +132,23 @@ fn expansion_index(name: &str) -> u8 {
     }
 }
 
-pub(crate) fn supported_features_of(config: &Config) -> u32 {
+pub(crate) fn supported_features_of(config: &Config) -> SupportedFeatures {
     let g = &config.gameplay;
     // The expansion the operator asked for. This is what the client builds its
     // paperdoll from: under AoS there is no Quest button to press, so the whole
     // `0xD7`/`0x32` path is unreachable however correctly it is implemented.
     let expansion = match g.expansion.trim().to_ascii_lowercase().as_str() {
-        "aos" => openshard_protocol::login::AOS_FEATURE_FLAGS,
-        "se" => openshard_protocol::login::SE_FEATURE_FLAGS,
+        "aos" => SupportedFeatures::AOS,
+        "se" => SupportedFeatures::SE,
         // `config` has already refused anything else; ML is the default.
-        _ => openshard_protocol::login::ML_FEATURE_FLAGS,
+        _ => SupportedFeatures::ML,
     };
     // With tooltips and context menus both off the shard advertises nothing at
     // all and a modern client falls back to the classic single-click name — the
     // pre-AoS feel, which is a choice an operator can still make.
     let aos = openshard_world::TooltipMode::parse(&g.tooltips) != openshard_world::TooltipMode::Off
         || g.context_menus;
-    if aos { expansion } else { 0 }
+    if aos { expansion } else { SupportedFeatures::NONE }
 }
 
 /// The `0xA9` character-list flags this shard advertises, from the tooltip and
@@ -159,16 +159,30 @@ pub(crate) fn supported_features_of(config: &Config) -> u32 {
 /// keys on the character-list flags, not the `0xB9` SupportedFeatures. Without
 /// the right bits here a modern client never sends a tooltip (`0xD6`) or
 /// context-menu (`0xBF`) request, whatever its version.
-pub(crate) fn character_list_flags_of(config: &Config) -> u32 {
+pub(crate) fn character_list_flags_of(config: &Config) -> CharacterListFlags {
     let g = &config.gameplay;
-    let mut flags = 0;
+    let mut flags = CharacterListFlags::NONE;
     if openshard_world::TooltipMode::parse(&g.tooltips) != openshard_world::TooltipMode::Off {
-        flags |= openshard_protocol::login::CLF_TOOLTIPS;
+        flags = flags.with(CharacterListFlags::TOOLTIPS);
     }
     if g.context_menus {
-        flags |= openshard_protocol::login::CLF_CONTEXT_MENU;
+        flags = flags.with(CharacterListFlags::CONTEXT_MENU);
     }
     flags
+}
+
+/// What the character screen offers, from the config.
+///
+/// The cities are filtered to the facets this shard loaded, so every one offered
+/// is a place a player can actually be put. The two masks are the same tooltip
+/// and context-menu settings read once more — one setting, three consumers, and
+/// they must agree or a modern client is told to expect tooltips it never gets.
+pub(crate) fn character_screen_of(config: &Config) -> CharacterScreen {
+    CharacterScreen {
+        starts: crate::start_cities(&config.world.facets, (config.world.start.x, config.world.start.y)),
+        flags: character_list_flags_of(config),
+        features: supported_features_of(config),
+    }
 }
 
 /// The world the config asks for, before a map or a save is laid over it.
@@ -180,6 +194,7 @@ pub(crate) fn character_list_flags_of(config: &Config) -> u32 {
 fn configured_world(config: &Config) -> World {
     let world = World::new((config.world.start.x, config.world.start.y))
         .with_gameplay(gameplay_of(config))
+        .with_character_screen(character_screen_of(config))
         .with_save_seconds(config.persistence.save_seconds);
     // Only when the operator pinned one. There is no `u64` that means "no seed", so
     // an absent `world.seed` has to leave the world's own default in place rather
@@ -196,12 +211,255 @@ fn configured_world(config: &Config) -> World {
     }
 }
 
+/// Everything a shard needs before its first tick that has to be read off a
+/// disk: the accounts, and a world with the last save laid over it.
+///
+/// Two values rather than one because they are two owners — the accounts go to
+/// [`LoginServer`], the world to the tick — and the only thing they share is that
+/// both are finished by the time the loop starts.
+pub(crate) struct Restored {
+    pub(crate) accounts: DevAccounts,
+    pub(crate) world: World,
+}
+
+/// Fill a freshly built world from the store and the config, in the one order
+/// that works.
+///
+/// The order is the whole reason this is a function and not seven calls in the
+/// shard loop: characters before items, because the serials `restore_characters`
+/// reserves are the owners the item records point at; items before mobiles,
+/// because a mobile is equipped out of the inventories the items filed; the
+/// config's characters after the store's, so a name on both keeps the row that
+/// describes it. Each function's own doc says why it sits where it does.
+///
+/// Nothing here is fatal. A store that cannot be read is logged at each step and
+/// the shard comes up with whatever it did get: a shard that refuses to start
+/// because one table is unreadable helps nobody, and the alternative to a
+/// partially restored world is no world at all.
+pub(crate) async fn restore(store: &dyn Store, config: &Config, world: World) -> Restored {
+    let accounts = load_accounts(store, config).await;
+    let mut world = world;
+    restore_characters(store, &mut world).await;
+    seed_configured_characters(config, &mut world);
+    restore_items(store, &mut world).await;
+    restore_mobiles(store, &mut world).await;
+    restore_decorations(store, &mut world).await;
+    restore_spawners(store, &mut world).await;
+    restore_regions(store, &mut world).await;
+    let world = restore_world(store, world, config.world.seed).await;
+    Restored { accounts, world }
+}
+
+/// Accounts come from the store first — their credentials are the argon2
+/// hashes saved there — and config seeds the rest. The store is authoritative
+/// for a password once it has one, so a config `[[accounts]]` line only
+/// creates an account the store has never seen; changing a config password
+/// after the first boot does nothing (the shard says as much in the docs).
+async fn load_accounts(store: &dyn Store, config: &Config) -> DevAccounts {
+    let mut accounts = DevAccounts::new();
+    match store.accounts().await {
+        Ok(stored) => {
+            for record in stored {
+                accounts = accounts.with_credential(&record.name, &record.credential);
+            }
+        }
+        Err(error) => error!(%error, "could not read saved accounts; config seeds them instead"),
+    }
+    for account in &config.accounts {
+        // Seed a config account only if the store has never seen it, hashing the
+        // plaintext once and writing that same hash both in memory and to the
+        // store — never the plaintext.
+        if !accounts.contains(&account.name) {
+            let credential = openshard_login::password::hash(&account.password);
+            accounts = accounts.with_credential(&account.name, &credential);
+            let record = AccountRecord {
+                name: account.name.clone(),
+                credential,
+            };
+            if let Err(error) = store.put_account(&record).await {
+                warn!(%account.name, %error, "could not persist a configured account");
+            }
+        }
+        // Access comes from config every boot regardless: it is deliberately not
+        // persisted, but re-derived at each login. The account's *characters* are
+        // not the accounts' business at all any more — they go to the world's
+        // roster, in `seed_configured_characters`.
+        // An unparseable access level is logged and left a player — authority is
+        // never granted by a typo.
+        match account.access.0.parse::<AccessLevel>() {
+            Ok(AccessLevel::Player) => {}
+            Ok(level) => accounts = accounts.with_access(&account.name, level),
+            Err(error) => {
+                warn!(%account.name, %error, "unknown access level; treating as player")
+            }
+        }
+    }
+    accounts
+}
+
+/// Bring the world's characters back from the database.
+///
+/// All of it goes to the world and none of it to the accounts: a stored row says
+/// both that the character exists and where it was, and since S5 of
+/// `docs/connection_state.md` the roster is what holds each. The accounts keep
+/// credentials and authority — what a login is about — and nothing that a
+/// character screen would read.
+async fn restore_characters(store: &dyn Store, world: &mut World) {
+    match store.characters().await {
+        Ok(characters) => {
+            world.restore_characters(characters);
+            if world.stored_characters() > 0 {
+                info!(
+                    characters = world.stored_characters(),
+                    "restored the world from the database"
+                );
+            }
+        }
+        Err(error) => error!(%error, "could not read saved characters; starting with none"),
+    }
+}
+
+/// Put the config's `[[accounts]] characters` on the world's lists.
+///
+/// The other half of who exists, beside the store's rows. A configured character
+/// that has never been played has nothing saved anywhere — no serial, no
+/// position — so all this records is that it exists; entering it spawns a fresh
+/// one at the start city. Called after [`restore_characters`], so a name the
+/// store also has keeps the row that describes it rather than being re-added as
+/// undescribed.
+fn seed_configured_characters(config: &Config, world: &mut World) {
+    for account in &config.accounts {
+        for character in &account.characters {
+            world.enrol_character(&account.name, character);
+        }
+    }
+}
+
+/// Bring back saved items: the world reserves their serials, drops the loose
+/// ground clutter back where it lay, and files each character's carried
+/// inventory to re-equip when it logs in. Called after `restore_characters`,
+/// so their serials are already reserved and an item can point at the
+/// container it was in.
+async fn restore_items(store: &dyn Store, world: &mut World) {
+    match store.items().await {
+        Ok(items) => {
+            if !items.is_empty() {
+                info!(items = items.len(), "restored saved items");
+            }
+            world.restore_items(items);
+        }
+        Err(error) => error!(%error, "could not read saved items; starting with none"),
+    }
+}
+
+/// Bring back the world's NPC mobiles — townsfolk, vendors, creatures — each
+/// exactly as saved. Called after `restore_items`, so each mobile's gear and
+/// stock is already filed under its serial for `World::restore_mobiles` to
+/// equip. This is the whole-world model: the pack seeds a fresh world once (a
+/// staff Populate), and from then on the save is the truth — nothing respawns
+/// at boot.
+async fn restore_mobiles(store: &dyn Store, world: &mut World) {
+    match store.mobiles().await {
+        Ok(mobiles) => {
+            if !mobiles.is_empty() {
+                info!(mobiles = mobiles.len(), "restored the world's mobiles");
+            }
+            world.restore_mobiles(mobiles);
+        }
+        Err(error) => error!(%error, "could not read saved mobiles; starting with none"),
+    }
+}
+
+/// Bring back the placed decoration, door state and all.
+async fn restore_decorations(store: &dyn Store, world: &mut World) {
+    match store.decorations().await {
+        Ok(decorations) => {
+            if !decorations.is_empty() {
+                info!(decorations = decorations.len(), "restored the world's decoration");
+            }
+            world.restore_decorations(decorations);
+        }
+        Err(error) => error!(%error, "could not read saved decorations; starting with none"),
+    }
+}
+
+/// Bring back the spawn regions with their respawn timers, so a populated area
+/// stays populated across a restart and a rare spawn keeps its remaining wait
+/// rather than popping again the moment the shard comes up.
+async fn restore_spawners(store: &dyn Store, world: &mut World) {
+    match store.spawners().await {
+        Ok(spawners) => {
+            if !spawners.is_empty() {
+                info!(spawners = spawners.len(), "restored spawn regions");
+            }
+            world.restore_spawners(spawners);
+        }
+        Err(error) => error!(%error, "could not read saved spawners; starting with none"),
+    }
+}
+
+/// Bring back the named regions — towns, dungeons, guarded zones. Saved like
+/// everything else, so a restart keeps its guards, its music and the dark in
+/// its caves without waiting for a staff `.admin`.
+async fn restore_regions(store: &dyn Store, world: &mut World) {
+    match store.regions().await {
+        Ok(regions) => {
+            if !regions.is_empty() {
+                info!(regions = regions.len(), "restored the world's regions");
+            }
+            world.restore_regions(regions);
+        }
+        Err(error) => error!(%error, "could not read saved regions; starting with none"),
+    }
+}
+
+/// Bring back the two things only the world itself knew: the hour of the day, and
+/// where its roll generator had got to.
+///
+/// The tick counter restarts at zero by design, so without the clock every restart
+/// would be a fresh midnight. The generator is the same shape of loss with a
+/// sharper edge — re-seeded, it does not roll *differently*, it rolls the previous
+/// run's sequence again, which is a thing a player who dislikes a roll can arrange
+/// by getting the shard restarted.
+///
+/// A store with no such row yet — a world nobody has saved — is left exactly as
+/// built, which is what keeps a configured `world.seed` from being overwritten on
+/// the first boot. A store that cannot be *read* is logged and treated the same
+/// way: this is cosmetic-to-annoying, not corrupting, and refusing to boot over it
+/// would be worse.
+///
+/// `pinned_seed` is only here to be *complained* about: a saved world resumes its
+/// stream, so a `world.seed` set on a shard that has saved does nothing, and a knob
+/// that silently does nothing is the failure this whole config crate exists to
+/// prevent. The operator hears it once, at boot.
+async fn restore_world(store: &dyn Store, world: World, pinned_seed: Option<u64>) -> World {
+    match store.world().await {
+        Ok(Some(record)) => {
+            if pinned_seed.is_some() {
+                warn!(
+                    "world.seed is set but this world has been saved before, so it is ignored: \
+                     the shard resumes the roll stream its save recorded. Start from a fresh \
+                     database to use it."
+                );
+            }
+            world
+                .with_clock_minutes(record.clock_minutes)
+                .with_rng_state(record.rng_state)
+        }
+        Ok(None) => world,
+        Err(error) => {
+            error!(%error, "could not read the saved world scalars; starting at midnight with a fresh roll stream");
+            world
+        }
+    }
+}
+
 /// Load the client's map, if it is configured.
 ///
 /// Blocking, and on purpose: this reads over a hundred megabytes and takes a
 /// moment, and there is no sense accepting a client before the world it will
 /// walk in exists.
-pub(crate) fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> {
+pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> {
     let start = (config.world.start.x, config.world.start.y);
     let dir = config.world.client_files.trim();
     if dir.is_empty() {

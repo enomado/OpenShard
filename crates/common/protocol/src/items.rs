@@ -10,13 +10,21 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::feature::Feature;
+use crate::gump::GumpPoint;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
+use crate::wire::{Graphic, Hue, Layer, RawLayer};
 use crate::world::Point;
 
 /// The serial a `0x08` drop carries when the item is going onto the ground
 /// rather than into a container or onto a mobile.
-pub const DROP_TO_GROUND: u32 = 0xFFFF_FFFF;
+///
+/// This packet's own sentinel, checked as itself rather than through
+/// [`RawSerial::validate`]: `validate` says "addresses nothing", and `0` says
+/// that too — but a `0` container is a confused client, and `0xFFFFFFFF` is the
+/// floor. See `docs/protocol_newtypes.md` N3 amendment 4.
+pub const DROP_TO_GROUND: RawSerial = RawSerial(0xFFFF_FFFF);
 
 /// `0x1A` — draw an item on the ground the client has not seen. Variable length.
 ///
@@ -41,15 +49,15 @@ pub const DROP_TO_GROUND: u32 = 0xFFFF_FFFF;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WorldItem {
     /// The item's wire serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// Its graphic (tiledata id).
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// How many are in the stack. 0 or 1 is a single item and sends no amount.
     pub amount: u16,
     /// Where it lies.
     pub position: Point,
-    /// Its hue, or 0 for none.
-    pub hue: u16,
+    /// Its hue, or [`Hue::NONE`] for none.
+    pub hue: Hue,
 }
 
 impl EncodePacket for WorldItem {
@@ -60,15 +68,18 @@ impl EncodePacket for WorldItem {
         // A stack amount is only sent when there is more than one; the client
         // reads a lone item as a stack of one on its own.
         let stacked = self.amount > 1;
-        let hued = self.hue != 0;
+        let hued = self.hue != Hue::NONE;
 
+        // The amount bit rides on top of the serial. Masking it off in the
+        // other branch is belt and braces: `Serial` cannot be built above the
+        // item pool, so the bit is already clear.
         let serial = if stacked {
-            self.serial | 0x8000_0000
+            self.serial.raw() | 0x8000_0000
         } else {
-            self.serial & 0x7FFF_FFFF
+            self.serial.raw() & 0x7FFF_FFFF
         };
         out.u32(serial);
-        out.u16(self.graphic);
+        out.u16(self.graphic.0);
         if stacked {
             out.u16(self.amount);
         }
@@ -84,8 +95,57 @@ impl EncodePacket for WorldItem {
         out.u16(y);
         out.u8(self.position.z as u8);
         if hued {
-            out.u16(self.hue);
+            out.u16(self.hue.0);
         }
+    }
+}
+
+impl DecodePacket for WorldItem {
+    const ID: u8 = 0x1A;
+
+    /// The two stolen bits this engine never sets on the way out —
+    /// "a direction/light byte follows" on `x`, "a flags byte follows" on `y` —
+    /// are refused rather than silently skipped: nothing here models what they
+    /// would introduce, and reading past them as if they were the next field
+    /// would produce a wrong value instead of an honest error.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw_serial = reader.u32()?;
+        let stacked = raw_serial & 0x8000_0000 != 0;
+        let serial = Serial::new(raw_serial & 0x7FFF_FFFF).ok_or(DecodeError::UnknownValue {
+            field: "0x1A world item serial",
+            value: raw_serial,
+        })?;
+        let graphic = Graphic(reader.u16()?);
+        let amount = if stacked { reader.u16()? } else { 1 };
+
+        let raw_x = reader.u16()?;
+        if raw_x & 0x8000 != 0 {
+            return Err(DecodeError::Unsupported {
+                packet: <Self as DecodePacket>::ID,
+                form: "a direction/light byte after x, which this engine never sends",
+            });
+        }
+
+        let raw_y = reader.u16()?;
+        if raw_y & 0x4000 != 0 {
+            return Err(DecodeError::Unsupported {
+                packet: <Self as DecodePacket>::ID,
+                form: "a flags byte after y, which this engine never sends",
+            });
+        }
+        let hued = raw_y & 0x8000 != 0;
+        let y = raw_y & 0x3FFF;
+
+        let z = reader.u8()? as i8;
+        let hue = if hued { Hue(reader.u16()?) } else { Hue::NONE };
+
+        Ok(Self {
+            serial,
+            graphic,
+            amount,
+            position: Point::new(raw_x, y, z),
+            hue,
+        })
     }
 }
 
@@ -97,7 +157,7 @@ impl EncodePacket for WorldItem {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PickUpItem {
     /// The item's serial.
-    pub serial: u32,
+    pub serial: RawSerial,
     /// How many to lift, for a stack.
     pub amount: u16,
 }
@@ -107,7 +167,7 @@ impl DecodePacket for PickUpItem {
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
-            serial: reader.u32()?,
+            serial: RawSerial(reader.u32()?),
             amount: reader.u16()?,
         })
     }
@@ -133,22 +193,96 @@ impl DecodePacket for PickUpItem {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DropItem {
     /// The item being dropped.
-    pub serial: u32,
+    pub serial: RawSerial,
     /// Where, when dropping on the ground.
     pub position: Point,
     /// Where the item is going: a container serial, a mobile serial to equip on,
     /// or [`DROP_TO_GROUND`].
-    pub container: u32,
+    pub container: RawSerial,
+}
+
+/// What a `0x08` is actually asking for, with its position field read the way
+/// the destination means it.
+///
+/// # Why this exists
+///
+/// The packet has one position field and two meanings for it, chosen by the
+/// container field: onto the ground it is a world tile, into a container it is a
+/// pixel offset inside that container's *gump*, which is a different coordinate
+/// space entirely — `(50, 50)` is a spot on a bag's picture, not fifty tiles
+/// north. Reading the packet as one struct meant every seam downstream took a
+/// world [`Point`] that was sometimes not one, and converted it at whatever
+/// depth first noticed. That is the conversion this type deletes: the meaning is
+/// fixed here, once, where the container field that decides it is read.
+///
+/// # Totality
+///
+/// Every one of the 2³² values the container field can hold lands in exactly one
+/// variant, and the order the checks run in is the whole rule. [`DROP_TO_GROUND`]
+/// (`0xFFFFFFFF`) is outside both serial pools, so it would otherwise fall in
+/// with the values that address nothing; it is tested first, which is what keeps
+/// this packet's own sentinel from being confused with a client's `0`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DropDestination {
+    /// Onto the ground, at a world position. The only variant where the
+    /// packet's position field is a [`Point`].
+    Ground(Point),
+    /// Onto an item — the destination serial is in the item pool.
+    ///
+    /// Deliberately not called `Container`: the client sends the same shape for
+    /// a drop into a bag, onto a stack to merge with, and onto a spellbook, and
+    /// which of those it is depends on components the wire knows nothing about.
+    /// All this variant claims is that the target is an item.
+    ///
+    /// `at` is where in that item's gump the client let go. The server may or
+    /// may not honour it (this one places by slot), but it is gump-space either
+    /// way and typed as such so it can never be added to a world coordinate.
+    Item {
+        /// What the item is going onto or into.
+        item: Serial,
+        /// Where in that item's gump the cursor was.
+        at: GumpPoint,
+    },
+    /// Onto a mobile — the destination serial is a mobile's. Equipping it, or
+    /// offering it in a trade; which one is the server's business.
+    ///
+    /// The position field is carried by the packet and means nothing here, so
+    /// it is not in this variant: a client dragging onto a person is pointing at
+    /// the person, not at a coordinate.
+    Mobile(Serial),
+    /// The destination addresses nothing at all — a `0`, or a value above the
+    /// item pool that is not the ground sentinel.
+    ///
+    /// Not an error and not a `None`: it is a fourth answer the client can give,
+    /// and the seam that acts on it still owes the client a bounce, because the
+    /// item is on its cursor either way. Making it a variant rather than an
+    /// `Option` is what keeps that obligation in the `match`.
+    Nowhere,
 }
 
 impl DropItem {
     /// The packet id.
     pub const ID: u8 = 0x08;
 
-    /// Whether this drop is onto the ground rather than into a container or onto
-    /// a mobile.
-    pub const fn to_ground(&self) -> bool {
-        self.container == DROP_TO_GROUND
+    /// Where this drop is going, with the position read as that destination
+    /// means it. Total: see [`DropDestination`].
+    #[must_use]
+    pub const fn destination(&self) -> DropDestination {
+        if self.container.0 == DROP_TO_GROUND.0 {
+            return DropDestination::Ground(self.position);
+        }
+        match Serial::new(self.container.0) {
+            // A gump's x/y are the packet's x/y read in the other space. The
+            // widths differ (the wire is unsigned, gump offsets are signed for
+            // layouts that hang off the left edge), so this widens rather than
+            // reinterprets.
+            Some(serial) if serial.is_item() => DropDestination::Item {
+                item: serial,
+                at: GumpPoint::new(self.position.x as i32, self.position.y as i32),
+            },
+            Some(serial) => DropDestination::Mobile(serial),
+            None => DropDestination::Nowhere,
+        }
     }
 }
 
@@ -162,7 +296,7 @@ impl DecodePacket for DropItem {
     /// — so asking `version` the same question here reads the grid byte when
     /// it is there without re-deriving the choice from the buffer length.
     fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
-        let serial = reader.u32()?;
+        let serial = RawSerial(reader.u32()?);
         let x = reader.u16()?;
         let y = reader.u16()?;
         let z = reader.u8()? as i8;
@@ -172,7 +306,7 @@ impl DecodePacket for DropItem {
         if version.supports(Feature::ItemGrid) {
             let _grid = reader.u8()?;
         }
-        let container = reader.u32()?;
+        let container = RawSerial(reader.u32()?);
         Ok(Self {
             serial,
             position: Point::new(x, y, z),
@@ -227,11 +361,11 @@ impl EncodePacket for DragCancel {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EquipItemRequest {
     /// The item being worn.
-    pub item: u32,
+    pub item: RawSerial,
     /// The layer to wear it on.
-    pub layer: u8,
+    pub layer: RawLayer,
     /// The mobile wearing it.
-    pub mobile: u32,
+    pub mobile: RawSerial,
 }
 
 impl DecodePacket for EquipItemRequest {
@@ -239,9 +373,9 @@ impl DecodePacket for EquipItemRequest {
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
-            item: reader.u32()?,
-            layer: reader.u8()?,
-            mobile: reader.u32()?,
+            item: RawSerial(reader.u32()?),
+            layer: RawLayer(reader.u8()?),
+            mobile: RawSerial(reader.u32()?),
         })
     }
 }
@@ -253,15 +387,15 @@ impl DecodePacket for EquipItemRequest {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EquipUpdate {
     /// The item now worn.
-    pub item: u32,
+    pub item: Serial,
     /// Its graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Which layer.
-    pub layer: u8,
+    pub layer: Layer,
     /// The mobile wearing it.
-    pub mobile: u32,
+    pub mobile: Serial,
     /// Its hue.
-    pub hue: u16,
+    pub hue: Hue,
 }
 
 impl EncodePacket for EquipUpdate {
@@ -269,12 +403,12 @@ impl EncodePacket for EquipUpdate {
     const LENGTH: PacketLength = PacketLength::Fixed(15);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.item);
-        out.u16(self.graphic);
+        out.u32(self.item.raw());
+        out.u16(self.graphic.0);
         out.u8(0); // graphic offset, always zero
-        out.u8(self.layer);
-        out.u32(self.mobile);
-        out.u16(self.hue);
+        out.u8(self.layer.0);
+        out.u32(self.mobile.raw());
+        out.u16(self.hue.0);
     }
 }
 
@@ -282,6 +416,7 @@ impl EncodePacket for EquipUpdate {
 mod tests {
     use super::*;
     use crate::packet::{decode_packet, encode_packet};
+    use crate::serial::{ITEM_MAX, ITEM_MIN, MOBILE_MAX, MOBILE_MIN};
 
     fn version() -> ClientVersion {
         ClientVersion::new(7, 0, 45, 65)
@@ -295,16 +430,21 @@ mod tests {
         ClientVersion::new(5, 0, 0, 0)
     }
 
+    /// The one item most of these tests draw or move.
+    fn item() -> Serial {
+        Serial::new(0x4000_0001).unwrap()
+    }
+
     #[test]
     fn a_plain_item_is_the_short_form() {
         // No amount, no hue: serial, graphic, x, y, z and nothing optional.
         let packet = encode_packet(
             &WorldItem {
-                serial: 0x4000_0001,
-                graphic: 0x0EED, // a gold coin graphic
+                serial: item(),
+                graphic: Graphic(0x0EED), // a gold coin graphic
                 amount: 1,
                 position: Point::new(1000, 2000, 5),
-                hue: 0,
+                hue: Hue::NONE,
             },
             version(),
         );
@@ -326,11 +466,11 @@ mod tests {
     fn a_hued_stack_carries_the_amount_and_hue_with_their_flags() {
         let packet = encode_packet(
             &WorldItem {
-                serial: 0x4000_00AB,
-                graphic: 0x0EED,
+                serial: Serial::new(0x4000_00AB).unwrap(),
+                graphic: Graphic(0x0EED),
                 amount: 500,
                 position: Point::new(1000, 2000, 5),
-                hue: 0x0021,
+                hue: Hue(0x0021),
             },
             version(),
         );
@@ -357,11 +497,11 @@ mod tests {
         // as signed, so -5 has to go out as 0xFB, not clamp to 0.
         let packet = encode_packet(
             &WorldItem {
-                serial: 0x4000_0001,
-                graphic: 0x0001,
+                serial: item(),
+                graphic: Graphic(0x0001),
                 amount: 1,
                 position: Point::new(0, 0, -5),
-                hue: 0,
+                hue: Hue::NONE,
             },
             version(),
         );
@@ -372,7 +512,7 @@ mod tests {
     fn a_pickup_is_a_serial_and_an_amount() {
         let bytes = [0x07, 0x40, 0x00, 0x00, 0x2A, 0x00, 0x05];
         let pickup: PickUpItem = decode_packet(&bytes, version()).unwrap();
-        assert_eq!(pickup.serial, 0x4000_002A);
+        assert_eq!(pickup.serial, RawSerial(0x4000_002A));
         assert_eq!(pickup.amount, 5);
     }
 
@@ -384,13 +524,17 @@ mod tests {
         bytes.extend_from_slice(&1000u16.to_be_bytes());
         bytes.extend_from_slice(&2000u16.to_be_bytes());
         bytes.push(5);
-        bytes.extend_from_slice(&DROP_TO_GROUND.to_be_bytes());
+        bytes.extend_from_slice(&DROP_TO_GROUND.0.to_be_bytes());
         assert_eq!(bytes.len(), 14);
 
         let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
-        assert_eq!(drop.serial, 0x4000_002A);
+        assert_eq!(drop.serial, RawSerial(0x4000_002A));
         assert_eq!(drop.position, Point::new(1000, 2000, 5));
-        assert!(drop.to_ground());
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Ground(Point::new(1000, 2000, 5)),
+            "the ground is the one destination whose position is a world tile",
+        );
     }
 
     #[test]
@@ -405,27 +549,87 @@ mod tests {
         bytes.extend_from_slice(&2000u16.to_be_bytes());
         bytes.push(5);
         bytes.push(0x00); // grid slot
-        bytes.extend_from_slice(&DROP_TO_GROUND.to_be_bytes());
+        bytes.extend_from_slice(&DROP_TO_GROUND.0.to_be_bytes());
         assert_eq!(bytes.len(), 15);
 
         let drop: DropItem = decode_packet(&bytes, grid_version()).unwrap();
-        assert_eq!(drop.serial, 0x4000_002A);
+        assert_eq!(drop.serial, RawSerial(0x4000_002A));
         assert_eq!(drop.position, Point::new(1000, 2000, 5));
         assert_eq!(drop.container, DROP_TO_GROUND);
-        assert!(drop.to_ground(), "the grid byte must not shift the container");
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Ground(Point::new(1000, 2000, 5)),
+            "the grid byte must not shift the container",
+        );
     }
 
     #[test]
-    fn a_drop_into_a_container_is_not_a_ground_drop() {
+    fn a_drop_into_a_container_reads_its_position_in_gump_space() {
+        // The same two bytes, and not the same coordinate: an item serial in the
+        // container field makes x/y a spot on that container's picture. The
+        // conversion happens here and nowhere downstream, which is the whole
+        // point of the type — a `Point` this size would be off the far edge of
+        // any map, and nothing would have said so.
         let mut bytes = vec![0x08];
         bytes.extend_from_slice(&0x4000_002Au32.to_be_bytes());
-        bytes.extend_from_slice(&0u16.to_be_bytes());
-        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend_from_slice(&50u16.to_be_bytes());
+        bytes.extend_from_slice(&60u16.to_be_bytes());
         bytes.push(0);
         bytes.extend_from_slice(&0x4000_00FFu32.to_be_bytes()); // a container serial
         let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
-        assert!(!drop.to_ground());
-        assert_eq!(drop.container, 0x4000_00FF);
+        assert_eq!(drop.container, RawSerial(0x4000_00FF));
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Item {
+                item: Serial::new(0x4000_00FF).unwrap(),
+                at: GumpPoint::new(50, 60),
+            },
+        );
+    }
+
+    #[test]
+    fn a_drop_onto_a_mobile_keeps_no_position_at_all() {
+        // A mobile serial in the container field: the client is pointing at a
+        // person, and the x/y it sent are neither a tile nor a gump offset. The
+        // variant has nowhere to put them, which is the type saying so.
+        let mut bytes = vec![0x08];
+        bytes.extend_from_slice(&0x4000_002Au32.to_be_bytes());
+        bytes.extend_from_slice(&50u16.to_be_bytes());
+        bytes.extend_from_slice(&60u16.to_be_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&0x0000_0007u32.to_be_bytes()); // a mobile serial
+        let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
+        assert_eq!(
+            drop.destination(),
+            DropDestination::Mobile(Serial::new(7).unwrap()),
+        );
+    }
+
+    #[test]
+    fn every_destination_value_lands_in_exactly_one_variant() {
+        // Class B totality, on the field that decides how the *other* field is
+        // read. Walking all 2^32 is not worth the minute; these are the four
+        // pool boundaries plus the two sentinels, which is where an off-by-one
+        // in the ordering of the checks would show.
+        let drop = |container: u32| {
+            DropItem {
+                serial: RawSerial(0x4000_002A),
+                position: Point::new(1, 2, 3),
+                container: RawSerial(container),
+            }
+            .destination()
+        };
+
+        assert_eq!(
+            drop(DROP_TO_GROUND.0),
+            DropDestination::Ground(Point::new(1, 2, 3))
+        );
+        assert_eq!(drop(0), DropDestination::Nowhere, "zero addresses nothing");
+        assert_eq!(drop(0x8000_0000), DropDestination::Nowhere, "above the item pool");
+        assert!(matches!(drop(MOBILE_MIN), DropDestination::Mobile(_)));
+        assert!(matches!(drop(MOBILE_MAX), DropDestination::Mobile(_)));
+        assert!(matches!(drop(ITEM_MIN), DropDestination::Item { .. }));
+        assert!(matches!(drop(ITEM_MAX), DropDestination::Item { .. }));
     }
 
     #[test]
@@ -458,20 +662,58 @@ mod tests {
         bytes.extend_from_slice(&0x0000_0001u32.to_be_bytes());
         assert_eq!(bytes.len(), 10);
         let req: EquipItemRequest = decode_packet(&bytes, version()).unwrap();
-        assert_eq!(req.item, 0x4000_0002);
-        assert_eq!(req.layer, 2);
-        assert_eq!(req.mobile, 0x0000_0001);
+        assert_eq!(req.item, RawSerial(0x4000_0002));
+        assert_eq!(req.layer, RawLayer(2));
+        assert_eq!(req.mobile, RawSerial(0x0000_0001));
+    }
+
+    #[test]
+    fn a_lift_of_nothing_decodes_and_is_refused_at_promotion() {
+        // `docs/protocol_newtypes.md` N9. `0` is the wire's word for "no object"
+        // and a client is free to send it; the packet is well-formed, so the
+        // framer must not drop the connection over it, and the refusal happens
+        // where the serial would have addressed something.
+        let bytes = [0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let pickup: PickUpItem = decode_packet(&bytes, version()).unwrap();
+        assert_eq!(pickup.serial, RawSerial(0), "the byte survives decoding");
+        assert_eq!(pickup.serial.validate(), None, "and dies at the seam");
+    }
+
+    #[test]
+    fn a_ground_drops_sentinel_is_not_a_serial() {
+        // The other half of the same pair, and the reason `destination` tests the
+        // sentinel before asking `Serial::new`: `0xFFFFFFFF` addresses nothing
+        // *and* means the floor, which are different answers — check them in the
+        // other order and every ground drop becomes `Nowhere` and bounces.
+        let mut bytes = vec![0x08];
+        bytes.extend_from_slice(&0x4000_002Au32.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&DROP_TO_GROUND.0.to_be_bytes());
+        let drop: DropItem = decode_packet(&bytes, pre_grid_version()).unwrap();
+        assert!(matches!(drop.destination(), DropDestination::Ground(_)));
+        assert_eq!(drop.container.validate(), None, "the floor is not an object");
+    }
+
+    #[test]
+    fn every_layer_byte_interprets() {
+        // Class B is total: a layer is a name, so all 256 come back whole and
+        // the wearable range is somebody else's question — see `RawLayer`.
+        for byte in 0..=u8::MAX {
+            assert_eq!(RawLayer(byte).interpret(), Layer(byte));
+        }
     }
 
     #[test]
     fn an_equip_packet_is_fifteen_bytes() {
         let packet = encode_packet(
             &EquipUpdate {
-                item: 0x4000_0002,
-                graphic: 0x13B9,
-                layer: 1,
-                mobile: 0x0000_0001,
-                hue: 0x0021,
+                item: Serial::new(0x4000_0002).unwrap(),
+                graphic: Graphic(0x13B9),
+                layer: Layer(1),
+                mobile: Serial::new(0x0000_0001).unwrap(),
+                hue: Hue(0x0021),
             },
             version(),
         );

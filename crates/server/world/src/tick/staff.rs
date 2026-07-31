@@ -1,4 +1,6 @@
 use super::*;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
 
 impl World {
     /// Act on a targeting cursor's answer. Looks up what the cursor was raised for
@@ -12,19 +14,18 @@ impl World {
         let Some(&actor) = self.state.players.get(&connection) else {
             return;
         };
-        let Some(purpose) = self.state.pending_targets.remove(&actor) else {
+        let Some(purpose) = self.state.take_target(actor) else {
             return; // no cursor was up for this mobile
         };
         if response.cancelled {
             return;
         }
-        let object_raw = response.object.map_or(0, |serial| serial.raw());
         match purpose {
             openshard_state::TargetPurpose::Teleport => {
                 crate::gm::teleport_to(&mut self.state, actor, response.location);
             }
             openshard_state::TargetPurpose::Skill { skill } => {
-                let outcome = skills::on_target(&mut self.state, actor, skill, object_raw);
+                let outcome = skills::on_target(&mut self.state, actor, skill, response.object);
                 if let Some(theft) = outcome.stolen {
                     self.carry_out_theft(theft);
                 }
@@ -42,7 +43,7 @@ impl World {
                 // The item-started skills (a bandage, a lockpick) answer with what
                 // to spend; the rest resolve on their own.
                 let (bandage, pick) =
-                    skills::on_item_target(&mut self.state, actor, skill, first, object_raw);
+                    skills::on_item_target(&mut self.state, actor, skill, first, response.object);
                 if let Some(started) = bandage {
                     if let Some(serial) = self.state.registry.serial_of(started.bandage) {
                         items::consume(&mut self.state, serial, 1);
@@ -53,7 +54,7 @@ impl World {
                         items::consume(&mut self.state, serial, 1);
                     }
                 }
-                skills::on_second_target(&mut self.state, actor, skill, first, object_raw);
+                skills::on_second_target(&mut self.state, actor, skill, first, response.object);
             }
             openshard_state::TargetPurpose::SetTrap { kind, power } => {
                 let target = response
@@ -116,12 +117,12 @@ impl World {
                         caster: actor,
                         serial,
                         spell,
-                        target: object_raw,
+                        target: response.object,
                         success,
                     });
                 }
                 if success {
-                    self.apply_spell_effect(actor, spell, object_raw, response.location);
+                    self.apply_spell_effect(actor, spell, response.object, response.location);
                 }
             }
         }
@@ -158,7 +159,7 @@ impl World {
         // that opened it (a notice board, a shard's custom menu). Forward it as a
         // `GumpAnswered` rather than dropping it, then stop — only the admin gump
         // runs the staff path below.
-        if response.gump_id != crate::admin::ADMIN_GUMP {
+        if response.gump_id.validate(&[crate::admin::ADMIN_GUMP]).is_none() {
             if let Some(&actor) = self.state.players.get(&connection) {
                 if let Some(serial) = self.state.registry.serial_of(actor) {
                     self.state.bus.send(crate::events::GumpAnswered {
@@ -204,9 +205,8 @@ impl World {
                     theft.item,
                     openshard_state::components::Contained {
                         container: backpack,
-                        x: 60,
-                        y: 60,
-                        grid: 0,
+                        position: GumpPoint::new(60, 60),
+                        grid: GridSlot(0),
                     },
                 );
             }

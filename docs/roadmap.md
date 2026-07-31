@@ -29,6 +29,51 @@ The codec deliberately has no dependencies — not even `bytes`. Keeping the
 foundation crates dependency-free is what lets them build in environments where
 crates.io is unreachable.
 
+### Backlog from the newtype sweep (`docs/protocol_newtypes.md`) — sweep done
+
+Found while wrapping `world.rs`'s remaining bare integers, back when the sweep
+was only N1. The sweep itself (N-pilot through N8) is now complete: every
+bare-integer field in `crates/common/protocol`'s packet structs is either a
+named type or on the reasoned, machine-checked allowlist
+`crates/common/protocol/tests/bare_integer_fields.rs` enforces. What is left
+below is what the sweep found but could not fix, because the fix crosses out
+of `protocol` — into `state`, `config`, or the tick — which the sweep's own
+rule (`common/*` is below the server) puts out of its reach on purpose.
+
+- ~~**Two types for one facet byte.**~~ Fixed: `protocol` owns the one
+  `world::Facet(pub u8)` now, the way `Serial` is owned there and borrowed by
+  `entities`; `state::components::Facet` is gone, and every crate that used it
+  (`world`, `npc`, `ai`, `items`, `skills`, `magic`, `server`, the client) reads
+  `openshard_protocol::world::Facet` directly instead. The two `MapId(facet.0)`
+  double-conversions collapse to a plain `facet` — the packet's own field and
+  the world's notion of a facet are the same value now, not two synchronised
+  ones.
+- ~~**A region's light level is never bounded.**~~ Fixed: `World::register_regions`
+  (`world/src/tick/regions.rs`, the one place every `Command::RegisterRegions`
+  — today only from `scripting::op_register_regions` — lands) now warns per
+  region whose `light` is above `0x1F`. `world::Light` still does not clamp,
+  deliberately, because the client does; this only makes a shard's own typo
+  audible instead of silent.
+- ~~**The tick keeps light and music as bare numbers.**~~ Fixed: `last_light`
+  is `HashMap<_, Light>`, `last_music` is `HashMap<_, MusicId>`, and the
+  `LIGHT_*` constants in `tick/defaults.rs` are `Light`, not `u8`. Only the
+  seam where a `Region`'s own `Option<u8>`/`Option<u16>` data enters the tick
+  (`light_for`, `start_music`) still wraps — the same boundary every other
+  newtype in `state` converts at.
+- ~~**`gameplay.season` is still a `u8` in config and in `WorldState`.**~~
+  Fixed: `GameplayConfig::season` and `Gameplay::season` are both `Season`
+  now. Config deserializes it through a `#[serde(with = "season")]` module
+  (`crates/common/config/src/lib.rs`, the way `AccountName` already does)
+  that calls the new `Season::try_from_bits` — unlike `from_bits`, which
+  silently falls back to spring, this refuses a sixth season at parse time,
+  so `ConfigError::UnknownSeason` (which duplicated the same check one step
+  later) is gone. `tick/enter.rs`'s world-entry send no longer calls
+  `Season::from_bits` at all — the value has been a `Season` since boot.
+- ~~**`mobile::OpenPaperdoll::flags` is a bare `u8`**~~ Fixed in N2:
+  `PaperdollFlags` replaced the two loose `pub const u8`s
+  (`PAPERDOLL_WARMODE`, `PAPERDOLL_CAN_LIFT`) with a named `with`, on N10's
+  allowlist for nothing because there is no bare field left to allowlist.
+
 ### Login encryption is deliberately deferred
 
 Sphere ships `sphereCrypt.ini`: a per-client-version key table for the login
@@ -109,16 +154,39 @@ than keeping their own copy of the unpacking. The private `struct Entering` besi
 
 The remaining step is the one this makes worth doing:
 
-- [ ] **The roster belongs in the world.** Characters are the only saved thing
-      whose `restore_*` hands data back to the caller instead of into `World`, and
-      the only one that asks the world for a favour (`reserve_serial`) rather than
-      giving it something. Moving it in deletes `departed`, `pending_inventories`
-      and the roster's place in `run_shard`'s signature; the character list becomes
-      a `Command` answered with a `0xA9`, exactly as `RequestStatus` is answered
-      with a status, and "exists" and "is being played" become two states of one
-      record rather than two tables. Accounts stay outside: argon2 must not run
-      inside a tick, and `openshard-login` exists to be sans-io. This is also the
-      shape UO itself has — an account is global, a character belongs to a shard.
+- [x] **The roster belongs in the world.** Done — S4 of
+      [connection_state.md](connection_state.md). `restore_characters` hands the
+      store's rows into `World` like every other `restore_*`, and `reserve_serial`
+      is something the world does to itself on the way in rather than a favour the
+      shard asks for. `departed` and its drain are gone: the logout writes the
+      roster at the same instant it hands the journal its copy. `Character::Saved`
+      and `Command::DeleteCharacter { account, name }` name a character instead of
+      carrying what the shard looked up, and `run_shard` no longer holds a roster
+      to look anything up in. `pending_inventories` stayed — it is keyed by mobile
+      serial and holds NPC gear too; see the finding in connection_state.md.
+      Accounts stay outside: argon2 must not run inside a tick, and
+      `openshard-login` exists to be sans-io. This is also the shape UO itself has
+      — an account is global, a character belongs to a shard. What is left is the
+      character *list*: `0xA9` becoming a `Command` answered out of a tick, the way
+      `RequestStatus` is answered with a status, is S5.
+
+- [x] **The character screen belongs in the world too.** Done — S5 of
+      [connection_state.md](connection_state.md). The roster stopped being "where
+      the saved characters were" and became the account's list, which is the fact
+      the login crate's `Accounts` used to hold: a character exists from the moment
+      it is created, and carries a record only once something has written one. With
+      that, `0xA9`, `0x00`/`0xF8`, `0x83` and `0x5D` are all answered out of a tick,
+      and `Accounts` is down to credentials, blocking and access — the things a
+      *login* is about. `LoginServer` lost its starting cities and its two
+      capability masks to the world's `CharacterScreen`, and its game-login handler
+      now returns `Response::Idle`: the crate ends where the world begins.
+
+      Two hazards closed themselves on the way. `0x83`'s slot indexes the list
+      `0xA9` was built from — one value, one process — instead of two lists that
+      merely happened to be ordered alike; and "is this character being played",
+      which has now been asked three ways (a serial the caller had to look up, a
+      scan of the shard's session table, and this), is asked of the entity that is
+      the fact.
 
 Found while doing the above, none of them blockers — all fixed:
 
@@ -158,35 +226,71 @@ in fields kept in step by hand; `Sessions` answers who is playing what; `Roster`
 replaced a bare `HashMap<(String, String), CharacterRecord>` threaded through
 five functions. What is left:
 
-- [ ] **`charscreen.rs`.** Create (`0x00`/`0xF8`), delete (`0x83`) and select
-      (`0x5D`) are one conversation and belong in one module. Select is in
-      `dispatch.rs` today only because it arrives as a `ClientPacket`, not
-      because it is about the world; it reads the roster exactly as the other two
-      do. What stays in `dispatch.rs` afterwards is the pure mapping of an
-      in-world packet to a `Command`.
-- [ ] **Nothing on the character screen takes `&mut World`.** Those three return
-      the `Command` for the caller to queue instead of queueing it themselves.
-      They already only ever produce one; the type should say so. This is the
-      same rule the tick already enforces for network tasks, applied one level
-      up: login's half of the shard can ask the world for something, and cannot
-      write to it.
-- [ ] **`run_shard` shrinks.** The seven `restore_*` functions are boot, and
-      belong in `boot.rs` beside `load_world` and `open_store`. `world_tick`
-      takes `&mut LoginServer` for one line — `keys.expire()`, which is memory
-      upkeep for abandoned relay keys and wants its own `select!` arm on a timer,
-      not a place in the tick.
+- [x] **`charscreen.rs`.** Done in S5, and one module further out than this
+      asked: create (`0x00`/`0xF8`), delete (`0x83`) and select (`0x5D`) are one
+      conversation, and it is the *world's* — `world/src/tick/screen.rs`, answered
+      out of the tick that owns the roster.
+- [x] **Nothing on the character screen takes `&mut World`.** Done in S3 and S5.
+      `dispatch_world_packet` is `fn(ClientPacket, ConnectionId) -> Option<Command>`
+      and the screen's three packets are commands. What is left holding a `&mut
+      World` is the binary's own router, which queues what the translation
+      produced — that is the seam, not a rule broken.
+- [x] **`run_shard` shrinks.** Done in S6. The seven `restore_*` functions and
+      the accounts are `boot::restore`, in `boot.rs` beside `load_world` and
+      `open_store`; the loop's own state is one `Shard` value instead of eight
+      locals; and `keys.expire` has its own `select!` arm on its own timer, where
+      memory upkeep for abandoned relay keys belongs.
 
-Two smaller things noticed on the way through, neither blocking:
+One smaller thing noticed on the way through, not blocking:
 
-- `dispatch_world_packet` opens with `session.login.account().cloned()
-  .unwrap_or_default()`, so a `0x5D` with no game login behind it builds an
-  `Enter` for the empty account rather than being refused. Harmless today because
-  the roster cannot match an empty account, but it is a default standing in for
-  absence — exactly what the style canon says not to do.
 - `Command::Enter` carries a `CharacterSheet` built out of four
   `openshard-persistence` record types. The tick's input vocabulary should not be
   shaped by the database's row format; it is also the single reason `Command`
   cannot move below `openshard-world` should that ever be wanted.
+
+### A connection's state is kept in two tables that must agree
+
+Read while asking why `world_handle_network` has to hold `Sessions`, `LoginServer`,
+`World` and `Roster` at once. None of these is a bug on a working shard today; all
+of them are the same seam being unnamed. The plan that acts on them, including the
+steps above, is [`connection_state.md`](connection_state.md).
+
+- **Presence is a bool, and it is set optimistically.** `Session::playing` is set
+  as `Command::Enter` is *queued* (`server/src/dispatch.rs`, `create_character`
+  and the `CharacterPlay` arm), and `World::enter` has three early returns that
+  refuse silently — already in the world, a saved serial that will not bind, an
+  exhausted mobile serial pool (`world/src/tick/enter.rs`). After any of them the
+  session says it is playing, the world has no entity, and every world packet the
+  client sends is queued into a tick that drops it on a `players.get` miss. The
+  client is told nothing and sits on "logging into shard". `Option<PlayedCharacter>`
+  cannot express *asked to enter but not yet in* — the state that exists between
+  the queue and the tick — so an explicit phase would close both this and the
+  "set once and never cleared" note on the field itself.
+- **`in_world()` is a second copy of `players.contains_key`.** Thirty arms of
+  `dispatch_world_packet` open with the same `if !session.in_world()` guard
+  against the copy rather than against the world.
+- **The world cannot answer a connection that has no entity.**
+  `WorldState::send_packet` resolves the client version through
+  `players → Client`, so a connection on the character screen is unreachable from
+  inside a tick, silently (`state/src/runtime.rs`). This is the structural reason
+  the character screen cannot become world commands as planned above: the version
+  has to live on the connection, not on the entity.
+- ~~**argon2 runs on the tick's task.**~~ Fixed in S6, and it was not as cheap as
+  this said. Moving the hash to a blocking task means the login conversation has
+  to *suspend*: `LoginServer::handle` returns an `Outcome` — bytes to send, or a
+  `CredentialCheck` to run — the session waits in a state named for it
+  (`VerifyingAccount`, `GameState::Verifying`), and the verdict comes back through
+  `LoginServer::resume` on a `select!` arm of its own. The account stays in the
+  state machine and the check carries no identity, so a verdict that reached the
+  wrong connection authenticates nobody. The blocking pool is bounded by a
+  semaphore: 19 MiB times `spawn_blocking`'s 512 threads is ten gigabytes, and the
+  loop used to bound that by having no choice but to run one at a time.
+- **Per-connection world state is seven maps and a hand-written teardown.**
+  `held`, `open_containers`, `open_quest_gumps`, `open_craft_gumps`,
+  `pending_targets`, `last_status`, `last_light`, `last_music` are all keyed by
+  connection or by the player entity, and `World::disconnect` clears each one by
+  name. Adding the eighth and forgetting the line is a leak nothing catches. One
+  record per connection makes the teardown a single `remove`.
 
 ## 3. World — a client walks in Britannia
 
@@ -231,6 +335,17 @@ if guessed:
 - **The UOP hash packs its halves `(b << 32) | c`.** Jenkins' own signature is
   `hashlittle2(key, len, &pc, &pb)`, so `(c << 32) | b` is the natural reading.
   It matches zero entries.
+
+**The map tests no longer share one path under `temp_dir()`.** Two of them wrote
+fixtures to `std::env::temp_dir()/openshard-map-test/` — one fixed directory in a
+place every process on the machine shares — and deleted them at the end, so two
+concurrent runs of the workspace's tests interleaved a write, a read and a remove
+on the same file. `a_map_with_no_statics_loads_as_bare_ground` was seen failing
+once under a full `cargo test --workspace` and passing alone immediately after,
+which is how that flake always presents. Both now take a `ScratchDir`: a
+directory named by pid and a counter, removed on `Drop` — so a failing assertion
+also stops leaving the fixture behind, which the old explicit `remove_file` did
+not.
 
 ### The pace limiter takes Sphere's numbers and not its arithmetic
 
@@ -2221,6 +2336,49 @@ started.
   looted items, writable books, the localized text on the signs the converter
   already places, and rate limiting beyond the walk-pace bucket.
 
+### Backlog from the data-table sweep
+
+The craft, body-type, mount, skill, creature-name, creature-sound, harvest-tile
+and NPC-name tables moved out of Rust source and into `data/*.json` behind a
+`build.rs` (18,155 lines of source became 5,521 of data; the rule is now in
+[`architecture.md`](architecture.md#a-big-table-is-data-and-lives-in-datajson)).
+Found while doing it, none started:
+
+- **Three tables share the `body` key and are three files.** `body_types.json`
+  answers what *type* a body is, `creature_names.json` what it is *called*, and
+  `creature_sounds.json` what it *sounds* like — and `creature_base_sound`'s own
+  doc already says "grow it alongside `creature_name`", which is an invariant
+  stated in prose because nothing enforces it. They were left separate on
+  purpose: the three disagree about which bodies share a row (the dire, grey and
+  timber wolves are three names and one howl) and the sound rows carry trailing
+  notes the other two have no column for. One file keyed by body, with three
+  optional columns, would end the drift — at the cost of a format that has to
+  express "these four bodies share a sound but not a name".
+
+- **The recipe invariants are tested, not enforced.** `defs/mod.rs` asserts that
+  every recipe names a group that exists and leads with its system's own skill —
+  both are properties of the *data*, and both are now checkable in
+  `crafting/build.rs`, where a bad row would fail the build instead of a test
+  run. The reason they cannot move today is that the group count and the main
+  skill live in `SYSTEMS`, which is hand-written Rust the build script does not
+  read. Either the five headers join the data, or the script learns them.
+- **`Text::Cliloc(0)` is a null.** The craft tables spell "no text" as cliloc
+  zero — `generate.cjs` emits it for a missing `TextDefinition` — which is
+  exactly the default-as-absent this project's style forbids: it reads like a
+  number somebody chose. `Option<Text>` says what is meant. Same question for
+  `CraftSystemDef::needs_message`, which is `ClilocId(0)` on four of five.
+- **`Recipe::amount` has a column and no data.** Every one of the 485 rows is 1;
+  the field exists for the stacking recipes (arrows, bolts, boards) that ServUO
+  expresses as `SetUseAllRes` plus an addon interaction, which is on the
+  crafting backlog above. Worth checking against `DefBowFletching` when that
+  table lands, rather than carrying a column nothing sets.
+- **Two files are still over the 2k line.** `world/src/tick/tests.rs` is 12,688
+  — by a wide margin the largest file in the repository, and the split mechanics
+  in `architecture.md` are written for exactly this; `state/src/runtime.rs` is
+  2,059. `state/src/components.rs` came down to ~2,300 and is the next
+  candidate: it holds every component in the crate and splits by subject
+  cleanly.
+
 ### Deferred / not yet ported (the Felucca converter)
 
 The one-shot converter (`OpenShard-Community-Pack/tools/convert-servuo.cjs`) lays
@@ -2284,6 +2442,42 @@ and edited as normal source afterwards — there is no ongoing `.scp` dependency
 - [ ] `tools/dashboard` — Next.js admin panel
 - [ ] `tools/launcher`, `tools/map-editor`
 
+## 9. The client — planned, see [`docs/client.md`](client.md)
+
+Our own client, starting with the only part that has to exist either way: the
+protocol in the direction a client reads it, and a `crates/client/net` that
+connects, logs in and walks into the world. The milestones, and what is already
+missing for each, are in [`docs/client.md`](client.md).
+
+- [x] M0 — `server_packet_length`, `frame_server_packet`, incremental Huffman,
+      and `ServerPacket::decode` for the login set. `ClientPacket::encode` and
+      the rest of the decoders land as a milestone needs them.
+- [x] M1 — `crates/client/net`: sans-io connection, login state machine,
+      `WorldView`, and `crates/e2e` proving a client reaches the world against
+      the real shard
+- [x] M1a — walking
+  - [x] The decoders that fill a `WorldView`: `0x20`, `0x11`, `0x77`, `0x78`,
+        `0x1A`, `0x1D`. `WorldView` now holds every other mobile and every
+        ground item, not just the player; `0x11` decodes but is not folded in
+        — see `docs/client.md`.
+  - [x] `0x02` with its sequence and fastwalk key, `0x22`/`0x21`.
+        `client_net::walk::Walk` sends the steps and predicts where they land,
+        because a `0x22` carries no position and only this end knows what the
+        acked step was asking for. Two rules are shared with the server rather
+        than written twice, which is the part that would have desynchronised
+        silently: `movement::intend` (a turn is a whole step, and the world
+        edge is not a tile) and `movement::StepCounter`, the client half of
+        the sequence rule `WalkSequence` enforces — open at zero, skip zero on
+        the wrap, back to zero on a `0x21`. `crates/e2e` walks a burst past
+        the pace budget on purpose and compares the position the resulting
+        `0x21` carries against the one the client derived on its own; the
+        refusal is the only packet that ever states the server's own answer.
+- [ ] M2 — `crates/common/uofiles`: move the format readers out of `world`, add
+      the ones a renderer needs
+- [ ] M3 — the first picture
+- [ ] M4 — the gump layer
+- [ ] M5 — interaction
+
 ## Later
 
 LLM NPCs, quest generation, GM assistant, Discord integration. All optional, all
@@ -2297,3 +2491,29 @@ has. Tests that need one read `OPENSHARD_CLIENT` and skip when it is unset.
 
 What this project contains is readers for the *formats*. Nothing is derived from
 any particular shard's data, and nothing should be documented as if it were.
+
+### Which client versions to support — see [`client_versions.md`](client_versions.md)
+
+That document holds the evidence: which clients people actually play (7.0.x on
+the big shards, 5.0.8.3 on the T2A/Renaissance ones), what changes between
+versions in the files and on the wire, and how to obtain a set of files legally.
+
+The backlog it leaves us, in order of size:
+
+- [ ] **`verdata.mul` support.** Mandatory below 5.0.0a and entirely absent:
+      `grep -rn verdata --include='*.rs' crates` finds nothing. `uo-rust-libs`
+      `src/map/diff.rs` (MIT) is worth reading first for the sibling
+      `mapdif`/`stadif` format, whose `*difl` lookup does not announce itself.
+- [ ] **A version-driven map width.** Felucca and Trammel are 6144 wide below
+      4.0.11d. We derive the width from the file, which is right about the file
+      and wrong about the client: a modern `map0.mul` served to a 3.0.8 client
+      gives a world 1024 tiles wider than the one being drawn. ClassicUO clamps
+      by version. Wants a `Feature`-shaped rule and a test.
+- [ ] **The lower half of two protocol boundaries.** `Feature::NewContextMenu`
+      (6.0.0.0) gates the *new* `0xBF.0x14.0x02` form, so nothing stops us
+      sending the old form to a client with no popup menus at all. Same gap for
+      cliloc: `Feature::Tooltips` (4.0.0a) covers OPL, the plain localized
+      message `0xC1` has no entry.
+- [ ] **The AoS boundary is Sphere's, not the client's.** `MINCLIVER_AOS` is
+      4.0.0.0 while the client gained AoS features at 3.0.8z, so every client in
+      `[3.0.8z, 4.0.0)` is told it has no AoS support when it does.

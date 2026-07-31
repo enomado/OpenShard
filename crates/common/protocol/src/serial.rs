@@ -87,6 +87,34 @@ impl Serial {
     }
 }
 
+/// An object reference exactly as a client packet carried it.
+///
+/// Every inbound packet that names something — a single click, a lift, a target,
+/// a vendor's shelf — carries four bytes the client chose, and nothing about
+/// them is a [`Serial`] until somebody looks. `0`, `0xFFFF_FFFF` and everything
+/// above the item pool all arrive here happily; see `docs/protocol_newtypes.md`
+/// for why the check belongs at the seam that acts on the packet and not in
+/// `decode_body`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawSerial(pub u32);
+
+impl RawSerial {
+    /// The [`Serial`] this addresses, or `None` for a value that addresses
+    /// nothing.
+    ///
+    /// `Option` rather than a typed error on purpose: the two values a client
+    /// most often sends here — `0` and `0xFFFF_FFFF` — are the wire's own words
+    /// for "no object", which is an answer and not a malformed packet. A seam
+    /// that wanted to complain about one still can; most of them want to do
+    /// nothing, which is what `None` reads as. [`Serial::new`] is the rule, kept
+    /// in one place.
+    #[inline]
+    #[must_use]
+    pub const fn validate(self) -> Option<Serial> {
+        Serial::new(self.0)
+    }
+}
+
 impl fmt::Debug for Serial {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = match self.kind() {
@@ -138,6 +166,17 @@ mod tests {
         assert_eq!(Serial::new(0), None);
         assert_eq!(Serial::new(ITEM_MAX + 1), None);
         assert_eq!(Serial::new(u32::MAX), None, "0xFFFFFFFF means 'nothing'");
+    }
+
+    #[test]
+    fn a_raw_serial_off_the_wire_is_checked_before_it_addresses_anything() {
+        // The pair `docs/protocol_newtypes.md` N9 asks for: the hostile value
+        // arrives intact (no decode error to drop the connection over) and is
+        // refused where it would have been used.
+        assert_eq!(RawSerial(0).validate(), None, "zero is 'no object'");
+        assert_eq!(RawSerial(u32::MAX).validate(), None, "and so is 0xFFFFFFFF");
+        assert_eq!(RawSerial(ITEM_MAX + 1).validate(), None, "past the item pool");
+        assert_eq!(RawSerial(0x4000_002A).validate(), Serial::new(0x4000_002A));
     }
 
     #[test]

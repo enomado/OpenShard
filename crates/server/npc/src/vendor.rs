@@ -11,12 +11,14 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_items as items;
 use openshard_movement::Terrain;
-use openshard_protocol::containers::{ContainerContents, encode_open_container};
-use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::containers::{ContainerContents, GridSlot, encode_open_container};
+use openshard_protocol::gump::GumpPoint;
+use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::vendor::{BuyLine, BuyList, Purchase, Sale, SellLine, SellList};
+use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_state::components::{
-    Amount, Client, Contained, Equipped, Graphic, Name, Position, Price, Restock, StockRecord, Vendor,
+    Amount, Contained, Drawn, Equipped, Name, Position, Price, Restock, StockRecord, Vendor,
 };
 use openshard_state::sectors::in_range;
 use openshard_state::{TooltipMode, WorldState};
@@ -26,20 +28,20 @@ use crate::GOLD_GRAPHIC;
 
 /// The layer a vendor's stock container rides on — ServUO's restockable buy
 /// layer, `0x1A` (ClassicUO's `ShopBuyRestock`).
-pub const STOCK_LAYER: u8 = 0x1A;
+pub const STOCK_LAYER: Layer = Layer(0x1A);
 
 /// The second shop layer, `0x1B` (ClassicUO's `ShopBuy`). ClassicUO's buy window
 /// scans layers `0x1A` **and** `0x1B` and dereferences the container on each with
 /// no null check, so a vendor must wear one on both or the client crashes when
 /// the shop opens. This one holds nothing; it exists only to satisfy the scan.
-pub const RESALE_LAYER: u8 = 0x1B;
+pub const RESALE_LAYER: Layer = Layer(0x1B);
 
 /// The crate the stock lives in, and its gump.
-const STOCK_GRAPHIC: u16 = 0x0E3F;
-const STOCK_GUMP: u16 = 0x003E;
+const STOCK_GRAPHIC: Graphic = Graphic(0x0E3F);
+const STOCK_GUMP: Graphic = Graphic(0x003E);
 
 /// The vendor buy gump the client opens over the stock container.
-const SHOP_GUMP: u16 = 0x0030;
+const SHOP_GUMP: Graphic = Graphic(0x0030);
 
 /// How near a customer must stand to trade — a few tiles, so a shopper reaches
 /// the counter but cannot buy from across the street. Trade also needs line of
@@ -50,9 +52,9 @@ const TRADE_RANGE: u32 = 4;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StockLine {
     /// The goods' graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Their hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// How many the vendor holds.
     pub amount: u16,
     /// What one unit costs.
@@ -102,8 +104,8 @@ pub const RESTOCK_TICKS: u64 = 60 * 60 * 20;
 ///
 /// It also records the shelf as it stands *now* on the vendor, so it can be topped
 /// back up later — see [`Restock`]. The record is cumulative, like the stocking.
-pub fn stock(state: &mut WorldState, vendor_serial: u32, lines: Vec<StockLine>) {
-    let Some(vendor) = Serial::new(vendor_serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn stock(state: &mut WorldState, vendor_serial: Serial, lines: Vec<StockLine>) {
+    let Some(vendor) = state.registry.entity_of(vendor_serial) else {
         return;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
@@ -138,7 +140,7 @@ fn place_stock_line(state: &mut WorldState, stock_serial: Serial, line: &StockLi
     };
     state.registry.insert(
         entity,
-        Graphic {
+        Drawn {
             id: line.graphic,
             hue: line.hue,
         },
@@ -147,9 +149,8 @@ fn place_stock_line(state: &mut WorldState, stock_serial: Serial, line: &StockLi
         entity,
         Contained {
             container: stock_serial,
-            x: 50,
-            y: 50,
-            grid: 0,
+            position: GumpPoint::new(50, 50),
+            grid: GridSlot(0),
         },
     );
     state.registry.insert(entity, Amount(line.amount));
@@ -184,7 +185,7 @@ fn restock_if_due(state: &mut WorldState, vendor: EntityId, stock_serial: Serial
             .filter(|(item, _)| {
                 state
                     .registry
-                    .get::<Graphic>(*item)
+                    .get::<Drawn>(*item)
                     .is_some_and(|g| g.id == line.graphic && g.hue == line.hue)
             })
             .map(|(item, _)| item)
@@ -225,23 +226,23 @@ fn restock_if_due(state: &mut WorldState, vendor: EntityId, stock_serial: Serial
 /// Open the shop on a double-click, if the clicked mobile is a vendor in
 /// range. Returns whether it was — the caller falls through to the ordinary
 /// double-click when it was not.
-pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) -> bool {
+pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: Serial) -> bool {
     let Some(&player) = state.players.get(&connection) else {
         return false;
     };
-    let Some(vendor) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(vendor) = state.registry.entity_of(serial) else {
         return false;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
         debug!(
-            serial,
+            %serial,
             is_vendor = state.registry.has::<Vendor>(vendor),
             "open_shop: not a stocked vendor"
         );
         return false;
     };
     if !in_trade_range(state, player, vendor) {
-        debug!(serial, "open_shop: out of trade range");
+        debug!(%serial, "open_shop: out of trade range");
         return false;
     }
     // Whether this customer may trade at all — ServUO checks it here, in `VendorBuy`,
@@ -250,7 +251,7 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     if !crate::speech::check_vendor_access(state, vendor, player) {
         return true;
     }
-    let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
+    let Some(version) = state.version_of(connection) else {
         return false;
     };
     // Before the shelf is read, refill it if its hour is up — ServUO checks the
@@ -263,13 +264,13 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     let lines: Vec<BuyLine> = contents
         .iter()
         .map(|item| {
-            let entity = Serial::new(item.serial).and_then(|s| state.registry.entity_of(s));
+            let entity = state.registry.entity_of(item.serial);
             let price = entity
                 .and_then(|e| state.registry.get::<Price>(e))
                 .map_or(1, |p| p.0);
             let name = entity
                 .and_then(|e| state.registry.get::<Name>(e))
-                .map_or_else(|| format!("item {:#06x}", item.graphic), |n| n.0.clone());
+                .map_or_else(|| format!("item {:#06x}", item.graphic.0), |n| n.0.clone());
             BuyLine { price, name }
         })
         .collect();
@@ -279,7 +280,14 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     // client crashes when the shop opens.
     if worn_container(state, vendor, RESALE_LAYER).is_none() {
         if let Some(vendor_serial) = state.registry.serial_of(vendor) {
-            items::equip_new_container(state, vendor_serial, STOCK_GRAPHIC, STOCK_GUMP, 0, RESALE_LAYER);
+            items::equip_new_container(
+                state,
+                vendor_serial,
+                STOCK_GRAPHIC,
+                STOCK_GUMP,
+                Hue(0),
+                RESALE_LAYER,
+            );
         }
     }
 
@@ -306,14 +314,14 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     state.send_packet(
         connection,
         &ServerPacket::ContainerContents(ContainerContents {
-            container: stock_serial.raw(),
+            container: stock_serial,
             items: contents.clone(),
         }),
     );
     state.send_packet(
         connection,
         &ServerPacket::BuyList(BuyList {
-            container: stock_serial.raw(),
+            container: stock_serial,
             lines: lines.clone(),
         }),
     );
@@ -324,22 +332,22 @@ pub fn open_shop(state: &mut WorldState, connection: ConnectionId, serial: u32) 
     // and the client requests the list itself.
     if state.gameplay.tooltip_mode != TooltipMode::Off {
         for item in &contents {
-            if let Some(entity) = Serial::new(item.serial).and_then(|s| state.registry.entity_of(s)) {
+            if let Some(entity) = state.registry.entity_of(item.serial) {
                 state.send_property_list(connection, entity);
             }
         }
     }
-    debug!(serial, items = lines.len(), "open_shop: sent buy gump");
+    debug!(%serial, items = lines.len(), "open_shop: sent buy gump");
     true
 }
 
 /// Settle a purchase: check the gold, take it, hand the goods over. See
 /// `Command::Buy`.
-pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32, list: &[Purchase]) {
+pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: RawSerial, list: &[Purchase]) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(vendor) = Serial::new(vendor_serial).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(vendor) = vendor_serial.validate().and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
@@ -351,16 +359,20 @@ pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32,
     if !crate::speech::check_vendor_access(state, vendor, player) {
         return;
     }
-    let Some(backpack) = worn_container(state, player, BACKPACK_LAYER) else {
+    let Some(backpack) = worn_container(state, player, openshard_items::BACKPACK_LAYER) else {
         return;
     };
 
     // Price the whole basket first: a purchase is all-or-nothing, so a client
     // that asked for more than it can pay is refused before anything moves.
     let mut total: u32 = 0;
-    let mut basket: Vec<(EntityId, u16, u16, u16, u32)> = Vec::new();
+    let mut basket: Vec<(EntityId, u16, Graphic, Hue, u32)> = Vec::new();
     for purchase in list {
-        let Some(item) = Serial::new(purchase.serial).and_then(|s| state.registry.entity_of(s)) else {
+        let Some(item) = purchase
+            .serial
+            .validate()
+            .and_then(|s| state.registry.entity_of(s))
+        else {
             continue;
         };
         let held_in = state.registry.get::<Contained>(item).map(|c| c.container);
@@ -373,7 +385,7 @@ pub fn buy(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32,
             continue;
         }
         let price = state.registry.get::<Price>(item).map_or(1, |p| p.0);
-        let Some(&Graphic { id, hue }) = state.registry.get::<Graphic>(item) else {
+        let Some(&Drawn { id, hue }) = state.registry.get::<Drawn>(item) else {
             continue;
         };
         total = total.saturating_add(price.saturating_mul(u32::from(take)));
@@ -436,7 +448,7 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
     if !crate::speech::check_vendor_access(state, vendor, actor) {
         return true;
     }
-    let Some(backpack) = worn_container(state, actor, BACKPACK_LAYER) else {
+    let Some(backpack) = worn_container(state, actor, openshard_items::BACKPACK_LAYER) else {
         return false;
     };
 
@@ -448,16 +460,16 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
         .query::<Contained>()
         .filter(|(_, held)| held.container == backpack)
         .filter_map(|(entity, _)| {
-            let &Graphic { id, hue } = state.registry.get::<Graphic>(entity)?;
+            let &Drawn { id, hue } = state.registry.get::<Drawn>(entity)?;
             let price = sell_price(*catalogue.iter().find(|(g, _)| *g == id).map(|(_, p)| p)?);
             let serial = state.registry.serial_of(entity)?;
             let amount = state.registry.get::<Amount>(entity).map_or(1, |a| a.0);
             let name = state
                 .registry
                 .get::<Name>(entity)
-                .map_or_else(|| format!("item {id:#06x}"), |n| n.0.clone());
+                .map_or_else(|| format!("item {:#06x}", id.0), |n| n.0.clone());
             Some(SellLine {
-                serial: serial.raw(),
+                serial,
                 graphic: id,
                 hue,
                 amount,
@@ -473,7 +485,7 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
     state.send_packet(
         connection,
         &ServerPacket::SellList(SellList {
-            vendor: vendor_serial.raw(),
+            vendor: vendor_serial,
             lines,
         }),
     );
@@ -481,11 +493,11 @@ pub fn offer_sell_list(state: &mut WorldState, connection: ConnectionId, actor: 
 }
 
 /// Settle a sale: goods out of the pack, gold in. See `Command::Sell`.
-pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32, list: &[Sale]) {
+pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: RawSerial, list: &[Sale]) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
-    let Some(vendor) = Serial::new(vendor_serial).and_then(|s| state.registry.entity_of(s)) else {
+    let Some(vendor) = vendor_serial.validate().and_then(|s| state.registry.entity_of(s)) else {
         return;
     };
     let Some((_, stock_serial)) = stock_of(state, vendor) else {
@@ -497,20 +509,20 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32
     if !crate::speech::check_vendor_access(state, vendor, player) {
         return;
     }
-    let Some(backpack) = worn_container(state, player, BACKPACK_LAYER) else {
+    let Some(backpack) = worn_container(state, player, openshard_items::BACKPACK_LAYER) else {
         return;
     };
     let catalogue = stock_prices(state, stock_serial);
 
     let mut earned: u32 = 0;
     for sale in list {
-        let Some(item) = Serial::new(sale.serial).and_then(|s| state.registry.entity_of(s)) else {
+        let Some(item) = sale.serial.validate().and_then(|s| state.registry.entity_of(s)) else {
             continue;
         };
         if state.registry.get::<Contained>(item).map(|c| c.container) != Some(backpack) {
             continue;
         }
-        let Some(&Graphic { id, .. }) = state.registry.get::<Graphic>(item) else {
+        let Some(&Drawn { id, .. }) = state.registry.get::<Drawn>(item) else {
             continue;
         };
         let Some(&(_, price)) = catalogue.iter().find(|(g, _)| *g == id) else {
@@ -526,7 +538,7 @@ pub fn sell(state: &mut WorldState, connection: ConnectionId, vendor_serial: u32
     // needs. Clamping it to one stack's worth here was the same silent loss as
     // clamping a merge.
     let paid = earned;
-    items::give(state, backpack, GOLD_GRAPHIC, 0, paid);
+    items::give(state, backpack, GOLD_GRAPHIC, Hue(0), paid);
     vendor_says(state, vendor, &format!("The total of thy sale is {paid} gold."));
 }
 
@@ -536,13 +548,13 @@ fn sell_price(buy: u32) -> u16 {
 }
 
 /// Every (graphic, unit price) the vendor's crate holds.
-fn stock_prices(state: &WorldState, stock_serial: Serial) -> Vec<(u16, u32)> {
+fn stock_prices(state: &WorldState, stock_serial: Serial) -> Vec<(Graphic, u32)> {
     state
         .registry
         .query::<Contained>()
         .filter(|(_, held)| held.container == stock_serial)
         .filter_map(|(entity, _)| {
-            let graphic = state.registry.get::<Graphic>(entity)?.id;
+            let graphic = state.registry.get::<Drawn>(entity)?.id;
             let price = state.registry.get::<Price>(entity).map_or(1, |p| p.0);
             Some((graphic, price))
         })
@@ -577,7 +589,7 @@ pub fn buy_keyword(state: &mut WorldState, connection: ConnectionId, actor: Enti
     let Some(vendor_serial) = state.registry.serial_of(vendor) else {
         return false;
     };
-    open_shop(state, connection, vendor_serial.raw())
+    open_shop(state, connection, vendor_serial)
 }
 
 /// The vendor's own voice: a conversational line drawn over its head for
@@ -585,11 +597,11 @@ pub fn buy_keyword(state: &mut WorldState, connection: ConnectionId, actor: Enti
 /// line to a single screen. The customer's answer should look like the
 /// shopkeeper talking, not the shard.
 fn vendor_says(state: &mut WorldState, vendor: EntityId, text: &str) {
-    openshard_chat::speak(state, vendor, 0, crate::GREET_HUE, crate::GREET_FONT, text);
+    crate::say(state, vendor, text);
 }
 
 /// The serial of the container `mobile` wears at `layer`, if any.
-fn worn_container(state: &WorldState, mobile: EntityId, layer: u8) -> Option<Serial> {
+fn worn_container(state: &WorldState, mobile: EntityId, layer: Layer) -> Option<Serial> {
     let serial = state.registry.serial_of(mobile)?;
     state
         .registry
@@ -598,13 +610,10 @@ fn worn_container(state: &WorldState, mobile: EntityId, layer: u8) -> Option<Ser
         .and_then(|(entity, _)| state.registry.serial_of(entity))
 }
 
-/// The layer a backpack rides on.
-const BACKPACK_LAYER: u8 = 0x15;
-
 /// Dress a fresh townsperson as a vendor: the mark, and the stock crate.
 pub(crate) fn make_vendor(state: &mut WorldState, entity: EntityId, serial: Serial) {
     state.registry.insert(entity, Vendor);
-    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, 0, STOCK_LAYER);
+    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, Hue(0), STOCK_LAYER);
     // The empty second crate ClassicUO's buy scan insists on — see `RESALE_LAYER`.
-    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, 0, RESALE_LAYER);
+    items::equip_new_container(state, serial, STOCK_GRAPHIC, STOCK_GUMP, Hue(0), RESALE_LAYER);
 }

@@ -14,31 +14,32 @@
 //! ServUO uses outside AoS.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Combat, Contained, Hidden, Position, Stealthing};
 use openshard_state::{Skill, WorldState, in_range};
 
 use crate::check::{roll_skill_band, roll_skill_chance};
 
 /// "You can't seem to hide right now." — somebody is fighting you.
-const CANNOT_HIDE_NOW: u32 = 501_237;
+const CANNOT_HIDE_NOW: ClilocId = ClilocId(501_237);
 /// "You have hidden yourself well."
-const HIDDEN_WELL: u32 = 501_240;
+const HIDDEN_WELL: ClilocId = ClilocId(501_240);
 /// "You can't seem to hide here."
-const CANNOT_HIDE_HERE: u32 = 501_241;
+const CANNOT_HIDE_HERE: ClilocId = ClilocId(501_241);
 /// "You must hide first."
-const HIDE_FIRST: u32 = 502_725;
+const HIDE_FIRST: ClilocId = ClilocId(502_725);
 /// "You are not hidden well enough. Become better at hiding."
-const NOT_HIDDEN_ENOUGH: u32 = 502_726;
+const NOT_HIDDEN_ENOUGH: ClilocId = ClilocId(502_726);
 /// "You could not hope to move quietly wearing this much armor."
-const TOO_MUCH_ARMOUR: u32 = 502_727;
+const TOO_MUCH_ARMOUR: ClilocId = ClilocId(502_727);
 /// "You begin to move quietly."
-const MOVING_QUIETLY: u32 = 502_730;
+const MOVING_QUIETLY: ClilocId = ClilocId(502_730);
 /// "You fail in your attempt to move unnoticed."
-const FAILED_TO_STEALTH: u32 = 502_731;
+const FAILED_TO_STEALTH: ClilocId = ClilocId(502_731);
 /// "You disturb the stillness and reveal what was hidden." — ServUO's reveal line.
-const YOU_REVEAL: u32 = 500_814;
+const YOU_REVEAL: ClilocId = ClilocId(500_814);
 /// "You are unable to detect anything unusual."
-const DETECT_NOTHING: u32 = 500_817;
+const DETECT_NOTHING: ClilocId = ClilocId(500_817);
 
 /// The Hiding a mobile needs before Stealth will work at all, in tenths — ServUO's
 /// `HidingRequirement` outside SE.
@@ -168,17 +169,17 @@ pub(super) fn detect_hidden(state: &mut WorldState, actor: EntityId) {
 }
 
 /// "You catch yourself red-handed." — stealing from yourself.
-const RED_HANDED: u32 = 502_704;
+const RED_HANDED: ClilocId = ClilocId(502_704);
 /// "You cannot steal that."
-const CANNOT_STEAL: u32 = 502_710;
+const CANNOT_STEAL: ClilocId = ClilocId(502_710);
 /// "That is too heavy to steal."
-const TOO_HEAVY: u32 = 502_711;
+const TOO_HEAVY: ClilocId = ClilocId(502_711);
 /// "You reach into their pack and take the item."
-const STOLE_IT: u32 = 502_724;
+const STOLE_IT: ClilocId = ClilocId(502_724);
 /// "You fail to steal the item." — and everyone finds out.
-const FAILED_TO_STEAL: u32 = 502_723;
+const FAILED_TO_STEAL: ClilocId = ClilocId(502_723);
 /// "You notice %s trying to steal from you!" — said to the victim.
-const CAUGHT_YOU: u32 = 1_010_585;
+const CAUGHT_YOU: ClilocId = ClilocId(1_010_585);
 /// The most a thief can lift, in stones — ServUO's `10 + value/10`, over a value
 /// in tenths.
 const STEAL_WEIGHT_PER_SKILL: u16 = 100;
@@ -293,7 +294,7 @@ fn somebody_is_fighting(state: &WorldState, actor: EntityId, range: u32) -> bool
 }
 
 /// "You cannot peek into the container." — a staff pack, or someone dead.
-const CANNOT_PEEK: u32 = 500_209;
+const CANNOT_PEEK: ClilocId = ClilocId(500_209);
 /// What snooping costs in karma, every time, whether it works or not.
 const SNOOP_KARMA: i32 = -4;
 

@@ -23,3 +23,9 @@ openshard-protocol.workspace = true
 openshard-state.workspace = true
 # For `ConnectionId` alone — a gump reply names the connection it came from.
 openshard-gateway.workspace = true
+
+# `build.rs` only: the recipe tables are `data/*.json` and become `const`s before
+# the crate compiles. Nothing here is linked into the shard.
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true

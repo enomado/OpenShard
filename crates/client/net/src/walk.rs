@@ -1,0 +1,525 @@
+//! Walking, from the client's chair: `0x02` out, `0x22` or `0x21` back.
+//!
+//! # Why this has to predict at all
+//!
+//! A `0x22` ack carries two bytes — the sequence being answered and a health-bar
+//! colour — and *not* a position. The server has one and does not send it. So
+//! "where am I now?" is a question only this end can answer: it is the tile the
+//! step the ack names was asking for. That is what [`Walk`] keeps, and why it
+//! has to work out turn-versus-step by exactly the rule the server uses. It does
+//! not reimplement that rule — [`openshard_movement::intend`] is the one copy,
+//! and the server's `Walker::request` calls the same function.
+//!
+//! # What it deliberately does not do
+//!
+//! Move the [`WorldView`](crate::view::WorldView) before the ack arrives. A real
+//! 2D client steps immediately and rubber-bands on a `0x21`, which is the right
+//! trade for something drawing at 60 frames a second and the wrong one for a
+//! record of what the server said. The prediction lives here, in
+//! [`Walk::predicted`], and the view learns a position only once a `0x22` has
+//! confirmed the step that produced it. Anything on top that wants to draw
+//! ahead of the server can read the prediction and do so knowingly.
+//!
+//! It also has no map. `z` therefore never changes on a step — see
+//! [`openshard_movement::intend`], which carries the height over unchanged —
+//! so a client walking up a hill drifts from the server in height until a `0x20`
+//! or a `0x21` corrects it. That is honest rather than fixed because the fix is
+//! the map, and the map moves out of `openshard-world` in M2; see
+//! `docs/client.md`.
+
+use std::collections::VecDeque;
+
+use openshard_movement::{Intent, StepCounter, intend};
+use openshard_protocol::direction::Facing;
+use openshard_protocol::mobile::Notoriety;
+use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::world::{Point, RawFastwalkKey, RawStepSequence, StepSequence, WalkRequest};
+
+/// Where this client believes it will be once every step in flight is answered.
+///
+/// Not where it is: nothing here has been confirmed by the server. It is the
+/// state the *next* `0x02` is computed from, which is why a caller sending
+/// several steps without waiting still produces a walkable line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Predicted {
+    /// The tile the last step asked for.
+    pub position: Point,
+    /// The facing the last step asked for.
+    pub facing: Facing,
+}
+
+/// One step asked for and not yet answered.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Pending {
+    /// The sequence byte its `0x02` carried, and the one its `0x22` will echo.
+    sequence: StepSequence,
+    /// Where this client will be if the step is allowed. For a turn, where it
+    /// already was — a turn moves nobody.
+    position: Point,
+    /// Which way it will face.
+    facing: Facing,
+}
+
+/// What a server packet meant for the walk.
+///
+/// Closed on purpose, unlike [`Step`](crate::session::Step): a packet either
+/// says nothing about the walk, confirms a step, or says where the body really
+/// is, and there is no fourth thing the handshake can do. A caller matching all
+/// three should be told by the compiler if that ever stops being true.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Moved {
+    /// Nothing to do — a packet the walk has no interest in.
+    Idle,
+    /// A step this client asked for was allowed. It is standing here now, and
+    /// this is the first moment that is true.
+    Stepped {
+        /// Where it is.
+        position: Point,
+        /// Which way it faces.
+        facing: Facing,
+        /// The colour of its own health bar, which is the only other thing a
+        /// `0x22` carries.
+        ///
+        /// Not folded into the [`WorldView`](crate::view::WorldView) for the
+        /// same reason `0x11` is not: it is status-bar data, not a position.
+        /// It is handed over rather than dropped so that whatever eventually
+        /// models the status bar has it.
+        notoriety: Notoriety,
+    },
+    /// Forget the prediction: this is where the server says it really is.
+    ///
+    /// A `0x21` refusing a step and a `0x20` moving the body somewhere it did
+    /// not walk to are the same event from here — everything in flight is void,
+    /// and both ends go back to a sequence of zero.
+    Snapped {
+        /// Where it really is.
+        position: Point,
+        /// Which way it really faces.
+        facing: Facing,
+    },
+}
+
+/// A `0x22` answered a step this client is not waiting for.
+///
+/// Means the two ends have lost track of each other: acks arrive in the order
+/// the steps were sent, one apiece, and a refused step gets a `0x21` instead. A
+/// caller has nothing local to repair — the server's idea of where the body is
+/// no longer matches this one's, and only the server can say so.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UnexpectedAck {
+    /// The sequence the server acked.
+    pub got: StepSequence,
+    /// The step this client was waiting on, or `None` when it was waiting on
+    /// nothing at all.
+    pub expected: Option<StepSequence>,
+}
+
+impl std::fmt::Display for UnexpectedAck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.expected {
+            Some(expected) => write!(
+                f,
+                "0x22 acked step {} while waiting on step {}",
+                self.got.0, expected.0
+            ),
+            None => write!(f, "0x22 acked step {} with nothing in flight", self.got.0),
+        }
+    }
+}
+
+impl std::error::Error for UnexpectedAck {}
+
+/// A step was asked for that has no tile to land on.
+///
+/// The map is addressed with `u16`s, so there is no way to express a step west
+/// from `x = 0`. Refused here rather than sent, because the server refuses it
+/// too (`Walker::request`'s world-edge branch) and a `0x02` that can only come
+/// back as a `0x21` is a round trip spent to learn something this end already
+/// knew.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AtTheWorldEdge {
+    /// Where the step was from.
+    pub from: Point,
+    /// Which way it was going.
+    pub facing: Facing,
+}
+
+impl std::fmt::Display for AtTheWorldEdge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} from {} leaves the map", self.facing.direction, self.from)
+    }
+}
+
+impl std::error::Error for AtTheWorldEdge {}
+
+/// Drives one character's walking.
+///
+/// Built from wherever the character is standing — `Step::Entered`'s
+/// [`PlayerStart`](openshard_protocol::world::PlayerStart) is where a login
+/// hands that over — and then fed every packet the connection decodes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Walk {
+    /// The sequence byte the next `0x02` will carry.
+    counter: StepCounter,
+    /// Where the last step asked to be.
+    predicted: Predicted,
+    /// Steps sent and not yet answered, oldest first.
+    pending: VecDeque<Pending>,
+}
+
+impl Walk {
+    /// A character standing at `position`, facing `facing`, with nothing in
+    /// flight and a fresh sequence.
+    #[must_use]
+    pub fn new(position: Point, facing: Facing) -> Self {
+        Self {
+            counter: StepCounter::new(),
+            predicted: Predicted { position, facing },
+            pending: VecDeque::new(),
+        }
+    }
+
+    /// Where this client believes it will end up. See [`Predicted`].
+    #[must_use]
+    pub const fn predicted(&self) -> Predicted {
+        self.predicted
+    }
+
+    /// How many steps have been sent and not yet answered.
+    ///
+    /// Nothing here caps it. The server's own pace budget
+    /// (`openshard_movement::WalkPace`) is what stops a client walking faster
+    /// than a body can, and it answers with `0x21`; a second limit invented on
+    /// this side would only differ from it. A caller that wants to walk in step
+    /// waits for this to reach zero.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Ask to take one step, and get the `0x02` to write to the socket.
+    ///
+    /// `facing` is a direction and whether to run, exactly as the packet carries
+    /// it. Asking for a direction the character is not already facing turns it
+    /// and moves it nowhere — that is a whole step in UO, it gets its own
+    /// sequence number and its own ack, and this predicts it as one.
+    pub fn step(&mut self, facing: Facing) -> Result<Vec<u8>, AtTheWorldEdge> {
+        let (position, facing) = match intend(self.predicted.position, self.predicted.facing, facing) {
+            Intent::Turned { facing } => (self.predicted.position, facing),
+            Intent::Stepped { target, facing } => (target, facing),
+            Intent::OffTheMap => {
+                return Err(AtTheWorldEdge {
+                    from: self.predicted.position,
+                    facing,
+                });
+            }
+        };
+
+        let sequence = RawStepSequence(self.counter.take());
+        self.predicted = Predicted { position, facing };
+        self.pending.push_back(Pending {
+            sequence: sequence.interpret(),
+            position,
+            facing,
+        });
+        Ok(WalkRequest {
+            facing,
+            sequence,
+            // Never read by anything, on either side of the wire — see
+            // `RawFastwalkKey`. Sending zero is what Sphere's own clients end up
+            // doing once the key is ignored.
+            fastwalk_key: RawFastwalkKey(0),
+        }
+        .encode())
+    }
+
+    /// Advance the walk with one packet from the server.
+    ///
+    /// Every decoded packet should come through here, not only the two walk
+    /// answers: a `0x20` or a second `0x1B` moves the body without a step, and
+    /// both ends put their sequence back to zero when that happens (the server
+    /// does it in `WorldState::move_to`). A client that missed one would be
+    /// refused on its next step and never find out why.
+    pub fn on_packet(&mut self, packet: &ServerPacket) -> Result<Moved, UnexpectedAck> {
+        match packet {
+            ServerPacket::WalkAck(ack) => self.acked(ack.sequence, ack.notoriety),
+            ServerPacket::WalkReject(reject) => Ok(self.snap(reject.position, reject.facing)),
+            ServerPacket::PlayerUpdate(update) => Ok(self.snap(update.position, update.facing)),
+            // A second `0x1B` restarts the session; the body it describes is
+            // where this character now is, whatever was in flight.
+            ServerPacket::PlayerStart(start) => Ok(self.snap(start.position, start.facing)),
+            _ => Ok(Moved::Idle),
+        }
+    }
+
+    /// A `0x22`: the oldest step in flight is confirmed, and only that one.
+    fn acked(&mut self, sequence: StepSequence, notoriety: Notoriety) -> Result<Moved, UnexpectedAck> {
+        let Some(pending) = self.pending.front().copied() else {
+            return Err(UnexpectedAck {
+                got: sequence,
+                expected: None,
+            });
+        };
+        if pending.sequence != sequence {
+            // Left in flight on purpose. The mismatch is not something this end
+            // can repair by guessing which step was meant, and dropping the
+            // queue would turn a diagnosable desync into a silent one.
+            return Err(UnexpectedAck {
+                got: sequence,
+                expected: Some(pending.sequence),
+            });
+        }
+        self.pending.pop_front();
+        Ok(Moved::Stepped {
+            position: pending.position,
+            facing: pending.facing,
+            notoriety,
+        })
+    }
+
+    /// The server put the body somewhere: believe it, and start over.
+    fn snap(&mut self, position: Point, facing: Facing) -> Moved {
+        self.predicted = Predicted { position, facing };
+        self.pending.clear();
+        self.counter.reset();
+        Moved::Snapped { position, facing }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use openshard_protocol::direction::Direction;
+    use openshard_protocol::serial::Serial;
+    use openshard_protocol::wire::{Graphic, Hue};
+    use openshard_protocol::world::{MapSize, PlayerStart, PlayerUpdate, WalkAck, WalkReject};
+
+    use super::*;
+
+    fn walk() -> Walk {
+        Walk::new(Point::new(100, 100, 0), Facing::walking(Direction::North))
+    }
+
+    /// The `0x02` a `step` produced, taken apart: direction bits, sequence.
+    fn sent(bytes: &[u8]) -> (u8, u8) {
+        assert_eq!(bytes.len(), 7, "0x02 is seven bytes");
+        assert_eq!(bytes[0], 0x02);
+        (bytes[1], bytes[2])
+    }
+
+    #[test]
+    fn the_first_step_of_a_session_carries_a_zero() {
+        // The one sequence rule the server actually enforces: a fresh
+        // connection opens at zero or the step is refused.
+        let mut walk = walk();
+        let bytes = walk.step(Facing::walking(Direction::North)).unwrap();
+        assert_eq!(sent(&bytes).1, 0);
+        assert_eq!(sent(&walk.step(Facing::walking(Direction::North)).unwrap()).1, 1);
+    }
+
+    #[test]
+    fn turning_costs_a_step_and_moves_nothing() {
+        // Facing north and asked to go east: the first request only turns, and
+        // the client must predict that or it puts itself a tile ahead of the
+        // server for the rest of the session.
+        let mut walk = walk();
+        walk.step(Facing::walking(Direction::East)).unwrap();
+        assert_eq!(
+            walk.predicted(),
+            Predicted {
+                position: Point::new(100, 100, 0),
+                facing: Facing::walking(Direction::East),
+            },
+            "a turn moves nobody"
+        );
+
+        walk.step(Facing::walking(Direction::East)).unwrap();
+        assert_eq!(walk.predicted().position, Point::new(101, 100, 0));
+        assert_eq!(walk.in_flight(), 2, "a turn is a step and gets its own ack");
+    }
+
+    #[test]
+    fn a_position_is_only_believed_once_the_ack_arrives() {
+        // The whole point of the type. Two steps go out; the view learns about
+        // the first only when the first ack comes back, and about the second
+        // only when the second does.
+        let mut walk = walk();
+        walk.step(Facing::walking(Direction::North)).unwrap();
+        walk.step(Facing::walking(Direction::North)).unwrap();
+        assert_eq!(walk.in_flight(), 2);
+
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(0),
+                notoriety: Notoriety::Innocent,
+            })),
+            Ok(Moved::Stepped {
+                position: Point::new(100, 99, 0),
+                facing: Facing::walking(Direction::North),
+                notoriety: Notoriety::Innocent,
+            })
+        );
+        assert_eq!(walk.in_flight(), 1);
+
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(1),
+                notoriety: Notoriety::Murderer,
+            })),
+            Ok(Moved::Stepped {
+                position: Point::new(100, 98, 0),
+                facing: Facing::walking(Direction::North),
+                notoriety: Notoriety::Murderer,
+            })
+        );
+        assert_eq!(walk.in_flight(), 0);
+    }
+
+    #[test]
+    fn a_reject_snaps_back_and_restarts_the_sequence() {
+        // Three steps in flight, all void. The next `0x02` has to carry a zero
+        // or the server — which reset its own counter when it sent the 0x21 —
+        // refuses that one too, and the client never walks again.
+        let mut walk = walk();
+        for _ in 0..3 {
+            walk.step(Facing::walking(Direction::North)).unwrap();
+        }
+
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkReject(WalkReject {
+                sequence: StepSequence(1),
+                position: Point::new(100, 100, 0),
+                facing: Facing::walking(Direction::North),
+            })),
+            Ok(Moved::Snapped {
+                position: Point::new(100, 100, 0),
+                facing: Facing::walking(Direction::North),
+            })
+        );
+        assert_eq!(walk.in_flight(), 0, "everything in flight is void");
+        assert_eq!(walk.predicted().position, Point::new(100, 100, 0));
+
+        let bytes = walk.step(Facing::walking(Direction::North)).unwrap();
+        assert_eq!(sent(&bytes).1, 0, "both ends are fresh again");
+    }
+
+    #[test]
+    fn a_jump_the_client_did_not_ask_for_resets_it_too() {
+        // `WorldState::move_to` resets the server's sequence on a teleport and
+        // sends a 0x20. A client that kept counting would be refused on its very
+        // next step, because a fresh server takes nothing but zero.
+        let mut walk = walk();
+        walk.step(Facing::walking(Direction::North)).unwrap();
+        walk.step(Facing::walking(Direction::North)).unwrap();
+
+        let update = PlayerUpdate {
+            serial: Serial::new(0x0000_002A).unwrap(),
+            body: Graphic(0x0190),
+            hue: Hue::NONE,
+            flags: openshard_protocol::mobile::StatusFlags::NONE,
+            position: Point::new(2000, 2000, -5),
+            facing: Facing::walking(Direction::South),
+        };
+        assert_eq!(
+            walk.on_packet(&ServerPacket::PlayerUpdate(update)),
+            Ok(Moved::Snapped {
+                position: Point::new(2000, 2000, -5),
+                facing: Facing::walking(Direction::South),
+            })
+        );
+        assert_eq!(sent(&walk.step(Facing::walking(Direction::South)).unwrap()).1, 0);
+        assert_eq!(walk.predicted().position, Point::new(2000, 2001, -5));
+    }
+
+    #[test]
+    fn a_second_player_start_is_a_jump_as_well() {
+        let mut walk = walk();
+        walk.step(Facing::walking(Direction::North)).unwrap();
+        let start = PlayerStart {
+            serial: Serial::new(0x0000_002A).unwrap(),
+            body: Graphic(0x0190),
+            position: Point::new(1475, 1770, 20),
+            facing: Facing::walking(Direction::West),
+            map: MapSize::BRITANNIA,
+        };
+        assert_eq!(
+            walk.on_packet(&ServerPacket::PlayerStart(start)),
+            Ok(Moved::Snapped {
+                position: Point::new(1475, 1770, 20),
+                facing: Facing::walking(Direction::West),
+            })
+        );
+        assert_eq!(walk.in_flight(), 0);
+    }
+
+    #[test]
+    fn an_ack_for_a_step_nobody_sent_is_reported_not_swallowed() {
+        let mut walk = walk();
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(0),
+                notoriety: Notoriety::Innocent,
+            })),
+            Err(UnexpectedAck {
+                got: StepSequence(0),
+                expected: None,
+            })
+        );
+
+        walk.step(Facing::walking(Direction::North)).unwrap();
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(9),
+                notoriety: Notoriety::Innocent,
+            })),
+            Err(UnexpectedAck {
+                got: StepSequence(9),
+                expected: Some(StepSequence(0)),
+            })
+        );
+        assert_eq!(
+            walk.in_flight(),
+            1,
+            "the step stays in flight: guessing which one was meant would hide the desync"
+        );
+    }
+
+    #[test]
+    fn the_world_edge_is_refused_here_rather_than_asked_about() {
+        let mut walk = Walk::new(Point::new(0, 0, 0), Facing::walking(Direction::West));
+        assert_eq!(
+            walk.step(Facing::walking(Direction::West)),
+            Err(AtTheWorldEdge {
+                from: Point::new(0, 0, 0),
+                facing: Facing::walking(Direction::West),
+            })
+        );
+        assert_eq!(walk.in_flight(), 0, "nothing was sent, so nothing is pending");
+        assert_eq!(
+            walk.step(Facing::walking(Direction::East))
+                .map(|bytes| sent(&bytes).1),
+            Ok(0),
+            "and the sequence was not spent on it"
+        );
+    }
+
+    #[test]
+    fn two_hundred_and_sixty_steps_never_send_a_second_zero() {
+        // A zero mid-session reads as a reconnect to the server. The wrap is
+        // `StepCounter`'s rule, and this is the client-side proof that walking
+        // through it does not break the session — the bug would show up once
+        // every 256 steps and nowhere else.
+        // Far enough north to have 260 tiles of room: the map edge is a
+        // different refusal and would hide this one.
+        let mut walk = Walk::new(Point::new(100, 1000, 0), Facing::walking(Direction::North));
+        for step in 0..260 {
+            let bytes = walk.step(Facing::walking(Direction::North)).unwrap();
+            let sequence = sent(&bytes).1;
+            assert!(step == 0 || sequence != 0, "step {step} sent a second zero");
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(sequence),
+                notoriety: Notoriety::Innocent,
+            }))
+            .unwrap();
+        }
+    }
+}

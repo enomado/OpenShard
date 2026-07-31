@@ -20,13 +20,14 @@ use openshard_state::harvest::tool_data;
 use openshard_state::instrument::{INSTRUMENT_MAX_USES, INSTRUMENT_MIN_USES, instrument_data};
 
 use openshard_entities::{EntityId, Registry};
+use openshard_protocol::wire::Graphic;
 
 /// Give a freshly made item whatever its graphic implies.
 ///
 /// Called from every place an item is created from a graphic — a vendor's shelf, a
 /// script's spawn, a staff `.add` — so there is no path that makes a lute nobody
 /// can play.
-pub fn apply_core_defaults(state: &mut WorldState, item: EntityId, graphic: u16) {
+pub fn apply_core_defaults(state: &mut WorldState, item: EntityId, graphic: Graphic) {
     if instrument_data(graphic).is_some() {
         // Rolled between ServUO's two bounds on the world's own generator, so a
         // shelf of lutes replays and no two are identical.
@@ -86,7 +87,7 @@ const SHELF_RUNEBOOK_CHARGES: u8 = 6;
 /// Both an instrument and a harvesting tool are ServUO's `IUsesRemaining` and both
 /// ride the same saved column, so the graphic is what decides which component it
 /// comes back as. Restoring the wrong one would leave a pickaxe that plays music.
-pub fn restore_uses(state: &mut WorldState, item: EntityId, graphic: u16, uses_left: u16) {
+pub fn restore_uses(state: &mut WorldState, item: EntityId, graphic: Graphic, uses_left: u16) {
     if instrument_data(graphic).is_some() {
         state.registry.insert(item, Instrument { uses_left });
     } else if tool_data(graphic).is_some() || craft_tool(graphic).is_some() {

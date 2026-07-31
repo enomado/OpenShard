@@ -20,7 +20,10 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::gump::{CloseGump, GumpButton, GumpDisplay, GumpLayout, GumpResponse};
+use openshard_protocol::gump::{
+    ButtonId, CloseGump, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint,
+    GumpResponse, RawGumpId,
+};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::components::Client;
 use openshard_state::{CraftGumpContext, CraftGumpPage, WorldState};
@@ -30,10 +33,11 @@ use crate::craft;
 use crate::defs::system;
 use crate::recipe::Recipe;
 use crate::system::{CraftSystemDef, Text};
+use openshard_protocol::wire::{ClilocId, Graphic, Hue};
 
 /// The window's own id. Distinct from the quest log's, so the two claims of a
 /// `0xB1` cannot be confused.
-pub const CRAFT_GUMP: u32 = 0x0052_0001;
+pub const CRAFT_GUMP: GumpId = GumpId(0x0052_0001);
 
 /// Where the window sits, ServUO's `base(40, 40)`.
 const WINDOW_X: i32 = 40;
@@ -77,30 +81,36 @@ mod misc {
 
 /// The detail page's buttons, which are plain small numbers rather than encoded.
 mod detail {
-    /// Back to the list.
-    pub const BACK: u32 = 0;
+    use openshard_protocol::gump::ButtonId;
+
+    /// Back to the list. ServUO's `CraftGumpItem` gives this button the close
+    /// box's own id, so dismissing the detail page and pressing Back are one
+    /// answer and cannot be told apart — see the reply, which keeps that.
+    pub const BACK: ButtonId = ButtonId::CLOSE_BOX;
     /// Make it.
-    pub const MAKE: u32 = 1;
+    pub const MAKE: ButtonId = ButtonId(1);
 }
 
 /// Whether a gump id is this window's.
 #[must_use]
-pub const fn owns(gump_id: u32) -> bool {
-    gump_id == CRAFT_GUMP
+pub fn owns(gump_id: RawGumpId) -> bool {
+    gump_id.validate(&[CRAFT_GUMP]).is_some()
 }
 
 /// ServUO's `GetButtonID`.
-const fn button_id(kind: u32, index: u32) -> u32 {
-    1 + kind + index * kind::COUNT
+const fn button_id(kind: u32, index: u32) -> ButtonId {
+    ButtonId(1 + kind + index * kind::COUNT)
 }
 
-/// And its inverse.
-const fn decode_button(id: u32) -> Option<(u32, u32)> {
-    if id == 0 {
-        return None;
-    }
-    let id = id - 1;
-    Some((id % kind::COUNT, id / kind::COUNT))
+/// And its inverse: which kind of button, and which row of it.
+///
+/// Total on a [`ButtonId`], where it used to have to answer `None` for `0` as
+/// well: the close box is no longer a button id at all — `RawButtonId::
+/// interpret` takes it apart one step earlier — so the `id == 0` guard this
+/// function opened with is gone.
+const fn decode_button(button: ButtonId) -> (u32, u32) {
+    let id = button.0 - 1;
+    (id % kind::COUNT, id / kind::COUNT)
 }
 
 /// Draw the craft window for a player, and remember what they are looking at.
@@ -132,39 +142,42 @@ pub fn open(state: &mut WorldState, player: EntityId, context: CraftGumpContext)
         connection,
         &ServerPacket::CloseGump(CloseGump {
             gump_id: CRAFT_GUMP,
-            button: 0,
+            button: ButtonId::CLOSE_BOX,
         }),
     );
     state.send_packet(
         connection,
         &ServerPacket::GumpDisplay(GumpDisplay {
-            serial: serial.raw(),
+            serial: GumpKey::on(serial),
             gump_id: CRAFT_GUMP,
-            x: WINDOW_X,
-            y: WINDOW_Y,
+            at: GumpPoint::new(WINDOW_X, WINDOW_Y),
             layout: string.to_owned(),
             lines: lines.to_vec(),
         }),
     );
-    state.open_craft_gumps.insert(player, context);
+    if let Some(row) = state.row_of_mut(player) {
+        row.craft_gump = Some(context);
+    }
 }
 
 /// Shut the window and forget it.
 pub fn close(state: &mut WorldState, player: EntityId) {
-    state.open_craft_gumps.remove(&player);
+    if let Some(row) = state.row_of_mut(player) {
+        row.craft_gump = None;
+    }
     if let Some(&Client { connection, .. }) = state.registry.get::<Client>(player) {
         state.send_packet(
             connection,
             &ServerPacket::CloseGump(CloseGump {
                 gump_id: CRAFT_GUMP,
-                button: 0,
+                button: ButtonId::CLOSE_BOX,
             }),
         );
     }
 }
 
 /// Put a line in the window's notice box and redraw it.
-fn reopen(state: &mut WorldState, player: EntityId, mut context: CraftGumpContext, notice: u32) {
+fn reopen(state: &mut WorldState, player: EntityId, mut context: CraftGumpContext, notice: Option<ClilocId>) {
     context.notice = notice;
     context.page = CraftGumpPage::Items;
     open(state, player, context);
@@ -196,12 +209,12 @@ fn main(
     layout.alpha_region(10, 10, 510, 477);
 
     title(&mut layout, def);
-    layout.html_localized_colored(10, 37, 200, 22, 1_044_010, LABEL, false, false); // CATEGORIES
-    layout.html_localized_colored(215, 37, 305, 22, 1_044_011, LABEL, false, false); // SELECTIONS
-    layout.html_localized_colored(10, 302, 150, 25, 1_044_012, LABEL, false, false); // NOTICES
+    layout.html_localized_colored(10, 37, 200, 22, ClilocId(1_044_010), LABEL, false, false); // CATEGORIES
+    layout.html_localized_colored(215, 37, 305, 22, ClilocId(1_044_011), LABEL, false, false); // SELECTIONS
+    layout.html_localized_colored(10, 302, 150, 25, ClilocId(1_044_012), LABEL, false, false); // NOTICES
 
-    layout.button(15, 442, 4017, 4019, GumpButton::Reply, 0, 0);
-    layout.html_localized_colored(50, 445, 150, 18, 1_011_441, LABEL, false, false); // EXIT
+    layout.button(15, 442, 4017, 4019, GumpButton::Reply, 0, ButtonId::CLOSE_BOX);
+    layout.html_localized_colored(50, 445, 150, 18, ClilocId(1_011_441), LABEL, false, false); // EXIT
 
     layout.button(
         115,
@@ -212,10 +225,10 @@ fn main(
         0,
         button_id(kind::MISC, misc::CANCEL),
     );
-    layout.html_localized_colored(150, 445, 150, 18, 1_112_698, LABEL, false, false); // CANCEL MAKE
+    layout.html_localized_colored(150, 445, 150, 18, ClilocId(1_112_698), LABEL, false, false); // CANCEL MAKE
 
-    if context.notice != 0 {
-        layout.html_localized_colored(170, 295, 350, 40, context.notice, LABEL, false, false);
+    if let Some(notice) = context.notice {
+        layout.html_localized_colored(170, 295, 350, 40, notice, LABEL, false, false);
     }
 
     // The material row: which metal or wood is selected, and how much of it the
@@ -311,14 +324,14 @@ fn items(layout: &mut GumpLayout, def: &CraftSystemDef, group: u16) {
         let page = u32::try_from(i / PER_PAGE).unwrap_or(0) + 1;
         if row == 0 {
             if i > 0 {
-                layout.button(370, 260, 4005, 4007, GumpButton::Page, page, 0);
-                layout.html_localized_colored(405, 263, 100, 18, 1_044_045, LABEL, false, false);
+                layout.button(370, 260, 4005, 4007, GumpButton::Page, page, ButtonId::UNUSED);
+                layout.html_localized_colored(405, 263, 100, 18, ClilocId(1_044_045), LABEL, false, false);
                 // NEXT PAGE
             }
             layout.page(page);
             if i > 0 {
-                layout.button(220, 260, 4014, 4015, GumpButton::Page, page - 1, 0);
-                layout.html_localized_colored(255, 263, 100, 18, 1_044_044, LABEL, false, false);
+                layout.button(220, 260, 4014, 4015, GumpButton::Page, page - 1, ButtonId::UNUSED);
+                layout.html_localized_colored(255, 263, 100, 18, ClilocId(1_044_044), LABEL, false, false);
                 // PREV PAGE
             }
         }
@@ -354,11 +367,11 @@ fn resources(layout: &mut GumpLayout, state: &WorldState, player: EntityId, def:
         let page = u32::try_from(i / PER_PAGE).unwrap_or(0) + 1;
         if row == 0 {
             if i > 0 {
-                layout.button(485, 290, 4005, 4007, GumpButton::Page, page, 0);
+                layout.button(485, 290, 4005, 4007, GumpButton::Page, page, ButtonId::UNUSED);
             }
             layout.page(page);
             if i > 0 {
-                layout.button(455, 290, 4014, 4015, GumpButton::Page, page - 1, 0);
+                layout.button(455, 290, 4014, 4015, GumpButton::Page, page - 1, ButtonId::UNUSED);
             }
         }
         let y = 60 + i32::try_from(row).unwrap_or(0) * 20;
@@ -402,25 +415,34 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
     layout.alpha_region(10, 10, 510, 399);
 
     title(&mut layout, def);
-    layout.html_localized_colored(170, 40, 150, 20, 1_044_053, LABEL, false, false); // ITEM
-    layout.html_localized_colored(10, 217, 150, 22, 1_044_055, LABEL, false, false); // MATERIALS
-    layout.html_localized_colored(10, 302, 150, 22, 1_044_056, LABEL, false, false); // OTHER
+    layout.html_localized_colored(170, 40, 150, 20, ClilocId(1_044_053), LABEL, false, false); // ITEM
+    layout.html_localized_colored(10, 217, 150, 22, ClilocId(1_044_055), LABEL, false, false); // MATERIALS
+    layout.html_localized_colored(10, 302, 150, 22, ClilocId(1_044_056), LABEL, false, false); // OTHER
 
     layout.button(405, 387, 4005, 4007, GumpButton::Reply, 0, detail::MAKE);
-    layout.html_localized_colored(445, 390, 150, 18, 1_044_151, LABEL, false, false); // MAKE NOW
+    layout.html_localized_colored(445, 390, 150, 18, ClilocId(1_044_151), LABEL, false, false); // MAKE NOW
     layout.button(15, 387, 4014, 4016, GumpButton::Reply, 0, detail::BACK);
-    layout.html_localized_colored(50, 390, 150, 18, 1_044_150, LABEL, false, false); // BACK
+    layout.html_localized_colored(50, 390, 150, 18, ClilocId(1_044_150), LABEL, false, false); // BACK
 
     label(&mut layout, 330, 40, 180, recipe.name, "");
-    layout.item(90, 110, u32::from(recipe.graphic), u32::from(recipe.hue));
+    layout.item(90, 110, u32::from(recipe.graphic.0), u32::from(recipe.hue.0));
 
     let mut other = 0;
     if recipe.use_all_res {
-        layout.html_localized_colored(170, 302, 310, 18, 1_048_176, LABEL, false, false); // makes as many as possible
+        layout.html_localized_colored(170, 302, 310, 18, ClilocId(1_048_176), LABEL, false, false); // makes as many as possible
         other += 1;
     }
     if recipe.markable {
-        layout.html_localized_colored(170, 302 + other * 20, 310, 18, 1_044_059, LABEL, false, false); // may hold a maker's mark
+        layout.html_localized_colored(
+            170,
+            302 + other * 20,
+            310,
+            18,
+            ClilocId(1_044_059),
+            LABEL,
+            false,
+            false,
+        ); // may hold a maker's mark
     }
 
     // One row per required skill, at the value it starts to be possible.
@@ -431,10 +453,10 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
     }
 
     let odds = chance(state, player, def, recipe);
-    layout.html_localized_colored(170, 80, 250, 18, 1_044_057, LABEL, false, false); // Success Chance:
+    layout.html_localized_colored(170, 80, 250, 18, ClilocId(1_044_057), LABEL, false, false); // Success Chance:
     layout.label(430, 80, LABEL_HUE, percent(odds.success));
     if recipe.markable {
-        layout.html_localized_colored(170, 100, 250, 18, 1_044_058, LABEL, false, false); // Exceptional Chance:
+        layout.html_localized_colored(170, 100, 250, 18, ClilocId(1_044_058), LABEL, false, false); // Exceptional Chance:
         layout.label(430, 100, LABEL_HUE, percent(odds.exceptional));
     }
 
@@ -453,8 +475,8 @@ fn details(state: &WorldState, player: EntityId, def: &CraftSystemDef, recipe: &
 
 /// A skill's name, as the client's own list numbers them — ServUO's
 /// `AosSkillBonuses.GetLabel`, whose three exceptions are skills no craft wants.
-fn skill_label(skill: openshard_state::Skill) -> u32 {
-    1_044_060 + u32::from(skill.id())
+fn skill_label(skill: openshard_state::Skill) -> ClilocId {
+    ClilocId(1_044_060 + u32::from(skill.id()))
 }
 
 /// `620` tenths as `"62.0"`.
@@ -468,7 +490,7 @@ fn percent(value: u32) -> String {
 }
 
 /// The hue a material line is really taken at, once the axis has been applied.
-fn axis_hue(def: &CraftSystemDef, res: &crate::recipe::CraftRes, sub_res: u8) -> u16 {
+fn axis_hue(def: &CraftSystemDef, res: &crate::recipe::CraftRes, sub_res: u8) -> Hue {
     if !res.from_axis {
         return res.hue;
     }
@@ -487,7 +509,7 @@ fn axis_name(def: &CraftSystemDef, res: &crate::recipe::CraftRes, sub_res: u8) -
 }
 
 /// How many of a material a player is carrying.
-fn carried(state: &WorldState, player: EntityId, graphic: u16, hue: u16) -> u32 {
+fn carried(state: &WorldState, player: EntityId, graphic: Graphic, hue: Hue) -> u32 {
     state.registry.serial_of(player).map_or(0, |serial| {
         openshard_items::carried_amount_of_hue(state, serial, graphic, Some(hue))
     })
@@ -506,10 +528,11 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
     if !owns(response.gump_id) {
         return false;
     }
+    let answer = response.button.interpret();
     let Some(&player) = state.players.get(&connection) else {
         return true;
     };
-    let Some(context) = state.open_craft_gumps.remove(&player) else {
+    let Some(context) = state.row_of_mut(player).and_then(|row| row.craft_gump.take()) else {
         return true;
     };
     let Some(def) = system(context.system) else {
@@ -519,29 +542,32 @@ pub fn handle(state: &mut WorldState, connection: ConnectionId, response: &GumpR
     // The detail page's buttons are plain small numbers, not encoded ones, so it
     // is dispatched on its own before the list's decode.
     if let CraftGumpPage::Details(recipe) = context.page {
-        match response.button {
-            detail::MAKE => {
+        match answer {
+            GumpAnswer::Pressed(detail::MAKE) => {
                 make(state, player, context, recipe);
             }
-            detail::BACK => {
+            // `detail::BACK` *is* the close box (see the constant), so this arm
+            // is both, exactly as ServUO's `OnResponse` reads it.
+            GumpAnswer::Closed => {
                 let mut back = context;
                 back.page = CraftGumpPage::Items;
                 open(state, player, back);
             }
-            _ => {}
+            GumpAnswer::Pressed(_) => {}
         }
         return true;
     }
 
-    let Some((kind, index)) = decode_button(response.button) else {
-        return true; // EXIT, or the close box
+    let GumpAnswer::Pressed(pressed) = answer else {
+        return true; // EXIT, or the close box — the same id on this page
     };
+    let (kind, index) = decode_button(pressed);
     match kind {
         kind::GROUP => {
             let mut next = context;
             next.group = u16::try_from(index).unwrap_or(0);
             next.page = CraftGumpPage::Items;
-            next.notice = 0;
+            next.notice = None;
             open(state, player, next);
         }
         kind::MAKE => {
@@ -614,7 +640,7 @@ fn make(state: &mut WorldState, player: EntityId, context: CraftGumpContext, rec
         recipe,
         context.sub_res,
     );
-    let notice = if started { 0 } else { context.notice };
+    let notice = if started { None } else { context.notice };
     reopen(state, player, context, notice);
 }
 
@@ -630,17 +656,22 @@ mod tests {
         for kind in 0..kind::COUNT {
             for index in 0..50 {
                 let id = button_id(kind, index);
-                assert_eq!(decode_button(id), Some((kind, index)));
+                assert_eq!(decode_button(id), (kind, index));
             }
         }
     }
 
     #[test]
-    fn the_exit_button_decodes_to_nothing() {
+    fn the_exit_button_is_not_a_button_id_at_all() {
         // Button 0 is EXIT and the window's close box alike, and it must never
-        // read as a category — index 0 of kind 0 is button *1*.
-        assert_eq!(decode_button(0), None);
-        assert_eq!(decode_button(button_id(kind::GROUP, 0)), Some((0, 0)));
+        // read as a category — index 0 of kind 0 is button *1*. The guard that
+        // used to live in `decode_button` is now one step earlier and applies
+        // to every window: `RawButtonId::interpret`.
+        assert_eq!(
+            openshard_protocol::gump::RawButtonId(0).interpret(),
+            GumpAnswer::Closed
+        );
+        assert_eq!(decode_button(button_id(kind::GROUP, 0)), (0, 0));
     }
 
     #[test]

@@ -17,9 +17,10 @@
 
 use openshard_entities::EntityId;
 use openshard_state::WorldState;
-use openshard_state::components::{Graphic, Position};
+use openshard_state::components::{Drawn, Position};
 
 use crate::system::Needs;
+use openshard_protocol::wire::Graphic;
 
 /// How far a workshop reaches — ServUO's `range` argument, 2 everywhere it is
 /// called.
@@ -60,7 +61,8 @@ impl Facilities {
     }
 
     /// Fold one tile id in, whichever list it belongs to.
-    fn add(&mut self, id: u16) {
+    fn add(&mut self, graphic: Graphic) {
+        let id = graphic.0;
         self.forge |= is_forge(id);
         self.anvil |= is_anvil(id);
         // Every forge is a fire, which ServUO says by listing the forge ranges in
@@ -93,7 +95,7 @@ pub fn around(state: &WorldState, crafter: EntityId) -> Facilities {
         if !in_z_band(i32::from(at.z), i32::from(pos.z)) {
             continue;
         }
-        if let Some(graphic) = state.registry.get::<Graphic>(item) {
+        if let Some(graphic) = state.registry.get::<Drawn>(item) {
             found.add(graphic.id);
         }
     }
@@ -118,7 +120,7 @@ pub fn around(state: &WorldState, crafter: EntityId) -> Facilities {
             terrain.statics_at(x, y, &mut statics);
             for (id, z) in &statics {
                 if in_z_band(i32::from(at.z), i32::from(*z)) {
-                    found.add(*id);
+                    found.add(Graphic(*id));
                 }
             }
         }
@@ -210,12 +212,12 @@ mod tests {
     #[test]
     fn a_forge_is_also_a_fire_but_an_anvil_is_not() {
         let mut found = Facilities::default();
-        found.add(4017);
+        found.add(Graphic(4017));
         assert!(found.forge);
         assert!(!found.anvil);
 
         let mut found = Facilities::default();
-        found.add(0x0FB1); // small forge, in the heat table
+        found.add(Graphic(0x0FB1)); // small forge, in the heat table
         assert!(found.heat);
     }
 
@@ -223,9 +225,9 @@ mod tests {
     fn a_smithy_wants_both_and_neither_alone_will_do() {
         let smithy = Needs::smithy();
         let mut found = Facilities::default();
-        found.add(4017);
+        found.add(Graphic(4017));
         assert!(!found.satisfy(smithy), "a forge with nothing to hammer on");
-        found.add(4015);
+        found.add(Graphic(4015));
         assert!(found.satisfy(smithy));
     }
 

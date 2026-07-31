@@ -6,7 +6,7 @@ pub fn can_stack(state: &WorldState, a: EntityId, b: EntityId) -> bool {
     a != b
         && state.registry.has::<Stackable>(a)
         && state.registry.has::<Stackable>(b)
-        && state.registry.get::<Graphic>(a) == state.registry.get::<Graphic>(b)
+        && state.registry.get::<Drawn>(a) == state.registry.get::<Drawn>(b)
 }
 
 /// Merge a held stack onto another stack, on the ground or inside a container.
@@ -41,7 +41,7 @@ pub fn merge_onto(state: &mut WorldState, connection: ConnectionId, held: HeldIt
             bounce(state, connection, held, DragCancelReason::Other);
             return;
         }
-        state.held.remove(&connection);
+        state.take_held(connection);
         state.registry.despawn(held.entity);
         debug!("stacks merged");
     } else if let Some(&contained) = state.registry.get::<Contained>(target) {
@@ -61,7 +61,7 @@ pub fn merge_onto(state: &mut WorldState, connection: ConnectionId, held: HeldIt
             bounce(state, connection, held, DragCancelReason::Other);
             return;
         }
-        state.held.remove(&connection);
+        state.take_held(connection);
         // The dragged stack was on a cursor, on no screen and in no gump, so
         // despawning it needs no packet of its own.
         state.registry.despawn(held.entity);
@@ -119,7 +119,7 @@ pub fn set_stack_amount(state: &mut WorldState, item: EntityId, amount: u16) {
 /// amount changed and the `seen` set would otherwise suppress the redraw.
 pub fn redraw_ground_item(state: &mut WorldState, item: EntityId) {
     for watcher in state.watchers_of(item) {
-        let Some(&Client { connection, version }) = state.registry.get::<Client>(watcher) else {
+        let Some((connection, version)) = state.client_of(watcher) else {
             continue;
         };
         if let Some(packet) = state.draw_packet(item, version) {

@@ -15,17 +15,25 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Instant;
 
 use openshard_gateway::{ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, ServerEvent};
-use openshard_login::{DevAccounts, LoginServer, LoginSession, Response, single_shard};
+use openshard_login::{DevAccounts, LoginServer, LoginSession, Outcome, Response, single_shard};
+use openshard_protocol::access::AccessLevel;
 use openshard_protocol::identity::{
     AccountName, CharacterName, PlaintextPassword, RawAccountName, RawPlaintextPassword,
 };
-use openshard_protocol::login::{AccountLogin, GameServerLogin, SelectShard};
+use openshard_protocol::login::{AccountLogin, GameServerLogin, RawShardIndex, SelectShard};
 use openshard_protocol::wire::AuthKey;
 use openshard_protocol::{seed::SEED_COMMAND, version::ClientVersion};
+use openshard_world::{Command, World};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 /// Stand up a shard on an ephemeral port. Mirrors `main.rs`.
+///
+/// It drives a real [`World`] beside the login server, and that is not padding:
+/// the character list is the world's since S5 of `docs/connection_state.md`, so
+/// a fake shard that only ran the login conversation would stop one packet short
+/// of what a client actually needs — which is precisely the seam this file
+/// exists to test.
 async fn shard() -> SocketAddr {
     let (server, mut events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap())
         .await
@@ -35,10 +43,14 @@ async fn shard() -> SocketAddr {
     tokio::spawn(server.run());
 
     tokio::spawn(async move {
-        let accounts = DevAccounts::new()
-            .with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"))
-            .with_character(&AccountName::new("admin"), &CharacterName::new("Lord British"));
+        let accounts =
+            DevAccounts::new().with_account(&AccountName::new("admin"), &PlaintextPassword::new("hunter2"));
         let mut login = LoginServer::new(accounts, "OpenShard", advertised);
+        let mut world = World::new((1363, 1600));
+        // The account's one character, on the world's roster — where "which
+        // characters exist" lives. Boot does this from the store's rows and the
+        // config's names; here there is neither, so it is put on directly.
+        world.enrol_character(&AccountName::new("admin"), &CharacterName::new("Lord British"));
         let mut outboxes: HashMap<ConnectionId, OutboxTx> = HashMap::new();
         let mut sessions: HashMap<ConnectionId, LoginSession> = HashMap::new();
 
@@ -58,7 +70,34 @@ async fn shard() -> SocketAddr {
                             let Ok(Packet::Login(packet)) = packet.parse_packet(session.version()) else {
                                 continue;
                             };
-                            let response = login.handle(session, packet, Instant::now());
+                            // The password check is a blocking task on the real
+                            // shard, with the verdict coming back on a channel —
+                            // see `Shard::resume_login`. This loop runs it on the
+                            // spot: what is under test is the wire, not where
+                            // argon2 lives.
+                            //
+                            // The hand-off is caught the way the shard catches it:
+                            // a one-way transition, seen by comparing the account
+                            // across the two halves.
+                            let authenticated = session.account().is_some();
+                            let response = match login.handle(session, packet, Instant::now()) {
+                                Outcome::Reply(response) => response,
+                                Outcome::Verify(check) => login.resume(session, check.run()),
+                            };
+                            if let (false, Some(account)) = (authenticated, session.account()) {
+                                world.queue(Command::Authenticated {
+                                    connection: id,
+                                    version: session.version(),
+                                    account: account.clone(),
+                                    access: AccessLevel::Player,
+                                });
+                                world.tick(Instant::now());
+                                for out in world.drain_outbound() {
+                                    if let Some(outbox) = outboxes.get(&out.connection) {
+                                        let _ = outbox.send(out.packet);
+                                    }
+                                }
+                            }
                             let outbox = &outboxes[&id];
                             match response {
                                 Response::Idle => {}
@@ -134,7 +173,12 @@ async fn a_client_reaches_the_character_list() {
     assert_eq!(&shards[8..17], b"OpenShard");
 
     client
-        .write_all(&SelectShard { index: 1 }.encode())
+        .write_all(
+            &SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode(),
+        )
         .await
         .unwrap();
 
@@ -167,6 +211,7 @@ async fn a_client_reaches_the_character_list() {
         .await
         .unwrap();
 
+    // Out of a tick now, rather than out of the same call that read the `0x91`.
     let characters = read_variable(&mut client).await;
     assert_eq!(characters[0], 0xA9, "character list");
     assert_eq!(characters[3], 5, "padded to five slots");
@@ -259,7 +304,12 @@ async fn a_stolen_auth_key_is_useless_over_a_real_socket() {
         .unwrap();
     let _ = read_variable(&mut client).await;
     client
-        .write_all(&SelectShard { index: 1 }.encode())
+        .write_all(
+            &SelectShard {
+                index: RawShardIndex(1),
+            }
+            .encode(),
+        )
         .await
         .unwrap();
     let mut relay = [0u8; 11];

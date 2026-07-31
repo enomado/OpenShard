@@ -7,6 +7,7 @@
 
 use super::*;
 use openshard_magic::MAGERY_SKILL;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_state::DamageType;
 use openshard_state::components::{FIELD_HEIGHT, Field, FieldKind, Skills};
 
@@ -64,17 +65,21 @@ impl World {
         }
     }
 
-    /// Put one field tile on the ground — the drawn-item path (`Graphic`, `Position`,
+    /// Put one field tile on the ground — the drawn-item path (`Drawn`, `Position`,
     /// `Facet`, the sector grid, `reveal`), plus the [`Field`] and, for a wall, an
     /// obstruction. No `Decays`: a field owns its own lifetime.
-    fn spawn_field_tile(&mut self, graphic: u16, pos: Point, facet: u8, field: Field) {
+    fn spawn_field_tile(&mut self, graphic: Graphic, pos: Point, facet: u8, field: Field) {
         let Ok((entity, _serial)) = self.state.registry.spawn_with_serial(SerialKind::Item) else {
             warn!("out of item serials; not laying a field tile");
             return;
         };
-        self.state
-            .registry
-            .insert(entity, Graphic { id: graphic, hue: 0 });
+        self.state.registry.insert(
+            entity,
+            Drawn {
+                id: graphic,
+                hue: Hue(0),
+            },
+        );
         self.state.registry.insert(entity, Position(pos));
         self.state.registry.insert(entity, Facet(facet));
         self.state.registry.insert(entity, field);
@@ -114,13 +119,13 @@ impl World {
             };
             let facet = self.state.facet_of(entity);
             // Range 0 is the tile itself (Chebyshev); a field only harms who stands on it.
-            let victims: Vec<u32> = self
+            let victims: Vec<Serial> = self
                 .state
                 .facet_state(facet)
                 .sectors
                 .nearby(pos, 0)
                 .filter(|(entity, _)| self.state.registry.has::<Body>(*entity))
-                .filter_map(|(entity, _)| self.state.registry.serial_of(entity).map(|s| s.raw()))
+                .filter_map(|(entity, _)| self.state.registry.serial_of(entity))
                 .collect();
             // A Paralyze Field freezes for the tick its caster's Magery dictates —
             // computed once per pulse, not per victim.
@@ -211,8 +216,8 @@ fn field_east_to_west(from: Point, to: Point) -> bool {
 
 /// The tile graphic for a field kind and orientation — ServUO's per-field art, an
 /// east–west and a north–south variant (Wall of Stone is one graphic either way).
-fn field_graphic(kind: FieldKind, east_to_west: bool) -> u16 {
-    match kind {
+fn field_graphic(kind: FieldKind, east_to_west: bool) -> Graphic {
+    Graphic(match kind {
         FieldKind::Fire => {
             if east_to_west {
                 0x398C
@@ -242,7 +247,7 @@ fn field_graphic(kind: FieldKind, east_to_west: bool) -> u16 {
             }
         }
         FieldKind::Stone => 0x0082,
-    }
+    })
 }
 
 /// How long a field lasts, in ticks — Magery-scaled (in tenths, grandmaster

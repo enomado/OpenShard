@@ -11,7 +11,9 @@
 
 use crate::codec::PacketWriter;
 use crate::packet::{EncodePacket, PacketLength};
+use crate::serial::Serial;
 use crate::version::ClientVersion;
+use crate::wire::Graphic;
 
 /// `0xBF` `0x1B` — the spells a book holds, as a 64-bit mask. Fixed 23 bytes.
 ///
@@ -27,10 +29,14 @@ use crate::version::ClientVersion;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SpellbookContent {
     /// The book.
-    pub serial: u32,
-    /// Its graphic.
-    pub graphic: u16,
-    /// The spell the low bit of `content` stands for.
+    pub serial: Serial,
+    /// Its graphic. Always `openshard_state::components::SPELLBOOK_GRAPHIC`
+    /// today, a server-chosen constant.
+    pub graphic: Graphic,
+    /// The spell the low bit of `content` stands for. Bare by decision: the
+    /// only value ever sent is `1` (Magery), and N3 amendment 1's test —
+    /// "does something already branch on this byte" — is not met while no
+    /// second spell school is wired up. See `docs/protocol_newtypes.md`.
     pub offset: u16,
     /// Bit `n` set means the book holds the `offset + n`-th spell.
     pub content: u64,
@@ -44,8 +50,8 @@ impl EncodePacket for SpellbookContent {
         out.u16(23); // this subcommand's own, constant length
         out.u16(0x1B); // subcommand: spellbook content
         out.u16(0x01); // the "new" (post-4.0) form
-        out.u32(self.serial);
-        out.u16(self.graphic);
+        out.u32(self.serial.raw());
+        out.u16(self.graphic.0);
         out.u16(self.offset);
         for i in 0..8 {
             out.u8((self.content >> (i * 8)) as u8);
@@ -64,8 +70,8 @@ mod tests {
         let content = 1u64 | (1u64 << 63);
         let packet = encode_packet(
             &SpellbookContent {
-                serial: 0x4000_0001,
-                graphic: 0x0EFA,
+                serial: Serial::new(0x4000_0001).unwrap(),
+                graphic: Graphic(0x0EFA),
                 offset: 1,
                 content,
             },

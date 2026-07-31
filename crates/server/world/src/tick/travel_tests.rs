@@ -15,9 +15,11 @@ use super::tests::{
     packets_for, serial_of, walk, world,
 };
 use super::*;
+use openshard_protocol::items::DropDestination;
+use openshard_protocol::serial::RawSerial;
 use openshard_state::components::{
-    Contained, CriminalUntil, Decays, Facet, InRegion, Mana, Moongate, Movement, Position,
-    RECALL_RUNE_GRAPHIC, RuneMark, SPELLBOOK_GRAPHIC, Spellbook,
+    Contained, CriminalUntil, Decays, InRegion, Mana, Moongate, Movement, Position, RECALL_RUNE_GRAPHIC,
+    RuneMark, SPELLBOOK_GRAPHIC, Spellbook,
 };
 use openshard_state::{Region, RegionFlags, RegionRect};
 
@@ -91,7 +93,7 @@ fn a_watcher_on_the_old_facet_is_told_to_forget_the_traveller() {
     assert!(
         packets_for(&mut world, watcher_connection)
             .iter()
-            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == traveller_serial),
+            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == traveller_serial.raw()),
         "and was told to take it off the screen"
     );
 }
@@ -122,7 +124,7 @@ fn a_traveller_forgets_everything_on_the_old_facets_screen() {
     assert!(
         packets_for(&mut world, traveller_connection)
             .iter()
-            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == stayer_serial),
+            .any(|p| p[0] == 0x1D && u32::from_be_bytes([p[1], p[2], p[3], p[4]]) == stayer_serial.raw()),
         "and it was told to forget who it left behind"
     );
 }
@@ -329,7 +331,7 @@ const SULFUROUS_ASH: u16 = 0x0F8C;
 /// Sphere-style casting, so a cast resolves the tick it is asked for and the
 /// cursor comes straight up — these tests are about the travel rules, not about
 /// waiting out a cast delay.
-fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, u32) {
+fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, Serial) {
     let mut world = World::new(START).with_gameplay(Gameplay {
         cast_style: openshard_state::CastStyle::Walk,
         ..Default::default()
@@ -345,30 +347,48 @@ fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, u32) {
     });
     world.tick(now);
 
-    let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
+    let backpack = backpack_serial(&world, connection);
     for reagent in [BLACK_PEARL, BLOOD_MOSS, MANDRAKE_ROOT, SULFUROUS_ASH] {
-        openshard_items::give(&mut world.state, backpack, reagent, 0, 50);
+        openshard_items::give(
+            &mut world.state,
+            backpack,
+            openshard_protocol::wire::Graphic(reagent),
+            openshard_protocol::wire::Hue(0),
+            50,
+        );
     }
-    if let Some(book) = openshard_items::give(&mut world.state, backpack, SPELLBOOK_GRAPHIC, 0, 1) {
+    if let Some(book) = openshard_items::give(
+        &mut world.state,
+        backpack,
+        SPELLBOOK_GRAPHIC,
+        openshard_protocol::wire::Hue(0),
+        1,
+    ) {
         world.state.registry.insert(book, Spellbook::full());
     }
-    let rune = openshard_items::place_one(&mut world.state, backpack, RECALL_RUNE_GRAPHIC, 0, 1)
-        .expect("a rune in the pack");
-    let rune_serial = world.state.registry.serial_of(rune).unwrap().raw();
+    let rune = openshard_items::place_one(
+        &mut world.state,
+        backpack,
+        RECALL_RUNE_GRAPHIC,
+        openshard_protocol::wire::Hue(0),
+        1,
+    )
+    .expect("a rune in the pack");
+    let rune_serial = world.state.registry.serial_of(rune).unwrap();
     let _ = packets_for(&mut world, connection);
     (world, connection, caster, rune_serial)
 }
 
 /// Cast `spell` and answer its cursor with `target`.
-fn cast_at(world: &mut World, connection: ConnectionId, spell: u16, target: u32, now: Instant) {
+fn cast_at(world: &mut World, connection: ConnectionId, spell: u16, target: Serial, now: Instant) {
     world.queue(Command::RequestCast { connection, spell });
     world.tick(now);
     let cursor_id = serial_of(world, connection);
     world.queue(Command::TargetResponse {
         connection,
         response: openshard_protocol::target::TargetResponse {
-            cursor_id: openshard_protocol::wire::CursorId(cursor_id),
-            object: openshard_protocol::serial::Serial::new(target),
+            cursor_id: openshard_protocol::wire::CursorId(cursor_id.raw()),
+            object: Some(target),
             location: Point::new(0, 0, 0),
             graphic: None,
             cancelled: false,
@@ -388,11 +408,7 @@ fn marking_a_rune_writes_where_you_stand_and_recalling_takes_you_back() {
 
     cast_at(&mut world, connection, MARK, rune_serial, now);
 
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     assert_eq!(
         world.registry().get::<RuneMark>(rune).map(|m| m.destination),
         Some(marked_at),
@@ -439,11 +455,7 @@ fn a_rune_on_the_floor_cannot_be_marked_but_can_be_recalled_from() {
     // reach — a rune held out by a friend is a classic way to be fetched.
     let now = Instant::now();
     let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     let at = world.registry().get::<Position>(caster).unwrap().0;
 
     // Mark it while it is still in the pack, then drop it at the caster's feet.
@@ -504,11 +516,7 @@ fn a_no_recall_region_bars_arriving_and_marking_but_not_leaving() {
     // Standing inside it, a rune cannot be marked.
     world.state.teleport(caster, inside);
     cast_at(&mut world, connection, MARK, rune_serial, now);
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     assert!(
         world.registry().get::<RuneMark>(rune).is_none(),
         "no marking inside a no-recall region"
@@ -555,11 +563,7 @@ fn a_rune_marked_on_another_facet_is_a_walk_unless_the_shard_says_otherwise() {
     // a limitation.
     let now = Instant::now();
     let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     let far = Point::new(START.0, START.1, 0);
     world.state.registry.insert(
         rune,
@@ -587,11 +591,7 @@ fn a_criminal_cannot_recall_away_and_it_costs_them_nothing_to_find_out() {
     // escape should learn that for free, not for eleven mana and three reagents.
     let now = Instant::now();
     let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     world.state.registry.insert(
         rune,
         RuneMark {
@@ -630,11 +630,7 @@ fn a_gate_opens_at_both_ends_and_each_leads_to_the_other() {
     let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
     let here = world.registry().get::<Position>(caster).unwrap().0;
     let there = Point::new(START.0 + 15, START.1 + 15, 0);
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     world.state.registry.insert(
         rune,
         RuneMark {
@@ -770,11 +766,7 @@ fn two_gates_never_stand_on_one_tile() {
     let now = Instant::now();
     let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
     let there = Point::new(START.0 + 15, START.1 + 15, 0);
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     world.state.registry.insert(
         rune,
         RuneMark {
@@ -859,7 +851,7 @@ fn a_city_moongate_survives_a_restart_with_its_meaning_intact() {
         .iter()
         .filter_map(|snapshot| snapshot.decorations.as_ref())
         .flatten()
-        .filter(|record| record.graphic == openshard_state::components::MOONGATE_GRAPHIC)
+        .filter(|record| record.graphic == openshard_state::components::MOONGATE_GRAPHIC.0)
         .collect();
     assert_eq!(
         decorations.len(),
@@ -892,12 +884,12 @@ const RECALL_SCROLL: u16 = 0x1F2D + 31;
 
 /// Give the caster an empty runebook in its pack, and return it.
 fn give_runebook(world: &mut World, connection: ConnectionId) -> EntityId {
-    let backpack = Serial::new(backpack_serial(world, connection)).unwrap();
+    let backpack = backpack_serial(world, connection);
     openshard_items::give(
         &mut world.state,
         backpack,
         openshard_state::components::RUNEBOOK_GRAPHIC,
-        0,
+        openshard_protocol::wire::Hue(0),
         1,
     )
     .expect("a runebook")
@@ -930,22 +922,20 @@ fn a_marked_rune_dropped_on_a_book_becomes_an_entry_and_is_consumed() {
     let now = Instant::now();
     let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
     let book = give_runebook(&mut world, connection);
-    let book_serial = world.state.registry.serial_of(book).unwrap().raw();
+    let book_serial = world.state.registry.serial_of(book).unwrap();
     cast_at(&mut world, connection, MARK, rune_serial, now);
-    let rune = world
-        .state
-        .registry
-        .entity_of(Serial::new(rune_serial).unwrap())
-        .unwrap();
+    let rune = world.state.registry.entity_of(rune_serial).unwrap();
     let marked_at = world.registry().get::<RuneMark>(rune).unwrap().destination;
 
-    openshard_items::pick_up(&mut world.state, connection, rune_serial, 1);
+    openshard_items::pick_up(&mut world.state, connection, RawSerial(rune_serial.raw()), 1);
     openshard_items::drop_item(
         &mut world.state,
         connection,
-        rune_serial,
-        Point::new(0, 0, 0),
-        book_serial,
+        RawSerial(rune_serial.raw()),
+        DropDestination::Item {
+            item: book_serial,
+            at: GumpPoint::new(0, 0),
+        },
     );
 
     let owned = world
@@ -955,11 +945,7 @@ fn a_marked_rune_dropped_on_a_book_becomes_an_entry_and_is_consumed() {
     assert_eq!(owned.entries.len(), 1, "the destination was bound");
     assert_eq!(owned.entries[0].destination, marked_at);
     assert!(
-        world
-            .state
-            .registry
-            .entity_of(Serial::new(rune_serial).unwrap())
-            .is_none(),
+        world.state.registry.entity_of(rune_serial).is_none(),
         "and the rune itself was spent"
     );
     let _ = caster;
@@ -972,7 +958,7 @@ fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
     let now = Instant::now();
     let (mut world, connection, _, _) = caster_with_rune(now);
     let book = give_runebook(&mut world, connection);
-    let book_serial = world.state.registry.serial_of(book).unwrap().raw();
+    let book_serial = world.state.registry.serial_of(book).unwrap();
     // Spend it down so there is room for exactly one.
     let mut owned = world
         .registry()
@@ -983,17 +969,26 @@ fn a_recall_scroll_recharges_a_book_and_the_surplus_stays_on_the_cursor() {
     owned.charges = max - 1;
     world.state.registry.insert(book, owned);
 
-    let backpack = Serial::new(backpack_serial(&world, connection)).unwrap();
-    let scrolls = openshard_items::give(&mut world.state, backpack, RECALL_SCROLL, 0, 3).expect("scrolls");
-    let scroll_serial = world.state.registry.serial_of(scrolls).unwrap().raw();
+    let backpack = backpack_serial(&world, connection);
+    let scrolls = openshard_items::give(
+        &mut world.state,
+        backpack,
+        openshard_protocol::wire::Graphic(RECALL_SCROLL),
+        openshard_protocol::wire::Hue(0),
+        3,
+    )
+    .expect("scrolls");
+    let scroll_serial = world.state.registry.serial_of(scrolls).unwrap();
 
-    openshard_items::pick_up(&mut world.state, connection, scroll_serial, 3);
+    openshard_items::pick_up(&mut world.state, connection, RawSerial(scroll_serial.raw()), 3);
     openshard_items::drop_item(
         &mut world.state,
         connection,
-        scroll_serial,
-        Point::new(0, 0, 0),
-        book_serial,
+        RawSerial(scroll_serial.raw()),
+        DropDestination::Item {
+            item: book_serial,
+            at: GumpPoint::new(0, 0),
+        },
     );
 
     let owned = world
@@ -1035,9 +1030,9 @@ fn a_charge_takes_you_there_for_free_and_is_spent() {
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: serial_of(&world, connection),
-            gump_id: 0x0053_0001,
-            button: 10, // BOOK_USE_CHARGE + slot 0
+            serial: openshard_protocol::gump::RawGumpKey(serial_of(&world, connection).raw()),
+            gump_id: openshard_protocol::gump::RawGumpId(0x0053_0001),
+            button: openshard_protocol::gump::RawButtonId(10), // BOOK_USE_CHARGE + slot 0
             switches: Vec::new(),
             text_entries: Vec::new(),
         },
@@ -1078,9 +1073,9 @@ fn a_reply_for_a_row_the_book_does_not_hold_does_nothing() {
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial: serial_of(&world, connection),
-            gump_id: 0x0053_0001,
-            button: 10 + 9, // a row an empty book has never had
+            serial: openshard_protocol::gump::RawGumpKey(serial_of(&world, connection).raw()),
+            gump_id: openshard_protocol::gump::RawGumpId(0x0053_0001),
+            button: openshard_protocol::gump::RawButtonId(10 + 9), // a row an empty book has never had
             switches: Vec::new(),
             text_entries: Vec::new(),
         },

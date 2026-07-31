@@ -1,0 +1,29 @@
+[package]
+name = "openshard-client-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The client binary: a window, a surface, and a camera over the map."
+
+# The only crate on the client side that is allowed to touch the platform. It
+# opens the files, asks for an adapter and owns the event loop; `client/render`
+# is handed the results and knows about none of it. That split is what keeps the
+# renderer testable offscreen and portable to a canvas.
+[dependencies]
+openshard-client-render.workspace = true
+openshard-protocol.workspace = true
+openshard-uofiles.workspace = true
+pollster = "0.4"
+winit = "0.30"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "gles"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl"] }
+
+[lints]
+workspace = true

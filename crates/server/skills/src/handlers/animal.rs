@@ -12,8 +12,9 @@
 //! - above it, anything, with the wild ones rolled against 100.0.
 
 use openshard_entities::EntityId;
-use openshard_protocol::gump::{GumpButton, GumpDisplay, GumpLayout};
+use openshard_protocol::gump::{ButtonId, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint};
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{
     Body, BodyType, Client, Ghost, Hitpoints, Mana, Pet, Resistance, Skills, Stamina, Stats,
 };
@@ -22,19 +23,19 @@ use openshard_state::{Skill, WorldState};
 use crate::check::roll_skill_band;
 
 /// "That's not an animal!"
-const NOT_AN_ANIMAL: u32 = 500_329;
+const NOT_AN_ANIMAL: ClilocId = ClilocId(500_329);
 /// "The spirits of the dead are not the province of animal lore."
-const NOT_THE_DEAD: u32 = 500_331;
+const NOT_THE_DEAD: ClilocId = ClilocId(500_331);
 /// "At your skill level, you can only lore tamed creatures."
-const ONLY_TAMED: u32 = 1_049_674;
+const ONLY_TAMED: ClilocId = ClilocId(1_049_674);
 /// "At your skill level, you can only lore tamed or tameable creatures."
-const ONLY_TAMEABLE: u32 = 1_049_675;
+const ONLY_TAMEABLE: ClilocId = ClilocId(1_049_675);
 /// "You can't think of anything you know offhand."
-const NOTHING_OFFHAND: u32 = 500_334;
+const NOTHING_OFFHAND: ClilocId = ClilocId(500_334);
 
 /// The gump id the window is drawn under. Its own number, so a reply cannot be
 /// confused with a quest dialog's.
-pub const ANIMAL_LORE_GUMP: u32 = 0x0A11;
+pub const ANIMAL_LORE_GUMP: GumpId = GumpId(0x0A11);
 
 /// The skill below which only a tamed creature can be read, in tenths.
 const TAMED_ONLY_BELOW: u16 = 1000;
@@ -54,7 +55,7 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
     };
     if state.registry.has::<Client>(target)
         || !matches!(
-            openshard_state::components::body_type(body.0),
+            openshard_state::components::body_type(body),
             BodyType::Animal | BodyType::Monster | BodyType::Sea
         )
     {
@@ -69,7 +70,7 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
         .registry
         .get::<openshard_state::components::Tamable>(target)
         .copied()
-        .or_else(|| openshard_state::tame::tamable(body.0))
+        .or_else(|| openshard_state::tame::tamable(body))
         .is_some();
 
     // The ladder, in ServUO's order. A tamed creature is always readable; the rest
@@ -119,7 +120,7 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
             state
                 .registry
                 .get::<Body>(target)
-                .and_then(|body| openshard_state::components::creature_name(body.id.0))
+                .and_then(|body| openshard_state::components::creature_name(body.id))
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "a creature".to_owned());
@@ -153,12 +154,12 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
         false,
     );
     // The close button, the one control ServUO gives it.
-    gump.button(240, 77, 2093, 2093, GumpButton::Reply, 0, 0);
+    gump.button(240, 77, 2093, 2093, GumpButton::Reply, 0, ButtonId::CLOSE_BOX);
 
     gump.page(1);
     gump.image(128, 152, 2086);
-    gump.html_localized_colored(147, 150, 160, 18, 1_049_593, 200, false, false); // Attributes
-    let row = |gump: &mut GumpLayout, y: i32, label: u32, value: String| {
+    gump.html_localized_colored(147, 150, 160, 18, ClilocId(1_049_593), 200, false, false); // Attributes
+    let row = |gump: &mut GumpLayout, y: i32, label: ClilocId, value: String| {
         gump.html_localized_colored(153, y, 160, 18, label, LABEL_HUE, false, false);
         gump.html(
             280,
@@ -170,39 +171,69 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
             false,
         );
     };
-    row(&mut gump, 168, 1_049_578, pool(hits.map(|h| (h.current, h.max))));
-    row(&mut gump, 186, 1_049_579, pool(stam.map(|s| (s.current, s.max))));
-    row(&mut gump, 204, 1_049_580, pool(mana.map(|m| (m.current, m.max))));
-    row(&mut gump, 222, 1_028_335, stat(stats.map(|s| s.strength)));
-    row(&mut gump, 240, 3_000_113, stat(stats.map(|s| s.dexterity)));
-    row(&mut gump, 258, 3_000_112, stat(stats.map(|s| s.intelligence)));
+    row(
+        &mut gump,
+        168,
+        ClilocId(1_049_578),
+        pool(hits.map(|h| (h.current, h.max))),
+    );
+    row(
+        &mut gump,
+        186,
+        ClilocId(1_049_579),
+        pool(stam.map(|s| (s.current, s.max))),
+    );
+    row(
+        &mut gump,
+        204,
+        ClilocId(1_049_580),
+        pool(mana.map(|m| (m.current, m.max))),
+    );
+    row(
+        &mut gump,
+        222,
+        ClilocId(1_028_335),
+        stat(stats.map(|s| s.strength)),
+    );
+    row(
+        &mut gump,
+        240,
+        ClilocId(3_000_113),
+        stat(stats.map(|s| s.dexterity)),
+    );
+    row(
+        &mut gump,
+        258,
+        ClilocId(3_000_112),
+        stat(stats.map(|s| s.intelligence)),
+    );
     // Pre-AoS the fourth block is "Miscellaneous", and the armour rating is what
     // goes in it — the number this engine actually has.
     gump.image(128, 278, 2086);
-    gump.html_localized_colored(147, 276, 160, 18, 3_001_016, 200, false, false); // Miscellaneous
-    row(&mut gump, 294, 1_049_581, stat(Some(armour))); // Armor Rating
-    row(&mut gump, 312, 1_061_646, percent(physical)); // Physical
-    gump.button(340, 358, 5601, 5605, GumpButton::Page, 2, 0);
+    gump.html_localized_colored(147, 276, 160, 18, ClilocId(3_001_016), 200, false, false); // Miscellaneous
+    row(&mut gump, 294, ClilocId(1_049_581), stat(Some(armour))); // Armor Rating
+    row(&mut gump, 312, ClilocId(1_061_646), percent(physical)); // Physical
+    gump.button(340, 358, 5601, 5605, GumpButton::Page, 2, ButtonId::UNUSED);
 
     gump.page(2);
     gump.image(128, 152, 2086);
-    gump.html_localized_colored(147, 150, 160, 18, 3_001_030, 200, false, false); // Combat Ratings
+    gump.html_localized_colored(147, 150, 160, 18, ClilocId(3_001_030), 200, false, false); // Combat Ratings
     let combat = [
-        (168, 1_044_103, Skill::Wrestling),
-        (186, 1_044_087, Skill::Tactics),
-        (204, 1_044_086, Skill::MagicResist),
-        (222, 1_044_061, Skill::Anatomy),
-        (240, 1_044_090, Skill::Poisoning),
-        (276, 1_044_085, Skill::Magery),
-        (294, 1_044_076, Skill::EvalInt),
-        (312, 1_044_106, Skill::Meditation),
+        (168, ClilocId(1_044_103), Skill::Wrestling),
+        (186, ClilocId(1_044_087), Skill::Tactics),
+        (204, ClilocId(1_044_086), Skill::MagicResist),
+        (222, ClilocId(1_044_061), Skill::Anatomy),
+        (240, ClilocId(1_044_090), Skill::Poisoning),
+        (276, ClilocId(1_044_085), Skill::Magery),
+        (294, ClilocId(1_044_076), Skill::EvalInt),
+        (312, ClilocId(1_044_106), Skill::Meditation),
     ];
     for (y, label, skill) in combat {
         let value = skills.as_ref().map_or(0, |s| s.get(skill.id()));
         row(&mut gump, y, label, tenths(value));
     }
     gump.image(128, 260, 2086);
-    gump.html_localized_colored(147, 258, 160, 18, 3_001_032, 200, false, false); // Lore & Knowledge
+    gump.html_localized_colored(147, 258, 160, 18, ClilocId(3_001_032), 200, false, false); // Lore & Knowledge
     // A tamed creature says what it was last told, which is the one thing this
     // window can say about loyalty that is true.
     if let Some(order) = loyalty {
@@ -216,14 +247,16 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
             false,
         );
     }
-    gump.button(317, 358, 5603, 5607, GumpButton::Page, 1, 0);
+    gump.button(317, 358, 5603, 5607, GumpButton::Page, 1, ButtonId::UNUSED);
 
     let (layout, lines) = gump.finish();
     let packet = ServerPacket::GumpDisplay(GumpDisplay {
-        serial: ANIMAL_LORE_GUMP,
+        // Keyed on the dialog's own id rather than on a mobile: the window is
+        // read-only and answers nothing, so the key only has to be a number the
+        // client can hang the window on — which is exactly what a `GumpKey` is.
+        serial: GumpKey(ANIMAL_LORE_GUMP.0),
         gump_id: ANIMAL_LORE_GUMP,
-        x: 250,
-        y: 50,
+        at: GumpPoint::new(250, 50),
         layout: layout.to_owned(),
         lines: lines.to_vec(),
     });

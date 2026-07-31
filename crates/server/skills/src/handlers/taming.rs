@@ -12,27 +12,28 @@
 //! handler in this crate uses.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Body, Client, Ghost, Pet, Tamable};
 use openshard_state::{Skill, WorldState};
 
 use crate::check::roll_skill_band;
 
 /// "That creature cannot be tamed."
-const NOT_TAMABLE: u32 = 1_049_655;
+const NOT_TAMABLE: ClilocId = ClilocId(1_049_655);
 /// "That animal looks tame already."
-const ALREADY_TAME: u32 = 502_804;
+const ALREADY_TAME: ClilocId = ClilocId(502_804);
 /// "You have too many followers to tame that creature."
-const TOO_MANY_FOLLOWERS: u32 = 1_049_611;
+const TOO_MANY_FOLLOWERS: ClilocId = ClilocId(1_049_611);
 /// "You have no chance of taming this creature."
-const NO_CHANCE: u32 = 502_806;
+const NO_CHANCE: ClilocId = ClilocId(502_806);
 /// "You seem to anger the beast!"
-const ANGERED: u32 = 502_805;
+const ANGERED: ClilocId = ClilocId(502_805);
 /// "You start to tame the creature."
-const START_TAMING: u32 = 1_010_597;
+const START_TAMING: ClilocId = ClilocId(1_010_597);
 /// "It seems to accept you as its master." — ServUO's success line.
-const ACCEPTS_YOU: u32 = 502_799;
+const ACCEPTS_YOU: ClilocId = ClilocId(502_799);
 /// "That being cannot be tamed." — a person.
-const CANNOT_TAME_PERSON: u32 = 502_469;
+const CANNOT_TAME_PERSON: ClilocId = ClilocId(502_469);
 /// How far a tamer can reach — ServUO's `Target(2, …)` outside AoS.
 pub(super) const TAME_RANGE: u32 = 3;
 /// How many followers a tamer may keep — ServUO's `FollowersMax`.
@@ -65,7 +66,7 @@ pub(super) fn taming(state: &mut WorldState, tamer: EntityId, target: EntityId) 
         .registry
         .get::<Tamable>(target)
         .copied()
-        .or_else(|| openshard_state::tame::tamable(body.0))
+        .or_else(|| openshard_state::tame::tamable(body))
     else {
         state.private_overhead_cliloc(tamer, target, NOT_TAMABLE, "");
         return None;

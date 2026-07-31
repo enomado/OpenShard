@@ -1,11 +1,73 @@
 use super::*;
+use openshard_protocol::wire::Hue;
 
 impl World {
-    /// The facet a mobile is on, or the default if it carries none.
+    /// Take a connection over from the login conversation.
     ///
-    /// Always a facet the world actually has: [`enter`](Self::enter) clamps an
-    /// unloaded facet to the default before it ever reaches a `Facet` component,
+    /// The world's whole knowledge of a client that is playing nothing yet. It is
+    /// what makes the connection addressable — [`WorldState::send_packet`] frames
+    /// a packet for the version recorded here — so everything the character screen
+    /// will need to answer starts with this row existing.
+    ///
+    /// Called twice on a real shard, and that is deliberate rather than tolerated:
+    /// once for `Command::Authenticated`, and again from [`enter`](Self::enter),
+    /// which carries the same version on its own command and would otherwise have
+    /// to trust that the hand-off happened. Every test that queues an `Enter`
+    /// without one does exactly that. One writer, two callers; the value written
+    /// is the same one both times, because both read it off the auth key the login
+    /// socket issued.
+    ///
+    /// Which is why this writes the identity *into* the row rather than replacing
+    /// it. Since S7 the row also carries what the client is in the middle of — the
+    /// item on its cursor above all — and that is not something either caller
+    /// knows or is entitled to reset.
+    ///
+    /// [`WorldState::send_packet`]: openshard_state::WorldState::send_packet
+    pub(super) fn attach(
+        &mut self,
+        connection: ConnectionId,
+        version: ClientVersion,
+        account: AccountName,
+        access: AccessLevel,
+    ) {
+        // Written into the existing row when there is one, rather than over it:
+        // both callers pass the same identity, but the row now also carries what
+        // the client is in the middle of, and a second hand-off must not put a
+        // dragged item back on the floor of a world it never left.
+        match self.state.connection_mut(connection) {
+            Some(row) => row.identify(version, account, access),
+            None => {
+                self.state.connections.insert(
+                    connection,
+                    openshard_state::connection::Connection::new(version, account, access),
+                );
+            }
+        }
+    }
+
+    /// Put a character into the world for a connection that asked to play it.
+    ///
+    /// Either the connection ends the call in the world, or it is told it did
+    /// not: an entry that fails without a [`PlayerRefused`] would leave the
+    /// binary's phase on `Entering` — the name of the gap between the queued
+    /// command and the tick that applies it — with nothing that ever moves it on,
+    /// and the client waiting on "logging into shard" forever.
+    ///
+    /// That obligation is why the work is in [`try_enter`](Self::try_enter) and
+    /// this is a wrapper. A failure path there is a `return Err(reason)`, and the
+    /// refusal is emitted in one place for all of them, so a fourth one added
+    /// later cannot forget to say so. It used to be checkable only by reading
+    /// every early return.
     pub(super) fn enter(&mut self, entering: Entering) {
+        let connection = entering.connection;
+        if let Err(reason) = self.try_enter(entering) {
+            self.refuse_entry(connection, reason);
+        }
+    }
+
+    /// The entry itself. See [`enter`](Self::enter) for why it returns a
+    /// [`RefusedEntry`] rather than emitting one.
+    fn try_enter(&mut self, entering: Entering) -> Result<(), RefusedEntry> {
         let Entering {
             connection,
             version,
@@ -16,24 +78,39 @@ impl World {
         } = entering;
         if self.state.players.contains_key(&connection) {
             warn!(%connection, "already in the world");
-            return;
+            return Err(RefusedEntry::AlreadyInWorld);
         }
 
         // Split the two arrivals into what the rest of this function reads. The
         // `Option`s below are the honest ones — a character nobody ever described
-        // has no look and no sheet — and they are local now: a *stored* character
-        // cannot reach here half-unpacked, because `StoredCharacter` has no way to
-        // say it.
+        // has no look and no sheet — and they are local: a *stored* character
+        // cannot reach the arms below half-unpacked, because `StoredCharacter`
+        // has no way to say it.
+        //
+        // Resolving `Saved` is this function's job rather than the caller's,
+        // because the roster is the world's since S4 of
+        // `docs/connection_state.md`. This is the one place a name becomes a row.
+        // A name nothing has recorded — config-seeded, or created this run and
+        // never logged out — is neither an error nor a refusal: it enters fresh
+        // on the default facet, which is what it did when the shard resolved this
+        // and passed a bare `Character::fresh`.
         let (requested_facet, saved_serial, saved_position, saved_facing, appearance, sheet) = match character
         {
-            Character::Stored(stored) => (
-                stored.facet,
-                Some(stored.serial),
-                Some(stored.position),
-                Some(stored.facing),
-                Some(stored.appearance),
-                Some(stored.sheet),
-            ),
+            Character::Saved => match self
+                .roster
+                .get(&account, &name)
+                .and_then(StoredCharacter::from_record)
+            {
+                Some(stored) => (
+                    stored.facet,
+                    Some(stored.serial),
+                    Some(stored.position),
+                    Some(stored.facing),
+                    Some(stored.appearance),
+                    Some(stored.sheet),
+                ),
+                None => (self.state.default_facet, None, None, None, None, None),
+            },
             Character::Fresh(fresh) => (
                 fresh.facet,
                 None,
@@ -67,7 +144,7 @@ impl World {
                 if let Err(error) = self.state.registry.bind_serial(entity, saved) {
                     warn!(%connection, ?error, "could not restore the saved serial");
                     self.state.registry.despawn(entity);
-                    return;
+                    return Err(RefusedEntry::SerialInUse);
                 }
                 (entity, saved)
             }
@@ -75,7 +152,7 @@ impl World {
                 Ok(pair) => pair,
                 Err(_) => {
                     warn!(%connection, "the mobile serial pool is exhausted");
-                    return;
+                    return Err(RefusedEntry::NoSerialsLeft);
                 }
             },
         };
@@ -89,7 +166,7 @@ impl World {
         let facing = saved_facing.unwrap_or_else(|| Facing::walking(Direction::South));
         // A created or loaded character brings its body and hue; without one it
         // falls back to the default. `Body` and `Appearance` now hold the same wire
-        // `Graphic`/`Hue`, so this is a move rather than an unwrap-and-rewrap: the
+        // `Drawn`/`Hue`, so this is a move rather than an unwrap-and-rewrap: the
         // only place the numbers are opened is the encoder that puts them on the
         // wire.
         let look = appearance.unwrap_or_else(Appearance::default_human);
@@ -102,7 +179,15 @@ impl World {
         self.state.registry.insert(entity, Heading(facing));
         self.state.registry.insert(entity, body);
         self.state.registry.insert(entity, Name(name.0.clone()));
-        self.state.registry.insert(entity, Account(account));
+        // A character in the world exists, whatever the roster had heard about it
+        // before. That is not a formality: a character created this run enters
+        // once and is not described anywhere until it logs out, so without this
+        // the list the character screen draws would be missing the character the
+        // player is playing. Idempotent — the common case is a name already
+        // enrolled by boot — and it deliberately records nothing about *where*
+        // the character is; the logout does that.
+        self.roster.enrol(&account, &name);
+        self.state.registry.insert(entity, Account(account.clone()));
         self.state.registry.insert(entity, facet);
         // The account's authority, re-derived each login and never saved with the
         // character — so it is what the GM command gate reads.
@@ -270,8 +355,12 @@ impl World {
         self.state
             .registry
             .insert(entity, Movement(Walker::new(position, facing)));
-        self.state.registry.insert(entity, Client { connection, version });
+        self.state.registry.insert(entity, Client { connection });
         self.state.players.insert(connection, entity);
+        // A character can reach the world without a hand-off — every test that
+        // queues an `Enter` of its own does — so the session row is written here
+        // too. See `attach`.
+        self.attach(connection, version, account, access);
         // The AoS feature gates for this connection, at debug — tooltips and
         // context menus are version-gated, so this is where to look if a modern
         // client unexpectedly shows no hover names.
@@ -291,7 +380,7 @@ impl World {
         // Bring back what this character was carrying, if the store had it. A
         // returning character re-equips its saved backpack, bank box and gear; a
         // new one has nothing waiting.
-        let restored = self.restore_inventory(serial.raw());
+        let restored = self.restore_inventory(serial);
 
         // Every character wears a backpack. Without it the paperdoll's bag is dead
         // and there is nowhere to put anything picked up. Equipped before the
@@ -304,15 +393,15 @@ impl World {
             .state
             .registry
             .query::<Equipped>()
-            .any(|(_, worn)| worn.mobile == serial && worn.layer == BACKPACK_LAYER);
+            .any(|(_, worn)| worn.mobile == serial && worn.layer == items::BACKPACK_LAYER);
         if !restored || !has_backpack {
             items::equip_new_container(
                 &mut self.state,
                 serial,
                 BACKPACK_GRAPHIC,
                 BACKPACK_GUMP,
-                0,
-                BACKPACK_LAYER,
+                Hue(0),
+                items::BACKPACK_LAYER,
             );
         }
 
@@ -331,7 +420,7 @@ impl World {
                 serial,
                 npc::BANK_GRAPHIC,
                 npc::BANK_GUMP,
-                0,
+                Hue(0),
                 npc::BANK_LAYER,
             );
         }
@@ -344,23 +433,25 @@ impl World {
         // The facets are not all the same shape — Ilshenar is 2304×1600 and
         // Tokuno 1448×1448 — and a client told the world is 7168×4096 when it is
         // not draws the edge of it wherever it likes.
-        let (map_width, map_height) = {
+        let map = {
             let state = self.state.facet_state(facet);
-            (state.width as u16, state.height as u16)
+            MapSize {
+                width: state.width as u16,
+                height: state.height as u16,
+            }
         };
         self.state.send_packet(
             connection,
             &ServerPacket::PlayerStart(PlayerStart {
-                serial: serial.raw(),
-                body: body.id.0,
+                serial,
+                body: body.id,
                 position,
                 facing,
-                map_width,
-                map_height,
+                map,
             }),
         );
         self.state
-            .send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet.0 }));
+            .send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
         // AoS SupportedFeatures, sent *again* at world entry — this is the copy
         // ServUO's `DoLogin` sends right after the login confirm, and the one
         // ClassicUO reads to turn on in-world object tooltips and context menus.
@@ -370,8 +461,10 @@ impl World {
         // shard serves neither.
         if self.state.gameplay.tooltip_mode != TooltipMode::Off || self.state.gameplay.context_menus {
             let extended = version.supports(Feature::ExtraFeatureMask);
-            self.state
-                .send(connection, encode_supported_features(AOS_FEATURE_FLAGS, extended));
+            self.state.send(
+                connection,
+                encode_supported_features(SupportedFeatures::AOS, extended),
+            );
         }
         // Which season the client draws its trees in, with the change sound off:
         // this is a login, not a turn of the year. Between the map change and the
@@ -380,7 +473,9 @@ impl World {
         // is told where the player stands.
         self.state.send_packet(
             connection,
-            &ServerPacket::Season(Season {
+            &ServerPacket::SeasonChange(SeasonChange {
+                // Already a `Season` on `Gameplay`, which `openshard_config`
+                // has refused to let past four since it was parsed.
                 season: self.state.gameplay.season,
                 play_sound: false,
             }),
@@ -388,10 +483,10 @@ impl World {
         self.state.send_packet(
             connection,
             &ServerPacket::PlayerUpdate(PlayerUpdate {
-                serial: serial.raw(),
-                body: body.id.0,
-                hue: body.hue.0,
-                flags: 0,
+                serial,
+                body: body.id,
+                hue: body.hue,
+                flags: StatusFlags::NONE,
                 position,
                 facing,
             }),
@@ -428,6 +523,7 @@ impl World {
             .send_packet(connection, &ServerPacket::LoginComplete(LoginComplete));
 
         self.state.bus.send(PlayerEntered {
+            connection,
             entity,
             serial,
             position,
@@ -447,6 +543,7 @@ impl World {
         if logged_out_dead {
             self.enter_ghost_state(entity, serial, false);
         }
+        Ok(())
     }
 
     /// Send a player its own `0x11` status — the paperdoll numbers, and the only
@@ -465,25 +562,16 @@ impl World {
             .send_packet(connection, &ServerPacket::MobileStatus(status));
     }
 
-    /// The connection a mobile is played over, if it is a connected player.
-    pub(super) fn connection_of(&self, entity: EntityId) -> Option<ConnectionId> {
-        self.state
-            .players
-            .iter()
-            .find(|(_, &e)| e == entity)
-            .map(|(&connection, _)| connection)
-    }
-
     /// Redraw a mobile's own status bar (`0x11`), if it is a connected player.
     ///
     /// Str/dex/int and the maxima do not move in ordinary play, so nothing
     /// re-sends the status but this — a stat buff landing, or wearing off. An NPC,
     /// or a player between sessions, is a no-op.
-    pub(super) fn refresh_status_of(&mut self, serial: u32) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    pub(super) fn refresh_status_of(&mut self, serial: Serial) {
+        let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
-        if let Some(connection) = self.connection_of(entity) {
+        if let Some(connection) = self.state.connection_of(entity) {
             self.send_status(connection, entity);
         }
     }

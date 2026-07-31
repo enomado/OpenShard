@@ -188,7 +188,7 @@ fn a_dungeon_is_dark_at_noon_and_night_sight_beats_both() {
     let expires = world.state.ticks + 1000;
     magic::apply_behaviour_buff(
         &mut world.state,
-        serial.raw(),
+        serial,
         openshard_state::effect::NIGHT_SIGHT,
         0,
         expires,
@@ -196,7 +196,7 @@ fn a_dungeon_is_dark_at_noon_and_night_sight_beats_both() {
     world.tick(now);
     assert_eq!(
         packets_of(&mut world, player, 0x4F).last().map(|p| p[1]),
-        Some(LIGHT_NIGHTSIGHT),
+        Some(LIGHT_NIGHTSIGHT.0),
         "Night Sight lights the cave"
     );
 }
@@ -247,9 +247,9 @@ fn calling_the_guards_kills_a_criminal_in_a_guarded_town() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards!".to_owned(),
     });
     world.tick(now);
@@ -287,9 +287,9 @@ fn the_guards_do_not_touch_the_innocent() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);
@@ -322,9 +322,9 @@ fn the_guards_are_not_called_outside_a_guarded_region() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);
@@ -364,9 +364,9 @@ fn staff_are_never_guard_candidates() {
 
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);
@@ -440,9 +440,9 @@ fn a_guard_earns_no_murder_count_and_leaves_when_it_is_done() {
     );
     world.queue(Command::Say {
         connection: player,
-        mode: 0,
-        hue: 0,
-        font: 0,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(0),
         text: "guards".to_owned(),
     });
     world.tick(now);

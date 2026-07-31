@@ -69,7 +69,8 @@ Arrows are dependencies; they only ever point down.
 | `login` | `Accounts`, `AuthKeys`, and the sans-io `LoginServer`. |
 | `movement` | The walk handshake, the sequence rules, the pace limiter, and A* (`find_path`). `Terrain` is a trait it does not implement. |
 | `config` | TOML, validated at load. |
-| `server` | The binary. Glue only: `boot` loads config/store/world, `shard` owns the accept loop and shutdown, `dispatch` turns packets into commands, `session` is per-connection state. |
+| `server` | The shard: glue only — `boot` loads config/store/world, `shard` owns the accept loop and shutdown, `dispatch` turns packets into commands, `session` is per-connection state. A library with a four-line binary on top, so a test can *start a shard* by calling `run_shard` instead of building one out of process. |
+| `client/net` | The client's side of the wire: framing, decompression, the login conversation as a sans-io state machine, and a `WorldView` of what the server has shown. The mirror of `gateway` + `login`, and it depends on neither. See [`client.md`](client.md). |
 | `world` | The tick, the client's file formats, `MapTerrain`, and the persistence journal. Owns `WorldState` and drives it. Orchestration, not rules — see the `tick/` layout below. |
 
 **The gameplay systems.** Each is a set of `fn(&mut WorldState)` in its own
@@ -95,6 +96,21 @@ rules.
 **Stubs** — declared so the dependency graph is visible.
 
 `housing`, `guilds`, `plugins`, `metrics`.
+
+**`crates/e2e/*` — tests, and the exception that proves the direction rule.**
+
+`server/*` and `client/*` never depend on each other: the wire is the only thing
+they agree on, and that is what keeps the protocol crate honest. But "a client
+can log in to a shard" needs both in one process, and hanging it off either side
+would make that side depend on the other — a dev-dependency is still a
+dependency, and it is the direction, not the profile, that the rule is about.
+
+So the seam tests live outside both, in crates that ship no code and that
+nothing depends on. Only what cannot be tested on one side belongs there: the
+framing, the login machine and the tick all have better tests of their own —
+pure state machines, no ports, no timing. What `e2e` is for is that two correct
+ends actually agree, and it earned its place on the first run by catching a
+client that assumed one compressed block was one packet.
 
 ## The shape of a file
 
@@ -125,6 +141,59 @@ The `tick/` layout, as the worked example: `command.rs` (the `Command` enum),
 `speech.rs`, `staff.rs`, and the test files. `tick.rs` itself keeps the `World` struct,
 the command router and the tick — orchestration, ~750 lines.
 
+### A big table is data, and lives in `data/*.json`
+
+The other way a file gets long is not logic at all. Five files of craft recipes
+were 16,106 lines; a body-type table was 469 lines inside a 2,782-line
+`components.rs`; 250 NPC names were most of `names.rs`. None of it is code —
+it is ported reference data (ServUO's `Def*.cs`, `Data/bodyTable.cfg`,
+`SkillInfo.Table`) that happens to be spelled in Rust syntax, and it drowns the
+few hundred lines around it that a person actually reads.
+
+**A table of more than a hundred rows belongs in `crates/<group>/<crate>/data/`
+as JSON, with a `build.rs` that emits the `const` before the crate compiles.**
+The three that exist — `crafting`, `state`, `npc` — are the pattern:
+
+- **A table is not always spelled as a `const`.** `creature_name` was 91 lines
+  of `match` arms and is data by every test that matters: a key, a value, and no
+  control flow. Look for the long run of near-identical lines, not for the
+  `const` keyword.
+- **The generated code keeps the shape the hand-written code had.** A searched
+  table stays a `const` slice; `creature_name` stays a `const fn` over a
+  `match`, because the compiler turns a dense integer `match` into a jump and a
+  search over a slice could not be `const fn`. Moving the data is not licence to
+  change the lookup.
+- **The generated tables stay `const`.** Two of `state`'s are binary-searched on
+  the tick path. Nothing is parsed or allocated at startup, and a caller still
+  reads `&'static [Recipe]`; the file it comes from is the only thing that
+  changed.
+- **Errors move from runtime to build time.** `deny_unknown_fields` on every
+  row makes a misspelt key a build failure, and a `Skill::` variant that does
+  not exist will not compile. What a runtime load would report on the first
+  craft of the day, this reports before the crate builds.
+- **Invariants the data must satisfy are the script's job, not the data's.**
+  `build.rs` sorts `BODY_TYPES` and `MOUNTS` by id, because `body_type` binary-
+  searches them and a table sorted by hand decays the first time somebody
+  appends a row. The same script asserts there is no duplicate id — the case a
+  binary search would answer arbitrarily, and a `match` would answer with
+  whichever arm came first, so a creature quietly wears another one's name.
+- **Prose stays in the source.** The doc comments for the generated items live
+  in `build.rs`, not in the JSON: a data file is a poor place to explain why
+  ServUO's `StatTotal` sums the *undivided* scales.
+- **Converting is verified by round-tripping, or by behaviour.** Every table
+  that could be was dumped out of the *compiled* tables rather than parsed out
+  of the source text, and the regenerated `const`s dump back to byte-identical
+  JSON. Where the layout necessarily changed — the `match` arms, whose grouping
+  the generator re-derives — the check is the stronger one: `creature_name` and
+  `creature_base_sound` were called for all 65,536 body ids before and after,
+  and the snapshots compared.
+
+What is *not* worth moving: `state`'s `WEAPONS` and `ARMOR`, `magic`'s `MAGERY`,
+`harvest`'s `ORES`. Each is already one row per line with a constructor function
+and the item named in a trailing comment, and that alignment is the readable
+part — JSON would lose it and save nothing. The line is roughly a hundred rows,
+or the point where the comments stop carrying meaning.
+
 ### Where code goes
 
 - A gameplay **rule** → a domain crate, as `fn(&mut WorldState)`.
@@ -139,6 +208,8 @@ Named so a review can point at them:
 
 - **The god file** — a tick that absorbs every new feature inline. Rules go in
   domain crates; the tick sequences them.
+- **The table in the source file** — a few hundred rows of ported reference data
+  spelled as Rust literals, drowning the code around it. It goes in `data/`.
 - **Gameplay in `state`** — `WorldState` is data plus the shared drawing
   substrate. The moment it grows a rule, every system depends on that rule.
 - **Circular crate dependencies** — if two crates need each other, one of them
@@ -282,49 +353,69 @@ Character *select* is pure instantiation, which is why it falls out as a single
 delete is deletion plus a question about presence — which is why those two are
 the ones that kept wanting to reach into the world.
 
-### Three owners, and the boundary between them
+### Two owners, and the boundary between them
 
-- **Existence lives on the account** (`openshard-login`): names, nothing more.
-  It never learns a serial or a position, which is what keeps that crate down to
-  `protocol` + `getrandom` + `argon2` and testable as a sequence of byte slices.
-- **State lives in the roster** (`server/src/roster.rs`): where each character
-  was when last seen — serial, spot, look, sheet. Seeded from the store at boot,
-  refreshed from `World::drain_departed` on every logout, because the store is
-  written *later* and a player can beat their own save back in.
-- **Presence lives in the sessions** (`server/src/session.rs`): which connection
-  is playing which character, from the moment `Enter` is queued.
+*This section said three, and named the binary as the owner of two of them, until
+[`connection_state.md`](connection_state.md) S4 and S5 moved them into the world.
+What is below is where they are.*
 
-The boundary between the login crate and the binary is exactly one question:
-**does this need the saved record?** Select needs it, so select cannot live in
-the login crate without dragging `openshard-persistence` — and with it bundled
-SQLite and `tokio-postgres` — into a crate whose whole value is that it has
-neither. And because select must stay, moving create and delete out of the
-binary would not reunite the character-screen conversation, only move the seam to
-a different arbitrary packet. So all three live together, on the binary's side of
-that line, and `Command` stays in `openshard-world`.
+- **Credentials live in `openshard-login`**: a password, a ban, an access level —
+  what a *login* is about. Nothing about a character, which is what keeps that
+  crate down to `protocol` + `getrandom` + `argon2` and testable as a sequence of
+  byte slices.
+- **Existence and state both live in the world's roster**
+  (`world/src/tick/roster.rs`): the account's characters, in the slot order `0xA9`
+  shows and `0x83` indexes, each carrying `Option<CharacterRecord>` — where that
+  character was when last seen, or `None` for one that exists and that nothing has
+  described yet. They were two lists before, one per crate, and the world's half
+  could not see the other.
+- **Presence lives in the entity**: a character is being played if it is in the
+  world, which is the fact itself rather than a table about it. The binary keeps a
+  `WorldPhase` per connection, but only to decide synchronously whether a packet
+  may be queued — see below.
 
-### Presence is asked of the sessions, never of the world
+The boundary is authentication, and it is one question: **is this the login
+conversation, or is it the world's?** The login crate ends at
+`Command::Authenticated`, and the character screen — list, create, select, delete
+— is answered out of a tick like everything else. What used to argue for the
+binary owning it was that select needs the saved record, and pulling
+`openshard-persistence` (with bundled SQLite and `tokio-postgres`) into the login
+crate would cost that crate its whole value. Moving the screen *into the world*,
+which already depends on persistence, is the other direction, and that objection
+does not apply.
 
-"Is this character being played?" is answered by scanning the session table, not
-by looking for its entity. The world can only be asked about a *serial*, and the
-only route to a serial from the character screen is the roster — which a
-character created during this run is not in until it logs out. Asking the world
-therefore skipped the check entirely for exactly the character most likely to be
-online, and deleted it out from under the connection playing it. The sessions
-know what they are playing from the moment they ask to.
+### Presence is asked of the entity, never of a table about it
+
+*Also reversed by S5, and it is worth keeping the old answer visible because the
+reasoning that produced it was sound and still incomplete.* "Is this character
+being played?" used to be answered by scanning the session table, because the
+world could only be asked about a *serial*, and the only route to a serial from
+the character screen was the roster — which a character created during this run
+was not in until it logged out. Asking the world therefore skipped the check for
+exactly the character most likely to be online, and deleted it out from under the
+connection playing it.
+
+What changed is the route, not the argument: the roster is the world's and holds
+the account's characters by name, so the world resolves the name itself and looks
+for the entity. The question is asked of the thing that *is* the fact, and
+`Sessions::is_playing` is gone.
 
 ### The world mints serials; the roster only remembers them
 
 A serial is durable — it is what every packet ever sent about a character
 referred to, so a restored character must come back on the one it was saved
 under. It is tempting to conclude that the registry should therefore own it, and
-that `Command::Enter { serial: Option<u32> }` and `World::reserve_serial` are an
-inversion showing through. They are not. Items, NPCs and decoration are persisted
-and reserve their serials at boot in exactly the same way; players are not a
-special case, and serials are one space (`SerialKind`) shared by all of them.
-Splitting a player range out would put two allocators over one pool to fix
-nothing. `None` on `Enter` is honest: a character being created has no serial
-yet, which is absence and not ignorance.
+that `World::reserve_serial` is an inversion showing through. It is not. Items,
+NPCs and decoration are persisted and reserve their serials at boot in exactly
+the same way; players are not a special case, and serials are one space
+(`SerialKind`) shared by all of them. Splitting a player range out would put two
+allocators over one pool to fix nothing.
+
+`Command::Enter` says which of the two it is by name rather than by an absent
+serial: `Character::Saved` asks the world to play whatever is on file for that
+account and name, and `Character::Fresh` carries what a creation chose. The
+serial is never on the command at all now — it is on the roster row, which the
+world holds.
 
 ### Where the login conversation ends
 

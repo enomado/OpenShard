@@ -13,45 +13,48 @@
 //! counter.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::{ClilocId, Graphic};
 use openshard_state::components::{Bandaging, Ghost, Hitpoints, Lock, Poisoned, Stats};
 use openshard_state::{Skill, TICKS_PER_SECOND, TargetPurpose, WorldState};
 
 use crate::check::roll_skill_band;
 
 /// The clean bandage a healer carries — ServUO's `Bandage`, item `0x0E21`.
-pub const BANDAGE_GRAPHIC: u16 = 0x0E21;
+pub const BANDAGE_GRAPHIC: Graphic = Graphic(0x0E21);
 /// A lockpick — ServUO's `Lockpick`, item `0x14FC`.
-pub const LOCKPICK_GRAPHIC: u16 = 0x14FC;
+pub const LOCKPICK_GRAPHIC: Graphic = Graphic(0x14FC);
 
 /// "Who will you use the bandage on?"
-const HEAL_WHOM: u32 = 500_951;
+const HEAL_WHOM: ClilocId = ClilocId(500_951);
 /// "That being is not damaged!"
-const NOT_DAMAGED: u32 = 500_955;
+const NOT_DAMAGED: ClilocId = ClilocId(500_955);
 /// "You begin applying the bandages."
-const BEGIN_BANDAGES: u32 = 500_956;
+const BEGIN_BANDAGES: ClilocId = ClilocId(500_956);
 /// "You finish applying the bandages."
-const FINISH_BANDAGES: u32 = 500_965;
+const FINISH_BANDAGES: ClilocId = ClilocId(500_965);
 /// "You apply the bandages, but they barely help."
-const BARELY_HELP: u32 = 500_968;
+const BARELY_HELP: ClilocId = ClilocId(500_968);
 /// "You have cured the target of all poisons!"
-const CURED: u32 = 500_962;
+const CURED: ClilocId = ClilocId(500_962);
 /// "You are able to resurrect your patient."
-const RESURRECTED: u32 = 500_965;
+const RESURRECTED: ClilocId = ClilocId(500_965);
 /// "You are unable to resurrect your patient."
-const NOT_RESURRECTED: u32 = 500_966;
+const NOT_RESURRECTED: ClilocId = ClilocId(500_966);
 /// "You cannot heal that."
-const CANNOT_HEAL: u32 = 500_970;
+const CANNOT_HEAL: ClilocId = ClilocId(500_970);
 
 /// "That did not work." — a lockpick that broke, or a lock that held.
-const PICK_FAILED: u32 = 502_075;
+const PICK_FAILED: ClilocId = ClilocId(502_075);
 /// "You broke the lockpick."
-const PICK_BROKE: u32 = 502_074;
+const PICK_BROKE: ClilocId = ClilocId(502_074);
 /// "The lock quickly yields to your skill."
-const LOCK_YIELDS: u32 = 502_076;
+const LOCK_YIELDS: ClilocId = ClilocId(502_076);
 /// "You do not have the skill to pick that lock."
-const LOCK_TOO_HARD: u32 = 502_072;
+const LOCK_TOO_HARD: ClilocId = ClilocId(502_072);
 /// "That does not appear to be locked."
-const NOT_LOCKED: u32 = 502_069;
+const NOT_LOCKED: ClilocId = ClilocId(502_069);
+/// "What do you want to pick?"
+const PICK_WHAT: ClilocId = ClilocId(502_068);
 
 /// The Healing a cure needs before it is even attempted, in tenths.
 const CURE_NEEDS: u16 = 600;
@@ -68,7 +71,7 @@ pub fn use_bandage(state: &mut WorldState, healer: EntityId, bandage: EntityId) 
     let Some((connection, serial)) = super::client_of(state, healer) else {
         return true;
     };
-    state.pending_targets.insert(
+    state.raise_target(
         healer,
         TargetPurpose::SkillSecond {
             skill: Skill::Healing.id(),
@@ -255,14 +258,14 @@ pub fn use_lockpick(state: &mut WorldState, picker: EntityId, pick: EntityId) ->
     let Some((connection, serial)) = super::client_of(state, picker) else {
         return true;
     };
-    state.pending_targets.insert(
+    state.raise_target(
         picker,
         TargetPurpose::SkillSecond {
             skill: Skill::Lockpicking.id(),
             first: pick,
         },
     );
-    state.localized_message(picker, 502_068, ""); // What do you want to pick?
+    state.localized_message(picker, PICK_WHAT, "");
     super::send_object_cursor(state, connection, serial);
     true
 }

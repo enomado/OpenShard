@@ -1,0 +1,35 @@
+//! The client's renderer: ground first, everything else after it.
+//!
+//! # What this crate is not allowed to do
+//!
+//! It does not open files, create windows, pick an adapter, spawn threads or
+//! read a clock. Everything it needs arrives as an argument: decoded art, a
+//! `wgpu::Device` and `Queue` somebody else asked for, and a texture view to
+//! draw into. That is what lets the same code back a window on the desktop, a
+//! canvas in a browser, and an offscreen texture in a test — and the last one is
+//! the point. A renderer with no way to read its own output back has no oracle,
+//! and `crates/common/uofiles` has already shown what tests without an oracle
+//! are worth: every reader in it was green against fixtures its own
+//! understanding had written, and the first real file broke two of them.
+//!
+//! # Browser-shaped from the start
+//!
+//! The web is a target, so the ceiling is WebGL2 rather than native Vulkan: no
+//! compute shaders, no storage buffers, instancing through vertex buffers, and
+//! every device request `async` because a browser cannot be blocked on. None of
+//! that constrains what UO needs to draw — the original client was a software
+//! blitter — but all of it is painful to retrofit, so it is honoured here from
+//! the first triangle rather than discovered later.
+//!
+//! # Colour is not converted
+//!
+//! Textures and targets are `Rgba8Unorm`, not `Rgba8UnormSrgb`. The client's
+//! files hold 5 bits per channel with no colour space attached, and the moment a
+//! gamma conversion enters, a pixel that went into the atlas is not the pixel
+//! that comes out of the frame — which would make an exact assertion in a test
+//! impossible and replace it with a tolerance nobody can justify.
+
+pub mod atlas;
+pub mod camera;
+pub mod ground;
+pub mod renderer;

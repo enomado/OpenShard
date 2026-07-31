@@ -11,22 +11,108 @@
 
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
-use openshard_protocol::gump::{GumpDisplay, GumpResponse};
+use openshard_protocol::gump::{
+    ButtonId, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint, GumpResponse,
+};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::WorldState;
 use openshard_state::components::Client;
 
 /// The id the admin gump answers under. High byte `0xAD` for "admin", so a stray
 /// `0xB1` for some other dialog never lands in the admin handler by accident.
-pub const ADMIN_GUMP: u32 = 0x00AD_0001;
+pub const ADMIN_GUMP: GumpId = GumpId(0x00AD_0001);
 
-/// Button ids the layout gives its reply buttons. `0` is the client's close box.
-const BTN_POPULATE_FELUCCA: u32 = 13;
-const BTN_DECORATE_FELUCCA: u32 = 22;
-const BTN_REGIONS_FELUCCA: u32 = 31;
-const BTN_CLEAR: u32 = 12;
-const BTN_CLEAR_DECO: u32 = 21;
-const BTN_CLEAR_REGIONS: u32 = 30;
+/// One row of the menu: a reply button and the verb its id means.
+///
+/// The table below is the *only* place a button id is written. The layout draws
+/// from it and [`button_action`] looks a reply up in it, so the drawn button and
+/// the handled one cannot drift apart — which they could while the layout was a
+/// string with the ids spelled into it by hand.
+struct Row {
+    /// What the `0xB1` comes back with. Never [`ButtonId::CLOSE_BOX`] — this menu
+    /// offers no button of its own under the client's close box.
+    id: ButtonId,
+    /// The button's top edge. The label sits two pixels lower, which is what
+    /// makes the two look level.
+    y: i32,
+    /// Gump art: unpressed, then pressed.
+    art: (u32, u32),
+    /// The label's hue. One for the verbs that lay a facet's worth of world
+    /// down, another for the ones that take it away again.
+    hue: u32,
+    label: &'static str,
+    /// What the community pack switches on. The engine holds no spawn or
+    /// decoration data, so this string is the whole of what a click means.
+    verb: &'static str,
+}
+
+/// The menu, top to bottom: three verbs that lay the world down, then three that
+/// clear them.
+const ROWS: [Row; 6] = [
+    Row {
+        id: ButtonId(13),
+        y: 54,
+        art: (4005, 4007),
+        hue: 1153,
+        label: "Populate Felucca",
+        verb: "populate:felucca",
+    },
+    Row {
+        id: ButtonId(22),
+        y: 88,
+        art: (4005, 4007),
+        hue: 1153,
+        label: "Decorate Felucca",
+        verb: "decorate:felucca",
+    },
+    Row {
+        id: ButtonId(31),
+        y: 122,
+        art: (4005, 4007),
+        hue: 1153,
+        label: "Regions: Felucca",
+        verb: "regions:felucca",
+    },
+    Row {
+        id: ButtonId(12),
+        y: 164,
+        art: (4017, 4019),
+        hue: 33,
+        label: "Clear spawns",
+        verb: "clear",
+    },
+    Row {
+        id: ButtonId(21),
+        y: 198,
+        art: (4017, 4019),
+        hue: 33,
+        label: "Clear deco",
+        verb: "clear:deco",
+    },
+    Row {
+        id: ButtonId(30),
+        y: 232,
+        art: (4017, 4019),
+        hue: 33,
+        label: "Clear regions",
+        verb: "clear:regions",
+    },
+];
+
+/// Draw the menu.
+///
+/// One flat page: the verbs that lay the whole facet, and the ones that clear
+/// them. Nothing to switch between, so there are no tabs to fall out of sync.
+fn menu() -> GumpLayout {
+    let mut layout = GumpLayout::new();
+    layout.background(0, 0, 300, 270, 5054);
+    layout.label(105, 14, 2100, "Admin");
+    for row in &ROWS {
+        layout.button(30, row.y, row.art.0, row.art.1, GumpButton::Reply, 0, row.id);
+        layout.label(66, row.y + 2, row.hue, row.label);
+    }
+    layout
+}
 
 /// Open the admin menu for `actor`. The caller has already checked the authority
 /// (the `.admin` command is game-master-gated), so this only draws.
@@ -34,35 +120,20 @@ pub fn open_menu(state: &mut WorldState, actor: EntityId) {
     let Some(&Client { connection, .. }) = state.registry.get::<Client>(actor) else {
         return;
     };
-    // One flat page: two actions that lay the whole facet, and the two that clear
-    // them. Nothing to switch between, so there are no tabs to fall out of sync.
-    let layout = "\
-{ resizepic 0 0 5054 300 270 }\
-{ text 105 14 2100 0 }\
-{ button 30 54 4005 4007 1 0 13 }{ text 66 56 1153 1 }\
-{ button 30 88 4005 4007 1 0 22 }{ text 66 90 1153 2 }\
-{ button 30 122 4005 4007 1 0 31 }{ text 66 124 1153 3 }\
-{ button 30 164 4017 4019 1 0 12 }{ text 66 166 33 4 }\
-{ button 30 198 4017 4019 1 0 21 }{ text 66 200 33 5 }\
-{ button 30 232 4017 4019 1 0 30 }{ text 66 234 33 6 }";
-    let lines = [
-        "Admin".to_owned(),
-        "Populate Felucca".to_owned(),
-        "Decorate Felucca".to_owned(),
-        "Regions: Felucca".to_owned(),
-        "Clear spawns".to_owned(),
-        "Clear deco".to_owned(),
-        "Clear regions".to_owned(),
-    ];
-    // The context serial is the game master's own — a non-zero value the client
-    // keys the open gump on and echoes back. A zero here can leave some clients
-    // with no gump to answer for, so no `0xB1` ever comes.
-    let serial = state.registry.serial_of(actor).map_or(0, |s| s.raw());
+    let gump = menu();
+    let (layout, lines) = gump.finish();
+    // The key is the game master's own serial — a non-zero value the client
+    // keys the open gump on and echoes back. `GumpKey::STANDALONE` can leave
+    // some clients with no gump to answer for, so no `0xB1` ever comes; a
+    // player always has a serial, so this falls back only in principle.
+    let serial = state
+        .registry
+        .serial_of(actor)
+        .map_or(GumpKey::STANDALONE, GumpKey::on);
     let packet = ServerPacket::GumpDisplay(GumpDisplay {
         serial,
         gump_id: ADMIN_GUMP,
-        x: 100,
-        y: 100,
+        at: GumpPoint::new(100, 100),
         layout: layout.to_owned(),
         lines: lines.to_vec(),
     });
@@ -82,9 +153,7 @@ pub fn button_action(
     connection: ConnectionId,
     response: &GumpResponse,
 ) -> Option<(EntityId, &'static str)> {
-    if response.gump_id != ADMIN_GUMP {
-        return None;
-    }
+    response.gump_id.validate(&[ADMIN_GUMP])?;
     let &actor = state.players.get(&connection)?;
     // Re-checked on the button, not only on open — and on the account's
     // authority, the same gate the `.` commands use, so a game master testing
@@ -93,14 +162,86 @@ pub fn button_action(
         return None;
     }
 
-    let verb = match response.button {
-        BTN_POPULATE_FELUCCA => "populate:felucca",
-        BTN_DECORATE_FELUCCA => "decorate:felucca",
-        BTN_REGIONS_FELUCCA => "regions:felucca",
-        BTN_CLEAR => "clear",
-        BTN_CLEAR_DECO => "clear:deco",
-        BTN_CLEAR_REGIONS => "clear:regions",
-        _ => return None, // the close box, or a button we do not know
+    let GumpAnswer::Pressed(button) = response.button.interpret() else {
+        return None; // the close box
     };
-    Some((actor, verb))
+    // `None` for a button this layout never drew.
+    let row = ROWS.iter().find(|row| row.id == button)?;
+    Some((actor, row.verb))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ROWS, menu};
+    use openshard_protocol::gump::{ButtonId, GumpAnswer, RawButtonId};
+
+    /// The layout as it was written by hand, before [`menu`] built it from
+    /// [`ROWS`]. The client parses this string positionally and says nothing
+    /// when it is wrong — it draws an empty window — so the bytes are the only
+    /// thing there is to assert, and this is what they were when the menu was
+    /// last seen working in a client.
+    const HAND_WRITTEN: &str = "\
+{ resizepic 0 0 5054 300 270 }\
+{ text 105 14 2100 0 }\
+{ button 30 54 4005 4007 1 0 13 }{ text 66 56 1153 1 }\
+{ button 30 88 4005 4007 1 0 22 }{ text 66 90 1153 2 }\
+{ button 30 122 4005 4007 1 0 31 }{ text 66 124 1153 3 }\
+{ button 30 164 4017 4019 1 0 12 }{ text 66 166 33 4 }\
+{ button 30 198 4017 4019 1 0 21 }{ text 66 200 33 5 }\
+{ button 30 232 4017 4019 1 0 30 }{ text 66 234 33 6 }";
+
+    #[test]
+    fn builder_draws_the_menu_the_hand_written_string_drew() {
+        let gump = menu();
+        let (layout, lines) = gump.finish();
+        assert_eq!(layout, HAND_WRITTEN);
+        // The text table is referred to by index, so its *order* is part of the
+        // layout: element `{ text .. 1 }` means whatever line 1 happens to be.
+        assert_eq!(
+            lines,
+            [
+                "Admin",
+                "Populate Felucca",
+                "Decorate Felucca",
+                "Regions: Felucca",
+                "Clear spawns",
+                "Clear deco",
+                "Clear regions",
+            ]
+        );
+    }
+
+    /// The one thing the table cannot enforce by construction. Two rows sharing
+    /// an id would draw two buttons and answer as one — the earlier row's verb
+    /// for both — and nothing would report it.
+    #[test]
+    fn button_ids_are_distinct_and_none_is_the_close_box() {
+        for (i, row) in ROWS.iter().enumerate() {
+            assert_ne!(
+                row.id,
+                ButtonId::CLOSE_BOX,
+                "{} answers under the client's close box",
+                row.verb
+            );
+            let clash = ROWS[..i].iter().find(|other| other.id == row.id);
+            assert!(
+                clash.is_none(),
+                "{} shares id {:?} with {}",
+                row.verb,
+                row.id,
+                clash.map_or("", |other| other.verb)
+            );
+        }
+    }
+
+    /// A `0xB1` naming a button this menu never drew is no verb at all — the
+    /// gump id is not a secret, so the id in a reply is as much an input as the
+    /// rest of the packet.
+    #[test]
+    fn a_button_the_menu_never_drew_names_no_verb() {
+        let GumpAnswer::Pressed(button) = RawButtonId(999).interpret() else {
+            panic!("999 is not the close box");
+        };
+        assert!(ROWS.iter().all(|row| row.id != button));
+    }
 }

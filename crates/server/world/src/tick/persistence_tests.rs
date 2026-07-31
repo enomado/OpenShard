@@ -1,7 +1,8 @@
-use super::tests::{START, enter, enter_as, walk};
+use super::tests::{START, delete_slot, enter, enter_as, walk};
 use super::*;
 use openshard_gateway::ConnectionId;
 use openshard_movement::WALK_INTERVAL;
+use openshard_protocol::wire::Graphic;
 
 /// A world that saves every tick, so a test does not have to run four
 /// hundred of them to see one row.
@@ -70,8 +71,10 @@ fn deleting_a_character_forgets_its_row_on_the_next_save() {
     world.tick(now + WALK_INTERVAL);
     let _ = world.drain_saves().count();
 
-    world.delete_character(serial);
-    world.tick(now + WALK_INTERVAL * 2);
+    // By slot, through the command: the slot indexes the list the screen was
+    // sent, which the world built out of the same roster this looks the character
+    // up in. See `docs/connection_state.md`, S5.
+    delete_slot(&mut world, 0, now + WALK_INTERVAL * 2);
     let snapshot = only_snapshot(&mut world).expect("a deletion is a change worth saving");
     assert!(
         snapshot.removed.contains(&serial),
@@ -205,14 +208,14 @@ fn a_dead_players_save_is_flagged_but_keeps_the_living_body() {
     let now = Instant::now();
     let connection = enter(&mut world, now);
     let entity = world.state.players[&connection];
-    let serial = world.registry().serial_of(entity).unwrap().raw();
+    let serial = world.registry().serial_of(entity).unwrap();
     let _ = only_snapshot(&mut world); // drop the enter's save
 
     world.queue(Command::Damage {
         serial,
         amount: 500,
         damage_type: 0,
-        by: 0,
+        by: None,
     });
     world.tick(now);
 
@@ -246,7 +249,7 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
             facet: Facet(0),
             start: None,
             appearance: Some(Appearance {
-                body: openshard_protocol::wire::Graphic(0x0190),
+                body: Graphic(0x0190),
                 hue: openshard_protocol::wire::Hue::NONE,
             }),
             sheet: Some(CharacterSheet {
@@ -281,7 +284,10 @@ fn a_character_that_logged_out_dead_returns_a_ghost() {
     );
     // No fresh corpse laid on re-entry — that would duplicate the saved one.
     assert!(
-        world.registry().query::<Graphic>().all(|(_, g)| g.id != 0x2006),
+        world
+            .registry()
+            .query::<Drawn>()
+            .all(|(_, g)| g.id != Graphic(0x2006)),
         "no corpse is laid on relog"
     );
 }
@@ -456,7 +462,7 @@ fn two_players_are_two_rows_in_one_snapshot() {
     world.take_snapshot();
     let snapshot = only_snapshot(&mut world).expect("a change");
     assert_eq!(snapshot.characters.len(), 2);
-    let serials: HashSet<u32> = snapshot.characters.iter().map(|c| c.serial).collect();
+    let serials: HashSet<Serial> = snapshot.characters.iter().map(|c| c.serial).collect();
     assert_eq!(serials.len(), 2, "and two distinct serials");
 }
 
@@ -473,5 +479,5 @@ fn a_saved_serial_is_the_one_the_client_was_told() {
 
     world.take_snapshot();
     let snapshot = only_snapshot(&mut world).expect("a change");
-    assert_eq!(snapshot.characters[0].serial, serial.raw());
+    assert_eq!(snapshot.characters[0].serial, serial);
 }

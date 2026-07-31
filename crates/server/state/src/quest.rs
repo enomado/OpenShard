@@ -22,6 +22,7 @@
 //! field, so that converting real quests later is transcription rather than
 //! design.
 
+use openshard_protocol::wire::{Graphic, Hue};
 use std::collections::HashMap;
 
 /// What an objective asks for.
@@ -35,7 +36,7 @@ pub enum ObjectiveKind {
     Slay {
         /// The body that counts. Matched against the victim's, so any creature
         /// drawn as this counts.
-        body: u16,
+        body: Graphic,
     },
     /// Carry `count` of an item at once. ServUO's `ObtainObjective`.
     ///
@@ -45,12 +46,12 @@ pub enum ObjectiveKind {
     /// which is ServUO's behaviour too.
     Obtain {
         /// The item graphic that counts.
-        graphic: u16,
+        graphic: Graphic,
     },
     /// Take `count` of an item to a named NPC. ServUO's `DeliverObjective`.
     Deliver {
         /// What to carry.
-        graphic: u16,
+        graphic: Graphic,
         /// Who to take it to, by name. A name and not a serial: the destination is
         /// written by the pack before anything has been spawned, and a name still
         /// means the same thing after a restart.
@@ -92,9 +93,9 @@ pub enum RewardKind {
     /// An item into the backpack.
     Item {
         /// Its graphic.
-        graphic: u16,
-        /// Its hue, or 0.
-        hue: u16,
+        graphic: Graphic,
+        /// Its hue, or [`Hue`]`(0)`.
+        hue: Hue,
         /// How many.
         amount: u16,
         /// Whether it merges onto a like pile.

@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// An item appeared in the world.
 ///
@@ -18,8 +19,8 @@ pub struct ItemSpawned {
 /// Override a weapon item's speed and damage — the pack's magic sword, its stats
 /// standing in for the core weapon table's for that graphic. See
 /// `Command::SetWeapon`. A stray or non-existent serial sets nothing.
-pub fn set_weapon(state: &mut WorldState, serial: u32, speed: u16, min: u16, max: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial)) else {
+pub fn set_weapon(state: &mut WorldState, serial: Serial, speed: u16, min: u16, max: u16) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     state.registry.insert(entity, Weapon { speed, min, max });
@@ -31,8 +32,8 @@ pub fn set_weapon(state: &mut WorldState, serial: u32, speed: u16, min: u16, max
 /// bottle on the wire, so which poison one holds is on the item and something has to
 /// put it there. `charges` of zero clears it, which is also how a spent coating is
 /// wiped — one door in and out, so "is this poisoned" never has two answers.
-pub fn set_poison(state: &mut WorldState, serial: u32, level: u8, charges: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|serial| state.registry.entity_of(serial)) else {
+pub fn set_poison(state: &mut WorldState, serial: Serial, level: u8, charges: u16) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     if charges == 0 {
@@ -48,8 +49,8 @@ pub fn set_poison(state: &mut WorldState, serial: u32, level: u8, charges: u16) 
 /// the same thing and then say it holds others.
 pub fn spawn_item(
     state: &mut WorldState,
-    graphic: u16,
-    hue: u16,
+    graphic: Graphic,
+    hue: Hue,
     amount: u16,
     stackable: bool,
     position: Point,
@@ -71,7 +72,7 @@ pub fn spawn_item(
             return None;
         }
     };
-    state.registry.insert(entity, Graphic { id: graphic, hue });
+    state.registry.insert(entity, Drawn { id: graphic, hue });
     state.registry.insert(entity, Position(position));
     state.registry.insert(entity, facet);
     // Only a real stack carries an amount; a single item stays a bare graphic.
@@ -89,7 +90,7 @@ pub fn spawn_item(
         position,
     });
     state.reveal(entity);
-    debug!(%serial, graphic, position = %position, "item on the ground");
+    debug!(%serial, graphic = graphic.0, position = %position, "item on the ground");
     crate::apply_core_defaults(state, entity, graphic);
     Some(entity)
 }
@@ -101,9 +102,9 @@ pub fn spawn_item(
 /// like one and then marked.
 pub fn spawn_container(
     state: &mut WorldState,
-    graphic: u16,
-    gump: u16,
-    hue: u16,
+    graphic: Graphic,
+    gump: Graphic,
+    hue: Hue,
     position: Point,
     facet: u8,
 ) {
@@ -126,10 +127,10 @@ pub fn spawn_container(
 pub fn equip_new_container(
     state: &mut WorldState,
     mobile: Serial,
-    graphic: u16,
-    gump: u16,
-    hue: u16,
-    layer: u8,
+    graphic: Graphic,
+    gump: Graphic,
+    hue: Hue,
+    layer: Layer,
 ) -> Option<EntityId> {
     let (entity, serial) = match state.registry.spawn_with_serial(SerialKind::Item) {
         Ok(pair) => pair,
@@ -138,10 +139,10 @@ pub fn equip_new_container(
             return None;
         }
     };
-    state.registry.insert(entity, Graphic { id: graphic, hue });
+    state.registry.insert(entity, Drawn { id: graphic, hue });
     state.registry.insert(entity, Container { gump });
     state.registry.insert(entity, Equipped { mobile, layer });
-    debug!(%serial, graphic, layer, "container equipped");
+    debug!(%serial, graphic = graphic.0, layer = layer.0, "container equipped");
     Some(entity)
 }
 
@@ -151,7 +152,7 @@ pub fn equip_new_container(
 /// and the copy is what the ground is left with. Straight from Sphere's
 /// `CItem::UnStackSplit`.
 pub fn spawn_leftover(state: &mut WorldState, original: EntityId, amount: u16, position: Point, facet: u8) {
-    let Some(&Graphic { id, hue }) = state.registry.get::<Graphic>(original) else {
+    let Some(&Drawn { id, hue }) = state.registry.get::<Drawn>(original) else {
         return;
     };
     let leftover = match state.registry.spawn_with_serial(SerialKind::Item) {
@@ -161,7 +162,7 @@ pub fn spawn_leftover(state: &mut WorldState, original: EntityId, amount: u16, p
             return;
         }
     };
-    state.registry.insert(leftover, Graphic { id, hue });
+    state.registry.insert(leftover, Drawn { id, hue });
     state.registry.insert(leftover, Stackable);
     set_stack_amount(state, leftover, amount);
     state.registry.insert(leftover, Position(position));

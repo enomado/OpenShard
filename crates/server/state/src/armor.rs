@@ -20,26 +20,26 @@
 //! armour coming off needs no undoing.
 
 /// The shield layer (UO `Layer.TwoHanded`).
-pub const LAYER_SHIELD: u8 = 0x02;
+pub const LAYER_SHIELD: Layer = Layer(0x02);
 /// Leggings (UO `Layer.Pants`).
-pub const LAYER_LEGS: u8 = 0x04;
+pub const LAYER_LEGS: Layer = Layer(0x04);
 /// Helm (UO `Layer.Helm`).
-pub const LAYER_HELM: u8 = 0x06;
+pub const LAYER_HELM: Layer = Layer(0x06);
 /// Gloves (UO `Layer.Gloves`).
-pub const LAYER_GLOVES: u8 = 0x07;
+pub const LAYER_GLOVES: Layer = Layer(0x07);
 /// Gorget (UO `Layer.Neck`).
-pub const LAYER_GORGET: u8 = 0x0A;
+pub const LAYER_GORGET: Layer = Layer(0x0A);
 /// Chest (UO `Layer.InnerTorso`).
-pub const LAYER_CHEST: u8 = 0x0D;
+pub const LAYER_CHEST: Layer = Layer(0x0D);
 /// Sleeves (UO `Layer.Arms`).
-pub const LAYER_ARMS: u8 = 0x13;
+pub const LAYER_ARMS: Layer = Layer(0x13);
 
 /// How much of a body each armour layer covers, in hundredths — ServUO's
 /// `BaseArmor.m_ArmorScalars` (`{ 0.07, 0.07, 0.14, 0.15, 0.22, 0.35 }` over
 /// gorget, gloves, helm, arms, legs, chest). A shield is not in that array and
 /// falls to ServUO's `1.0`: a shield's rating counts whole.
 #[must_use]
-pub const fn layer_coverage(layer: u8) -> u32 {
+pub const fn layer_coverage(layer: Layer) -> u32 {
     match layer {
         LAYER_GORGET | LAYER_GLOVES => 7,
         LAYER_HELM => 14,
@@ -63,7 +63,7 @@ pub const fn layer_coverage(layer: u8) -> u32 {
 /// mean writing the same fact twice and having to keep them apart. The scalars
 /// array wins here, because the second stage of the absorb reads it directly.
 #[must_use]
-pub const fn hit_layer(roll: u32) -> u8 {
+pub const fn hit_layer(roll: u32) -> Layer {
     match roll {
         0..=6 => LAYER_GORGET,
         7..=13 => LAYER_GLOVES,
@@ -91,11 +91,11 @@ pub enum MedAllowance {
     None,
 }
 
-/// One armour class's rating, keyed by its item [`Graphic`](crate::Graphic) id.
+/// One armour class's rating, keyed by its item [`Drawn`](crate::Drawn) id.
 #[derive(Debug, Clone, Copy)]
 pub struct ArmorData {
     /// The item graphic this row describes.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// ServUO's `ArmorBase` — the class rating before body coverage.
     pub rating: u16,
     /// How much it hinders meditation — its material's `DefMedAllowance`.
@@ -104,13 +104,14 @@ pub struct ArmorData {
 
 /// The armour row for an item graphic, or `None` for anything not armour.
 #[must_use]
-pub fn armor_data(graphic: u16) -> Option<&'static ArmorData> {
+pub fn armor_data(graphic: Graphic) -> Option<&'static ArmorData> {
     ARMOR.iter().find(|a| a.graphic == graphic)
 }
 
 use crate::WorldState;
-use crate::components::{Armor, Equipped, Graphic, Quality};
+use crate::components::{Armor, Drawn, Equipped, Quality};
 use openshard_entities::EntityId;
+use openshard_protocol::wire::{Graphic, Hue, Layer};
 
 /// What an exceptional piece is worth — ServUO's `ar += -8 + 8 * (int)m_Quality`
 /// with `ItemQuality.Exceptional` being 2, so eight points over an ordinary one.
@@ -125,14 +126,14 @@ const EXCEPTIONAL_BONUS: u16 = 8;
 /// breastplate is sixteen points better than an iron one, and until crafting
 /// landed there was no way to have one.
 #[must_use]
-pub fn material_bonus(hue: u16) -> u16 {
+pub fn material_bonus(hue: Hue) -> u16 {
     if let Some(index) = crate::harvest::ORES.iter().position(|ore| ore.hue == hue) {
         // Two points a grade, iron at nothing through valorite at sixteen —
         // ServUO's ladder exactly, and evenly spaced, which is why it is
         // arithmetic here and a switch there.
         return u16::try_from(index).unwrap_or(0) * 2;
     }
-    match hue {
+    match hue.0 {
         0x08AC => 10, // spined
         0x0845 => 13, // horned
         0x0851 => 16, // barbed
@@ -153,7 +154,7 @@ pub fn piece_rating(state: &WorldState, item: EntityId) -> u16 {
     if let Some(&Armor { rating }) = state.registry.get::<Armor>(item) {
         return rating;
     }
-    let Some(graphic) = state.registry.get::<Graphic>(item) else {
+    let Some(graphic) = state.registry.get::<Drawn>(item) else {
         return 0;
     };
     let Some(armor) = armor_data(graphic.id) else {
@@ -168,7 +169,7 @@ pub fn piece_rating(state: &WorldState, item: EntityId) -> u16 {
 
 /// The item a mobile wears on `layer`, if any.
 #[must_use]
-pub fn worn_on_layer(state: &WorldState, mobile: EntityId, layer: u8) -> Option<EntityId> {
+pub fn worn_on_layer(state: &WorldState, mobile: EntityId, layer: Layer) -> Option<EntityId> {
     let serial = state.registry.serial_of(mobile)?;
     state
         .registry
@@ -189,7 +190,7 @@ pub fn worn_armor_rating(state: &WorldState, mobile: EntityId) -> u16 {
     let Some(serial) = state.registry.serial_of(mobile) else {
         return 0;
     };
-    let worn: Vec<(EntityId, u8)> = state
+    let worn: Vec<(EntityId, Layer)> = state
         .registry
         .query::<Equipped>()
         .filter(|(_, worn)| worn.mobile == serial)
@@ -281,7 +282,7 @@ static ARMOR: &[ArmorData] = &[
 /// A row, so the table above reads as data.
 const fn a(graphic: u16, rating: u16, meditation: MedAllowance) -> ArmorData {
     ArmorData {
-        graphic,
+        graphic: Graphic(graphic),
         rating,
         meditation,
     }
@@ -298,10 +299,10 @@ mod tests {
 
     #[test]
     fn a_known_graphic_resolves_and_an_unknown_one_does_not() {
-        assert_eq!(armor_data(0x1415).expect("plate chest").rating, 40);
-        assert_eq!(armor_data(0x13CC).expect("leather chest").rating, 13);
-        assert_eq!(armor_data(0x1B73).expect("buckler").rating, 7);
-        assert!(armor_data(0x0000).is_none());
+        assert_eq!(armor_data(Graphic(0x1415)).expect("plate chest").rating, 40);
+        assert_eq!(armor_data(Graphic(0x13CC)).expect("leather chest").rating, 13);
+        assert_eq!(armor_data(Graphic(0x1B73)).expect("buckler").rating, 7);
+        assert!(armor_data(Graphic(0x0000)).is_none());
     }
 
     #[test]
@@ -309,7 +310,7 @@ mod tests {
         // The one fact that makes Meditation a mage's skill: a leather suit costs
         // nothing, studded costs half its rating, and every metal piece — down to
         // the buckler on your arm — costs all of it.
-        let med = |graphic: u16| armor_data(graphic).expect("in the table").meditation;
+        let med = |graphic: u16| armor_data(Graphic(graphic)).expect("in the table").meditation;
         assert_eq!(med(0x13CC), MedAllowance::All); // leather chest
         assert_eq!(med(0x13DB), MedAllowance::Half); // studded chest
         assert_eq!(med(0x1415), MedAllowance::None); // plate chest
@@ -322,7 +323,7 @@ mod tests {
     fn no_two_rows_share_a_graphic() {
         for (i, a) in ARMOR.iter().enumerate() {
             for b in &ARMOR[i + 1..] {
-                assert_ne!(a.graphic, b.graphic, "duplicate graphic 0x{:04X}", a.graphic);
+                assert_ne!(a.graphic, b.graphic, "duplicate graphic 0x{:04X}", a.graphic.0);
             }
         }
     }
@@ -331,7 +332,7 @@ mod tests {
     fn the_hit_bands_match_their_coverage() {
         // The ladder and the scalars are the same fact told twice; a chest is hit
         // 35% of the time because it covers 35% of a body.
-        let mut counts: [(u8, u32); 6] = [
+        let mut counts: [(Layer, u32); 6] = [
             (LAYER_GORGET, 0),
             (LAYER_GLOVES, 0),
             (LAYER_ARMS, 0),
@@ -348,7 +349,7 @@ mod tests {
             slot.1 += 1;
         }
         for (layer, count) in counts {
-            assert_eq!(count, layer_coverage(layer), "layer {layer:#04X}");
+            assert_eq!(count, layer_coverage(layer), "layer {:#04X}", layer.0);
         }
     }
 }

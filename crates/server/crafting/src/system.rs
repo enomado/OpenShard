@@ -9,6 +9,7 @@
 //! tenths, chances in per-mille, every duration a tick count. A craft has to
 //! replay.
 
+use openshard_protocol::wire::{ClilocId, SoundId};
 use openshard_state::Skill;
 
 use crate::recipe::{Recipe, SubResAxis};
@@ -23,7 +24,7 @@ use crate::recipe::{Recipe, SubResAxis};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Text {
     /// A cliloc number the client looks up.
-    Cliloc(u32),
+    Cliloc(ClilocId),
     /// A literal, for the rows that have no number.
     Str(&'static str),
 }
@@ -139,12 +140,12 @@ pub struct CraftSystemDef {
     pub max_beats: u8,
     /// What the tool makes on each beat — `PlayCraftEffect`. The hammer on the
     /// anvil is `0x2A`.
-    pub craft_sound: u16,
+    pub craft_sound: SoundId,
     /// What has to be standing nearby for *any* of this system's recipes.
     pub needs: Needs,
     /// The cliloc said when [`needs`](Self::needs) is not met — "You must be near
     /// an anvil and a forge to smith items."
-    pub needs_message: u32,
+    pub needs_message: ClilocId,
     /// The gump's left-hand column, indexed by [`Recipe::group`].
     pub groups: &'static [Text],
     /// Everything it can make.

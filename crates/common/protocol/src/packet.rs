@@ -261,11 +261,30 @@ pub fn client_packet_length(id: u8, version: Option<ClientVersion>) -> Option<Pa
 /// assert_eq!(frame_client_packet(&talk, None), Ok(Frame::Complete(5)));
 /// ```
 pub fn frame_client_packet(buffer: &[u8], version: Option<ClientVersion>) -> Result<Frame, FrameError> {
+    frame_packet(buffer, |id| client_packet_length(id, version))
+}
+
+/// The framing rule, with the length table left to the caller.
+///
+/// Both directions of the wire are framed the same way — an id, then either a
+/// known size or a `u16` at offset 1 — and only the table that answers "how long
+/// is this id" differs. Writing the rule twice would mean two places that could
+/// disagree about a length below its own header, or about
+/// [`MAX_PACKET_SIZE`]; the client-to-server side of that pair is the one that
+/// faces hostile input, and it is not the copy anybody would remember to fix.
+///
+/// So the rule lives here once and the tables are arguments:
+/// [`frame_client_packet`] passes [`client_packet_length`], and the client's
+/// side passes `server_packet_length`.
+pub(crate) fn frame_packet(
+    buffer: &[u8],
+    length_of: impl FnOnce(u8) -> Option<PacketLength>,
+) -> Result<Frame, FrameError> {
     let Some(&id) = buffer.first() else {
         return Ok(Frame::Incomplete { needed: 1 });
     };
 
-    let length = client_packet_length(id, version).ok_or(FrameError::UnknownPacket(id))?;
+    let length = length_of(id).ok_or(FrameError::UnknownPacket(id))?;
 
     match length {
         PacketLength::Fixed(size) => {

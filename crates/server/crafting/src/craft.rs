@@ -13,6 +13,7 @@
 //! animation for a craft that was never possible.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::{ClilocId, Graphic, Hue, SoundId};
 use openshard_state::WorldState;
 use openshard_state::components::{CraftedBy, Crafting, Name, Position, Quality, Tool};
 
@@ -24,23 +25,23 @@ use crate::recipe::Recipe;
 use crate::system::{CraftSystemDef, SystemId};
 
 /// "You have worn out your tool!"
-const TOOL_WORN_OUT: u32 = 1_044_038;
+const TOOL_WORN_OUT: ClilocId = ClilocId(1_044_038);
 /// "The tool must be on your person to use."
-const TOOL_NOT_ON_PERSON: u32 = 1_044_263;
+const TOOL_NOT_ON_PERSON: ClilocId = ClilocId(1_044_263);
 /// "You don't have the required skills to attempt this item."
-const NO_SKILL: u32 = 1_044_153;
+const NO_SKILL: ClilocId = ClilocId(1_044_153);
 /// "You failed to create the item, and some of your materials are lost."
-const FAILED_LOST: u32 = 1_044_043;
+const FAILED_LOST: ClilocId = ClilocId(1_044_043);
 /// "You failed to create the item, but no materials were lost."
-const FAILED_KEPT: u32 = 1_044_157;
+const FAILED_KEPT: ClilocId = ClilocId(1_044_157);
 /// "You create the item."
-const MADE: u32 = 1_044_154;
+const MADE: ClilocId = ClilocId(1_044_154);
 /// "You create an exceptional quality item."
-const MADE_EXCEPTIONAL: u32 = 1_044_155;
+const MADE_EXCEPTIONAL: ClilocId = ClilocId(1_044_155);
 /// "You create an exceptional quality item and affix your maker's mark."
-const MADE_MARKED: u32 = 1_044_156;
+const MADE_MARKED: ClilocId = ClilocId(1_044_156);
 /// "You must wait to perform another action." — ServUO's `BeginAction` refusal.
-const ALREADY_BUSY: u32 = 500_119;
+const ALREADY_BUSY: ClilocId = ClilocId(500_119);
 /// The base skill a maker's mark wants: grandmaster, in tenths.
 const MARK_AT: u16 = 1000;
 
@@ -55,9 +56,9 @@ pub struct ItemCrafted {
     /// The item that came out, or `None` for a batch that could not be placed.
     pub item: Option<EntityId>,
     /// Its art.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Its hue, which for most materials is the material.
-    pub hue: u16,
+    pub hue: Hue,
     /// How many.
     pub amount: u16,
     /// Whether it came out exceptional.
@@ -76,7 +77,7 @@ enum Blocked {
     /// It is not on the crafter's person.
     NotCarried,
     /// The workshop is not here.
-    NoWorkshop(u32),
+    NoWorkshop(ClilocId),
 }
 
 /// The tool and workshop gates — ServUO's `CanCraft`, less the recipe's own.
@@ -243,7 +244,7 @@ fn strike(state: &mut WorldState, crafter: EntityId, def: &CraftSystemDef) {
     // it gives a hidden crafter away.
     state.disrupt(crafter);
     state.break_cover(crafter);
-    if def.craft_sound != 0 {
+    if def.craft_sound != SoundId(0) {
         state.play_sound(crafter, def.craft_sound);
     }
 }
@@ -293,7 +294,7 @@ fn complete(state: &mut WorldState, crafter: EntityId, work: &Crafting, def: &Cr
         train_per_item(state, crafter, recipe, materials.max_amount);
     }
 
-    let hue = if recipe.hue == 0 {
+    let hue = if recipe.hue == Hue(0) {
         materials.res_hue
     } else {
         recipe.hue
@@ -341,7 +342,7 @@ fn place(
     state: &mut WorldState,
     crafter: EntityId,
     recipe: &Recipe,
-    hue: u16,
+    hue: Hue,
     amount: u16,
 ) -> Option<EntityId> {
     let serial = state.registry.serial_of(crafter)?;
@@ -391,7 +392,7 @@ fn wear_tool(state: &mut WorldState, crafter: EntityId, tool: EntityId) {
 /// second copy here keyed by system is the pair of hand-kept halves the mount
 /// table's lesson is about.
 #[must_use]
-pub fn tool_system(graphic: u16) -> Option<SystemId> {
+pub fn tool_system(graphic: Graphic) -> Option<SystemId> {
     let tool = openshard_state::craft::craft_tool(graphic)?;
     SYSTEMS
         .iter()

@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 impl World {
     /// Keep every spawn region at its ceiling. Once per tick, but cheap: a region
@@ -168,8 +169,8 @@ impl World {
                     .creatures
                     .iter()
                     .map(|c| openshard_persistence::CreatureData {
-                        body: c.body,
-                        hue: c.hue,
+                        body: c.body.0,
+                        hue: c.hue.0,
                         hits: c.hits,
                         notoriety: c.notoriety,
                         damage: c.damage,
@@ -209,8 +210,8 @@ impl World {
                 .creatures
                 .into_iter()
                 .map(|c| crate::spawner::CreatureTemplate {
-                    body: c.body,
-                    hue: c.hue,
+                    body: Graphic(c.body),
+                    hue: Hue(c.hue),
                     hits: c.hits,
                     notoriety: c.notoriety,
                     damage: c.damage,

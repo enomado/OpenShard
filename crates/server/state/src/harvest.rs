@@ -15,10 +15,13 @@
 //! The banks — the depletion-and-respawn state that makes a vein run dry — are
 //! [`Banks`], which lives on `FacetState` beside the sector grid.
 
+use std::collections::HashMap;
+
+use openshard_protocol::wire::{ClilocId, Graphic, Hue, SoundId};
+
 use crate::rng::Rng;
 use crate::runtime::TICKS_PER_SECOND;
 use crate::skill::Skill;
-use std::collections::HashMap;
 
 /// Which of the four definitions a row is, and the key half of a bank's address.
 ///
@@ -68,12 +71,12 @@ pub struct HarvestResource {
     /// And the top.
     pub max_skill: i32,
     /// The cliloc said on a success — "You have found some iron ore."
-    pub success_cliloc: u32,
+    pub success_cliloc: ClilocId,
     /// The item art the yield is made of.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// And its hue — ServUO's `CraftResources.GetHue`, which is the *only* thing
     /// telling valorite ore from iron.
-    pub hue: u16,
+    pub hue: Hue,
 }
 
 /// One vein of a bank — which resource it holds and how often it disappoints.
@@ -98,20 +101,20 @@ pub struct HarvestVein {
 #[derive(Clone, Copy, Debug)]
 pub struct HarvestMessages {
     /// The bank is empty, said when the swing is *begun*.
-    pub no_resources: u32,
+    pub no_resources: ClilocId,
     /// The bank ran empty *during* the swing — somebody else got there first.
-    pub double_harvest: u32,
+    pub double_harvest: ClilocId,
     /// Too far away, said when the swing is begun.
-    pub out_of_range: u32,
+    pub out_of_range: ClilocId,
     /// Walked away mid-swing. A different line from `out_of_range`, and the
     /// difference is the point: one is a mistake, the other is giving up.
-    pub timed_out_of_range: u32,
+    pub timed_out_of_range: ClilocId,
     /// The roll failed — "You loosen some rocks but fail to find any useable ore."
-    pub fail: u32,
+    pub fail: ClilocId,
     /// The yield would not fit in the pack.
-    pub pack_full: u32,
+    pub pack_full: ClilocId,
     /// The tool is spent.
-    pub tool_broke: u32,
+    pub tool_broke: ClilocId,
 }
 
 /// One harvesting system — ServUO's `HarvestDefinition`.
@@ -147,7 +150,7 @@ pub struct HarvestDef {
     /// The gesture each beat plays.
     pub action: HarvestAction,
     /// The sounds each beat may play, rolled between. Fishing has none.
-    pub sounds: &'static [u16],
+    pub sounds: &'static [SoundId],
     /// How many beats one harvest takes.
     pub beats: u16,
     /// How long a beat is, in ticks.
@@ -252,7 +255,7 @@ pub struct ToolData {
 /// again: an axe you can swing at an orc and not at a tree is the kind of split
 /// two hand-kept tables produce, and the mount table already taught that lesson.
 #[must_use]
-pub fn tool_data(graphic: u16) -> Option<ToolData> {
+pub fn tool_data(graphic: Graphic) -> Option<ToolData> {
     if let Some(row) = TOOLS.iter().find(|(art, _)| *art == graphic) {
         return Some(row.1);
     }
@@ -279,13 +282,13 @@ const AXE_MAX_USES: u16 = 100;
 /// The purpose-built tools, each with `BaseHarvestTool`'s `50..=100` uses.
 /// A hatchet and the axe classes come through [`tool_data`]'s `is_axe` branch.
 #[rustfmt::skip]
-static TOOLS: &[(u16, ToolData)] = &[
-    (0x0E86, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe
-    (0x0E85, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe (flipped art)
-    (0x0F39, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel
-    (0x0F3A, ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel (flipped art)
-    (0x0DC0, ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole
-    (0x0DBF, ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole (flipped art)
+static TOOLS: &[(Graphic, ToolData)] = &[
+    (Graphic(0x0E86), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe
+    (Graphic(0x0E85), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // pickaxe (flipped art)
+    (Graphic(0x0F39), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel
+    (Graphic(0x0F3A), ToolData { skill: Skill::Mining,  min_uses: 50, max_uses: 100 }), // shovel (flipped art)
+    (Graphic(0x0DC0), ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole
+    (Graphic(0x0DBF), ToolData { skill: Skill::Fishing, min_uses: 50, max_uses: 100 }), // fishing pole (flipped art)
 ];
 
 // ---------------------------------------------------------------------------
@@ -447,18 +450,18 @@ const ORE: HarvestDef = HarvestDef {
     consumed_felucca: 2,
     place_at_feet: false,
     action: HarvestAction::Mine,
-    sounds: &[0x125, 0x126],
+    sounds: &[SoundId(0x125), SoundId(0x126)],
     beats: 1,
     beat_ticks: BEAT_TICKS,
     sound_ticks: SOUND_TICKS,
     messages: HarvestMessages {
-        no_resources: 503_040,       // There is no metal here to mine.
-        double_harvest: 503_042,     // Someone has gotten to the metal before you.
-        out_of_range: 500_446,       // That is too far away.
-        timed_out_of_range: 503_041, // You have moved too far away to continue mining.
-        fail: 503_043,               // You loosen some rocks but fail to find any useable ore.
-        pack_full: 1_010_481,        // Your backpack is full, so the ore you mined is lost.
-        tool_broke: 1_044_038,       // You have worn out your tool!
+        no_resources: ClilocId(503_040),       // There is no metal here to mine.
+        double_harvest: ClilocId(503_042),     // Someone has gotten to the metal before you.
+        out_of_range: ClilocId(500_446),       // That is too far away.
+        timed_out_of_range: ClilocId(503_041), // You have moved too far away to continue mining.
+        fail: ClilocId(503_043),               // You loosen some rocks but fail to find any useable ore.
+        pack_full: ClilocId(1_010_481),        // Your backpack is full, so the ore you mined is lost.
+        tool_broke: ClilocId(1_044_038),       // You have worn out your tool!
     },
     resources: ORES,
     veins: ORE_VEINS,
@@ -481,18 +484,18 @@ const SAND: HarvestDef = HarvestDef {
     consumed_felucca: 2,
     place_at_feet: false,
     action: HarvestAction::Mine,
-    sounds: &[0x125, 0x126],
+    sounds: &[SoundId(0x125), SoundId(0x126)],
     beats: 6,
     beat_ticks: BEAT_TICKS,
     sound_ticks: SOUND_TICKS,
     messages: HarvestMessages {
-        no_resources: 1_044_629,     // There is no sand here to mine.
-        double_harvest: 1_044_629,   // There is no sand here to mine.
-        out_of_range: 500_446,       // That is too far away.
-        timed_out_of_range: 503_041, // You have moved too far away to continue mining.
-        fail: 1_044_630,             // You dig for a while but fail to find any of sufficient quality.
-        pack_full: 1_044_632,        // Your backpack can't hold the sand, and it is lost!
-        tool_broke: 1_044_038,       // You have worn out your tool!
+        no_resources: ClilocId(1_044_629),     // There is no sand here to mine.
+        double_harvest: ClilocId(1_044_629),   // There is no sand here to mine.
+        out_of_range: ClilocId(500_446),       // That is too far away.
+        timed_out_of_range: ClilocId(503_041), // You have moved too far away to continue mining.
+        fail: ClilocId(1_044_630), // You dig for a while but fail to find any of sufficient quality.
+        pack_full: ClilocId(1_044_632), // Your backpack can't hold the sand, and it is lost!
+        tool_broke: ClilocId(1_044_038), // You have worn out your tool!
     },
     resources: SANDS,
     veins: ONE_VEIN,
@@ -516,18 +519,18 @@ const LUMBER_ML: HarvestDef = HarvestDef {
     consumed_felucca: 20,
     place_at_feet: false,
     action: HarvestAction::Chop,
-    sounds: &[0x13E],
+    sounds: &[SoundId(0x13E)],
     beats: 1,
     beat_ticks: BEAT_TICKS,
     sound_ticks: SOUND_TICKS,
     messages: HarvestMessages {
-        no_resources: 500_493,       // There's not enough wood here to harvest.
-        double_harvest: 500_493,     // There's not enough wood here to harvest.
-        out_of_range: 500_446,       // That is too far away.
-        timed_out_of_range: 500_446, // That is too far away.
-        fail: 500_495, // You hack at the tree for a while, but fail to produce any useable wood.
-        pack_full: 500_497, // You can't place any wood into your backpack!
-        tool_broke: 500_499, // You broke your axe.
+        no_resources: ClilocId(500_493),   // There's not enough wood here to harvest.
+        double_harvest: ClilocId(500_493), // There's not enough wood here to harvest.
+        out_of_range: ClilocId(500_446),   // That is too far away.
+        timed_out_of_range: ClilocId(500_446), // That is too far away.
+        fail: ClilocId(500_495), // You hack at the tree for a while, but fail to produce any useable wood.
+        pack_full: ClilocId(500_497), // You can't place any wood into your backpack!
+        tool_broke: ClilocId(500_499), // You broke your axe.
     },
     resources: WOODS,
     veins: WOOD_VEINS,
@@ -573,13 +576,13 @@ const FISHING: HarvestDef = HarvestDef {
     beat_ticks: TICKS_PER_SECOND * 8,
     sound_ticks: 0,
     messages: HarvestMessages {
-        no_resources: 503_172,       // The fish don't seem to be biting here.
-        double_harvest: 503_172,     // The fish don't seem to be biting here.
-        out_of_range: 500_976,       // You need to be closer to the water to fish!
-        timed_out_of_range: 500_976, // You need to be closer to the water to fish!
-        fail: 503_171,               // You fish a while, but fail to catch anything.
-        pack_full: 503_176,          // You do not have room in your backpack for a fish.
-        tool_broke: 503_174,         // You broke your fishing pole.
+        no_resources: ClilocId(503_172),       // The fish don't seem to be biting here.
+        double_harvest: ClilocId(503_172),     // The fish don't seem to be biting here.
+        out_of_range: ClilocId(500_976),       // You need to be closer to the water to fish!
+        timed_out_of_range: ClilocId(500_976), // You need to be closer to the water to fish!
+        fail: ClilocId(503_171),               // You fish a while, but fail to catch anything.
+        pack_full: ClilocId(503_176),          // You do not have room in your backpack for a fish.
+        tool_broke: ClilocId(503_174),         // You broke your fishing pole.
     },
     resources: FISHES,
     veins: ONE_VEIN,
@@ -613,14 +616,14 @@ pub static ORES: &[HarvestResource] = &[
 ];
 
 /// The item art every ore pile takes — ServUO's most common `RandomSize` result.
-pub const ORE_GRAPHIC: u16 = 0x19B9;
+pub const ORE_GRAPHIC: Graphic = Graphic(0x19B9);
 /// A log, ServUO's `BaseLog`.
-pub const LOG_GRAPHIC: u16 = 0x1BDD;
+pub const LOG_GRAPHIC: Graphic = Graphic(0x1BDD);
 /// A pile of sand.
-pub const SAND_GRAPHIC: u16 = 0x423A;
+pub const SAND_GRAPHIC: Graphic = Graphic(0x423A);
 /// A fish. ServUO rolls between `0x09CC..0x09CF`; one art, for the reason the ore
 /// table gives.
-pub const FISH_GRAPHIC: u16 = 0x09CC;
+pub const FISH_GRAPHIC: Graphic = Graphic(0x09CC);
 
 /// An ore row, so the table above reads as data.
 const fn ore(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestResource {
@@ -628,9 +631,9 @@ const fn ore(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestReso
         req_skill: req,
         min_skill: min,
         max_skill: max,
-        success_cliloc: cliloc,
+        success_cliloc: ClilocId(cliloc),
         graphic: ORE_GRAPHIC,
-        hue,
+        hue: Hue(hue),
     }
 }
 
@@ -666,9 +669,9 @@ static PLAIN_WOOD: &[HarvestResource] = &[HarvestResource {
     req_skill: 0,
     min_skill: 0,
     max_skill: 1000,
-    success_cliloc: 500_498, // You put some logs in your backpack.
+    success_cliloc: ClilocId(500_498), // You put some logs in your backpack.
     graphic: LOG_GRAPHIC,
-    hue: 0,
+    hue: Hue(0),
 }];
 
 /// A wood row.
@@ -677,9 +680,9 @@ const fn wood(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestRes
         req_skill: req,
         min_skill: min,
         max_skill: max,
-        success_cliloc: cliloc,
+        success_cliloc: ClilocId(cliloc),
         graphic: LOG_GRAPHIC,
-        hue,
+        hue: Hue(hue),
     }
 }
 
@@ -700,9 +703,9 @@ static SANDS: &[HarvestResource] = &[HarvestResource {
     req_skill: 1000,
     min_skill: 700,
     max_skill: 1000,
-    success_cliloc: 1_044_631, // You carefully dig up some workable sand.
+    success_cliloc: ClilocId(1_044_631), // You carefully dig up some workable sand.
     graphic: SAND_GRAPHIC,
-    hue: 0,
+    hue: Hue(0),
 }];
 
 /// Fish, one grade, banded so a beginner still catches something.
@@ -710,9 +713,9 @@ static FISHES: &[HarvestResource] = &[HarvestResource {
     req_skill: 0,
     min_skill: 0,
     max_skill: 1200,
-    success_cliloc: 1_043_297, // You pull out a heavy and beautiful fish!
+    success_cliloc: ClilocId(1_043_297), // You pull out a heavy and beautiful fish!
     graphic: FISH_GRAPHIC,
-    hue: 0,
+    hue: Hue(0),
 }];
 
 /// The single vein the one-resource definitions have.
@@ -737,107 +740,10 @@ const fn vein(chance: u32, fallback_chance: u32, primary: usize, fallback: Optio
 // Tile tables
 // ---------------------------------------------------------------------------
 
-/// ServUO's `Mining.m_MountainAndCaveTiles`, verbatim. Land ids below 0x4000, and
-/// the Ter Mur cave statics above it.
-#[rustfmt::skip]
-static MOUNTAIN_AND_CAVE_TILES: &[u16] = &[
-    220, 221, 222, 223, 224, 225, 226, 227, 228, 229,
-    230, 231, 236, 237, 238, 239, 240, 241, 242, 243,
-    244, 245, 246, 247, 252, 253, 254, 255, 256, 257,
-    258, 259, 260, 261, 262, 263, 268, 269, 270, 271,
-    272, 273, 274, 275, 276, 277, 278, 279, 286, 287,
-    288, 289, 290, 291, 292, 293, 294, 296, 297,
-    321, 322, 323, 324, 467, 468, 469, 470, 471, 472,
-    473, 474, 476, 477, 478, 479, 480, 481, 482, 483,
-    484, 485, 486, 487, 492, 493, 494, 495, 543, 544,
-    545, 546, 547, 548, 549, 550, 551, 552, 553, 554,
-    555, 556, 557, 558, 559, 560, 561, 562, 563, 564,
-    565, 566, 567, 568, 569, 570, 571, 572, 573, 574,
-    575, 576, 577, 578, 579, 581, 582, 583, 584, 585,
-    586, 587, 588, 589, 590, 591, 592, 593, 594, 595,
-    596, 597, 598, 599, 600, 601, 610, 611, 612, 613,
-    1010, 1741, 1742, 1743, 1744, 1745, 1746, 1747, 1748, 1749,
-    1750, 1751, 1752, 1753, 1754, 1755, 1756, 1757, 1771, 1772,
-    1773, 1774, 1775, 1776, 1777, 1778, 1779, 1780, 1781, 1782,
-    1783, 1784, 1785, 1786, 1787, 1788, 1789, 1790, 1801, 1802,
-    1803, 1804, 1805, 1806, 1807, 1808, 1809, 1811, 1812, 1813,
-    1814, 1815, 1816, 1817, 1818, 1819, 1820, 1821, 1822, 1823,
-    1824, 1831, 1832, 1833, 1834, 1835, 1836, 1837, 1838, 1839,
-    1840, 1841, 1842, 1843, 1844, 1845, 1846, 1847, 1848, 1849,
-    1850, 1851, 1852, 1853, 1854, 1861, 1862, 1863, 1864, 1865,
-    1866, 1867, 1868, 1869, 1870, 1871, 1872, 1873, 1874, 1875,
-    1876, 1877, 1878, 1879, 1880, 1881, 1882, 1883, 1884, 1981,
-    1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991,
-    1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
-    2002, 2003, 2004, 2028, 2029, 2030, 2031, 2032, 2033, 2100,
-    2101, 2102, 2103, 2104, 2105,
-    0x453B, 0x453C, 0x453D, 0x453E, 0x453F, 0x4540, 0x4541,
-    0x4542, 0x4543, 0x4544, 0x4545, 0x4546, 0x4547, 0x4548,
-    0x4549, 0x454A, 0x454B, 0x454C, 0x454D, 0x454E, 0x454F,
-];
-
-/// ServUO's `Mining.m_SandTiles`, verbatim.
-#[rustfmt::skip]
-static SAND_TILES: &[u16] = &[
-    22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-    32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
-    42, 43, 44, 45, 46, 47, 48, 49, 50, 51,
-    52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
-    62, 68, 69, 70, 71, 72, 73, 74, 75,
-    286, 287, 288, 289, 290, 291, 292, 293, 294, 295,
-    296, 297, 298, 299, 300, 301, 402, 424, 425, 426,
-    427, 441, 442, 443, 444, 445, 446, 447, 448, 449,
-    450, 451, 452, 453, 454, 455, 456, 457, 458, 459,
-    460, 461, 462, 463, 464, 465, 642, 643, 644, 645,
-    650, 651, 652, 653, 654, 655, 656, 657, 821, 822,
-    823, 824, 825, 826, 827, 828, 833, 834, 835, 836,
-    845, 846, 847, 848, 849, 850, 851, 852, 857, 858,
-    859, 860, 951, 952, 953, 954, 955, 956, 957, 958,
-    967, 968, 969, 970,
-    1447, 1448, 1449, 1450, 1451, 1452, 1453, 1454, 1455,
-    1456, 1457, 1458, 1611, 1612, 1613, 1614, 1615, 1616,
-    1617, 1618, 1623, 1624, 1625, 1626, 1635, 1636, 1637,
-    1638, 1639, 1640, 1641, 1642, 1647, 1648, 1649, 1650,
-];
-
-/// ServUO's `Lumberjacking.m_TreeTiles`, verbatim — all statics, so every id is
-/// matched through [`tile_key`]'s `| 0x4000`.
-#[rustfmt::skip]
-static TREE_TILES: &[u16] = &[
-    0x4CCA, 0x4CCB, 0x4CCC, 0x4CCD, 0x4CD0, 0x4CD3, 0x4CD6, 0x4CD8,
-    0x4CDA, 0x4CDD, 0x4CE0, 0x4CE3, 0x4CE6, 0x4CF8, 0x4CFB, 0x4CFE,
-    0x4D01, 0x4D41, 0x4D42, 0x4D43, 0x4D44, 0x4D57, 0x4D58, 0x4D59,
-    0x4D5A, 0x4D5B, 0x4D6E, 0x4D6F, 0x4D70, 0x4D71, 0x4D72, 0x4D84,
-    0x4D85, 0x4D86, 0x52B5, 0x52B6, 0x52B7, 0x52B8, 0x52B9, 0x52BA,
-    0x52BB, 0x52BC, 0x52BD,
-    0x4CCE, 0x4CCF, 0x4CD1, 0x4CD2, 0x4CD4, 0x4CD5, 0x4CD7, 0x4CD9,
-    0x4CDB, 0x4CDC, 0x4CDE, 0x4CDF, 0x4CE1, 0x4CE2, 0x4CE4, 0x4CE5,
-    0x4CE7, 0x4CE8, 0x4CF9, 0x4CFA, 0x4CFC, 0x4CFD, 0x4CFF, 0x4D00,
-    0x4D02, 0x4D03, 0x4D45, 0x4D46, 0x4D47, 0x4D48, 0x4D49, 0x4D4A,
-    0x4D4B, 0x4D4C, 0x4D4D, 0x4D4E, 0x4D4F, 0x4D50, 0x4D51, 0x4D52,
-    0x4D53, 0x4D5C, 0x4D5D, 0x4D5E, 0x4D5F, 0x4D60, 0x4D61, 0x4D62,
-    0x4D63, 0x4D64, 0x4D65, 0x4D66, 0x4D67, 0x4D68, 0x4D69, 0x4D73,
-    0x4D74, 0x4D75, 0x4D76, 0x4D77, 0x4D78, 0x4D79, 0x4D7A, 0x4D7B,
-    0x4D7C, 0x4D7D, 0x4D7E, 0x4D7F, 0x4D87, 0x4D88, 0x4D89, 0x4D8A,
-    0x4D8B, 0x4D8C, 0x4D8D, 0x4D8E, 0x4D8F, 0x4D90, 0x4D95, 0x4D96,
-    0x4D97, 0x4D99, 0x4D9A, 0x4D9B, 0x4D9D, 0x4D9E, 0x4D9F, 0x4DA1,
-    0x4DA2, 0x4DA3, 0x4DA5, 0x4DA6, 0x4DA7, 0x4DA9, 0x4DAA, 0x4DAB,
-    0x52BE, 0x52BF, 0x52C0, 0x52C1, 0x52C2, 0x52C3, 0x52C4, 0x52C5,
-    0x52C6, 0x52C7,
-];
-
-/// ServUO's `Fishing.m_WaterTiles` — inclusive pairs, which is what
-/// `RangedTiles` means. The first two are land (open sea and the shallows); the
-/// rest are the animated water statics.
-#[rustfmt::skip]
-static WATER_TILES: &[(u16, u16)] = &[
-    (0x00A8, 0x00AB),
-    (0x0136, 0x0137),
-    (0x5797, 0x579C),
-    (0x746E, 0x7485),
-    (0x7490, 0x74AB),
-    (0x74B5, 0x75D5),
-];
+// The four tile tables are `data/harvest_tiles.json`; `build.rs` emits them
+// before this crate compiles. They are `contains` tables of ServUO ids and
+// nothing more — kept in ServUO's order, so the two can still be diffed.
+include!(concat!(env!("OUT_DIR"), "/harvest_tiles.rs"));
 
 #[cfg(test)]
 mod tests {
@@ -998,11 +904,14 @@ mod tests {
 
     #[test]
     fn a_pickaxe_mines_and_an_axe_chops() {
-        assert_eq!(tool_data(0x0E86).map(|t| t.skill), Some(Skill::Mining));
-        assert_eq!(tool_data(0x0DC0).map(|t| t.skill), Some(Skill::Fishing));
+        assert_eq!(tool_data(Graphic(0x0E86)).map(|t| t.skill), Some(Skill::Mining));
+        assert_eq!(tool_data(Graphic(0x0DC0)).map(|t| t.skill), Some(Skill::Fishing));
         // Derived from the weapon table's `is_axe`, not listed twice: a hatchet.
-        assert_eq!(tool_data(0x0F43).map(|t| t.skill), Some(Skill::Lumberjacking));
+        assert_eq!(
+            tool_data(Graphic(0x0F43)).map(|t| t.skill),
+            Some(Skill::Lumberjacking)
+        );
         // A katana is a weapon and nothing else.
-        assert!(tool_data(0x13FF).is_none());
+        assert!(tool_data(Graphic(0x13FF)).is_none());
     }
 }

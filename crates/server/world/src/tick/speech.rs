@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::Hue;
 
 impl World {
     /// A player's speech, with staff commands split off the front. A
@@ -6,7 +7,24 @@ impl World {
     /// anyone's screen; from an ordinary player it is just speech, so a player can
     /// still say ".hello" out loud. The authority gate lives here, not in `gm`,
     /// so the command module can assume a call is already cleared.
-    pub(super) fn say(&mut self, connection: ConnectionId, mode: u8, hue: u16, font: u16, text: String) {
+    ///
+    /// The seam where the client's three header values stop being raw. `mode` is
+    /// class B and interprets totally; `hue` and `font` are class C and their
+    /// checks — which set of hues, which of the client's faces this shard allows —
+    /// are content that does not exist in this repo yet, so they pass through
+    /// unchecked and *visibly* so. See `docs/protocol_newtypes.md`: a `.0` with no
+    /// `validate` beside it is the grep the plan asks for.
+    pub(super) fn say(
+        &mut self,
+        connection: ConnectionId,
+        mode: RawTalkMode,
+        hue: RawHue,
+        font: RawFont,
+        text: String,
+    ) {
+        let mode = mode.interpret();
+        let hue = Hue(hue.0); // unchecked: no allowed-hue set exists yet
+        let font = Font(font.0); // unchecked: the client's font count is its own
         if let Some(rest) = text.strip_prefix(gm::COMMAND_PREFIX) {
             if let Some(&actor) = self.state.players.get(&connection) {
                 // The *authority*, not the staff mode: a game master who has
@@ -92,18 +110,18 @@ impl World {
     /// for a click at a time). A nameless creature or an item on an unmapped world
     /// says nothing rather than a blank label. Mirrors Sphere's `addCharName` /
     /// `addItemName`.
-    pub(super) fn single_click(&mut self, connection: ConnectionId, serial: u32) {
-        let Some(target) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    pub(super) fn single_click(&mut self, connection: ConnectionId, serial: Serial) {
+        let Some(target) = self.state.registry.entity_of(serial) else {
             return;
         };
 
-        // A mobile carries a `Name` and a `Body`; an item a `Graphic` and no
+        // A mobile carries a `Name` and a `Body`; an item a `Drawn` and no
         // `Name`. The two cases pick a different graphic, hue, and name source.
         let (graphic, hue, text) = if let Some(name) = self.state.registry.get::<Name>(target) {
             // The earned name, not the bare one: ServUO shows a fame title to an
             // onlooker once the mobile's fame reaches 5000.
             let name = openshard_state::titled_name(&self.state, target, &name.0.clone());
-            let Some(body) = self.state.registry.get::<Body>(target).map(|b| b.id.0) else {
+            let Some(body) = self.state.registry.get::<Body>(target).map(|b| b.id) else {
                 return;
             };
             let hue = self
@@ -115,7 +133,7 @@ impl World {
                 .name_hue();
             (body, hue, name)
         } else {
-            let Some(&Graphic { id, .. }) = self.state.registry.get::<Graphic>(target) else {
+            let Some(&Drawn { id, .. }) = self.state.registry.get::<Drawn>(target) else {
                 return;
             };
             let facet = self.state.facet_of(target);
@@ -133,7 +151,7 @@ impl World {
             // Sphere's `GetNameFull`. The amount count decides both the markers and
             // the prefix.
             let amount = self.state.registry.get::<Amount>(target).map_or(1, |a| a.0);
-            let resolved = crate::tiledata::pluralize_name(name, amount > 1);
+            let resolved = openshard_uofiles::tiledata::pluralize_name(name, amount > 1);
             let text = if amount > 1 {
                 format!("{amount} {resolved}")
             } else {
@@ -145,11 +163,11 @@ impl World {
         // The object's own serial makes the client draw the text over it; an empty
         // speaker name and the label mode make it a name tag, not speech.
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
-            serial,
-            graphic,
-            mode: LABEL_MODE,
+            serial: Some(serial),
+            graphic: Some(graphic),
+            mode: TalkMode::Label,
             hue,
-            font: 3,
+            font: Font::DEFAULT,
             name: String::new(),
             text,
         });
@@ -160,12 +178,12 @@ impl World {
     /// list back to the asker. The client batches several serials as it hovers; a
     /// serial it cannot see or that names nothing is simply skipped. Off entirely
     /// when the shard serves no tooltips.
-    pub(super) fn query_properties(&mut self, connection: ConnectionId, serials: &[u32]) {
+    pub(super) fn query_properties(&mut self, connection: ConnectionId, serials: &[RawSerial]) {
         if self.state.gameplay.tooltip_mode == TooltipMode::Off {
             return;
         }
         for &serial in serials {
-            if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+            if let Some(entity) = serial.validate().and_then(|s| self.state.registry.entity_of(s)) {
                 self.state.send_property_list(connection, entity);
             }
         }

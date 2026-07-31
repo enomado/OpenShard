@@ -8,6 +8,7 @@ use openshard_state::quest::{ObjectiveKind, RewardKind};
 use crate::events::QuestCompleted;
 use crate::gump::{self, sound};
 use crate::offer;
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// Whether every objective a quest needs has been met.
 ///
@@ -70,7 +71,7 @@ pub fn complete(state: &mut WorldState, player: EntityId, key: &str) -> bool {
         .and_then(|log| log.active_quest(key))
         .map(|entry| entry.progress.clone())
         .unwrap_or_default();
-    let mut wanted: Vec<(u16, u16)> = Vec::new();
+    let mut wanted: Vec<(Graphic, u16)> = Vec::new();
     for (index, objective) in quest.objectives.iter().enumerate() {
         if progress.get(index).copied().unwrap_or(0) < objective.count {
             continue;
@@ -104,7 +105,7 @@ pub fn complete(state: &mut WorldState, player: EntityId, key: &str) -> bool {
                     state,
                     backpack_or_return(state, player_serial),
                     openshard_items::GOLD_GRAPHIC,
-                    0,
+                    Hue(0),
                     amount,
                 );
             }

@@ -15,16 +15,17 @@
 use openshard_state::Skill;
 
 use crate::system::{Needs, Text};
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// One ingredient line — ServUO's `CraftRes`.
 #[derive(Clone, Copy, Debug)]
 pub struct CraftRes {
     /// The item art consumed.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// And its hue. Zero is the plain grade (iron, regular wood); a line marked
     /// [`from_axis`](Self::from_axis) has this overridden by whatever material the
     /// player picked in the gump.
-    pub hue: u16,
+    pub hue: Hue,
     /// How many, per craft.
     pub amount: u16,
     /// What it is called, for the detail page.
@@ -54,7 +55,7 @@ pub struct CraftSkillReq {
 #[derive(Clone, Copy, Debug)]
 pub struct Recipe {
     /// The item art it produces.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Its name, for the gump.
     pub name: Text,
     /// Which of the system's [`groups`](crate::system::CraftSystemDef::groups) it
@@ -71,7 +72,7 @@ pub struct Recipe {
     /// A fixed hue for the result — ServUO's `SetItemHue`. Zero means the result
     /// takes the hue of the material it was made from, which is what makes a
     /// valorite blade valorite-coloured.
-    pub hue: u16,
+    pub hue: Hue,
     /// Whether the craft consumes every material in the pack and makes as many as
     /// it can — ServUO's `SetUseAllRes`, which is how a hundred logs become a
     /// hundred boards in one click.
@@ -96,7 +97,7 @@ pub struct Recipe {
 #[derive(Clone, Copy, Debug)]
 pub struct SubRes {
     /// The hue that *is* this material.
-    pub hue: u16,
+    pub hue: Hue,
     /// Its name, for the material row of the gump.
     pub name: Text,
     /// The main skill needed to work it, in tenths, checked against the crafter's
@@ -113,7 +114,7 @@ pub struct SubRes {
 pub struct SubResAxis {
     /// The resource graphic the axis substitutes a hue into. The recipe line
     /// carrying [`CraftRes::from_axis`] must name this same graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// The heading over the material row — "Metal", "Wood".
     pub name: Text,
     /// The grades, in the order the gump lists them; index 0 is the plain one and

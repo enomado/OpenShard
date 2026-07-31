@@ -21,12 +21,9 @@ use openshard_magic::{MAGERY_SKILL, SpellEffect, SpellTarget};
 use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
-use openshard_protocol::wire::{CursorId, Graphic as WireGraphic, SoundId};
+use openshard_protocol::wire::{CursorId, Graphic, SoundId};
 use openshard_state::components::{Casting, Skills};
 use openshard_state::{CastStyle, DamageType, FieldKind, TargetPurpose};
-
-/// The layer a backpack rides on, where reagents are kept.
-const BACKPACK_LAYER: u8 = 0x15;
 
 impl World {
     /// A client asked to cast a spell (`0xBF`). Begin it: right away in the
@@ -140,7 +137,7 @@ impl World {
         let mana_loss_on_fail = self.state.gameplay.mana_loss_on_fail;
         let reagent_loss_on_fail = self.state.gameplay.reagent_loss_on_fail;
         // Reagents off means an empty list: nothing to check, nothing to consume.
-        let reagents: Vec<(u16, u16)> = if reagents_required {
+        let reagents: Vec<(Graphic, u16)> = if reagents_required {
             info.reagents.iter().map(|&graphic| (graphic, 1)).collect()
         } else {
             Vec::new()
@@ -163,7 +160,7 @@ impl World {
                 caster,
                 serial,
                 spell,
-                target: 0,
+                target: None,
                 success: false,
             });
             self.notify_self(caster, "You lack the mana or reagents to cast that.");
@@ -177,12 +174,12 @@ impl World {
                     caster,
                     serial,
                     spell,
-                    target: 0,
+                    target: None,
                     success,
                 });
                 if success {
                     let at = self.caster_position(caster);
-                    self.apply_spell_effect(caster, spell, 0, at);
+                    self.apply_spell_effect(caster, spell, None, at);
                 }
             }
             SpellTarget::Mobile | SpellTarget::Location | SpellTarget::Item => {
@@ -200,8 +197,7 @@ impl World {
                         TargetKind::Location
                     };
                     self.state
-                        .pending_targets
-                        .insert(caster, TargetPurpose::Spell { spell, success });
+                        .raise_target(caster, TargetPurpose::Spell { spell, success });
                     self.state.send_packet(
                         connection,
                         &ServerPacket::TargetCursor(TargetCursor {
@@ -221,7 +217,7 @@ impl World {
         &mut self,
         caster: EntityId,
         spell: u16,
-        mut target_serial: u32,
+        mut target_serial: Option<Serial>,
         mut target_location: Point,
     ) {
         let Some(info) = magic::info(spell) else {
@@ -234,16 +230,15 @@ impl World {
         if matches!(
             info.effect,
             SpellEffect::Damage(..) | SpellEffect::Poison | SpellEffect::Paralyze
-        ) && target_serial != 0
-        {
-            if let Some(target) = Serial::new(target_serial).and_then(|s| self.state.registry.entity_of(s)) {
+        ) {
+            if let Some(target) = target_serial.and_then(|serial| self.state.registry.entity_of(serial)) {
                 if magic::consume_behaviour_buff(
                     &mut self.state,
                     target,
                     openshard_state::effect::MAGIC_REFLECT,
                 ) {
                     if let Some(caster_serial) = by {
-                        target_serial = caster_serial.raw();
+                        target_serial = Some(caster_serial);
                         target_location = self.caster_position(caster);
                     }
                 }
@@ -254,8 +249,8 @@ impl World {
         self.spell_feedback(caster, target_serial, target_location, info.effect);
         match info.effect {
             SpellEffect::Damage(kind, base) => {
-                if target_serial != 0 {
-                    combat::damage(&mut self.state, target_serial, base, kind, by);
+                if let Some(target) = target_serial {
+                    combat::damage(&mut self.state, target, base, kind, by);
                 }
             }
             SpellEffect::AreaDamage(kind, base) => {
@@ -267,28 +262,27 @@ impl World {
                     target_location
                 };
                 let facet = self.state.facet_of(caster);
-                let victims: Vec<u32> = self
+                let victims: Vec<Serial> = self
                     .state
                     .facet_state(facet)
                     .sectors
                     .nearby(centre, magic::AREA_RADIUS)
                     .filter(|(entity, _)| *entity != caster && self.state.registry.has::<Body>(*entity))
-                    .filter_map(|(entity, _)| self.state.registry.serial_of(entity).map(|s| s.raw()))
+                    .filter_map(|(entity, _)| self.state.registry.serial_of(entity))
                     .collect();
                 for victim in victims {
                     combat::damage(&mut self.state, victim, base, kind, by);
                 }
             }
             SpellEffect::Heal(amount) => {
-                let who = if target_serial != 0 {
-                    target_serial
-                } else {
-                    by.map_or(0, |s| s.raw())
-                };
-                magic::heal(&mut self.state, who, amount);
+                // A self-cast answered its own cursor and carries no mark, so it
+                // mends the caster.
+                if let Some(who) = target_serial.or(by) {
+                    magic::heal(&mut self.state, who, amount);
+                }
             }
             SpellEffect::Poison => {
-                if target_serial != 0 {
+                if let Some(target) = target_serial {
                     // The dose scales with the caster's Magery — a novice lands a
                     // lesser poison, a master a greater one (Poisoning, the
                     // deadlier levels, is a later skill).
@@ -299,26 +293,23 @@ impl World {
                         .map_or(0, |s| s.get(MAGERY_SKILL));
                     let level = ((magery / 300) as u8).min(2);
                     let now = self.state.ticks;
-                    combat::apply_poison(&mut self.state, target_serial, level, now);
+                    combat::apply_poison(&mut self.state, target, level, now);
                 }
             }
             SpellEffect::Cure => {
-                let who = if target_serial != 0 {
-                    target_serial
-                } else {
-                    by.map_or(0, |s| s.raw())
-                };
-                combat::cure_poison(&mut self.state, who);
+                if let Some(who) = target_serial.or(by) {
+                    combat::cure_poison(&mut self.state, who);
+                }
             }
             SpellEffect::AreaCure => {
                 let facet = self.state.facet_of(caster);
-                let healed: Vec<u32> = self
+                let healed: Vec<Serial> = self
                     .state
                     .facet_state(facet)
                     .sectors
                     .nearby(target_location, magic::AREA_RADIUS)
                     .filter(|(entity, _)| self.state.registry.has::<Body>(*entity))
-                    .filter_map(|(entity, _)| self.state.registry.serial_of(entity).map(|s| s.raw()))
+                    .filter_map(|(entity, _)| self.state.registry.serial_of(entity))
                     .collect();
                 for mobile in healed {
                     combat::cure_poison(&mut self.state, mobile);
@@ -338,12 +329,7 @@ impl World {
             SpellEffect::StatMod(kind) => {
                 // A Mobile-target spell, so it lands on the aimed mobile — or on
                 // the caster for a self-cast that answered its own cursor.
-                let who = if target_serial != 0 {
-                    target_serial
-                } else {
-                    by.map_or(0, |s| s.raw())
-                };
-                if who != 0 {
+                if let Some(who) = target_serial.or(by) {
                     let (offset, expires_at) = self.stat_buff_terms(caster, kind);
                     magic::apply_stat_buff(&mut self.state, who, kind, offset, expires_at);
                     self.refresh_status_of(who);
@@ -352,9 +338,7 @@ impl World {
             SpellEffect::Resurrect => {
                 // Raise the aimed ghost. A no-op on the living (or on a bad
                 // target), so a misfired Resurrection wastes the cast, no more.
-                if let Some(entity) =
-                    Serial::new(target_serial).and_then(|s| self.state.registry.entity_of(s))
-                {
+                if let Some(entity) = target_serial.and_then(|s| self.state.registry.entity_of(s)) {
                     self.resurrect(entity);
                 }
             }
@@ -365,12 +349,7 @@ impl World {
                 // Night Sight can land on another mobile; the self-cast trio
                 // (Protection, Reactive Armor, Magic Reflection) answers its own
                 // cursor and lands on the caster.
-                let who = if target_serial != 0 {
-                    target_serial
-                } else {
-                    by.map_or(0, |s| s.raw())
-                };
-                if who != 0 {
+                if let Some(who) = target_serial.or(by) {
                     let (amount, expires_at) = self.behaviour_buff_terms(caster, kind);
                     magic::apply_behaviour_buff(&mut self.state, who, kind, amount, expires_at);
                     // Night Sight lights the buffed mobile's own screen. (Ambient
@@ -389,9 +368,9 @@ impl World {
             }
             SpellEffect::Paralyze => {
                 // A Mobile-target spell: it freezes the aimed mobile in place.
-                if target_serial != 0 {
+                if let Some(target) = target_serial {
                     let until = self.paralyze_until(Some(caster));
-                    magic::apply_paralyze(&mut self.state, target_serial, until);
+                    magic::apply_paralyze(&mut self.state, target, until);
                 }
             }
             SpellEffect::Scripted => {} // the pack's, off SpellCast
@@ -410,7 +389,7 @@ impl World {
     fn spell_feedback(
         &mut self,
         caster: EntityId,
-        target_serial: u32,
+        target_serial: Option<Serial>,
         target_location: Point,
         effect: SpellEffect,
     ) {
@@ -477,17 +456,17 @@ impl World {
 
         let caster_serial = self.state.registry.serial_of(caster);
         let caster_pos = self.caster_position(caster);
-        let target_pos = Serial::new(target_serial)
+        let target_pos = target_serial
             .and_then(|s| self.state.registry.entity_of(s))
             .and_then(|e| self.state.registry.get::<Position>(e).map(|p| p.0))
-            // An area spell (target_serial 0) aims at a spot, not a mobile.
+            // An area spell has no mark: it aims at a spot, not a mobile.
             .unwrap_or(target_location);
         let packet = match visual {
             Visual::Bolt(graphic) => GraphicalEffect {
                 kind: EffectKind::Moving,
                 from: caster_serial,
-                to: Serial::new(target_serial),
-                art: WireGraphic(graphic),
+                to: target_serial,
+                art: Graphic(graphic),
                 from_point: caster_pos,
                 to_point: target_pos,
                 speed: 7,
@@ -497,9 +476,9 @@ impl World {
             },
             Visual::OnTarget(graphic) => GraphicalEffect {
                 kind: EffectKind::FixedFrom,
-                from: Serial::new(target_serial),
+                from: target_serial,
                 to: None,
-                art: WireGraphic(graphic),
+                art: Graphic(graphic),
                 from_point: target_pos,
                 to_point: target_pos,
                 speed: 9,
@@ -511,7 +490,7 @@ impl World {
                 kind: EffectKind::FixedXyz,
                 from: None,
                 to: None,
-                art: WireGraphic(graphic),
+                art: Graphic(graphic),
                 from_point: target_location,
                 to_point: target_location,
                 speed: 9,
@@ -522,7 +501,7 @@ impl World {
         };
         self.state.broadcast_packet(caster, &ServerPacket::Effect(packet));
         // The sound at the point of the effect — target_pos is the aimed spot for
-        // an area spell, since its target_serial is 0.
+        // an area spell, which has no mark.
         self.state.broadcast_packet(
             caster,
             &ServerPacket::PlaySound(PlaySound {
@@ -605,8 +584,8 @@ impl World {
 
     /// Send a mobile its personal light level, if it has a client — the seam Night
     /// Sight lights and its expiry restores. A creature (no `Client`) is a no-op.
-    pub(super) fn send_light(&mut self, serial: u32, level: u8) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    pub(super) fn send_light(&mut self, serial: Serial, level: Light) {
+        let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
         if let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) {
@@ -621,28 +600,26 @@ impl World {
         let Some(serial) = self.state.registry.serial_of(caster) else {
             return false;
         };
-        let pack = self.caster_pack(serial);
-        if pack == 0 {
+        let Some(pack) = self.caster_pack(serial) else {
             return false;
-        }
+        };
         self.state.registry.query::<Spellbook>().any(|(book, mask)| {
             mask.has(spell as u8)
                 && self
                     .state
                     .registry
                     .get::<Contained>(book)
-                    .is_some_and(|c| c.container.raw() == pack)
+                    .is_some_and(|c| c.container == pack)
         })
     }
 
-    /// The backpack serial reagents come out of, or `0` if the caster wears none.
-    pub(super) fn caster_pack(&self, caster: Serial) -> u32 {
+    /// The backpack reagents come out of, or `None` if the caster wears no pack.
+    pub(super) fn caster_pack(&self, caster: Serial) -> Option<Serial> {
         self.state
             .registry
             .query::<Equipped>()
-            .find(|(_, worn)| worn.mobile == caster && worn.layer == BACKPACK_LAYER)
+            .find(|(_, worn)| worn.mobile == caster && worn.layer == items::BACKPACK_LAYER)
             .and_then(|(item, _)| self.state.registry.serial_of(item))
-            .map_or(0, |s| s.raw())
     }
 
     /// Where a caster stands, or the origin if it somehow has no position.

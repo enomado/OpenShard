@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 /// Handle a double-click. See `Command::DoubleClick`.
 ///
@@ -6,11 +7,8 @@ use super::*;
 /// paperdoll. Any other item is handed to the pack as an [`ItemUsed`] trigger,
 /// keyed by graphic — the engine has no default "use" for a bare item, so a
 /// shard gives it one; without a pack the double-click is simply silent.
-pub fn double_click(state: &mut WorldState, connection: ConnectionId, serial: u32) {
+pub fn double_click(state: &mut WorldState, connection: ConnectionId, target_serial: Serial) {
     let Some(&player) = state.players.get(&connection) else {
-        return;
-    };
-    let Some(target_serial) = Serial::new(serial) else {
         return;
     };
     let Some(target) = state.registry.entity_of(target_serial) else {
@@ -59,11 +57,8 @@ pub fn double_click(state: &mut WorldState, connection: ConnectionId, serial: u3
 /// `OnPaperdollRequest`, never to `Use`: it opens the paperdoll and does nothing
 /// else — above all it does not dismount a mounted rider, which is exactly what
 /// treating it as a raw self-double-click used to do.
-pub fn paperdoll_request(state: &mut WorldState, connection: ConnectionId, serial: u32) {
+pub fn paperdoll_request(state: &mut WorldState, connection: ConnectionId, target_serial: Serial) {
     let Some(&player) = state.players.get(&connection) else {
-        return;
-    };
-    let Some(target_serial) = Serial::new(serial) else {
         return;
     };
     let Some(target) = state.registry.entity_of(target_serial) else {
@@ -87,20 +82,20 @@ pub(crate) fn open_spellbook(
     if !in_reach(state, book, player) {
         return;
     }
-    let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
+    let Some(version) = state.version_of(connection) else {
         return;
     };
     let mask = state.registry.get::<Spellbook>(book).map_or(0, |b| b.0);
     state.send(
         connection,
-        // The gump `0xFFFF` is what tells the client this container is a book.
-        encode_open_container(book_serial.raw(), 0xFFFF, version),
+        // `BOOK_GUMP` is what tells the client this container is a book.
+        encode_open_container(book_serial, BOOK_GUMP, version),
     );
     // Magery spells start at offset 1; the mask's bit `n` is spell `n`.
     state.send_packet(
         connection,
         &ServerPacket::SpellbookContent(SpellbookContent {
-            serial: book_serial.raw(),
+            serial: book_serial,
             graphic: SPELLBOOK_GRAPHIC,
             offset: 1,
             content: mask,
@@ -114,14 +109,14 @@ pub(crate) fn open_spellbook(
 /// only one of them is the banker's: what a character *carries* stops at the bank
 /// box (see [`carried`](crate::carried)). `npc` re-exports this, so there is one
 /// number and the two rules cannot drift apart.
-pub const BANK_LAYER: u8 = 0x1D;
+pub const BANK_LAYER: Layer = Layer(0x1D);
 
 /// Open the container a player wears at `layer` — its backpack, or its bank box.
 ///
 /// The service path a banker uses: find the worn container and open it onto the
 /// player's own client, the same `0x24`/`0x3C` a double-click sends. Does nothing
 /// if the player wears no container there.
-pub fn open_worn_container(state: &mut WorldState, connection: ConnectionId, player: EntityId, layer: u8) {
+pub fn open_worn_container(state: &mut WorldState, connection: ConnectionId, player: EntityId, layer: Layer) {
     let Some(mobile) = state.registry.serial_of(player) else {
         return;
     };
@@ -163,18 +158,15 @@ pub(crate) fn open_container(
         return;
     }
 
-    let Some(&Client { version, .. }) = state.registry.get::<Client>(player) else {
+    let Some(version) = state.version_of(connection) else {
         return;
     };
     let contents = contents_of(state, container_serial);
-    state.send(
-        connection,
-        encode_open_container(container_serial.raw(), gump, version),
-    );
+    state.send(connection, encode_open_container(container_serial, gump, version));
     state.send_packet(
         connection,
         &ServerPacket::ContainerContents(ContainerContents {
-            container: container_serial.raw(),
+            container: container_serial,
             items: contents.clone(),
         }),
     );
@@ -186,7 +178,7 @@ pub(crate) fn open_container(
         .insert(connection);
     debug!(
         %container_serial,
-        gump = format!("0x{gump:04X}"),
+        gump = format!("0x{:04X}", gump.0),
         items = contents.len(),
         "container opened"
     );
@@ -251,21 +243,21 @@ pub(crate) fn open_paperdoll(
         .registry
         .get::<Name>(mobile)
         .map_or(String::new(), |n| n.0.clone());
-    let mut flags = 0u8;
+    let mut flags = PaperdollFlags::NONE;
     if state
         .registry
         .get::<Combat>(mobile)
         .is_some_and(|combat| combat.warmode)
     {
-        flags |= PAPERDOLL_WARMODE;
+        flags = flags.with(PaperdollFlags::WARMODE);
     }
     if mobile == player {
-        flags |= PAPERDOLL_CAN_LIFT;
+        flags = flags.with(PaperdollFlags::CAN_LIFT);
     }
     state.send_packet(
         connection,
         &ServerPacket::OpenPaperdoll(OpenPaperdoll {
-            serial: mobile_serial.raw(),
+            serial: mobile_serial,
             text: name,
             flags,
         }),
@@ -295,7 +287,7 @@ pub fn item_count(state: &WorldState, container: Serial) -> u8 {
 
 /// How many of `graphic` a container holds, counting stack amounts.
 #[must_use]
-pub fn count_in_container(state: &WorldState, container: Serial, graphic: u16) -> u32 {
+pub fn count_in_container(state: &WorldState, container: Serial, graphic: Graphic) -> u32 {
     state
         .registry
         .query::<Contained>()
@@ -303,7 +295,7 @@ pub fn count_in_container(state: &WorldState, container: Serial, graphic: u16) -
         .filter(|(entity, _)| {
             state
                 .registry
-                .get::<Graphic>(*entity)
+                .get::<Drawn>(*entity)
                 .is_some_and(|g| g.id == graphic)
         })
         .map(|(entity, _)| u32::from(state.registry.get::<Amount>(entity).map_or(1, |a| a.0)))
@@ -319,7 +311,7 @@ pub fn count_in_container(state: &WorldState, container: Serial, graphic: u16) -
 /// stack it empties is despawned; a stack it dips into loses that much
 /// [`Amount`]. (A container open on a client is not live-redrawn yet — reagents
 /// come from a closed pack; the gump refreshes when reopened.)
-pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: u16, count: u32) -> bool {
+pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: Graphic, count: u32) -> bool {
     if count == 0 {
         return true;
     }
@@ -330,7 +322,7 @@ pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: u
         .filter(|(entity, _)| {
             state
                 .registry
-                .get::<Graphic>(*entity)
+                .get::<Drawn>(*entity)
                 .is_some_and(|g| g.id == graphic)
         })
         .map(|(entity, _)| (entity, state.registry.get::<Amount>(entity).map_or(1, |a| a.0)))
@@ -376,22 +368,21 @@ pub fn take_from_container(state: &mut WorldState, container: Serial, graphic: u
 pub fn place_one(
     state: &mut WorldState,
     container: Serial,
-    graphic: u16,
-    hue: u16,
+    graphic: Graphic,
+    hue: Hue,
     amount: u16,
 ) -> Option<EntityId> {
     let Ok((entity, _serial)) = state.registry.spawn_with_serial(SerialKind::Item) else {
         warn!("out of item serials; nothing placed");
         return None;
     };
-    state.registry.insert(entity, Graphic { id: graphic, hue });
+    state.registry.insert(entity, Drawn { id: graphic, hue });
     state.registry.insert(
         entity,
         Contained {
             container,
-            x: 60,
-            y: 60,
-            grid: 0,
+            position: GumpPoint::new(60, 60),
+            grid: GridSlot(0),
         },
     );
     if amount > 1 {
@@ -415,7 +406,7 @@ pub fn spawn_contained_leftover(
     amount: u16,
     contained: Contained,
 ) -> Option<EntityId> {
-    let &Graphic { id, hue } = state.registry.get::<Graphic>(original)?;
+    let &Drawn { id, hue } = state.registry.get::<Drawn>(original)?;
     let leftover = match state.registry.spawn_with_serial(SerialKind::Item) {
         Ok((entity, _)) => entity,
         Err(error) => {
@@ -423,15 +414,14 @@ pub fn spawn_contained_leftover(
             return None;
         }
     };
-    state.registry.insert(leftover, Graphic { id, hue });
+    state.registry.insert(leftover, Drawn { id, hue });
     state.registry.insert(leftover, Stackable);
     set_stack_amount(state, leftover, amount);
     state.registry.insert(
         leftover,
         Contained {
             container: contained.container,
-            x: contained.x,
-            y: contained.y,
+            position: contained.position,
             grid: contained.grid,
         },
     );
@@ -451,8 +441,8 @@ pub fn spawn_contained_leftover(
 pub fn give(
     state: &mut WorldState,
     container: Serial,
-    graphic: u16,
-    hue: u16,
+    graphic: Graphic,
+    hue: Hue,
     amount: u32,
 ) -> Option<EntityId> {
     if amount == 0 {
@@ -468,14 +458,13 @@ pub fn give(
             warn!("out of item serials; nothing given");
             return None;
         };
-        state.registry.insert(entity, Graphic { id: graphic, hue });
+        state.registry.insert(entity, Drawn { id: graphic, hue });
         state.registry.insert(
             entity,
             Contained {
                 container,
-                x: 60,
-                y: 60,
-                grid: 0,
+                position: GumpPoint::new(60, 60),
+                grid: GridSlot(0),
             },
         );
         if graphic == SPELLBOOK_GRAPHIC {
@@ -495,7 +484,7 @@ pub fn give(
             state.registry.has::<Stackable>(*entity)
                 && state
                     .registry
-                    .get::<Graphic>(*entity)
+                    .get::<Drawn>(*entity)
                     .is_some_and(|g| g.id == graphic && g.hue == hue)
         })
         .map(|(entity, _)| entity)
@@ -529,14 +518,13 @@ pub fn give(
             warn!("out of item serials; the rest of the payout is lost");
             return last;
         };
-        state.registry.insert(entity, Graphic { id: graphic, hue });
+        state.registry.insert(entity, Drawn { id: graphic, hue });
         state.registry.insert(
             entity,
             Contained {
                 container,
-                x: 60,
-                y: 60,
-                grid: 0,
+                position: GumpPoint::new(60, 60),
+                grid: GridSlot(0),
             },
         );
         state.registry.insert(entity, Amount(take));
@@ -597,7 +585,7 @@ pub(crate) fn tell_watchers_removed_except(
         if Some(connection) == except {
             continue;
         }
-        state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item.raw() }));
+        state.send_packet(connection, &ServerPacket::Remove(Remove { serial: item }));
     }
 }
 
@@ -632,16 +620,8 @@ pub(crate) fn tell_watchers_updated_except(
         if Some(connection) == except {
             continue;
         }
-        let version = state
-            .players
-            .get(&connection)
-            .and_then(|&player| state.registry.get::<Client>(player))
-            .map(|client| client.version);
-        if let Some(version) = version {
-            state.send(
-                connection,
-                encode_add_to_container(record, container.raw(), version),
-            );
+        if let Some(version) = state.version_of(connection) {
+            state.send(connection, encode_add_to_container(record, container, version));
         }
     }
 }
@@ -649,15 +629,16 @@ pub(crate) fn tell_watchers_updated_except(
 /// Build the `0x25`/`0x3C` record for one contained item.
 pub fn contained_record(state: &WorldState, entity: EntityId) -> Option<ContainedItem> {
     let serial = state.registry.serial_of(entity)?;
-    let Contained { x, y, grid, .. } = *state.registry.get::<Contained>(entity)?;
-    let Graphic { id, hue } = *state.registry.get::<Graphic>(entity)?;
+    // Component and record now carry the same three types, so this is a copy
+    // rather than a conversion — which is the point of having swept them.
+    let Contained { position, grid, .. } = *state.registry.get::<Contained>(entity)?;
+    let Drawn { id, hue } = *state.registry.get::<Drawn>(entity)?;
     let amount = state.registry.get::<Amount>(entity).map_or(1, |a| a.0);
     Some(ContainedItem {
-        serial: serial.raw(),
+        serial,
         graphic: id,
         amount,
-        x,
-        y,
+        at: position,
         grid,
         hue,
     })

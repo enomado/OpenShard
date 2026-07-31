@@ -110,6 +110,59 @@ use. This was a systemic miss for most of the project's life; do not add to it.
 `.mul` may be a stub full of zeroes. `Map::load_facet` prefers the UOP. See
 `world::uop`.
 
+**A zero pixel inside a land diamond is black, not transparent.** Statics carry
+their transparency as `0x0000` pixels, and applying the same rule to the ground
+is wrong: a land tile's shape is the diamond and nothing else, and real tiles
+contain a handful of genuinely black pixels inside it — three to nine on a
+typical one. `Image` cannot tell the two apart, because it stores the corners
+outside the diamond as `Color16::TRANSPARENT` too, so the shape has to come from
+`art::land_row` rather than from the colours. Reading it out of the colours
+instead punches pinholes through the ground, which look exactly like dark
+texture: the first renderer to do it covered 97.7% of a viewport instead of
+100%, and the missing 2.3% was invisible on a screenshot.
+
+**A land cell's `z` is the height of one corner, not of the tile.** It belongs to
+the corner the tile shares with its neighbours to the north — the top of the
+diamond on screen — and the other three corners are read from the cells at
+`(x+1, y)`, `(x, y+1)` and `(x+1, y+1)`. The client stretches the tile over those
+four points, so adjacent tiles are built from *the same* vertices and a gap
+between them cannot occur. Drawing each tile as a flat 44×44 diamond at its own
+`z` instead is not merely an approximation: neighbours pull apart along every
+slope, and a screen of Britain loses 2.3% of its pixels to seams while the sea
+still covers 100%, so a level-ground test says nothing about it.
+
+**A sloped tile's texture comes from `texmaps.mul`, not from `art`.** The 44×44
+land sprite is what the client draws when the four corners share a height; on a
+slope it binds a square texture from `texmaps.mul` and maps it corner to corner,
+because stretching the art diamond onto a steep quad smears it. Two shapes and
+two texture sources, chosen per tile. Corner to corner is the identity — the
+quad's top vertex takes the texture's top-left, the right vertex its top-right —
+which is `_cornerOffsetX/Y` in ClassicUO's `DrawStretchedLand`.
+
+**Which texture is not the land graphic.** It is a separate id in `tiledata`'s
+land entry, two bytes between the flags and the name, in an index space of its
+own. Nothing relates the two numbers, so reading that field at the wrong offset
+still names *a* texture for every tile in the game: the ground comes out textured
+with somebody else's terrain, which reads as a seasonal variant rather than as a
+bug. The size is not stored either — 64 or 128 is decided by the entry's
+*length*, and ClassicUO reads anything that is not `0x2000` as a 128.
+
+**No texture means the client never stretches the tile at all.** `IsStretched` is
+initialised to `TexID == 0 && IsWet` and then read as "do not", and
+`ApplyStretch` gives up immediately when the texture entry is empty — so a tile
+with no texture is drawn as a flat diamond however the ground around it stands,
+seams and all, and water is never stretched. The decision is also made over a
+wider neighbourhood than the tile's own four corners: it comes from the four
+corner *normals*, each of which reads a cell beyond the corner.
+
+**A quad's corner texture coordinates need a half-texel inset.** A region's edge
+is the boundary *between* two texels, so a vertex at `u + du` samples the first
+texel of whatever is packed next door in an atlas — a one-texel fringe of foreign
+terrain along two edges of every stretched tile. ClassicUO insets by half a texel
+in `CalculateHalfPixelUVs`, which makes the four corners sample the texture's own
+first and last texel centres. This does not arise for a tile drawn 1:1 from its
+own sprite, which is why it appears exactly when stretching starts.
+
 **No client files are in this repository and none ever will be.** They are
 copyrighted and they are not ours to redistribute. `world.client_files` points
 at whatever install the operator already has; the tests that need one read

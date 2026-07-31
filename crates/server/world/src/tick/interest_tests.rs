@@ -1,3 +1,5 @@
+use openshard_protocol::world::RawFastwalkKey;
+
 use super::tests::*;
 use super::*;
 use openshard_movement::WALK_INTERVAL;
@@ -67,8 +69,8 @@ fn a_mobile_is_drawn_once_however_much_it_walks() {
             connection: BOB,
             request: WalkRequest {
                 facing: Facing::walking(Direction::South),
-                sequence: (step - 1) as u8,
-                fastwalk_key: 0,
+                sequence: RawStepSequence((step - 1) as u8),
+                fastwalk_key: RawFastwalkKey(0),
             },
         });
         world.tick(now + WALK_INTERVAL * step);
@@ -160,8 +162,8 @@ fn a_player_is_never_sent_itself() {
         connection: ALICE,
         request: WalkRequest {
             facing: Facing::walking(Direction::South),
-            sequence: 0,
-            fastwalk_key: 0,
+            sequence: RawStepSequence(0),
+            fastwalk_key: RawFastwalkKey(0),
         },
     });
     world.tick(now);
@@ -223,8 +225,8 @@ fn the_index_never_disagrees_with_the_position() {
             connection: alice,
             request: WalkRequest {
                 facing: Facing::walking(Direction::South),
-                sequence: (step - 1) as u8,
-                fastwalk_key: 0,
+                sequence: RawStepSequence((step - 1) as u8),
+                fastwalk_key: RawFastwalkKey(0),
             },
         });
         world.tick(start + WALK_INTERVAL * step);
@@ -283,9 +285,9 @@ fn the_living_do_not_hear_the_dead() {
 
     world.queue(Command::Say {
         connection: ALICE,
-        mode: 0,
-        hue: 0,
-        font: 3,
+        mode: RawTalkMode(0),
+        hue: RawHue(0),
+        font: RawFont(3),
         text: "can anyone hear me".to_owned(),
     });
     world.tick(now);

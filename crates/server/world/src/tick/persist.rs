@@ -3,7 +3,9 @@ use openshard_persistence::{
     CorpseData, DoneQuestRecord, EffectRecord, PetData, QuestRecord, RestockRecord, RunebookData,
     RunebookEntryData, WorldRecord,
 };
+use openshard_protocol::containers::GridSlot;
 use openshard_protocol::identity::CharacterName;
+use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_state::components::{
     Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy, DoneQuest, Escortable, Field,
     Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality, QuestGiver,
@@ -115,7 +117,7 @@ impl World {
         // exactly and a killed creature (absent here) stays dead.
         let mobiles = self.mobile_records();
         for record in &mobiles {
-            if let Some(entity) = Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s)) {
+            if let Some(entity) = self.state.registry.entity_of(record.serial) {
                 snapshot.inventories.push(Inventory {
                     owner: record.serial,
                     items: self.inventory_of(entity),
@@ -168,7 +170,6 @@ impl World {
         let Some(owner) = registry.serial_of(entity) else {
             return Vec::new();
         };
-        let owner_raw = owner.raw();
         let mut records = Vec::new();
         let mut containers: Vec<Serial> = Vec::new();
 
@@ -191,10 +192,10 @@ impl World {
             // carries the mount's graphic, and [`restore_inventory`] rebuilds the
             // ridden creature from it, so the rider logs back in still mounted.
             let location = ItemLocation::Equipped {
-                mobile: owner_raw,
-                layer: worn.layer,
+                mobile: owner,
+                layer: worn.layer.0,
             };
-            if let Some(record) = Self::item_record(registry, item, owner_raw, location) {
+            if let Some(record) = Self::item_record(registry, item, Some(owner), location) {
                 if record.container_gump.is_some() {
                     if let Some(serial) = registry.serial_of(item) {
                         containers.push(serial);
@@ -210,12 +211,12 @@ impl World {
                     continue;
                 }
                 let location = ItemLocation::Contained {
-                    container: container.raw(),
-                    x: held.x,
-                    y: held.y,
-                    grid: held.grid,
+                    container,
+                    x: u16::try_from(held.position.x).unwrap_or(0),
+                    y: u16::try_from(held.position.y).unwrap_or(0),
+                    grid: held.grid.0,
                 };
-                if let Some(record) = Self::item_record(registry, item, owner_raw, location) {
+                if let Some(record) = Self::item_record(registry, item, Some(owner), location) {
                     if record.container_gump.is_some() {
                         if let Some(serial) = registry.serial_of(item) {
                             containers.push(serial);
@@ -245,7 +246,7 @@ impl World {
             // portal becomes a permanent one whose caster no longer exists. The
             // eight city moongates are `Decoration` and are already out by the
             // line above, so the two cases do not collide.
-            if !registry.has::<Graphic>(item)
+            if !registry.has::<Drawn>(item)
                 || registry.has::<Body>(item)
                 || registry.has::<Decoration>(item)
                 || registry.has::<Field>(item)
@@ -260,7 +261,7 @@ impl World {
                 y: at.y,
                 z: at.z,
             };
-            if let Some(record) = Self::item_record(registry, item, 0, location) {
+            if let Some(record) = Self::item_record(registry, item, None, location) {
                 records.push(record);
             }
         }
@@ -272,18 +273,18 @@ impl World {
     pub(super) fn item_record(
         registry: &Registry,
         item: EntityId,
-        owner: u32,
+        owner: Option<Serial>,
         location: ItemLocation,
     ) -> Option<ItemRecord> {
         let serial = registry.serial_of(item)?;
-        let graphic = registry.get::<Graphic>(item)?;
+        let graphic = registry.get::<Drawn>(item)?;
         let amount = registry.get::<Amount>(item).map_or(1, |a| a.0);
-        let container_gump = registry.get::<Container>(item).map(|c| c.gump);
+        let container_gump = registry.get::<Container>(item).map(|c| c.gump.0);
         Some(ItemRecord {
-            serial: serial.raw(),
+            serial,
             owner,
-            graphic: graphic.id,
-            hue: graphic.hue,
+            graphic: graphic.id.0,
+            hue: graphic.hue.0,
             amount,
             stackable: registry.has::<Stackable>(item),
             container_gump,
@@ -457,7 +458,7 @@ impl World {
                 .map_or((0, 0), |ranged| (ranged.range, ranged.kind));
             let npc = registry.get::<Npc>(entity).copied();
             records.push(MobileRecord {
-                serial: serial.raw(),
+                serial,
                 body: body.id.0,
                 hue: body.hue.0,
                 facet: self.state.facet_of(entity).0,
@@ -493,10 +494,10 @@ impl World {
                 // A tamed creature is property: a restart that quietly released
                 // every pet on the shard would be the `Murders` lesson again.
                 pet: registry.get::<Pet>(entity).map(|pet| PetData {
-                    owner: pet.owner.raw(),
+                    owner: pet.owner,
                     slots: pet.slots,
                     order: pet_order_code(pet.order),
-                    order_target: pet.order_target.map(Serial::raw),
+                    order_target: pet.order_target,
                 }),
                 restock: registry.get::<Restock>(entity).map(|shelf| RestockRecord {
                     // Seconds, not the tick: a tick counter restarts at boot, so a
@@ -505,9 +506,13 @@ impl World {
                     lines: shelf
                         .lines
                         .iter()
-                        .map(|l| (l.graphic, l.hue, l.amount, l.price, l.name.clone()))
+                        .map(|l| (l.graphic.0, l.hue.0, l.amount, l.price, l.name.clone()))
                         .collect(),
                 }),
+                // `SpawnedBy` is a plain index into the spawner list (0, 1, 2, ...), not
+                // a wire serial — a namespace of its own that starts at 0, which
+                // `Serial::new` would reject outright. It is not part of the Serial
+                // sweep and stays a bare `u32`.
                 spawned_by: registry.get::<SpawnedBy>(entity).map(|s| s.0),
                 effects: Self::effects_of(registry, entity, self.state.ticks),
                 skills: registry.get::<Skills>(entity).map_or_else(Vec::new, |s| {
@@ -532,29 +537,29 @@ impl World {
             let Some(serial) = registry.serial_of(entity) else {
                 continue;
             };
-            let Some(&Graphic { id, hue }) = registry.get::<Graphic>(entity) else {
+            let Some(&Drawn { id, hue }) = registry.get::<Drawn>(entity) else {
                 continue;
             };
             let Some(&Position(at)) = registry.get::<Position>(entity) else {
                 continue;
             };
             let door = registry.get::<Door>(entity).map(|door| DoorState {
-                closed_graphic: door.closed,
-                open_graphic: door.open,
+                closed_graphic: door.closed.0,
+                open_graphic: door.open.0,
                 offset_x: door.offset_x,
                 offset_y: door.offset_y,
                 is_open: door.is_open,
             });
             records.push(DecorationRecord {
-                serial: serial.raw(),
-                graphic: id,
-                hue,
+                serial,
+                graphic: id.0,
+                hue: hue.0,
                 facet: self.state.facet_of(entity).0,
                 x: at.x,
                 y: at.y,
                 z: at.z,
                 door,
-                container_gump: registry.get::<Container>(entity).map(|c| c.gump),
+                container_gump: registry.get::<Container>(entity).map(|c| c.gump.0),
                 key_value: registry
                     .get::<openshard_state::components::Lock>(entity)
                     .map_or(0, |lock| lock.key_value),
@@ -739,7 +744,7 @@ impl World {
             intelligence_age: age(last.intelligence),
         };
         Some(CharacterRecord {
-            serial: serial.raw(),
+            serial,
             account: account.0.clone(),
             name: CharacterName(name.0.clone()),
             body: body.id.0,
@@ -788,7 +793,7 @@ impl World {
                 progress: quest.progress.clone(),
                 seconds: quest.seconds_left.clone(),
                 failed: quest.failed,
-                giver: quest.giver.map(Serial::raw),
+                giver: quest.giver,
             })
             .collect()
     }
@@ -833,7 +838,7 @@ impl World {
                     progress: record.progress.clone(),
                     seconds_left: record.seconds.clone(),
                     failed: record.failed,
-                    giver: record.giver.and_then(Serial::new),
+                    giver: record.giver,
                 })
                 .collect(),
             done: done
@@ -855,11 +860,33 @@ impl World {
     ///
     /// A logged-out character is not in the world — it is a row in the database —
     /// but its serial is still spoken for. Call this at boot for every stored
-    /// character, before anyone can create a new one. Values outside the serial
-    /// range are ignored: a corrupt row should not stop the shard from starting.
-    pub fn reserve_serial(&mut self, raw: u32) {
-        if let Some(serial) = Serial::new(raw) {
-            self.state.registry.reserve_serial(serial);
+    /// character, before anyone can create a new one. The record's `serial` field
+    /// is already a checked [`Serial`] (validated on deserialisation), so there is
+    /// no longer a corrupt-value case for this to swallow.
+    pub fn reserve_serial(&mut self, serial: Serial) {
+        self.state.registry.reserve_serial(serial);
+    }
+
+    /// Bring the saved characters back from the store at boot.
+    ///
+    /// Two things per row, and they are the same two the world does on every
+    /// logout: reserve the serial so a character created later cannot take it,
+    /// and file where the character was, so playing it puts it back there. Call
+    /// once, before anyone connects and before [`restore_items`], which files
+    /// inventories under these serials.
+    ///
+    /// A row also says the character *exists*, and since S5 of
+    /// `docs/connection_state.md` this is where that is recorded — the account's
+    /// list is the roster's, not the login crate's. So this is the whole of what
+    /// the store knows about who may be played, and the config's
+    /// `[[accounts]] characters` is folded in beside it by
+    /// [`enrol_character`](World::enrol_character) afterwards.
+    ///
+    /// [`restore_items`]: World::restore_items
+    pub fn restore_characters(&mut self, records: Vec<CharacterRecord>) {
+        for record in records {
+            self.reserve_serial(record.serial);
+            self.roster.remember(record);
         }
     }
 
@@ -874,13 +901,11 @@ impl World {
             self.reserve_serial(record.serial);
         }
         for record in records {
-            if record.owner == 0 {
-                self.place_ground_item(&record);
-            } else {
-                self.pending_inventories
-                    .entry(record.owner)
-                    .or_default()
-                    .push(record);
+            match record.owner {
+                None => self.place_ground_item(&record),
+                Some(owner) => {
+                    self.pending_inventories.entry(owner).or_default().push(record);
+                }
             }
         }
     }
@@ -890,9 +915,7 @@ impl World {
         let ItemLocation::Ground { facet, x, y, z } = record.location else {
             return;
         };
-        let Some(serial) = Serial::new(record.serial) else {
-            return;
-        };
+        let serial = record.serial;
         let facet = if self.state.facets.contains_key(&Facet(facet)) {
             Facet(facet)
         } else {
@@ -906,9 +929,9 @@ impl World {
         let position = Point::new(x, y, z);
         self.state.registry.insert(
             entity,
-            Graphic {
-                id: record.graphic,
-                hue: record.hue,
+            Drawn {
+                id: Graphic(record.graphic),
+                hue: Hue(record.hue),
             },
         );
         self.state.registry.insert(entity, Position(position));
@@ -920,7 +943,9 @@ impl World {
             self.state.registry.insert(entity, Stackable);
         }
         if let Some(gump) = record.container_gump {
-            self.state.registry.insert(entity, Container { gump });
+            self.state
+                .registry
+                .insert(entity, Container { gump: Graphic(gump) });
         }
         if let Some(price) = record.price {
             self.state.registry.insert(entity, Price(price));
@@ -952,7 +977,7 @@ impl World {
         // The graphic says whether a saved use count is an instrument's tunes or a
         // tool's swings, so `items` decides which component it comes back as.
         if let Some(uses) = record.uses {
-            items::restore_uses(&mut self.state, entity, record.graphic, uses);
+            items::restore_uses(&mut self.state, entity, Graphic(record.graphic), uses);
         }
         self.restore_craftsmanship(entity, record);
         self.restore_travel_state(entity, record);
@@ -961,7 +986,7 @@ impl World {
         // a fresh timer here (the decay tick is not itself saved, so a restored
         // corpse counts down from the restore, like any restored clutter does).
         items::mark_decay(&mut self.state, entity);
-        if record.graphic == openshard_state::components::CORPSE_GRAPHIC {
+        if Graphic(record.graphic) == openshard_state::components::CORPSE_GRAPHIC {
             self.state.registry.insert(
                 entity,
                 openshard_state::components::Decays {
@@ -980,16 +1005,14 @@ impl World {
     /// record names, now that every container entity exists. Returns whether an
     /// inventory was restored, so [`enter`](Self::enter) knows not to hand out a
     /// starter backpack.
-    pub(super) fn restore_inventory(&mut self, owner: u32) -> bool {
+    pub(super) fn restore_inventory(&mut self, owner: Serial) -> bool {
         let Some(records) = self.pending_inventories.remove(&owner) else {
             return false;
         };
         // Pass one: the entities, so a container exists before its contents point
         // at it.
         for record in &records {
-            let Some(serial) = Serial::new(record.serial) else {
-                continue;
-            };
+            let serial = record.serial;
             let entity = self.state.registry.spawn();
             if self.state.registry.bind_serial(entity, serial).is_err() {
                 self.state.registry.despawn(entity);
@@ -997,9 +1020,9 @@ impl World {
             }
             self.state.registry.insert(
                 entity,
-                Graphic {
-                    id: record.graphic,
-                    hue: record.hue,
+                Drawn {
+                    id: Graphic(record.graphic),
+                    hue: Hue(record.hue),
                 },
             );
             if record.amount > 1 {
@@ -1009,7 +1032,9 @@ impl World {
                 self.state.registry.insert(entity, Stackable);
             }
             if let Some(gump) = record.container_gump {
-                self.state.registry.insert(entity, Container { gump });
+                self.state
+                    .registry
+                    .insert(entity, Container { gump: Graphic(gump) });
             }
             if let Some(price) = record.price {
                 self.state.registry.insert(entity, Price(price));
@@ -1039,26 +1064,29 @@ impl World {
                 );
             }
             if let Some(uses) = record.uses {
-                items::restore_uses(&mut self.state, entity, record.graphic, uses);
+                items::restore_uses(&mut self.state, entity, Graphic(record.graphic), uses);
             }
             self.restore_craftsmanship(entity, record);
             self.restore_travel_state(entity, record);
         }
         // Pass two: where each item goes.
         for record in &records {
-            let Some(entity) = Serial::new(record.serial).and_then(|s| self.state.registry.entity_of(s))
-            else {
+            let Some(entity) = self.state.registry.entity_of(record.serial) else {
                 continue;
             };
             match record.location {
                 ItemLocation::Equipped { mobile, layer } => {
-                    if let Some(mobile) = Serial::new(mobile) {
-                        self.state.registry.insert(entity, Equipped { mobile, layer });
-                        // A saved mount: rebuild the ridden creature the saddle
-                        // stands for and put the rider back in the saddle.
-                        if layer == items::MOUNT_LAYER {
-                            self.remount_saved(mobile, entity, record.graphic, record.hue);
-                        }
+                    self.state.registry.insert(
+                        entity,
+                        Equipped {
+                            mobile,
+                            layer: Layer(layer),
+                        },
+                    );
+                    // A saved mount: rebuild the ridden creature the saddle
+                    // stands for and put the rider back in the saddle.
+                    if Layer(layer) == items::MOUNT_LAYER {
+                        self.remount_saved(mobile, entity, Graphic(record.graphic), Hue(record.hue));
                     }
                 }
                 ItemLocation::Contained {
@@ -1067,17 +1095,14 @@ impl World {
                     y,
                     grid,
                 } => {
-                    if let Some(container) = Serial::new(container) {
-                        self.state.registry.insert(
-                            entity,
-                            Contained {
-                                container,
-                                x,
-                                y,
-                                grid,
-                            },
-                        );
-                    }
+                    self.state.registry.insert(
+                        entity,
+                        Contained {
+                            container,
+                            position: GumpPoint::new(i32::from(x), i32::from(y)),
+                            grid: GridSlot(grid),
+                        },
+                    );
                 }
                 // An owned item is never on the ground; ignore a stray one rather
                 // than drop it into the world at 0,0.
@@ -1102,9 +1127,7 @@ impl World {
     /// (the saved one is restored with the rest of the inventory).
     pub fn restore_mobiles(&mut self, records: Vec<MobileRecord>) {
         for record in records {
-            let Some(serial) = Serial::new(record.serial) else {
-                continue;
-            };
+            let serial = record.serial;
             let entity = self.state.registry.spawn();
             if self.state.registry.bind_serial(entity, serial).is_err() {
                 self.state.registry.despawn(entity);
@@ -1139,7 +1162,7 @@ impl World {
             registry.insert(
                 entity,
                 Body {
-                    id: openshard_protocol::wire::Graphic(record.body),
+                    id: Graphic(record.body),
                     hue: openshard_protocol::wire::Hue(record.hue),
                 },
             );
@@ -1190,7 +1213,7 @@ impl World {
                         wander: record.wander,
                         next_think: first_think,
                         guard_until: 0,
-                        opens_doors: body_opens_doors(record.body),
+                        opens_doors: body_opens_doors(Graphic(record.body)),
                         aggression,
                         beat_ticks: record.beat,
                     },
@@ -1211,17 +1234,15 @@ impl World {
                 registry.insert(entity, Title(title));
             }
             if let Some(pet) = &record.pet {
-                if let Some(owner) = Serial::new(pet.owner) {
-                    registry.insert(
-                        entity,
-                        Pet {
-                            owner,
-                            slots: pet.slots,
-                            order: pet_order_from(pet.order),
-                            order_target: pet.order_target.and_then(Serial::new),
-                        },
-                    );
-                }
+                registry.insert(
+                    entity,
+                    Pet {
+                        owner: pet.owner,
+                        slots: pet.slots,
+                        order: pet_order_from(pet.order),
+                        order_target: pet.order_target,
+                    },
+                );
             }
             if let Some((x, y, z)) = record.night_home {
                 registry.insert(entity, NightHome(Point::new(x, y, z)));
@@ -1235,8 +1256,8 @@ impl World {
                             .lines
                             .into_iter()
                             .map(|(graphic, hue, amount, price, name)| StockRecord {
-                                graphic,
-                                hue,
+                                graphic: Graphic(graphic),
+                                hue: Hue(hue),
                                 amount,
                                 price,
                                 name,
@@ -1312,7 +1333,7 @@ impl World {
             self.state.bus.send(crate::events::MobileRestored {
                 entity,
                 serial,
-                body: record.body,
+                body: Graphic(record.body),
                 at: position,
                 // Its post, which is what a pack keys a binding on — see the
                 // event's own doc. `position` is wherever it had wandered to when
@@ -1329,9 +1350,7 @@ impl World {
     /// never does, and why decoration cannot ride the ground-item path.
     pub fn restore_decorations(&mut self, records: Vec<DecorationRecord>) {
         for record in records {
-            let Some(serial) = Serial::new(record.serial) else {
-                continue;
-            };
+            let serial = record.serial;
             let entity = self.state.registry.spawn();
             if self.state.registry.bind_serial(entity, serial).is_err() {
                 self.state.registry.despawn(entity);
@@ -1345,9 +1364,9 @@ impl World {
             let position = Point::new(record.x, record.y, record.z);
             self.state.registry.insert(
                 entity,
-                Graphic {
-                    id: record.graphic,
-                    hue: record.hue,
+                Drawn {
+                    id: Graphic(record.graphic),
+                    hue: Hue(record.hue),
                 },
             );
             self.state.registry.insert(entity, Position(position));
@@ -1365,15 +1384,17 @@ impl World {
                 );
             }
             if let Some(gump) = record.container_gump {
-                self.state.registry.insert(entity, Container { gump });
+                self.state
+                    .registry
+                    .insert(entity, Container { gump: Graphic(gump) });
             }
             match record.door {
                 Some(door) => {
                     self.state.registry.insert(
                         entity,
                         Door {
-                            closed: door.closed_graphic,
-                            open: door.open_graphic,
+                            closed: Graphic(door.closed_graphic),
+                            open: Graphic(door.open_graphic),
                             offset_x: door.offset_x,
                             offset_y: door.offset_y,
                             is_open: door.is_open,
@@ -1401,8 +1422,8 @@ impl World {
                         .facet_state(facet)
                         .terrain
                         .as_deref()
-                        .filter(|t| t.item_blocks(record.graphic))
-                        .map(|t| t.item_height(record.graphic));
+                        .filter(|t| t.item_blocks(Graphic(record.graphic)))
+                        .map(|t| t.item_height(Graphic(record.graphic)));
                     if let Some(height) = height {
                         self.state
                             .facet_state_mut(facet)
@@ -1421,7 +1442,7 @@ impl World {
     /// position) until the rider dismounts, exactly as a live mount does — its
     /// stats do not matter while ridden, so a fresh serial and the body the
     /// saddle names are all it needs.
-    fn remount_saved(&mut self, rider_serial: Serial, item: EntityId, graphic: u16, hue: u16) {
+    fn remount_saved(&mut self, rider_serial: Serial, item: EntityId, graphic: Graphic, hue: Hue) {
         let Some(rider) = self.state.registry.entity_of(rider_serial) else {
             return;
         };
@@ -1432,13 +1453,7 @@ impl World {
             return;
         };
         let facet = self.state.facet_of(rider);
-        self.state.registry.insert(
-            mount,
-            Body {
-                id: openshard_protocol::wire::Graphic(body),
-                hue: openshard_protocol::wire::Hue(hue),
-            },
-        );
+        self.state.registry.insert(mount, Body { id: body, hue });
         self.state.registry.insert(mount, facet);
         self.state.registry.insert(mount, Ridden { rider });
         self.state.registry.insert(rider, Riding { mount, item });

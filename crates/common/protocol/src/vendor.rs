@@ -11,13 +11,21 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::DecodeError;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::{RawSerial, Serial};
 use crate::version::ClientVersion;
+use crate::wire::{Graphic, Hue};
 
 /// One line of a vendor's buy list: the price and label for one stock item, in
 /// the same order as the `0x3C` contents it rides beside.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BuyLine {
-    /// What one unit costs.
+    /// What one unit costs, in gold.
+    ///
+    /// A bare integer by decision, on `docs/protocol_newtypes.md`'s N10
+    /// allowlist: a price is a quantity in the sense `MobileStatus`'s `gold`
+    /// is — multiplied by an amount, added into a total, compared against what
+    /// a purse holds — and the rules that bound it (what a vendor charges,
+    /// what it pays back) live in `openshard_npc`, far above `protocol`.
     pub price: u32,
     /// The label the client shows — usually the item's name.
     pub name: String,
@@ -27,7 +35,7 @@ pub struct BuyLine {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BuyList {
     /// The stock container the lines pair with, by order.
-    pub container: u32,
+    pub container: Serial,
     /// One line per stocked item.
     pub lines: Vec<BuyLine>,
 }
@@ -37,7 +45,7 @@ impl EncodePacket for BuyList {
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.container);
+        out.u32(self.container.raw());
         out.u8(self.lines.len() as u8);
         for line in &self.lines {
             out.u32(line.price);
@@ -56,17 +64,23 @@ impl EncodePacket for BuyList {
 /// A purchase the client asked for: which stock item, how many.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Purchase {
-    /// The stock item's serial, as listed in the `0x3C`.
-    pub serial: u32,
-    /// How many units.
+    /// The stock item, as the client read it off the `0x3C` — four bytes it
+    /// chose, checked where the sale is settled.
+    pub serial: RawSerial,
+    /// How many units the client asked for.
+    ///
+    /// On N10's allowlist for `PickUpItem::amount`'s reason: a stack size is a
+    /// quantity, and the check that matters — is there that much on the
+    /// shelf — exists today in `openshard_npc::vendor::buy`, which takes
+    /// `have.min(purchase.amount)`.
     pub amount: u16,
 }
 
 /// `0x3B` decoded — the client's answer to the buy gump.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BuyReply {
-    /// The vendor mobile.
-    pub vendor: u32,
+    /// The vendor mobile, as the client named it.
+    pub vendor: RawSerial,
     /// What was bought; empty when the gump was closed without buying.
     pub purchases: Vec<Purchase>,
 }
@@ -75,15 +89,23 @@ impl DecodePacket for BuyReply {
     const ID: u8 = 0x3B;
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
-        let vendor = reader.u32()?;
+        let vendor = RawSerial(reader.u32()?);
         let mut purchases = Vec::new();
         if reader.remaining() > 0 {
             let flag = reader.u8()?;
             // 0x02 is "bought"; anything else is a close with nothing taken.
+            //
+            // This byte is read and not kept, which is the *opposite* of
+            // `StatLockRequest`'s and `0xAD`'s findings in
+            // `docs/protocol_newtypes.md`: those two folded a value they then
+            // stored, destroying the client's own byte. Here the flag is pure
+            // framing — it says whether a list follows — and the two answers it
+            // distinguishes ("closed" and "bought nothing") are the same empty
+            // basket to everything downstream, so there is nothing to preserve.
             if flag == 0x02 {
                 while reader.remaining() >= 7 {
                     let _layer = reader.u8()?;
-                    let serial = reader.u32()?;
+                    let serial = RawSerial(reader.u32()?);
                     let amount = reader.u16()?;
                     purchases.push(Purchase { serial, amount });
                 }
@@ -98,14 +120,16 @@ impl DecodePacket for BuyReply {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SellLine {
     /// The player's item.
-    pub serial: u32,
+    pub serial: Serial,
     /// Its graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Its hue.
-    pub hue: u16,
-    /// How many the player carries.
+    pub hue: Hue,
+    /// How many the player carries. A quantity, on N10's allowlist for
+    /// [`Purchase::amount`]'s reason.
     pub amount: u16,
-    /// What the vendor pays per unit.
+    /// What the vendor pays per unit. A quantity, on N10's allowlist for
+    /// [`BuyLine::price`]'s reason.
     pub price: u16,
     /// The label the client shows.
     pub name: String,
@@ -115,7 +139,7 @@ pub struct SellLine {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SellList {
     /// The vendor mobile.
-    pub vendor: u32,
+    pub vendor: Serial,
     /// One line per item the vendor will take.
     pub lines: Vec<SellLine>,
 }
@@ -125,12 +149,12 @@ impl EncodePacket for SellList {
     const LENGTH: PacketLength = PacketLength::Variable;
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.vendor);
+        out.u32(self.vendor.raw());
         out.u16(self.lines.len() as u16);
         for line in &self.lines {
-            out.u32(line.serial);
-            out.u16(line.graphic);
-            out.u16(line.hue);
+            out.u32(line.serial.raw());
+            out.u16(line.graphic.0);
+            out.u16(line.hue.0);
             out.u16(line.amount);
             out.u16(line.price);
             let name = line.name.as_bytes();
@@ -144,17 +168,18 @@ impl EncodePacket for SellList {
 /// A sale the client confirmed: which of the player's items, how many.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sale {
-    /// The player's item.
-    pub serial: u32,
-    /// How many units.
+    /// The player's item, as the client named it.
+    pub serial: RawSerial,
+    /// How many units the client let go. A quantity, on N10's allowlist for
+    /// [`Purchase::amount`]'s reason.
     pub amount: u16,
 }
 
 /// `0x9F` decoded — the client's answer to the sell gump.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SellReply {
-    /// The vendor mobile.
-    pub vendor: u32,
+    /// The vendor mobile, as the client named it.
+    pub vendor: RawSerial,
     /// What was sold; empty when the gump was closed without selling.
     pub sales: Vec<Sale>,
 }
@@ -163,11 +188,11 @@ impl DecodePacket for SellReply {
     const ID: u8 = 0x9F;
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
-        let vendor = reader.u32()?;
+        let vendor = RawSerial(reader.u32()?);
         let count = reader.u16()?;
         let mut sales = Vec::with_capacity(usize::from(count.min(64)));
         for _ in 0..count {
-            let serial = reader.u32()?;
+            let serial = RawSerial(reader.u32()?);
             let amount = reader.u16()?;
             sales.push(Sale { serial, amount });
         }
@@ -188,7 +213,7 @@ mod tests {
     fn a_buy_list_carries_prices_and_labels_in_order() {
         let bytes = encode_packet(
             &BuyList {
-                container: 0x4000_0010,
+                container: Serial::new(0x4000_0010).unwrap(),
                 lines: vec![
                     BuyLine {
                         price: 3,
@@ -226,11 +251,11 @@ mod tests {
         bytes[1..3].copy_from_slice(&len.to_be_bytes());
 
         let reply: BuyReply = decode_packet(&bytes, version()).unwrap();
-        assert_eq!(reply.vendor, 0x0000_0AAA);
+        assert_eq!(reply.vendor, RawSerial(0x0000_0AAA));
         assert_eq!(
             reply.purchases,
             vec![Purchase {
-                serial: 0x4000_0020,
+                serial: RawSerial(0x4000_0020),
                 amount: 5
             }]
         );
@@ -250,11 +275,11 @@ mod tests {
     fn a_sell_list_round_trips_through_the_reply() {
         let list = encode_packet(
             &SellList {
-                vendor: 0x0000_0BBB,
+                vendor: Serial::new(0x0000_0BBB).unwrap(),
                 lines: vec![SellLine {
-                    serial: 0x4000_0033,
-                    graphic: 0x0F7A,
-                    hue: 0,
+                    serial: Serial::new(0x4000_0033).unwrap(),
+                    graphic: Graphic(0x0F7A),
+                    hue: Hue::NONE,
                     amount: 20,
                     price: 2,
                     name: "black pearl".to_owned(),
@@ -277,9 +302,38 @@ mod tests {
         assert_eq!(
             reply.sales,
             vec![Sale {
-                serial: 0x4000_0033,
+                serial: RawSerial(0x4000_0033),
                 amount: 10
             }]
+        );
+    }
+
+    #[test]
+    fn a_shelf_serial_no_client_could_own_survives_decoding_and_is_refused() {
+        // N9's pair for `Purchase::serial`: `0xFFFF_FFFF` is past the item pool
+        // and addresses nothing, and the split
+        // `docs/protocol_newtypes.md` N2 draws says so at the *seam* — the
+        // packet still decodes, because a framing error would drop the
+        // connection over a value that is merely a lie.
+        let mut bytes = vec![0x3B, 0, 0];
+        bytes.extend_from_slice(&0x0000_0AAAu32.to_be_bytes());
+        bytes.push(0x02);
+        bytes.push(0x1A);
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        let len = bytes.len() as u16;
+        bytes[1..3].copy_from_slice(&len.to_be_bytes());
+
+        let reply: BuyReply = decode_packet(&bytes, version()).unwrap();
+        assert_eq!(
+            reply.purchases[0].serial,
+            RawSerial(0xFFFF_FFFF),
+            "the byte the client sent arrives intact"
+        );
+        assert_eq!(
+            reply.purchases[0].serial.validate(),
+            None,
+            "and buys nothing when the sale is settled"
         );
     }
 }

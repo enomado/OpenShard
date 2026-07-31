@@ -14,13 +14,11 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::SpokenMessage;
+use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
 use openshard_protocol::target::{TargetCursor, TargetKind};
-use openshard_protocol::wire::CursorId;
-use openshard_protocol::world::Point;
-use openshard_state::components::{
-    Client, Equipped, Facet, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats,
-};
+use openshard_protocol::wire::{CursorId, Graphic, Hue};
+use openshard_protocol::world::{Facet, Point};
+use openshard_state::components::{Client, Equipped, Position, SPELLBOOK_GRAPHIC, Spellbook, Staff, Stats};
 use openshard_state::{TargetPurpose, WorldState};
 
 use openshard_items as items;
@@ -32,8 +30,8 @@ pub const COMMAND_PREFIX: char = '.';
 
 /// The hue and font a command reply is drawn in — a muted grey, the client's
 /// usual system-message colour, so it reads as the server talking, not a mobile.
-const SYSTEM_HUE: u16 = 0x03B2;
-const SYSTEM_FONT: u16 = 3;
+const SYSTEM_HUE: Hue = Hue::SYSTEM;
+const SYSTEM_FONT: Font = Font::DEFAULT;
 
 /// Run a staff command for `actor`, already checked to hold the authority. `rest`
 /// is the speech with the leading [`COMMAND_PREFIX`] removed.
@@ -91,7 +89,7 @@ fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     let facet = state.facet_of(actor);
     // ServUO's iron key, `0x100E`.
-    let Some(key) = items::spawn_item(state, 0x100E, 0, 1, false, at, facet.0) else {
+    let Some(key) = items::spawn_item(state, Graphic(0x100E), Hue(0), 1, false, at, facet.0) else {
         notify(state, actor, "No room for a key.");
         return;
     };
@@ -123,7 +121,7 @@ fn make_poison(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     let facet = state.facet_of(actor);
     let graphic = openshard_state::components::POISON_POTION_GRAPHIC;
-    let Some(potion) = items::spawn_item(state, graphic, 0, 1, false, at, facet.0) else {
+    let Some(potion) = items::spawn_item(state, graphic, Hue(0), 1, false, at, facet.0) else {
         notify(state, actor, "No room for a potion.");
         return;
     };
@@ -168,9 +166,7 @@ fn set_trap(state: &mut WorldState, actor: EntityId, args: &[&str]) {
         }
     };
     let power: u16 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(30);
-    state
-        .pending_targets
-        .insert(actor, openshard_state::TargetPurpose::SetTrap { kind, power });
+    state.raise_target(actor, openshard_state::TargetPurpose::SetTrap { kind, power });
     if let Some((connection, serial)) = connection_and_serial(state, actor) {
         state.send_packet(
             connection,
@@ -236,9 +232,9 @@ fn save_world(state: &mut WorldState, actor: EntityId) {
     let connections: Vec<_> = state.players.keys().copied().collect();
     for connection in connections {
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
-            serial: u32::MAX,
-            graphic: 0xFFFF,
-            mode: 0,
+            serial: None, // the system talking, not a mobile
+            graphic: None,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             name: "System".to_owned(),
@@ -311,7 +307,7 @@ fn teleport_cursor(state: &mut WorldState, actor: EntityId) {
     let serial = state.registry.serial_of(actor).map_or(0, |s| s.raw());
     // Remember this game master is targeting for a teleport, so the click knows
     // what it is for.
-    state.pending_targets.insert(actor, TargetPurpose::Teleport);
+    state.raise_target(actor, TargetPurpose::Teleport);
     state.send_packet(
         connection,
         &ServerPacket::TargetCursor(TargetCursor {
@@ -343,20 +339,19 @@ pub(crate) fn teleport_to(state: &mut WorldState, actor: EntityId, to: Point) {
 /// pack, so a tester can cast anything without buying each scroll. The mage's
 /// book off the shelf is empty; this is the staff shortcut.
 fn full_spellbook(state: &mut WorldState, actor: EntityId) {
-    const BACKPACK_LAYER: u8 = 0x15;
     let Some(actor_serial) = state.registry.serial_of(actor) else {
         return;
     };
     let backpack = state
         .registry
         .query::<Equipped>()
-        .find(|(_, worn)| worn.mobile == actor_serial && worn.layer == BACKPACK_LAYER)
+        .find(|(_, worn)| worn.mobile == actor_serial && worn.layer == openshard_items::BACKPACK_LAYER)
         .and_then(|(entity, _)| state.registry.serial_of(entity));
     let Some(backpack) = backpack else {
         notify(state, actor, "You have no backpack.");
         return;
     };
-    if let Some(book) = items::give(state, backpack, SPELLBOOK_GRAPHIC, 0, 1) {
+    if let Some(book) = items::give(state, backpack, SPELLBOOK_GRAPHIC, Hue(0), 1) {
         state.registry.insert(book, Spellbook::full());
         notify(state, actor, "A full spellbook appears in your pack.");
     }
@@ -365,7 +360,7 @@ fn full_spellbook(state: &mut WorldState, actor: EntityId) {
 /// `.add <graphic> [amount]` — drop an item at the actor's feet. Hex (`0x1bf2`)
 /// or decimal, because item ids are quoted both ways.
 fn add_item(state: &mut WorldState, actor: EntityId, args: &[&str]) {
-    let Some(graphic) = args.first().and_then(parse_u16) else {
+    let Some(graphic) = args.first().and_then(parse_u16).map(Graphic) else {
         notify(state, actor, "Usage: .add <graphic> [amount]");
         return;
     };
@@ -378,11 +373,11 @@ fn add_item(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     // by decree here — the graphic decides that in real gameplay, but a spawned
     // pile the operator named is stackable so the count takes.
     let stackable = amount > 1;
-    if items::spawn_item(state, graphic, 0, amount, stackable, at, facet.0).is_some() {
+    if items::spawn_item(state, graphic, Hue(0), amount, stackable, at, facet.0).is_some() {
         notify(
             state,
             actor,
-            &format!("Spawned {amount} of {graphic:#06x} at your feet."),
+            &format!("Spawned {amount} of {:#06x} at your feet.", graphic.0),
         );
     }
 }
@@ -415,7 +410,7 @@ fn set_stat(state: &mut WorldState, actor: EntityId, args: &[&str]) {
             return;
         }
     };
-    skills::set_stats(state, serial.raw(), strength, dexterity, intelligence);
+    skills::set_stats(state, serial, strength, dexterity, intelligence);
     notify(state, actor, &format!("Set {stat} to {value}."));
 }
 

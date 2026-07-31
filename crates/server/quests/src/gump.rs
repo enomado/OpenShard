@@ -16,20 +16,22 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::gump::{
-    CloseGump, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE, GumpButton, GumpDisplay, GumpLayout,
+    ButtonId, CloseGump, GUMP_DARK_GREEN, GUMP_LIGHT_GREEN, GUMP_RED, GUMP_WHITE, GumpButton, GumpDisplay,
+    GumpId, GumpKey, GumpLayout, GumpPoint, SwitchId,
 };
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Client, QuestLog};
 use openshard_state::quest::{ObjectiveKind, QuestDef};
 use openshard_state::{QuestGumpContext, QuestSection, WorldState};
 
 /// The gump id the quest window answers under. Distinctive, so a reply is never
 /// mistaken for the admin menu's or a pack dialog's.
-pub const QUEST_GUMP: u32 = 0x0051_0001;
+pub const QUEST_GUMP: GumpId = GumpId(0x0051_0001);
 
 /// The gump id the resign confirmation answers under.
-pub const QUEST_RESIGN_GUMP: u32 = 0x0051_0002;
+pub const QUEST_RESIGN_GUMP: GumpId = GumpId(0x0051_0002);
 
 /// Where the window opens. ServUO's `base(75, 25)`.
 const WINDOW_X: u16 = 75;
@@ -38,60 +40,82 @@ const WINDOW_Y: u16 = 25;
 /// The button ids, from ServUO's `Buttons` enum. A quest row in the log is
 /// [`ROW_OFFSET`] plus its index.
 pub(crate) mod button {
-    /// Dismiss the window.
-    pub const CLOSE: u32 = 0;
+    use openshard_protocol::gump::ButtonId;
+
+    /// Dismiss the window. The layout gives its own `X` the close box's id, so
+    /// pressing it and dismissing the window are one answer — see
+    /// [`ButtonId::CLOSE_BOX`].
+    pub const CLOSE: ButtonId = ButtonId::CLOSE_BOX;
     /// Back to the quest log from a quest's detail page.
-    pub const CLOSE_QUEST: u32 = 1;
+    pub const CLOSE_QUEST: ButtonId = ButtonId(1);
     /// Turn an offer down.
-    pub const REFUSE_QUEST: u32 = 2;
+    pub const REFUSE_QUEST: ButtonId = ButtonId(2);
     /// Give up a quest already taken.
-    pub const RESIGN_QUEST: u32 = 3;
+    pub const RESIGN_QUEST: ButtonId = ButtonId(3);
     /// Take an offered quest.
-    pub const ACCEPT_QUEST: u32 = 4;
+    pub const ACCEPT_QUEST: ButtonId = ButtonId(4);
     /// Take the reward for a finished quest.
-    pub const ACCEPT_REWARD: u32 = 5;
+    pub const ACCEPT_REWARD: ButtonId = ButtonId(5);
     /// Back a page.
-    pub const PREVIOUS_PAGE: u32 = 6;
+    pub const PREVIOUS_PAGE: ButtonId = ButtonId(6);
     /// On a page.
-    pub const NEXT_PAGE: u32 = 7;
+    pub const NEXT_PAGE: ButtonId = ButtonId(7);
     /// Hand in a finished quest.
-    pub const COMPLETE: u32 = 8;
+    pub const COMPLETE: ButtonId = ButtonId(8);
 }
 
 /// The first button id a quest row in the log uses. ServUO's `ButtonOffset`.
-pub(crate) const ROW_OFFSET: u32 = 11;
+const ROW_OFFSET: u32 = 11;
+
+/// The button id the log gives the row at `index`.
+///
+/// The rows are the one part of this window whose ids are computed rather than
+/// named, so the encoding gets both directions with names — [`row_of`] is the
+/// inverse the reply reads, and neither side re-derives the arithmetic.
+pub(crate) const fn row_button(index: u32) -> ButtonId {
+    ButtonId(ROW_OFFSET + index)
+}
+
+/// Which log row a button id names, or `None` for a button that is not a row.
+pub(crate) const fn row_of(button: ButtonId) -> Option<u32> {
+    button.0.checked_sub(ROW_OFFSET)
+}
 
 /// The sounds a quest plays, from `BaseQuest`. All four are per-player: they are
 /// feedback on a dialog one person is looking at.
 pub(crate) mod sound {
+    use openshard_protocol::wire::SoundId;
+
     /// A quest accepted.
-    pub const ACCEPT: u16 = 0x5B4;
+    pub const ACCEPT: SoundId = SoundId(0x5B4);
     /// A quest resigned.
-    pub const RESIGN: u16 = 0x5B3;
+    pub const RESIGN: SoundId = SoundId(0x5B3);
     /// A quest finished.
-    pub const COMPLETE: u16 = 0x5B5;
+    pub const COMPLETE: SoundId = SoundId(0x5B5);
     /// An objective moved.
-    pub const UPDATE: u16 = 0x5B6;
+    pub const UPDATE: SoundId = SoundId(0x5B6);
 }
 
 /// Clilocs the frame and the objective lines use, from `MondainQuestGump`.
 mod cliloc {
-    pub const QUEST_LOG: u32 = 1_046_026;
-    pub const QUEST_OFFER: u32 = 1_049_010;
-    pub const QUEST_CONVERSATION: u32 = 3_006_156;
-    pub const FAILED: u32 = 500_039;
-    pub const DESCRIPTION: u32 = 1_072_202;
-    pub const OBJECTIVE: u32 = 1_049_073;
-    pub const ALL_OF_THE_FOLLOWING: u32 = 1_072_208;
-    pub const ONLY_ONE_OF_THE_FOLLOWING: u32 = 1_072_209;
-    pub const REWARD: u32 = 1_072_201;
-    pub const SLAY: u32 = 1_072_204;
-    pub const OBTAIN: u32 = 1_072_205;
-    pub const ESCORT_TO: u32 = 1_072_206;
-    pub const DELIVER: u32 = 1_072_207;
-    pub const DELIVER_TO: u32 = 1_072_379;
-    pub const TOTAL: u32 = 3_000_087;
-    pub const TIME_REMAINING: u32 = 1_062_379;
+    use openshard_protocol::wire::ClilocId;
+
+    pub const QUEST_LOG: ClilocId = ClilocId(1_046_026);
+    pub const QUEST_OFFER: ClilocId = ClilocId(1_049_010);
+    pub const QUEST_CONVERSATION: ClilocId = ClilocId(3_006_156);
+    pub const FAILED: ClilocId = ClilocId(500_039);
+    pub const DESCRIPTION: ClilocId = ClilocId(1_072_202);
+    pub const OBJECTIVE: ClilocId = ClilocId(1_049_073);
+    pub const ALL_OF_THE_FOLLOWING: ClilocId = ClilocId(1_072_208);
+    pub const ONLY_ONE_OF_THE_FOLLOWING: ClilocId = ClilocId(1_072_209);
+    pub const REWARD: ClilocId = ClilocId(1_072_201);
+    pub const SLAY: ClilocId = ClilocId(1_072_204);
+    pub const OBTAIN: ClilocId = ClilocId(1_072_205);
+    pub const ESCORT_TO: ClilocId = ClilocId(1_072_206);
+    pub const DELIVER: ClilocId = ClilocId(1_072_207);
+    pub const DELIVER_TO: ClilocId = ClilocId(1_072_379);
+    pub const TOTAL: ClilocId = ClilocId(3_000_087);
+    pub const TIME_REMAINING: ClilocId = ClilocId(1_062_379);
 }
 
 /// The label hue an objective's numbers are drawn in (ServUO's `0x481`).
@@ -117,19 +141,20 @@ pub(crate) fn show(state: &mut WorldState, player: EntityId, context: QuestGumpC
     // first in every branch of `OnResponse`, and this is that.
     let close = ServerPacket::CloseGump(CloseGump {
         gump_id: QUEST_GUMP,
-        button: 0,
+        button: ButtonId::CLOSE_BOX,
     });
     let packet = ServerPacket::GumpDisplay(GumpDisplay {
-        serial: serial.raw(),
+        serial: GumpKey::on(serial),
         gump_id: QUEST_GUMP,
-        x: i32::from(WINDOW_X),
-        y: i32::from(WINDOW_Y),
+        at: GumpPoint::new(i32::from(WINDOW_X), i32::from(WINDOW_Y)),
         layout: string.to_owned(),
         lines: lines.to_vec(),
     });
     state.send_packet(connection, &close);
     state.send_packet(connection, &packet);
-    state.open_quest_gumps.insert(player, context);
+    if let Some(row) = state.row_of_mut(player) {
+        row.quest_gump = Some(context);
+    }
 }
 
 /// Build the layout for one section.
@@ -246,7 +271,7 @@ fn section_main(layout: &mut GumpLayout, state: &WorldState, player: EntityId) {
             0x26B1,
             GumpButton::Reply,
             0,
-            ROW_OFFSET + index as u32,
+            row_button(index as u32),
         );
         offset += 21;
     }
@@ -620,20 +645,19 @@ pub(crate) fn show_resign(state: &mut WorldState, player: EntityId, key: &str) {
     layout.image_tiled(10, 210, 300, 20, 0xA40);
     layout.alpha_region(10, 10, 300, 220);
     // 1049005 "Yes, I want to quit this quest." / 1049006 "No, I want to continue."
-    layout.html_localized_colored(14, 12, 300, 20, 1_049_000, GUMP_WHITE, false, false);
+    layout.html_localized_colored(14, 12, 300, 20, ClilocId(1_049_000), GUMP_WHITE, false, false);
     layout.html_colored(40, 45, 260, 40, &title, GUMP_DARK_GREEN, false, false);
     layout.radio(45, 100, 0x25F8, 0x25FB, true, RESIGN_SWITCH_YES);
-    layout.html_localized_colored(80, 100, 200, 20, 1_049_005, GUMP_WHITE, false, false);
+    layout.html_localized_colored(80, 100, 200, 20, ClilocId(1_049_005), GUMP_WHITE, false, false);
     layout.radio(45, 130, 0x25F8, 0x25FB, false, RESIGN_SWITCH_NO);
-    layout.html_localized_colored(80, 130, 200, 20, 1_049_006, GUMP_WHITE, false, false);
+    layout.html_localized_colored(80, 130, 200, 20, ClilocId(1_049_006), GUMP_WHITE, false, false);
     layout.button(265, 220, 0x00F7, 0x00F8, GumpButton::Reply, 0, RESIGN_OK);
 
     let (string, lines) = layout.finish();
     let packet = ServerPacket::GumpDisplay(GumpDisplay {
-        serial: serial.raw(),
+        serial: GumpKey::on(serial),
         gump_id: QUEST_RESIGN_GUMP,
-        x: 120,
-        y: 50,
+        at: GumpPoint::new(120, 50),
         layout: string.to_owned(),
         lines: lines.to_vec(),
     });
@@ -641,14 +665,17 @@ pub(crate) fn show_resign(state: &mut WorldState, player: EntityId, key: &str) {
 }
 
 /// The switch id meaning "yes, give it up" in the resign dialog.
-pub(crate) const RESIGN_SWITCH_YES: u32 = 1;
+pub(crate) const RESIGN_SWITCH_YES: SwitchId = SwitchId(1);
 /// The switch id meaning "no, keep it".
-pub(crate) const RESIGN_SWITCH_NO: u32 = 0;
+pub(crate) const RESIGN_SWITCH_NO: SwitchId = SwitchId(0);
+/// How many switches the resign dialog draws — the domain a reply's switch id
+/// is checked against.
+pub(crate) const RESIGN_SWITCHES: usize = 2;
 /// The one reply button on the resign dialog.
-pub(crate) const RESIGN_OK: u32 = 1;
+pub(crate) const RESIGN_OK: ButtonId = ButtonId(1);
 
 /// Play one of the quest sounds for a player.
-pub(crate) fn play(state: &mut WorldState, player: EntityId, sound: u16) {
+pub(crate) fn play(state: &mut WorldState, player: EntityId, sound: openshard_protocol::wire::SoundId) {
     state.play_sound_to(player, sound);
 }
 

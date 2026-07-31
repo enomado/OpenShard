@@ -28,9 +28,10 @@ use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
-use openshard_protocol::world::Point;
+use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::world::{Facet, Point};
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
-use openshard_world::components::Facet;
 use openshard_world::{Character, Command, Entering, FreshCharacter, Gameplay, TICK_INTERVAL, World};
 
 /// Britain, the same spot the tests use.
@@ -79,8 +80,8 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
                 break 'grid;
             }
             world.queue(Command::SpawnMobile {
-                body: 0x0190,
-                hue: 0,
+                body: Graphic(0x0190),
+                hue: Hue(0),
                 hits: 100,
                 notoriety: 7,
                 damage: 0,
@@ -115,7 +116,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
     for i in 0..decor {
         let gx = (i % u32::from(side * 2)) as u16;
         let gy = (i / u32::from(side * 2)) as u16;
-        statics.push((0x0B4F, 0, Point::new(START.0 + gx, START.1 + gy, 0)));
+        statics.push((Graphic(0x0B4F), Hue(0), Point::new(START.0 + gx, START.1 + gy, 0)));
     }
     world.queue(Command::Decorate {
         facet: 0,
@@ -142,7 +143,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
 /// neighbour is wearing. Walking through a market square pays all of it, and it
 /// is what a player actually does.
 fn time_ticks(world: &mut World, rounds: u32, walking: bool) -> f64 {
-    let movers: Vec<u32> = if walking {
+    let movers: Vec<Serial> = if walking {
         world.player_serials()
     } else {
         Vec::new()

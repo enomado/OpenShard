@@ -6,12 +6,12 @@ use openshard_movement::Walker;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
-use openshard_protocol::world::Point;
+use openshard_protocol::wire::{Graphic, Hue, Layer};
+use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Banker, Body, Brain, Facet, Fame, Heading, Hitpoints, Karma, MeleeDamage, Movement, Name,
-    NightHome, Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors,
-    creature_name,
+    Aggression, Banker, Body, Brain, Fame, Heading, Hitpoints, Karma, MeleeDamage, Movement, Name, NightHome,
+    Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors, creature_name,
 };
 use tracing::{debug, warn};
 
@@ -45,8 +45,8 @@ pub struct MobileSpawned {
 /// creature takes one argument instead of eleven.
 #[derive(Debug)]
 pub struct SpawnSpec {
-    pub body: u16,
-    pub hue: u16,
+    pub body: Graphic,
+    pub hue: Hue,
     pub hits: u16,
     pub notoriety: u8,
     pub damage: u16,
@@ -96,7 +96,7 @@ pub struct SpawnSpec {
     /// precedence ServUO's per-trade `InitOutfit` overrides have — they call
     /// `base.InitOutfit()` and add an apron, not instead of the shirt. Where the two
     /// want one layer, this list wins. A mobile with no `title` wears only this.
-    pub equipment: Vec<(u16, u8, u16)>,
+    pub equipment: Vec<(Graphic, Layer, Hue)>,
     /// Trained combat skills, `(skill id, value in tenths)` — Wrestling, Tactics,
     /// Anatomy and the weapon skills. Without these a creature has no `Skills`
     /// sheet, so its blows always land unscaled (the combat gate); with them it
@@ -194,13 +194,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     };
     let hits = hits.max(1);
     let facing = Facing::walking(Direction::South);
-    state.registry.insert(
-        entity,
-        Body {
-            id: openshard_protocol::wire::Graphic(body),
-            hue: openshard_protocol::wire::Hue(hue),
-        },
-    );
+    state.registry.insert(entity, Body { id: body, hue });
     state.registry.insert(entity, Position(position));
     state.registry.insert(entity, Heading(facing));
     state.registry.insert(entity, facet);
@@ -351,7 +345,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // one layer the pack wins. `equip_worn_item` does not check the layer — it would
     // cheerfully list two items on one and leave the client drawing whichever it
     // read last — so the check is here, at the one place that equips a whole outfit.
-    let mut worn: Vec<u8> = Vec::with_capacity(8);
+    let mut worn: Vec<Layer> = Vec::with_capacity(8);
     for (graphic, layer, item_hue) in equipment
         .into_iter()
         .chain(dressed.into_iter().flat_map(|look| look.equipment))
@@ -375,6 +369,6 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         serial,
         position,
     });
-    debug!(%serial, body, "mobile spawned");
+    debug!(%serial, body = body.0, "mobile spawned");
     Some(entity)
 }

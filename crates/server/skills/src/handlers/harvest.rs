@@ -19,9 +19,9 @@ use openshard_entities::EntityId;
 use openshard_movement::Terrain;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::target::{TargetCursor, TargetKind};
-use openshard_protocol::wire::CursorId;
-use openshard_protocol::world::Point;
-use openshard_state::components::{Client, Facet, Harvesting, Position, Tool};
+use openshard_protocol::wire::{ClilocId, CursorId, Graphic, Hue};
+use openshard_protocol::world::{Facet, Point};
+use openshard_state::components::{Client, Harvesting, Position, Tool};
 use openshard_state::harvest::{
     Bank, HarvestAction, HarvestDef, HarvestKind, HarvestResource, TileSource, definition_for, tool_data,
 };
@@ -31,17 +31,17 @@ use crate::check::{roll_skill_band, skill_value};
 
 /// "You have worn out your tool!" — said before a cursor goes up, so a spent
 /// pickaxe never asks a question it cannot answer.
-const WORN_OUT: u32 = 1_044_038;
+const WORN_OUT: ClilocId = ClilocId(1_044_038);
 /// "Where do you wish to dig?" / the prompt each tool asks with.
-const DIG_WHERE: u32 = 503_033;
+const DIG_WHERE: ClilocId = ClilocId(503_033);
 /// "Target a mountain or cave." — what a pick says about a patch of grass.
-const NOT_MINABLE: u32 = 501_862;
+const NOT_MINABLE: ClilocId = ClilocId(501_862);
 /// "You can't use an axe on that." — ServUO's `Lumberjacking.OnBadHarvestTarget`.
-const NOT_CHOPPABLE: u32 = 500_489;
+const NOT_CHOPPABLE: ClilocId = ClilocId(500_489);
 /// "You can't fish there." — a line cast at dry land.
-const NOT_FISHABLE: u32 = 500_979;
+const NOT_FISHABLE: ClilocId = ClilocId(500_979);
 /// "You are already harvesting." — one swing at a time per tool.
-const ALREADY_BUSY: u32 = 500_972;
+const ALREADY_BUSY: ClilocId = ClilocId(500_972);
 
 /// The facet a Felucca-rate harvest is worth double on.
 ///
@@ -91,9 +91,9 @@ pub struct Harvested {
     /// Which of the three systems.
     pub kind: HarvestKind,
     /// The item art that came out.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// And its hue, which is the only thing telling valorite from iron.
-    pub hue: u16,
+    pub hue: Hue,
     /// How much.
     pub amount: u16,
 }
@@ -105,7 +105,7 @@ pub struct Harvested {
 pub fn use_tool(state: &mut WorldState, harvester: EntityId, tool: EntityId) -> bool {
     let Some(graphic) = state
         .registry
-        .get::<openshard_state::components::Graphic>(tool)
+        .get::<openshard_state::components::Drawn>(tool)
         .map(|g| g.id)
     else {
         return false;
@@ -129,9 +129,7 @@ pub fn use_tool(state: &mut WorldState, harvester: EntityId, tool: EntityId) -> 
     let Some(serial) = state.registry.serial_of(harvester) else {
         return true;
     };
-    state
-        .pending_targets
-        .insert(harvester, TargetPurpose::Harvest { tool });
+    state.raise_target(harvester, TargetPurpose::Harvest { tool });
     state.localized_message(harvester, DIG_WHERE, "");
     // The *location* cursor, not the object one: a mountain face and a patch of
     // water are not entities, and an object cursor would refuse the click.
@@ -161,7 +159,7 @@ pub fn begin_harvest(state: &mut WorldState, harvester: EntityId, tool: EntityId
     // fishing pole still cannot mine, so the two have to agree.
     let matches_tool = state
         .registry
-        .get::<openshard_state::components::Graphic>(tool)
+        .get::<openshard_state::components::Drawn>(tool)
         .and_then(|g| tool_data(g.id))
         .is_some_and(|data| data.skill == def.skill);
     if !matches_tool {
@@ -519,10 +517,10 @@ fn within_reach(state: &WorldState, harvester: EntityId, at: Point, range: u32) 
 
 /// What a tool says about ground it cannot work — ServUO's per-system
 /// `OnBadHarvestTarget`, which is a different sentence for each.
-fn bad_target_line(state: &WorldState, tool: EntityId) -> u32 {
+fn bad_target_line(state: &WorldState, tool: EntityId) -> ClilocId {
     let skill = state
         .registry
-        .get::<openshard_state::components::Graphic>(tool)
+        .get::<openshard_state::components::Drawn>(tool)
         .and_then(|g| tool_data(g.id))
         .map(|data| data.skill);
     match skill {

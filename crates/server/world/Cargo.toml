@@ -28,4 +28,5 @@ openshard-protocol.workspace = true
 openshard-quests.workspace = true
 openshard-skills.workspace = true
 openshard-state.workspace = true
+openshard-uofiles.workspace = true
 tracing.workspace = true

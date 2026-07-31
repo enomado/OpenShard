@@ -21,6 +21,8 @@ use openshard_combat::MobileDied;
 use openshard_entities::EntityId;
 use openshard_items::Contents;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::speech::{Font, TalkMode};
+use openshard_protocol::wire::Hue;
 use openshard_state::components::{Escortable, QuestLog};
 use openshard_state::quest::ObjectiveKind;
 use openshard_state::{QuestSection, TICKS_PER_SECOND, WorldState};
@@ -121,7 +123,7 @@ pub fn refresh_obtain(state: &mut WorldState, contents: &Contents) {
 /// The arrival test is a point query — which region is this NPC standing in — and
 /// not an event, which is what lets this crate stay below the one that owns
 /// regions. An escortable whose leader has been out of sight too long gives up.
-pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
+pub fn advance_escorts(state: &mut WorldState) -> Vec<(Serial, u8)> {
     let escorting: Vec<(EntityId, Escortable)> = state
         .registry
         .query::<Escortable>()
@@ -174,21 +176,23 @@ pub fn advance_escorts(state: &mut WorldState) -> Vec<(u32, u8)> {
         let opens_doors = state
             .registry
             .get::<openshard_state::components::Body>(npc)
-            .is_some_and(|body| openshard_state::components::body_opens_doors(body.id.0));
+            .is_some_and(|body| openshard_state::components::body_opens_doors(body.id));
         if let Some(direction) = openshard_ai::step_toward(state, facet.0, here, there, opens_doors) {
             if let Some(serial) = state.registry.serial_of(npc) {
-                steps.push((serial.raw(), direction));
+                steps.push((serial, direction));
             }
         }
     }
     steps
 }
 
-/// The muted grey and font the client draws townsfolk chatter in — `npc`'s, so an
-/// escortable's voice matches every other NPC's.
-const NPC_HUE: u16 = 0x03B2;
+/// The muted grey and font the client draws townsfolk chatter in — the shared
+/// [`Hue::NPC_SPEECH`], so an escortable's voice matches every other NPC's. This
+/// crate cannot reach `npc`'s own constant (neither depends on the other), which
+/// is why the name lives in `protocol` where both can see it.
+const NPC_HUE: Hue = Hue::NPC_SPEECH;
 /// The font a townsperson speaks in.
-const NPC_FONT: u16 = 3;
+const NPC_FONT: Font = Font::DEFAULT;
 
 /// Have an escortable say something out loud, over its own head.
 ///
@@ -198,7 +202,7 @@ const NPC_FONT: u16 = 3;
 /// player, which reads as the interface talking rather than the NPC.
 pub(crate) fn escortable_says(state: &mut WorldState, npc: Option<EntityId>, text: &str) {
     if let Some(npc) = npc {
-        openshard_chat::speak(state, npc, 0, NPC_HUE, NPC_FONT, text);
+        openshard_chat::speak(state, npc, TalkMode::Regular, NPC_HUE, NPC_FONT, text);
     }
 }
 

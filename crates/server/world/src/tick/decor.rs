@@ -1,9 +1,10 @@
 use super::*;
+use openshard_protocol::wire::{Graphic, Hue};
 
 impl World {
     /// Place a batch of decoration: script-added statics the shard puts on top of
     /// the map's art, plus the interactive kinds — doors and containers. Each is an
-    /// item — a `Graphic` and a `Position`, drawn to clients through the same
+    /// item — a `Drawn` and a `Position`, drawn to clients through the same
     /// `0x1A`/interest path as any item — but marked [`Decoration`], so it never
     /// decays and cannot be picked up. A door also carries [`Door`] (toggled by
     /// double-click) and a container [`Container`] (opened by double-click). See
@@ -11,7 +12,7 @@ impl World {
     pub(super) fn decorate(
         &mut self,
         facet: u8,
-        statics: &[(u16, u16, Point)],
+        statics: &[(Graphic, Hue, Point)],
         doors: &[DecorDoor],
         containers: &[DecorContainer],
     ) {
@@ -29,7 +30,7 @@ impl World {
             }
         }
         for door in doors {
-            let Some(entity) = self.place_decoration(facet, door.closed, 0, door.position) else {
+            let Some(entity) = self.place_decoration(facet, door.closed, Hue(0), door.position) else {
                 return;
             };
             self.state.registry.insert(
@@ -82,22 +83,22 @@ impl World {
         }
     }
 
-    /// Spawn one decoration item — a `Graphic`, `Position`, `Facet` and the
+    /// Spawn one decoration item — a `Drawn`, `Position`, `Facet` and the
     /// [`Decoration`] marker — index it and draw it to everyone in range. Returns
     /// its entity, or `None` if the item-serial pool is empty (the caller stops the
     /// batch).
     pub(super) fn place_decoration(
         &mut self,
         facet: u8,
-        graphic: u16,
-        hue: u16,
+        graphic: Graphic,
+        hue: Hue,
         position: Point,
     ) -> Option<EntityId> {
         let Ok((entity, _serial)) = self.state.registry.spawn_with_serial(SerialKind::Item) else {
             warn!("out of item serials; stopping decoration");
             return None;
         };
-        self.state.registry.insert(entity, Graphic { id: graphic, hue });
+        self.state.registry.insert(entity, Drawn { id: graphic, hue });
         self.state.registry.insert(entity, Position(position));
         self.state.registry.insert(entity, Facet(facet));
         self.state.registry.insert(entity, Decoration);
@@ -162,7 +163,7 @@ impl World {
         }
 
         // (closed, open, offset_x, offset_y, where-it-sits-closed).
-        let mut placements: Vec<(u16, u16, i16, i16, Point)> = Vec::new();
+        let mut placements: Vec<(Graphic, Graphic, i16, i16, Point)> = Vec::new();
         {
             let Some(terrain) = self.state.facet_state(Facet(facet)).terrain.as_ref() else {
                 warn!(facet, "no map on this facet; no doors to generate");
@@ -178,7 +179,7 @@ impl World {
             // open doorway with a floor, not a solid wall or thin air — and it is
             // not already doored. `can_fit` is ServUO's `CanFit` guard (16 tall);
             // the `occupied` set is our own de-dup.
-            let mut try_place = |gap: Point, door: (u16, u16, i16, i16)| {
+            let mut try_place = |gap: Point, door: (Graphic, Graphic, i16, i16)| {
                 let key = (gap.x, gap.y);
                 if occupied.contains(&key) || !terrain.can_fit(gap.x, gap.y, i32::from(gap.z), 16) {
                     return;
@@ -230,7 +231,7 @@ impl World {
 
         let count = placements.len();
         for (closed, open, offset_x, offset_y, position) in placements {
-            if let Some(entity) = self.place_decoration(facet, closed, 0, position) {
+            if let Some(entity) = self.place_decoration(facet, closed, Hue(0), position) {
                 self.state.registry.insert(
                     entity,
                     Door {

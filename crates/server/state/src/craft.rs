@@ -10,6 +10,8 @@
 //! `state` sits below the systems and must not learn their shape. Each system owns
 //! exactly one main skill, so the mapping is complete either way round.
 
+use openshard_protocol::wire::Graphic;
+
 use crate::skill::Skill;
 
 /// A craft tool: the trade it practises and how many attempts are in it.
@@ -36,8 +38,9 @@ const MAX_USES: u16 = 75;
 /// the other art, and a table that knows only one of the two makes a saw that
 /// works until somebody turns it round.
 #[must_use]
-pub fn craft_tool(graphic: u16) -> Option<CraftToolData> {
-    let skill = match graphic {
+pub fn craft_tool(graphic: Graphic) -> Option<CraftToolData> {
+    // Opened once, so the arms below stay the terse art table they read as.
+    let skill = match graphic.0 {
         // Blacksmithy: a smith hammer, tongs, or a sledge.
         0x13E3 | 0x13E4 | 0x0FBB | 0x0FBC | 0x0FB4 | 0x0FB5 => Skill::Blacksmith,
         // Tailoring: a sewing kit.
@@ -83,7 +86,8 @@ mod tests {
             (0x1028, 0x1029), // dovetail saw
             (0x1EB8, 0x1EB9), // tinker's tools
         ] {
-            assert_eq!(craft_tool(a), craft_tool(b), "{a:#06X} and {b:#06X}");
+            let (a, b) = (Graphic(a), Graphic(b));
+            assert_eq!(craft_tool(a), craft_tool(b), "{:#06X} and {:#06X}", a.0, b.0);
             assert!(craft_tool(a).is_some());
         }
     }
@@ -92,17 +96,18 @@ mod tests {
     fn a_craft_tool_is_not_a_harvest_tool_and_the_reverse() {
         // The two tables are consulted one after the other on a double-click, so
         // an overlap would make one trade shadow the other.
-        for graphic in 0..=u16::MAX {
+        for graphic in (0..=u16::MAX).map(Graphic) {
             assert!(
                 craft_tool(graphic).is_none() || crate::harvest::tool_data(graphic).is_none(),
-                "{graphic:#06X} is claimed by both tables"
+                "{:#06X} is claimed by both tables",
+                graphic.0
             );
         }
     }
 
     #[test]
     fn each_tool_names_a_trade_that_can_actually_be_practised() {
-        for graphic in 0..=u16::MAX {
+        for graphic in (0..=u16::MAX).map(Graphic) {
             let Some(tool) = craft_tool(graphic) else {
                 continue;
             };

@@ -22,6 +22,16 @@
 //! classic action number to the new packet and be believed, which is exactly the
 //! confusion a newtype is supposed to prevent. Each packet documents its own
 //! numbering instead.
+//!
+//! On N10's allowlist for the same reason [`SkillEntry::id`](crate::skill::SkillEntry::id)
+//! is: the domain type both animation packets draw their numbers from,
+//! `openshard_state::Action`, lives in a server crate above `protocol` and
+//! cannot be held here. `GraphicalEffect::speed`/`duration` are quantities —
+//! every caller passes a per-effect literal, nothing branches on either — the
+//! `mobile::Vitals` argument again. `HuedEffect::render_mode` is untouched for
+//! a different reason: no non-test code in this workspace constructs a
+//! `HuedEffect` today, so there is nothing to classify against; wrapping it
+//! would be a guess with no caller to check it against.
 
 use crate::codec::PacketWriter;
 use crate::packet::{EncodePacket, PacketLength};

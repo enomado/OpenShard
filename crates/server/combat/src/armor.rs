@@ -17,12 +17,13 @@
 //! needs no undoing.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::Layer;
 use openshard_state::WorldState;
 use openshard_state::armor::{
     LAYER_ARMS, LAYER_CHEST, LAYER_GLOVES, LAYER_GORGET, LAYER_HELM, LAYER_LEGS, LAYER_SHIELD, MedAllowance,
     armor_data, hit_layer, layer_coverage, piece_rating, worn_armor_rating, worn_on_layer,
 };
-use openshard_state::components::{Equipped, Graphic};
+use openshard_state::components::{Drawn, Equipped};
 
 /// How much a mobile's worn armour gets in the way of meditating, in hundredths
 /// of a rating point — ServUO's `RegenRates.GetArmorOffset`.
@@ -39,7 +40,7 @@ pub fn meditation_offset(state: &WorldState, mobile: EntityId) -> u32 {
     let Some(serial) = state.registry.serial_of(mobile) else {
         return 0;
     };
-    let worn: Vec<(EntityId, u8)> = state
+    let worn: Vec<(EntityId, Layer)> = state
         .registry
         .query::<Equipped>()
         .filter(|(_, worn)| worn.mobile == serial)
@@ -52,7 +53,7 @@ pub fn meditation_offset(state: &WorldState, mobile: EntityId) -> u32 {
             let rating = u32::from(piece_rating(state, item)) * 100;
             match state
                 .registry
-                .get::<Graphic>(item)
+                .get::<Drawn>(item)
                 .and_then(|graphic| armor_data(graphic.id))
                 .map_or(MedAllowance::All, |armor| armor.meditation)
             {
@@ -70,7 +71,7 @@ pub fn meditation_offset(state: &WorldState, mobile: EntityId) -> u32 {
 /// The layers `meditation_offset` counts, pre-AoS: the six armour positions and
 /// the shield. ServUO adds the shield only outside AoS, and it is the difference
 /// between a mage who can meditate and one who cannot.
-const MEDITATION_LAYERS: [u8; 7] = [
+const MEDITATION_LAYERS: [Layer; 7] = [
     LAYER_SHIELD,
     LAYER_LEGS,
     LAYER_HELM,

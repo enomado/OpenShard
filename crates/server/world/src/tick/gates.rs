@@ -14,10 +14,15 @@
 //! position it cannot miss somebody who steps on and off a gate inside one
 //! batch of commands, which is an ordinary thing for the inbox to hold.
 
-use super::*;
-use openshard_protocol::gump::{CloseGump, GUMP_WHITE, GumpButton, GumpDisplay, GumpLayout, GumpResponse};
+use openshard_protocol::gump::{
+    ButtonId, CloseGump, GUMP_WHITE, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout,
+    GumpPoint, GumpResponse, SwitchId,
+};
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::wire::{Hue, SoundId};
 use openshard_state::components::{MOONGATE_GRAPHIC, MOONGATE_REACH, Moongate, Position};
+
+use super::*;
 
 /// The gump id the destination list is drawn under.
 ///
@@ -26,26 +31,25 @@ use openshard_state::components::{MOONGATE_GRAPHIC, MOONGATE_REACH, Moongate, Po
 /// The id is an opaque token the client echoes back and nothing on its side
 /// depends on the value — unlike the *button* encoding, which has to be
 /// ServUO's exactly.
-pub(super) const MOONGATE_GUMP: u32 = 0x0053_0002;
+pub(super) const MOONGATE_GUMP: GumpId = GumpId(0x0053_0002);
 
 /// The one button that means "go" — ServUO's `MoongateGump` OKAY. Zero is the
 /// close box and means cancel, as it does everywhere.
-const MOONGATE_OK: u32 = 1;
+const MOONGATE_OK: ButtonId = ButtonId(1);
 
 /// How long a Gate Travel pair stands — ServUO's thirty seconds.
 const GATE_LIFETIME_SECONDS: u64 = 30;
 
 /// ServUO's `GateTravel` sound, played at both ends as the pair opens.
-const GATE_OPEN_SOUND: u16 = 0x020E;
+const GATE_OPEN_SOUND: SoundId = SoundId(0x020E);
 /// And the one a traveller makes arriving through one.
-const GATE_USE_SOUND: u16 = 0x01FE;
+const GATE_USE_SOUND: SoundId = SoundId(0x01FE);
 
 impl World {
     /// Open a gate at the caster and another at `destination`, each leading to
     /// the other.
-    pub(super) fn open_gate_pair(&mut self, caster: EntityId, target_serial: u32) {
-        let Some(rune) = Serial::new(target_serial).and_then(|serial| self.state.registry.entity_of(serial))
-        else {
+    pub(super) fn open_gate_pair(&mut self, caster: EntityId, target_serial: Option<Serial>) {
+        let Some(rune) = target_serial.and_then(|serial| self.state.registry.entity_of(serial)) else {
             return;
         };
         if !openshard_items::in_reach(&self.state, rune, caster) {
@@ -135,9 +139,9 @@ impl World {
         };
         self.state.registry.insert(
             entity,
-            Graphic {
+            Drawn {
                 id: MOONGATE_GRAPHIC,
-                hue: 0,
+                hue: Hue(0),
             },
         );
         self.state.registry.insert(entity, Position(at));
@@ -179,9 +183,9 @@ impl World {
             };
             self.state.registry.insert(
                 entity,
-                Graphic {
+                Drawn {
                     id: MOONGATE_GRAPHIC,
-                    hue: 0,
+                    hue: Hue(0),
                 },
             );
             self.state.registry.insert(entity, Position(gate.at));
@@ -222,7 +226,7 @@ impl World {
         magic::public_gate_at(facet, at)?;
         self.state
             .registry
-            .query::<Graphic>()
+            .query::<Drawn>()
             .find(|(entity, graphic)| {
                 graphic.id == MOONGATE_GRAPHIC
                     && self.state.facet_of(*entity) == Facet(facet)
@@ -358,7 +362,9 @@ impl World {
             // The gate you are standing on is offered and simply refused on
             // selection (ServUO's 1019003), rather than left out — a list whose
             // rows move depending on where you are is a list nobody learns.
-            layout.radio(25, y, 0x00D2, 0x00D3, false, index as u32);
+            // The switch ids are the rows, numbered from zero — which is what
+            // makes the list's length the whole domain a reply is checked against.
+            layout.radio(25, y, 0x00D2, 0x00D3, false, SwitchId(index as u32));
             layout.label(60, y, GUMP_WHITE, destination.name);
         }
         let ok_y = 50 + 30 * rows;
@@ -372,28 +378,33 @@ impl World {
             connection,
             &ServerPacket::CloseGump(CloseGump {
                 gump_id: MOONGATE_GUMP,
-                button: 0,
+                button: ButtonId::CLOSE_BOX,
             }),
         );
         self.state.send_packet(
             connection,
             &ServerPacket::GumpDisplay(GumpDisplay {
-                serial: self.state.registry.serial_of(traveller).map_or(0, |s| s.raw()),
+                serial: self
+                    .state
+                    .registry
+                    .serial_of(traveller)
+                    .map_or(GumpKey::STANDALONE, GumpKey::on),
                 gump_id: MOONGATE_GUMP,
-                x: 50,
-                y: 50,
+                at: GumpPoint::new(50, 50),
                 layout: text.to_owned(),
                 lines: lines.to_vec(),
             }),
         );
         // Remembered so the reply can re-check the player is still beside the
         // gate it answered for, and so a `0xB1` this side never drew does nothing.
-        self.state.open_gate_gumps.insert(traveller, gate);
+        if let Some(row) = self.state.row_of_mut(traveller) {
+            row.gate_gump = Some(gate);
+        }
     }
 
     /// Answer a destination list. Returns whether the reply was one of ours.
     pub(super) fn handle_gate_gump(&mut self, connection: ConnectionId, response: &GumpResponse) -> bool {
-        if response.gump_id != MOONGATE_GUMP {
+        if response.gump_id.validate(&[MOONGATE_GUMP]).is_none() {
             return false;
         }
         let Some(&player) = self.state.players.get(&connection) else {
@@ -401,18 +412,24 @@ impl World {
         };
         // Taken, not borrowed: a reply to a window this side never drew finds
         // nothing and does nothing.
-        let Some(gate) = self.state.open_gate_gumps.remove(&player) else {
+        let Some(gate) = self.state.row_of_mut(player).and_then(|row| row.gate_gump.take()) else {
             return true;
         };
-        if response.button != MOONGATE_OK {
+        if response.button.interpret() != GumpAnswer::Pressed(MOONGATE_OK) {
             return true; // the close box
         }
-        let Some(&choice) = response.switches.first() else {
-            return true; // nothing selected
+        // Nothing selected, or a row no list ever offered — refused, not
+        // clamped: taking somebody to whatever sits in slot zero is worse than
+        // taking them nowhere.
+        let Some(choice) = response
+            .switches
+            .first()
+            .and_then(|switch| switch.validate(magic::PUBLIC_MOONGATES.len()).ok())
+        else {
+            return true;
         };
-        let Some(destination) = magic::PUBLIC_MOONGATES.get(choice as usize) else {
-            return true; // an index no list ever offered — refused, not clamped
-        };
+        // `validate` bounded it against this very list, so the index holds.
+        let destination = &magic::PUBLIC_MOONGATES[choice.0 as usize];
 
         // Still beside the gate it was opened for: the window can sit on screen
         // while its owner walks away, and a reach checked only when it opened is
@@ -461,10 +478,7 @@ impl World {
             self.notify_self(traveller, "You are too busy to do that.");
             return;
         }
-        if self
-            .connection_of(traveller)
-            .is_some_and(|connection| self.state.held.contains_key(&connection))
-        {
+        if self.state.row_of(traveller).is_some_and(|row| row.held.is_some()) {
             self.notify_self(traveller, "You cannot teleport while dragging an object.");
             return;
         }

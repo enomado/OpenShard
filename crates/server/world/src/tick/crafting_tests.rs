@@ -13,22 +13,26 @@
 use super::tests::{START, enter, packets_for, world};
 use super::*;
 use openshard_movement::Terrain;
+use openshard_protocol::containers::GridSlot;
+use openshard_protocol::gump::GumpPoint;
+use openshard_protocol::serial::RawSerial;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_state::components::{Contained, CraftedBy, Crafting, Quality, Tool};
 use openshard_state::harvest::ORE_GRAPHIC;
 use openshard_state::{CraftGumpContext, CraftGumpPage, Skill};
 
 /// A smith's tongs, one of the graphics that opens the blacksmithy window.
-const TONGS: u16 = 0x0FBB;
+const TONGS: Graphic = Graphic(0x0FBB);
 /// A sewing kit — a trade that needs no workshop, which is the contrast.
-const SEWING_KIT: u16 = 0x0F9D;
+const SEWING_KIT: Graphic = Graphic(0x0F9D);
 /// An anvil's static id, ServUO's `4015`.
-const ANVIL: u16 = 4015;
+const ANVIL: Graphic = Graphic(4015);
 /// A forge's, `4017`.
-const FORGE: u16 = 4017;
+const FORGE: Graphic = Graphic(4017);
 /// An iron ingot.
-const INGOT: u16 = openshard_crafting::INGOT_GRAPHIC;
+const INGOT: Graphic = openshard_crafting::INGOT_GRAPHIC;
 /// Valorite's hue — the top of the metal axis.
-const VALORITE: u16 = 0x08AB;
+const VALORITE: Hue = Hue(0x08AB);
 
 /// A terrain that lays the same statics on every tile.
 ///
@@ -53,19 +57,18 @@ fn shop(world: &mut World, statics: &[(u16, i8)]) {
 }
 
 /// Put an item in the player's pack, through the door a vendor's shelf uses.
-fn give(world: &mut World, connection: ConnectionId, graphic: u16, hue: u16, amount: u16) -> EntityId {
+fn give(world: &mut World, connection: ConnectionId, graphic: Graphic, hue: Hue, amount: u16) -> EntityId {
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
     let backpack = items::backpack_of(&world.state, owner).expect("a backpack");
     let (item, _) = world.state.registry.spawn_with_serial(SerialKind::Item).unwrap();
-    world.state.registry.insert(item, Graphic { id: graphic, hue });
+    world.state.registry.insert(item, Drawn { id: graphic, hue });
     world.state.registry.insert(
         item,
         Contained {
             container: backpack,
-            x: 20,
-            y: 20,
-            grid: 0,
+            position: GumpPoint::new(20, 20),
+            grid: GridSlot(0),
         },
     );
     if amount > 1 {
@@ -82,7 +85,7 @@ fn give(world: &mut World, connection: ConnectionId, graphic: u16, hue: u16, amo
 /// Give the player a skill outright, so a roll is a sure thing.
 fn train(world: &mut World, connection: ConnectionId, skill: Skill, value: u16) {
     let entity = world.state.players[&connection];
-    let serial = world.state.registry.serial_of(entity).unwrap().raw();
+    let serial = world.state.registry.serial_of(entity).unwrap();
     world.queue(Command::SetSkill {
         serial,
         skill: skill.id(),
@@ -100,7 +103,7 @@ fn clilocs(world: &mut World, connection: ConnectionId) -> Vec<u32> {
 }
 
 /// How many of a graphic at a hue are in the player's backpack.
-fn carried(world: &World, connection: ConnectionId, graphic: u16, hue: u16) -> u32 {
+fn carried(world: &World, connection: ConnectionId, graphic: Graphic, hue: Hue) -> u32 {
     let player = world.state.players[&connection];
     let Some(owner) = world.state.registry.serial_of(player) else {
         return 0;
@@ -147,7 +150,7 @@ fn craft(
             group,
             sub_res,
             page: CraftGumpPage::Items,
-            notice: 0,
+            notice: None,
         },
     );
     // The row's index is its place *within the group*, which is what the window
@@ -159,14 +162,14 @@ fn craft(
         .filter(|(_, r)| r.group == group)
         .position(|(at, _)| at == usize::from(recipe))
         .expect("the recipe is in its own group");
-    let serial = world.state.registry.serial_of(player).unwrap().raw();
+    let serial = world.state.registry.serial_of(player).unwrap();
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial,
-            gump_id: openshard_crafting::CRAFT_GUMP,
+            serial: openshard_protocol::gump::RawGumpKey(serial.raw()),
+            gump_id: openshard_protocol::gump::RawGumpId(openshard_crafting::CRAFT_GUMP.0),
             // ServUO's `1 + kind + index * 7`, kind 1 being "make".
-            button: 1 + 1 + u32::try_from(row).unwrap() * 7,
+            button: openshard_protocol::gump::RawButtonId(1 + 1 + u32::try_from(row).unwrap() * 7),
             switches: Vec::new(),
             text_entries: Vec::new(),
         },
@@ -192,13 +195,13 @@ fn a_smith_at_a_forge_turns_ingots_into_a_blade() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    shop(&mut world, &[(FORGE, 0), (ANVIL, 0)]);
-    let tongs = give(&mut world, connection, TONGS, 0, 1);
+    shop(&mut world, &[(FORGE.0, 0), (ANVIL.0, 0)]);
+    let tongs = give(&mut world, connection, TONGS, Hue(0), 1);
     let (recipe, _) = cheapest_smithing();
     let def = openshard_crafting::system(0).unwrap();
     let wanted = def.recipes[usize::from(recipe)].resources[0].amount;
     let made = def.recipes[usize::from(recipe)].graphic;
-    give(&mut world, connection, INGOT, 0, wanted * 2);
+    give(&mut world, connection, INGOT, Hue(0), wanted * 2);
     train(&mut world, connection, Skill::Blacksmith, 1000);
     now += TICK_INTERVAL;
     world.tick(now);
@@ -207,9 +210,9 @@ fn a_smith_at_a_forge_turns_ingots_into_a_blade() {
     craft(&mut world, connection, tongs, recipe, 0, now);
     finish(&mut world, connection, now);
 
-    assert_eq!(carried(&world, connection, made, 0), 1, "the blade");
+    assert_eq!(carried(&world, connection, made, Hue(0)), 1, "the blade");
     assert_eq!(
-        carried(&world, connection, INGOT, 0),
+        carried(&world, connection, INGOT, Hue(0)),
         u32::from(wanted),
         "half the ingots are gone"
     );
@@ -229,12 +232,12 @@ fn the_same_smith_in_the_street_is_told_to_find_a_forge() {
     let mut world = world();
     let connection = enter(&mut world, now);
     shop(&mut world, &[]);
-    let tongs = give(&mut world, connection, TONGS, 0, 1);
+    let tongs = give(&mut world, connection, TONGS, Hue(0), 1);
     let (recipe, _) = cheapest_smithing();
     let def = openshard_crafting::system(0).unwrap();
     let wanted = def.recipes[usize::from(recipe)].resources[0].amount;
     let made = def.recipes[usize::from(recipe)].graphic;
-    give(&mut world, connection, INGOT, 0, wanted * 4);
+    give(&mut world, connection, INGOT, Hue(0), wanted * 4);
     train(&mut world, connection, Skill::Blacksmith, 1000);
     now += TICK_INTERVAL;
     world.tick(now);
@@ -249,7 +252,7 @@ fn the_same_smith_in_the_street_is_told_to_find_a_forge() {
             .has::<Crafting>(world.state.players[&connection]),
         "nothing was begun"
     );
-    assert_eq!(carried(&world, connection, made, 0), 0);
+    assert_eq!(carried(&world, connection, made, Hue(0)), 0);
     assert!(
         clilocs(&mut world, connection).contains(&1_044_267),
         "you must be near an anvil and a forge"
@@ -261,15 +264,15 @@ fn an_anvil_alone_is_not_a_smithy() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    shop(&mut world, &[(ANVIL, 0)]);
-    let tongs = give(&mut world, connection, TONGS, 0, 1);
+    shop(&mut world, &[(ANVIL.0, 0)]);
+    let tongs = give(&mut world, connection, TONGS, Hue(0), 1);
     let (recipe, _) = cheapest_smithing();
     let def = openshard_crafting::system(0).unwrap();
     give(
         &mut world,
         connection,
         INGOT,
-        0,
+        openshard_protocol::wire::Hue(0),
         def.recipes[usize::from(recipe)].resources[0].amount * 2,
     );
     train(&mut world, connection, Skill::Blacksmith, 1000);
@@ -293,13 +296,13 @@ fn a_valorite_order_cannot_be_paid_in_iron() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    shop(&mut world, &[(FORGE, 0), (ANVIL, 0)]);
-    let tongs = give(&mut world, connection, TONGS, 0, 1);
+    shop(&mut world, &[(FORGE.0, 0), (ANVIL.0, 0)]);
+    let tongs = give(&mut world, connection, TONGS, Hue(0), 1);
     let (recipe, _) = cheapest_smithing();
     let def = openshard_crafting::system(0).unwrap();
     let wanted = def.recipes[usize::from(recipe)].resources[0].amount;
     let made = def.recipes[usize::from(recipe)].graphic;
-    give(&mut world, connection, INGOT, 0, wanted * 10);
+    give(&mut world, connection, INGOT, Hue(0), wanted * 10);
     train(&mut world, connection, Skill::Blacksmith, 1000);
     now += TICK_INTERVAL;
     world.tick(now);
@@ -313,9 +316,9 @@ fn a_valorite_order_cannot_be_paid_in_iron() {
             .registry
             .has::<Crafting>(world.state.players[&connection])
     );
-    assert_eq!(carried(&world, connection, made, 0), 0);
+    assert_eq!(carried(&world, connection, made, Hue(0)), 0);
     assert_eq!(
-        carried(&world, connection, INGOT, 0),
+        carried(&world, connection, INGOT, Hue(0)),
         u32::from(wanted) * 10,
         "and the iron was not touched"
     );
@@ -327,7 +330,7 @@ fn a_valorite_order_cannot_be_paid_in_iron() {
     finish(&mut world, connection, now);
     assert_eq!(carried(&world, connection, made, VALORITE), 1);
     assert_eq!(
-        carried(&world, connection, INGOT, 0),
+        carried(&world, connection, INGOT, Hue(0)),
         u32::from(wanted) * 10,
         "the iron is still untouched"
     );
@@ -342,8 +345,8 @@ fn a_novice_is_refused_rather_than_charged_for_a_failure() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    shop(&mut world, &[(FORGE, 0), (ANVIL, 0)]);
-    let tongs = give(&mut world, connection, TONGS, 0, 1);
+    shop(&mut world, &[(FORGE.0, 0), (ANVIL.0, 0)]);
+    let tongs = give(&mut world, connection, TONGS, Hue(0), 1);
     let def = openshard_crafting::system(0).unwrap();
     // The hardest one-material recipe in the table, which nobody at zero can try.
     let (recipe, _) = def
@@ -355,7 +358,7 @@ fn a_novice_is_refused_rather_than_charged_for_a_failure() {
         .map(|(at, r)| (u16::try_from(at).unwrap(), r))
         .expect("a hard recipe");
     let wanted = def.recipes[usize::from(recipe)].resources[0].amount;
-    give(&mut world, connection, INGOT, 0, wanted * 4);
+    give(&mut world, connection, INGOT, Hue(0), wanted * 4);
     now += TICK_INTERVAL;
     world.tick(now);
     let _ = clilocs(&mut world, connection);
@@ -363,7 +366,7 @@ fn a_novice_is_refused_rather_than_charged_for_a_failure() {
     craft(&mut world, connection, tongs, recipe, 0, now);
 
     assert_eq!(
-        carried(&world, connection, INGOT, 0),
+        carried(&world, connection, INGOT, Hue(0)),
         u32::from(wanted) * 4,
         "a refusal costs nothing"
     );
@@ -382,7 +385,7 @@ fn a_tailor_needs_no_workshop_at_all() {
     let mut world = world();
     let connection = enter(&mut world, now);
     shop(&mut world, &[]);
-    let kit = give(&mut world, connection, SEWING_KIT, 0, 1);
+    let kit = give(&mut world, connection, SEWING_KIT, Hue(0), 1);
     let player = world.state.players[&connection];
     train(&mut world, connection, Skill::Tailoring, 1000);
     now += TICK_INTERVAL;
@@ -424,28 +427,38 @@ fn ore_becomes_ingots_at_a_forge_and_nowhere_else() {
     let mut world = world();
     let connection = enter(&mut world, now);
     shop(&mut world, &[]);
-    let ore = give(&mut world, connection, ORE_GRAPHIC, 0, 10);
+    let ore = give(&mut world, connection, ORE_GRAPHIC, Hue(0), 10);
     train(&mut world, connection, Skill::Mining, 1000);
     now += TICK_INTERVAL;
     world.tick(now);
 
-    let serial = world.state.registry.serial_of(ore).unwrap().raw();
-    world.queue(Command::DoubleClick { connection, serial });
-    now += TICK_INTERVAL;
-    world.tick(now);
-    assert_eq!(carried(&world, connection, INGOT, 0), 0, "no forge, no ingots");
-    assert_eq!(carried(&world, connection, ORE_GRAPHIC, 0), 10);
-
-    shop(&mut world, &[(FORGE, 0)]);
-    world.queue(Command::DoubleClick { connection, serial });
+    let serial = world.state.registry.serial_of(ore).unwrap();
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial.raw())),
+    });
     now += TICK_INTERVAL;
     world.tick(now);
     assert_eq!(
-        carried(&world, connection, INGOT, 0),
+        carried(&world, connection, INGOT, Hue(0)),
+        0,
+        "no forge, no ingots"
+    );
+    assert_eq!(carried(&world, connection, ORE_GRAPHIC, Hue(0)), 10);
+
+    shop(&mut world, &[(FORGE.0, 0)]);
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial.raw())),
+    });
+    now += TICK_INTERVAL;
+    world.tick(now);
+    assert_eq!(
+        carried(&world, connection, INGOT, Hue(0)),
         20,
         "two ingots to the unit, ServUO's large-pile rate"
     );
-    assert_eq!(carried(&world, connection, ORE_GRAPHIC, 0), 0);
+    assert_eq!(carried(&world, connection, ORE_GRAPHIC, Hue(0)), 0);
 }
 
 #[test]
@@ -455,19 +468,22 @@ fn the_metal_a_pile_of_ore_is_survives_the_forge() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    shop(&mut world, &[(FORGE, 0)]);
+    shop(&mut world, &[(FORGE.0, 0)]);
     let ore = give(&mut world, connection, ORE_GRAPHIC, VALORITE, 4);
     train(&mut world, connection, Skill::Mining, 1000);
     now += TICK_INTERVAL;
     world.tick(now);
 
-    let serial = world.state.registry.serial_of(ore).unwrap().raw();
-    world.queue(Command::DoubleClick { connection, serial });
+    let serial = world.state.registry.serial_of(ore).unwrap();
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial.raw())),
+    });
     now += TICK_INTERVAL;
     world.tick(now);
 
     assert_eq!(carried(&world, connection, INGOT, VALORITE), 8);
-    assert_eq!(carried(&world, connection, INGOT, 0), 0);
+    assert_eq!(carried(&world, connection, INGOT, Hue(0)), 0);
 }
 
 #[test]
@@ -479,8 +495,8 @@ fn a_gump_reply_for_a_window_the_server_never_opened_makes_nothing() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    shop(&mut world, &[(FORGE, 0), (ANVIL, 0)]);
-    give(&mut world, connection, TONGS, 0, 1);
+    shop(&mut world, &[(FORGE.0, 0), (ANVIL.0, 0)]);
+    give(&mut world, connection, TONGS, Hue(0), 1);
     let (recipe, _) = cheapest_smithing();
     let def = openshard_crafting::system(0).unwrap();
     let made = def.recipes[usize::from(recipe)].graphic;
@@ -488,7 +504,7 @@ fn a_gump_reply_for_a_window_the_server_never_opened_makes_nothing() {
         &mut world,
         connection,
         INGOT,
-        0,
+        openshard_protocol::wire::Hue(0),
         def.recipes[usize::from(recipe)].resources[0].amount * 4,
     );
     train(&mut world, connection, Skill::Blacksmith, 1000);
@@ -496,13 +512,13 @@ fn a_gump_reply_for_a_window_the_server_never_opened_makes_nothing() {
     world.tick(now);
 
     let player = world.state.players[&connection];
-    let serial = world.state.registry.serial_of(player).unwrap().raw();
+    let serial = world.state.registry.serial_of(player).unwrap();
     world.queue(Command::GumpResponse {
         connection,
         response: openshard_protocol::gump::GumpResponse {
-            serial,
-            gump_id: openshard_crafting::CRAFT_GUMP,
-            button: 2, // "make", row 0
+            serial: openshard_protocol::gump::RawGumpKey(serial.raw()),
+            gump_id: openshard_protocol::gump::RawGumpId(openshard_crafting::CRAFT_GUMP.0),
+            button: openshard_protocol::gump::RawButtonId(2), // "make", row 0
             switches: Vec::new(),
             text_entries: Vec::new(),
         },
@@ -511,7 +527,7 @@ fn a_gump_reply_for_a_window_the_server_never_opened_makes_nothing() {
     world.tick(now);
 
     assert!(!world.state.registry.has::<Crafting>(player));
-    assert_eq!(carried(&world, connection, made, 0), 0);
+    assert_eq!(carried(&world, connection, made, Hue(0)), 0);
 }
 
 #[test]
@@ -524,7 +540,13 @@ fn an_exceptional_piece_is_still_exceptional_after_a_restart() {
     let connection = enter(&mut world, now);
     let player = world.state.players[&connection];
     let owner = world.state.registry.serial_of(player).unwrap();
-    let sword = give(&mut world, connection, 0x0F5E, 0, 1);
+    let sword = give(
+        &mut world,
+        connection,
+        openshard_protocol::wire::Graphic(0x0F5E),
+        openshard_protocol::wire::Hue(0),
+        1,
+    );
     world.state.registry.insert(sword, Quality { exceptional: true });
     world.state.registry.insert(sword, CraftedBy("Rowena".into()));
     now += TICK_INTERVAL;
@@ -533,7 +555,7 @@ fn an_exceptional_piece_is_still_exceptional_after_a_restart() {
     let record = World::item_record(
         &world.state.registry,
         sword,
-        owner.raw(),
+        Some(owner),
         openshard_persistence::ItemLocation::Ground {
             facet: 0,
             x: START.0,
@@ -546,11 +568,17 @@ fn an_exceptional_piece_is_still_exceptional_after_a_restart() {
 
     // And an ordinary sword carries nothing at all, which is what keeps the two
     // columns empty for all but the handful of items a player made.
-    let plain = give(&mut world, connection, 0x0F5E, 0, 1);
+    let plain = give(
+        &mut world,
+        connection,
+        openshard_protocol::wire::Graphic(0x0F5E),
+        openshard_protocol::wire::Hue(0),
+        1,
+    );
     let plain = World::item_record(
         &world.state.registry,
         plain,
-        owner.raw(),
+        Some(owner),
         openshard_persistence::ItemLocation::Ground {
             facet: 0,
             x: START.0,
@@ -569,7 +597,13 @@ fn craftsmanship_is_read_where_the_armour_rating_is_worked_out() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    let plate = give(&mut world, connection, 0x1415, 0, 1); // a plate chest
+    let plate = give(
+        &mut world,
+        connection,
+        openshard_protocol::wire::Graphic(0x1415),
+        openshard_protocol::wire::Hue(0),
+        1,
+    ); // a plate chest
     let plain = openshard_state::armor::piece_rating(&world.state, plate);
     assert!(plain > 0, "the core table knows a breastplate");
 
@@ -582,7 +616,13 @@ fn craftsmanship_is_read_where_the_armour_rating_is_worked_out() {
 
     // And the metal is worth something too, which is the whole point of offering
     // a smith nine of them.
-    let valorite = give(&mut world, connection, 0x1415, VALORITE, 1);
+    let valorite = give(
+        &mut world,
+        connection,
+        openshard_protocol::wire::Graphic(0x1415),
+        VALORITE,
+        1,
+    );
     assert_eq!(
         openshard_state::armor::piece_rating(&world.state, valorite),
         plain + 16,
@@ -600,20 +640,26 @@ fn double_clicking_the_tongs_is_what_opens_the_window() {
     let mut now = Instant::now();
     let mut world = world();
     let connection = enter(&mut world, now);
-    shop(&mut world, &[(FORGE, 0), (ANVIL, 0)]);
-    let tongs = give(&mut world, connection, TONGS, 0, 1);
+    shop(&mut world, &[(FORGE.0, 0), (ANVIL.0, 0)]);
+    let tongs = give(&mut world, connection, TONGS, Hue(0), 1);
     now += TICK_INTERVAL;
     world.tick(now);
     let _ = packets_for(&mut world, connection);
 
-    let serial = world.state.registry.serial_of(tongs).unwrap().raw();
-    world.queue(Command::DoubleClick { connection, serial });
+    let serial = world.state.registry.serial_of(tongs).unwrap();
+    world.queue(Command::DoubleClick {
+        connection,
+        request: UseRequest::Use(RawSerial(serial.raw())),
+    });
     now += TICK_INTERVAL;
     world.tick(now);
 
     let player = world.state.players[&connection];
     assert!(
-        world.state.open_craft_gumps.contains_key(&player),
+        world
+            .state
+            .row_of(player)
+            .is_some_and(|row| row.craft_gump.is_some()),
         "the server remembers drawing it"
     );
     assert!(
@@ -621,6 +667,26 @@ fn double_clicking_the_tongs_is_what_opens_the_window() {
             .iter()
             .any(|packet| packet[0] == 0xB0),
         "and the client was sent one"
+    );
+
+    // And it is forgotten when the client goes. It used to be keyed by the
+    // player's entity in a map of its own, which `disconnect` did not sweep — so
+    // logging out with the window open left a context behind for an entity that
+    // no longer existed, for as long as the process ran. Its own doc said
+    // "Cleared on logout", which was true of the map it was written beside.
+    world.queue(Command::Disconnect { connection });
+    now += TICK_INTERVAL;
+    world.tick(now);
+
+    assert_eq!(
+        world
+            .state
+            .connections
+            .values()
+            .filter(|row| row.craft_gump.is_some())
+            .count(),
+        0,
+        "nothing anywhere still remembers drawing it"
     );
 }
 
@@ -633,7 +699,7 @@ fn a_tool_off_the_shelf_has_uses_in_it() {
     let mut world = world();
     let connection = enter(&mut world, now);
     for graphic in [TONGS, SEWING_KIT] {
-        let tool = give(&mut world, connection, graphic, 0, 1);
+        let tool = give(&mut world, connection, graphic, Hue(0), 1);
         let uses = world
             .state
             .registry

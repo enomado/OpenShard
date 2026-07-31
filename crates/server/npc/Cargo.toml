@@ -22,3 +22,8 @@ openshard-movement.workspace = true
 openshard-protocol.workspace = true
 openshard-state.workspace = true
 tracing.workspace = true
+
+# `build.rs` only: the default name lists are `data/names.json` and become
+# `const`s before the crate compiles. Nothing here is linked into the shard.
+[build-dependencies]
+serde_json.workspace = true

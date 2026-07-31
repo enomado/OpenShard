@@ -16,6 +16,16 @@ use std::str::FromStr;
 /// patch: `a` is 1, `b` is 2, and so on. [`ClientVersion::from_str`] accepts
 /// both that and the modern dotted form, so `"3.0.7b"` and `"3.0.7.2"` parse to
 /// the same value.
+///
+/// # Why its four fields stay bare integers
+///
+/// `crate::world::Point`'s argument, verbatim: this *is* the named type, and
+/// its components are the one thing a version is made of — four numbers
+/// compared in order, which is what the derived `Ord` above does. Nothing
+/// reaches a `revision` except through a `ClientVersion`, and it is not a
+/// packet field at all: what arrives off the wire is a seed dword or a `0xBD`
+/// string, and both are narrowed here. See the allowlist in
+/// `docs/protocol_newtypes.md`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ClientVersion {
     /// Major version. `7` for all modern clients.

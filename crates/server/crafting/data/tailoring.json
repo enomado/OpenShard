@@ -1,0 +1,1254 @@
+{
+  "groups": [1044457, 1011375, 1111747, 1015283, 1015288, 1015293, 1015300, 1015306, 1049149],
+  "sub_res": {
+    "graphic": "0x1081",
+    "name": 1049150,
+    "entries": [
+      { "hue": "0x0000", "name": 1049150, "req_skill": 0, "message": 1049311 },
+      { "hue": "0x08AC", "name": 1049151, "req_skill": 650, "message": 1049311 },
+      { "hue": "0x0845", "name": 1049152, "req_skill": 800, "message": 1049311 },
+      { "hue": "0x0851", "name": 1049153, "req_skill": 990, "message": 1049311 }
+    ]
+  },
+  "recipes": [
+    {
+      "graphic": "0x1544",
+      "name": 1025444,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 0, "max": 250 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 2, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1540",
+      "name": 1025440,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 0, "max": 250 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 2, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1713",
+      "name": 1025907,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 11, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1715",
+      "name": 1025909,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 11, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1714",
+      "name": 1025908,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1717",
+      "name": 1025911,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1716",
+      "name": 1025910,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 67, "max": 317 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 13, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1718",
+      "name": 1025912,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 72, "max": 322 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 15, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1719",
+      "name": 1025913,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 11, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x171A",
+      "name": 1025914,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x171B",
+      "name": 1025915,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x171C",
+      "name": 1025916,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 72, "max": 322 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 15, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2306",
+      "name": 1028965,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 100, "max": 350 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 5, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x278F",
+      "name": 1030202,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 13, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2798",
+      "name": 1030211,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 600, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x141B",
+      "name": 1025147,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1545",
+      "name": 1025445,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 775, "max": 1025 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 15, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1547",
+      "name": 1025447,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 775, "max": 1025 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 15, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x154B",
+      "name": 1025449,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 825, "max": 1075 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1549",
+      "name": 1025451,
+      "group": 1,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 825, "max": 1075 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1F7B",
+      "name": 1028059,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 0, "max": 250 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 8, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1517",
+      "name": 1025399,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 207, "max": 457 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 8, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1EFD",
+      "name": 1027933,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 248, "max": 498 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 8, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1FA1",
+      "name": 1028097,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 0, "max": 250 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1FFD",
+      "name": 1028189,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 82, "max": 332 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 14, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1F01",
+      "name": 1027937,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 124, "max": 374 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1F00",
+      "name": 1027935,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 331, "max": 581 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1515",
+      "name": 1025397,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 414, "max": 664 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 14, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1F03",
+      "name": 1027939,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 539, "max": 789 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 16, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1F9F",
+      "name": 1028095,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 82, "max": 332 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 24, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x230A",
+      "name": 1028969,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 350, "max": 600 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 13, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x230E",
+      "name": 1028973,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 375, "max": 625 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 16, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2310",
+      "name": 1028975,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 260, "max": 510 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 16, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2794",
+      "name": 1030207,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2799",
+      "name": 1030212,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 15, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x279C",
+      "name": 1030215,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 400, "max": 650 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 14, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2782",
+      "name": 1030189,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 500, "max": 750 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 16, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2783",
+      "name": 1030190,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 500, "max": 750 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 16, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x27A1",
+      "name": 1030220,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 300, "max": 550 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x152E",
+      "name": 1025422,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 248, "max": 498 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 6, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1539",
+      "name": 1025433,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 248, "max": 498 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 8, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1537",
+      "name": 1025431,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 207, "max": 457 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 8, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1516",
+      "name": 1025398,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 290, "max": 540 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x230C",
+      "name": 1028971,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 350, "max": 600 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x279A",
+      "name": 1030213,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 500, "max": 750 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 16, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x279B",
+      "name": 1030214,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 500, "max": 750 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 16, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x3175",
+      "name": 1032661,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x3176",
+      "name": 1032662,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2FC3",
+      "name": 1032665,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2FB9",
+      "name": 1032659,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 30, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2FBA",
+      "name": 1032660,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 30, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2B68",
+      "name": 1032639,
+      "group": 2,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x1541",
+      "name": 1025441,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 41, "max": 291 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 4, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x153B",
+      "name": 1025435,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 207, "max": 457 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 6, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x153D",
+      "name": 1025437,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 290, "max": 540 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x27A0",
+      "name": 1030219,
+      "group": 3,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 200, "max": 450 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 6, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x0F9D",
+      "name": 1072152,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x0F7E", "amount": 1, "name": 1049064, "message": 1049063 },
+        { "graphic": "0x1081", "amount": 6, "name": 1044462, "message": 1044463, "from_axis": true },
+        { "graphic": "0x0FA0", "amount": 2, "name": 1073462, "message": 1073463 },
+        { "graphic": "0x0FA9", "amount": 1, "name": 1024009, "message": 1044253 }
+      ]
+    },
+    {
+      "graphic": "0x175D",
+      "name": 1041498,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 746, "max": 996 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 1, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030404,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030405,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030407,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030406,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030408,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030409,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030411,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x14F0",
+      "name": 1030410,
+      "group": 3,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 25, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2FC4",
+      "name": 1072902,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 15, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2307",
+      "name": 1028967,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 500, "max": 750 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 12, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2797",
+      "name": 1030210,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 700, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 10, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x2796",
+      "name": 1030209,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 200, "max": 450 }],
+      "resources": [
+        { "graphic": "0x1766", "amount": 6, "name": 1044455, "message": 1044287 }
+      ]
+    },
+    {
+      "graphic": "0x170D",
+      "name": 1025901,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 124, "max": 374 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 4, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x170F",
+      "name": 1025904,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 165, "max": 415 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 6, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x170B",
+      "name": 1025899,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 331, "max": 581 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1711",
+      "name": 1025906,
+      "group": 4,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 414, "max": 664 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 10, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13C7",
+      "name": 1025063,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 539, "max": 789 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 4, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1DB9",
+      "name": 1027609,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 62, "max": 312 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 2, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13C6",
+      "name": 1025062,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 518, "max": 768 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 3, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13CD",
+      "name": 1025061,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 539, "max": 789 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 4, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13CB",
+      "name": 1025067,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 663, "max": 913 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 10, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13CC",
+      "name": 1025068,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 705, "max": 955 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2776",
+      "name": 1030177,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 450, "max": 700 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 4, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x277A",
+      "name": 1030181,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27C6",
+      "name": 1030182,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x277E",
+      "name": 1030185,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 550, "max": 800 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 5, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2786",
+      "name": 1030193,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 680, "max": 930 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x278A",
+      "name": 1030197,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 680, "max": 930 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2791",
+      "name": 1030204,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 13, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2793",
+      "name": 1030206,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 13, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2790",
+      "name": 1030203,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 500, "max": 750 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 5, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2792",
+      "name": 1030205,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 650, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x278E",
+      "name": 1030201,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 14, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2FC5",
+      "name": 1032667,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 15, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2FC8",
+      "name": 1032670,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 600, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2FC6",
+      "name": 1032668,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 600, "max": 850 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 10, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2FC9",
+      "name": 1032671,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 15, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2FC7",
+      "name": 1032669,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 650, "max": 900 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2FCA",
+      "name": 1032672,
+      "group": 5,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 700, "max": 950 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13D6",
+      "name": 1025078,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 788, "max": 1038 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 6, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13D5",
+      "name": 1025077,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 829, "max": 1079 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13DC",
+      "name": 1025076,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 871, "max": 1121 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 10, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13DA",
+      "name": 1025082,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 912, "max": 1162 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x13DB",
+      "name": 1025083,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 940, "max": 1190 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 14, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x279D",
+      "name": 1030216,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 800, "max": 1050 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27C7",
+      "name": 1030183,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 950, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 14, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x277F",
+      "name": 1030186,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x27D2",
+      "name": 1030194,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 920, "max": 1170 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 14, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x278B",
+      "name": 1030198,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 920, "max": 1170 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 14, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B74",
+      "name": 1032651,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 15, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B77",
+      "name": 1032654,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B75",
+      "name": 1032652,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 750, "max": 1000 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 10, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B78",
+      "name": 1032655,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 920, "max": 1170 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 15, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x2B76",
+      "name": 1032653,
+      "group": 6,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1C00",
+      "name": 1027168,
+      "group": 7,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 622, "max": 872 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1C08",
+      "name": 1027176,
+      "group": 7,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 580, "max": 830 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 6, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1C0A",
+      "name": 1027178,
+      "group": 7,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 580, "max": 830 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 6, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1C0C",
+      "name": 1027180,
+      "group": 7,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 829, "max": 1079 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1C06",
+      "name": 1027174,
+      "group": 7,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 622, "max": 872 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1C02",
+      "name": 1027170,
+      "group": 7,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 871, "max": 1121 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 10, "name": 1044462, "message": 1044463, "from_axis": true }
+      ]
+    },
+    {
+      "graphic": "0x1451",
+      "name": 1025206,
+      "group": 8,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 850, "max": 1100 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 4, "name": 1044462, "message": 1044463, "from_axis": true },
+        { "graphic": "0x0F7E", "amount": 2, "name": 1049064, "message": 1049063 }
+      ]
+    },
+    {
+      "graphic": "0x1450",
+      "name": 1025205,
+      "group": 8,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 890, "max": 1140 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 6, "name": 1044462, "message": 1044463, "from_axis": true },
+        { "graphic": "0x0F7E", "amount": 2, "name": 1049064, "message": 1049063 }
+      ]
+    },
+    {
+      "graphic": "0x144E",
+      "name": 1025203,
+      "group": 8,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 920, "max": 1170 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 8, "name": 1044462, "message": 1044463, "from_axis": true },
+        { "graphic": "0x0F7E", "amount": 4, "name": 1049064, "message": 1049063 }
+      ]
+    },
+    {
+      "graphic": "0x1452",
+      "name": 1025202,
+      "group": 8,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 950, "max": 1200 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 10, "name": 1044462, "message": 1044463, "from_axis": true },
+        { "graphic": "0x0F7E", "amount": 6, "name": 1049064, "message": 1049063 }
+      ]
+    },
+    {
+      "graphic": "0x144F",
+      "name": 1025199,
+      "group": 8,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 960, "max": 1210 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 12, "name": 1044462, "message": 1044463, "from_axis": true },
+        { "graphic": "0x0F7E", "amount": 10, "name": 1049064, "message": 1049063 }
+      ]
+    },
+    {
+      "graphic": "0x1F0B",
+      "name": 1027947,
+      "group": 8,
+      "markable": true,
+      "skills": [{ "skill": "Tailoring", "min": 900, "max": 1150 }],
+      "resources": [
+        { "graphic": "0x1081", "amount": 6, "name": 1044462, "message": 1044463, "from_axis": true },
+        { "graphic": "0x0F7E", "amount": 4, "name": 1049064, "message": 1049063 }
+      ]
+    }
+  ]
+}

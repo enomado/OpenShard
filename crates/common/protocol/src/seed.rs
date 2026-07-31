@@ -34,12 +34,25 @@ use crate::version::ClientVersion;
 /// The `0xEF` byte that opens a new-style seed.
 pub const SEED_COMMAND: u8 = 0xEF;
 
+/// The four bytes a client opens with, whatever it meant by them.
+///
+/// Class D — named, never read. Historically these are the client's own IPv4
+/// address, and they are what a server implementing login encryption would key
+/// the cipher on; this one implements none (the password is plaintext inside a
+/// cipher that is trivially broken either way — see
+/// [`AccountLogin::password`](crate::login::AccountLogin)), and the address is
+/// the same claim [`RawClientIp`](crate::wire::RawClientIp) refuses to believe,
+/// with the socket's real address available for free. So nothing reads it, and
+/// the type is the record of that decision rather than a promise to check
+/// something. See `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawSeedValue(pub u32);
+
 /// What a client sent as its opening handshake.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Seed {
-    /// The seed value. Doubles as the client's claimed IPv4 address on old
-    /// clients, and keys the login encryption on both.
-    pub value: u32,
+    /// The seed value. Never read — see [`RawSeedValue`].
+    pub value: RawSeedValue,
     /// The version the client reports here.
     ///
     /// `None` for an old-style seed, which carries no version — those clients
@@ -51,12 +64,51 @@ pub struct Seed {
     pub version: Option<ClientVersion>,
 }
 
+impl Seed {
+    /// Write the new-style handshake a client opens with.
+    ///
+    /// Always the `0xEF` form: the old four-byte seed carries no version, and a
+    /// client that has one has no reason to withhold it — the server sizes half
+    /// its packets from what it reads here, and the alternative is being
+    /// identified later by `0xBD`, several packets after the first mistake.
+    ///
+    /// The version is not `Option` for the same reason. A seed *this* engine
+    /// writes always knows what it is; decoding keeps the `Option` because a
+    /// legacy client is a thing that can arrive, not a thing to emit.
+    ///
+    /// ```
+    /// use openshard_protocol::seed::{RawSeedValue, Seed, SeedReader};
+    /// use openshard_protocol::version::ClientVersion;
+    ///
+    /// let version = ClientVersion::new(7, 0, 45, 65);
+    /// let bytes = Seed::encode(RawSeedValue(0x0A00_0001), version);
+    ///
+    /// let (used, seed) = SeedReader::new().feed(&bytes);
+    /// assert_eq!(used, bytes.len());
+    /// assert_eq!(seed.unwrap().version, Some(version));
+    /// ```
+    #[must_use]
+    pub fn encode(value: RawSeedValue, version: ClientVersion) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(SEED_LENGTH_NEW);
+        bytes.push(SEED_COMMAND);
+        bytes.extend_from_slice(&value.0.to_be_bytes());
+        for field in [version.major, version.minor, version.revision, version.patch] {
+            bytes.extend_from_slice(&u32::from(field).to_be_bytes());
+        }
+        debug_assert_eq!(bytes.len(), SEED_LENGTH_NEW);
+        bytes
+    }
+}
+
 /// Reads the opening handshake across however many TCP reads it takes.
 ///
 /// Feed it bytes; it tells you how many it consumed and whether it is done.
 ///
 /// ```
-/// use openshard_protocol::{seed::SeedReader, version::ClientVersion};
+/// use openshard_protocol::{
+///     seed::{RawSeedValue, SeedReader},
+///     version::ClientVersion,
+/// };
 ///
 /// let mut reader = SeedReader::new();
 ///
@@ -75,7 +127,7 @@ pub struct Seed {
 /// assert_eq!(used, 20);
 ///
 /// let seed = seed.unwrap();
-/// assert_eq!(seed.value, 0x0A00_0001);
+/// assert_eq!(seed.value, RawSeedValue(0x0A00_0001));
 /// assert_eq!(seed.version, Some(ClientVersion::new(7, 0, 45, 65)));
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -139,7 +191,7 @@ impl SeedReader {
             // read, so we cannot yet decide it is legacy — wait.
             Some(&SEED_COMMAND) => (0, None),
             Some(_) if buffer.len() >= SEED_LENGTH_OLD => {
-                let value = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+                let value = RawSeedValue(u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]));
                 self.done = true;
                 (SEED_LENGTH_OLD, Some(Seed { value, version: None }))
             }
@@ -171,7 +223,7 @@ impl SeedReader {
         (
             offset + body_length,
             Some(Seed {
-                value,
+                value: RawSeedValue(value),
                 // The client sends each field as a dword but every real value
                 // fits a byte. Saturating rather than truncating: a claimed
                 // major of 256 becoming 0 would silently demote a modern client
@@ -219,7 +271,7 @@ mod tests {
         assert_eq!(
             seed,
             Some(Seed {
-                value: 0x0A00_0001,
+                value: RawSeedValue(0x0A00_0001),
                 version: Some(ClientVersion::new(7, 0, 45, 65)),
             })
         );
@@ -234,7 +286,7 @@ mod tests {
         assert_eq!(
             seed,
             Some(Seed {
-                value: 0xC0A8_0001,
+                value: RawSeedValue(0xC0A8_0001),
                 version: None,
             }),
             "a legacy seed carries no version at all"
@@ -298,7 +350,7 @@ mod tests {
             }
         }
 
-        assert_eq!(seed.unwrap().value, 0x0A00_0001);
+        assert_eq!(seed.unwrap().value, RawSeedValue(0x0A00_0001));
         assert!(buffer.is_empty());
     }
 
@@ -368,6 +420,6 @@ mod tests {
         let mut reader = SeedReader::new();
         let (used, seed) = reader.feed(&bytes);
         assert_eq!(used, SEED_LENGTH_NEW);
-        assert_eq!(seed.unwrap().value, 0);
+        assert_eq!(seed.unwrap().value, RawSeedValue(0));
     }
 }

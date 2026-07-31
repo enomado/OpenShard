@@ -25,11 +25,12 @@
 //! see [`weapon_layer`].
 
 use crate::Skill;
+use openshard_protocol::wire::{Graphic, Layer};
 
 /// The paperdoll layer a one-handed weapon sits on (UO layer 1).
-pub const LAYER_ONE_HANDED: u8 = 1;
+pub const LAYER_ONE_HANDED: Layer = Layer(1);
 /// The paperdoll layer a two-handed weapon or shield sits on (UO layer 2).
-pub const LAYER_TWO_HANDED: u8 = 2;
+pub const LAYER_TWO_HANDED: Layer = Layer(2);
 
 /// Which combat skill a weapon trains and hits with — ServUO's `DefSkill`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,11 +90,11 @@ pub enum WeaponKind {
     Ranged,
 }
 
-/// One weapon's combat numbers, keyed by its item [`Graphic`](crate::Graphic) id.
+/// One weapon's combat numbers, keyed by its item [`Drawn`](crate::Drawn) id.
 #[derive(Debug, Clone, Copy)]
 pub struct WeaponData {
     /// The item graphic this row describes.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// The skill it trains and strikes with.
     pub skill: WeaponSkill,
     /// How it wounds — which family of Arms Lore lines describes it.
@@ -126,7 +127,7 @@ pub struct WeaponData {
     /// crossbow, the heavy crossbow, the battle axe and the war hammer as
     /// one-handed. Everyone knows you do not fire a bow one-handed, so ServUO says
     /// so in code and so does this. Read through [`weapon_layer`], never directly.
-    pub hands: Option<u8>,
+    pub hands: Option<Layer>,
 }
 
 /// Pick the era-appropriate damage value: the AoS family (eras 2 AoS, 3 SE, 4 ML)
@@ -151,7 +152,7 @@ pub const fn swing_base(weapon: &WeaponData, era: u8) -> u16 {
 /// The weapon row for an item graphic, or `None` for anything not a known weapon
 /// (a torch, a spellbook, a shield, bare hands).
 #[must_use]
-pub fn weapon_data(graphic: u16) -> Option<&'static WeaponData> {
+pub fn weapon_data(graphic: Graphic) -> Option<&'static WeaponData> {
     WEAPONS.iter().find(|w| w.graphic == graphic)
 }
 
@@ -163,7 +164,7 @@ pub fn weapon_data(graphic: u16) -> Option<&'static WeaponData> {
 /// but the six, which is the honest answer: without tiledata the engine does not
 /// know, and it says so rather than guessing one-handed.
 #[must_use]
-pub const fn weapon_layer(weapon: &WeaponData, tiledata_layer: u8) -> u8 {
+pub const fn weapon_layer(weapon: &WeaponData, tiledata_layer: Layer) -> Layer {
     match weapon.hands {
         Some(layer) => layer,
         None => tiledata_layer,
@@ -279,7 +280,7 @@ const fn w(
     is_axe: bool,
 ) -> WeaponData {
     WeaponData {
-        graphic,
+        graphic: Graphic(graphic),
         skill,
         kind,
         old_speed,
@@ -301,11 +302,11 @@ mod tests {
 
     #[test]
     fn a_known_graphic_resolves_and_an_unknown_one_does_not() {
-        let sword = weapon_data(0x0F61).expect("longsword is in the table");
+        let sword = weapon_data(Graphic(0x0F61)).expect("longsword is in the table");
         assert_eq!(sword.skill, WeaponSkill::Swords);
         assert_eq!(sword.old_speed, 35);
         assert_eq!((sword.old_min, sword.old_max), (5, 33));
-        assert!(weapon_data(0x0000).is_none());
+        assert!(weapon_data(Graphic(0x0000)).is_none());
     }
 
     #[test]
@@ -319,7 +320,7 @@ mod tests {
 
     #[test]
     fn swing_base_picks_the_eras_speed_column() {
-        let sword = weapon_data(0x0F61).unwrap(); // old 35, aos 30, ml 350
+        let sword = weapon_data(Graphic(0x0F61)).unwrap(); // old 35, aos 30, ml 350
         assert_eq!(swing_base(sword, 0), 35);
         assert_eq!(swing_base(sword, 1), 35);
         assert_eq!(swing_base(sword, 2), 30);
@@ -331,14 +332,14 @@ mod tests {
     fn no_two_weapons_share_a_graphic() {
         for (i, a) in WEAPONS.iter().enumerate() {
             for b in &WEAPONS[i + 1..] {
-                assert_ne!(a.graphic, b.graphic, "duplicate graphic 0x{:04X}", a.graphic);
+                assert_ne!(a.graphic, b.graphic, "duplicate graphic 0x{:04X}", a.graphic.0);
             }
         }
     }
 
     #[test]
     fn a_weapons_kind_is_its_servuo_class_and_not_its_skill() {
-        let kind = |graphic: u16| weapon_data(graphic).expect("in the table").kind;
+        let kind = |graphic: u16| weapon_data(Graphic(graphic)).expect("in the table").kind;
         assert_eq!(kind(0x0F61), WeaponKind::Slashing); // longsword, BaseSword
         assert_eq!(kind(0x0F49), WeaponKind::Axe); // axe, BaseAxe
         assert_eq!(kind(0x13B0), WeaponKind::Bashing); // war axe: an axe that bashes
@@ -353,8 +354,9 @@ mod tests {
 
     #[test]
     fn the_six_classes_that_distrust_tiledata_win_over_it() {
-        let layer =
-            |graphic: u16, tiledata: u8| weapon_layer(weapon_data(graphic).expect("in the table"), tiledata);
+        let layer = |graphic: u16, tiledata: Layer| {
+            weapon_layer(weapon_data(Graphic(graphic)).expect("in the table"), tiledata)
+        };
         // A real `tiledata.mul` files all five of these as one-handed. They are not.
         for graphic in [0x13B2, 0x0F50, 0x13FD, 0x0F47, 0x1439] {
             assert_eq!(
@@ -368,7 +370,7 @@ mod tests {
         // Everything else takes the client's word, whichever way it reads.
         assert_eq!(layer(0x143E, LAYER_TWO_HANDED), LAYER_TWO_HANDED); // halberd
         assert_eq!(layer(0x13FF, LAYER_ONE_HANDED), LAYER_ONE_HANDED); // katana
-        assert_eq!(layer(0x13FF, 0), 0, "no tiledata, no answer");
+        assert_eq!(layer(0x13FF, Layer(0)), Layer(0), "no tiledata, no answer");
     }
 
     #[test]

@@ -27,17 +27,10 @@ use openshard_state::components::{Riding, body_is_female};
 /// that the pack walk is nothing next to the rest of the tick.
 pub(super) const STATUS_REFRESH_TICKS: u64 = 10;
 
-/// The derived half of a player's status bar, kept to compare against next time.
-///
-/// Only the fields this pass computes: the stats and pools have their own
-/// re-send (`refresh_status_of`, off a buff landing), and the name never moves.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(super) struct StatusSnapshot {
-    pub(super) gold: u32,
-    pub(super) armor: u16,
-    pub(super) weight: u16,
-    pub(super) followers: u8,
-}
+// What this pass remembers between runs is `StatusSnapshot`, and it lives on the
+// connection's row in `openshard_state` rather than here: it is about what a
+// particular client was last told, not about what the character is.
+use openshard_state::connection::StatusSnapshot;
 
 impl World {
     /// What a mobile's status bar says right now.
@@ -59,33 +52,56 @@ impl World {
             .map_or((DEFAULT_HITPOINTS, DEFAULT_DEXTERITY, DEFAULT_MANA), |s| {
                 (s.strength, s.dexterity, s.intelligence)
             });
-        let (hits_now, hits_max) =
-            hits.map_or((DEFAULT_HITPOINTS, DEFAULT_HITPOINTS), |h| (h.current, h.max));
-        let (mana_now, mana_max) = mana.map_or((DEFAULT_MANA, DEFAULT_MANA), |m| (m.current, m.max));
+        let hits = hits.map_or(
+            Vitals {
+                current: DEFAULT_HITPOINTS,
+                max: DEFAULT_HITPOINTS,
+            },
+            |h| Vitals {
+                current: h.current,
+                max: h.max,
+            },
+        );
+        let mana = mana.map_or(
+            Vitals {
+                current: DEFAULT_MANA,
+                max: DEFAULT_MANA,
+            },
+            |m| Vitals {
+                current: m.current,
+                max: m.max,
+            },
+        );
         // The real pool if the mobile carries one; otherwise dexterity, so an NPC
         // or a bare test mobile still reads as able to run.
-        let (stamina_now, stamina_max) = stamina.map_or((dexterity, dexterity), |s| (s.current, s.max));
+        let stamina = stamina.map_or(
+            Vitals {
+                current: dexterity,
+                max: dexterity,
+            },
+            |s| Vitals {
+                current: s.current,
+                max: s.max,
+            },
+        );
         let derived = self.derived_status(entity);
 
         Some(MobileStatus {
-            serial: serial.raw(),
+            serial,
             name,
-            hits: hits_now,
-            hits_max,
+            hits,
             // The body says which paperdoll the client draws; the bar should agree
             // with it rather than call every character male.
             female: self
                 .state
                 .registry
                 .get::<Body>(entity)
-                .is_some_and(|body| body_is_female(body.id.0)),
+                .is_some_and(|body| body_is_female(body.id)),
             strength,
             dexterity,
             intelligence,
-            stamina: stamina_now,
-            stamina_max,
-            mana: mana_now,
-            mana_max,
+            stamina,
+            mana,
             gold: derived.gold,
             armor: derived.armor,
             weight: derived.weight,
@@ -164,8 +180,9 @@ impl World {
             .get::<Stats>(entity)
             .map_or(DEFAULT_HITPOINTS, |stats| stats.strength);
         let carried = self
-            .connection_of(entity)
-            .and_then(|connection| self.last_status.get(&connection))
+            .state
+            .row_of(entity)
+            .and_then(|row| row.last_status.as_ref())
             .map_or_else(
                 || items::total_weight(&self.state, entity, BODY_WEIGHT),
                 |remembered| remembered.weight,
@@ -191,16 +208,20 @@ impl World {
             .iter()
             .map(|(&connection, &entity)| (connection, entity))
             .collect();
-        // A connection that has gone drops its remembered numbers with it.
-        self.last_status
-            .retain(|connection, _| self.state.players.contains_key(connection));
+        // No sweep of the remembered numbers here any more: they live on the
+        // connection's row and a connection that has gone took them with it. This
+        // used to be a `retain` over the map, and it was the second hand-written
+        // teardown of the same state — `disconnect` cleared it too.
         let contents = items::contents_index(&self.state);
         for (connection, entity) in players {
             let now = self.derived_status_with(&contents, entity);
-            let unchanged = self.last_status.get(&connection) == Some(&now);
+            let Some(row) = self.state.connection_mut(connection) else {
+                continue;
+            };
+            let unchanged = row.last_status == Some(now);
             // Remembered either way: the fatigue check reads this weight, and a
             // player whose numbers have not moved still needs one on file.
-            self.last_status.insert(connection, now);
+            row.last_status = Some(now);
             if !unchanged {
                 self.send_status(connection, entity);
             }

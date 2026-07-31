@@ -14,6 +14,7 @@ use crate::error::{DecodeError, expect_id};
 use crate::feature::Feature;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::version::ClientVersion;
+use crate::wire::RawSkillId;
 
 /// How the skill window is set to train a skill — ServUO's `SkillLock`. The wire
 /// byte the `0x3A` packets carry.
@@ -51,6 +52,15 @@ impl SkillLock {
 }
 
 /// One skill's line in a `0x3A` packet, every value in tenths (so 75.5 is 755).
+///
+/// Every field here is a bare integer by decision, and both halves of N10's
+/// allowlist are represented: `id` is server-chosen (class A) but its domain
+/// type, `openshard_state::Skill`, lives in a server crate above `protocol`
+/// and cannot be held here — the same reason `version.rs`'s `ClientVersion`
+/// components and `feedback.rs`'s animation numbers stay plain. `value`,
+/// `base` and `cap` are quantities — trained, computed and clamped in
+/// `openshard_skills` and `[gameplay]` config, far above `protocol` — exactly
+/// `mobile::Vitals`'s argument. See `docs/protocol_newtypes.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SkillEntry {
     /// The skill id, zero-based (Alchemy is 0), as the client numbers them.
@@ -143,10 +153,15 @@ impl EncodePacket for SkillUpdate {
 
 /// `0x3A` from the client — the player clicked a skill's up/down/lock arrow.
 /// ServUO's `ChangeSkillLock`.
+///
+/// `skill` is never checked against `openshard_state::Skill`'s table before
+/// this stage — `Skills::set_lock` took whatever arrived, a `HashMap` insert
+/// with no range on the path at all. It is unwrapped and validated at the
+/// seam that owns the skill list, `World::set_skill_lock`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SkillLockRequest {
-    /// Which skill, zero-based.
-    pub skill: u8,
+    /// Which skill, zero-based, exactly as sent.
+    pub skill: RawSkillId,
     /// The new lock state.
     pub lock: SkillLock,
 }
@@ -157,7 +172,7 @@ impl DecodePacket for SkillLockRequest {
     /// Decode the incoming skill-lock request.
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         // The wire carries the id as a word; every skill id fits a byte.
-        let skill = reader.u16()? as u8;
+        let skill = RawSkillId(reader.u16()? as u8);
         let lock = SkillLock::from_bits(reader.u8()?);
         Ok(Self { skill, lock })
     }
@@ -168,8 +183,10 @@ impl DecodePacket for SkillLockRequest {
 /// `TextCommand` case `0x24` → `Skills.UseSkill`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct UseSkillRequest {
-    /// Which skill, zero-based.
-    pub skill: u8,
+    /// Which skill, zero-based, exactly as sent — checked against the table by
+    /// `openshard_skills::use_skill_button`, which already refused an id past
+    /// it before this stage; the type just makes that visible.
+    pub skill: RawSkillId,
 }
 
 impl UseSkillRequest {
@@ -192,7 +209,9 @@ impl UseSkillRequest {
         // ignores. A payload that is not a number is not a use we can act on.
         let command = reader.null_terminated_string()?;
         match command.split(' ').next().unwrap_or("").trim().parse::<u8>() {
-            Ok(skill) => Ok(Some(Self { skill })),
+            Ok(skill) => Ok(Some(Self {
+                skill: RawSkillId(skill),
+            })),
             Err(_) => Ok(None),
         }
     }
@@ -315,8 +334,18 @@ mod tests {
         // 0x3A, length, skill(u16)=45, lock=1 (down).
         let packet = [0x3A, 0x00, 0x06, 0x00, 0x2D, 0x01];
         let request: SkillLockRequest = decode_packet(&packet, aos()).unwrap();
-        assert_eq!(request.skill, 45);
+        assert_eq!(request.skill, RawSkillId(45));
         assert_eq!(request.lock, SkillLock::Down);
+    }
+
+    #[test]
+    fn a_lock_request_past_the_skill_table_decodes_cleanly() {
+        // N9's decode half: 255 names no skill, but nothing here refuses it —
+        // that check is `openshard_state::Skill::from_id`, at the seam that
+        // owns the skill list (`World::set_skill_lock`), not in this decoder.
+        let packet = [0x3A, 0x00, 0x06, 0x00, 0xFF, 0x00];
+        let request: SkillLockRequest = decode_packet(&packet, aos()).unwrap();
+        assert_eq!(request.skill, RawSkillId(255));
     }
 
     #[test]
@@ -327,7 +356,7 @@ mod tests {
         let len = packet.len() as u16;
         packet[1..3].copy_from_slice(&len.to_be_bytes());
         let request = UseSkillRequest::decode(&packet).unwrap().unwrap();
-        assert_eq!(request.skill, 45, "Mining, zero-based");
+        assert_eq!(request.skill, RawSkillId(45), "Mining, zero-based");
     }
 
     #[test]

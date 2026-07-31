@@ -25,6 +25,8 @@ copy that goes stale silently, which is worse than no copy at all.
 | [`docs/architecture.md`](docs/architecture.md) | The shape: layers, dependency rules, the crate map, how entities/events/protocol/persistence fit together, and what belongs in which file. |
 | [`docs/findings.md`](docs/findings.md) | What the client actually does, and how to read Sphere and ServUO without inheriting their mistakes. Every entry cost a day. |
 | [`docs/roadmap.md`](docs/roadmap.md) | The order, and what is built. §6 is gameplay, system by system, with the protocol findings and reference-emulator arguments behind each one. |
+| [`docs/client.md`](docs/client.md) | **Our own client**, milestone by milestone: what the protocol is missing in the client's direction, and what has to move out of `server/world` before anything draws. |
+| [`docs/client_versions.md`](docs/client_versions.md) | **Which clients exist and which are played.** What changes between versions in the files and on the wire, why server and client must read the same `.mul`, and how to obtain a set legally. |
 | [`docs/development.md`](docs/development.md) | The environment: the three commands, a toolchain without root, `target/` bloat, the `Cargo.lock` MSRV pin. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | What lands and how: branch, PR, review, merge commit. |
 
@@ -116,7 +118,9 @@ map. The rules:
   than complaining. Every boundary lives in `Feature::since`, once.
 - **`crates/common/*` is below the server.** `server/*` and `client/*` may depend
   on it and never on each other; anything both ends of the wire agree on lives in
-  `crates/common/protocol`.
+  `crates/common/protocol`. The one place both ends may be named is
+  **`crates/e2e/*`**, which ships no code — only tests that need a real client
+  and a real shard in one process — and which nothing depends on.
 
 ## What the client actually does
 
@@ -184,7 +188,11 @@ The workspace is three groups, and the group is part of the path:
   more systems read), `persistence`, `scripting`, `server` (the binary, glue
   only), and the gameplay systems: `chat`, `skills`, `magic`, `combat`, `items`,
   `crafting`, `npc`, `quests`, `ai`.
-- `crates/client/*` — not started.
+- `crates/client/*` — `net`: the client's side of the wire. Framing and
+  decompression, the login conversation, and a `WorldView` of what the server
+  has shown. [`docs/client.md`](docs/client.md) is the plan it is being built
+  against.
+- `crates/e2e/*` — tests only, and the only crates allowed to name both ends.
 
 ## Working on this
 

@@ -16,7 +16,8 @@ use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{DEFAULT_LANGUAGE_TAG, NO_GRAPHIC, UnicodeMessage};
+use openshard_protocol::speech::{DEFAULT_LANGUAGE_TAG, Font, TalkMode, UnicodeMessage};
+use openshard_protocol::wire::Hue;
 use openshard_state::components::{Body, Client, Name, Position};
 use openshard_state::sectors::in_range;
 use openshard_state::{Gameplay, WorldState};
@@ -38,30 +39,27 @@ pub struct MobileSpoke {
     pub text: String,
 }
 
-/// The talk mode of a whisper — heard only by those right beside the speaker.
-/// Sphere's `TALKMODE_WHISPER`; the client sends it for `;`-prefixed speech.
-pub const TALKMODE_WHISPER: u8 = 8;
-/// The talk mode of a yell — carried two screens off. Sphere's `TALKMODE_YELL`,
-/// the client's `!`-prefixed speech.
-pub const TALKMODE_YELL: u8 = 9;
-/// A middling font the client renders speech in when the speaker names none.
-pub const DEFAULT_FONT: u16 = 3;
-
 /// How far speech in `mode` carries, in tiles. A whisper is heard only right up
 /// close, a yell two screens off, everything else across the screen — the
-/// operator's three `distance_*` ranges, chosen by the mode byte the client
-/// sends.
+/// operator's three `distance_*` ranges, chosen by the mode the client sent.
 #[must_use]
-pub const fn speech_range(mode: u8, gameplay: &Gameplay) -> u32 {
+pub const fn speech_range(mode: TalkMode, gameplay: &Gameplay) -> u32 {
     match mode {
-        TALKMODE_WHISPER => gameplay.distance_whisper,
-        TALKMODE_YELL => gameplay.distance_yell,
+        TalkMode::Whisper => gameplay.distance_whisper,
+        TalkMode::Yell => gameplay.distance_yell,
         _ => gameplay.distance_talk,
     }
 }
 
 /// A player says something. The connection names the speaker.
-pub fn say(state: &mut WorldState, connection: ConnectionId, mode: u8, hue: u16, font: u16, text: &str) {
+pub fn say(
+    state: &mut WorldState,
+    connection: ConnectionId,
+    mode: TalkMode,
+    hue: Hue,
+    font: Font,
+    text: &str,
+) {
     let Some(&player) = state.players.get(&connection) else {
         return;
     };
@@ -70,7 +68,7 @@ pub fn say(state: &mut WorldState, connection: ConnectionId, mode: u8, hue: u16,
 
 /// Put words over a mobile's head, for everyone in earshot, and say on the bus
 /// that it spoke. The shared body of [`say`] and a script's speak command.
-pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font: u16, text: &str) {
+pub fn speak(state: &mut WorldState, entity: EntityId, mode: TalkMode, hue: Hue, font: Font, text: &str) {
     let Some(serial) = state.registry.serial_of(entity) else {
         return;
     };
@@ -82,7 +80,7 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
     // `OnSaid` calls `RevealingAction`, whose last line is `DisruptiveAction`. A
     // trance you can talk through is not a trance, and nor is a hiding place.
     state.break_cover(entity);
-    let graphic = state.registry.get::<Body>(entity).map_or(NO_GRAPHIC, |b| b.id.0);
+    let graphic = state.registry.get::<Body>(entity).map(|b| b.id);
     // Owned before the packet, so the immutable borrow of the name is done by the
     // time the mutable outbox is touched.
     let name = state
@@ -96,7 +94,7 @@ pub fn speak(state: &mut WorldState, entity: EntityId, mode: u8, hue: u16, font:
     // line; `0xAE` also carries any script `0x1C` cannot. The hue is left as the
     // caller (the client, for a player) chose it.
     let packet = ServerPacket::UnicodeMessage(UnicodeMessage {
-        serial: serial.raw(),
+        serial: Some(serial),
         graphic,
         mode,
         hue,

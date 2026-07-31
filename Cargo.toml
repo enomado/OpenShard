@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/common/*", "crates/server/*", "crates/client/*"]
+members = ["crates/common/*", "crates/server/*", "crates/client/*", "crates/e2e/*"]
 
 [workspace.package]
 version = "0.0.1"
@@ -28,6 +28,8 @@ debug = false
 # Internal crates
 openshard-ai = { path = "crates/server/ai", version = "0.0.1" }
 openshard-chat = { path = "crates/server/chat", version = "0.0.1" }
+openshard-client-net = { path = "crates/client/net", version = "0.0.1" }
+openshard-client-render = { path = "crates/client/render", version = "0.0.1" }
 openshard-combat = { path = "crates/server/combat", version = "0.0.1" }
 openshard-config = { path = "crates/common/config", version = "0.0.1" }
 openshard-crafting = { path = "crates/server/crafting", version = "0.0.1" }
@@ -50,6 +52,7 @@ openshard-scripting = { path = "crates/server/scripting", version = "0.0.1" }
 openshard-server = { path = "crates/server/server", version = "0.0.1" }
 openshard-skills = { path = "crates/server/skills", version = "0.0.1" }
 openshard-state = { path = "crates/server/state", version = "0.0.1" }
+openshard-uofiles = { path = "crates/common/uofiles", version = "0.0.1" }
 openshard-world = { path = "crates/server/world", version = "0.0.1" }
 
 # External

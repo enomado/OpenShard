@@ -1,24 +1,26 @@
-use super::*;
+use openshard_protocol::wire::{ClilocId, Graphic, SoundId};
 use openshard_state::components::{Trap, TrapKind};
 
+use super::*;
+
 /// The sound a sprung magic or explosion trap makes — ServUO's `PlaySound(0x307)`.
-const BLAST_SOUND: u16 = 0x0307;
+const BLAST_SOUND: SoundId = SoundId(0x0307);
 /// A dart trap's twang.
-const DART_SOUND: u16 = 0x0223;
+const DART_SOUND: SoundId = SoundId(0x0223);
 /// The hiss of a poison cloud.
-const POISON_SOUND: u16 = 0x0231;
+const POISON_SOUND: SoundId = SoundId(0x0231);
 /// The explosion's flame, and the dart's — ServUO's `0x36BD` location effect.
-const BLAST_GRAPHIC: u16 = 0x36BD;
+const BLAST_GRAPHIC: Graphic = Graphic(0x36BD);
 /// The green cloud a poison trap lets out.
-const CLOUD_GRAPHIC: u16 = 0x113A;
+const CLOUD_GRAPHIC: Graphic = Graphic(0x113A);
 /// "You set off a trap!"
-const SET_OFF_A_TRAP: u32 = 502_999;
+const SET_OFF_A_TRAP: ClilocId = ClilocId(502_999);
 /// "Your skin blisters from the heat!"
-const SKIN_BLISTERS: u32 = 503_000;
+const SKIN_BLISTERS: ClilocId = ClilocId(503_000);
 /// "A dart imbeds itself in your flesh!"
-const DART_IN_FLESH: u32 = 502_998;
+const DART_IN_FLESH: ClilocId = ClilocId(502_998);
 /// "You are enveloped in a noxious green cloud!"
-const NOXIOUS_CLOUD: u32 = 503_004;
+const NOXIOUS_CLOUD: ClilocId = ClilocId(503_004);
 
 impl World {
     /// Spring a container's trap on whoever just opened it, if it has one.
@@ -61,14 +63,14 @@ impl World {
         match kind {
             TrapKind::Magic => {
                 self.state.localized_message(opener, SET_OFF_A_TRAP, "");
-                combat::damage(&mut self.state, serial.raw(), power, DamageType::Energy, None);
+                combat::damage(&mut self.state, serial, power, DamageType::Energy, None);
                 self.state.play_sound(container, BLAST_SOUND);
                 self.location_effect(container, BLAST_GRAPHIC);
             }
             TrapKind::Explosion => {
                 self.state.localized_message(opener, SET_OFF_A_TRAP, "");
                 let damage = scaled(10, 30, &mut self.state);
-                combat::damage(&mut self.state, serial.raw(), damage, DamageType::Fire, None);
+                combat::damage(&mut self.state, serial, damage, DamageType::Fire, None);
                 self.state.localized_message(opener, SKIN_BLISTERS, "");
                 self.state.play_sound(container, BLAST_SOUND);
                 self.location_effect(container, BLAST_GRAPHIC);
@@ -76,7 +78,7 @@ impl World {
             TrapKind::Dart => {
                 self.state.localized_message(opener, SET_OFF_A_TRAP, "");
                 let damage = scaled(5, 15, &mut self.state);
-                combat::damage(&mut self.state, serial.raw(), damage, DamageType::Physical, None);
+                combat::damage(&mut self.state, serial, damage, DamageType::Physical, None);
                 self.state.localized_message(opener, DART_IN_FLESH, "");
                 self.state.play_sound(container, DART_SOUND);
             }
@@ -85,12 +87,12 @@ impl World {
                 // ServUO poisons by the chest's level where it has one, and hits
                 // for `power` and greater poison where it does not.
                 let poison = if level == 0 {
-                    combat::damage(&mut self.state, serial.raw(), power, DamageType::Poison, None);
+                    combat::damage(&mut self.state, serial, power, DamageType::Poison, None);
                     2 // greater
                 } else {
                     level.saturating_sub(1).min(4)
                 };
-                combat::apply_poison(&mut self.state, serial.raw(), poison, ticks);
+                combat::apply_poison(&mut self.state, serial, poison, ticks);
                 self.state.localized_message(opener, NOXIOUS_CLOUD, "");
                 self.state.play_sound(container, POISON_SOUND);
                 self.location_effect(container, CLOUD_GRAPHIC);
@@ -100,7 +102,7 @@ impl World {
 
     /// A flash, a puff of smoke or a cloud, standing at a thing's own tile — the
     /// `0x70` in its simplest form, seen by everyone who can see the thing.
-    fn location_effect(&mut self, at: EntityId, graphic: u16) {
+    fn location_effect(&mut self, at: EntityId, graphic: Graphic) {
         let Some(&Position(spot)) = self.state.registry.get::<Position>(at) else {
             return;
         };
@@ -108,7 +110,7 @@ impl World {
             kind: openshard_protocol::feedback::EffectKind::FixedXyz,
             from: None,
             to: None,
-            art: openshard_protocol::wire::Graphic(graphic),
+            art: graphic,
             from_point: spot,
             to_point: spot,
             speed: 9,

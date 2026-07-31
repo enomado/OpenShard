@@ -26,13 +26,25 @@ use crate::direction::Facing;
 use crate::error::{DecodeError, WrongPacket};
 use crate::identity::RawCharacterName;
 use crate::login::CHARACTER_NAME_LENGTH;
+use crate::mobile::{Notoriety, StatusFlags};
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::Serial;
 use crate::version::ClientVersion;
+use crate::wire::{Graphic, Hue, RawCharacterSlot, RawClientIp, RawGraphic, RawHue, RawSkillId};
 
 /// Where something is.
 ///
 /// `z` is signed and one byte: UO's world is 256 units tall and the client has
 /// no way to express more.
+///
+/// # Why its three fields stay bare integers
+///
+/// `Point` is itself the named type, and its components are the one thing a
+/// coordinate is made of: numbers that get added to and compared. Wrapping each
+/// axis would buy nothing — nothing reaches an `x` except through a `Point`, so
+/// there is no call site at which it could be mistaken for a hue — and would
+/// cost a `.0` on every step, every sector lookup and every line of sight in the
+/// server. See the allowlist in `docs/protocol_newtypes.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Point {
     /// East-west tile.
@@ -59,14 +71,25 @@ impl fmt::Display for Point {
 // -- 0x5D character play --------------------------------------------------
 
 /// `0x5D` — the client picks a character from the list. 73 bytes.
+///
+/// Laid out here because this is where the conversation it opens is drawn, and
+/// decoded on the other side of the split: it is a
+/// [`LoginStagePacket::PlayCharacter`](crate::login::LoginStagePacket::PlayCharacter),
+/// the last of the character screen's three, beside `0x00`/`0xF8` and `0x83`
+/// whose bodies also live in this module. Nothing about a connection that sends
+/// one is in the world yet.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CharacterPlay {
-    /// The character's name, echoed from the 0xA9 list.
-    pub name: String,
-    /// Which slot, zero-based, into the list the server sent.
-    pub slot: u32,
-    /// The client's own claimed IPv4, as a raw dword. Not to be trusted or used.
-    pub client_ip: u32,
+    /// The character's name, echoed from the 0xA9 list, not yet checked
+    /// against the account's actual list — see [`RawCharacterName`]'s module
+    /// docs; the lookup in the world (`tick::screen::play_character`) is the
+    /// check.
+    pub name: RawCharacterName,
+    /// Which slot, zero-based, into the list the server sent. Class D: the
+    /// seam looks the character up by name, not by slot. See [`RawCharacterSlot`].
+    pub slot: RawCharacterSlot,
+    /// The client's own claimed IPv4. Never trusted or used. See [`RawClientIp`].
+    pub client_ip: RawClientIp,
 }
 
 impl DecodePacket for CharacterPlay {
@@ -76,12 +99,12 @@ impl DecodePacket for CharacterPlay {
         // A constant the client always sends. Sphere ignores it and so do we:
         // rejecting on it would be a compatibility risk for no gain.
         reader.skip(4)?;
-        let name = reader.fixed_string(30)?;
+        let name = RawCharacterName(reader.fixed_string(30)?);
         reader.skip(2)?; // unknown
         reader.skip(4)?; // client flags
         reader.skip(24)?; // unknown / login count
-        let slot = reader.u32()?;
-        let client_ip = reader.u32()?;
+        let slot = RawCharacterSlot(reader.u32()?);
+        let client_ip = RawClientIp(reader.u32()?);
         Ok(Self {
             name,
             slot,
@@ -91,18 +114,19 @@ impl DecodePacket for CharacterPlay {
 }
 
 impl CharacterPlay {
-    /// Encode a whole 0x5D packet. Test fixtures only — see `login`'s module
-    /// docs: this server never sends one, only ever decodes it.
+    /// Encode a whole 0x5D packet. What `crates/client/net`'s login state
+    /// machine sends for real — see `login`'s module docs: this server never
+    /// sends one, only ever decodes it.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(73);
         writer.u8(Self::ID);
         writer.u32(0xEDED_EDED); // the constant the client sends
-        writer.fixed_string(&self.name, 30);
+        writer.fixed_string(&self.name.0, 30);
         writer.zeros(2);
         writer.zeros(4);
         writer.zeros(24);
-        writer.u32(self.slot);
-        writer.u32(self.client_ip);
+        writer.u32(self.slot.0);
+        writer.u32(self.client_ip.0);
         writer.into_bytes()
     }
 }
@@ -124,13 +148,19 @@ pub enum Race {
     Gargoyle,
 }
 
+/// A starting skill value exactly as sent — the client's own whole points,
+/// not yet checked against the shard's starting-skill rule. No promotion
+/// method yet — see `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawSkillValue(pub u8);
+
 /// One starting skill a player chose at creation: which skill, and its value.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct SkillChoice {
     /// The skill id, as the client numbers them.
-    pub skill: u8,
+    pub skill: RawSkillId,
     /// Its starting value; the client sends whole points here. Stored raw.
-    pub value: u8,
+    pub value: RawSkillValue,
 }
 
 /// `0x00` / `0xF8` — the client asks to create a character.
@@ -161,41 +191,124 @@ pub struct SkillChoice {
 pub struct CreateCharacter {
     /// The new character's name.
     pub name: RawCharacterName,
-    /// Client flags reported at creation.
-    pub flags: u32,
-    /// The chosen profession, or 0 for the "advanced"/custom option.
-    pub profession: u8,
-    /// The raw sex/race byte, exactly as sent. [`Self::race`] and
-    /// [`Self::is_female`] interpret it.
-    pub sex_race: u8,
-    /// Starting strength.
-    pub strength: u8,
-    /// Starting dexterity.
-    pub dexterity: u8,
-    /// Starting intelligence.
-    pub intelligence: u8,
+    /// Client flags reported at creation. Class D — never trusted, never read.
+    pub flags: ClientFlags,
+    /// The chosen profession, or the "advanced"/custom option. See
+    /// [`RawProfession::interpret`].
+    pub profession: RawProfession,
+    /// The raw sex/race byte, exactly as sent. See [`RawSexRace::interpret`].
+    pub sex_race: RawSexRace,
+    /// Starting strength, the client's own whole-point value.
+    pub strength: RawStatValue,
+    /// Starting dexterity, the client's own whole-point value.
+    pub dexterity: RawStatValue,
+    /// Starting intelligence, the client's own whole-point value.
+    pub intelligence: RawStatValue,
     /// The starting skills: three for `0x00`, four for `0xF8`.
     pub skills: Vec<SkillChoice>,
     /// Skin hue.
-    pub skin_hue: u16,
+    pub skin_hue: RawHue,
     /// Hair graphic.
-    pub hair: u16,
+    pub hair: RawGraphic,
     /// Hair hue.
-    pub hair_hue: u16,
+    pub hair_hue: RawHue,
     /// Facial-hair graphic.
-    pub beard: u16,
+    pub beard: RawGraphic,
     /// Facial-hair hue.
-    pub beard_hue: u16,
+    pub beard_hue: RawHue,
     /// Which starting city the player picked, as an index into the list the
-    /// character-list packet offered.
-    pub start_location: u8,
-    /// Which character slot to fill.
-    pub slot: u32,
+    /// character-list packet offered. No promotion method yet — see
+    /// `docs/protocol_newtypes.md`.
+    pub start_location: RawStartLocationIndex,
+    /// Which character slot to fill. Class D — `create_character` fills the
+    /// first free slot and does not read this. See [`RawCharacterSlot`].
+    pub slot: RawCharacterSlot,
     /// Shirt hue.
-    pub shirt_hue: u16,
+    pub shirt_hue: RawHue,
     /// Trousers hue.
-    pub pants_hue: u16,
+    pub pants_hue: RawHue,
 }
+
+/// Client flags reported at character creation, exactly as sent. Never
+/// trusted, never read — nothing downstream acts on them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ClientFlags(pub u32);
+
+/// The profession byte exactly as a `0x00`/`0xF8` packet carried it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RawProfession(pub u8);
+
+/// The profession a player picked at character creation.
+///
+/// The wire fixes exactly one distinction — zero means "advanced/custom" —
+/// so this is as far as `protocol` interprets it. Naming the professions a
+/// non-zero id refers to is Community Pack content, not this crate's business.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Profession {
+    /// The player set stats and skills themselves.
+    Custom,
+    /// A shard-defined template, by its id.
+    Predefined(u8),
+}
+
+impl RawProfession {
+    /// Total: every byte value means something, including "custom".
+    pub const fn interpret(self) -> Profession {
+        match self.0 {
+            0 => Profession::Custom,
+            id => Profession::Predefined(id),
+        }
+    }
+}
+
+/// The sex/race byte exactly as a `0x00`/`0xF8` packet carried it, in the
+/// Stygian Abyss encoding (`0x2`–`0x7`) every client that reaches character
+/// creation on a modern shard sends. See [`CreateCharacter`]'s module docs for
+/// the deliberate simplification this makes for a genuinely pre-SA client.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RawSexRace(pub u8);
+
+/// The sex a player picked at character creation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Sex {
+    Male,
+    Female,
+}
+
+impl RawSexRace {
+    /// Total: odd values are female on every client — Sphere notes this rule
+    /// holds across versions — and anything the Stygian Abyss encoding does
+    /// not name falls back to `(Male, Human)`, the safe default Sphere itself
+    /// uses.
+    pub const fn interpret(self) -> (Sex, Race) {
+        let sex = if self.0.is_multiple_of(2) {
+            Sex::Male
+        } else {
+            Sex::Female
+        };
+        let race = match self.0 {
+            0x4 | 0x5 => Race::Elf,
+            0x6 | 0x7 => Race::Gargoyle,
+            _ => Race::Human,
+        };
+        (sex, race)
+    }
+}
+
+/// A starting stat point exactly as sent: the client's own whole-point value,
+/// not yet checked against the shard's starting-stat rule.
+///
+/// No promotion method yet — the per-stat floor/ceiling and total-points rule
+/// that would produce one is gameplay balance this crate does not own; see
+/// `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawStatValue(pub u8);
+
+/// Which starting city index a create-character packet carried, not yet
+/// checked against the list the character-list packet actually offered. No
+/// promotion method yet — see `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawStartLocationIndex(pub u8);
 
 impl CreateCharacter {
     /// The classic create-character id: 104 bytes, three skills.
@@ -223,33 +336,33 @@ impl CreateCharacter {
         reader.skip(9)?;
         let name = RawCharacterName(reader.fixed_string(CHARACTER_NAME_LENGTH)?);
         reader.skip(2)?; // 0x0000
-        let flags = reader.u32()?;
+        let flags = ClientFlags(reader.u32()?);
         reader.skip(8)?; // unknown
-        let profession = reader.u8()?;
+        let profession = RawProfession(reader.u8()?);
         reader.skip(15)?; // 0x00 * 15
-        let sex_race = reader.u8()?;
-        let strength = reader.u8()?;
-        let dexterity = reader.u8()?;
-        let intelligence = reader.u8()?;
+        let sex_race = RawSexRace(reader.u8()?);
+        let strength = RawStatValue(reader.u8()?);
+        let dexterity = RawStatValue(reader.u8()?);
+        let intelligence = RawStatValue(reader.u8()?);
 
         let mut skills = Vec::with_capacity(skill_count);
         for _ in 0..skill_count {
-            let skill = reader.u8()?;
-            let value = reader.u8()?;
+            let skill = RawSkillId(reader.u8()?);
+            let value = RawSkillValue(reader.u8()?);
             skills.push(SkillChoice { skill, value });
         }
 
-        let skin_hue = reader.u16()?;
-        let hair = reader.u16()?;
-        let hair_hue = reader.u16()?;
-        let beard = reader.u16()?;
-        let beard_hue = reader.u16()?;
+        let skin_hue = RawHue(reader.u16()?);
+        let hair = RawGraphic(reader.u16()?);
+        let hair_hue = RawHue(reader.u16()?);
+        let beard = RawGraphic(reader.u16()?);
+        let beard_hue = RawHue(reader.u16()?);
         reader.skip(1)?; // shard index
-        let start_location = reader.u8()?;
-        let slot = reader.u32()?;
+        let start_location = RawStartLocationIndex(reader.u8()?);
+        let slot = RawCharacterSlot(reader.u32()?);
         reader.skip(4)?; // the client's claimed ip; not to be trusted
-        let shirt_hue = reader.u16()?;
-        let pants_hue = reader.u16()?;
+        let shirt_hue = RawHue(reader.u16()?);
+        let pants_hue = RawHue(reader.u16()?);
 
         Ok(Self {
             name,
@@ -272,32 +385,17 @@ impl CreateCharacter {
         })
     }
 
-    /// Whether the character is female. Odd sex/race values are female on every
-    /// client — Sphere notes this rule holds across versions.
-    pub const fn is_female(&self) -> bool {
-        !self.sex_race.is_multiple_of(2)
-    }
-
-    /// The chosen race, read with the Stygian Abyss encoding.
-    pub const fn race(&self) -> Race {
-        match self.sex_race {
-            0x4 | 0x5 => Race::Elf,
-            0x6 | 0x7 => Race::Gargoyle,
-            // 0x2 / 0x3, and anything unexpected, is a human — the safe default
-            // Sphere falls back to.
-            _ => Race::Human,
-        }
-    }
-
-    /// The body graphic for this character's race and sex.
-    pub const fn body(&self) -> u16 {
-        match (self.race(), self.is_female()) {
-            (Race::Human, false) => 0x0190,
-            (Race::Human, true) => 0x0191,
-            (Race::Elf, false) => 0x025D,
-            (Race::Elf, true) => 0x025E,
-            (Race::Gargoyle, false) => 0x029A,
-            (Race::Gargoyle, true) => 0x029B,
+    /// The body graphic for the given race and sex, as interpreted from the
+    /// wire's sex/race byte. Replaces the old `is_female`/`race` methods on
+    /// `Self` — see [`RawSexRace::interpret`].
+    pub const fn body(sex: Sex, race: Race) -> u16 {
+        match (race, sex) {
+            (Race::Human, Sex::Male) => 0x0190,
+            (Race::Human, Sex::Female) => 0x0191,
+            (Race::Elf, Sex::Male) => 0x025D,
+            (Race::Elf, Sex::Female) => 0x025E,
+            (Race::Gargoyle, Sex::Male) => 0x029A,
+            (Race::Gargoyle, Sex::Female) => 0x029B,
         }
     }
 
@@ -315,38 +413,61 @@ impl CreateCharacter {
         writer.zeros(9); // pattern1, pattern2, kuoc
         writer.fixed_string(&self.name.0, CHARACTER_NAME_LENGTH);
         writer.zeros(2);
-        writer.u32(self.flags);
+        writer.u32(self.flags.0);
         writer.zeros(8);
-        writer.u8(self.profession);
+        writer.u8(self.profession.0);
         writer.zeros(15);
-        writer.u8(self.sex_race);
-        writer.u8(self.strength);
-        writer.u8(self.dexterity);
-        writer.u8(self.intelligence);
+        writer.u8(self.sex_race.0);
+        writer.u8(self.strength.0);
+        writer.u8(self.dexterity.0);
+        writer.u8(self.intelligence.0);
 
         let count = if high_seas { 4 } else { 3 };
         for index in 0..count {
             let choice = self.skills.get(index).copied().unwrap_or_default();
-            writer.u8(choice.skill);
-            writer.u8(choice.value);
+            writer.u8(choice.skill.0);
+            writer.u8(choice.value.0);
         }
 
-        writer.u16(self.skin_hue);
-        writer.u16(self.hair);
-        writer.u16(self.hair_hue);
-        writer.u16(self.beard);
-        writer.u16(self.beard_hue);
+        writer.u16(self.skin_hue.0);
+        writer.u16(self.hair.0);
+        writer.u16(self.hair_hue.0);
+        writer.u16(self.beard.0);
+        writer.u16(self.beard_hue.0);
         writer.zeros(1); // shard index
-        writer.u8(self.start_location);
-        writer.u32(self.slot);
+        writer.u8(self.start_location.0);
+        writer.u32(self.slot.0);
         writer.zeros(4); // client ip
-        writer.u16(self.shirt_hue);
-        writer.u16(self.pants_hue);
+        writer.u16(self.shirt_hue.0);
+        writer.u16(self.pants_hue.0);
         writer.into_bytes()
     }
 }
 
 // -- 0x1B start -----------------------------------------------------------
+
+/// How big a facet is, in tiles.
+///
+/// The two numbers always travel together — both packets that carry a map size
+/// carry both halves, and a client told a width without the matching height
+/// draws the edge of the world in the wrong place — so they are one value rather
+/// than two fields something has to keep in step. Its own components stay bare
+/// integers for the same reason [`Point`]'s do.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct MapSize {
+    /// Width in tiles.
+    pub width: u16,
+    /// Height in tiles.
+    pub height: u16,
+}
+
+impl MapSize {
+    /// Britannia's, which is what Sphere sends when it has nothing better.
+    pub const BRITANNIA: Self = Self {
+        width: 0x1800,
+        height: 0x1000,
+    };
+}
 
 /// `0x1B` — put a body in the world. 37 bytes.
 ///
@@ -355,32 +476,26 @@ impl CreateCharacter {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayerStart {
     /// The player's serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// The body graphic.
-    pub body: u16,
+    pub body: Graphic,
     /// Where.
     pub position: Point,
     /// Which way, and whether running.
     pub facing: Facing,
-    /// Map width in tiles.
-    pub map_width: u16,
-    /// Map height in tiles.
-    pub map_height: u16,
+    /// How big the facet this character is on is — not Britannia's, unless it
+    /// is on Britannia.
+    pub map: MapSize,
 }
-
-/// The map size Sphere sends when it has nothing better: Britannia's.
-pub const DEFAULT_MAP_WIDTH: u16 = 0x1800;
-/// The map size Sphere sends when it has nothing better: Britannia's.
-pub const DEFAULT_MAP_HEIGHT: u16 = 0x1000;
 
 impl EncodePacket for PlayerStart {
     const ID: u8 = 0x1B;
     const LENGTH: PacketLength = PacketLength::Fixed(37);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
         out.zeros(4);
-        out.u16(self.body);
+        out.u16(self.body.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         // The z field is two bytes wide but only the low one is read, as a
@@ -393,9 +508,49 @@ impl EncodePacket for PlayerStart {
         out.zeros(1);
         out.u32(0xFFFF_FFFF);
         out.zeros(4);
-        out.u16(self.map_width);
-        out.u16(self.map_height);
+        out.u16(self.map.width);
+        out.u16(self.map.height);
         out.zeros(6);
+    }
+}
+
+impl DecodePacket for PlayerStart {
+    const ID: u8 = 0x1B;
+
+    /// The client's side of the first packet of the game proper.
+    ///
+    /// The z field is the trap: two bytes wide, and only the low one is read,
+    /// as a *signed* byte. Reading the pair as an `i16` puts a dungeon floor at
+    /// 65,526 instead of -10 — the mirror of the note on the encoder.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x1B player serial",
+            value: raw,
+        })?;
+        reader.skip(4)?;
+        let body = Graphic(reader.u16()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        reader.skip(1)?; // the high half of z, which the client never reads
+        let z = reader.u8()? as i8;
+        let facing = Facing::from_bits(reader.u8()?);
+        reader.skip(1)?;
+        reader.skip(4)?; // 0xFFFFFFFF
+        reader.skip(4)?;
+        let map = MapSize {
+            width: reader.u16()?,
+            height: reader.u16()?,
+        };
+        // The six trailing zeros are not read: nothing follows them in the
+        // packet, and a frame that ended early is already a codec error.
+        Ok(Self {
+            serial,
+            body,
+            position: Point::new(x, y, z),
+            facing,
+            map,
+        })
     }
 }
 
@@ -408,13 +563,13 @@ impl EncodePacket for PlayerStart {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayerUpdate {
     /// The player's serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// The body graphic.
-    pub body: u16,
+    pub body: Graphic,
     /// The body hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// Status flags: poisoned, invisible, warmode.
-    pub flags: u8,
+    pub flags: StatusFlags,
     /// Where.
     pub position: Point,
     /// Which way, and whether running.
@@ -426,16 +581,45 @@ impl EncodePacket for PlayerUpdate {
     const LENGTH: PacketLength = PacketLength::Fixed(19);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
-        out.u16(self.body);
+        out.u32(self.serial.raw());
+        out.u16(self.body.0);
         out.zeros(1);
-        out.u16(self.hue);
-        out.u8(self.flags);
+        out.u16(self.hue.0);
+        out.u8(self.flags.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         out.zeros(2);
         out.u8(self.facing.to_bits());
         out.u8(self.position.z as u8);
+    }
+}
+
+impl DecodePacket for PlayerUpdate {
+    const ID: u8 = 0x20;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x20 player update serial",
+            value: raw,
+        })?;
+        let body = Graphic(reader.u16()?);
+        reader.skip(1)?;
+        let hue = Hue(reader.u16()?);
+        let flags = StatusFlags(reader.u8()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        reader.skip(2)?;
+        let facing = Facing::from_bits(reader.u8()?);
+        let z = reader.u8()? as i8;
+        Ok(Self {
+            serial,
+            body,
+            hue,
+            flags,
+            position: Point::new(x, y, z),
+            facing,
+        })
     }
 }
 
@@ -465,19 +649,55 @@ impl EncodePacket for DeathStatus {
 
 // -- 0x02 walk request ----------------------------------------------------
 
+/// The sequence byte of a `0x02` walk request, exactly as the client sent it.
+///
+/// See [`RawStepSequence::interpret`] for why the promotion is total and why the
+/// rule about sequences does not live in it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct RawStepSequence(pub u8);
+
+/// The sequence byte a `0x22` ack or `0x21` reject carries back.
+///
+/// Always a number the client chose: the server never invents one, it echoes
+/// the request's. The type exists to say that the byte reached an outbound
+/// packet through the seam rather than out of nowhere.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct StepSequence(pub u8);
+
+impl RawStepSequence {
+    /// Total: every one of the 256 bytes is a legal tag.
+    ///
+    /// The sequence is an *echo* — the client owns the number, the server sends
+    /// it back so the client can match an ack to the step that asked for it —
+    /// so there is no domain to fall outside of and this promotion changes
+    /// nothing but provenance. There *is* a rule about sequences (a fresh
+    /// connection must open at zero, and a wrap skips it), but it refuses the
+    /// **step**, not the value, and lives with the walk state machine in
+    /// `openshard_movement::WalkSequence::accept`. Reflecting a byte a rule
+    /// declined to accept is correct: a `0x21` names the step it is rejecting.
+    pub const fn interpret(self) -> StepSequence {
+        StepSequence(self.0)
+    }
+}
+
+/// The fastwalk key a `0x02` carries, exactly as sent. Never read.
+///
+/// Dead weight on the wire. It was a 1999 attempt to stop speed hacks, was
+/// broken immediately, and Sphere stopped reading it; this shard throttles by
+/// pace (`openshard_movement::Pace`) instead. The type is the record of that
+/// decision — it has no promotion because nothing is ever going to want one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RawFastwalkKey(pub u32);
+
 /// `0x02` — the client asks to take one step. 7 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WalkRequest {
     /// Which way, and whether running.
     pub facing: Facing,
     /// The client's sequence number for this step. See `openshard-movement`.
-    pub sequence: u8,
-    /// The fastwalk key.
-    ///
-    /// Dead weight. It was a 1999 attempt to stop speed hacks, was broken
-    /// immediately, and Sphere stopped reading it. Kept here only because the
-    /// four bytes are on the wire.
-    pub fastwalk_key: u32,
+    pub sequence: RawStepSequence,
+    /// The fastwalk key. Never read — see [`RawFastwalkKey`].
+    pub fastwalk_key: RawFastwalkKey,
 }
 
 impl DecodePacket for WalkRequest {
@@ -486,21 +706,22 @@ impl DecodePacket for WalkRequest {
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
             facing: Facing::from_bits(reader.u8()?),
-            sequence: reader.u8()?,
-            fastwalk_key: reader.u32()?,
+            sequence: RawStepSequence(reader.u8()?),
+            fastwalk_key: RawFastwalkKey(reader.u32()?),
         })
     }
 }
 
 impl WalkRequest {
-    /// Encode a whole 0x02 packet. Test fixtures only — this server never sends
-    /// one, only ever decodes it.
+    /// Encode a whole 0x02 packet. What `crates/client/net`'s walk state
+    /// machine (`walk.rs`) sends for real; this *server* never sends one, only
+    /// ever decodes it.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = PacketWriter::with_capacity(7);
         writer.u8(Self::ID);
         writer.u8(self.facing.to_bits());
-        writer.u8(self.sequence);
-        writer.u32(self.fastwalk_key);
+        writer.u8(self.sequence.0);
+        writer.u32(self.fastwalk_key.0);
         writer.into_bytes()
     }
 }
@@ -511,18 +732,41 @@ impl WalkRequest {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WalkAck {
     /// The sequence number being acknowledged.
-    pub sequence: u8,
+    pub sequence: StepSequence,
     /// Colours the player's own health bar.
-    pub notoriety: u8,
+    pub notoriety: Notoriety,
 }
 
 impl EncodePacket for WalkAck {
     const ID: u8 = 0x22;
     const LENGTH: PacketLength = PacketLength::Fixed(3);
 
-    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.sequence);
-        out.u8(self.notoriety);
+    fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
+        out.u8(self.sequence.0);
+        // Through `for_client` for the same reason `0x77` and `0x78` are: a
+        // client older than 4.0.0 draws no bar at all for a yellow one, and the
+        // player's own bar going missing reads as the client being broken.
+        out.u8(self.notoriety.for_client(version));
+    }
+}
+
+impl DecodePacket for WalkAck {
+    const ID: u8 = 0x22;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self {
+            // The sequence a client reads back out of an ack is a number it
+            // chose itself and the server echoed, so it is a `StepSequence`
+            // already — there is nothing to interpret. `RawStepSequence` is the
+            // other direction, where the byte is a client's claim.
+            sequence: StepSequence(reader.u8()?),
+            // Lossy in exactly one place, and knowingly: `for_client` sends a
+            // yellow bar as blue to a client older than 4.0.0, so decoding what
+            // such a client was sent gives `Innocent` back. That is what
+            // arrived, and inventing the `Invulnerable` behind it would be a
+            // guess the wire does not support.
+            notoriety: Notoriety::from_bits(reader.u8()?),
+        })
     }
 }
 
@@ -532,7 +776,7 @@ impl EncodePacket for WalkAck {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WalkReject {
     /// The sequence number being refused.
-    pub sequence: u8,
+    pub sequence: StepSequence,
     /// Where the client really is.
     pub position: Point,
     /// Which way it is really facing.
@@ -544,11 +788,31 @@ impl EncodePacket for WalkReject {
     const LENGTH: PacketLength = PacketLength::Fixed(8);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.sequence);
+        out.u8(self.sequence.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         out.u8(self.facing.to_bits());
         out.u8(self.position.z as u8);
+    }
+}
+
+impl DecodePacket for WalkReject {
+    const ID: u8 = 0x21;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        // The facing sits *between* the y and the z, which is the one thing
+        // about this packet worth reading twice: every other position on this
+        // wire is three fields in a row.
+        let sequence = StepSequence(reader.u8()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        let facing = Facing::from_bits(reader.u8()?);
+        let z = reader.u8()? as i8;
+        Ok(Self {
+            sequence,
+            position: Point::new(x, y, z),
+            facing,
+        })
     }
 }
 
@@ -565,14 +829,31 @@ impl EncodePacket for LoginComplete {
     fn encode_body(&self, _out: &mut PacketWriter, _version: ClientVersion) {}
 }
 
-/// `0x4F` — overall light level. 2 bytes.
+impl DecodePacket for LoginComplete {
+    const ID: u8 = 0x55;
+
+    /// One byte, all of it the id: the packet *is* the signal.
+    fn decode_body(_reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+/// How dark the world is drawn: `0` is blinding daylight and `0x1F` is pitch
+/// dark.
 ///
-/// 0 is blinding daylight and 0x1F is pitch dark. Backwards from what the name
-/// suggests, and the client clamps rather than complaining.
+/// Backwards from what the word suggests, which is exactly why it is a type: a
+/// bare `u8` here reads as brightness to everyone who has not been told. Values
+/// above `0x1F` are not refused — the client clamps them itself, and a shard
+/// whose region data says `200` gets the dark it asked for rather than a
+/// dropped packet.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct Light(pub u8);
+
+/// `0x4F` — overall light level. 2 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LightLevel {
-    /// 0 (blinding daylight) to 0x1F (pitch dark).
-    pub level: u8,
+    /// How dark, in the client's own backwards scale. See [`Light`].
+    pub level: Light,
 }
 
 impl EncodePacket for LightLevel {
@@ -580,7 +861,7 @@ impl EncodePacket for LightLevel {
     const LENGTH: PacketLength = PacketLength::Fixed(2);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.level);
+        out.u8(self.level.0);
     }
 }
 
@@ -595,38 +876,100 @@ impl EncodePacket for LightLevel {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PlayMusic {
     /// Indexes the client's own music list.
-    pub track: u16,
+    pub track: MusicId,
 }
+
+/// An index into the client's own music list — ServUO's `MusicName` order.
+///
+/// Not a filename and not a graphic: the tracks live in the client's files and
+/// the server only ever names one by number.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct MusicId(pub u16);
 
 impl EncodePacket for PlayMusic {
     const ID: u8 = 0x6D;
     const LENGTH: PacketLength = PacketLength::Fixed(3);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u16(self.track);
+        out.u16(self.track.0);
+    }
+}
+
+/// Which season the client draws its trees and ground in.
+///
+/// Five, and the client knows no others — a sixth byte draws nothing at all,
+/// which is why `openshard_config` refuses one at startup rather than letting a
+/// shard find out at world entry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Season {
+    Spring,
+    Summer,
+    Fall,
+    Winter,
+    /// The blighted look Felucca's dungeons use.
+    Desolation,
+}
+
+impl Season {
+    /// The wire byte.
+    pub const fn to_bits(self) -> u8 {
+        match self {
+            Self::Spring => 0,
+            Self::Summer => 1,
+            Self::Fall => 2,
+            Self::Winter => 3,
+            Self::Desolation => 4,
+        }
+    }
+
+    /// Read a season from its byte. Total, the way [`Notoriety::from_bits`] is:
+    /// anything the client cannot draw falls back to spring rather than leaving
+    /// the world in whatever it was last told.
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => Self::Summer,
+            2 => Self::Fall,
+            3 => Self::Winter,
+            4 => Self::Desolation,
+            _ => Self::Spring,
+        }
+    }
+
+    /// Read a season from its byte, refusing anything the client cannot draw
+    /// instead of falling back to spring — for a caller like config validation
+    /// that needs to reject a bad byte rather than silently accept one.
+    pub const fn try_from_bits(bits: u8) -> Option<Self> {
+        match bits {
+            0 => Some(Self::Spring),
+            1 => Some(Self::Summer),
+            2 => Some(Self::Fall),
+            3 => Some(Self::Winter),
+            4 => Some(Self::Desolation),
+            _ => None,
+        }
     }
 }
 
 /// `0xBC` — which season the client draws. 3 bytes.
 ///
-/// `0` spring, `1` summer, `2` fall, `3` winter, `4` desolation. The second byte
-/// asks the client to play the season's own sound as it changes; sending it on
-/// world entry with the sound off avoids announcing a change that is really just
-/// a login. Ported from ServUO's `SeasonChange`.
+/// The second byte asks the client to play the season's own sound as it
+/// changes; sending it on world entry with the sound off avoids announcing a
+/// change that is really just a login. Ported from ServUO's `SeasonChange`,
+/// whose name this takes so that [`Season`] can be the season itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Season {
-    /// `0` spring, `1` summer, `2` fall, `3` winter, `4` desolation.
-    pub season: u8,
+pub struct SeasonChange {
+    /// Which season.
+    pub season: Season,
     /// Whether to play the season's own change sound.
     pub play_sound: bool,
 }
 
-impl EncodePacket for Season {
+impl EncodePacket for SeasonChange {
     const ID: u8 = 0xBC;
     const LENGTH: PacketLength = PacketLength::Fixed(3);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u8(self.season);
+        out.u8(self.season.to_bits());
         out.bool(self.play_sound);
     }
 }
@@ -679,8 +1022,21 @@ impl EncodePacket for LogoutAck {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapChange {
     /// Which map (facet) to draw.
-    pub map: u8,
+    pub map: Facet,
 }
+
+/// Which facet the client draws, and which a mobile is on: `0` Felucca, `1`
+/// Trammel, `2` Ilshenar, and so on up through whatever the shard's own files
+/// hold.
+///
+/// The number indexes the client's `map*.mul`/`map*.uop` files, so its meaning
+/// is fixed by what the player installed and not by anything the server
+/// decides. One type for both the wire's own idea of a facet and the world's —
+/// they used to be two (`world::MapId` here, `state::components::Facet`
+/// separately), converted at every seam; see "Two types for one facet byte" in
+/// `docs/protocol_newtypes.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct Facet(pub u8);
 
 impl EncodePacket for MapChange {
     const ID: u8 = 0xBF;
@@ -689,7 +1045,7 @@ impl EncodePacket for MapChange {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u16(6); // this subcommand's own, constant length
         out.u16(0x08);
-        out.u8(self.map);
+        out.u8(self.map.0);
     }
 }
 
@@ -709,8 +1065,8 @@ impl EncodePacket for MapChange {
 ///
 /// The three zeroed fields after `z` are unused in every client that reads it.
 #[must_use]
-pub fn encode_server_change(at: Point, width: u16, height: u16) -> Vec<u8> {
-    let mut writer = PacketWriter::with_capacity(16);
+pub fn encode_server_change(at: Point, size: MapSize) -> Vec<u8> {
+    let mut writer = PacketWriter::with_capacity(SERVER_CHANGE_LENGTH.minimum());
     writer.u8(0x76);
     writer.u16(at.x);
     writer.u16(at.y);
@@ -718,11 +1074,20 @@ pub fn encode_server_change(at: Point, width: u16, height: u16) -> Vec<u8> {
     // and a zero-extended one puts the player 65,000 tiles in the air.
     writer.u16(i16::from(at.z) as u16);
     writer.zeros(5);
-    writer.u16(width);
-    writer.u16(height);
-    debug_assert_eq!(writer.len(), 16);
+    writer.u16(size.width);
+    writer.u16(size.height);
+    debug_assert_eq!(writer.len(), SERVER_CHANGE_LENGTH.minimum());
     writer.into_bytes()
 }
+
+/// How [`encode_server_change`] is framed.
+///
+/// A hand-written packet still has to be readable from the other end, and the
+/// client's framer needs this length before it can find where the next packet
+/// starts. Naming it here keeps the size beside the code that writes it — a
+/// number copied into a framing table is a number that can disagree with the
+/// encoder.
+pub const SERVER_CHANGE_LENGTH: PacketLength = PacketLength::Fixed(16);
 
 #[cfg(test)]
 mod tests {
@@ -741,9 +1106,9 @@ mod tests {
     #[test]
     fn character_play_round_trips_at_the_declared_length() {
         let play = CharacterPlay {
-            name: "Lord British".to_owned(),
-            slot: 0,
-            client_ip: 0x0A00_0001,
+            name: RawCharacterName("Lord British".to_owned()),
+            slot: RawCharacterSlot(0),
+            client_ip: RawClientIp(0x0A00_0001),
         };
         let bytes = play.encode();
         assert_eq!(
@@ -761,31 +1126,43 @@ mod tests {
 
     fn sample_create(high_seas: bool) -> CreateCharacter {
         let mut skills = vec![
-            SkillChoice { skill: 1, value: 50 },
-            SkillChoice { skill: 2, value: 30 },
-            SkillChoice { skill: 3, value: 20 },
+            SkillChoice {
+                skill: RawSkillId(1),
+                value: RawSkillValue(50),
+            },
+            SkillChoice {
+                skill: RawSkillId(2),
+                value: RawSkillValue(30),
+            },
+            SkillChoice {
+                skill: RawSkillId(3),
+                value: RawSkillValue(20),
+            },
         ];
         if high_seas {
-            skills.push(SkillChoice { skill: 4, value: 0 });
+            skills.push(SkillChoice {
+                skill: RawSkillId(4),
+                value: RawSkillValue(0),
+            });
         }
         CreateCharacter {
             name: RawCharacterName("Lord British".to_owned()),
-            flags: 0x0000_001F,
-            profession: 1,
-            sex_race: 0x3, // human female
-            strength: 60,
-            dexterity: 20,
-            intelligence: 20,
+            flags: ClientFlags(0x0000_001F),
+            profession: RawProfession(1),
+            sex_race: RawSexRace(0x3), // human female
+            strength: RawStatValue(60),
+            dexterity: RawStatValue(20),
+            intelligence: RawStatValue(20),
             skills,
-            skin_hue: 0x83EA,
-            hair: 0x203B,
-            hair_hue: 0x044E,
-            beard: 0,
-            beard_hue: 0,
-            start_location: 0,
-            slot: 0,
-            shirt_hue: 0x0386,
-            pants_hue: 0x01BB,
+            skin_hue: RawHue(0x83EA),
+            hair: RawGraphic(0x203B),
+            hair_hue: RawHue(0x044E),
+            beard: RawGraphic(0),
+            beard_hue: RawHue(0),
+            start_location: RawStartLocationIndex(0),
+            slot: RawCharacterSlot(0),
+            shirt_hue: RawHue(0x0386),
+            pants_hue: RawHue(0x01BB),
         }
     }
 
@@ -822,37 +1199,46 @@ mod tests {
         // place, which shifts everything after it. Pin the name and the skills.
         let decoded = CreateCharacter::decode(&sample_create(true).encode()).unwrap();
         assert_eq!(decoded.name, "Lord British");
-        assert_eq!(decoded.skin_hue, 0x83EA);
+        assert_eq!(decoded.skin_hue, RawHue(0x83EA));
         assert_eq!(decoded.skills.len(), 4);
-        assert_eq!(decoded.skills[0], SkillChoice { skill: 1, value: 50 });
-        assert_eq!(decoded.start_location, 0);
+        assert_eq!(
+            decoded.skills[0],
+            SkillChoice {
+                skill: RawSkillId(1),
+                value: RawSkillValue(50)
+            }
+        );
+        assert_eq!(decoded.start_location, RawStartLocationIndex(0));
     }
 
     #[test]
     fn create_character_maps_race_and_sex_to_a_body() {
         let human_female = CreateCharacter {
-            sex_race: 0x3,
+            sex_race: RawSexRace(0x3),
             ..sample_create(true)
         };
-        assert!(human_female.is_female());
-        assert_eq!(human_female.race(), Race::Human);
-        assert_eq!(human_female.body(), 0x0191);
+        let (sex, race) = human_female.sex_race.interpret();
+        assert!(matches!(sex, Sex::Female));
+        assert_eq!(race, Race::Human);
+        assert_eq!(CreateCharacter::body(sex, race), 0x0191);
 
         let elf_male = CreateCharacter {
-            sex_race: 0x4,
+            sex_race: RawSexRace(0x4),
             ..sample_create(true)
         };
-        assert!(!elf_male.is_female());
-        assert_eq!(elf_male.race(), Race::Elf);
-        assert_eq!(elf_male.body(), 0x025D);
+        let (sex, race) = elf_male.sex_race.interpret();
+        assert!(matches!(sex, Sex::Male));
+        assert_eq!(race, Race::Elf);
+        assert_eq!(CreateCharacter::body(sex, race), 0x025D);
 
         let gargoyle_female = CreateCharacter {
-            sex_race: 0x7,
+            sex_race: RawSexRace(0x7),
             ..sample_create(true)
         };
-        assert!(gargoyle_female.is_female());
-        assert_eq!(gargoyle_female.race(), Race::Gargoyle);
-        assert_eq!(gargoyle_female.body(), 0x029B);
+        let (sex, race) = gargoyle_female.sex_race.interpret();
+        assert!(matches!(sex, Sex::Female));
+        assert_eq!(race, Race::Gargoyle);
+        assert_eq!(CreateCharacter::body(sex, race), 0x029B);
     }
 
     #[test]
@@ -870,15 +1256,19 @@ mod tests {
         ));
     }
 
+    /// A serial every test in here can use: valid, and in the mobile pool.
+    fn serial() -> Serial {
+        Serial::new(0x0000_0001).unwrap()
+    }
+
     #[test]
     fn player_start_matches_its_declared_length() {
         let start = PlayerStart {
-            serial: 0x0000_0001,
-            body: 0x0190,
+            serial: serial(),
+            body: Graphic(0x0190),
             position: Point::new(1475, 1774, 0),
             facing: facing(),
-            map_width: DEFAULT_MAP_WIDTH,
-            map_height: DEFAULT_MAP_HEIGHT,
+            map: MapSize::BRITANNIA,
         };
         let bytes = encode_packet(&start, version());
         assert_eq!(bytes.len(), 37, "Sphere's PacketPlayerStart length");
@@ -897,12 +1287,11 @@ mod tests {
         // byte. Writing z as a big-endian i16 would put -10 on the wire as
         // 0xFFF6, and the client would take 0xFF — a height of -1.
         let start = PlayerStart {
-            serial: 1,
-            body: 0x0190,
+            serial: serial(),
+            body: Graphic(0x0190),
             position: Point::new(100, 100, -10),
             facing: facing(),
-            map_width: DEFAULT_MAP_WIDTH,
-            map_height: DEFAULT_MAP_HEIGHT,
+            map: MapSize::BRITANNIA,
         };
         let bytes = encode_packet(&start, version());
         assert_eq!(bytes[15], 0x00, "the high byte is padding, not sign");
@@ -912,10 +1301,10 @@ mod tests {
     #[test]
     fn player_update_matches_its_declared_length() {
         let update = PlayerUpdate {
-            serial: 1,
-            body: 0x0190,
-            hue: 0x83EA,
-            flags: 0,
+            serial: serial(),
+            body: Graphic(0x0190),
+            hue: Hue(0x83EA),
+            flags: StatusFlags::NONE,
             position: Point::new(1475, 1774, -5),
             facing: facing(),
         };
@@ -939,8 +1328,8 @@ mod tests {
     fn walk_request_round_trips_at_the_declared_length() {
         let request = WalkRequest {
             facing: facing(),
-            sequence: 42,
-            fastwalk_key: 0xDEAD_BEEF,
+            sequence: RawStepSequence(42),
+            fastwalk_key: RawFastwalkKey(0xDEAD_BEEF),
         };
         let bytes = request.encode();
         assert_eq!(
@@ -955,8 +1344,8 @@ mod tests {
     fn walk_request_keeps_the_running_bit_out_of_the_direction() {
         let bytes = WalkRequest {
             facing: Facing::running(Direction::North),
-            sequence: 0,
-            fastwalk_key: 0,
+            sequence: RawStepSequence(0),
+            fastwalk_key: RawFastwalkKey(0),
         }
         .encode();
         assert_eq!(bytes[1], 0x80, "north, running");
@@ -971,8 +1360,8 @@ mod tests {
         assert_eq!(
             encode_packet(
                 &WalkAck {
-                    sequence: 7,
-                    notoriety: 0x01
+                    sequence: StepSequence(7),
+                    notoriety: Notoriety::Innocent,
                 },
                 version()
             ),
@@ -981,7 +1370,7 @@ mod tests {
 
         let reject = encode_packet(
             &WalkReject {
-                sequence: 7,
+                sequence: StepSequence(7),
                 position: Point::new(1475, 1774, -5),
                 facing: facing(),
             },
@@ -999,21 +1388,29 @@ mod tests {
     #[test]
     fn the_small_entry_packets_are_the_right_shape() {
         assert_eq!(encode_packet(&LoginComplete, version()), vec![0x55]);
-        assert_eq!(encode_packet(&LightLevel { level: 0 }, version()), vec![0x4F, 0]);
+        assert_eq!(
+            encode_packet(&LightLevel { level: Light(0) }, version()),
+            vec![0x4F, 0]
+        );
         // Music and season: three bytes each, the track big-endian. Both
         // references write exactly this.
         assert_eq!(
-            encode_packet(&PlayMusic { track: 11 }, version()),
+            encode_packet(&PlayMusic { track: MusicId(11) }, version()),
             vec![0x6D, 0x00, 11]
         );
         assert_eq!(
-            encode_packet(&PlayMusic { track: 0x0102 }, version()),
+            encode_packet(
+                &PlayMusic {
+                    track: MusicId(0x0102)
+                },
+                version()
+            ),
             vec![0x6D, 0x01, 0x02]
         );
         assert_eq!(
             encode_packet(
-                &Season {
-                    season: 3,
+                &SeasonChange {
+                    season: Season::Winter,
                     play_sound: true
                 },
                 version()
@@ -1022,8 +1419,8 @@ mod tests {
         );
         assert_eq!(
             encode_packet(
-                &Season {
-                    season: 0,
+                &SeasonChange {
+                    season: Season::Spring,
                     play_sound: false
                 },
                 version()
@@ -1041,7 +1438,7 @@ mod tests {
         // 0xBF is variable-length on the client's own table, but this
         // subcommand's own body never varies, so it declares its own length at
         // offset 1 the same way every other fixed packet does.
-        let map = encode_packet(&MapChange { map: 1 }, version());
+        let map = encode_packet(&MapChange { map: Facet(1) }, version());
         assert_eq!(map.len(), 6);
         assert_eq!(map[0], 0xBF);
         assert_eq!(u16::from_be_bytes([map[1], map[2]]), 6, "declares its length");
@@ -1056,7 +1453,13 @@ mod tests {
     /// it is worth pinning rather than trusting a reading of either.
     #[test]
     fn the_server_change_says_where_and_how_big() {
-        let packet = encode_server_change(Point::new(1495, 1629, -20), 2304, 1600);
+        let packet = encode_server_change(
+            Point::new(1495, 1629, -20),
+            MapSize {
+                width: 2304,
+                height: 1600,
+            },
+        );
 
         assert_eq!(packet.len(), 16, "fixed at sixteen bytes");
         assert_eq!(packet[0], 0x76);
@@ -1079,25 +1482,86 @@ mod tests {
     #[test]
     fn a_point_at_the_edges_of_its_fields_encodes() {
         // z is the one that can go negative, and the map is 24 bits wide in
-        // neither axis — u16 is the whole range the client has.
+        // neither axis — u16 is the whole range the client has. The serial is
+        // the top of the item pool rather than `u32::MAX`, because `Serial`
+        // refuses `0xFFFFFFFF`: that value means "nothing", not "the last
+        // object".
+        let highest = Serial::new(crate::serial::ITEM_MAX).unwrap();
         let start = PlayerStart {
-            serial: u32::MAX,
-            body: u16::MAX,
+            serial: highest,
+            body: Graphic(u16::MAX),
             position: Point::new(u16::MAX, u16::MAX, i8::MIN),
             facing: Facing::walking(Direction::NorthWest),
-            map_width: u16::MAX,
-            map_height: u16::MAX,
+            map: MapSize {
+                width: u16::MAX,
+                height: u16::MAX,
+            },
         };
         assert_eq!(encode_packet(&start, version()).len(), 37);
 
         let update = PlayerUpdate {
-            serial: u32::MAX,
-            body: u16::MAX,
-            hue: u16::MAX,
-            flags: u8::MAX,
+            serial: highest,
+            body: Graphic(u16::MAX),
+            hue: Hue(u16::MAX),
+            flags: StatusFlags(u8::MAX),
             position: Point::new(u16::MAX, u16::MAX, i8::MAX),
             facing: Facing::walking(Direction::NorthWest),
         };
         assert_eq!(encode_packet(&update, version()).len(), 19);
+    }
+
+    #[test]
+    fn every_sequence_byte_survives_interpretation() {
+        // Class B, and total: the walk sequence has no out-of-domain value to
+        // refuse, so the promotion must be defined — and unchanged — for all
+        // 256. A gap here would be a step the server silently renumbered, and
+        // the client matches its ack by that number.
+        for byte in 0..=u8::MAX {
+            assert_eq!(RawStepSequence(byte).interpret(), StepSequence(byte), "{byte}");
+        }
+    }
+
+    #[test]
+    fn a_walk_ack_downgrades_a_yellow_bar_for_an_old_client() {
+        // The player's own health bar goes through `for_client` for the same
+        // reason another mobile's does: a client below 4.0.0 draws nothing at
+        // all for 0x07, and a missing bar on your own character reads as the
+        // client being broken rather than as a server sending a colour it
+        // cannot draw.
+        let ack = WalkAck {
+            sequence: StepSequence(3),
+            notoriety: Notoriety::Invulnerable,
+        };
+        let ancient = ClientVersion::new(3, 0, 0, 0);
+        assert_eq!(encode_packet(&ack, ancient), vec![0x22, 3, 0x01], "blue instead");
+        assert_eq!(
+            encode_packet(&ack, version()),
+            vec![0x22, 3, 0x07],
+            "a modern client gets the yellow it can draw"
+        );
+    }
+
+    #[test]
+    fn the_seasons_are_the_clients_own_five() {
+        for (season, bits) in [
+            (Season::Spring, 0),
+            (Season::Summer, 1),
+            (Season::Fall, 2),
+            (Season::Winter, 3),
+            (Season::Desolation, 4),
+        ] {
+            assert_eq!(season.to_bits(), bits, "{season:?}");
+            assert_eq!(Season::from_bits(bits), season);
+            assert_eq!(Season::try_from_bits(bits), Some(season));
+        }
+        // Total, and the fallback is the one the client can always draw. A
+        // shard config cannot reach here — `openshard_config` refuses a sixth
+        // season at startup — but a script or a save from another shard can.
+        assert_eq!(Season::from_bits(5), Season::Spring);
+        assert_eq!(Season::from_bits(u8::MAX), Season::Spring);
+        // `try_from_bits` is what config validation uses instead: unlike
+        // `from_bits` it refuses rather than silently drawing spring.
+        assert_eq!(Season::try_from_bits(5), None);
+        assert_eq!(Season::try_from_bits(u8::MAX), None);
     }
 }

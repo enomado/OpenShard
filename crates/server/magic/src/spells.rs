@@ -16,14 +16,14 @@
 use openshard_state::{DamageType, FieldKind, Skill};
 
 /// A reagent's item graphic — the eight classic Magery reagents.
-const BLACK_PEARL: u16 = 0x0F7A;
-const BLOOD_MOSS: u16 = 0x0F7B;
-const GARLIC: u16 = 0x0F84;
-const GINSENG: u16 = 0x0F85;
-const MANDRAKE_ROOT: u16 = 0x0F86;
-const NIGHTSHADE: u16 = 0x0F88;
-const SULFUROUS_ASH: u16 = 0x0F8C;
-const SPIDERS_SILK: u16 = 0x0F8D;
+const BLACK_PEARL: Graphic = Graphic(0x0F7A);
+const BLOOD_MOSS: Graphic = Graphic(0x0F7B);
+const GARLIC: Graphic = Graphic(0x0F84);
+const GINSENG: Graphic = Graphic(0x0F85);
+const MANDRAKE_ROOT: Graphic = Graphic(0x0F86);
+const NIGHTSHADE: Graphic = Graphic(0x0F88);
+const SULFUROUS_ASH: Graphic = Graphic(0x0F8C);
+const SPIDERS_SILK: Graphic = Graphic(0x0F8D);
 
 /// The mana a spell of each circle (1..8) costs — ServUO's mana table.
 const CIRCLE_MANA: [u16; 8] = [4, 6, 9, 11, 14, 20, 40, 50];
@@ -110,7 +110,7 @@ pub struct SpellInfo {
     /// Circle 1..8 — sets mana, cast delay and difficulty.
     pub circle: u8,
     /// The reagents it consumes, by item graphic (one of each).
-    pub reagents: &'static [u16],
+    pub reagents: &'static [Graphic],
     /// What it aims at.
     pub target: SpellTarget,
     /// The core's default effect.
@@ -123,13 +123,14 @@ use SpellEffect::{
     Teleport,
 };
 use SpellTarget::{Item, Location, Mobile, SelfCast};
+use openshard_protocol::wire::Graphic;
 use openshard_state::effect;
 
 /// One table entry, kept terse so all 64 read at a glance.
 const fn spell(
     name: &'static str,
     circle: u8,
-    reagents: &'static [u16],
+    reagents: &'static [Graphic],
     target: SpellTarget,
     effect: SpellEffect,
 ) -> SpellInfo {

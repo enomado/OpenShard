@@ -4,19 +4,32 @@
 //! The client draws its own character from `0x1B`/`0x20`; everyone *else* comes
 //! from here.
 
+use std::fmt;
+
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
 use crate::error::DecodeError;
 use crate::feature::Feature;
 use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::serial::{RawSerial, Serial};
+use crate::skill::SkillLock;
 use crate::version::ClientVersion;
+use crate::wire::{Graphic, Hue, Layer};
 use crate::world::Point;
 
 /// Status flags on a mobile: poisoned, invisible, in war mode.
 ///
-/// Not modelled further yet — nothing sets them. A `u8` that says so is more
-/// honest than an enum with one variant.
-pub type StatusFlags = u8;
+/// The bits are not modelled yet — nothing sets them, and an enum with one
+/// variant would be a guess about what the rest mean. A newtype over the byte
+/// says exactly that much and no more, while still keeping the field out of the
+/// pool of interchangeable `u8`s a packet struct is otherwise made of.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct StatusFlags(pub u8);
+
+impl StatusFlags {
+    /// Nothing set: not poisoned, not hidden, not in war mode.
+    pub const NONE: Self = Self(0);
+}
 
 /// How the client colours a mobile's health bar.
 ///
@@ -85,15 +98,83 @@ impl Notoriety {
     /// label comes back in, matching the health bar. ServUO's `Notoriety.Hues`,
     /// indexed by the same wire byte: blue innocent, green friend, grey
     /// neutral/criminal, orange enemy, red murderer, yellow invulnerable.
-    pub const fn name_hue(self) -> u16 {
+    pub const fn name_hue(self) -> Hue {
         match self {
-            Self::Innocent => 0x0059,
-            Self::Friend => 0x003F,
-            Self::Neutral | Self::Criminal => 0x03B2,
-            Self::Enemy => 0x0090,
-            Self::Murderer => 0x0022,
-            Self::Invulnerable => 0x0035,
+            Self::Innocent => Hue(0x0059),
+            Self::Friend => Hue(0x003F),
+            Self::Neutral | Self::Criminal => Hue(0x03B2),
+            Self::Enemy => Hue(0x0090),
+            Self::Murderer => Hue(0x0022),
+            Self::Invulnerable => Hue(0x0035),
         }
+    }
+}
+
+/// One of the three arrows the status bar draws, as the wire numbers them.
+///
+/// The client's own domain and a closed one: the `0xBF 0x19` lock byte has room
+/// for exactly three, two bits apiece, and there is no fourth stat to point at.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Stat {
+    /// Strength — bits 4-5 of the lock byte.
+    Strength,
+    /// Dexterity — bits 2-3.
+    Dexterity,
+    /// Intelligence — bits 0-1.
+    Intelligence,
+}
+
+/// Which stat a client's `0xBF 0x1A` named, exactly as sent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct RawStat(pub u8);
+
+impl RawStat {
+    /// The stat this names, or [`InvalidStat`] for a number the status bar has
+    /// no arrow for.
+    ///
+    /// ServUO ignores the packet in that case, and so does this engine's seam —
+    /// but the refusal is now a value a caller has to look at rather than a
+    /// `_ => return` buried three calls deeper.
+    pub const fn validate(self) -> Result<Stat, InvalidStat> {
+        match self.0 {
+            0 => Ok(Stat::Strength),
+            1 => Ok(Stat::Dexterity),
+            2 => Ok(Stat::Intelligence),
+            other => Err(InvalidStat(other)),
+        }
+    }
+}
+
+/// A `0xBF 0x1A` naming a stat the status bar does not have.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct InvalidStat(pub u8);
+
+impl fmt::Display for InvalidStat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "there is no stat {}; the status bar draws three arrows",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for InvalidStat {}
+
+/// A stat arrow's new position, exactly as a client's `0xBF 0x1A` sent it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct RawStatLock(pub u8);
+
+impl RawStatLock {
+    /// Which way the arrow points. Total: ServUO folds anything past "locked"
+    /// back to "up" rather than refusing the packet, and so does this — an arrow
+    /// is a three-way choice with no room for an error.
+    ///
+    /// The fold lives here and not in [`StatLockRequest::decode_body`] because a
+    /// decoder that rewrites a value has spent it: nothing downstream can tell
+    /// the `0` a client sent from the `0x63` it did not.
+    pub const fn interpret(self) -> SkillLock {
+        SkillLock::from_bits(self.0)
     }
 }
 
@@ -105,8 +186,9 @@ impl Notoriety {
 /// client asks for a click at a time.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LookRequest {
-    /// The clicked object, by serial.
-    pub serial: u32,
+    /// The clicked object, by serial — the client's word for what is under its
+    /// cursor, and not yet anything the registry has heard of.
+    pub serial: RawSerial,
 }
 
 impl DecodePacket for LookRequest {
@@ -114,7 +196,7 @@ impl DecodePacket for LookRequest {
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         Ok(Self {
-            serial: reader.u32()?,
+            serial: RawSerial(reader.u32()?),
         })
     }
 }
@@ -156,21 +238,17 @@ impl DecodePacket for StatusQuery {
     }
 }
 
-/// The `0x1C` message mode that draws text as a name label over an object rather
-/// than as spoken words — ServUO's `MessageType.Label`.
-pub const LABEL_MODE: u8 = 6;
-
 /// One piece of equipment on a mobile, as the client draws it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Equipment {
     /// The item's serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// Its graphic.
-    pub graphic: u16,
+    pub graphic: Graphic,
     /// Which layer: hair, weapon, robe.
-    pub layer: u8,
-    /// Its colour. Zero means the graphic's own.
-    pub hue: u16,
+    pub layer: Layer,
+    /// Its colour. [`Hue::NONE`] means the graphic's own.
+    pub hue: Hue,
 }
 
 /// `0x1D` — take an object off the client's screen. 5 bytes.
@@ -180,7 +258,7 @@ pub struct Equipment {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Remove {
     /// The object to forget.
-    pub serial: u32,
+    pub serial: Serial,
 }
 
 impl EncodePacket for Remove {
@@ -188,31 +266,62 @@ impl EncodePacket for Remove {
     const LENGTH: PacketLength = PacketLength::Fixed(5);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
     }
 }
 
-/// The flag bit on a `0x88` paperdoll meaning the mobile is in war mode.
-pub const PAPERDOLL_WARMODE: u8 = 0x01;
-/// The flag bit meaning the beholder may lift items off this paperdoll — set for
-/// your own, so the client lets you drag your equipment.
-pub const PAPERDOLL_CAN_LIFT: u8 = 0x02;
+impl DecodePacket for Remove {
+    const ID: u8 = 0x1D;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x1D remove serial",
+            value: raw,
+        })?;
+        Ok(Self { serial })
+    }
+}
+
+/// What a `0x88` paperdoll's flag byte says about the mobile and the beholder.
+///
+/// Two bits are known and the rest are the client's business, so this is a byte
+/// with a name and named constants rather than an enum — the same shape, and for
+/// the same reason, as [`StatusFlags`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct PaperdollFlags(pub u8);
+
+impl PaperdollFlags {
+    /// Nothing set: at peace, and not liftable.
+    pub const NONE: Self = Self(0);
+    /// The mobile is in war mode.
+    pub const WARMODE: Self = Self(0x01);
+    /// The beholder may lift items off this paperdoll — set for your own, so the
+    /// client lets you drag your equipment.
+    pub const CAN_LIFT: Self = Self(0x02);
+
+    /// Both sets of bits. A named method rather than `BitOr`: an operator on a
+    /// newtype is the same invisible coercion `Deref` is.
+    #[must_use]
+    pub const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
 
 /// `0x88` — open a mobile's paperdoll. 66 bytes.
 ///
 /// The reply to double-clicking a mobile. `text` is the title shown across the
-/// top (the name, plus any honorific), clamped to 60 bytes. `flags` is
-/// [`PAPERDOLL_WARMODE`] and/or [`PAPERDOLL_CAN_LIFT`]. Ported from Sphere's
+/// top (the name, plus any honorific), clamped to 60 bytes. Ported from Sphere's
 /// `PacketPaperdoll`/ServUO's `DisplayPaperdoll`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct OpenPaperdoll {
     /// Whose paperdoll.
-    pub serial: u32,
+    pub serial: Serial,
     /// The title across the top: the name, plus any honorific. Clamped to 60
     /// bytes.
     pub text: String,
-    /// [`PAPERDOLL_WARMODE`] and/or [`PAPERDOLL_CAN_LIFT`].
-    pub flags: u8,
+    /// War mode, and whether the beholder may lift what is worn.
+    pub flags: PaperdollFlags,
 }
 
 impl EncodePacket for OpenPaperdoll {
@@ -220,10 +329,31 @@ impl EncodePacket for OpenPaperdoll {
     const LENGTH: PacketLength = PacketLength::Fixed(66);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
         out.fixed_string(&self.text, 60);
-        out.u8(self.flags);
+        out.u8(self.flags.0);
     }
+}
+
+/// One of the three bars a client draws: what there is now, and the most there
+/// could be.
+///
+/// The halves travel together for the same reason `world::MapSize`'s do: the
+/// client draws a *ratio*, so a current sent without its maximum is not a
+/// smaller number, it is a bar of the wrong length. Every source of one is a
+/// source of the other — `Hitpoints`, `Mana` and `Stamina` each carry both — so
+/// nothing is ever in a position to know only half.
+///
+/// The two components stay bare integers by decision, exactly as
+/// `world::Point`'s do: they are genuinely numbers, added to and clamped on
+/// every regeneration tick and every blow landed, and their rules live in the
+/// gameplay crates far above `protocol`. See `docs/protocol_newtypes.md` N10.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Vitals {
+    /// What there is now.
+    pub current: u16,
+    /// The most there can be.
+    pub max: u16,
 }
 
 /// `0x11` — a mobile's full status: the paperdoll numbers. Variable length.
@@ -245,13 +375,11 @@ impl EncodePacket for OpenPaperdoll {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MobileStatus {
     /// Whose status.
-    pub serial: u32,
+    pub serial: Serial,
     /// The name shown on the bar, clamped to 30 bytes.
     pub name: String,
-    /// Current and maximum hit points.
-    pub hits: u16,
-    /// Maximum hit points.
-    pub hits_max: u16,
+    /// Hit points, current and maximum.
+    pub hits: Vitals,
     /// Whether the body is female — a bit the client draws the paperdoll from.
     pub female: bool,
     /// Strength.
@@ -260,14 +388,10 @@ pub struct MobileStatus {
     pub dexterity: u16,
     /// Intelligence.
     pub intelligence: u16,
-    /// Current stamina. Zero here is what stops a client running.
-    pub stamina: u16,
-    /// Maximum stamina.
-    pub stamina_max: u16,
-    /// Current mana.
-    pub mana: u16,
-    /// Maximum mana.
-    pub mana_max: u16,
+    /// Stamina. A zero current is what stops a client running.
+    pub stamina: Vitals,
+    /// Mana.
+    pub mana: Vitals,
     /// Gold in the pack, shown on the status bar.
     pub gold: u32,
     /// Physical resistance (pre-AoS: armour rating).
@@ -294,10 +418,10 @@ impl EncodePacket for MobileStatus {
         // still understands. `type` is ServUO's, and it drives the tail length.
         let kind = version.status_packet_version().clamp(3, 6);
 
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
         out.fixed_string(&self.name, 30);
-        out.u16(self.hits);
-        out.u16(self.hits_max);
+        out.u16(self.hits.current);
+        out.u16(self.hits.max);
         out.bool(false); // the beholder may not rename us
         out.u8(kind);
 
@@ -305,10 +429,10 @@ impl EncodePacket for MobileStatus {
         out.u16(self.strength);
         out.u16(self.dexterity);
         out.u16(self.intelligence);
-        out.u16(self.stamina);
-        out.u16(self.stamina_max);
-        out.u16(self.mana);
-        out.u16(self.mana_max);
+        out.u16(self.stamina.current);
+        out.u16(self.stamina.max);
+        out.u16(self.mana.current);
+        out.u16(self.mana.max);
         out.u32(self.gold);
         out.u16(self.armor);
         out.u16(self.weight);
@@ -342,6 +466,90 @@ impl EncodePacket for MobileStatus {
     }
 }
 
+impl DecodePacket for MobileStatus {
+    const ID: u8 = 0x11;
+
+    /// `kind` is read from the wire, not re-derived from `version`: it is what
+    /// says how much of the body follows, and a decoder that recomputed it from
+    /// the connection's own version would read the wrong number of trailing
+    /// bytes the moment the two disagree.
+    ///
+    /// Below type 5 the wire never carries `max_weight` at all — a client that
+    /// old is simply never told it, so `0` here is not a guess at a real value,
+    /// it is what "the server didn't say" looks like for this one field.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x11 mobile status serial",
+            value: raw,
+        })?;
+        let name = reader.fixed_string(30)?;
+        let hits = Vitals {
+            current: reader.u16()?,
+            max: reader.u16()?,
+        };
+        let _renamable = reader.bool()?;
+        let kind = reader.u8()?;
+
+        let female = reader.bool()?;
+        let strength = reader.u16()?;
+        let dexterity = reader.u16()?;
+        let intelligence = reader.u16()?;
+        let stamina = Vitals {
+            current: reader.u16()?,
+            max: reader.u16()?,
+        };
+        let mana = Vitals {
+            current: reader.u16()?,
+            max: reader.u16()?,
+        };
+        let gold = reader.u32()?;
+        let armor = reader.u16()?;
+        let weight = reader.u16()?;
+
+        let max_weight = if kind >= 5 {
+            let max_weight = reader.u16()?;
+            reader.skip(1)?; // race id + 1, not modelled
+            max_weight
+        } else {
+            0
+        };
+
+        let stat_cap = reader.u16()?;
+        let followers = reader.u8()?;
+        let followers_max = reader.u8()?;
+
+        if kind >= 4 {
+            // Resistances, luck, weapon damage, tithing: zeroed placeholders on
+            // the way out, so there is nothing here worth keeping on the way in.
+            reader.skip(5 * 2 + 2 + 2 + 4)?;
+        }
+        if kind >= 6 {
+            // The AoS extended-status block: 15 zeroed shorts.
+            reader.skip(15 * 2)?;
+        }
+
+        Ok(Self {
+            serial,
+            name,
+            hits,
+            female,
+            strength,
+            dexterity,
+            intelligence,
+            stamina,
+            mana,
+            gold,
+            armor,
+            weight,
+            max_weight,
+            stat_cap,
+            followers,
+            followers_max,
+        })
+    }
+}
+
 /// `0x77` — move a mobile the client already knows about. 17 bytes.
 ///
 /// Sphere's comment is worth keeping: this cannot move the client's *own*
@@ -350,15 +558,15 @@ impl EncodePacket for MobileStatus {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MobileMove {
     /// The mobile's serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// Its body graphic.
-    pub body: u16,
+    pub body: Graphic,
     /// Where.
     pub position: Point,
     /// Which way, and whether running.
     pub facing: Facing,
     /// Its hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// Poisoned, invisible, war mode.
     pub flags: StatusFlags,
     /// How to colour its health bar.
@@ -370,15 +578,44 @@ impl EncodePacket for MobileMove {
     const LENGTH: PacketLength = PacketLength::Fixed(17);
 
     fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
-        out.u32(self.serial);
-        out.u16(self.body);
+        out.u32(self.serial.raw());
+        out.u16(self.body.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         out.u8(self.position.z as u8);
         out.u8(self.facing.to_bits());
-        out.u16(self.hue);
-        out.u8(self.flags);
+        out.u16(self.hue.0);
+        out.u8(self.flags.0);
         out.u8(self.notoriety.for_client(version));
+    }
+}
+
+impl DecodePacket for MobileMove {
+    const ID: u8 = 0x77;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x77 mobile move serial",
+            value: raw,
+        })?;
+        let body = Graphic(reader.u16()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        let z = reader.u8()? as i8;
+        let facing = Facing::from_bits(reader.u8()?);
+        let hue = Hue(reader.u16()?);
+        let flags = StatusFlags(reader.u8()?);
+        let notoriety = Notoriety::from_bits(reader.u8()?);
+        Ok(Self {
+            serial,
+            body,
+            position: Point::new(x, y, z),
+            facing,
+            hue,
+            flags,
+            notoriety,
+        })
     }
 }
 
@@ -399,15 +636,15 @@ impl EncodePacket for MobileMove {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MobileIncoming {
     /// The mobile's serial.
-    pub serial: u32,
+    pub serial: Serial,
     /// Its body graphic.
-    pub body: u16,
+    pub body: Graphic,
     /// Where.
     pub position: Point,
     /// Which way, and whether running.
     pub facing: Facing,
     /// Its hue.
-    pub hue: u16,
+    pub hue: Hue,
     /// Poisoned, invisible, war mode.
     pub flags: StatusFlags,
     /// How to colour its health bar.
@@ -423,31 +660,31 @@ impl EncodePacket for MobileIncoming {
     fn encode_body(&self, out: &mut PacketWriter, version: ClientVersion) {
         let new_layout = version.supports(Feature::NewMobileIncoming);
 
-        out.u32(self.serial);
-        out.u16(self.body);
+        out.u32(self.serial.raw());
+        out.u16(self.body.0);
         out.u16(self.position.x);
         out.u16(self.position.y);
         out.u8(self.position.z as u8);
         out.u8(self.facing.to_bits());
-        out.u16(self.hue);
-        out.u8(self.flags);
+        out.u16(self.hue.0);
+        out.u8(self.flags.0);
         out.u8(self.notoriety.for_client(version));
 
         for item in &self.equipment {
-            out.u32(item.serial);
+            out.u32(item.serial.raw());
             if new_layout {
-                out.u16(item.graphic);
-                out.u8(item.layer);
-                out.u16(item.hue);
-            } else if item.hue != 0 {
+                out.u16(item.graphic.0);
+                out.u8(item.layer.0);
+                out.u16(item.hue.0);
+            } else if item.hue != Hue::NONE {
                 // The top bit is not part of the graphic. It is the flag that
                 // says the next two bytes are a hue.
-                out.u16(item.graphic | 0x8000);
-                out.u8(item.layer);
-                out.u16(item.hue);
+                out.u16(item.graphic.0 | 0x8000);
+                out.u8(item.layer.0);
+                out.u16(item.hue.0);
             } else {
-                out.u16(item.graphic);
-                out.u8(item.layer);
+                out.u16(item.graphic.0);
+                out.u8(item.layer.0);
             }
         }
 
@@ -457,20 +694,79 @@ impl EncodePacket for MobileIncoming {
     }
 }
 
+impl DecodePacket for MobileIncoming {
+    const ID: u8 = 0x78;
+
+    fn decode_body(reader: &mut PacketReader<'_>, version: ClientVersion) -> Result<Self, DecodeError> {
+        let raw = reader.u32()?;
+        let serial = Serial::new(raw).ok_or(DecodeError::UnknownValue {
+            field: "0x78 mobile incoming serial",
+            value: raw,
+        })?;
+        let body = Graphic(reader.u16()?);
+        let x = reader.u16()?;
+        let y = reader.u16()?;
+        let z = reader.u8()? as i8;
+        let facing = Facing::from_bits(reader.u8()?);
+        let hue = Hue(reader.u16()?);
+        let flags = StatusFlags(reader.u8()?);
+        let notoriety = Notoriety::from_bits(reader.u8()?);
+
+        let new_layout = version.supports(Feature::NewMobileIncoming);
+        let mut equipment = Vec::new();
+        loop {
+            let item_raw = reader.u32()?;
+            if item_raw == 0 {
+                break;
+            }
+            let item_serial = Serial::new(item_raw).ok_or(DecodeError::UnknownValue {
+                field: "0x78 mobile incoming equipment serial",
+                value: item_raw,
+            })?;
+            let (graphic, layer, item_hue) = if new_layout {
+                (Graphic(reader.u16()?), Layer(reader.u8()?), Hue(reader.u16()?))
+            } else {
+                let raw_graphic = reader.u16()?;
+                let hued = raw_graphic & 0x8000 != 0;
+                let layer = Layer(reader.u8()?);
+                let item_hue = if hued { Hue(reader.u16()?) } else { Hue::NONE };
+                (Graphic(raw_graphic & 0x7FFF), layer, item_hue)
+            };
+            equipment.push(Equipment {
+                serial: item_serial,
+                graphic,
+                layer,
+                hue: item_hue,
+            });
+        }
+
+        Ok(Self {
+            serial,
+            body,
+            position: Point::new(x, y, z),
+            facing,
+            hue,
+            flags,
+            notoriety,
+            equipment,
+        })
+    }
+}
+
 /// The three stat arrows on the status bar, as the wire carries them.
 ///
 /// Two bits each inside one byte of the `0xBF 0x19` extended-status packet, and
-/// the mirror of [`SkillLock`](crate::skill::SkillLock) for strength, dexterity and
-/// intelligence. Ported from ServUO's `StatLockInfo` (out) and its `0x1A`
-/// handler (in).
+/// the mirror of [`SkillLock`] for strength, dexterity and intelligence — the
+/// same three-way arrow, so it is the same type and not a second copy of it.
+/// Ported from ServUO's `StatLockInfo` (out) and its `0x1A` handler (in).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct StatLockBits {
-    /// Strength's arrow: 0 up, 1 down, 2 locked.
-    pub strength: u8,
+    /// Strength's arrow.
+    pub strength: SkillLock,
     /// Dexterity's arrow.
-    pub dexterity: u8,
+    pub dexterity: SkillLock,
     /// Intelligence's arrow.
-    pub intelligence: u8,
+    pub intelligence: SkillLock,
 }
 
 /// `0xBF` subcommand `0x19` type `2` — tell a client which way its stats train,
@@ -490,7 +786,7 @@ pub struct StatLockBits {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StatLocks {
     /// Whose stats.
-    pub serial: u32,
+    pub serial: Serial,
     /// The three arrows.
     pub locks: StatLockBits,
 }
@@ -503,9 +799,11 @@ impl EncodePacket for StatLocks {
         out.u16(12); // this subcommand's own, constant length
         out.u16(0x19);
         out.u8(2); // the classic client's type; the enhanced one wants 5
-        out.u32(self.serial);
+        out.u32(self.serial.raw());
         out.u8(0);
-        out.u8((self.locks.strength << 4) | (self.locks.dexterity << 2) | self.locks.intelligence);
+        out.u8((self.locks.strength.to_bits() << 4)
+            | (self.locks.dexterity.to_bits() << 2)
+            | self.locks.intelligence.to_bits());
     }
 }
 
@@ -513,10 +811,10 @@ impl EncodePacket for StatLocks {
 /// arrows.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct StatLockRequest {
-    /// Which stat: 0 strength, 1 dexterity, 2 intelligence.
-    pub stat: u8,
-    /// The new arrow: 0 up, 1 down, 2 locked.
-    pub lock: u8,
+    /// Which stat the client named, before anyone checked there is one.
+    pub stat: RawStat,
+    /// Where it says the arrow now points.
+    pub lock: RawStatLock,
 }
 
 impl StatLockRequest {
@@ -526,14 +824,14 @@ impl StatLockRequest {
     pub const SUBCOMMAND: u16 = 0x1A;
 
     /// Read the body, `reader` already past the id, length and subcommand.
+    ///
+    /// Byte shape only. Neither field is checked here: which stat exists is
+    /// [`RawStat::validate`]'s answer and where an arrow may point is
+    /// [`RawStatLock::interpret`]'s, both at the seam that acts on the packet.
     pub(crate) fn decode_body(reader: &mut PacketReader<'_>) -> Result<Self, DecodeError> {
-        let stat = reader.u8()?;
-        // ServUO folds anything past "locked" back to "up" rather than refusing
-        // the packet, and a stat past the third is simply ignored upstream.
-        let lock = reader.u8()?;
         Ok(Self {
-            stat,
-            lock: if lock > 2 { 0 } else { lock },
+            stat: RawStat(reader.u8()?),
+            lock: RawStatLock(reader.u8()?),
         })
     }
 }
@@ -554,11 +852,11 @@ mod tests {
         // ServUO's `StatLockInfo`: str in bits 4-5, dex in 2-3, int in 0-1.
         let packet = encode_packet(
             &StatLocks {
-                serial: 0x0000_0007,
+                serial: Serial::new(0x0000_0007).unwrap(),
                 locks: StatLockBits {
-                    strength: 2,     // locked
-                    dexterity: 1,    // down
-                    intelligence: 0, // up
+                    strength: SkillLock::Locked,
+                    dexterity: SkillLock::Down,
+                    intelligence: SkillLock::Up,
                 },
             },
             version(),
@@ -583,18 +881,70 @@ mod tests {
         let request = ExtendedRequest::decode(&packet).unwrap();
         assert_eq!(
             request,
-            ExtendedRequest::StatLock(StatLockRequest { stat: 1, lock: 1 })
+            ExtendedRequest::StatLock(StatLockRequest {
+                stat: RawStat(1),
+                lock: RawStatLock(1),
+            })
         );
+        let ExtendedRequest::StatLock(request) = request else {
+            panic!("expected a stat-lock request");
+        };
+        assert_eq!(request.stat.validate(), Ok(Stat::Dexterity));
+        assert_eq!(request.lock.interpret(), SkillLock::Down);
     }
 
     #[test]
     fn an_impossible_stat_arrow_reads_as_up() {
         // ServUO folds anything past "locked" back to "up" rather than refusing.
+        // The fold is the promotion's, not the decoder's: the byte the client
+        // sent survives to the seam, which is what lets a log line say what
+        // actually arrived.
         let packet = [0xBF, 0x00, 0x07, 0x00, 0x1A, 0x00, 0x63];
         let ExtendedRequest::StatLock(request) = ExtendedRequest::decode(&packet).unwrap() else {
             panic!("expected a stat-lock request");
         };
-        assert_eq!(request.lock, 0);
+        assert_eq!(request.lock, RawStatLock(0x63), "decoding rewrites nothing");
+        assert_eq!(request.lock.interpret(), SkillLock::Up);
+    }
+
+    #[test]
+    fn every_arrow_byte_interprets() {
+        // Class B's promise: `interpret` is total. Nothing a client can put in
+        // this byte needs a `Result`, so nothing downstream grows one.
+        for bits in 0..=u8::MAX {
+            let lock = RawStatLock(bits).interpret();
+            assert_eq!(lock, SkillLock::from_bits(bits));
+            if bits > 2 {
+                assert_eq!(lock, SkillLock::Up, "0x{bits:02X} folds to up");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fourth_stat_decodes_cleanly_and_is_refused_at_promotion() {
+        // The pair `docs/protocol_newtypes.md` N9 asks for. The packet is
+        // well-formed — dropping the connection over it would be wrong — and the
+        // value is refused where the arrow would have been stored.
+        let packet = [0xBF, 0x00, 0x07, 0x00, 0x1A, 0x03, 0x01];
+        let ExtendedRequest::StatLock(request) = ExtendedRequest::decode(&packet).unwrap() else {
+            panic!("expected a stat-lock request");
+        };
+        assert_eq!(request.stat, RawStat(3));
+        assert_eq!(request.stat.validate(), Err(InvalidStat(3)));
+
+        assert_eq!(RawStat(0).validate(), Ok(Stat::Strength));
+        assert_eq!(RawStat(1).validate(), Ok(Stat::Dexterity));
+        assert_eq!(RawStat(2).validate(), Ok(Stat::Intelligence));
+    }
+
+    #[test]
+    fn a_single_click_on_nothing_decodes_cleanly_and_is_refused_at_promotion() {
+        // The same pair for the one serial a client chooses in this module. A
+        // `0x09` naming zero is a click that hit nothing, not a broken packet.
+        let bytes = [0x09, 0x00, 0x00, 0x00, 0x00];
+        let look: LookRequest = crate::packet::decode_packet(&bytes, version()).unwrap();
+        assert_eq!(look.serial, RawSerial(0));
+        assert_eq!(look.serial.validate(), None);
     }
 
     #[test]
@@ -612,16 +962,17 @@ mod tests {
     fn a_single_click_decodes_the_clicked_serial() {
         let bytes = [0x09, 0x40, 0x00, 0x00, 0x2A];
         let look: LookRequest = crate::packet::decode_packet(&bytes, version()).unwrap();
-        assert_eq!(look.serial, 0x4000_002A);
+        assert_eq!(look.serial, RawSerial(0x4000_002A));
+        assert_eq!(look.serial.validate(), Serial::new(0x4000_002A));
     }
 
     #[test]
     fn a_name_hue_matches_the_health_bar_colour() {
         // Blue innocent, yellow invulnerable — the same colours the bar uses, from
         // ServUO's Notoriety.Hues.
-        assert_eq!(Notoriety::Innocent.name_hue(), 0x0059);
-        assert_eq!(Notoriety::Invulnerable.name_hue(), 0x0035);
-        assert_eq!(Notoriety::Murderer.name_hue(), 0x0022);
+        assert_eq!(Notoriety::Innocent.name_hue(), Hue(0x0059));
+        assert_eq!(Notoriety::Invulnerable.name_hue(), Hue(0x0035));
+        assert_eq!(Notoriety::Murderer.name_hue(), Hue(0x0022));
     }
 
     fn facing() -> Facing {
@@ -630,12 +981,12 @@ mod tests {
 
     fn mobile() -> MobileIncoming {
         MobileIncoming {
-            serial: 0x0000_0002,
-            body: 0x0190,
+            serial: Serial::new(0x0000_0002).unwrap(),
+            body: Graphic(0x0190),
             position: Point::new(1475, 1774, -5),
             facing: facing(),
-            hue: 0x83EA,
-            flags: 0,
+            hue: Hue(0x83EA),
+            flags: StatusFlags::NONE,
             notoriety: Notoriety::Innocent,
             equipment: Vec::new(),
         }
@@ -643,18 +994,27 @@ mod tests {
 
     fn shirt() -> Equipment {
         Equipment {
-            serial: 0x4000_0001,
-            graphic: 0x1517,
-            layer: 0x05,
-            hue: 0x0021,
+            serial: Serial::new(0x4000_0001).unwrap(),
+            graphic: Graphic(0x1517),
+            layer: Layer(0x05),
+            hue: Hue(0x0021),
         }
     }
 
     #[test]
     fn remove_is_five_bytes() {
+        // The serial was `0xDEAD_BEEF` here until `Remove` took a `Serial`, and
+        // `Serial::new` refuses it — it is past the item pool, so no client
+        // could have anything under it. The shape it proves is unchanged: five
+        // bytes, the serial big-endian.
         assert_eq!(
-            encode_packet(&Remove { serial: 0xDEAD_BEEF }, version()),
-            vec![0x1D, 0xDE, 0xAD, 0xBE, 0xEF]
+            encode_packet(
+                &Remove {
+                    serial: Serial::new(0x4EAD_BEEF).unwrap()
+                },
+                version()
+            ),
+            vec![0x1D, 0x4E, 0xAD, 0xBE, 0xEF]
         );
     }
 
@@ -662,12 +1022,12 @@ mod tests {
     fn a_move_matches_its_declared_length() {
         let bytes = encode_packet(
             &MobileMove {
-                serial: 2,
-                body: 0x0190,
+                serial: Serial::new(2).unwrap(),
+                body: Graphic(0x0190),
                 position: Point::new(1475, 1774, -5),
                 facing: facing(),
-                hue: 0x83EA,
-                flags: 0,
+                hue: Hue(0x83EA),
+                flags: StatusFlags::NONE,
                 notoriety: Notoriety::Innocent,
             },
             ClientVersion::TOL,
@@ -737,7 +1097,10 @@ mod tests {
         // client read the hue as the next item's serial, and everything after it
         // is noise.
         let mut incoming = mobile();
-        incoming.equipment = vec![Equipment { hue: 0, ..shirt() }];
+        incoming.equipment = vec![Equipment {
+            hue: Hue::NONE,
+            ..shirt()
+        }];
         let bytes = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 0));
 
         assert_eq!(bytes.len(), 23 + 7, "no hue, no two bytes for one");
@@ -754,7 +1117,10 @@ mod tests {
         // The whole reason this is version-gated. If these ever agree, the gate
         // has stopped doing anything.
         let mut incoming = mobile();
-        incoming.equipment = vec![Equipment { hue: 0, ..shirt() }];
+        incoming.equipment = vec![Equipment {
+            hue: Hue::NONE,
+            ..shirt()
+        }];
 
         let modern = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 1));
         let ancient = encode_packet(&incoming, ClientVersion::new(7, 0, 33, 0));
@@ -767,8 +1133,8 @@ mod tests {
         let mut incoming = mobile();
         incoming.equipment = (0..25)
             .map(|index| Equipment {
-                serial: 0x4000_0000 + index,
-                layer: index as u8,
+                serial: Serial::new(0x4000_0000 + index).unwrap(),
+                layer: Layer(index as u8),
                 ..shirt()
             })
             .collect();
@@ -829,18 +1195,18 @@ mod tests {
 
     fn a_status() -> MobileStatus {
         MobileStatus {
-            serial: 0x0001_2345,
+            serial: Serial::new(0x0001_2345).unwrap(),
             name: "Lord British".to_owned(),
-            hits: 100,
-            hits_max: 100,
+            hits: Vitals {
+                current: 100,
+                max: 100,
+            },
             female: false,
             strength: 100,
             dexterity: 90,
             intelligence: 80,
-            stamina: 90,
-            stamina_max: 90,
-            mana: 80,
-            mana_max: 80,
+            stamina: Vitals { current: 90, max: 90 },
+            mana: Vitals { current: 80, max: 80 },
             gold: 1234,
             armor: 0,
             weight: 14,
@@ -855,9 +1221,9 @@ mod tests {
     fn a_paperdoll_is_sixty_six_bytes_with_its_title() {
         let bytes = encode_packet(
             &OpenPaperdoll {
-                serial: 0x0001_2345,
+                serial: Serial::new(0x0001_2345).unwrap(),
                 text: "Lord British".to_owned(),
-                flags: PAPERDOLL_CAN_LIFT,
+                flags: PaperdollFlags::CAN_LIFT,
             },
             version(),
         );
@@ -867,9 +1233,19 @@ mod tests {
             u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]),
             0x0001_2345
         );
-        assert_eq!(bytes[65], PAPERDOLL_CAN_LIFT);
+        assert_eq!(bytes[65], PaperdollFlags::CAN_LIFT.0);
         // The title is where the client draws the name across the top.
         assert!(bytes[5..].starts_with(b"Lord British"));
+    }
+
+    #[test]
+    fn the_paperdoll_flags_are_one_byte_of_bits() {
+        // Your own paperdoll while fighting: both bits, one byte, and the values
+        // are Sphere's `PacketPaperdoll`.
+        let both = PaperdollFlags::WARMODE.with(PaperdollFlags::CAN_LIFT);
+        assert_eq!(both.0, 0x03);
+        assert_eq!(PaperdollFlags::NONE.with(PaperdollFlags::WARMODE).0, 0x01);
+        assert_eq!(both.with(PaperdollFlags::WARMODE), both, "setting twice is once");
     }
 
     #[test]

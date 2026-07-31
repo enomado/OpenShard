@@ -12,6 +12,7 @@ pub mod carpentry;
 pub mod tailoring;
 pub mod tinkering;
 
+use openshard_protocol::wire::{ClilocId, SoundId};
 use openshard_state::{Skill, TICKS_PER_SECOND};
 
 use crate::system::{CraftSystemDef, Eca, Needs, SystemId, Text};
@@ -22,7 +23,7 @@ use crate::system::{CraftSystemDef, Eca, Needs, SystemId, Text};
 const DELAY_TICKS: u64 = TICKS_PER_SECOND * 5 / 4;
 
 /// "You must be near an anvil and a forge to smith items."
-const NEEDS_SMITHY: u32 = 1_044_267;
+const NEEDS_SMITHY: ClilocId = ClilocId(1_044_267);
 
 /// The trades a shard can practise, in the order their ids are numbered.
 ///
@@ -35,13 +36,13 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // one, which is what makes the last five points of the skill worth having.
     CraftSystemDef {
         skill: Skill::Blacksmith,
-        title: Text::Cliloc(1_044_002),
+        title: Text::Cliloc(ClilocId(1_044_002)),
         chance_at_min: 0,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x2A,
+        craft_sound: SoundId(0x2A),
         needs: Needs::smithy(),
         needs_message: NEEDS_SMITHY,
         groups: blacksmithy::GROUPS,
@@ -53,15 +54,15 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // trade that is pleasant to learn and one that is not.
     CraftSystemDef {
         skill: Skill::Tailoring,
-        title: Text::Cliloc(1_044_005),
+        title: Text::Cliloc(ClilocId(1_044_005)),
         chance_at_min: 500,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x248,
+        craft_sound: SoundId(0x248),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: tailoring::GROUPS,
         recipes: tailoring::RECIPES,
         sub_res: Some(tailoring::SUB_RES),
@@ -69,15 +70,15 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // Carpentry, the same floor as tailoring.
     CraftSystemDef {
         skill: Skill::Carpentry,
-        title: Text::Cliloc(1_044_004),
+        title: Text::Cliloc(ClilocId(1_044_004)),
         chance_at_min: 500,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x23D,
+        craft_sound: SoundId(0x23D),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: carpentry::GROUPS,
         recipes: carpentry::RECIPES,
         sub_res: Some(carpentry::SUB_RES),
@@ -85,15 +86,15 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // Tinkering: a smith's floor with a carpenter's freedom to work anywhere.
     CraftSystemDef {
         skill: Skill::Tinkering,
-        title: Text::Cliloc(1_044_007),
+        title: Text::Cliloc(ClilocId(1_044_007)),
         chance_at_min: 0,
         eca: Eca::ChanceMinusSixtyToFourtyFive,
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x23B,
+        craft_sound: SoundId(0x23B),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: tinkering::GROUPS,
         recipes: tinkering::RECIPES,
         sub_res: Some(tinkering::SUB_RES),
@@ -103,15 +104,15 @@ pub const SYSTEMS: &[CraftSystemDef] = &[
     // appears here and nowhere else.
     CraftSystemDef {
         skill: Skill::Alchemy,
-        title: Text::Cliloc(1_044_001),
+        title: Text::Cliloc(ClilocId(1_044_001)),
         chance_at_min: 0,
         eca: Eca::ChanceMinusSixty,
         delay_ticks: DELAY_TICKS,
         min_beats: 1,
         max_beats: 1,
-        craft_sound: 0x242,
+        craft_sound: SoundId(0x242),
         needs: Needs::none(),
-        needs_message: 0,
+        needs_message: ClilocId(0),
         groups: alchemy::GROUPS,
         recipes: alchemy::RECIPES,
         sub_res: None,
@@ -127,6 +128,7 @@ pub fn system(id: SystemId) -> Option<&'static CraftSystemDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openshard_protocol::wire::{Graphic, Hue};
 
     #[test]
     fn every_trade_has_exactly_one_system() {
@@ -147,7 +149,7 @@ mod tests {
         // with nothing at all, which is what every one of these was before this
         // slice.
         for graphic in 0..=u16::MAX {
-            let Some(tool) = openshard_state::craft::craft_tool(graphic) else {
+            let Some(tool) = openshard_state::craft::craft_tool(Graphic(graphic)) else {
                 continue;
             };
             assert!(
@@ -169,7 +171,7 @@ mod tests {
                     usize::from(recipe.group) < def.groups.len(),
                     "{:?} recipe {:#06X} is in group {}",
                     def.skill,
-                    recipe.graphic,
+                    recipe.graphic.0,
                     recipe.group
                 );
             }
@@ -187,7 +189,7 @@ mod tests {
                     recipe.skills.iter().any(|want| want.skill == def.skill),
                     "{:?} recipe {:#06X} never names {:?}",
                     def.skill,
-                    recipe.graphic,
+                    recipe.graphic.0,
                     def.skill
                 );
             }
@@ -202,7 +204,7 @@ mod tests {
         for def in SYSTEMS {
             let Some(axis) = def.sub_res else { continue };
             assert!(!axis.entries.is_empty());
-            assert_eq!(axis.entries[0].hue, 0, "{:?}'s plain grade", def.skill);
+            assert_eq!(axis.entries[0].hue, Hue(0), "{:?}'s plain grade", def.skill);
             let uses_axis = def
                 .recipes
                 .iter()
@@ -216,7 +218,7 @@ mod tests {
                         res.graphic == axis.graphic,
                         "{:?} recipe {:#06X}",
                         def.skill,
-                        recipe.graphic
+                        recipe.graphic.0
                     );
                 }
             }

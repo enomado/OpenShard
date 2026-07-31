@@ -31,7 +31,8 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{SYSTEM_SERIAL, SpokenMessage};
+use openshard_protocol::speech::{Font, SpokenMessage, TalkMode};
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_state::WorldState;
 use openshard_state::components::{Banker, Position};
 use openshard_state::sectors::in_range;
@@ -58,9 +59,9 @@ pub use vendor::{
 /// The bank box graphic and gump — ServUO's `BankBox` on `Layer.Bank`. A
 /// character wears one; a banker opens it. Exported so the world equips it on the
 /// same layer this crate opens.
-pub const BANK_GRAPHIC: u16 = 0x0E7C;
+pub const BANK_GRAPHIC: Graphic = Graphic(0x0E7C);
 /// The bank box gump.
-pub const BANK_GUMP: u16 = 0x004A;
+pub const BANK_GUMP: Graphic = Graphic(0x004A);
 /// The bank layer, `Layer.Bank`. Defined by `items`, which also has to know where
 /// a character's own load stops; re-exported here so a banker still reads as
 /// owning its own box.
@@ -71,16 +72,25 @@ const BANK_RANGE: u32 = 12;
 /// The gold-coin graphic — `items`', so a banker counts the same coin the status
 /// bar weighs and a corpse drops.
 pub(crate) use openshard_items::GOLD_GRAPHIC;
-/// The muted grey the client draws townsfolk chatter in.
-pub(crate) const GREET_HUE: u16 = 0x03B2;
+/// The muted grey the client draws townsfolk chatter in — [`Hue::NPC_SPEECH`],
+/// shared with every other crate that gives an NPC a voice.
+pub(crate) const GREET_HUE: Hue = Hue::NPC_SPEECH;
 /// The font a greeting is spoken in.
-pub(crate) const GREET_FONT: u16 = 3;
+pub(crate) const GREET_FONT: Font = Font::DEFAULT;
 
 /// Have an NPC say something out loud, in the muted grey and font the client draws
 /// townsfolk chatter in. The one door every townsperson's speech goes through, so
-/// the hue and the font are decided once.
+/// the hue and the font are decided once — the greeters, the vendor's answers
+/// (`vendor::vendor_says`) and a guard's sentence (`guards::execute`) all come
+/// through here. The latter two called `openshard_chat::speak` directly for a
+/// while, with arguments that happened to match; that is the shape this door
+/// exists to prevent, because it drifts without anything failing.
+///
+/// A caller that wants a *different* hue is not a townsperson speaking and should
+/// not be routed through here — the private "the bank says" line uses [`notify`],
+/// and a script's `Speak` names its own hue.
 pub(crate) fn say(state: &mut WorldState, npc: EntityId, line: &str) {
-    openshard_chat::speak(state, npc, 0, GREET_HUE, GREET_FONT, line);
+    openshard_chat::speak(state, npc, TalkMode::Regular, GREET_HUE, GREET_FONT, line);
 }
 
 /// Answer a banker's keywords for a speaking player, if one is in reach. "bank"
@@ -128,10 +138,14 @@ use openshard_items::banked_gold as bank_gold;
 /// the "the bank says" reply a keyword earns.
 pub(crate) fn notify(state: &mut WorldState, connection: ConnectionId, text: &str) {
     let packet = ServerPacket::SpokenMessage(SpokenMessage {
-        serial: SYSTEM_SERIAL,
-        graphic: 0xFFFF,
-        mode: 0,
-        hue: GREET_HUE,
+        serial: None, // the system talking, not the banker
+        graphic: None,
+        mode: TalkMode::Regular,
+        // The system's hue, not [`GREET_HUE`]: this line carries no serial and
+        // names itself "System", so it is the shard talking and not the banker.
+        // It read `GREET_HUE` while the two names shared a value, which is the
+        // confusion splitting them was for.
+        hue: Hue::SYSTEM,
         font: GREET_FONT,
         name: "System".to_owned(),
         text: text.to_owned(),

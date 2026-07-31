@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::wire::Graphic;
 
 /// How often the world ticks.
 ///
@@ -8,30 +9,30 @@ use super::*;
 pub const TICK_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A human male body.
-pub(super) const BODY_HUMAN_MALE: u16 = 0x0190;
-/// The graphic, container gump, and paperdoll layer of a starting backpack.
-/// Layer 0x15 is UO's `Layer.Backpack`; the gump `0x003C` is the bag window the
-/// client draws when it is opened.
-pub(super) const BACKPACK_GRAPHIC: u16 = 0x0E75;
-pub(super) const BACKPACK_GUMP: u16 = 0x003C;
-pub(super) const BACKPACK_LAYER: u8 = 0x15;
+pub(super) const BODY_HUMAN_MALE: Graphic = Graphic(0x0190);
+/// The graphic and container gump of a starting backpack. The gump `0x003C` is
+/// the bag window the client draws when it is opened; the layer it rides on is
+/// `openshard_items::BACKPACK_LAYER`, which was written out in five places
+/// across two crates until N4 — see `docs/protocol_newtypes.md`.
+pub(super) const BACKPACK_GRAPHIC: Graphic = Graphic(0x0E75);
+pub(super) const BACKPACK_GUMP: Graphic = Graphic(0x003C);
 /// The skin hue a character gets when nothing else chose one — the same one
 /// Sphere hands a body with no stored colour.
 pub(super) const DEFAULT_HUE: u16 = 0x83EA;
-/// The colour overhead text takes when nothing else chose one — grey `0x03B2`,
-/// the default both references use for an object's single-click name (ServUO's
-/// `AsciiMessage` hue fallback, Sphere's `HUE_TEXT_DEF`).
-pub(super) const TEXT_HUE: u16 = 0x03B2;
+/// The colour overhead text takes when nothing else chose one — the client's
+/// grey name label, [`Hue::LABEL`]. Only an *item*'s single click reaches it: a
+/// mobile's label is coloured by its standing instead.
+pub(super) const TEXT_HUE: Hue = Hue::LABEL;
 /// Full daylight. The scale runs backwards: 0 is brightest, 0x1F pitch dark.
-pub(super) const LIGHT_DAY: u8 = 0;
+pub(super) const LIGHT_DAY: Light = Light(0);
 /// Full night — ServUO's `LightCycle.NightLevel`. Dark enough to want a lantern,
 /// not dark enough to be unplayable; the two-hour ramps either side of it are in
 /// `tick/ambient.rs`.
-pub(super) const LIGHT_NIGHT: u8 = 12;
+pub(super) const LIGHT_NIGHT: Light = Light(12);
 /// The light a Night Sight caster sees by — the brightest level, so the dark
 /// lifts wherever they are. Distinct name from [`LIGHT_DAY`] though both are 0:
 /// one is what time it is, the other is a buff beating it.
-pub(super) const LIGHT_NIGHTSIGHT: u8 = 0;
+pub(super) const LIGHT_NIGHTSIGHT: Light = Light(0);
 /// The facet a new character spawns on, and the world's fallback for a facet it
 /// has not loaded. Zero is Felucca.
 pub(super) const DEFAULT_FACET: u8 = 0;
@@ -39,8 +40,6 @@ pub(super) const DEFAULT_FACET: u8 = 0;
 /// the world reads the flat default through [`WorldState::start_position`].
 #[cfg(test)]
 pub(super) const Z_WITHOUT_A_MAP: i8 = 0;
-/// Notoriety 0x01 is "innocent" — the blue health bar.
-pub(super) const NOTORIETY_INNOCENT: u8 = 0x01;
 /// The facet size used when there is no map. Big enough for anywhere a test
 /// puts something; the grid is a `Vec` of empty buckets and costs nothing.
 pub(super) const FACET_WITHOUT_A_MAP: (u32, u32) = (7168, 4096);

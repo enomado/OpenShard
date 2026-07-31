@@ -11,6 +11,10 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "openshard_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "openshard"
 path = "src/main.rs"
@@ -26,6 +30,7 @@ openshard-persistence.workspace = true
 openshard-protocol.workspace = true
 openshard-quests.workspace = true
 openshard-scripting.workspace = true
+openshard-uofiles.workspace = true
 openshard-world.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing.workspace = true

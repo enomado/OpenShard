@@ -8,16 +8,26 @@
 
 use super::*;
 use openshard_protocol::skill::{SkillEntry, SkillLock, SkillUpdate, SkillsFull, skill_count};
+use openshard_protocol::wire::RawSkillId;
 use openshard_skills::SkillChanged;
-use openshard_state::StatLock;
 use openshard_state::components::{Skills, StatLocks};
+use openshard_state::{Skill, StatLock};
 
 impl World {
     /// A client moved a skill's up/down/lock arrow: store it. ServUO's
     /// `SetLockNoRelay` — the client already redrew its own arrow, so nothing is
     /// sent back.
-    pub(super) fn set_skill_lock(&mut self, connection: ConnectionId, skill: u8, lock: SkillLock) {
+    ///
+    /// `skill` crossed the command queue unchecked (N3's "the queue is a
+    /// delivery, not a checkpoint"); this is the seam that owns the skill
+    /// list, so this is where an id past the table is refused rather than
+    /// handed to `Skills::set_lock`, which would have accepted any byte.
+    pub(super) fn set_skill_lock(&mut self, connection: ConnectionId, skill: RawSkillId, lock: SkillLock) {
         let Some(&player) = self.state.players.get(&connection) else {
+            return;
+        };
+        let Some(named) = Skill::from_id(skill.0) else {
+            debug!(skill = skill.0, "skill lock named an id past the table");
             return;
         };
         let mut skills = self
@@ -26,7 +36,7 @@ impl World {
             .get::<Skills>(player)
             .cloned()
             .unwrap_or_default();
-        skills.set_lock(skill, lock);
+        skills.set_lock(named.id(), lock);
         self.state.registry.insert(player, skills);
     }
 
@@ -37,7 +47,11 @@ impl World {
     /// own arrow before the packet leaves, so it needs no answer; the status bar's
     /// arrows come out of a separate `0xBF 0x19` the server has to send, and a
     /// client that never receives one draws all three pointing up.
-    pub(super) fn set_stat_lock(&mut self, connection: ConnectionId, stat: u8, lock: StatLock) {
+    ///
+    /// `stat` is a [`Stat`] and not a byte: which of the three a client named is
+    /// checked at the seam that read the packet, so there is no fourth-stat case
+    /// to fall through here.
+    pub(super) fn set_stat_lock(&mut self, connection: ConnectionId, stat: Stat, lock: StatLock) {
         let Some(&player) = self.state.players.get(&connection) else {
             return;
         };
@@ -48,10 +62,9 @@ impl World {
             .copied()
             .unwrap_or_default();
         match stat {
-            0 => locks.strength = lock,
-            1 => locks.dexterity = lock,
-            2 => locks.intelligence = lock,
-            _ => return, // there is no fourth stat
+            Stat::Strength => locks.strength = lock,
+            Stat::Dexterity => locks.dexterity = lock,
+            Stat::Intelligence => locks.intelligence = lock,
         }
         self.state.registry.insert(player, locks);
         self.send_stat_locks(connection, player);
@@ -71,11 +84,11 @@ impl World {
         self.state.send_packet(
             connection,
             &ServerPacket::StatLocks(openshard_protocol::mobile::StatLocks {
-                serial: serial.raw(),
+                serial,
                 locks: StatLockBits {
-                    strength: locks.strength.to_bits(),
-                    dexterity: locks.dexterity.to_bits(),
-                    intelligence: locks.intelligence.to_bits(),
+                    strength: locks.strength.to_wire(),
+                    dexterity: locks.dexterity.to_wire(),
+                    intelligence: locks.intelligence.to_wire(),
                 },
             }),
         );
@@ -112,7 +125,7 @@ impl World {
     /// Send a player its whole skill list, to fill the window — on login, the
     /// way ServUO sends `SkillUpdate` on world entry.
     pub(super) fn send_skills(&mut self, connection: ConnectionId, entity: EntityId) {
-        let Some(&Client { version, .. }) = self.state.registry.get::<Client>(entity) else {
+        let Some(version) = self.state.version_of(connection) else {
             return;
         };
         let entries = self.skill_entries(entity, version);
@@ -147,7 +160,7 @@ impl World {
     /// customise in the pack" — a pack that gives a graphic its own meaning has
     /// already been heard.
     pub(super) fn use_item_skill(&mut self, player: EntityId, item: EntityId) {
-        let Some(graphic) = self.state.registry.get::<Graphic>(item).map(|g| g.id) else {
+        let Some(graphic) = self.state.registry.get::<Drawn>(item).map(|g| g.id) else {
             return;
         };
         match graphic {
@@ -186,7 +199,7 @@ impl World {
     /// what knows the click happened; from the moment the window is drawn the
     /// crate owns everything, including the reply.
     fn open_craft_window(&mut self, player: EntityId, tool: EntityId) {
-        let Some(graphic) = self.state.registry.get::<Graphic>(tool).map(|g| g.id) else {
+        let Some(graphic) = self.state.registry.get::<Drawn>(tool).map(|g| g.id) else {
             return;
         };
         let Some(system) = crafting::tool_system(graphic) else {
@@ -201,7 +214,7 @@ impl World {
                 group: 0,
                 sub_res: 0,
                 page: openshard_state::CraftGumpPage::Items,
-                notice: 0,
+                notice: None,
             },
         );
     }
@@ -225,7 +238,7 @@ impl World {
                 self.state.broadcast_health(done.patient);
             }
             if done.healed > 0 {
-                magic::heal(&mut self.state, serial.raw(), done.healed);
+                magic::heal(&mut self.state, serial, done.healed);
             }
         }
     }

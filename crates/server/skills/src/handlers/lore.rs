@@ -14,6 +14,7 @@
 //! why the numbers are quoted from ServUO beside each one.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::ClilocId;
 use openshard_state::components::{Body, BodyType, Mana, Stamina, Stats};
 use openshard_state::{Skill, WorldState};
 
@@ -25,11 +26,11 @@ const ANATOMY_RESULT: u32 = 1_038_045;
 /// "That being is at [n] percent endurance." — eleven in a row.
 const ANATOMY_STAMINA: u32 = 1_038_303;
 /// "You can not quite get a sense of their physical characteristics."
-const ANATOMY_FAILED: u32 = 1_042_666;
+const ANATOMY_FAILED: ClilocId = ClilocId(1_042_666);
 /// "You know yourself quite well enough already."
-const ANATOMY_SELF: u32 = 500_324;
+const ANATOMY_SELF: ClilocId = ClilocId(500_324);
 /// "Only living things have anatomies!"
-const ANATOMY_NOT_ALIVE: u32 = 500_323;
+const ANATOMY_NOT_ALIVE: ClilocId = ClilocId(500_323);
 /// The skill at which Anatomy starts reporting stamina too, in tenths.
 const ANATOMY_STAMINA_AT: u16 = 650;
 
@@ -49,9 +50,9 @@ const EVAL_INT_MANA: u32 = 1_038_202;
 /// "You cannot judge his/her/its mental abilities." — three in a row.
 const EVAL_INT_FAILED: u32 = 1_038_166;
 /// "Hmm, that person looks really silly."
-const EVAL_INT_SELF: u32 = 500_910;
+const EVAL_INT_SELF: ClilocId = ClilocId(500_910);
 /// "It looks smarter than a rock, but dumber than a piece of wood."
-const EVAL_INT_ITEM: u32 = 500_908;
+const EVAL_INT_ITEM: ClilocId = ClilocId(500_908);
 /// The skill at which Eval Int starts reporting mana too, in tenths.
 const EVAL_INT_MANA_AT: u16 = 760;
 
@@ -99,12 +100,17 @@ pub(super) fn anatomy(state: &mut WorldState, actor: EntityId, target: EntityId)
     let stamina = fuzzed_index(state, stamina, margin);
 
     if roll_skill_band(state, actor, id, 0, 1000) {
-        state.private_overhead_cliloc(actor, target, ANATOMY_RESULT + strength * 11 + dexterity, "");
+        state.private_overhead_cliloc(
+            actor,
+            target,
+            ClilocId(ANATOMY_RESULT + strength * 11 + dexterity),
+            "",
+        );
         // The endurance line is a second sentence, and only a trained eye sees it.
         // ServUO reads the *base* here, not the effective value: a strong smith
         // does not learn to read a stranger's breathing.
         if trained(state, actor, id) >= ANATOMY_STAMINA_AT {
-            state.private_overhead_cliloc(actor, target, ANATOMY_STAMINA + stamina, "");
+            state.private_overhead_cliloc(actor, target, ClilocId(ANATOMY_STAMINA + stamina), "");
         }
     } else {
         state.private_overhead_cliloc(actor, target, ANATOMY_FAILED, "");
@@ -131,20 +137,20 @@ pub(super) fn eval_int(state: &mut WorldState, actor: EntityId, target: EntityId
     let mana = fuzzed_index(state, mana, margin);
     // Which block of eleven the sentence comes from: he, she, or it.
     let body = state.registry.get::<Body>(target).map_or(22, |body| {
-        match openshard_state::components::body_type(body.id.0) {
-            BodyType::Human => u32::from(openshard_state::components::body_is_female(body.id.0)) * 11,
+        match openshard_state::components::body_type(body.id) {
+            BodyType::Human => u32::from(openshard_state::components::body_is_female(body.id)) * 11,
             _ => 22,
         }
     });
 
     if roll_skill_band(state, actor, id, 0, 1200) {
-        state.private_overhead_cliloc(actor, target, EVAL_INT_RESULT + intelligence + body, "");
+        state.private_overhead_cliloc(actor, target, ClilocId(EVAL_INT_RESULT + intelligence + body), "");
         if trained(state, actor, id) >= EVAL_INT_MANA_AT {
-            state.private_overhead_cliloc(actor, target, EVAL_INT_MANA + mana, "");
+            state.private_overhead_cliloc(actor, target, ClilocId(EVAL_INT_MANA + mana), "");
         }
     } else {
         // Three failure lines, one per pronoun — the block index over eleven.
-        state.private_overhead_cliloc(actor, target, EVAL_INT_FAILED + body / 11, "");
+        state.private_overhead_cliloc(actor, target, ClilocId(EVAL_INT_FAILED + body / 11), "");
     }
 }
 

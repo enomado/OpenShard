@@ -14,8 +14,9 @@
 //! a double-click anywhere else says so.
 
 use openshard_entities::EntityId;
+use openshard_protocol::wire::{ClilocId, Graphic};
 use openshard_skills::{roll_skill_band, skill_value};
-use openshard_state::components::{Graphic, Stackable};
+use openshard_state::components::{Drawn, Stackable};
 use openshard_state::harvest::{ORE_GRAPHIC, ORES};
 use openshard_state::{Skill, WorldState};
 
@@ -24,7 +25,7 @@ use crate::system::Needs;
 
 /// The art an ingot takes — ServUO's `BaseIngot`, one graphic for all nine
 /// metals, told apart by hue exactly as the ore is.
-pub const INGOT_GRAPHIC: u16 = 0x1BF2;
+pub const INGOT_GRAPHIC: Graphic = Graphic(0x1BF2);
 
 /// How many ingots one unit of the large ore pile yields. ServUO's
 /// `ingotAmount = toConsume * 2` for art `0x19B9`, which is the only ore art this
@@ -37,15 +38,15 @@ const MAX_PER_SMELT: u16 = 30_000;
 /// "You must be near a forge to smelt ore." — ServUO says this by simply not
 /// accepting the target; a shard that answers nothing at all reads as broken, so
 /// the nearest stock line is used.
-const NO_FORGE: u32 = 1_044_267;
+const NO_FORGE: ClilocId = ClilocId(1_044_267);
 /// "You have no idea how to smelt this strange ore!"
-const TOO_STRANGE: u32 = 501_986;
+const TOO_STRANGE: ClilocId = ClilocId(501_986);
 /// "There is not enough metal-bearing ore in this pile to make an ingot."
-const NOT_ENOUGH: u32 = 501_987;
+const NOT_ENOUGH: ClilocId = ClilocId(501_987);
 /// "You smelt the ore removing the impurities and put the metal in your backpack."
-const SMELTED: u32 = 501_988;
+const SMELTED: ClilocId = ClilocId(501_988);
 /// "You burn away the impurities but are left with less useable metal."
-const BURNED: u32 = 501_990;
+const BURNED: ClilocId = ClilocId(501_990);
 
 /// How hard each metal is to smelt, in tenths — ServUO's `difficulty` switch,
 /// indexed like [`ORES`].
@@ -60,7 +61,7 @@ const BAND: i32 = 250;
 
 /// Smelt a pile of ore, or say why not. Returns whether the item was ore at all.
 pub fn smelt(state: &mut WorldState, smelter: EntityId, ore: EntityId) -> bool {
-    let Some(graphic) = state.registry.get::<Graphic>(ore).copied() else {
+    let Some(graphic) = state.registry.get::<Drawn>(ore).copied() else {
         return false;
     };
     if graphic.id != ORE_GRAPHIC {

@@ -21,20 +21,23 @@ use openshard_movement::Terrain;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
 use openshard_protocol::items::WorldItem;
-use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriety, Remove};
+use openshard_protocol::mobile::{Equipment, MobileIncoming, MobileMove, Notoriety, Remove, StatusFlags};
 use openshard_protocol::properties::{PropertyList, TooltipRevision};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::{LocalizedMessage, NO_GRAPHIC, SYSTEM_SERIAL, SpokenMessage};
-use openshard_protocol::wire::SoundId;
-use openshard_protocol::world::{MapChange, PlayerUpdate, Point, encode_server_change};
+use openshard_protocol::speech::{Font, LocalizedMessage, SpokenMessage, TalkMode};
+use openshard_protocol::wire::{ClilocId, Hue, SoundId};
+use openshard_protocol::world::{
+    Facet, MapChange, MapSize, PlayerUpdate, Point, Season, encode_server_change,
+};
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
-    Access, Amount, Body, Client, Contained, CraftedBy, Equipped, Facet, Ghost, Graphic, Heading,
-    HearsGhosts, Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff,
-    Stealthing, TradeWindow, body_opens_doors,
+    Access, Amount, Body, Client, Contained, CraftedBy, Drawn, Equipped, Ghost, Heading, HearsGhosts, Hidden,
+    Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing, TradeWindow,
+    body_opens_doors,
 };
+use crate::connection::Connection;
 use crate::dialogue::Dialogue;
 use crate::harvest::Banks;
 use crate::obstruct::{LiveTerrain, Obstructions};
@@ -47,12 +50,12 @@ use crate::sectors::{Sectors, VIEW_RANGE};
 const Z_WITHOUT_A_MAP: i8 = 0;
 
 /// "You stop meditating." — the line a broken trance says, ServUO's 500134.
-const STOP_MEDITATING: u32 = 500_134;
+const STOP_MEDITATING: ClilocId = ClilocId(500_134);
 
 /// The hue and font a private system line is drawn in — the client's usual muted
 /// grey, so it reads as the server talking rather than as a mobile speaking.
-const SYSTEM_HUE: u16 = 0x03B2;
-const SYSTEM_FONT: u16 = 3;
+const SYSTEM_HUE: Hue = Hue::SYSTEM;
+const SYSTEM_FONT: Font = Font::DEFAULT;
 
 /// Ticks in one second — the reciprocal of the world's 50ms tick interval. The
 /// world defines the interval; this is the whole-number rate config uses to turn
@@ -158,9 +161,8 @@ pub struct Gameplay {
     /// Ticks in one UO minute — how fast the world clock runs. ServUO's five real
     /// seconds to the minute puts a whole UO day in two real hours.
     pub uo_minute_ticks: u64,
-    /// The season the client draws: 0 spring, 1 summer, 2 fall, 3 winter, 4
-    /// desolation. Static for now; sent on world entry.
-    pub season: u8,
+    /// The season the client draws. Static for now; sent on world entry.
+    pub season: Season,
     /// Whether guards answer at all in the regions marked guarded — ServUO's
     /// per-region `Disabled`, as one shard-wide switch.
     pub guards: bool,
@@ -325,7 +327,7 @@ impl Default for Gameplay {
             lod_idle_factor: 8,
             // ServUO's rate: a whole UO day in two real hours.
             uo_minute_ticks: Self::ticks(5),
-            season: 0, // spring
+            season: Season::Spring,
             guards: true,
             // Ours, not the references'; opt-in, and inert without pack data.
             npc_schedule: false,
@@ -530,16 +532,26 @@ pub struct WorldState {
     pub default_facet: Facet,
     /// Which entity a connection is driving.
     pub players: HashMap<ConnectionId, EntityId>,
+    /// Every connection the world is holding, playing a character or not.
+    ///
+    /// Wider than [`players`](Self::players) on purpose: a connection exists from
+    /// the moment the login conversation hands it over, which is before it has
+    /// picked a character and after it has left one behind. See
+    /// [`Connection`](crate::connection::Connection) for why that has to be
+    /// expressible.
+    ///
+    /// It carries what the client is in the middle of as well as who it is — what
+    /// is on its cursor, what it was last told about the light, the music and its
+    /// own numbers. Those were maps of their own, cleared by name on the way out;
+    /// the row is what makes forgetting one impossible. Let go of through
+    /// [`forget_connection`](Self::forget_connection), never `connections.remove`.
+    pub connections: HashMap<ConnectionId, Connection>,
     /// What each player's client currently has on screen.
     ///
     /// The server has to remember, because the client never says. There is no
     /// "what can you see" packet — only "draw this" and "forget that" — so the
     /// only way to send a mobile exactly once is to know what was sent before.
     pub seen: HashMap<EntityId, HashSet<EntityId>>,
-    /// The item each connection is dragging on its cursor, and where it was so a
-    /// cancelled drag can put it back. An item here is off the ground and out of
-    /// everyone's [`seen`](Self::seen) — in limbo until a `0x08` lands it.
-    pub held: HashMap<ConnectionId, HeldItem>,
     /// Where new characters appear. The height comes from the map.
     pub start: (u16, u16),
     /// The generator behind every roll — a swing landing, a skill gaining. Part
@@ -572,9 +584,6 @@ pub struct WorldState {
     /// whole once a tick to find a trade whose parties have walked apart, which
     /// is cheaper than the region diff it copies, and a player is in at most one.
     pub trades: Vec<Trade>,
-    /// Mobiles that have a targeting cursor up, and what the click is for. A `.tele`
-    /// raises one; the `0x6C` answer looks here to know what to do with the spot.
-    pub pending_targets: HashMap<EntityId, TargetPurpose>,
     /// Every quest this shard knows, as the script pack defined them. Replaced
     /// wholesale on a pack reload, and never persisted — the pack is the truth
     /// about what a quest *is*, every boot; only a player's progress is saved.
@@ -583,28 +592,12 @@ pub struct WorldState {
     /// on a reload and never persisted, for the same reason as
     /// [`quests`](Self::quests): the pack is the truth about content.
     pub dialogue: Dialogue,
-    /// Which quest dialog each player has open, and on which page.
-    ///
-    /// Session state, like [`pending_targets`](Self::pending_targets): a gump
-    /// exists only while someone is looking at it, and a reply that arrives for a
-    /// window this side never opened is a reply to nothing. Cleared on logout.
-    pub open_quest_gumps: HashMap<EntityId, QuestGumpContext>,
-    /// Which craft window each player has open, on which category and material.
-    ///
-    /// Session state beside [`open_quest_gumps`](Self::open_quest_gumps), and for
-    /// the same reason — but it carries more weight than the quest log's does:
-    /// the selected category, the chosen metal and the tool in hand all live
-    /// here and never in the packet, so a reply cannot name a material the
-    /// player did not pick. Cleared on logout.
-    pub open_craft_gumps: HashMap<EntityId, CraftGumpContext>,
-    /// Which runebook each player has open. The `open_craft_gumps` shape.
-    pub open_runebook_gumps: HashMap<EntityId, EntityId>,
-    /// Which gate each player has a destination list open for.
-    ///
-    /// The `open_craft_gumps` shape, and for the same reason: the reply carries a
-    /// button and a switch, never *which* gate asked, so a `0xB1` for a window
-    /// this side never drew must do nothing.
-    pub open_gate_gumps: HashMap<EntityId, EntityId>,
+    // The targeting cursor and the four gump contexts used to be maps here, keyed
+    // by the *player's entity*. They are fields on the connection's row now —
+    // `connection::Connection` — reached through `row_of`/`row_of_mut`. They are
+    // about a client's screen and not about a mobile: every one of them was
+    // already unreachable without a `Client`, and keying them by the entity meant
+    // nothing swept them when the client went. Four of the five leaked outright.
     /// The tunable rules — swing era, speech ranges, timers — the systems read.
     pub gameplay: Gameplay,
     /// Set by a staff `.save` to ask the tick for an immediate snapshot. The world
@@ -686,9 +679,13 @@ pub struct CraftGumpContext {
     pub sub_res: u8,
     /// Which page.
     pub page: CraftGumpPage,
-    /// The cliloc in the window's notice box — what the last attempt had to say.
-    /// Zero for none.
-    pub notice: u32,
+    /// The cliloc in the window's notice box — what the last attempt had to say,
+    /// or `None` when the box is empty.
+    ///
+    /// An `Option` and not a zero sentinel: cliloc `0` is a number the client
+    /// would look up, so "no notice" and "notice number zero" were the same
+    /// value here, and only the `!= 0` at the draw site kept them apart.
+    pub notice: Option<ClilocId>,
 }
 
 /// What a raised targeting cursor is waiting to do with the click.
@@ -864,7 +861,7 @@ impl WorldState {
         let Some(serial) = self.registry.serial_of(entity) else {
             return;
         };
-        if let Some(&Client { connection, version }) = self.registry.get::<Client>(entity) {
+        if let Some((connection, version)) = self.client_of(entity) {
             let exact = ServerPacket::Health(HealthBar::exact(serial, max, current));
             self.outbox.push(Outbound {
                 connection,
@@ -873,7 +870,7 @@ impl WorldState {
         }
         let scaled = ServerPacket::Health(HealthBar::scaled(serial, max, current));
         for watcher in self.watchers_of(entity) {
-            if let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) {
+            if let Some((connection, version)) = self.client_of(watcher) {
                 self.outbox.push(Outbound {
                     connection,
                     packet: scaled.encode(version),
@@ -917,19 +914,11 @@ impl WorldState {
     /// A no-op for a source with no `Position` (a contained item) — its holder's
     /// tile is where such a sound belongs, and that is the caller's to place. The
     /// `0x54` is placed in 3D so the client attenuates it by distance.
-    /// `sound` is still a bare id here, not a [`SoundId`]: the sound *tables* —
-    /// spell definitions, creature voices, instrument notes — carry raw numbers
-    /// out of config, and the newtype starts where the packet is built. Converting
-    /// those tables is its own sweep and would drag serde into the protocol
-    /// newtypes; nothing here unwraps a `SoundId`, which is the rule that matters.
-    pub fn play_sound(&mut self, source: EntityId, sound: u16) {
+    pub fn play_sound(&mut self, source: EntityId, sound: SoundId) {
         let Some(&Position(at)) = self.registry.get::<Position>(source) else {
             return;
         };
-        let packet = ServerPacket::PlaySound(PlaySound {
-            sound: SoundId(sound),
-            at,
-        });
+        let packet = ServerPacket::PlaySound(PlaySound { sound, at });
         self.broadcast_packet(source, &packet);
     }
 
@@ -944,9 +933,9 @@ impl WorldState {
             return;
         };
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
-            serial: SYSTEM_SERIAL,
-            graphic: NO_GRAPHIC,
-            mode: 0, // regular mode
+            serial: None, // the system talking, not a mobile
+            graphic: None,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             name: "System".to_owned(),
@@ -962,14 +951,14 @@ impl WorldState {
     /// reads it in their own language, and the shard ships no English. `arguments`
     /// fills the cliloc's `~1_val~` slots, tab-separated, and is usually empty.
     /// A mobile with no client hears nothing, like [`system_message`](Self::system_message).
-    pub fn localized_message(&mut self, mobile: EntityId, cliloc: u32, arguments: &str) {
+    pub fn localized_message(&mut self, mobile: EntityId, cliloc: ClilocId, arguments: &str) {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
         let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
-            serial: SYSTEM_SERIAL,
-            graphic: NO_GRAPHIC,
-            mode: 0, // regular mode
+            serial: None, // the system talking, not a mobile
+            graphic: None,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             cliloc,
@@ -989,23 +978,26 @@ impl WorldState {
         &mut self,
         watcher: EntityId,
         source: EntityId,
-        cliloc: u32,
+        cliloc: ClilocId,
         arguments: &str,
     ) {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
             return;
         };
-        let serial = self.registry.serial_of(source).map_or(0, |s| s.raw());
+        // A source with neither a serial nor a graphic falls back to the system's
+        // sentinels, which is what the line degrades to: the watcher still reads
+        // it, drawn as the server talking rather than over a thing that has no
+        // wire identity to draw it over.
+        let serial = self.registry.serial_of(source);
         let graphic = self
             .registry
             .get::<Body>(source)
-            .map(|body| body.id.0)
-            .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
-            .unwrap_or(NO_GRAPHIC);
+            .map(|body| body.id)
+            .or_else(|| self.registry.get::<Drawn>(source).map(|g| g.id));
         let packet = ServerPacket::LocalizedMessage(LocalizedMessage {
             serial,
             graphic,
-            mode: 0, // regular mode
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             cliloc,
@@ -1027,17 +1019,18 @@ impl WorldState {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) else {
             return;
         };
-        let serial = self.registry.serial_of(source).map_or(0, |s| s.raw());
+        // Degrades to a system line for a source with no wire identity, exactly as
+        // [`private_overhead_cliloc`](Self::private_overhead_cliloc) does.
+        let serial = self.registry.serial_of(source);
         let graphic = self
             .registry
             .get::<Body>(source)
-            .map(|body| body.id.0)
-            .or_else(|| self.registry.get::<Graphic>(source).map(|g| g.id))
-            .unwrap_or(NO_GRAPHIC);
+            .map(|body| body.id)
+            .or_else(|| self.registry.get::<Drawn>(source).map(|g| g.id));
         let packet = ServerPacket::SpokenMessage(SpokenMessage {
             serial,
             graphic,
-            mode: 0,
+            mode: TalkMode::Regular,
             hue: SYSTEM_HUE,
             font: SYSTEM_FONT,
             name: String::new(),
@@ -1056,17 +1049,14 @@ impl WorldState {
     /// mobile's own tile, so the client does not attenuate it away.
     ///
     /// A no-op for a mobile with no client (an NPC) or no position.
-    pub fn play_sound_to(&mut self, mobile: EntityId, sound: u16) {
+    pub fn play_sound_to(&mut self, mobile: EntityId, sound: SoundId) {
         let Some(&Client { connection, .. }) = self.registry.get::<Client>(mobile) else {
             return;
         };
         let Some(&Position(at)) = self.registry.get::<Position>(mobile) else {
             return;
         };
-        let packet = ServerPacket::PlaySound(PlaySound {
-            sound: SoundId(sound),
-            at,
-        });
+        let packet = ServerPacket::PlaySound(PlaySound { sound, at });
         self.send_packet(connection, &packet);
     }
 
@@ -1125,7 +1115,7 @@ impl WorldState {
         let humanoid = self
             .registry
             .get::<Body>(mobile)
-            .is_some_and(|body| body_opens_doors(body.id.0));
+            .is_some_and(|body| body_opens_doors(body.id));
         // Built once each; the per-recipient choice is only which to send.
         let new_packet = ServerPacket::NewAnimation(NewAnimation {
             serial,
@@ -1322,31 +1312,37 @@ impl WorldState {
 
         if from != facet {
             if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
-                let (width, height) = {
+                let size = {
                     let state = self.facet_state(facet);
-                    (state.width, state.height)
+                    MapSize {
+                        width: state.width as u16,
+                        height: state.height as u16,
+                    }
                 };
                 // Which map to draw, then where on it and how big it is. No
                 // `0x1B`: that is the "entering the world" packet, and neither
                 // reference re-sends it mid-session.
-                // `.0` because the facet number is what goes on the wire here.
-                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet.0 }));
-                self.send(connection, encode_server_change(to, width as u16, height as u16));
+                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
+                self.send(connection, encode_server_change(to, size));
             }
         }
 
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
-            let serial = self.registry.serial_of(entity).map_or(0, |s| s.raw());
-            let body = self.registry.get::<Body>(entity);
+            // The serial joins the body and the facing in the `if let`: a
+            // `0x20` addressed to nothing is not worth sending, and the old
+            // `map_or(0, …)` sent one — zero is not a serial, it is the wire's
+            // word for "no object".
+            let serial = self.registry.serial_of(entity);
+            let body = self.registry.get::<Body>(entity).copied();
             let facing = self.registry.get::<Heading>(entity).map(|h| h.0);
-            if let (Some(body), Some(facing)) = (body, facing) {
+            if let (Some(serial), Some(body), Some(facing)) = (serial, body, facing) {
                 self.send_packet(
                     connection,
                     &ServerPacket::PlayerUpdate(PlayerUpdate {
                         serial,
-                        body: body.id.0,
-                        hue: body.hue.0,
-                        flags: 0,
+                        body: body.id,
+                        hue: body.hue,
+                        flags: StatusFlags::NONE,
                         position: to,
                         facing,
                     }),
@@ -1466,7 +1462,7 @@ impl WorldState {
             return;
         };
         for watcher in self.watchers_of(entity) {
-            let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) else {
+            let Some((connection, version)) = self.client_of(watcher) else {
                 continue;
             };
             self.outbox.push(Outbound {
@@ -1480,7 +1476,7 @@ impl WorldState {
     pub fn show(&mut self, watcher: EntityId, other: EntityId) {
         // Only players have screens. An NPC "seeing" someone is an AI question,
         // and it does not belong in the packet path.
-        let Some(&Client { connection, version }) = self.registry.get::<Client>(watcher) else {
+        let Some((connection, version)) = self.client_of(watcher) else {
             return;
         };
         if self.seen.get(&watcher).is_some_and(|seen| seen.contains(&other)) {
@@ -1537,7 +1533,7 @@ impl WorldState {
         let send_version =
             self.gameplay.tooltip_mode == TooltipMode::SendVersion && version.supports(Feature::TooltipHash);
         if send_version {
-            let serial = self.registry.serial_of(entity)?.raw();
+            let serial = self.registry.serial_of(entity)?;
             Some(ServerPacket::TooltipRevision(TooltipRevision { serial, hash }).encode(version))
         } else {
             Some(full)
@@ -1554,7 +1550,7 @@ impl WorldState {
     /// `Item.AddNameProperty`.
     #[must_use]
     pub fn object_properties(&self, entity: EntityId) -> Option<(Vec<u8>, u32)> {
-        let serial = self.registry.serial_of(entity)?.raw();
+        let serial = self.registry.serial_of(entity)?;
         let mut list = PropertyList::new(serial);
         if let Some(Name(name)) = self.registry.get::<Name>(entity) {
             // The earned name — a fame title once the mobile is famous enough for an
@@ -1563,12 +1559,12 @@ impl WorldState {
             // prefix and a suffix around the name in one string, so it goes in the name
             // slot whole and the other two stay empty.
             let name = crate::title::titled_name(self, entity, name);
-            list.add_args(1_050_045, &format!(" \t{name}\t "));
-        } else if let Some(&Graphic { id, .. }) = self.registry.get::<Graphic>(entity) {
-            let cliloc = 1_020_000 + u32::from(id);
+            list.add_args(ClilocId(1_050_045), &format!(" \t{name}\t "));
+        } else if let Some(&Drawn { id, .. }) = self.registry.get::<Drawn>(entity) {
+            let cliloc = ClilocId(1_020_000 + u32::from(id.0));
             match self.registry.get::<Amount>(entity) {
                 Some(Amount(amount)) if *amount > 1 => {
-                    list.add_args(1_050_039, &format!("{amount}\t#{cliloc}"));
+                    list.add_args(ClilocId(1_050_039), &format!("{amount}\t#{}", cliloc.0));
                 }
                 _ => list.add(cliloc),
             }
@@ -1584,10 +1580,10 @@ impl WorldState {
             .get::<Quality>(entity)
             .is_some_and(|quality| quality.exceptional)
         {
-            list.add(1_060_636); // Exceptional
+            list.add(ClilocId(1_060_636)); // Exceptional
         }
         if let Some(CraftedBy(maker)) = self.registry.get::<CraftedBy>(entity) {
-            list.add_args(1_050_043, maker); // crafted by ~1_NAME~
+            list.add_args(ClilocId(1_050_043), maker); // crafted by ~1_NAME~
         }
         Some(list.finish())
     }
@@ -1608,7 +1604,7 @@ impl WorldState {
         if self.registry.has::<Body>(entity) {
             let incoming = self.mobile_incoming(entity)?;
             Some(ServerPacket::MobileIncoming(incoming).encode(version))
-        } else if self.registry.has::<Graphic>(entity) {
+        } else if self.registry.has::<Drawn>(entity) {
             Some(ServerPacket::WorldItem(self.world_item(entity)?).encode(version))
         } else {
             None
@@ -1619,12 +1615,12 @@ impl WorldState {
     #[must_use]
     pub fn world_item(&self, entity: EntityId) -> Option<WorldItem> {
         let serial = self.registry.serial_of(entity)?;
-        let Graphic { id, hue } = *self.registry.get::<Graphic>(entity)?;
+        let Drawn { id, hue } = *self.registry.get::<Drawn>(entity)?;
         let Position(position) = *self.registry.get::<Position>(entity)?;
         // No `Amount` means a single. The encoder treats 1 and absent the same.
         let amount = self.registry.get::<Amount>(entity).map_or(1, |a| a.0);
         Some(WorldItem {
-            serial: serial.raw(),
+            serial,
             graphic: id,
             amount,
             position,
@@ -1642,7 +1638,7 @@ impl WorldState {
             return;
         }
         if let Some(&Client { connection, .. }) = self.registry.get::<Client>(watcher) {
-            self.send_packet(connection, &ServerPacket::Remove(Remove { serial: serial.raw() }));
+            self.send_packet(connection, &ServerPacket::Remove(Remove { serial }));
         }
     }
 
@@ -1836,12 +1832,12 @@ impl WorldState {
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
         let body = *self.registry.get::<Body>(entity)?;
         Some(MobileIncoming {
-            serial: serial.raw(),
-            body: body.id.0,
+            serial,
+            body: body.id,
             position,
             facing,
-            hue: body.hue.0,
-            flags: 0,
+            hue: body.hue,
+            flags: StatusFlags::NONE,
             notoriety: self.notoriety_of(entity),
             equipment: self.equipment_of(serial),
         })
@@ -1867,7 +1863,7 @@ impl WorldState {
     /// without knowing the map exists breaks it silently.
     ///
     /// It holds *entities*, not the finished list, so a re-dyed or re-graphicked
-    /// item still reads its current `Graphic` here — only membership is cached,
+    /// item still reads its current `Drawn` here — only membership is cached,
     /// and only membership is what the version tracks.
     #[must_use]
     pub fn equipment_of(&mut self, mobile: Serial) -> Vec<Equipment> {
@@ -1893,9 +1889,9 @@ impl WorldState {
                 }
                 let serial = self.registry.serial_of(item)?;
                 let worn = self.registry.get::<Equipped>(item)?;
-                let Graphic { id, hue } = *self.registry.get::<Graphic>(item)?;
+                let Drawn { id, hue } = *self.registry.get::<Drawn>(item)?;
                 Some(Equipment {
-                    serial: serial.raw(),
+                    serial,
                     graphic: id,
                     layer: worn.layer,
                     hue,
@@ -1912,12 +1908,12 @@ impl WorldState {
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
         let body = *self.registry.get::<Body>(entity)?;
         Some(MobileMove {
-            serial: serial.raw(),
-            body: body.id.0,
+            serial,
+            body: body.id,
             position,
             facing,
-            hue: body.hue.0,
-            flags: 0,
+            hue: body.hue,
+            flags: StatusFlags::NONE,
             notoriety: self.notoriety_of(entity),
         })
     }
@@ -1929,14 +1925,156 @@ impl WorldState {
 
     /// The client version negotiated on `connection`.
     ///
-    /// `None` for a connection with no player in the world. That is not a stopgap
-    /// for "don't know yet": every in-world packet is addressed to a mobile, and a
-    /// connection without one has nothing such a packet could tell it — it left,
-    /// or it has not entered.
+    /// `None` for a connection the world has never been handed — one still in the
+    /// login conversation, or one already gone. That is absence and not ignorance:
+    /// a connection the world holds always knows what its client is, because the
+    /// version arrives with the hand-off (`Command::Authenticated`) and never
+    /// changes afterwards.
+    ///
+    /// Read off the session row rather than off the player's
+    /// [`Client`](crate::components::Client) component, which is what made a
+    /// connection with no character unaddressable — see
+    /// [`session`](crate::session).
     #[must_use]
     pub fn version_of(&self, connection: ConnectionId) -> Option<ClientVersion> {
-        let &player = self.players.get(&connection)?;
-        self.registry.get::<Client>(player).map(|client| client.version)
+        self.connections.get(&connection).map(|client| client.version)
+    }
+
+    /// What the world remembers about `connection`, or `None` for one it is not
+    /// holding — still in the login conversation, or already gone.
+    #[must_use]
+    pub fn connection(&self, connection: ConnectionId) -> Option<&Connection> {
+        self.connections.get(&connection)
+    }
+
+    /// The same row, to write what this client is in the middle of.
+    ///
+    /// A write to a connection the world does not hold is a no-op rather than a
+    /// panic: a tick can be applying work queued for a socket that has since
+    /// closed, which is ordinary rather than exceptional.
+    pub fn connection_mut(&mut self, connection: ConnectionId) -> Option<&mut Connection> {
+        self.connections.get_mut(&connection)
+    }
+
+    /// Let go of a connection, and of everything the world was holding for it.
+    ///
+    /// The one exit. Returns the row so the caller can deal with what was still in
+    /// flight — an item on the cursor has to be put back somewhere, and only the
+    /// item code knows where. Everything else on the row simply ceases to exist,
+    /// which is the point: teardown is a `remove`, not a list of maps to clear
+    /// that a new field can be left off.
+    ///
+    /// It does not touch the *character*: letting go of the entity, its serial and
+    /// its saved record is `World::disconnect`'s, because it involves the journal
+    /// and the roster and this crate has neither.
+    pub fn forget_connection(&mut self, connection: ConnectionId) -> Option<Connection> {
+        // The one per-connection fact that is not on the row: which containers this
+        // client has open is indexed by *container*, because every read of it asks
+        // "who is watching this one" as an item inside changes. Inverting it onto
+        // the row would turn each of those into a scan of every connection, so it
+        // stays an index — and this is the sweep the row cannot do for it.
+        self.open_containers.retain(|_, watchers| {
+            watchers.remove(&connection);
+            !watchers.is_empty()
+        });
+        self.connections.remove(&connection)
+    }
+
+    /// The row of the client playing `entity`, if it is a connected player.
+    ///
+    /// The seam for the state that is *about a screen* but is reached holding a
+    /// mobile — a targeting cursor, an open gump. `None` for a creature, for a
+    /// character between sessions, and for an entity that is not a mobile at all,
+    /// which is one absence and not three: none of them has a screen.
+    ///
+    /// One lookup and not a walk of [`players`](Self::players): the entity says
+    /// which connection through its [`Client`] component.
+    #[must_use]
+    pub fn row_of(&self, entity: EntityId) -> Option<&Connection> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        self.connections.get(&connection)
+    }
+
+    /// The same row, to write to. See [`row_of`](Self::row_of).
+    pub fn row_of_mut(&mut self, entity: EntityId) -> Option<&mut Connection> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        self.connections.get_mut(&connection)
+    }
+
+    /// The connection `entity` is played over, if it is a connected player.
+    ///
+    /// For the caller that needs the *name* of the connection rather than what is
+    /// on its row — one that sends a packet, or hands the id to something that
+    /// keys by it. A caller that goes on to read the row wants
+    /// [`row_of`](Self::row_of) instead, and one that also needs the client
+    /// version wants [`client_of`](Self::client_of): both are this lookup with the
+    /// second half already done.
+    ///
+    /// One lookup, and the reason to reach for it is that the obvious alternative
+    /// is not: [`players`](Self::players) is keyed by connection, so answering
+    /// this from it means walking every player on the shard to find the one entry
+    /// that matches.
+    #[must_use]
+    pub fn connection_of(&self, entity: EntityId) -> Option<ConnectionId> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        Some(connection)
+    }
+
+    /// Put a targeting cursor up for `entity`, remembering what the click is for.
+    ///
+    /// Nothing happens for a mobile with no client, which is the invariant every
+    /// caller used to spell out for itself: a creature has no cursor to raise.
+    pub fn raise_target(&mut self, entity: EntityId, purpose: TargetPurpose) {
+        if let Some(row) = self.row_of_mut(entity) {
+            row.pending_target = Some(purpose);
+        }
+    }
+
+    /// Take down `entity`'s targeting cursor and say what it was for. `None` when
+    /// none was up — a `0x6C` for a cursor this side never raised.
+    pub fn take_target(&mut self, entity: EntityId) -> Option<TargetPurpose> {
+        self.row_of_mut(entity).and_then(|row| row.pending_target.take())
+    }
+
+    /// Whether `entity` already has a cursor up and is therefore busy.
+    #[must_use]
+    pub fn has_target(&self, entity: EntityId) -> bool {
+        self.row_of(entity)
+            .is_some_and(|row| row.pending_target.is_some())
+    }
+
+    /// What `connection` is dragging on its cursor, if anything.
+    #[must_use]
+    pub fn held_of(&self, connection: ConnectionId) -> Option<HeldItem> {
+        self.connections.get(&connection).and_then(|row| row.held)
+    }
+
+    /// Put an item on `connection`'s cursor.
+    pub fn hold(&mut self, connection: ConnectionId, held: HeldItem) {
+        if let Some(row) = self.connections.get_mut(&connection) {
+            row.held = Some(held);
+        }
+    }
+
+    /// Take whatever is on `connection`'s cursor off it.
+    pub fn take_held(&mut self, connection: ConnectionId) -> Option<HeldItem> {
+        self.connections
+            .get_mut(&connection)
+            .and_then(|row| row.held.take())
+    }
+
+    /// Who to answer for `entity`, and in which dialect: its connection and that
+    /// connection's client version, or `None` if it has no client at all.
+    ///
+    /// The two halves used to sit together on the [`Client`] component and are
+    /// now one lookup apiece — the entity says which connection, the connection
+    /// says which client. This is the pair every packet path needs, so it is one
+    /// call and not two: a caller that reached for `Client { connection }` and
+    /// then guessed a version would be back to the bug that split them.
+    #[must_use]
+    pub fn client_of(&self, entity: EntityId) -> Option<(ConnectionId, ClientVersion)> {
+        let &Client { connection } = self.registry.get::<Client>(entity)?;
+        Some((connection, self.version_of(connection)?))
     }
 
     /// Queue `packet` for a connection, framed for the version that connection
@@ -1944,7 +2082,8 @@ impl WorldState {
     ///
     /// The seam every server-to-client packet should go through: the caller names
     /// *what* to say and this decides *how* to say it to this particular client.
-    /// A connection with no player is skipped — see [`version_of`](Self::version_of).
+    /// A connection the world does not hold is skipped — see
+    /// [`version_of`](Self::version_of).
     /// Encoding for a guessed version instead is how a client silently drops a
     /// packet it cannot parse, which is the failure mode that is hardest to see.
     pub fn send_packet(&mut self, connection: ConnectionId, packet: &ServerPacket) {
@@ -1995,8 +2134,7 @@ impl WorldState {
         };
         sectors
             .nearby(centre, VIEW_RANGE)
-            .filter_map(|(entity, _)| self.registry.get::<Client>(entity))
-            .map(|client| (client.connection, client.version))
+            .filter_map(|(entity, _)| self.client_of(entity))
             .collect()
     }
 

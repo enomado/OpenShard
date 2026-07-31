@@ -74,8 +74,8 @@ pub struct SkillUsed {
 }
 
 /// Set a mobile's stats by serial, and re-cap its pools to match.
-pub fn set_stats(state: &mut WorldState, serial: u32, strength: u16, dexterity: u16, intelligence: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn set_stats(state: &mut WorldState, serial: Serial, strength: u16, dexterity: u16, intelligence: u16) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     apply_stats(state, entity, strength, dexterity, intelligence);
@@ -133,8 +133,8 @@ pub fn apply_stats(
 }
 
 /// Set a mobile's skill value, in tenths, clamped to that skill's cap.
-pub fn set_skill(state: &mut WorldState, serial: u32, skill: u8, value: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn set_skill(state: &mut WorldState, serial: Serial, skill: u8, value: u16) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     let mut skills = state.registry.get::<Skills>(entity).cloned().unwrap_or_default();
@@ -145,8 +145,8 @@ pub fn set_skill(state: &mut WorldState, serial: u32, skill: u8, value: u16) {
 
 /// Set the ceiling on one of a mobile's skills, in tenths, dragging the value
 /// down under it if it now sits above.
-pub fn set_skill_cap(state: &mut WorldState, serial: u32, skill: u8, cap: u16) {
-    let Some(entity) = Serial::new(serial).and_then(|s| state.registry.entity_of(s)) else {
+pub fn set_skill_cap(state: &mut WorldState, serial: Serial, skill: u8, cap: u16) {
+    let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };
     let mut skills = state.registry.get::<Skills>(entity).cloned().unwrap_or_default();
@@ -162,10 +162,7 @@ pub fn set_skill_cap(state: &mut WorldState, serial: u32, skill: u8, cap: u16) {
 ///
 /// The band is ServUO's — under `min_skill` the attempt is beyond the mobile,
 /// at `max_skill` it is no challenge — and both are in tenths.
-pub fn use_skill(state: &mut WorldState, serial: u32, skill: u8, min_skill: i32, max_skill: i32) {
-    let Some(serial) = Serial::new(serial) else {
-        return;
-    };
+pub fn use_skill(state: &mut WorldState, serial: Serial, skill: u8, min_skill: i32, max_skill: i32) {
     let Some(entity) = state.registry.entity_of(serial) else {
         return;
     };

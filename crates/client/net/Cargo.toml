@@ -1,0 +1,26 @@
+[package]
+name = "openshard-client-net"
+description = "The client's side of the wire: framing, decompression, and the login conversation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openshard-protocol.workspace = true
+# The walk handshake, shared with the server: `intend` is the turn-versus-step
+# rule both ends have to agree on, and `StepCounter` is the client half of the
+# sequence rule `WalkSequence` enforces. See `walk.rs`.
+openshard-movement.workspace = true
+# The same narrow set the gateway takes: this crate opens sockets and nothing
+# else. The parsing half is sans-io and does not touch tokio at all.
+tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "macros"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

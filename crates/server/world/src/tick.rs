@@ -35,17 +35,19 @@ use openshard_persistence::{
     CharacterRecord, DecorationRecord, DoorState, Inventory, ItemLocation, ItemRecord, Journal, MobileRecord,
     SCHEMA_VERSION, Snapshot,
 };
+use openshard_protocol::containers::UseRequest;
 use openshard_protocol::context::{ContextMenu, ContextMenuEntry};
-use openshard_protocol::gump::{CloseGump, GumpDisplay, GumpResponse};
+use openshard_protocol::gump::{ButtonId, CloseGump, GumpDisplay, GumpId, GumpKey, GumpPoint, GumpResponse};
 use openshard_protocol::identity::{AccountName, CharacterName};
-use openshard_protocol::login::{AOS_FEATURE_FLAGS, encode_supported_features};
-use openshard_protocol::mobile::{LABEL_MODE, MobileStatus, Notoriety, StatLockBits};
-use openshard_protocol::serial::{Serial, SerialKind};
+use openshard_protocol::login::{SupportedFeatures, encode_supported_features};
+use openshard_protocol::mobile::{MobileStatus, Notoriety, Stat, StatLockBits, StatusFlags, Vitals};
+use openshard_protocol::serial::{RawSerial, Serial, SerialKind};
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::SpokenMessage;
+use openshard_protocol::speech::{Font, RawFont, RawTalkMode, SpokenMessage, TalkMode};
+use openshard_protocol::wire::{Graphic, Hue, Layer, RawHue, RawLayer};
 use openshard_protocol::world::{
-    DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayerStart, PlayerUpdate, Point, Season,
-    WalkAck, WalkReject, WalkRequest,
+    DeathStatus, Facet, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapSize, PlayerStart,
+    PlayerUpdate, Point, RawStepSequence, SeasonChange, WalkAck, WalkReject, WalkRequest,
 };
 use openshard_protocol::{
     access::AccessLevel,
@@ -57,8 +59,8 @@ use tracing::{debug, info, warn};
 
 use openshard_state::components::{
     Access, Account, Amount, Body, Brain, Client, Combat, Contained, Container, DamageType, Decoration, Door,
-    Equipped, Facet, Ghost, Graphic, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position,
-    Resistance, Ridden, Riding, Scripted, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
+    Drawn, Equipped, Ghost, Heading, Hitpoints, Mana, MeleeDamage, Movement, Name, Position, Resistance,
+    Ridden, Riding, Scripted, SpawnedBy, Spellbook, Stackable, Stamina, Stats, Vendor,
 };
 use openshard_state::harvest::Banks;
 use openshard_state::rng::Rng;
@@ -79,8 +81,8 @@ use openshard_skills as skills;
 
 use crate::doorgen;
 use crate::events::{
-    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeft, RefusedReason,
-    RegionChanged, StepRefused,
+    AdminMenuAction, CorpseCreated, MobileMoved, MobileTurned, PlayerEntered, PlayerLeaving, PlayerLeft,
+    PlayerRefused, RefusedEntry, RefusedReason, RegionChanged, StepRefused,
 };
 use crate::gm;
 use crate::terrain::MapTerrain;
@@ -97,6 +99,8 @@ mod gates;
 mod motion;
 mod persist;
 mod regions;
+mod roster;
+pub mod screen;
 mod skills_wire;
 mod spawners;
 mod speech;
@@ -107,12 +111,13 @@ mod traps;
 mod travel;
 mod wake;
 
+use command::StoredCharacter;
 pub use command::{
     Appearance, Character, CharacterSheet, Command, DecorContainer, DecorDoor, Entering, FreshCharacter,
-    StoredCharacter,
 };
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
+use roster::Roster;
 
 // `Outbound`, `FacetState`, `HeldItem` and `Origin` are the world's runtime
 // state, moved down into `openshard-state` with `WorldState` so the systems can
@@ -135,12 +140,16 @@ pub struct World {
     save_every: u64,
     /// Snapshots the tick has taken and nobody has collected yet.
     saves: Vec<Snapshot>,
-    /// Characters that left this tick, with the state they left in. The server
-    /// drains these to keep its in-memory character list current, so a re-login in
-    /// the same run finds the character where it logged out — not where it was at
-    /// boot. The store gets the same record through the journal; this is the
-    /// immediate copy, because a re-login can beat the next deferred save.
-    departed: Vec<CharacterRecord>,
+    /// Where every stored character was when it was last seen: seeded from the
+    /// store at boot, and rewritten by every logout. It is what a re-login reads
+    /// to come back where it left rather than where it stood at boot, and the
+    /// store cannot answer that — its copy is written by a task nobody waits for,
+    /// which a fast re-login can beat. See [`Roster`].
+    roster: Roster,
+    /// What the character screen offers beside the characters: the starting
+    /// cities, and the two client-capability masks. Configuration, handed over at
+    /// boot — see [`CharacterScreen`](screen::CharacterScreen).
+    screen: screen::CharacterScreen,
     /// Read to find out what to mark dirty. See `mark_dirty`.
     entered: Cursor<PlayerEntered>,
     /// Read to find out what to mark dirty. See `mark_dirty`.
@@ -187,16 +196,12 @@ pub struct World {
     /// entering takes its own and equips it, once.
     ///
     /// [`restore_inventory`]: World::restore_inventory
-    pending_inventories: HashMap<u32, Vec<ItemRecord>>,
-    /// The derived status numbers last sent to each connected player, so the
-    /// refresh pass can send only what changed. See `tick/status.rs`.
-    last_status: HashMap<ConnectionId, status::StatusSnapshot>,
-    /// The light level last sent to each connected player, the remembered half of
-    /// the ambient diff. See `tick/ambient.rs`.
-    last_light: HashMap<ConnectionId, u8>,
-    /// The music track each player is currently hearing, so a crossing that does
-    /// not change it does not restart it. See `tick/regions.rs`.
-    last_music: HashMap<ConnectionId, u16>,
+    pending_inventories: HashMap<Serial, Vec<ItemRecord>>,
+    // The status, light and music a connection was last told about used to be
+    // three maps here, keyed by connection and cleared by name in `disconnect`.
+    // They are fields on the connection's row now — see
+    // `openshard_state::connection::Connection` — because a map cleared by name is
+    // a map the next one added beside it can be left out of.
     /// Where the world clock started, in UO minutes — restored at boot so a
     /// restart does not put the world back at midnight. See `tick/ambient.rs`.
     clock_base: u64,
@@ -240,8 +245,8 @@ impl World {
                 facets,
                 default_facet: Facet(DEFAULT_FACET),
                 players: HashMap::new(),
+                connections: HashMap::new(),
                 seen: HashMap::new(),
-                held: HashMap::new(),
                 start,
                 rng: Rng::new(DEFAULT_SEED),
                 ticks: 0,
@@ -250,20 +255,16 @@ impl World {
                 outbox: Vec::new(),
                 open_containers: HashMap::new(),
                 trades: Vec::new(),
-                pending_targets: HashMap::new(),
                 quests: openshard_state::QuestDefs::default(),
                 dialogue: openshard_state::Dialogue::default(),
-                open_quest_gumps: HashMap::new(),
-                open_craft_gumps: HashMap::new(),
-                open_gate_gumps: HashMap::new(),
-                open_runebook_gumps: HashMap::new(),
                 gameplay: Gameplay::default(),
                 save_requested: false,
             },
             journal: Journal::new(),
             save_every: SAVE_EVERY_TICKS,
             saves: Vec::new(),
-            departed: Vec::new(),
+            roster: Roster::new(),
+            screen: screen::CharacterScreen::default(),
             entered: Cursor::default(),
             moved: Cursor::default(),
             gated: Cursor::default(),
@@ -281,9 +282,6 @@ impl World {
             spawners: Vec::new(),
             next_spawner_id: 1,
             pending_inventories: HashMap::new(),
-            last_status: HashMap::new(),
-            last_light: HashMap::new(),
-            last_music: HashMap::new(),
             clock_base: 0,
             player_sectors: HashMap::new(),
         }
@@ -314,6 +312,19 @@ impl World {
     #[must_use]
     pub const fn with_gameplay(mut self, gameplay: Gameplay) -> Self {
         self.state.gameplay = gameplay;
+        self
+    }
+
+    /// Set what the character screen offers: the starting cities, and the two
+    /// client-capability masks the `0xA9` and `0xB9` carry.
+    ///
+    /// The server builds these from `[gameplay]` and `[world] facets`; a test
+    /// takes the default, which offers no city — nothing in a test creates a
+    /// character through the screen, and a city list that came from nowhere would
+    /// be a fixture pretending to be configuration.
+    #[must_use]
+    pub fn with_character_screen(mut self, screen: screen::CharacterScreen) -> Self {
+        self.screen = screen;
         self
     }
 
@@ -404,11 +415,11 @@ impl World {
 
     /// The wire serial of everyone connected. For a benchmark that wants to walk
     /// them; a shard addresses players by connection, not by serial.
-    pub fn player_serials(&self) -> Vec<u32> {
+    pub fn player_serials(&self) -> Vec<Serial> {
         self.state
             .players
             .values()
-            .filter_map(|&entity| self.state.registry.serial_of(entity).map(Serial::raw))
+            .filter_map(|&entity| self.state.registry.serial_of(entity))
             .collect()
     }
 
@@ -420,6 +431,17 @@ impl World {
     /// different world depending on which packet won.
     pub fn queue(&mut self, command: Command) {
         self.inbox.push(command);
+    }
+
+    /// How many commands are waiting for the next tick.
+    ///
+    /// The only way anything outside can see that a packet became work. A test
+    /// that a gate *refused* a packet has nothing else to look at: the whole
+    /// assertion is that nothing happened, and every other observation of the
+    /// world — the outbox, the players, the events — is downstream of a tick that
+    /// would have had nothing to apply either way.
+    pub fn queued(&self) -> usize {
+        self.inbox.len()
     }
 
     /// Take the packets the last tick produced.
@@ -438,31 +460,48 @@ impl World {
         self.saves.drain(..)
     }
 
-    /// Take the records of characters that logged out since the last call.
-    ///
-    /// The server keeps an in-memory character list — where each stored character
-    /// was, so playing one spawns it back at its spot — seeded from the store at
-    /// boot. Without this it would go stale the moment a character moved and logged
-    /// out, and a re-login in the same run would rewind to the boot position. These
-    /// are the fresh records to fold in; the store gets the same data through the
-    /// journal, but a re-login can beat that deferred write, so this is the copy
-    /// that closes the gap.
-    pub fn drain_departed(&mut self) -> std::vec::Drain<'_, CharacterRecord> {
-        self.departed.drain(..)
+    /// How many stored characters the world has on file, for the boot log.
+    pub fn stored_characters(&self) -> usize {
+        self.roster.saved()
     }
 
-    /// Delete a logged-out character's saved state.
+    /// Put a character on an account's list without recording anything about it.
     ///
-    /// The server has already dropped it from the account's in-memory list and
-    /// its own restore map; this forgets the store row and inventory so the
-    /// deletion lands on the next save. The serial is *not* unbound — a packet in
-    /// flight may still name it — so `reserve_serial` keeps it out of circulation
-    /// for the rest of the run.
-    pub fn delete_character(&mut self, serial: u32) {
-        self.journal.forget_serial(serial);
+    /// For the config-seeded characters at boot: `[[accounts]] characters` names
+    /// characters that exist and that nothing has ever saved, which is exactly
+    /// what the roster's `None` record means. Call after
+    /// [`restore_characters`](Self::restore_characters), so a name the store also
+    /// has keeps the row that describes it — the enrolment is idempotent and the
+    /// order only decides which call is the no-op.
+    pub fn enrol_character(&mut self, account: &AccountName, name: &CharacterName) {
+        self.roster.enrol(account, name);
+    }
+
+    /// An account's characters, in the slot order the `0xA9` list shows and
+    /// `0x83` indexes.
+    pub fn characters(&self, account: &AccountName) -> Vec<openshard_protocol::login::CharacterEntry> {
+        self.roster.characters(account)
+    }
+
+    /// Delete a character.
+    ///
+    /// Everything the world has under that name goes: its place on the account's
+    /// list, the record a re-login would read, the store row, and the inventory
+    /// waiting under its serial. A character with nothing recorded — created this
+    /// run and never logged out — leaves the list all the same; there is simply
+    /// nothing saved anywhere to clean up after it, which is what the early
+    /// return below skips.
+    ///
+    /// The serial is *not* unbound — a packet in flight may still name it — so
+    /// `reserve_serial` keeps it out of circulation for the rest of the run.
+    fn delete_character(&mut self, account: &AccountName, name: &CharacterName) {
+        let Some(record) = self.roster.forget(account, name) else {
+            return;
+        };
+        self.journal.forget_serial(record.serial.raw());
         // Drop the fast-relogin inventory cache: the character is gone, not
         // coming back this run.
-        self.pending_inventories.remove(&serial);
+        self.pending_inventories.remove(&record.serial);
     }
 
     /// How many entities are waiting to be saved.
@@ -554,7 +593,7 @@ impl World {
             let Some(backpack) = items::backpack_of(&self.state, serial) else {
                 continue;
             };
-            items::give(&mut self.state, backpack, items::GOLD_GRAPHIC, 0, beg.gold);
+            items::give(&mut self.state, backpack, items::GOLD_GRAPHIC, Hue(0), beg.gold);
         }
         combat::expire_criminality(&mut self.state);
         combat::decay_murders(&mut self.state);
@@ -572,7 +611,7 @@ impl World {
         let now = self.state.ticks;
         for entity in magic::expire_buffs(&mut self.state, now) {
             if let Some(serial) = self.state.registry.serial_of(entity) {
-                self.refresh_status_of(serial.raw());
+                self.refresh_status_of(serial);
             }
         }
         // Lift the behaviour buffs whose time is up. Night Sight restores the
@@ -580,7 +619,7 @@ impl World {
         for (entity, kind) in magic::expire_behaviour_buffs(&mut self.state, now) {
             if kind == openshard_state::effect::NIGHT_SIGHT {
                 if let Some(serial) = self.state.registry.serial_of(entity) {
-                    self.send_light(serial.raw(), LIGHT_DAY);
+                    self.send_light(serial, LIGHT_DAY);
                 }
             }
         }
@@ -689,6 +728,14 @@ impl World {
 
     fn apply(&mut self, command: Command, now: Instant) {
         match command {
+            Command::Authenticated {
+                connection,
+                version,
+                account,
+                access,
+            } => self.authenticated(connection, version, account, access),
+            Command::CreateCharacter { connection, create } => self.create_character(connection, create),
+            Command::PlayCharacter { connection, name } => self.play_character(connection, name),
             Command::Enter(entering) => self.enter(entering),
             Command::Walk { connection, request } => self.walk(connection, request, now),
             Command::RequestStatus { connection } => {
@@ -702,6 +749,12 @@ impl World {
                 // way of leaving — there is no second logout rule here.
                 self.state
                     .send_packet(connection, &ServerPacket::LogoutAck(LogoutAck));
+                // But say it out loud as well, because the character stays in the
+                // world until the socket closes and something has to know that
+                // this connection is on its way out. The shard loop stops
+                // accepting in-world packets from it; the world itself changes
+                // nothing, which is why this is an event and not a rule.
+                self.state.bus.send(PlayerLeaving { connection });
             }
             Command::RequestSkills { connection } => {
                 if let Some(&entity) = self.state.players.get(&connection) {
@@ -814,7 +867,7 @@ impl World {
                 serial,
                 amount,
                 DamageType::from_u8(damage_type),
-                openshard_protocol::serial::Serial::new(by),
+                by,
             ),
             Command::CastSpell {
                 serial,
@@ -892,26 +945,42 @@ impl World {
                 text,
             } => self.say(connection, mode, hue, font, text),
             Command::Speak { serial, hue, text } => {
-                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
-                    chat::speak(&mut self.state, entity, 0, hue, chat::DEFAULT_FONT, &text);
+                if let Some(entity) = self.state.registry.entity_of(serial) {
+                    chat::speak(
+                        &mut self.state,
+                        entity,
+                        TalkMode::Regular,
+                        hue,
+                        Font::DEFAULT,
+                        &text,
+                    );
                 }
             }
-            Command::DoubleClick { connection, serial } => {
-                debug!(
-                    serial = format!("0x{serial:08X}"),
-                    paperdoll = serial & 0x8000_0000 != 0,
-                    "double-click"
-                );
-                // Bit 31 is the client's *paperdoll request* — the login-time
-                // paperdoll open, the paperdoll macro — and it is only that:
-                // ServUO's `UseReq` routes it straight to `OnPaperdollRequest`,
-                // never to `Use`. A raw double-click carries the bare serial.
-                // Stripping the bit and treating both alike was the bug where
-                // relogging mounted dismounted you a breath later: the client's
-                // paperdoll-open read as a self-double-click.
-                if serial & 0x8000_0000 != 0 {
-                    items::paperdoll_request(&mut self.state, connection, serial & 0x7FFF_FFFF);
-                } else {
+            // Bit 31 is the client's *paperdoll request* — the login-time
+            // paperdoll open, the paperdoll macro — and it is only that:
+            // ServUO's `UseReq` routes it straight to `OnPaperdollRequest`,
+            // never to `Use`. Treating both alike was the bug where relogging
+            // mounted dismounted you a breath later: the client's paperdoll-open
+            // read as a self-double-click. `DoubleClick::interpret` is what
+            // takes the two apart, and it did so before this command was queued.
+            Command::DoubleClick {
+                connection,
+                request: UseRequest::Paperdoll(raw),
+            } => {
+                debug!(serial = format!("0x{:08X}", raw.0), "paperdoll request");
+                if let Some(serial) = raw.validate() {
+                    items::paperdoll_request(&mut self.state, connection, serial);
+                }
+            }
+            Command::DoubleClick {
+                connection,
+                request: UseRequest::Use(raw),
+            } => {
+                debug!(serial = format!("0x{:08X}", raw.0), "double-click");
+                // A click on nothing is silence: `0`, `0xFFFFFFFF` and anything
+                // past the item pool address no object, and the client is owed
+                // no answer for asking.
+                if let Some(serial) = raw.validate() {
                     // Every double-clicked mobile reaches the rules layered over
                     // it, whatever the engine itself then does with the click.
                     // This used to fire only where the click fell through to the
@@ -925,7 +994,7 @@ impl World {
                     // quest giver is a vendor and both have to work.
                     if let (Some(&player), Some(target)) = (
                         self.state.players.get(&connection),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         quests::talk_to(&mut self.state, player, target);
                     }
@@ -934,7 +1003,7 @@ impl World {
                     // does not bar the lid.
                     if let (Some(&player), Some(target)) = (
                         self.state.players.get(&connection),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         self.spring_trap(player, target);
                     }
@@ -944,7 +1013,7 @@ impl World {
                     // peek keeps the gump shut, and every peek costs karma.
                     let snoop_refused = match (
                         self.state.players.get(&connection).copied(),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         (Some(player), Some(target))
                             if self.state.registry.has::<Container>(target)
@@ -961,7 +1030,7 @@ impl World {
                     // both would reach the pack as a bare `ItemUsed`.
                     let engine_window = match (
                         self.state.players.get(&connection).copied(),
-                        Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                        self.state.registry.entity_of(serial),
                     ) {
                         (Some(player), Some(target)) => {
                             // A runebook is checked beside the gate for the same
@@ -987,7 +1056,7 @@ impl World {
                         // customise in the pack, in that order.
                         if let (Some(&player), Some(item)) = (
                             self.state.players.get(&connection),
-                            Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)),
+                            self.state.registry.entity_of(serial),
                         ) {
                             self.use_item_skill(player, item);
                         }
@@ -1018,9 +1087,8 @@ impl World {
             Command::DropItem {
                 connection,
                 serial,
-                position,
-                container,
-            } => items::drop_item(&mut self.state, connection, serial, position, container),
+                destination,
+            } => items::drop_item(&mut self.state, connection, serial, destination),
             Command::TradeAction {
                 connection,
                 container,
@@ -1031,16 +1099,15 @@ impl World {
                 container,
             } => items::cancel_by_container(&mut self.state, connection, container),
             Command::Disconnect { connection } => self.disconnect(connection),
-            Command::DeleteCharacter { serial } => self.delete_character(serial),
+            Command::DeleteCharacter { connection, slot } => self.delete_character_at(connection, slot),
             Command::Control { serial } => self.control(serial),
             Command::ShowGump {
                 serial,
                 gump_id,
-                x,
-                y,
+                at,
                 layout,
                 lines,
-            } => self.show_gump(serial, gump_id, x, y, &layout, &lines),
+            } => self.show_gump(serial, gump_id, at, &layout, &lines),
             Command::RegisterNpcSpeech {
                 trades,
                 male_names,
@@ -1057,26 +1124,22 @@ impl World {
                 debug!(count, "quest definitions registered");
             }
             Command::BindQuestGiver { serial, keys } => {
-                if let Some(serial) = Serial::new(serial) {
-                    quests::bind_giver(&mut self.state, serial, keys);
-                }
+                quests::bind_giver(&mut self.state, serial, keys);
             }
             Command::MakeEscortable { serial, destination } => {
-                if let Some(serial) = Serial::new(serial) {
-                    quests::make_escortable(&mut self.state, serial, destination);
-                }
+                quests::make_escortable(&mut self.state, serial, destination);
             }
             Command::QuestLogRequest { connection } => {
                 quests::open_log(&mut self.state, connection);
             }
             Command::CloseGump { serial, gump_id } => self.close_gump(serial, gump_id),
             Command::Message { serial, text } => {
-                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+                if let Some(entity) = self.state.registry.entity_of(serial) {
                     self.state.system_message(entity, &text);
                 }
             }
             Command::PlaySound { serial, sound } => {
-                if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+                if let Some(entity) = self.state.registry.entity_of(serial) {
                     self.state.play_sound_to(entity, sound);
                 }
             }
@@ -1104,9 +1167,7 @@ impl World {
                 stackable,
             } => self.add_loot(container, graphic, hue, amount, stackable),
             Command::ConsumeItem { serial, amount } => {
-                if let Some(serial) = Serial::new(serial) {
-                    items::consume(&mut self.state, serial, amount);
-                }
+                items::consume(&mut self.state, serial, amount);
             }
             Command::Buy {
                 connection,
@@ -1196,7 +1257,7 @@ impl World {
             };
             if let Some(dir) = step {
                 if let Some(serial) = self.state.registry.serial_of(creature) {
-                    self.step(serial.raw(), dir);
+                    self.step(serial, dir);
                 }
             }
             // A hunter re-beats at its own pace (or the shard's); idle life
@@ -1245,8 +1306,8 @@ impl World {
 
     /// Hand a mobile's brain to the script: it stops thinking on its own and its
     /// `onTick` drives it instead. See [`Command::Control`].
-    fn control(&mut self, serial: u32) {
-        if let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) {
+    fn control(&mut self, serial: Serial) {
+        if let Some(entity) = self.state.registry.entity_of(serial) {
             self.state.registry.insert(entity, Scripted);
         }
     }
@@ -1254,18 +1315,17 @@ impl World {
     /// Send a pack-built gump to a mobile's client — the pack-facing counterpart
     /// of the admin menu's own `GumpDisplay`. Silent if the serial names
     /// no mobile, or it has no client to draw on.
-    fn show_gump(&mut self, serial: u32, gump_id: u32, x: u16, y: u16, layout: &str, lines: &[String]) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    fn show_gump(&mut self, serial: Serial, gump_id: GumpId, at: GumpPoint, layout: &str, lines: &[String]) {
+        let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
         let packet = ServerPacket::GumpDisplay(GumpDisplay {
-            serial,
+            serial: GumpKey::on(serial),
             gump_id,
-            x: i32::from(x),
-            y: i32::from(y),
+            at,
             layout: layout.to_owned(),
             lines: lines.to_vec(),
         });
@@ -1274,25 +1334,25 @@ impl World {
 
     /// Close an open dialog on a player's client. Silent if the serial names no
     /// mobile, or it has no client to close anything on.
-    fn close_gump(&mut self, serial: u32, gump_id: u32) {
-        let Some(entity) = Serial::new(serial).and_then(|s| self.state.registry.entity_of(s)) else {
+    fn close_gump(&mut self, serial: Serial, gump_id: GumpId) {
+        let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(entity) else {
             return;
         };
-        let packet = ServerPacket::CloseGump(CloseGump { gump_id, button: 0 });
+        let packet = ServerPacket::CloseGump(CloseGump {
+            gump_id,
+            button: ButtonId::CLOSE_BOX,
+        });
         self.state.send_packet(connection, &packet);
     }
 
     /// Drop an item into a player's backpack — a quest reward. Merges onto a like
     /// pile when `stackable` (gold), else a discrete piece. Silent if the serial
     /// names no mobile or it wears no backpack.
-    fn give_item(&mut self, serial: u32, graphic: u16, hue: u16, amount: u16, stackable: bool) {
-        let Some(mobile) = Serial::new(serial) else {
-            return;
-        };
-        items::give_to_backpack(&mut self.state, mobile, graphic, hue, amount, stackable);
+    fn give_item(&mut self, serial: Serial, graphic: Graphic, hue: Hue, amount: u16, stackable: bool) {
+        items::give_to_backpack(&mut self.state, serial, graphic, hue, amount, stackable);
     }
 
     /// Take up to `amount` of a graphic from a player's backpack — all-or-nothing,
@@ -1300,36 +1360,32 @@ impl World {
     /// result with an [`ItemsTaken`](crate::ItemsTaken) event the pack reads next
     /// tick. Nothing (and `taken: 0`) if the serial names no mobile or it wears no
     /// backpack.
-    fn take_item(&mut self, serial: u32, graphic: u16, amount: u16) {
-        let Some(player) = Serial::new(serial) else {
-            return;
-        };
-        let taken = items::take_from_backpack(&mut self.state, player, graphic, amount);
+    fn take_item(&mut self, serial: Serial, graphic: Graphic, amount: u16) {
+        let taken = items::take_from_backpack(&mut self.state, serial, graphic, amount);
         self.state.bus.send(openshard_items::ItemsTaken {
-            player,
+            player: serial,
             graphic,
             taken,
         });
     }
 
     fn disconnect(&mut self, connection: ConnectionId) {
-        // A client that logs out mid-drag would otherwise leave its item nowhere —
-        // off the ground and out of any container, on a cursor that is gone. Put
-        // it back where it was.
-        if let Some(held) = self.state.held.remove(&connection) {
+        // The world's own row for this client goes first: it is what made the
+        // connection addressable, and there is nothing left to say to a socket
+        // that is gone. Unconditional, because a connection that never picked a
+        // character has one of these and nothing else below.
+        //
+        // One `remove` for everything the connection was in the middle of — what
+        // it was last told about the light, the music and its own numbers goes
+        // silently, which is right: a connection id can be reused, and a reconnect
+        // inheriting the last one's remembered light would sit in daylight inside
+        // a cave. Only the cursor needs an answer, because an item on it is
+        // nowhere — off the ground and out of any container — until something puts
+        // it back.
+        let held = self.state.forget_connection(connection).and_then(|row| row.held);
+        if let Some(held) = held {
             items::restore(&mut self.state, held);
         }
-        // Forget any containers it had open; a gone connection watches nothing.
-        self.state.open_containers.retain(|_, watchers| {
-            watchers.remove(&connection);
-            !watchers.is_empty()
-        });
-        // And forget what it was last told about itself. A connection id can be
-        // reused, and a reconnect that inherits the last one's remembered light
-        // and music is told neither — it would sit in daylight inside a cave.
-        self.last_status.remove(&connection);
-        self.forget_light(connection);
-        self.forget_music(connection);
 
         let Some(entity) = self.state.players.remove(&connection) else {
             return;
@@ -1344,8 +1400,6 @@ impl World {
         // horseback where every other emulator would have dropped them on foot.
         // The transient creature itself is despawned once the inventory has
         // captured the saddle that stands for it (below).
-        // Forget any targeting cursor it had up: a gone mobile clicks nothing.
-        self.state.pending_targets.remove(&entity);
         // End any trade it was in, *before* the record and inventory are read
         // below: cancelling puts both sides' offerings back in their own packs,
         // and a trade escrow is deliberately not saved, so an item still sitting
@@ -1360,10 +1414,11 @@ impl World {
         // it is the only moment a player's whole session is at stake — so the
         // record is taken at the one instant it still can be.
         if let Some(record) = Self::record_of(&self.state.registry, entity, self.state.ticks) {
-            // The journal copy is for the store; the departed copy is for the
-            // server's in-memory character list, which a re-login reads before the
-            // deferred store save has necessarily landed.
-            self.departed.push(record.clone());
+            // The journal copy is for the store; the roster copy is what a
+            // re-login reads, because it can arrive before the deferred store
+            // save has landed. Written here, at the same instant, so the two
+            // cannot describe different logouts.
+            self.roster.remember(record.clone());
             // The carried inventory, walked now for the same reason as the record:
             // in a moment the items are despawned with the character and there is
             // nothing left to read. Two copies, for two readers: the journal's for
@@ -1404,9 +1459,23 @@ impl World {
         self.state.registry.despawn(entity);
 
         if let Some(serial) = serial {
-            self.state.bus.send(PlayerLeft { entity, serial });
+            self.state.bus.send(PlayerLeft {
+                connection,
+                entity,
+                serial,
+            });
             info!(%serial, "left the world");
         }
+    }
+
+    /// Say that a connection asked to enter and did not.
+    ///
+    /// Every caller is a failure path inside [`enter`](Self::enter) that used to
+    /// end in a bare `return`. Emitting rather than answering the client directly:
+    /// what to *do* about it — close the socket, log it, count it — is the shard
+    /// loop's, and the world's job ends at saying so.
+    fn refuse_entry(&mut self, connection: ConnectionId, reason: RefusedEntry) {
+        self.state.bus.send(PlayerRefused { connection, reason });
     }
 }
 

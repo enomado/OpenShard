@@ -21,9 +21,9 @@
 //! collapses those four, and this is where to widen it if that is ever wanted.
 
 use openshard_entities::EntityId;
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
-use openshard_state::components::{Facet, Position, RuneMark};
+use openshard_state::components::{Position, RuneMark};
 
 /// What a mobile is trying to do, and at which end.
 ///

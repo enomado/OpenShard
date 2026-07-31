@@ -91,6 +91,34 @@ about: that module's contract is that `Accounts::verify` is the only way to a
 trusted `AccountName`, and `String::into()` is a second way that runs no check.
 They should become named constructors. Do not add more.
 
+## A value off the wire is `Raw` until something checks it
+
+The newtype rule above says a `u16` gets a name. For a client-supplied packet
+field, a name is not enough: `Hue(create.skin_hue)` is exactly as named as
+`RawHue(create.skin_hue)`, and only one of the two says whether the value has
+been checked against anything. So every client → server field is wrapped in a
+`Raw*` type — `RawHue`, `RawSkillId`, `RawCharacterSlot` — that can become the
+real domain type only through a named promotion method, and a server → client
+field carries the validated type directly: the server does not send itself
+hostile input, and a `Raw` on an outbound packet would claim a check happened
+where none is needed.
+
+The promotion has exactly two names. `interpret(self) -> X` for a field where
+every bit pattern means something, including "something odd" — total, no
+`Result`. `validate(self, …) -> Result<X, InvalidX>` for a field with real
+out-of-domain values, refused with a typed error. A field the client claims
+and the server never reads gets the `Raw*` type and no second method at
+all — that absence is the record of the decision, not an omission a reviewer
+should fill in.
+
+`docs/protocol_newtypes.md` is the full argument, the worked classification
+(four shapes, called A–D, and which of the two method names each one gets),
+and the running sweep applying it across `crates/common/protocol`. Read it
+before adding a bare integer field to a packet struct; do not re-derive the
+four classes from scratch, and do not restate them here — this section is a
+pointer, and a second copy of the table is exactly the kind of stale summary
+`CLAUDE.md` warns a documentation index against.
+
 ## `unwrap` where the invariant already holds
 
 This codebase prefers `unwrap()` to a `?` or a `match` that cannot fail. That is

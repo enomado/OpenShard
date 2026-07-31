@@ -19,16 +19,23 @@
 //! rewritten are here, the rest are still free functions elsewhere in the crate.
 //! `docs/protocol_rewrite.md` tracks which group lands when.
 
+use std::fmt;
+
 use crate::codec::PacketWriter;
 use crate::combat::{AttackTarget, HealthBar, WarMode};
-use crate::containers::ContainerContents;
+use crate::containers::{ContainerContents, add_to_container_length, open_container_length};
 use crate::context::ContextMenu;
+use crate::error::{DecodeError, expect_id};
+use crate::feature::Feature;
 use crate::feedback::{Animation, GraphicalEffect, HuedEffect, NewAnimation, PlaySound};
 use crate::gump::{CloseGump, GumpDisplay};
 use crate::items::{DragCancel, EquipUpdate, WorldItem};
-use crate::login::{CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList};
+use crate::login::{
+    CharacterList, CharacterListUpdate, DeleteReject, LoginDenied, Relay, ShardList,
+    supported_features_length,
+};
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
-use crate::packet::{EncodePacket, PacketLength, frame_body};
+use crate::packet::{DecodePacket, EncodePacket, Frame, FrameError, PacketLength, frame_body, frame_packet};
 use crate::properties::TooltipRevision;
 use crate::skill::{SkillUpdate, SkillsFull};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
@@ -38,7 +45,7 @@ use crate::vendor::{BuyList, SellList};
 use crate::version::ClientVersion;
 use crate::world::{
     DeathStatus, LightLevel, LoginComplete, LogoutAck, MapChange, PlayMusic, PlayerStart, PlayerUpdate,
-    Season, WalkAck, WalkReject,
+    SERVER_CHANGE_LENGTH, SeasonChange, WalkAck, WalkReject,
 };
 
 /// A packet the server sends to a client.
@@ -95,7 +102,7 @@ pub enum ServerPacket {
     /// `0x6D` — play a music track.
     PlayMusic(PlayMusic),
     /// `0xBC` — which season the client draws.
-    Season(Season),
+    SeasonChange(SeasonChange),
     /// `0xD1` — a logout is granted.
     LogoutAck(LogoutAck),
     /// `0xBF` subcommand `0x08` — which map the client should draw.
@@ -164,30 +171,30 @@ impl ServerPacket {
             Self::NewAnimation(_) => NewAnimation::ID,
             Self::Effect(_) => GraphicalEffect::ID,
             Self::HuedEffect(_) => HuedEffect::ID,
-            Self::LoginDenied(_) => LoginDenied::ID,
-            Self::ShardList(_) => ShardList::ID,
-            Self::Relay(_) => Relay::ID,
-            Self::CharacterList(_) => CharacterList::ID,
+            Self::LoginDenied(_) => <LoginDenied as EncodePacket>::ID,
+            Self::ShardList(_) => <ShardList as EncodePacket>::ID,
+            Self::Relay(_) => <Relay as EncodePacket>::ID,
+            Self::CharacterList(_) => <CharacterList as EncodePacket>::ID,
             Self::DeleteReject(_) => DeleteReject::ID,
             Self::CharacterListUpdate(_) => CharacterListUpdate::ID,
-            Self::PlayerStart(_) => PlayerStart::ID,
-            Self::PlayerUpdate(_) => PlayerUpdate::ID,
+            Self::PlayerStart(_) => <PlayerStart as EncodePacket>::ID,
+            Self::PlayerUpdate(_) => <PlayerUpdate as EncodePacket>::ID,
             Self::DeathStatus(_) => DeathStatus::ID,
-            Self::WalkAck(_) => WalkAck::ID,
-            Self::WalkReject(_) => WalkReject::ID,
-            Self::LoginComplete(_) => LoginComplete::ID,
+            Self::WalkAck(_) => <WalkAck as EncodePacket>::ID,
+            Self::WalkReject(_) => <WalkReject as EncodePacket>::ID,
+            Self::LoginComplete(_) => <LoginComplete as EncodePacket>::ID,
             Self::LightLevel(_) => LightLevel::ID,
             Self::PlayMusic(_) => PlayMusic::ID,
-            Self::Season(_) => Season::ID,
+            Self::SeasonChange(_) => SeasonChange::ID,
             Self::LogoutAck(_) => LogoutAck::ID,
             Self::MapChange(_) => MapChange::ID,
-            Self::Remove(_) => Remove::ID,
+            Self::Remove(_) => <Remove as EncodePacket>::ID,
             Self::OpenPaperdoll(_) => OpenPaperdoll::ID,
-            Self::MobileStatus(_) => MobileStatus::ID,
-            Self::MobileMove(_) => MobileMove::ID,
-            Self::MobileIncoming(_) => MobileIncoming::ID,
+            Self::MobileStatus(_) => <MobileStatus as EncodePacket>::ID,
+            Self::MobileMove(_) => <MobileMove as EncodePacket>::ID,
+            Self::MobileIncoming(_) => <MobileIncoming as EncodePacket>::ID,
             Self::StatLocks(_) => StatLocks::ID,
-            Self::WorldItem(_) => WorldItem::ID,
+            Self::WorldItem(_) => <WorldItem as EncodePacket>::ID,
             Self::DragCancel(_) => DragCancel::ID,
             Self::EquipUpdate(_) => EquipUpdate::ID,
             Self::ContainerContents(_) => ContainerContents::ID,
@@ -219,21 +226,21 @@ impl ServerPacket {
             Self::NewAnimation(_) => NewAnimation::LENGTH,
             Self::Effect(_) => GraphicalEffect::LENGTH,
             Self::HuedEffect(_) => HuedEffect::LENGTH,
-            Self::LoginDenied(_) => LoginDenied::LENGTH,
-            Self::ShardList(_) => ShardList::LENGTH,
-            Self::Relay(_) => Relay::LENGTH,
-            Self::CharacterList(_) => CharacterList::LENGTH,
+            Self::LoginDenied(_) => <LoginDenied as EncodePacket>::LENGTH,
+            Self::ShardList(_) => <ShardList as EncodePacket>::LENGTH,
+            Self::Relay(_) => <Relay as EncodePacket>::LENGTH,
+            Self::CharacterList(_) => <CharacterList as EncodePacket>::LENGTH,
             Self::DeleteReject(_) => DeleteReject::LENGTH,
             Self::CharacterListUpdate(_) => CharacterListUpdate::LENGTH,
-            Self::PlayerStart(_) => PlayerStart::LENGTH,
+            Self::PlayerStart(_) => <PlayerStart as EncodePacket>::LENGTH,
             Self::PlayerUpdate(_) => PlayerUpdate::LENGTH,
             Self::DeathStatus(_) => DeathStatus::LENGTH,
             Self::WalkAck(_) => WalkAck::LENGTH,
             Self::WalkReject(_) => WalkReject::LENGTH,
-            Self::LoginComplete(_) => LoginComplete::LENGTH,
+            Self::LoginComplete(_) => <LoginComplete as EncodePacket>::LENGTH,
             Self::LightLevel(_) => LightLevel::LENGTH,
             Self::PlayMusic(_) => PlayMusic::LENGTH,
-            Self::Season(_) => Season::LENGTH,
+            Self::SeasonChange(_) => SeasonChange::LENGTH,
             Self::LogoutAck(_) => LogoutAck::LENGTH,
             Self::MapChange(_) => MapChange::LENGTH,
             Self::Remove(_) => Remove::LENGTH,
@@ -298,7 +305,7 @@ impl ServerPacket {
             Self::LoginComplete(packet) => packet.encode_body(out, version),
             Self::LightLevel(packet) => packet.encode_body(out, version),
             Self::PlayMusic(packet) => packet.encode_body(out, version),
-            Self::Season(packet) => packet.encode_body(out, version),
+            Self::SeasonChange(packet) => packet.encode_body(out, version),
             Self::LogoutAck(packet) => packet.encode_body(out, version),
             Self::MapChange(packet) => packet.encode_body(out, version),
             Self::Remove(packet) => packet.encode_body(out, version),
@@ -325,6 +332,289 @@ impl ServerPacket {
             Self::GumpDisplay(packet) => packet.encode_body(out, version),
         }
     }
+}
+
+// -- reading, from the client's side --------------------------------------
+
+/// Decode one server-to-client payload from a framed packet.
+///
+/// [`decode_packet`](crate::packet::decode_packet) asks the *client* length
+/// table whether to skip a length field, which is the right question on the
+/// server and the wrong one here: `0xA9` is variable in this direction and
+/// unknown in that one. Same shape, other table.
+fn decode_server<P: DecodePacket>(bytes: &[u8], version: ClientVersion) -> Result<P, DecodeError> {
+    let mut reader = expect_id(bytes, P::ID)?;
+    if server_packet_length(P::ID, version) == Some(PacketLength::Variable) {
+        reader.skip(2)?;
+    }
+    P::decode_body(&mut reader, version)
+}
+
+impl ServerPacket {
+    /// Decode `packet` by its id byte, as a client does.
+    ///
+    /// `packet` must be non-empty and must already have passed
+    /// [`frame_server_packet`], which is what guarantees it is exactly one
+    /// packet.
+    ///
+    /// # Three answers, not two
+    ///
+    /// - `Ok(Some(_))` — decoded.
+    /// - `Ok(None)` — a packet this engine sends but has no decoder for yet.
+    ///   The framer knew its length, so the stream is not lost and the caller
+    ///   can log the id and read on. This is where the client grows: a variant
+    ///   moves from here to `Some` when someone writes its `DecodePacket`.
+    /// - `Err(_)` — a decoder ran and the body was not what it claimed.
+    ///
+    /// The middle answer is deliberately not the `Unknown { id, body }` variant
+    /// [`ClientPacket`](crate::client_packet::ClientPacket) uses. That one
+    /// carries the bytes because the *server* discards them otherwise; a client
+    /// still holds the buffer it just framed.
+    pub fn decode(packet: &[u8], version: ClientVersion) -> Result<Option<Self>, ServerDecodeError> {
+        let id = *packet
+            .first()
+            .expect("packet is empty: caller skipped framing, which never produces one");
+        let decoded = match id {
+            <LoginDenied as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::LoginDenied)
+                .map_err(ServerDecodeError::LoginDenied)?,
+            <ShardList as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::ShardList)
+                .map_err(ServerDecodeError::ShardList)?,
+            <Relay as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::Relay)
+                .map_err(ServerDecodeError::Relay)?,
+            <CharacterList as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::CharacterList)
+                .map_err(ServerDecodeError::CharacterList)?,
+            <PlayerStart as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::PlayerStart)
+                .map_err(ServerDecodeError::PlayerStart)?,
+            <LoginComplete as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::LoginComplete)
+                .map_err(ServerDecodeError::LoginComplete)?,
+            <Remove as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::Remove)
+                .map_err(ServerDecodeError::Remove)?,
+            <PlayerUpdate as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::PlayerUpdate)
+                .map_err(ServerDecodeError::PlayerUpdate)?,
+            <MobileStatus as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::MobileStatus)
+                .map_err(ServerDecodeError::MobileStatus)?,
+            <MobileMove as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::MobileMove)
+                .map_err(ServerDecodeError::MobileMove)?,
+            <MobileIncoming as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::MobileIncoming)
+                .map_err(ServerDecodeError::MobileIncoming)?,
+            <WorldItem as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::WorldItem)
+                .map_err(ServerDecodeError::WorldItem)?,
+            <WalkAck as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::WalkAck)
+                .map_err(ServerDecodeError::WalkAck)?,
+            <WalkReject as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::WalkReject)
+                .map_err(ServerDecodeError::WalkReject)?,
+            _ => return Ok(None),
+        };
+        Ok(Some(decoded))
+    }
+}
+
+/// A server packet arrived and its body did not decode.
+///
+/// One variant per packet, the same shape as
+/// [`ClientDecodeError`](crate::client_packet::ClientDecodeError): a caller can
+/// match the failure by type the way it matches the packet.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum ServerDecodeError {
+    /// `0x82` did not decode.
+    LoginDenied(DecodeError),
+    /// `0xA8` did not decode.
+    ShardList(DecodeError),
+    /// `0x8C` did not decode.
+    Relay(DecodeError),
+    /// `0xA9` did not decode.
+    CharacterList(DecodeError),
+    /// `0x1B` did not decode.
+    PlayerStart(DecodeError),
+    /// `0x55` did not decode.
+    LoginComplete(DecodeError),
+    /// `0x1D` did not decode.
+    Remove(DecodeError),
+    /// `0x20` did not decode.
+    PlayerUpdate(DecodeError),
+    /// `0x11` did not decode.
+    MobileStatus(DecodeError),
+    /// `0x77` did not decode.
+    MobileMove(DecodeError),
+    /// `0x78` did not decode.
+    MobileIncoming(DecodeError),
+    /// `0x1A` did not decode.
+    WorldItem(DecodeError),
+    /// `0x22` did not decode.
+    WalkAck(DecodeError),
+    /// `0x21` did not decode.
+    WalkReject(DecodeError),
+}
+
+impl fmt::Display for ServerDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (name, error) = match self {
+            Self::LoginDenied(error) => ("0x82 login denied", error),
+            Self::ShardList(error) => ("0xA8 shard list", error),
+            Self::Relay(error) => ("0x8C relay", error),
+            Self::CharacterList(error) => ("0xA9 character list", error),
+            Self::PlayerStart(error) => ("0x1B player start", error),
+            Self::LoginComplete(error) => ("0x55 login complete", error),
+            Self::Remove(error) => ("0x1D remove", error),
+            Self::PlayerUpdate(error) => ("0x20 player update", error),
+            Self::MobileStatus(error) => ("0x11 mobile status", error),
+            Self::MobileMove(error) => ("0x77 mobile move", error),
+            Self::MobileIncoming(error) => ("0x78 mobile incoming", error),
+            Self::WorldItem(error) => ("0x1A world item", error),
+            Self::WalkAck(error) => ("0x22 walk ack", error),
+            Self::WalkReject(error) => ("0x21 walk reject", error),
+        };
+        write!(f, "{name}: {error}")
+    }
+}
+
+impl std::error::Error for ServerDecodeError {}
+
+// -- framing, from the client's side --------------------------------------
+
+/// How long the server-to-client packet with this id is, if we send it.
+///
+/// The mirror of [`client_packet_length`](crate::packet::client_packet_length),
+/// and the table a client needs for the same reason a server needs that one:
+/// the wire has no self-describing frame, so a stream cannot be split into
+/// packets without knowing, per id, which kind it is.
+///
+/// # The numbers are not written here
+///
+/// Every payload already declares its own [`EncodePacket::LENGTH`], so this
+/// reads those constants rather than repeating them — the same argument as
+/// [`ServerPacket::id`]. What it does hold is the *ids*, and a wrong one is
+/// caught by `every_packet_frames_to_its_own_length`, which frames the real
+/// bytes of one of every variant.
+///
+/// # `None` is deliberate, not incomplete
+///
+/// An id this engine never sends has no entry, and framing it is fatal for the
+/// connection. The alternative — guessing a length from a reference for a packet
+/// no encoder here writes — would put an unverified number in the one table
+/// whose entire job is to be right, and would be discovered as a desynchronised
+/// stream hundreds of bytes later. When a packet is added, its length arrives
+/// with it.
+///
+/// # Why `version` is not optional
+///
+/// The server takes `Option<ClientVersion>` because it frames packets before it
+/// knows what is connected. A client always knows what it is, so there is no
+/// unknown state to model — and three packets need the answer: `0x24`, `0x25`
+/// and `0xB9` are fixed-length in a size that depends on the client, which is
+/// exactly why they are hand-written free functions rather than `EncodePacket`s.
+// The column alignment is load-bearing, as in the client table: this is read as
+// a table, and rustfmt would reflow it into an unscannable list.
+#[rustfmt::skip]
+#[must_use]
+pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLength> {
+    use PacketLength::Variable;
+
+    // The three whose size is a function of the client. Each rule lives beside
+    // the encoder that obeys it, so neither side can drift.
+    match id {
+        0x24 => return Some(open_container_length(version)),
+        0x25 => return Some(add_to_container_length(version)),
+        0xB9 => return Some(supported_features_length(
+            version.supports(Feature::ExtraFeatureMask),
+        )),
+        _ => {}
+    }
+
+    Some(match id {
+        0x11 => MobileStatus::LENGTH,
+        0x1A => WorldItem::LENGTH,
+        0x1B => <PlayerStart as EncodePacket>::LENGTH,
+        0x1C => SpokenMessage::LENGTH,
+        0x1D => Remove::LENGTH,
+        0x20 => PlayerUpdate::LENGTH,
+        0x21 => WalkReject::LENGTH,
+        0x22 => WalkAck::LENGTH,
+        0x27 => DragCancel::LENGTH,
+        0x2C => DeathStatus::LENGTH,
+        0x2E => EquipUpdate::LENGTH,
+        0x3A => SkillsFull::LENGTH,          // and SkillUpdate: same id, both Variable
+        0x3C => ContainerContents::LENGTH,
+        0x4F => LightLevel::LENGTH,
+        0x54 => PlaySound::LENGTH,
+        0x55 => <LoginComplete as EncodePacket>::LENGTH,
+        0x6C => TargetCursor::LENGTH,
+        0x6D => PlayMusic::LENGTH,
+        0x6E => Animation::LENGTH,
+        0x6F => Variable,                    // secure trade, hand-written in trade.rs
+        0x70 => GraphicalEffect::LENGTH,
+        0x72 => <WarMode as EncodePacket>::LENGTH,
+        0x74 => BuyList::LENGTH,
+        0x76 => SERVER_CHANGE_LENGTH,        // facet change, hand-written in world.rs
+        0x77 => MobileMove::LENGTH,
+        0x78 => MobileIncoming::LENGTH,
+        0x82 => <LoginDenied as EncodePacket>::LENGTH,
+        0x85 => DeleteReject::LENGTH,
+        0x86 => CharacterListUpdate::LENGTH,
+        0x88 => OpenPaperdoll::LENGTH,
+        0x8C => <Relay as EncodePacket>::LENGTH,
+        0x9E => SellList::LENGTH,
+        0xA1 => HealthBar::LENGTH,
+        0xA8 => <ShardList as EncodePacket>::LENGTH,
+        0xA9 => <CharacterList as EncodePacket>::LENGTH,
+        0xAA => AttackTarget::LENGTH,
+        0xAE => UnicodeMessage::LENGTH,
+        0xB0 => GumpDisplay::LENGTH,
+        0xBC => SeasonChange::LENGTH,
+        // 0xBF is the one id whose payloads disagree with the table on purpose.
+        // Each subcommand declares `Fixed(n)` and writes its own `u16` length
+        // into its body — that is what the extended-command format is — so from
+        // outside, every 0xBF on the wire is length-prefixed at offset 1 and is
+        // framed as `Variable`. Reading MapChange's `Fixed(6)` here would frame
+        // a 13-byte gump-close as six bytes and desynchronise everything after.
+        0xBF => Variable,
+        0xC0 => HuedEffect::LENGTH,
+        0xC1 => LocalizedMessage::LENGTH,
+        0xD1 => LogoutAck::LENGTH,
+        0xDC => TooltipRevision::LENGTH,
+        0xE2 => NewAnimation::LENGTH,
+        _ => return None,
+    })
+}
+
+/// Find the first whole server-to-client packet at the front of `buffer`.
+///
+/// The client's [`frame_client_packet`](crate::packet::frame_client_packet):
+/// same rule, other table. Does not copy and does not consume.
+///
+/// ```
+/// use openshard_protocol::packet::Frame;
+/// use openshard_protocol::server_packet::frame_server_packet;
+/// use openshard_protocol::version::ClientVersion;
+///
+/// let modern = ClientVersion::new(7, 0, 45, 65);
+///
+/// // 0x55 "you may start drawing" is one byte.
+/// assert_eq!(frame_server_packet(&[0x55], modern), Ok(Frame::Complete(1)));
+///
+/// // 0xB9 is three bytes for an old client and five for this one.
+/// assert_eq!(
+///     frame_server_packet(&[0xB9, 0, 0, 0], modern),
+///     Ok(Frame::Incomplete { needed: 5 }),
+/// );
+/// ```
+pub fn frame_server_packet(buffer: &[u8], version: ClientVersion) -> Result<Frame, FrameError> {
+    frame_packet(buffer, |id| server_packet_length(id, version))
 }
 
 #[cfg(test)]
@@ -394,14 +684,13 @@ mod tests {
             ServerPacket::ShardList(ShardList {
                 shards: vec![crate::login::ShardEntry {
                     name: "Britannia".to_owned(),
-                    percent_full: 10,
+                    percent_full: crate::login::PercentFull::clamped(10),
                     timezone: 5,
                     address: std::net::Ipv4Addr::new(127, 0, 0, 1),
                 }],
             }),
             ServerPacket::Relay(Relay {
-                address: std::net::Ipv4Addr::new(127, 0, 0, 1),
-                port: 2593,
+                endpoint: std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 2593),
                 auth_key: AuthKey(0xDEAD_BEEF),
             }),
             ServerPacket::CharacterList(CharacterList {
@@ -409,7 +698,7 @@ mod tests {
                     name: crate::identity::CharacterName("Lord British".to_owned()),
                 }],
                 starts: Vec::new(),
-                flags: 0,
+                flags: crate::login::CharacterListFlags::NONE,
             }),
             ServerPacket::DeleteReject(DeleteReject {
                 result: crate::login::DeleteResult::CharNotExist,
@@ -420,59 +709,64 @@ mod tests {
                 }],
             }),
             ServerPacket::PlayerStart(PlayerStart {
-                serial: 0x0000_002A,
-                body: 0x0190,
+                serial,
+                body: crate::wire::Graphic(0x0190),
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
-                map_width: crate::world::DEFAULT_MAP_WIDTH,
-                map_height: crate::world::DEFAULT_MAP_HEIGHT,
+                map: crate::world::MapSize::BRITANNIA,
             }),
             ServerPacket::PlayerUpdate(PlayerUpdate {
-                serial: 0x0000_002A,
-                body: 0x0190,
-                hue: 0x83EA,
-                flags: 0,
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
             }),
             ServerPacket::DeathStatus(DeathStatus { dead: true }),
             ServerPacket::WalkAck(WalkAck {
-                sequence: 1,
-                notoriety: 0x01,
+                sequence: crate::world::StepSequence(1),
+                notoriety: crate::mobile::Notoriety::Innocent,
             }),
             ServerPacket::WalkReject(WalkReject {
-                sequence: 1,
+                sequence: crate::world::StepSequence(1),
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
             }),
             ServerPacket::LoginComplete(LoginComplete),
-            ServerPacket::LightLevel(LightLevel { level: 0 }),
-            ServerPacket::PlayMusic(PlayMusic { track: 11 }),
-            ServerPacket::Season(Season {
-                season: 0,
+            ServerPacket::LightLevel(LightLevel {
+                level: crate::world::Light(0),
+            }),
+            ServerPacket::PlayMusic(PlayMusic {
+                track: crate::world::MusicId(11),
+            }),
+            ServerPacket::SeasonChange(SeasonChange {
+                season: crate::world::Season::Spring,
                 play_sound: false,
             }),
             ServerPacket::LogoutAck(LogoutAck),
-            ServerPacket::MapChange(MapChange { map: 0 }),
-            ServerPacket::Remove(Remove { serial: 0x0000_002A }),
+            ServerPacket::MapChange(MapChange {
+                map: crate::world::Facet(0),
+            }),
+            ServerPacket::Remove(Remove { serial }),
             ServerPacket::OpenPaperdoll(OpenPaperdoll {
-                serial: 0x0000_002A,
+                serial,
                 text: "Lord British".to_owned(),
-                flags: 0,
+                flags: crate::mobile::PaperdollFlags::NONE,
             }),
             ServerPacket::MobileStatus(MobileStatus {
-                serial: 0x0000_002A,
+                serial,
                 name: "Lord British".to_owned(),
-                hits: 100,
-                hits_max: 100,
+                hits: crate::mobile::Vitals {
+                    current: 100,
+                    max: 100,
+                },
                 female: false,
                 strength: 100,
                 dexterity: 90,
                 intelligence: 80,
-                stamina: 90,
-                stamina_max: 90,
-                mana: 80,
-                mana_max: 80,
+                stamina: crate::mobile::Vitals { current: 90, max: 90 },
+                mana: crate::mobile::Vitals { current: 80, max: 80 },
                 gold: 1234,
                 armor: 0,
                 weight: 14,
@@ -482,69 +776,69 @@ mod tests {
                 followers_max: 5,
             }),
             ServerPacket::MobileMove(MobileMove {
-                serial: 0x0000_002A,
-                body: 0x0190,
+                serial,
+                body: crate::wire::Graphic(0x0190),
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
-                hue: 0x83EA,
-                flags: 0,
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
                 notoriety: crate::mobile::Notoriety::Innocent,
             }),
             ServerPacket::MobileIncoming(MobileIncoming {
-                serial: 0x0000_002A,
-                body: 0x0190,
+                serial,
+                body: crate::wire::Graphic(0x0190),
                 position: crate::world::Point::new(1475, 1774, 0),
                 facing: crate::direction::Facing::walking(crate::direction::Direction::South),
-                hue: 0x83EA,
-                flags: 0,
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
                 notoriety: crate::mobile::Notoriety::Innocent,
                 equipment: Vec::new(),
             }),
             ServerPacket::StatLocks(StatLocks {
-                serial: 0x0000_002A,
+                serial,
                 locks: crate::mobile::StatLockBits::default(),
             }),
             ServerPacket::WorldItem(crate::items::WorldItem {
-                serial: 0x4000_0001,
-                graphic: 0x0EED,
+                serial: crate::serial::Serial::new(0x4000_0001).unwrap(),
+                graphic: crate::wire::Graphic(0x0EED),
                 amount: 1,
                 position: crate::world::Point::new(1000, 2000, 5),
-                hue: 0,
+                hue: crate::wire::Hue::NONE,
             }),
             ServerPacket::DragCancel(crate::items::DragCancel {
                 reason: crate::items::DragCancelReason::OutOfRange,
             }),
             ServerPacket::EquipUpdate(crate::items::EquipUpdate {
-                item: 0x4000_0002,
-                graphic: 0x13B9,
-                layer: 1,
-                mobile: 0x0000_0001,
-                hue: 0x0021,
+                item: crate::serial::Serial::new(0x4000_0002).unwrap(),
+                graphic: crate::wire::Graphic(0x13B9),
+                layer: crate::wire::Layer(1),
+                mobile: crate::serial::Serial::new(0x0000_0001).unwrap(),
+                hue: crate::wire::Hue(0x0021),
             }),
             ServerPacket::ContainerContents(crate::containers::ContainerContents {
-                container: 0x4000_0001,
+                container: crate::serial::Serial::new(0x4000_0001).unwrap(),
                 items: Vec::new(),
             }),
             ServerPacket::BuyList(crate::vendor::BuyList {
-                container: 0x4000_0010,
+                container: crate::serial::Serial::new(0x4000_0010).unwrap(),
                 lines: vec![crate::vendor::BuyLine {
                     price: 3,
                     name: "black pearl".to_owned(),
                 }],
             }),
             ServerPacket::SellList(crate::vendor::SellList {
-                vendor: 0x0000_0BBB,
+                vendor: crate::serial::Serial::new(0x0000_0BBB).unwrap(),
                 lines: vec![crate::vendor::SellLine {
-                    serial: 0x4000_0033,
-                    graphic: 0x0F7A,
-                    hue: 0,
+                    serial: crate::serial::Serial::new(0x4000_0033).unwrap(),
+                    graphic: crate::wire::Graphic(0x0F7A),
+                    hue: crate::wire::Hue::NONE,
                     amount: 20,
                     price: 2,
                     name: "black pearl".to_owned(),
                 }],
             }),
             ServerPacket::TooltipRevision(crate::properties::TooltipRevision {
-                serial: 0x0000_00AB,
+                serial: crate::serial::Serial::new(0x0000_00AB).unwrap(),
                 hash: 0x1234_5678,
             }),
             ServerPacket::SkillsFull(crate::skill::SkillsFull {
@@ -566,56 +860,55 @@ mod tests {
                 },
             }),
             ServerPacket::SpokenMessage(crate::speech::SpokenMessage {
-                serial: 0x0000_0002,
-                graphic: 0x0190,
-                mode: 0,
-                hue: 0x0384,
-                font: 3,
+                serial: crate::serial::Serial::new(0x0000_0002),
+                graphic: Some(crate::wire::Graphic(0x0190)),
+                mode: crate::speech::TalkMode::Regular,
+                hue: crate::wire::Hue(0x0384),
+                font: crate::speech::Font(3),
                 name: "British".to_owned(),
                 text: "hail".to_owned(),
             }),
             ServerPacket::LocalizedMessage(crate::speech::LocalizedMessage {
-                serial: crate::speech::SYSTEM_SERIAL,
-                graphic: crate::speech::NO_GRAPHIC,
-                mode: 0,
-                hue: 0x03B2,
-                font: 3,
-                cliloc: 1_042_764,
+                serial: None,
+                graphic: None,
+                mode: crate::speech::TalkMode::Regular,
+                hue: crate::wire::Hue(0x03B2),
+                font: crate::speech::Font(3),
+                cliloc: crate::wire::ClilocId(1_042_764),
                 name: "System".to_owned(),
                 arguments: "Iolo".to_owned(),
             }),
             ServerPacket::UnicodeMessage(crate::speech::UnicodeMessage {
-                serial: 0x0000_0002,
-                graphic: 0x0190,
-                mode: 0,
-                hue: 0x0384,
-                font: 3,
+                serial: crate::serial::Serial::new(0x0000_0002),
+                graphic: Some(crate::wire::Graphic(0x0190)),
+                mode: crate::speech::TalkMode::Regular,
+                hue: crate::wire::Hue(0x0384),
+                font: crate::speech::Font(3),
                 language: "PTB".to_owned(),
                 name: "Cidadão".to_owned(),
                 text: "olá".to_owned(),
             }),
             ServerPacket::ContextMenu(crate::context::ContextMenu {
-                serial: 0x0000_00AB,
+                serial: crate::serial::Serial::new(0x0000_00AB).unwrap(),
                 entries: vec![crate::context::ContextMenuEntry {
-                    cliloc: 3_000_362,
-                    flags: 0,
+                    cliloc: crate::wire::ClilocId(3_000_362),
+                    flags: crate::context::ContextMenuFlags::NONE,
                 }],
             }),
             ServerPacket::SpellbookContent(crate::spellbook::SpellbookContent {
-                serial: 0x4000_0001,
-                graphic: 0x0EFA,
+                serial: crate::serial::Serial::new(0x4000_0001).unwrap(),
+                graphic: crate::wire::Graphic(0x0EFA),
                 offset: 1,
                 content: 1,
             }),
             ServerPacket::CloseGump(crate::gump::CloseGump {
-                gump_id: 0x0051_0001,
-                button: 0,
+                gump_id: crate::gump::GumpId(0x0051_0001),
+                button: crate::gump::ButtonId::CLOSE_BOX,
             }),
             ServerPacket::GumpDisplay(crate::gump::GumpDisplay {
-                serial: 0,
-                gump_id: 0x0051_0001,
-                x: 75,
-                y: 25,
+                serial: crate::gump::GumpKey::STANDALONE,
+                gump_id: crate::gump::GumpId(0x0051_0001),
+                at: crate::gump::GumpPoint::new(75, 25),
                 layout: "{ page 0 }".to_owned(),
                 lines: Vec::new(),
             }),
@@ -650,6 +943,485 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_packet_frames_to_its_own_length() {
+        // The oracle for `server_packet_length`: encode one of every variant and
+        // ask the framer to find it again. It catches a wrong id in the table, a
+        // length that disagrees with the encoder, and — the reason this is done
+        // over bytes rather than over `packet.length()` — a 0xBF subcommand whose
+        // declared `Fixed(n)` must still be framed as length-prefixed.
+        for packet in one_of_each() {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                frame_server_packet(&bytes, version()),
+                Ok(Frame::Complete(bytes.len())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_packet_split_across_reads_asks_for_the_rest() {
+        // What a socket does to a client: half a packet arrives, and the framer
+        // has to say how much more it needs rather than guess or fail. Over every
+        // variant, because a variable-length packet answers this from its length
+        // field and a fixed one from the table.
+        for packet in one_of_each() {
+            let bytes = packet.encode(version());
+            if bytes.len() < 2 {
+                continue; // nothing to cut short
+            }
+            assert_eq!(
+                frame_server_packet(&bytes[..bytes.len() - 1], version()),
+                Ok(Frame::Incomplete { needed: bytes.len() }),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hand_written_packets_are_in_the_table() {
+        // 0x24, 0x25, 0xB9 and 0x76 are not `EncodePacket`s, so `one_of_each`
+        // cannot reach them — and a client that cannot frame them stops dead on
+        // the first container it opens.
+        let serial = Serial::new(0x0000_002A).unwrap();
+        let bytes = crate::containers::encode_open_container(serial, crate::wire::Graphic(0x3C), version());
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+
+        let bytes = crate::login::encode_supported_features(crate::login::SupportedFeatures::ML, true);
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+
+        let bytes = crate::world::encode_server_change(
+            crate::world::Point::new(1, 2, 3),
+            crate::world::MapSize {
+                width: 6144,
+                height: 4096,
+            },
+        );
+        assert_eq!(
+            frame_server_packet(&bytes, version()),
+            Ok(Frame::Complete(bytes.len()))
+        );
+    }
+
+    #[test]
+    fn the_old_feature_mask_is_two_bytes_narrower() {
+        // The one place the table's `version` earns its place: same id, and a
+        // client from before 6.0.14.2 reads two fewer bytes. Framing it with the
+        // modern length swallows the first two bytes of whatever follows.
+        let old = ClientVersion::new(5, 0, 9, 1);
+        assert_eq!(
+            server_packet_length(0xB9, old),
+            Some(PacketLength::Fixed(3)),
+            "an old client reads a 16-bit mask"
+        );
+        assert_eq!(
+            server_packet_length(0xB9, version()),
+            Some(PacketLength::Fixed(5))
+        );
+    }
+
+    #[test]
+    fn an_id_this_engine_never_sends_is_fatal() {
+        // Not a silent skip: without a length there is no way to find where the
+        // next packet starts, so the connection is over. 0xD6 is a real
+        // server-to-client packet this engine does not send — see the table.
+        assert_eq!(server_packet_length(0xD6, version()), None);
+        assert_eq!(
+            frame_server_packet(&[0xD6, 0x00, 0x05], version()),
+            Err(FrameError::UnknownPacket(0xD6))
+        );
+    }
+
+    #[test]
+    fn the_login_conversation_round_trips() {
+        // The packets a client has to read to reach the world, encoded by this
+        // server and decoded as the client will decode them. Round-tripping is
+        // the first test the encoders have ever had against a real inverse
+        // rather than against hand-written bytes.
+        let packets = [
+            ServerPacket::LoginDenied(LoginDenied {
+                reason: crate::login::DenyReason::BadPassword,
+            }),
+            ServerPacket::ShardList(ShardList {
+                shards: vec![crate::login::ShardEntry {
+                    name: "OpenShard".to_owned(),
+                    percent_full: crate::login::PercentFull::clamped(12),
+                    timezone: 5,
+                    address: std::net::Ipv4Addr::new(192, 168, 11, 6),
+                }],
+            }),
+            ServerPacket::Relay(Relay {
+                endpoint: std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(192, 168, 11, 6), 2593),
+                auth_key: AuthKey(0xDEAD_BEEF),
+            }),
+            ServerPacket::LoginComplete(LoginComplete),
+        ];
+
+        for packet in packets {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(packet.clone())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_packets_that_populate_a_world_view_round_trip() {
+        // 0x1D, 0x20, 0x11, 0x77, 0x78 and 0x1A: what M1a needs so a client can
+        // hold anyone but the player. `version()` here is TOL — a status kind
+        // of 6 and the new mobile-incoming layout — so every field the struct
+        // models actually rides the wire; see the separate tests below for the
+        // two lossy shapes (an old status kind, the old equipment layout).
+        let serial = Serial::new(0x0000_002A).unwrap();
+
+        let packets = [
+            ServerPacket::Remove(Remove { serial }),
+            ServerPacket::PlayerUpdate(PlayerUpdate {
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+            }),
+            ServerPacket::MobileStatus(MobileStatus {
+                serial,
+                name: "Lord British".to_owned(),
+                hits: crate::mobile::Vitals {
+                    current: 100,
+                    max: 100,
+                },
+                female: false,
+                strength: 100,
+                dexterity: 90,
+                intelligence: 80,
+                stamina: crate::mobile::Vitals { current: 90, max: 90 },
+                mana: crate::mobile::Vitals { current: 80, max: 80 },
+                gold: 1234,
+                armor: 0,
+                weight: 14,
+                max_weight: 390,
+                stat_cap: 225,
+                followers: 0,
+                followers_max: 5,
+            }),
+            ServerPacket::MobileMove(MobileMove {
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
+                notoriety: crate::mobile::Notoriety::Murderer,
+            }),
+            ServerPacket::MobileIncoming(MobileIncoming {
+                serial,
+                body: crate::wire::Graphic(0x0190),
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+                hue: crate::wire::Hue(0x83EA),
+                flags: crate::mobile::StatusFlags::NONE,
+                notoriety: crate::mobile::Notoriety::Innocent,
+                equipment: vec![crate::mobile::Equipment {
+                    serial: Serial::new(0x4000_0001).unwrap(),
+                    graphic: crate::wire::Graphic(0x1517),
+                    layer: crate::wire::Layer(0x05),
+                    hue: crate::wire::Hue(0x0021),
+                }],
+            }),
+            ServerPacket::WorldItem(crate::items::WorldItem {
+                serial: Serial::new(0x4000_00AB).unwrap(),
+                graphic: crate::wire::Graphic(0x0EED),
+                amount: 500,
+                position: crate::world::Point::new(1000, 2000, -5),
+                hue: crate::wire::Hue(0x0021),
+            }),
+        ];
+
+        for packet in packets {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(packet.clone())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_client_gets_the_hue_flagged_equipment_layout_back() {
+        // Before 7.0.33.1 an item's hue rides on a stolen bit in the graphic
+        // rather than a fixed field; the decoder must read the same layout it
+        // was handed, not the one `version()` elsewhere in this module implies.
+        let old = ClientVersion::new(7, 0, 33, 0);
+        let packet = ServerPacket::MobileIncoming(MobileIncoming {
+            serial: Serial::new(0x0000_0002).unwrap(),
+            body: crate::wire::Graphic(0x0190),
+            position: crate::world::Point::new(1475, 1774, -5),
+            facing: crate::direction::Facing::walking(crate::direction::Direction::South),
+            hue: crate::wire::Hue(0x83EA),
+            flags: crate::mobile::StatusFlags::NONE,
+            notoriety: crate::mobile::Notoriety::Innocent,
+            equipment: vec![
+                crate::mobile::Equipment {
+                    serial: Serial::new(0x4000_0001).unwrap(),
+                    graphic: crate::wire::Graphic(0x1517),
+                    layer: crate::wire::Layer(0x05),
+                    hue: crate::wire::Hue(0x0021),
+                },
+                crate::mobile::Equipment {
+                    serial: Serial::new(0x4000_0002).unwrap(),
+                    graphic: crate::wire::Graphic(0x1F03),
+                    layer: crate::wire::Layer(0x0D),
+                    hue: crate::wire::Hue::NONE,
+                },
+            ],
+        });
+
+        let bytes = packet.encode(old);
+        assert_eq!(ServerPacket::decode(&bytes, old), Ok(Some(packet)));
+    }
+
+    #[test]
+    fn a_pre_aos_status_has_no_max_weight_on_the_wire() {
+        // Below status type 5 the client is never told a max weight at all —
+        // decoding gets 0 back, not the value the server happened to hold, and
+        // that is the honest shape of the packet rather than a decoder gap.
+        let ancient = ClientVersion::new(3, 0, 8, 10);
+        let sent = MobileStatus {
+            serial: Serial::new(0x0001_2345).unwrap(),
+            name: "Lord British".to_owned(),
+            hits: crate::mobile::Vitals {
+                current: 100,
+                max: 100,
+            },
+            female: false,
+            strength: 100,
+            dexterity: 90,
+            intelligence: 80,
+            stamina: crate::mobile::Vitals { current: 90, max: 90 },
+            mana: crate::mobile::Vitals { current: 80, max: 80 },
+            gold: 1234,
+            armor: 0,
+            weight: 14,
+            max_weight: 390,
+            stat_cap: 225,
+            followers: 0,
+            followers_max: 5,
+        };
+
+        let bytes = ServerPacket::MobileStatus(sent.clone()).encode(ancient);
+        let Ok(Some(ServerPacket::MobileStatus(decoded))) = ServerPacket::decode(&bytes, ancient) else {
+            panic!("expected a mobile status");
+        };
+        assert_eq!(decoded.max_weight, 0, "type 3 never carries this field");
+        assert_eq!(
+            decoded,
+            MobileStatus {
+                max_weight: 0,
+                ..sent
+            }
+        );
+    }
+
+    #[test]
+    fn the_two_answers_to_a_walk_request_round_trip() {
+        // 0x22 and 0x21: the other half of M1a. A negative z matters here —
+        // `0x21`'s height is written as a byte and read back as an `i8`, and a
+        // client that got the sign wrong would snap itself into the ground.
+        let packets = [
+            ServerPacket::WalkAck(WalkAck {
+                sequence: crate::world::StepSequence(0x2A),
+                notoriety: crate::mobile::Notoriety::Murderer,
+            }),
+            ServerPacket::WalkReject(WalkReject {
+                sequence: crate::world::StepSequence(0xFF),
+                position: crate::world::Point::new(1475, 1774, -5),
+                facing: crate::direction::Facing::running(crate::direction::Direction::NorthWest),
+            }),
+        ];
+
+        for packet in packets {
+            let bytes = packet.encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(packet.clone())),
+                "{packet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_client_is_told_a_yellow_bar_is_blue_and_that_is_what_it_reads_back() {
+        // `Notoriety::for_client` downgrades `Invulnerable` for a client with no
+        // yellow bar, so this one shape does not survive the round trip — by
+        // design, and the honest half of that bargain is that decoding reports
+        // what was actually on the wire rather than what the sender meant.
+        let old = ClientVersion::new(3, 0, 8, 10);
+        let sent = ServerPacket::WalkAck(WalkAck {
+            sequence: crate::world::StepSequence(1),
+            notoriety: crate::mobile::Notoriety::Invulnerable,
+        });
+        assert_eq!(
+            ServerPacket::decode(&sent.encode(old), old),
+            Ok(Some(ServerPacket::WalkAck(WalkAck {
+                sequence: crate::world::StepSequence(1),
+                notoriety: crate::mobile::Notoriety::Innocent,
+            }))),
+        );
+        // A client that does have the yellow bar gets it back intact.
+        assert_eq!(
+            ServerPacket::decode(&sent.encode(version()), version()),
+            Ok(Some(sent))
+        );
+    }
+
+    #[test]
+    fn a_relayed_address_survives_both_byte_orders() {
+        // 0xA8 reverses the octets for a modern client and 0x8C never does. A
+        // decoder that copied one rule to the other would still round-trip
+        // against itself — so the two are checked against the *same* address,
+        // which is the only thing that catches it.
+        let address = std::net::Ipv4Addr::new(192, 168, 11, 6);
+        let list = ServerPacket::ShardList(ShardList {
+            shards: vec![crate::login::ShardEntry {
+                name: "OpenShard".to_owned(),
+                percent_full: crate::login::PercentFull::EMPTY,
+                timezone: 0,
+                address,
+            }],
+        })
+        .encode(version());
+        let relay = ServerPacket::Relay(Relay {
+            endpoint: std::net::SocketAddrV4::new(address, 2593),
+            auth_key: AuthKey(1),
+        })
+        .encode(version());
+
+        // The bytes differ...
+        assert_eq!(&relay[1..5], &[192, 168, 11, 6], "0x8C sends octets in order");
+        assert_eq!(
+            &list[list.len() - 4..],
+            &[6, 11, 168, 192],
+            "0xA8 reverses them for a modern client"
+        );
+
+        // ...and both decode to the one address.
+        let Ok(Some(ServerPacket::ShardList(decoded))) = ServerPacket::decode(&list, version()) else {
+            panic!("the shard list did not decode");
+        };
+        assert_eq!(decoded.shards[0].address, address);
+        let Ok(Some(ServerPacket::Relay(decoded))) = ServerPacket::decode(&relay, version()) else {
+            panic!("the relay did not decode");
+        };
+        assert_eq!(*decoded.endpoint.ip(), address);
+    }
+
+    #[test]
+    fn a_dungeon_floor_comes_back_negative() {
+        // 0x1B writes z as one signed byte behind a zero. Reading the pair as a
+        // big-endian i16 puts a character at z = 65,526 instead of -10, and the
+        // client draws them somewhere over the map.
+        let start = PlayerStart {
+            serial: Serial::new(0x0000_002A).unwrap(),
+            body: crate::wire::Graphic(0x0190),
+            position: crate::world::Point::new(1000, 1200, -10),
+            facing: crate::direction::Facing::running(crate::direction::Direction::SouthEast),
+            map: crate::world::MapSize::BRITANNIA,
+        };
+        let bytes = ServerPacket::PlayerStart(start).encode(version());
+        assert_eq!(
+            ServerPacket::decode(&bytes, version()),
+            Ok(Some(ServerPacket::PlayerStart(start)))
+        );
+    }
+
+    #[test]
+    fn the_character_list_comes_back_as_the_wire_holds_it() {
+        // The list is padded to five slots on the way out, so decoding gives
+        // five back however many characters exist. Re-encoding what was decoded
+        // must produce the same bytes — the property that matters, since the
+        // struct's own `characters` is not what the wire carries.
+        let list = CharacterList {
+            characters: vec![crate::login::CharacterEntry {
+                name: crate::identity::CharacterName::new("Lord British"),
+            }],
+            starts: vec![crate::login::StartLocation {
+                area: "Britain".to_owned(),
+                name: "Castle Britannia".to_owned(),
+                position: crate::world::Point::new(1475, 1770, 20),
+                map: crate::world::Facet(0),
+                description_cliloc: crate::wire::ClilocId(1075072),
+            }],
+            flags: crate::login::CharacterListFlags::TOOLTIPS,
+        };
+        let bytes = ServerPacket::CharacterList(list).encode(version());
+
+        let Ok(Some(ServerPacket::CharacterList(decoded))) = ServerPacket::decode(&bytes, version()) else {
+            panic!("the character list did not decode");
+        };
+        assert_eq!(decoded.characters.len(), crate::login::MIN_CHARACTER_SLOTS);
+        assert_eq!(decoded.characters[0].name, "Lord British");
+        assert_eq!(decoded.starts[0].name, "Castle Britannia");
+        assert_eq!(
+            decoded.starts[0].position,
+            crate::world::Point::new(1475, 1770, 20)
+        );
+        assert_eq!(
+            ServerPacket::CharacterList(decoded).encode(version()),
+            bytes,
+            "re-encoding what the wire held must reproduce it"
+        );
+    }
+
+    #[test]
+    fn the_old_character_list_says_it_is_not_decoded() {
+        // Before 7.0.13.0 a start location has no coordinates at all. Zeros
+        // would be three numbers that look chosen; this says what happened.
+        let bytes = ServerPacket::CharacterList(CharacterList {
+            characters: Vec::new(),
+            starts: Vec::new(),
+            flags: crate::login::CharacterListFlags::NONE,
+        })
+        .encode(version());
+        let old = ClientVersion::new(5, 0, 9, 1);
+        assert!(matches!(
+            ServerPacket::decode(&bytes, old),
+            Err(ServerDecodeError::CharacterList(DecodeError::Unsupported { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_deny_code_the_client_does_not_know_is_an_error() {
+        // Five codes reach a client. A sixth is a server this one does not
+        // understand, and picking the nearest legal reason would be the decoder
+        // inventing the answer.
+        assert!(matches!(
+            ServerPacket::decode(&[0x82, 0x09], version()),
+            Err(ServerDecodeError::LoginDenied(DecodeError::UnknownValue { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_packet_with_no_decoder_yet_is_not_a_failure() {
+        // The framer knew the length, so the stream is intact and the client can
+        // read on. This is the answer that shrinks as decoders are written.
+        let bytes = ServerPacket::LightLevel(crate::world::LightLevel {
+            level: crate::world::Light(0),
+        })
+        .encode(version());
+        assert_eq!(ServerPacket::decode(&bytes, version()), Ok(None));
     }
 
     #[test]
