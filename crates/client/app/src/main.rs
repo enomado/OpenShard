@@ -7,19 +7,36 @@
 //! ```
 //!
 //! Arrow keys walk a tile at a time, page up and down change the camera's
-//! height, and escape closes it. There is no connection yet: this draws the
-//! map's own ground and statics, not a world a server has shown us, and the one
-//! mobile on screen is a body standing where the camera looks rather than a
-//! character anybody logged in as. `WorldView` arrives when `client/net` and
-//! `client/render` are joined, and the camera then follows `0x20` instead of
-//! the keyboard.
+//! height, and escape closes it.
+//!
+//! # With a shard, and without one
+//!
+//! Given an account it logs in and draws what the server has shown it — the
+//! character, everyone else on screen, and the ground under them:
+//!
+//! ```sh
+//! OPENSHARD_CLIENT=… OPENSHARD_ACCOUNT=admin OPENSHARD_PASSWORD=… \
+//!     cargo run -p openshard-client-app
+//! ```
+//!
+//! Then the arrows are a `0x02` each and the camera follows the body the server
+//! confirms, not the keyboard. Without an account it stays what it was: a
+//! window onto the map's own ground and statics, with one placeholder body
+//! standing wherever the camera looks. Both are worth having — the offline one
+//! needs no shard to look at a hillside, and it is the only one that runs
+//! against a facet nobody is serving.
 
 use std::fmt;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
+mod link;
+
+use openshard_client_net::session::{Pick, Plan};
+use openshard_client_net::view::WorldView;
 use openshard_client_render::animation::{AnimationClock, FRAME_DELAY};
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::camera::Camera;
@@ -27,7 +44,9 @@ use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::{ground, statics};
-use openshard_protocol::direction::Direction;
+use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
+use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::Hue;
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::Anim;
@@ -45,8 +64,46 @@ use winit::window::{Window, WindowId};
 /// Where the camera starts: Britain, by the bank.
 const START: Point = Point::new(1495, 1629, 0);
 
-/// The facet to open. Felucca until there is a server to say otherwise.
+/// The facet to open. Felucca: `0x1B` carries the facet's *size* and not its
+/// number, so a shard serving another one is noticed by the size test in
+/// [`App::entered`] rather than followed.
 const FACET: u8 = 0;
+
+/// Which client this claims to be. Every `Feature` gate on the server follows
+/// from it, and this is the one ClassicUO opens with — see `docs/client.md`.
+const VERSION: ClientVersion = ClientVersion::new(7, 0, 45, 65);
+
+/// Where a shard is, when one is asked for and no address is given.
+const DEFAULT_SHARD: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 2593);
+
+/// The login this run was asked to make, if it was asked for one.
+///
+/// The account is what decides: a client with no account has nobody to log in
+/// as, and asking for a password on a command line nobody typed would be worse
+/// than drawing the map on its own.
+fn plan_from_environment() -> Option<(SocketAddrV4, Plan)> {
+    let account = std::env::var("OPENSHARD_ACCOUNT").ok()?;
+    let password = std::env::var("OPENSHARD_PASSWORD").unwrap_or_default();
+    let address = match std::env::var("OPENSHARD_SERVER") {
+        Ok(text) => match text.parse() {
+            Ok(address) => address,
+            Err(error) => {
+                eprintln!("OPENSHARD_SERVER is not an address:port: {error}");
+                return None;
+            }
+        },
+        Err(_) => DEFAULT_SHARD,
+    };
+    Some((
+        address,
+        Plan {
+            account: RawAccountName(account),
+            password: RawPlaintextPassword(password),
+            shard: Pick::First,
+            character: std::env::var("OPENSHARD_CHARACTER").map_or(Pick::First, Pick::Named),
+        },
+    ))
+}
 
 fn main() -> ExitCode {
     let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(PathBuf::from) else {
@@ -104,7 +161,8 @@ fn main() -> ExitCode {
         map.height()
     );
 
-    let event_loop = match EventLoop::new() {
+    // With user events, because the shard thread wakes the loop with them.
+    let event_loop = match EventLoop::<link::Update>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
             eprintln!("no window system: {error}");
@@ -129,6 +187,14 @@ fn main() -> ExitCode {
         map.land(START.x, START.y).map_or(START.z, |cell| cell.z),
     );
 
+    // The connection, if this run was asked for one. Started before the window
+    // exists: the login is several round trips, and there is a map to draw
+    // while it happens.
+    let link = plan_from_environment().map(|(address, plan)| {
+        eprintln!("logging in to {address} as {}", plan.account.0);
+        link::connect(address, plan, VERSION, event_loop.create_proxy())
+    });
+
     let mut app = App {
         map,
         art,
@@ -147,6 +213,9 @@ fn main() -> ExitCode {
             frame: 0,
             hue: Hue::NONE,
         },
+        others: Vec::new(),
+        link,
+        facet_checked: false,
         animation: AnimationClock::default(),
         next_tick: Instant::now(),
         window: None,
@@ -157,6 +226,29 @@ fn main() -> ExitCode {
             eprintln!("event loop: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The animation group a body that is doing nothing plays.
+///
+/// Every mobile stands here. Walking, running and everything else are groups of
+/// their own, and choosing between them wants a mobile's *history* — where it
+/// was on the previous packet — which `WorldView` deliberately does not keep.
+/// See the backlog in `docs/client.md`.
+const STANDING: u8 = 4;
+
+/// One of the server's mobiles, as the renderer wants it.
+///
+/// The frame is left at zero: the clock picks it in [`App::draw`], from however
+/// many the atlas turned out to hold.
+fn as_mobile(at: Point, body: openshard_protocol::wire::Graphic, facing: Facing, hue: Hue) -> Mobile {
+    Mobile {
+        at,
+        body: body.0,
+        group: STANDING,
+        facing: facing.direction,
+        frame: 0,
+        hue,
     }
 }
 
@@ -250,13 +342,30 @@ struct App {
     /// out of it a body at a time. `&mut` because reading one seeks the file.
     anim: Anim,
     camera: Camera,
-    /// The one mobile there is, until a server sends some.
+    /// This client's own body.
     ///
-    /// A real client draws what `0x77` and `0x78` told it about. This binary has
-    /// no connection, so it draws the character the camera is standing on — which
-    /// is enough to hold the animation reader, the frame atlas and the placement
-    /// against a real install, and is honest about being a placeholder.
+    /// Connected, it is what the server says: `0x1B` puts it somewhere and
+    /// every ack, `0x20` and `0x21` moves it. Offline it is a placeholder
+    /// standing wherever the camera looks, which is enough to hold the
+    /// animation reader, the frame atlas and the placement against a real
+    /// install.
     player: Mobile,
+    /// Everyone else on screen, as `0x77` and `0x78` last described them.
+    ///
+    /// Empty offline, and rebuilt whole from the [`WorldView`] on every update:
+    /// the view is the record of what arrived and this is a projection of it,
+    /// so there is nothing here to keep in step by hand.
+    others: Vec<Mobile>,
+    /// The shard, if this run logged in to one.
+    ///
+    /// `None` is the offline viewer, and it is what the keyboard asks: a step
+    /// is a `0x02` when there is somebody to send it to, and a camera move when
+    /// there is not.
+    link: Option<link::Link>,
+    /// Whether the shard's facet has been compared with the one loaded. See
+    /// [`App::entered`]: once, because it cannot change without a `0xBF 0x08`
+    /// nothing here reads yet.
+    facet_checked: bool,
     /// How long the player's body animation has played.
     ///
     /// Real time, not the world tick — there is no world here to tick, and a
@@ -268,7 +377,26 @@ struct App {
     window: Option<Screen>,
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<link::Update> for App {
+    /// The shard thread had something to say.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, update: link::Update) {
+        match update {
+            link::Update::World(view) => self.entered(&view),
+            // The window stays open: whatever is on screen is still the last
+            // thing the server said, and closing it would take the reason with
+            // it. The map viewer is what is left, which is a fair description
+            // of a client that has lost its shard.
+            link::Update::Lost(reason) => {
+                eprintln!("disconnected: {reason}");
+                self.link = None;
+                return;
+            }
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.window.request_redraw();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -353,6 +481,24 @@ impl App {
     /// edge in UO is impossible, and a camera that wrapped would draw a seam
     /// between two sides of the world.
     fn step(&mut self, code: KeyCode) -> bool {
+        // Connected, the keyboard moves nothing: it asks. The body goes where
+        // the `0x22` says it went, which is the whole point of the walk
+        // handshake — a client that stepped locally and corrected later would
+        // be predicting, and the prediction lives in `Walk` where it can be
+        // rolled back. Page up and down are a camera control the protocol has
+        // no packet for, so they do nothing here.
+        if let Some(link) = self.link.as_ref() {
+            let facing = match code {
+                KeyCode::ArrowUp => Direction::NorthWest,
+                KeyCode::ArrowDown => Direction::SouthEast,
+                KeyCode::ArrowLeft => Direction::SouthWest,
+                KeyCode::ArrowRight => Direction::NorthEast,
+                _ => return false,
+            };
+            link.step(Facing::walking(facing));
+            return false;
+        }
+
         // The four arrows are the four diagonals of the map, which are the four
         // *straight* directions on screen: UO's grid is turned 45 degrees, so
         // "up" is north-west and there is no key that moves one axis alone.
@@ -394,6 +540,58 @@ impl App {
             .map_or(self.camera.center.z, |cell| cell.z);
         self.player.at = Point::new(self.camera.center.x, self.camera.center.y, ground);
         true
+    }
+
+    /// Redraw from what the server has shown us.
+    ///
+    /// A projection of the whole [`WorldView`], rebuilt each time rather than
+    /// patched: the view is the record of what arrived, and anything kept in
+    /// step with it by hand would be a second record that could disagree.
+    fn entered(&mut self, view: &WorldView) {
+        // The facet is chosen at startup and `0x1B` names only its size, so a
+        // shard serving a different one draws this client the wrong ground with
+        // no complaint from either end. Said once, because it is a
+        // misconfiguration and not an event.
+        if !self.facet_checked {
+            self.facet_checked = true;
+            if u32::from(view.map.width) != self.map.width()
+                || u32::from(view.map.height) != self.map.height()
+            {
+                eprintln!(
+                    "the shard's facet is {}x{} and {} is {}x{}: the ground drawn is not the ground you are standing on",
+                    view.map.width,
+                    view.map.height,
+                    self.map.facet_name(),
+                    self.map.width(),
+                    self.map.height(),
+                );
+            }
+        }
+
+        self.player = as_mobile(
+            view.player.position,
+            view.player.body,
+            view.player.facing,
+            view.player.hue,
+        );
+        // Sorted by serial: a `HashMap`'s order is not one, and an atlas built
+        // in a different order every frame is a rebuild every frame.
+        let mut others: Vec<_> = view.mobiles.iter().collect();
+        others.sort_unstable_by_key(|(serial, _)| serial.raw());
+        self.others = others
+            .into_iter()
+            .map(|(_, mobile)| as_mobile(mobile.position, mobile.body, mobile.facing, mobile.hue))
+            .collect();
+        // The camera follows the body, which is what `0x20` is for.
+        self.camera.center = view.player.position;
+    }
+
+    /// The player and everyone else, in one slice for the atlas and the pass.
+    fn drawn_mobiles(&self) -> Vec<Mobile> {
+        let mut mobiles = Vec::with_capacity(self.others.len() + 1);
+        mobiles.push(self.player);
+        mobiles.extend_from_slice(&self.others);
+        mobiles
     }
 
     fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<Screen, StartupError> {
@@ -493,7 +691,7 @@ impl App {
             .map_err(StartupError::Atlas)?;
         // Every animation the mobiles on screen need. `&mut` because the
         // frames are read from the file rather than held in memory.
-        let wanted = mobiles::needed_animations(std::slice::from_ref(&self.player));
+        let wanted = mobiles::needed_animations(&self.drawn_mobiles());
         let mobiles = AnimAtlas::build(&mut self.anim, wanted).map_err(StartupError::Atlas)?;
         Ok(Atlases {
             land,
@@ -514,7 +712,7 @@ impl App {
         // pack reads the whole of `self`, and the window is part of it.
         let wanted = ground::visible_graphics(&self.map, &self.camera);
         let wanted_statics = statics::visible_graphics(&self.map, &self.camera);
-        let (player_direction, _) = openshard_uofiles::anim::facing(self.player.facing);
+        let mut drawn = self.drawn_mobiles();
         let stale = self.window.as_ref().is_some_and(|window| {
             wanted
                 .iter()
@@ -522,13 +720,17 @@ impl App {
                 || wanted_statics
                     .iter()
                     .any(|graphic| window.static_atlas.sprite(*graphic).is_none())
-                // Turning is a step here (see `step`), and the atlas holds one
-                // stored direction at a time — packed for whichever facing the
-                // player had when it was last built.
-                || window
-                    .mobile_atlas
-                    .frame_count(self.player.body, self.player.group, player_direction)
-                    == 0
+                // The atlas holds one stored direction of one body at a time,
+                // packed for whoever was on screen facing whichever way when it
+                // was last built. A mobile turning, or a new one arriving, is
+                // the same miss as walking off the land atlas.
+                || drawn.iter().any(|mobile| {
+                    let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
+                    window
+                        .mobile_atlas
+                        .frame_count(mobile.body, mobile.group, direction)
+                        == 0
+                })
         });
         let repacked = stale.then(|| self.build_atlases());
 
@@ -569,12 +771,17 @@ impl App {
 
         // The clock picks the frame from how many the atlas actually packed —
         // asking the atlas rather than remembering the count is what keeps
-        // "frame 7 of a 6-frame walk" from being expressible.
-        let frame_count =
-            window
+        // "frame 7 of a 6-frame walk" from being expressible. One clock for
+        // everybody: a standing crowd animating in step is wrong and looks it,
+        // and fixing it wants a clock per mobile, which wants a mobile that
+        // survives between frames. See the backlog.
+        for mobile in &mut drawn {
+            let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
+            let frame_count = window
                 .mobile_atlas
-                .frame_count(self.player.body, self.player.group, player_direction);
-        self.player.frame = self.animation.frame(frame_count);
+                .frame_count(mobile.body, mobile.group, direction);
+            mobile.frame = self.animation.frame(frame_count);
+        }
 
         let frame = match window.surface.get_current_texture() {
             // Suboptimal still draws: the surface wants reconfiguring, and the
@@ -605,11 +812,7 @@ impl App {
 
         let quads = ground::collect(&self.map, &self.camera, &window.atlas, &window.texmap_atlas);
         let static_quads = statics::collect(&self.map, &self.camera, &self.tiledata, &window.static_atlas);
-        let mobile_quads = mobiles::collect(
-            std::slice::from_ref(&self.player),
-            &self.camera,
-            &window.mobile_atlas,
-        );
+        let mobile_quads = mobiles::collect(&drawn, &self.camera, &window.mobile_atlas);
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let target = Target {
             view: &view,

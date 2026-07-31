@@ -2177,10 +2177,13 @@ dependencies = [
 name = "openshard-client-app"
 version = "0.0.1"
 dependencies = [
+ "openshard-client-net",
  "openshard-client-render",
  "openshard-protocol",
  "openshard-uofiles",
  "pollster",
+ "tokio",
+ "tracing",
  "wgpu",
  "winit",
 ]

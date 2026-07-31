@@ -14,9 +14,17 @@ description = "The client binary: a window, a surface, and a camera over the map
 # renderer testable offscreen and portable to a canvas.
 [dependencies]
 openshard-client-render.workspace = true
+# The wire. This binary owns the thread it runs on and nothing about the
+# protocol itself — see `link.rs`.
+openshard-client-net.workspace = true
 openshard-protocol.workspace = true
 openshard-uofiles.workspace = true
 pollster = "0.4"
+# `rt` for the shard thread's own current-thread runtime, `macros` for the
+# select! that reads the socket and the keyboard at once, `sync` for the channel
+# between them. No `net`: the sockets belong to `client/net`.
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+tracing.workspace = true
 winit = "0.30"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

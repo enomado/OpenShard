@@ -247,6 +247,33 @@ graphic and a height and nothing else — so the hue table has no consumer until
 statics arrive, and building the plumbing for it now would be building it
 untested.
 
+**The window is joined to the wire.** `crates/client/app` logs in when it is
+given an account and draws what the server has shown it — the character, and
+everyone else on screen — with the arrow keys sending a `0x02` each and the
+camera following the body the server confirms:
+
+```sh
+OPENSHARD_CLIENT=… OPENSHARD_ACCOUNT=admin OPENSHARD_PASSWORD=… \
+    cargo run -p openshard-client-app
+```
+
+Without an account it stays the offline map viewer it was, which is the only
+thing that runs against a facet nobody is serving.
+
+The socket gets a thread and a current-thread runtime of its own
+(`crates/client/app/src/link.rs`), because the event loop blocks on the
+compositor and the runtime blocks on the socket, and neither can poll the
+other. They exchange values: a `Facing` down, a whole `WorldView` back through
+`EventLoopProxy`. Nothing about the protocol is decided there — `client/net`
+owns the login, the walk and the view.
+
+**Neither `0x22` nor `0x21` moves the body in `WorldView::apply`, and both move
+it on screen.** The ack carries a sequence and no position, so the tile is the
+one `Walk` asked for; the rejection is a rollback the view has no arm for. That
+join is the one rule in `link.rs` and it is `fold`, tested without a socket or
+a window: fold only one of the two and the client's own body stands still while
+everyone else walks around it.
+
 ## M4 — the gump layer
 
 The journal and the speech line, the status bar, the paperdoll, containers, and
@@ -459,6 +486,40 @@ own understanding had written.
   pipeline built twice, which is the cost of a draw call binding one texture. If
   a third sprite layer arrives — equipment — it is worth asking whether one
   atlas keyed by a tagged id beats three of these.
+
+## Backlog, found while joining the window to the wire
+
+- **Everything stands.** Every mobile is drawn in group 4 whatever it is doing,
+  because choosing walk over stand wants a mobile's *history* — where it was on
+  the previous packet, and how long ago — which `WorldView` deliberately does
+  not keep, being a record of what arrived. The place for it is a layer above
+  the view that ages what it sees, and that layer is also what smooths a step
+  into a glide instead of a teleport.
+- **One animation clock for everybody.** `client/app` holds a single
+  `AnimationClock`, so a crowd standing still breathes in unison — which is
+  wrong and looks it. A clock per mobile needs a mobile that survives between
+  frames, and today the whole list is rebuilt from the view on every update.
+- **Ground items are decoded, held, and not drawn.** `WorldView::items` fills
+  up from `0x1A` and the renderer never sees it: a static sprite is placed from
+  the map's `staidx`, and an item from the server has no cell to be read out of.
+  It is the same `SpriteRenderer` with a different source of quads —
+  `statics::collect` is the shape to follow.
+- **The facet is a startup constant and `0x1B` only carries a size.** The app
+  loads Felucca and compares the shard's map size once, warning when they
+  differ rather than following. Following means decoding `0xBF 0x08` and
+  reloading the facet, and the reload is the interesting half: `Map::load_facet`
+  reads a few hundred megabytes.
+- **A whole `WorldView` is cloned per changed packet.** Fine for the handful a
+  standing character receives, and not fine beside a crowded bank: the thread
+  clones the map of every mobile to say that one of them turned. The answer is
+  probably not a delta protocol between the two threads but a shared snapshot
+  the window reads — worth measuring before deciding.
+- **`z` still drifts on a hill, and now it is visible.** The client's `Walk`
+  has no map (see below), so a step predicts the height it started at, and the
+  body is drawn at that height until a `0x20` or a `0x21` corrects it. Standing
+  a body below the terrain is exactly what a mobile that failed to draw looks
+  like. `uofiles` is now on the client's side of the wall, so the fix — handing
+  `Walk` the map, or asking the map at draw time — is finally available.
 
 ## Backlog, found while building M0, M1 and M1a
 
