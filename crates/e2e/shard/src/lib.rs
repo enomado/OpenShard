@@ -29,10 +29,11 @@
 pub mod in_process;
 
 use std::net::{SocketAddr, SocketAddrV4};
+use std::thread::JoinHandle;
 
 use openshard_client_net::session::{Pick, Plan};
 use openshard_config::{Config, DEFAULT_TOML};
-use openshard_gateway::ClientGatewayServer;
+use openshard_gateway::{ClientGatewayServer, Shutdown};
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 use openshard_protocol::version::ClientVersion;
 
@@ -116,6 +117,65 @@ pub fn stock_config(address: SocketAddr) -> Config {
     config
 }
 
+/// A shard running on a thread of its own, and the way to end it.
+///
+/// # Hold it for as long as the shard should live
+///
+/// Dropping one stops the shard and waits for its thread, which is where the
+/// last save happens — so `let (address, _) = shard();` starts a shard and
+/// immediately ends it, and the test that follows finds nothing listening.
+/// Bind it to a name.
+///
+/// # Why a caller needs one at all
+///
+/// Because a shard used to have no way to stop: [`spawn`] kept a thread nothing
+/// joined, and the gate it held kept the event channel open, so `run_shard`
+/// never saw its input close. That is right for a process that ends with the
+/// shard and wrong for a test — and wrong in a way that grows, because a fuzzing
+/// run wants fifty worlds started and dropped, not fifty threads and fifty
+/// leaked configs kept until the process exits.
+#[derive(Debug)]
+#[must_use = "the shard stops when this is dropped"]
+pub struct Running {
+    stop: Shutdown,
+    /// `Option` only because [`Drop`] has to move the handle out of a `&mut
+    /// self` to join it. It is `Some` for the whole life of the value.
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Running {
+    /// Stop the shard and wait until it has stopped.
+    ///
+    /// The wait is the point: `run_shard` writes the world on its way out, so
+    /// this returns once the last save has landed and the thread is gone. A
+    /// test that asserts on what a shard persisted has somewhere to put the
+    /// assertion.
+    pub fn stop(mut self) {
+        self.halt();
+    }
+
+    /// What both [`Running::stop`] and [`Drop`] do. Idempotent: whichever runs
+    /// first takes the handle, and the other finds nothing to join.
+    fn halt(&mut self) {
+        self.stop.stop();
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() {
+                // Reported rather than re-raised. This runs from `Drop`, and a
+                // panic there while another panic is unwinding aborts the test
+                // process — which would hide the first failure behind the
+                // second.
+                eprintln!("the shard thread panicked");
+            }
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.halt();
+    }
+}
+
 /// Start a shard on an ephemeral port and hand back where it listens.
 ///
 /// `config` is called with the address the gateway actually bound, because the
@@ -124,23 +184,32 @@ pub fn stock_config(address: SocketAddr) -> Config {
 /// of what a caller varies: [`shard`] is what the tests want, and
 /// `crates/e2e/playground` builds one that reads a client install as well.
 ///
+/// The [`Running`] beside the address is what stops it, and it must be held —
+/// see there.
+///
 /// # Why a thread and not a `tokio::spawn`
 ///
 /// The shard owns a V8 isolate, so its future is not `Send` and cannot be
 /// spawned onto a multi-threaded runtime — the binary does not spawn it either,
 /// it awaits it in `main`. A thread with its own current-thread runtime is that
 /// same arrangement, next door to the caller.
-pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> SocketAddrV4 {
+pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (SocketAddrV4, Running) {
     let (ready, listening) = std::sync::mpsc::channel();
 
-    std::thread::spawn(move || {
+    // Built out here rather than inside the thread, because it is half of what
+    // is handed back — and unlike a `Gate`, a `Shutdown` needs no runtime to
+    // exist in.
+    let shutdown = Shutdown::new();
+    let served = shutdown.clone();
+
+    let thread = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("a runtime for the shard");
 
         runtime.block_on(async move {
-            let (gateway, events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap())
+            let (gateway, events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap(), served.clone())
                 .await
                 .expect("a loopback port");
             let address = gateway.local_address().expect("the bound address");
@@ -155,18 +224,25 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> Sock
 
             tokio::spawn(gateway.run());
             ready.send(address).expect("the caller is still waiting");
-            openshard_server::shard::run_shard(events, config, world, store).await;
+            openshard_server::shard::run_shard(events, config, world, store, served).await;
         });
     });
 
-    match listening.recv().expect("the shard came up") {
+    let address = match listening.recv().expect("the shard came up") {
         SocketAddr::V4(address) => address,
         SocketAddr::V6(_) => unreachable!("bound to a v4 loopback address"),
-    }
+    };
+    (
+        address,
+        Running {
+            stop: shutdown,
+            thread: Some(thread),
+        },
+    )
 }
 
 /// A shard on the stock config: no map, no database, two development accounts.
-pub fn shard() -> SocketAddrV4 {
+pub fn shard() -> (SocketAddrV4, Running) {
     spawn(stock_config)
 }
 

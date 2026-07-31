@@ -161,6 +161,39 @@ reader filling a kernel queue rather than blocking a writer. The socket tests in
 its deadlines are there because a broken pipe arrangement hangs rather than
 refusing.
 
+### Stopping is one word, and everything hears it
+
+A shard has three loops that never end on their own — the accept loop, a
+read/write pair per connection, and the tick — and it used to have no way to end
+any of them. `run_shard` left its loop on Ctrl-C, which the tick listened for
+itself, and everything else ran until the process did.
+
+So there is now a `gateway::Shutdown`: a value that is cloned and carried down
+the call tree, not a signal handler and not a flag some module owns.
+`ClientGatewayServer::bind` takes one, `Gate::new` takes one, every connection
+task holds one, and `run_shard` takes the same one. Ctrl-C in the binary and a
+handle in a test produce the same stop, on the same paths.
+
+It is **level-triggered**, and that is the design rather than an implementation
+detail: `requested()` resolves the moment the stop *has been asked for*, not the
+moment it is asked for. A connection accepted one instant before the stop would
+otherwise be served forever by a shard that had already saved and gone. It is
+also what makes it safe in a `select!` loop — cancelling a waiter loses nothing,
+because the thing waited for is a state and not an event.
+
+What a stop does, in order: the listener stops accepting and is dropped, so the
+port is free and a late client is refused rather than let into a world that is
+saving; every connection task hangs up, which the client sees as the zero read
+it would get from a process that had exited; and the tick leaves its loop, ends
+every trade, takes one last full snapshot and **awaits** the save task. So
+`run_shard` returns only once the world is on disk, which is what makes it
+something a caller may wait for.
+
+`crates/e2e` is where that last part matters. `spawn` hands back a `Running`
+beside the address — stop it, or drop it, and the shard stops and its thread is
+joined. Fifty worlds started and dropped is now fifty threads that end, which is
+what a fuzzing run needs and what the old arrangement could not do at all.
+
 Two smaller decisions. The shard is given the same install the window reads
 (`world.client_files`), because the client predicts each step's `z` from its own
 copy of the facet and two ends reading different ground is a stream of `0x21`
@@ -182,11 +215,9 @@ Backlog it leaves behind:
   config with `client_files` set, and a window — is covered by running it. An
   `#[ignore]`d test that starts the in-process shard with a real install and
   enters the world *without* a window would cover everything but the GPU.
-- **The in-process shard has no way to stop.** `in_process::spawn` hands back a
-  dialler and keeps the thread; nothing joins it, and the `Gate` it holds keeps
-  the event channel open, so `run_shard` never sees its input close. Right for a
-  playground that ends with the process, wrong for a test that wants to start
-  fifty worlds and drop them — which a fuzzing run does.
+- ~~**The in-process shard has no way to stop.**~~ **Done.** A shard now stops
+  on one word, and it is the same word wherever it comes from. See "Stopping"
+  below.
 - **A virtual player is now one type away.** `Dial` is the seam; what is missing
   is something that drives `client/net` without a window — the walk, the speech,
   and an oracle for what the world should have said. It belongs beside

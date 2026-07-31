@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 use openshard_config::{Config, DEFAULT_TOML};
 use openshard_gateway::{
     ClientGatewayServer, ConnectionId, Event, OutboxTx, Packet, PacketError, ServerEvent, ServerEventRx,
-    VersionTx,
+    Shutdown, VersionTx,
 };
 use openshard_login::{Accounts, DevAccounts, LoginServer, LoginSession, Outcome, Response};
 use openshard_persistence::{AccountRecord, MemoryStore, PgStore, Snapshot, SqliteStore, Store};
@@ -95,15 +95,22 @@ use verify::{Verdict, Verifier};
 /// Where the config lives, relative to the working directory.
 pub const CONFIG_PATH: &str = "openshard.toml";
 
-/// Load the config, open the store, bind the port, and serve until the process
-/// ends.
+/// Load the config, open the store, bind the port, and serve until Ctrl-C.
 ///
 /// The binary's whole body, kept here so that what an operator starts and what
 /// a test could start are the same code.
+///
+/// Returns once the world has been saved: [`run_shard`] does not return before
+/// that, and neither does this.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(CONFIG_PATH)?;
 
-    let (gateway_server, events) = ClientGatewayServer::bind(config.server.listen).await?;
+    // One stop for the whole process — the listener, every connection, and the
+    // tick. It is made here rather than inside any of them, because a shard that
+    // stopped in pieces would be a shard whose parts each decided when to go.
+    let shutdown = Shutdown::new();
+
+    let (gateway_server, events) = ClientGatewayServer::bind(config.server.listen, shutdown.clone()).await?;
     info!(
         shard = config.server.name,
         listen = %config.server.listen,
@@ -121,8 +128,25 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let world = load_world(&config)?;
     let store = open_store(&config).await?;
 
+    // Ctrl-C is the operator's way to ask, and this is the only place the
+    // process listens for it: the shard loop watches the same `Shutdown` a test
+    // would use, so a stop is one thing that happens rather than two paths that
+    // have to agree. A signal that cannot be listened for is worth saying out
+    // loud — the shard still runs, but the only way left to end it is to kill
+    // it, which is the save this whole arrangement exists to avoid losing.
+    let signalled = shutdown.clone();
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Ctrl-C");
+                signalled.stop();
+            }
+            Err(error) => error!(%error, "cannot listen for Ctrl-C; this shard will only stop when killed"),
+        }
+    });
+
     tokio::spawn(gateway_server.run());
-    run_shard(events, &config, world, store).await;
+    run_shard(events, &config, world, store, shutdown).await;
 
     Ok(())
 }

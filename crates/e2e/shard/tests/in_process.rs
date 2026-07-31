@@ -29,7 +29,10 @@ const WAIT: Duration = Duration::from_secs(20);
 
 #[tokio::test]
 async fn a_client_enters_the_world_with_no_socket_anywhere() {
-    let dial = in_process::spawn(stock_config);
+    // The handle is held for the length of the test: dropping it stops the
+    // shard, and `stopping_a_shard_ends_its_thread_and_hangs_up` below is where
+    // that is the subject rather than the housekeeping.
+    let (dial, _shard) = in_process::spawn(stock_config);
 
     let (mut socket, mut view) = tokio::time::timeout(WAIT, enter_world_with(dial, plan(), version()))
         .await
@@ -80,4 +83,46 @@ async fn a_client_enters_the_world_with_no_socket_anywhere() {
 
     assert_ne!(stepped, start, "an acked step moves the body");
     assert_eq!(view.player.position, stepped, "and the view follows it");
+}
+
+#[tokio::test]
+async fn stopping_a_shard_ends_its_thread_and_hangs_up() {
+    // The shard used to have no way out at all: the thread was kept, nothing
+    // joined it, and the gate it held kept the event channel open, so the tick
+    // never saw its input close. Right for a playground that ends with the
+    // process; wrong for anything that wants a second world — a fuzzing run
+    // starting fifty of them would leak fifty threads.
+    //
+    // Both halves of a stop are asserted here, because either alone would pass
+    // for the wrong reason: `stop` returning proves the tick left its loop and
+    // saved (`run_shard` returns after the last write, and `stop` joins), and
+    // the client's zero read proves the same word reached the connection task,
+    // which is a different loop on the other side of the gate.
+    let (dial, shard) = in_process::spawn(stock_config);
+
+    let (mut socket, _view) = tokio::time::timeout(WAIT, enter_world_with(dial, plan(), version()))
+        .await
+        .expect("the login conversation finished inside the deadline")
+        .expect("the client reached the world");
+
+    // Blocking, on purpose and safely: the shard runs on a thread of its own, so
+    // nothing this runtime is holding is needed for it to finish.
+    shard.stop();
+
+    // And the client, which asked for nothing and was never told, finds the
+    // connection closed under it rather than waiting for a shard that has gone.
+    let ended = tokio::time::timeout(WAIT, async {
+        loop {
+            match socket.next_event().await {
+                Ok(Some(_)) => continue, // whatever was in flight when it stopped
+                Ok(None) => return,      // hung up on: what a stop looks like from here
+                Err(error) => panic!("the pipe failed rather than closing: {error}"),
+            }
+        }
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "the client was left waiting on a shard that had stopped"
+    );
 }

@@ -28,7 +28,8 @@ use openshard_e2e_shard::{plan, shard, version};
 
 #[tokio::test]
 async fn a_client_walks_and_the_shard_agrees_on_where_it_ended_up() {
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
     let entered = tokio::time::timeout(Duration::from_secs(20), enter_world(address, plan(), version()))
         .await
         .expect("the login conversation finished inside the timeout")

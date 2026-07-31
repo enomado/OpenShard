@@ -55,7 +55,7 @@ fn main() -> ExitCode {
     // It costs a second copy of the facet in this process; a playground can
     // afford one, and `docs/client_versions.md` is the standing rule it obeys.
     let files = dir.to_string_lossy().into_owned();
-    let dial = openshard_e2e_shard::in_process::spawn(move |stated| {
+    let (dial, shard) = openshard_e2e_shard::in_process::spawn(move |stated| {
         let mut config = openshard_e2e_shard::stock_config(stated);
         config.world.client_files = files;
         config
@@ -67,5 +67,12 @@ fn main() -> ExitCode {
 
     // On this thread, because `winit` requires the event loop to own the one it
     // was built on. The shard is the one that moved.
-    openshard_client_app::run(&dir, Some((dial, openshard_e2e_shard::plan())))
+    let code = openshard_client_app::run(&dir, Some((dial, openshard_e2e_shard::plan())));
+
+    // The window is gone, so the shard is asked to stop and waited for. It keeps
+    // nothing — the world is in memory and goes away with it — but the wait is
+    // still worth having: it is the same path an operator's Ctrl-C takes, so a
+    // stop that hangs or panics shows up here rather than only in production.
+    shard.stop();
+    code
 }

@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::connection::{Connection, ConnectionError, Event};
+use crate::shutdown::Shutdown;
 
 /// Identifies a connection for the lifetime of the process.
 ///
@@ -223,23 +224,31 @@ pub struct Gate {
     session_ids: SessionIdFabric,
     /// Where connection tasks are spawned. See the note above.
     reader: tokio::runtime::Handle,
+    /// Handed to every connection this gate serves, so that a stop reaches a
+    /// socket nobody is speaking on. See [`Shutdown`].
+    shutdown: Shutdown,
 }
 
 impl Gate {
     /// A gate with nothing in front of it, and the channel its events arrive on.
+    ///
+    /// `shutdown` is the shard's, not one made here: a gate that owned its own
+    /// stop would be a second thing to remember to stop, and the whole point of
+    /// the type is that there is one.
     ///
     /// # Panics
     ///
     /// If called outside a Tokio runtime: a gate with no runtime to read on
     /// could accept a connection and never poll it, which is a hang rather than
     /// an error — better said here, at the one line that can say it.
-    pub fn new() -> (Self, ServerEventRx) {
+    pub fn new(shutdown: Shutdown) -> (Self, ServerEventRx) {
         let (events, receiver) = server_event_channel();
         (
             Self {
                 events,
                 session_ids: SessionIdFabric::new(),
                 reader: tokio::runtime::Handle::current(),
+                shutdown,
             },
             receiver,
         )
@@ -257,10 +266,11 @@ impl Gate {
     {
         let id = self.session_ids.next();
         let events = self.events.clone();
+        let shutdown = self.shutdown.clone();
         self.reader.spawn(async move {
             // A panic in here takes this connection down and nothing else.
             // That is why the release profile does not set panic = "abort".
-            if let Err(error) = client_session_serve(id, address, stream, events).await {
+            if let Err(error) = client_session_serve(id, address, stream, events, shutdown).await {
                 debug!(%id, %error, "connection ended");
             }
         });
@@ -283,10 +293,12 @@ pub struct ClientGatewayServer {
 impl ClientGatewayServer {
     /// Bind to `address`.
     ///
-    /// Returns the server and the channel its events arrive on.
-    pub async fn bind(address: SocketAddr) -> io::Result<(Self, ServerEventRx)> {
+    /// Returns the server and the channel its events arrive on. `shutdown` is
+    /// what ends [`run`](Self::run) and every connection it accepts — see
+    /// [`Shutdown`].
+    pub async fn bind(address: SocketAddr, shutdown: Shutdown) -> io::Result<(Self, ServerEventRx)> {
         let listener = TcpListener::bind(address).await?;
-        let (gate, receiver) = Gate::new();
+        let (gate, receiver) = Gate::new(shutdown);
         Ok((Self { listener, gate }, receiver))
     }
 
@@ -304,13 +316,30 @@ impl ClientGatewayServer {
         self.gate.clone()
     }
 
-    /// Accept forever, spawning a task per connection.
+    /// Accept until the shard stops, spawning a task per connection.
     ///
-    /// Only returns if accepting itself fails, which means the listener is gone.
+    /// Returns `Ok(())` on a stop and an error if accepting itself fails, which
+    /// means the listener is gone. Returning drops the listener, so the port is
+    /// free the moment this ends — a client that dials afterwards is refused
+    /// rather than accepted into a world that is saving.
     pub async fn run(self) -> io::Result<()> {
         info!(address = ?self.local_address()?, "gateway listening");
         loop {
-            let (stream, address) = self.listener.accept().await?;
+            let accepted = tokio::select! {
+                // Biased towards the stop: a connection that arrives in the same
+                // moment is one nobody is left to serve, and accepting it would
+                // hand a client a session on a world that has already begun its
+                // last save.
+                biased;
+
+                () = self.gate.shutdown.requested() => {
+                    info!("gateway stopping; not accepting any more connections");
+                    return Ok(());
+                }
+
+                accepted = self.listener.accept() => accepted?,
+            };
+            let (stream, address) = accepted;
             // Nagle batches small writes, and nearly everything a UO server
             // sends is a small write that the client is waiting on. Latency
             // beats packet count. Here rather than in `serve`, which is the one
@@ -332,6 +361,7 @@ async fn client_session_serve<S>(
     address: SocketAddr,
     stream: S,
     events: ServerEventTx,
+    shutdown: Shutdown,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
@@ -390,10 +420,22 @@ where
     // `crates/e2e/shard/tests/refused_teardown.rs`, which walks the whole chain
     // and is where its six links are written down.
     //
-    // `None` is the right reason: this end decided, and that is a clean close.
+    // The third arm is the shard stopping. Without it a connection outlives the
+    // tick that was serving it: the world has saved and gone, and this task is
+    // still reading a socket to queue events onto a channel nobody drains. The
+    // client is hung up on instead, which is what it would see from a process
+    // that had exited — and it sees it while the shard is still saving rather
+    // than at whatever later moment the runtime happened to be torn down.
+    //
+    // `None` is the right reason in all three cases: this end decided, and that
+    // is a clean close.
     let reason = tokio::select! {
         reason = read_loop(id, &mut client_tcp_reader, &events, control_rx) => reason,
         _ = &mut writes => None,
+        () = shutdown.requested() => {
+            debug!(%id, "the shard is stopping; hanging up");
+            None
+        }
     };
 
     // Either the read loop ended and the write task is still waiting on an outbox
@@ -472,6 +514,8 @@ impl From<ConnectionError> for io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use openshard_protocol::seed::SEED_COMMAND;
     use tokio::net::TcpStream;
 
@@ -487,8 +531,12 @@ mod tests {
     }
 
     /// Bind to an ephemeral port and start accepting.
-    async fn start() -> (SocketAddr, ServerEventRx) {
-        let (server, events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap())
+    ///
+    /// The stop is a parameter rather than made here because most of these tests
+    /// end by dropping the runtime and only two are about stopping on purpose —
+    /// and those two need the handle the server was built with.
+    async fn start(shutdown: Shutdown) -> (SocketAddr, ServerEventRx) {
+        let (server, events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap(), shutdown)
             .await
             .unwrap();
         let address = server.local_address().unwrap();
@@ -498,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_can_connect_and_be_heard() {
-        let (address, mut events) = start().await;
+        let (address, mut events) = start(Shutdown::new()).await;
         let mut client = TcpStream::connect(address).await.unwrap();
 
         // The outbox is held for as long as the connection is meant to live.
@@ -529,7 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_server_can_write_back() {
-        let (address, mut events) = start().await;
+        let (address, mut events) = start(Shutdown::new()).await;
         let mut client = TcpStream::connect(address).await.unwrap();
 
         let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
@@ -544,7 +592,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_clean_close_reports_no_reason() {
-        let (address, mut events) = start().await;
+        let (address, mut events) = start(Shutdown::new()).await;
         let client = TcpStream::connect(address).await.unwrap();
         // Held, so that the close under test is unambiguously the client's:
         // dropping this would hang up from the other end and the assertion below
@@ -573,7 +621,7 @@ mod tests {
         // So the client here deliberately does *not* close: it reads its zero
         // bytes and keeps its own half open, which is exactly the case a
         // well-behaved client hid.
-        let (address, mut events) = start().await;
+        let (address, mut events) = start(Shutdown::new()).await;
         let mut client = TcpStream::connect(address).await.unwrap();
         let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
             panic!("expected Connected");
@@ -597,7 +645,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_protocol_violation_drops_the_connection() {
-        let (address, mut events) = start().await;
+        let (address, mut events) = start(Shutdown::new()).await;
         let mut client = TcpStream::connect(address).await.unwrap();
         // Held: the reason under test is the protocol violation, and a dropped
         // outbox would close the connection first and report none.
@@ -631,7 +679,7 @@ mod tests {
     /// exercise is the gateway and not a second implementation of it.
     #[tokio::test]
     async fn a_gate_serves_a_stream_that_is_not_a_socket() {
-        let (gate, mut events) = Gate::new();
+        let (gate, mut events) = Gate::new(Shutdown::new());
         let (mut client, server) = tokio::io::duplex(4096);
         let served = gate.serve(server, "127.0.0.1:0".parse().unwrap());
 
@@ -663,7 +711,7 @@ mod tests {
     /// an in-process client waits for a server that has already gone.
     #[tokio::test]
     async fn dropping_the_outbox_ends_a_stream_connection_too() {
-        let (gate, mut events) = Gate::new();
+        let (gate, mut events) = Gate::new(Shutdown::new());
         let (mut client, server) = tokio::io::duplex(4096);
         gate.serve(server, "127.0.0.1:0".parse().unwrap());
 
@@ -688,7 +736,7 @@ mod tests {
 
     #[tokio::test]
     async fn connections_get_distinct_ids() {
-        let (address, mut events) = start().await;
+        let (address, mut events) = start(Shutdown::new()).await;
         let _a = TcpStream::connect(address).await.unwrap();
         let _b = TcpStream::connect(address).await.unwrap();
 
@@ -699,5 +747,59 @@ mod tests {
             }
         }
         assert_ne!(ids[0], ids[1]);
+    }
+
+    #[tokio::test]
+    async fn a_stop_ends_the_accept_loop() {
+        // `run` used to have exactly one way out: an accept that failed. So the
+        // only way to stop a shard was to end the process, and a test that
+        // wanted a second world had to leak the first.
+        let shutdown = Shutdown::new();
+        let (server, _events) = ClientGatewayServer::bind("127.0.0.1:0".parse().unwrap(), shutdown.clone())
+            .await
+            .unwrap();
+        let accepting = tokio::spawn(server.run());
+
+        shutdown.stop();
+
+        tokio::time::timeout(Duration::from_secs(5), accepting)
+            .await
+            .expect("the accept loop noticed the stop")
+            .expect("it did not panic")
+            .expect("and a stop is not an accept failure");
+    }
+
+    #[tokio::test]
+    async fn a_stop_hangs_up_on_a_client_that_is_already_connected() {
+        // The half that is easy to leave out. Stopping the listener stops new
+        // clients; the ones already in are held by a task of their own, and
+        // without the stop reaching *those* the shard saves and goes while a
+        // socket is still being read for a world nobody is ticking.
+        //
+        // The client here does not close: it is the well-behaved-client case
+        // that hid the same gap in `dropping_the_outbox_...` above.
+        let shutdown = Shutdown::new();
+        let (address, mut events) = start(shutdown.clone()).await;
+        let mut client = TcpStream::connect(address).await.unwrap();
+        // Held, exactly as the world server holds one: were it dropped, the
+        // hang-up under test would be the outbox's rather than the stop's.
+        let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
+            panic!("expected Connected");
+        };
+        let _outbox = outbox;
+
+        shutdown.stop();
+
+        let mut trailing = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut trailing))
+            .await
+            .expect("the client was hung up on")
+            .unwrap();
+        assert!(trailing.is_empty(), "nothing was sent; the socket was closed");
+
+        let ServerEvent::Disconnected { reason, .. } = events.recv().await.unwrap() else {
+            panic!("the gateway never said the connection was gone");
+        };
+        assert_eq!(reason, None, "this end decided; that is a clean close");
     }
 }

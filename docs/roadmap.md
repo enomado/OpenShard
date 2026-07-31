@@ -2474,6 +2474,38 @@ long as both existed. Resolved in favour of the metadata; the reasoning is the
   the release artefacts should generate a third-party notices file rather than
   leaving this to be remembered.
 
+### Stopping a shard — done, and what it left behind
+
+A shard stops on one `gateway::Shutdown`, cloned into the accept loop, every
+connection task and the tick; `run_shard` returns only once the last snapshot is
+written. The design and the order of events are in
+[`docs/client.md`](client.md), under "Stopping is one word". What the work
+found and did not fix:
+
+- **Only Ctrl-C is listened for.** `run()` wires `tokio::signal::ctrl_c` and
+  nothing else, so a shard under systemd — which stops a unit with `SIGTERM` —
+  is killed rather than asked, and loses whatever play happened since the last
+  save. That is precisely the loss the whole save-on-stop path exists to
+  prevent. The fix is a second `signal::unix::SignalKind::terminate` watcher
+  calling the same `Shutdown::stop`; it is cheap, and the only reason it is not
+  done here is that it is a `cfg(unix)` branch in a function that currently has
+  none.
+- **Queued outbound bytes are dropped on a stop.** A connection task aborts its
+  writer, so whatever was in the outbox at that instant never reaches the wire.
+  Nothing a player can lose depends on it today — the world is saved from the
+  world, not from what a client was told — but a "the shard is going down"
+  message to each client would be the first thing that did, and it would need a
+  drain-then-shutdown in `client_session_serve` rather than an abort.
+- **Nothing tells a client *why*.** The protocol has a way to say it (`0x53`,
+  and the `0x82` reasons at login); a stop currently looks to a player exactly
+  like the shard crashing. Worth doing when there is an operator command to
+  schedule a stop, not before.
+- **`Running::halt` reports a panicked shard thread with `eprintln!`.** It runs
+  from `Drop`, where a panic during unwinding aborts the process and would hide
+  the failure that was already being reported. It is the right call there, but
+  it means a shard thread that dies during a test's teardown is a line of
+  output rather than a failure.
+
 ## 9. The client — planned, see [`docs/client.md`](client.md)
 
 Our own client, starting with the only part that has to exist either way: the

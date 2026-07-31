@@ -181,13 +181,28 @@ impl Shard {
     }
 }
 
-/// Drive login and the world until the gateway stops.
+/// Drive login and the world until the shard is stopped or the gateway goes.
 ///
 /// One task owns both. That is not a limitation: the world is deliberately
 /// single-threaded — a deterministic tick is the whole point — and login is a
 /// state machine that does no work worth parallelising. Async lives in the
 /// gateway's tasks, on the far side of the channel.
-pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World, store: Arc<dyn Store>) {
+///
+/// # Stopping
+///
+/// `shutdown` is the one signal, and it is the caller's: Ctrl-C in the binary,
+/// a handle in a test, and the same [`Shutdown`] the gateway was built with, so
+/// that the door closes and the tick ends on one word rather than two. What
+/// happens after it is heard is below the loop — the trades, the last snapshot,
+/// and the save task awaited to the end. **This function returns only once the
+/// world is on disk**, which is what makes it something a caller may wait for.
+pub async fn run_shard(
+    mut events: ServerEventRx,
+    config: &Config,
+    world: World,
+    store: Arc<dyn Store>,
+    shutdown: Shutdown,
+) {
     // `Config::validate` (run by `Config::load`, which every `Config` reaching
     // here has been through) refuses an IPv6 `server.advertise`, so this is
     // always `Some` in practice.
@@ -257,9 +272,16 @@ pub async fn run_shard(mut events: ServerEventRx, config: &Config, world: World,
 
             _ = key_sweep.tick() => shard.expire_keys(),
 
-            // Ctrl-C: leave the loop and save the world on the way out, rather than
-            // dying with the last save cadence's worth of play unwritten.
-            _ = tokio::signal::ctrl_c() => {
+            // A stop was asked for — Ctrl-C in the binary, a handle in a test.
+            // Leave the loop and save the world on the way out, rather than dying
+            // with the last save cadence's worth of play unwritten.
+            //
+            // Nothing here has to be done first: the gateway heard the same word
+            // and is hanging up on its own connections, and a packet that arrives
+            // in this same moment is queued into a tick that will not run. What
+            // matters is that the world below is written, and that is what
+            // follows the loop.
+            () = shutdown.requested() => {
                 info!("shutdown requested; saving the world");
                 break;
             }

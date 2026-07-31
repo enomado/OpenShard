@@ -35,8 +35,10 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use openshard_client_net::transport::Dial;
 use openshard_config::Config;
-use openshard_gateway::Gate;
+use openshard_gateway::{Gate, Shutdown};
 use tokio::io::DuplexStream;
+
+use crate::Running;
 
 /// The address the config is written with, and which nothing ever listens on.
 ///
@@ -66,10 +68,20 @@ const PIPE: usize = 64 * 1024;
 /// The returned [`InProcess`] is what a client is given in place of an address.
 /// It can be cloned, and each clone opens its own connections — which is what a
 /// second character, or a hundred virtual ones, will need.
-pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> InProcess {
+///
+/// The [`Running`] beside it stops the shard, and it must be held for as long as
+/// the shard is wanted — see there. Stopping ends the thread and with it the
+/// runtime the gate reads on, so an [`InProcess`] that outlives its `Running` is
+/// a dialler with nothing behind it.
+pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (InProcess, Running) {
     let (ready, opened) = std::sync::mpsc::channel();
 
-    std::thread::spawn(move || {
+    // Outside the thread, because it is half of what is handed back. See
+    // `crate::spawn`.
+    let shutdown = Shutdown::new();
+    let served = shutdown.clone();
+
+    let thread = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -79,7 +91,12 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> InPr
             // Built inside the runtime on purpose: a `Gate` captures the handle
             // it will read connections on, and the client dials from a thread of
             // its own. See `Gate::new`.
-            let (gate, events) = Gate::new();
+            //
+            // The gate is given the same stop as the tick, which is what makes a
+            // stop reach a connection here at all: nothing binds a port, so
+            // there is no listener to close and the pipes are the whole of what
+            // is open.
+            let (gate, events) = Gate::new(served.clone());
 
             // Leaked for the same reason as in `crate::spawn`: `run_shard`
             // borrows the config for as long as it runs, which is the process.
@@ -88,13 +105,20 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> InPr
             let store = openshard_server::boot::open_store(config).await.expect("a store");
 
             ready.send(gate).expect("the caller is still waiting");
-            openshard_server::shard::run_shard(events, config, world, store).await;
+            openshard_server::shard::run_shard(events, config, world, store, served).await;
         });
     });
 
-    InProcess {
+    let dial = InProcess {
         gate: opened.recv().expect("the shard came up"),
-    }
+    };
+    (
+        dial,
+        Running {
+            stop: shutdown,
+            thread: Some(thread),
+        },
+    )
 }
 
 /// A shard in this process, dialled through memory.

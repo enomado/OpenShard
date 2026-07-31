@@ -148,7 +148,8 @@ async fn enter(address: std::net::SocketAddrV4, plan: Plan, who: &str) -> (Socke
 
 #[tokio::test]
 async fn a_refused_entry_closes_the_socket_and_the_world_forgets_the_character() {
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
 
     // The witness first, so it is already standing there when the second client
     // arrives and is told about it by `0x78` rather than having to have been

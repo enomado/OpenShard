@@ -19,7 +19,8 @@ use openshard_e2e_shard::{plan, shard, version};
 
 #[tokio::test]
 async fn a_client_logs_in_and_stands_in_the_world() {
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
 
     // A bound, rather than waiting forever: every step of this conversation is
     // one side waiting for the other, so the failure mode of a mismatch is a
@@ -56,7 +57,8 @@ async fn a_wrong_password_comes_back_as_a_refusal() {
     // reason it was given, not as a socket that closed. The shard sends `0x82`
     // and hangs up immediately after, so a client that only noticed the close
     // would lose the reason it had already been handed.
-    let address = shard();
+    // Held for the length of the test: dropping the handle stops the shard.
+    let (address, _shard) = shard();
     let plan = openshard_client_net::session::Plan {
         password: RawPlaintextPassword("wrong".to_owned()),
         ..plan()
