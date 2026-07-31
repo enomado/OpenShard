@@ -243,7 +243,11 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (Soc
 
             tokio::spawn(gateway.run());
             ready.send(address).expect("the caller is still waiting");
-            openshard_server::shard::run_shard(events, config, world, store, served).await;
+            // A fresh tally nobody reads: what counts unwritten saves is there
+            // for the force-exit of `docs/shutdown.md` D2, and a test shard has
+            // no signals to force-exit on.
+            let unwritten = openshard_server::shard::Unwritten::new();
+            openshard_server::shard::run_shard(events, config, world, store, served, unwritten).await;
         });
     });
 

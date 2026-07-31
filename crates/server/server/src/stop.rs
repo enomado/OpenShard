@@ -60,7 +60,7 @@ pub fn install() -> io::Result<Signals> {
 ///
 /// Never returns: either the process is being stopped by something else and this
 /// task is dropped with it, or the second signal takes the whole process out.
-pub async fn watch(mut signals: Signals, shutdown: Shutdown) {
+pub async fn watch(mut signals: Signals, shutdown: Shutdown, unwritten: Unwritten) {
     let first = signals.next().await;
     info!(
         signal = first,
@@ -69,13 +69,19 @@ pub async fn watch(mut signals: Signals, shutdown: Shutdown) {
     shutdown.stop();
 
     let second = signals.next().await;
-    // `error!` and not `warn!`: whatever the tick had not written is gone, and
-    // this line is the only record that it was a choice rather than a crash.
-    // What was abandoned cannot be named yet — the save task does not count what
-    // it has not written (see `docs/shutdown.md`, backlog) — so the line says
-    // what it can, which is that the save did not finish.
+    // Read before the line rather than inside it: the two counters are read one
+    // after the other and this is the last thing that will ever read them, so
+    // taking both at one point is worth the two locals.
+    let (writes, rows) = (unwritten.writes(), unwritten.rows());
+    // `error!` and not `warn!`: whatever the save task had not written is gone,
+    // and this line is the only record that it was a choice rather than a crash.
+    // It names the cost because the operator is the one paying it — a stop that
+    // abandoned nothing and a stop that abandoned a full sweep are the same
+    // keystroke and very different mornings.
     error!(
         signal = second,
+        abandoned_writes = writes,
+        abandoned_rows = rows,
         "asked to stop a second time; exiting without waiting for the save to finish"
     );
     std::process::exit(FORCED_EXIT_CODE);
@@ -174,7 +180,7 @@ mod tests {
     async fn a_sigterm_asks_the_shard_to_stop() {
         let signals = install().expect("this platform lets a process handle its own signals");
         let shutdown = Shutdown::new();
-        tokio::spawn(watch(signals, shutdown.clone()));
+        tokio::spawn(watch(signals, shutdown.clone(), Unwritten::new()));
 
         let killed = std::process::Command::new("kill")
             .args(["-TERM", &std::process::id().to_string()])

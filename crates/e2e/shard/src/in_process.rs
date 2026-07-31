@@ -108,7 +108,9 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (InP
             let store = openshard_server::boot::open_store(config).await.expect("a store");
 
             ready.send(gate).expect("the caller is still waiting");
-            openshard_server::shard::run_shard(events, config, world, store, served).await;
+            // Unread, as in `crate::spawn` — see there.
+            let unwritten = openshard_server::shard::Unwritten::new();
+            openshard_server::shard::run_shard(events, config, world, store, served, unwritten).await;
         });
     });
 

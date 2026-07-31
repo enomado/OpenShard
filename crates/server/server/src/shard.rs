@@ -1,34 +1,141 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::*;
+
+/// What the save task has been handed and has not finished writing.
+///
+/// # Why anything counts this
+///
+/// D2 of `docs/shutdown.md`: the second stop signal is a force-exit, and it owes
+/// the operator a line naming what their impatience cost. Without this the line
+/// can only say that the save did not finish, which is the one thing they
+/// already know — they are the ones who did not wait.
+///
+/// # It is a number for a log line, and nothing branches on it
+///
+/// Hence [`Ordering::Relaxed`] throughout, and hence two counters read one after
+/// the other rather than one lock: no data is published through these, and a
+/// reader that catches the pair mid-update reports a count that was true a
+/// moment earlier. That is the correct amount of care for a diagnostic, and
+/// paying more for it would suggest something depends on it.
+///
+/// A write that is *in flight* is counted as unwritten, because at a force-exit
+/// that is what it is: `store.save` has not returned, so whether the rows landed
+/// is exactly the question nobody can answer.
+#[derive(Debug, Clone, Default)]
+pub struct Unwritten(Arc<UnwrittenCounts>);
+
+#[derive(Debug, Default)]
+struct UnwrittenCounts {
+    writes: AtomicUsize,
+    rows: AtomicUsize,
+}
+
+impl Unwritten {
+    /// Nothing queued and nothing written yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many snapshots have been handed over and not yet written.
+    ///
+    /// One snapshot is one `Store::save`, which is one transaction — so this is
+    /// the number of *writes* D2 promises to name.
+    pub fn writes(&self) -> usize {
+        self.0.writes.load(Ordering::Relaxed)
+    }
+
+    /// How many rows are inside those snapshots.
+    ///
+    /// Beside [`Unwritten::writes`] because "three writes" tells an operator
+    /// nothing about what they lost and "three writes, 12,000 rows" tells them
+    /// whether it was a quiet minute or a full sweep.
+    pub fn rows(&self) -> usize {
+        self.0.rows.load(Ordering::Relaxed)
+    }
+
+    /// One more snapshot is outstanding.
+    fn queued(&self, rows: usize) {
+        self.0.writes.fetch_add(1, Ordering::Relaxed);
+        self.0.rows.fetch_add(rows, Ordering::Relaxed);
+    }
+
+    /// One fewer is: the store answered, or the snapshot never reached the queue
+    /// at all. Both are "nothing is waiting on it any more", which is the only
+    /// thing this counts.
+    ///
+    /// Always paired with a [`Unwritten::queued`] of the same `rows`, which is
+    /// what keeps the subtraction from going below zero — and it is raised
+    /// first, in [`SnapshotTx::send`], so a save task that finishes a snapshot
+    /// before its sender returns cannot subtract from a count that has not been
+    /// added to yet.
+    fn cleared(&self, rows: usize) {
+        self.0.writes.fetch_sub(1, Ordering::Relaxed);
+        self.0.rows.fetch_sub(rows, Ordering::Relaxed);
+    }
+}
 
 /// Sender half of the tick's outbound-snapshot channel. Only the tick loop in
 /// `run_shard` ever has a snapshot to hand off, so this stays private to the
 /// module rather than a bare `UnboundedSender` some unrelated `Snapshot`
 /// producer could be handed by mistake.
+///
+/// It carries the [`Unwritten`] tally because this is the only place a snapshot
+/// enters the queue: counting here rather than at each call site is the same
+/// argument as marking persistence dirty from the event bus — a `queued()`
+/// beside every `send` works, and then one is forgotten.
 #[derive(Debug, Clone)]
-pub(crate) struct SnapshotTx(mpsc::UnboundedSender<Snapshot>);
+pub(crate) struct SnapshotTx {
+    snapshots: mpsc::UnboundedSender<Snapshot>,
+    unwritten: Unwritten,
+}
 
 impl SnapshotTx {
     // Boxed: a bare `SendError<Snapshot>` carries a whole `Snapshot` by value,
     // which is the failure case's problem alone — the caller here only ever
     // checks `is_err()` and never wants that weight on the stack.
     fn send(&self, snapshot: Snapshot) -> Result<(), Box<mpsc::error::SendError<Snapshot>>> {
-        self.0.send(snapshot).map_err(Box::new)
+        // Counted before the send, and only kept if the send took it: a snapshot
+        // the channel refused was never handed over, so it is not outstanding
+        // work — it is work that went nowhere, and the receiver that would have
+        // decremented it is gone.
+        let rows = snapshot.len();
+        self.unwritten.queued(rows);
+        self.snapshots.send(snapshot).map_err(|error| {
+            self.unwritten.cleared(rows);
+            Box::new(error)
+        })
     }
 }
 
 /// Receiver half of [`SnapshotTx`], drained by [`save_loop`].
+///
+/// It carries the same [`Unwritten`] the sender does — one tally, counted up on
+/// one side and down on the other.
 #[derive(Debug)]
-pub(crate) struct SnapshotRx(mpsc::UnboundedReceiver<Snapshot>);
+pub(crate) struct SnapshotRx {
+    snapshots: mpsc::UnboundedReceiver<Snapshot>,
+    unwritten: Unwritten,
+}
 
 impl SnapshotRx {
     async fn recv(&mut self) -> Option<Snapshot> {
-        self.0.recv().await
+        self.snapshots.recv().await
     }
 }
 
-fn snapshot_channel() -> (SnapshotTx, SnapshotRx) {
+fn snapshot_channel(unwritten: Unwritten) -> (SnapshotTx, SnapshotRx) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (SnapshotTx(tx), SnapshotRx(rx))
+    (
+        SnapshotTx {
+            snapshots: tx,
+            unwritten: unwritten.clone(),
+        },
+        SnapshotRx {
+            snapshots: rx,
+            unwritten,
+        },
+    )
 }
 
 /// Sender half of the save task's failure-signal channel — a save failed and
@@ -94,6 +201,11 @@ async fn save_loop(store: Arc<dyn Store>, mut snapshots: SnapshotRx, failures: F
                 let _ = failures.send();
             }
         }
+        // After the store has answered, and whichever way it answered: a write
+        // that failed is not going to be retried from here, so nothing is
+        // waiting on it any more. It is out of the tally for the same reason it
+        // is out of the queue.
+        snapshots.unwritten.cleared(rows);
     }
 }
 
@@ -242,12 +354,20 @@ impl Shard {
 /// happens after it is heard is below the loop — the trades, the last snapshot,
 /// and the save task awaited to the end. **This function returns only once the
 /// world is on disk**, which is what makes it something a caller may wait for.
+///
+/// `unwritten` is the tally of what the save task still owes the disk, and it is
+/// the caller's for the same reason `shutdown` is: the only thing that reads it
+/// is the force-exit of D2, which lives outside this function because the whole
+/// point of it is to work when this function will not return. A caller with no
+/// way to force-exit — every test — passes a fresh [`Unwritten`] and never looks
+/// at it.
 pub async fn run_shard(
     mut events: ServerEventRx,
     config: &Config,
     world: World,
     store: Arc<dyn Store>,
     shutdown: Shutdown,
+    unwritten: Unwritten,
 ) {
     // `Config::validate` (run by `Config::load`, which every `Config` reaching
     // here has been through) refuses an IPv6 `server.advertise`, so this is
@@ -256,7 +376,7 @@ pub async fn run_shard(
         .advertise_v4()
         .expect("Config::validate rejects an IPv6 server.advertise");
 
-    let (saves, snapshots) = snapshot_channel();
+    let (saves, snapshots) = snapshot_channel(unwritten);
     let (failed, mut failures) = failure_channel();
     let (verifier, mut verdicts) = Verifier::new();
 
@@ -702,6 +822,8 @@ mod tests {
 
     use openshard_protocol::world::CharacterPlay;
 
+    use openshard_persistence::SCHEMA_VERSION;
+
     use super::*;
     use crate::testing::{at_character_screen, login_server, lord_british};
 
@@ -822,6 +944,76 @@ mod tests {
         ));
         assert_eq!(world.queued(), 1, "the entry is queued");
         assert!(session.in_world(), "and the gate is open for what follows");
+    }
+
+    /// A snapshot worth three rows, built out of removals alone.
+    ///
+    /// Deliberately not a character: what is being counted is `Snapshot::len`,
+    /// and three serials say that in one line where three `CharacterRecord`
+    /// fixtures would say it in thirty and invite a reader to look for meaning
+    /// in them.
+    fn three_rows(tick: u64) -> Snapshot {
+        Snapshot {
+            tick,
+            schema: SCHEMA_VERSION,
+            characters: Vec::new(),
+            removed: vec![1, 2, 3],
+            inventories: Vec::new(),
+            ground: None,
+            spawners: None,
+            mobiles: None,
+            decorations: None,
+            regions: None,
+            world: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_is_unwritten_until_the_store_has_answered_for_it() {
+        // The number D2's force-exit names. Without it the second signal can
+        // only say that the save did not finish — which the operator knows,
+        // being the one who did not wait — and the difference between a stop
+        // that cost nothing and one that dropped a full sweep is invisible.
+        let unwritten = Unwritten::new();
+        let (saves, snapshots) = snapshot_channel(unwritten.clone());
+        let (failed, _failures) = failure_channel();
+
+        // Handed over with nothing draining the queue: this is exactly the
+        // state a shard is in when its store is slow and the operator is
+        // impatient.
+        saves.send(three_rows(1)).expect("the receiver is alive");
+        saves.send(three_rows(2)).expect("the receiver is alive");
+        assert_eq!(unwritten.writes(), 2, "two transactions are outstanding");
+        assert_eq!(unwritten.rows(), 6, "and six rows are inside them");
+
+        // Dropping the sender is what ends `save_loop`, so awaiting it here
+        // runs it to the end of the queue rather than forever.
+        drop(saves);
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        save_loop(store, snapshots, failed).await;
+
+        assert_eq!(unwritten.writes(), 0, "nothing is owed once the store answered");
+        assert_eq!(unwritten.rows(), 0, "and no rows are left behind in the count");
+    }
+
+    #[test]
+    fn a_snapshot_the_channel_refused_is_not_owed_by_anybody() {
+        // A send that fails means the save task is gone — it panicked, or the
+        // shutdown tail already dropped the receiver — so nothing will ever
+        // clear that snapshot from the tally. Counting it would make the
+        // force-exit line grow a permanent phantom backlog, and an operator
+        // reading "3 writes abandoned" every time would learn to ignore it.
+        let unwritten = Unwritten::new();
+        let (saves, snapshots) = snapshot_channel(unwritten.clone());
+        drop(snapshots);
+
+        assert!(saves.send(three_rows(1)).is_err(), "the receiver is gone");
+        assert_eq!(
+            unwritten.writes(),
+            0,
+            "a snapshot nobody took is not outstanding work"
+        );
+        assert_eq!(unwritten.rows(), 0);
     }
 
     #[test]

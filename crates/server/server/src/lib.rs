@@ -90,7 +90,7 @@ use boot::{load_config, load_world, open_store};
 use dispatch::{dispatch_world_packet, start_cities};
 use scripting::Scripts;
 use session::{PhaseSync, Session, Sessions};
-use shard::run_shard;
+use shard::{Unwritten, run_shard};
 use verify::{Verdict, Verifier};
 
 /// Where the config lives, relative to the working directory.
@@ -129,6 +129,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let world = load_world(&config)?;
     let store = open_store(&config).await?;
 
+    // What the save task has been handed and not yet written. Made here rather
+    // than inside the shard because both sides of a forced stop need it: the
+    // shard counts into it, and the signal watcher — which exits the process
+    // without waiting for the shard — is what reads it, and it has to be able to
+    // do that at a moment when `run_shard` is not going to return.
+    let unwritten = Unwritten::new();
+
     // A signal is the operator's way to ask, and this is the only place the
     // process listens for one: the shard loop watches the same `Shutdown` a test
     // would use, so a stop is one thing that happens rather than two paths that
@@ -137,7 +144,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `SIGTERM` kills the shard instead of stopping it.
     match stop::install() {
         Ok(signals) => {
-            tokio::spawn(stop::watch(signals, shutdown.clone()));
+            tokio::spawn(stop::watch(signals, shutdown.clone(), unwritten.clone()));
         }
         Err(error) => {
             error!(%error, "cannot listen for stop signals; this shard will only stop when killed")
@@ -145,7 +152,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tokio::spawn(gateway_server.run());
-    run_shard(events, &config, world, store, shutdown).await;
+    run_shard(events, &config, world, store, shutdown, unwritten).await;
 
     Ok(())
 }

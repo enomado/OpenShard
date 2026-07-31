@@ -254,14 +254,20 @@ on. The rest are independent.
   shard where it is wrong; the number belongs beside `save_every` in
   `[persistence]` if it ever moves.
 - **`save_loop` has no bound and `run_shard` awaits it forever.** D2's
-  force-exit is the mitigation, not the fix: a store that never returns leaves
-  the shard in a state where the only honest thing left is to say which snapshots
-  were abandoned. That means the save task counting what it has not written.
+  force-exit is the mitigation, not the fix. It now says *how much* was
+  abandoned — `Unwritten` counts what the save task has been handed and has not
+  finished writing, and the second signal's line names the writes and the rows —
+  but a store that never returns still leaves a shard nobody can stop politely.
+  What is missing is a bound on the await itself, and the honest shape of one is
+  not obvious: a deadline that gives up on a slow-but-working Postgres would
+  throw away exactly the writes this whole tail exists to keep.
 - **The force-exit of D2 is untested, and structurally hard to test.** The second
   signal ends the process, so proving it takes a child process — the shard binary
   started, signalled twice, and its exit status read — which is the out-of-process
   test this repository has otherwise avoided. Worth doing once the binary has any
   other reason to be driven from a test; not worth building the harness for alone.
+  What the line *says* is testable and tested — see `Unwritten` in `shard.rs`;
+  what is not is that the process leaves with code 2 when it says it.
 - **The client decodes `0x1C` and draws nothing with it.** S3 wrote the decoder
   because the shutdown notice had to be readable; nothing in `WorldView` keeps
   what was said, so a client built on it still has no journal. The next thing
@@ -303,9 +309,10 @@ exists for — that `run_shard` returns only once the world is on disk — is
 finally asserted against a real file rather than believed.
 
 What is left is S7, an operator's stop from inside the world, and the backlog
-below. The oldest thing in it is now the unbounded `save_loop`, which is also
-what stands between D2's force-exit and the count of abandoned writes it
-promises. The commit that created this plan is the one that landed the stop
+below. The oldest thing in it is now the unbounded `save_loop`: D2's force-exit
+finally names what it costs — the writes and the rows the save task had not
+finished — but a store that never answers is still a shard that cannot be
+stopped politely. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.
