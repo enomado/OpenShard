@@ -342,6 +342,7 @@ own understanding had written.
   statics share the atlas. The place to fix it is an eviction policy in
   `LandAtlas`, once something needs one.
 - **`Map` cannot be built in memory, so the renderer has no offline tests.**
+  *(Planned: [`unenforced.md`](unenforced.md) S4.)*
   Every assertion about `ground::collect` lives in `tests/frame.rs` behind
   `OPENSHARD_CLIENT` and a GPU, because the only way to get a `Map` is to load
   one from a file. A constructor taking cells — or a small fixture facet — would

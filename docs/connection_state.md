@@ -370,7 +370,8 @@ will read it.
   that is not an oversight left half-done: a handler holds a `&mut Session` while
   it queues into the world, which the compiler splits across fields and refuses
   across a `&mut self`.
-- **Closing a refused connection relies on a chain nothing states.**
+- **Closing a refused connection relies on a chain nothing states.** *(Planned:
+  [`unenforced.md`](unenforced.md) S3.)*
   `Sessions::close` drops the session, which drops the outbox, which ends the
   gateway's write task, which closes the socket, which makes the gateway emit
   `Disconnected`, which queues `Command::Disconnect` so the world lets go of
@@ -438,7 +439,8 @@ will read it.
   follow a link to something they cannot use — and it keeps
   `rustdoc::private_intra_doc_links` quiet.
 - **`restore_characters` must run before `restore_items`, and only a doc says
-  so.** The serials it reserves are the owners the item records point at; run
+  so.** *(Planned: [`unenforced.md`](unenforced.md) S1.)*
+  The serials it reserves are the owners the item records point at; run
   them the other way round and a character's pack is filed under a serial the
   allocator is free to hand to something else. Both `restore_*` docs state the
   order and `run_shard` obeys it, but nothing in the types does.
