@@ -75,6 +75,66 @@ impl Unwritten {
     }
 }
 
+/// What the outside world holds of a running shard: the one word that stops it,
+/// and the tally of what its save task still owes the disk.
+///
+/// # Why they travel together
+///
+/// They are already handed to the same two places. [`run_shard`] watches the
+/// word and counts into the tally; `stop::watch` says the word on the first
+/// signal and reads the tally on the second. Neither may live *inside* the
+/// shard, and for one reason: the force-exit of `docs/shutdown.md` D2 has to
+/// work at the moment `run_shard` is not going to return, so what reads the
+/// tally cannot be owned by the thing that is stuck.
+///
+/// A caller with no way to force-exit — every test — builds one with
+/// [`Reins::new`] or [`Reins::over`] and never looks at it. That is the point of
+/// the type: it was two arguments passed blind, and a signature stops being
+/// readable long before it stops compiling.
+///
+/// Cloning hands out another hold on the same shard, the way cloning a
+/// [`Shutdown`] does; there is no owner among the clones.
+#[derive(Debug, Clone)]
+pub struct Reins {
+    shutdown: Shutdown,
+    unwritten: Unwritten,
+}
+
+impl Reins {
+    /// A shard nobody has asked to stop, owing nothing.
+    pub fn new() -> Self {
+        Self::over(Shutdown::new())
+    }
+
+    /// The same, over a [`Shutdown`] that already exists.
+    ///
+    /// For a caller that made the stop before the shard — the binary, which
+    /// binds the gateway with it, and the e2e harness, whose `Running` holds it
+    /// so a test can stop a shard it handed away.
+    pub fn over(shutdown: Shutdown) -> Self {
+        Self {
+            shutdown,
+            unwritten: Unwritten::new(),
+        }
+    }
+
+    /// The word that stops this shard. A clone, like every other hold on it.
+    pub fn shutdown(&self) -> Shutdown {
+        self.shutdown.clone()
+    }
+
+    /// The tally of what the save task has been handed and not written.
+    pub fn unwritten(&self) -> Unwritten {
+        self.unwritten.clone()
+    }
+}
+
+impl Default for Reins {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Sender half of the tick's outbound-snapshot channel. Only the tick loop in
 /// `run_shard` ever has a snapshot to hand off, so this stays private to the
 /// module rather than a bare `UnboundedSender` some unrelated `Snapshot`
@@ -348,27 +408,21 @@ impl Shard {
 ///
 /// # Stopping
 ///
-/// `shutdown` is the one signal, and it is the caller's: Ctrl-C in the binary,
-/// a handle in a test, and the same [`Shutdown`] the gateway was built with, so
-/// that the door closes and the tick ends on one word rather than two. What
-/// happens after it is heard is below the loop — the trades, the last snapshot,
-/// and the save task awaited to the end. **This function returns only once the
-/// world is on disk**, which is what makes it something a caller may wait for.
-///
-/// `unwritten` is the tally of what the save task still owes the disk, and it is
-/// the caller's for the same reason `shutdown` is: the only thing that reads it
-/// is the force-exit of D2, which lives outside this function because the whole
-/// point of it is to work when this function will not return. A caller with no
-/// way to force-exit — every test — passes a fresh [`Unwritten`] and never looks
-/// at it.
+/// `reins` is what the caller keeps of this shard, and both halves of it are the
+/// caller's deliberately — see [`Reins`]. The stop inside it is the same
+/// [`Shutdown`] the gateway was built with, so that the door closes and the tick
+/// ends on one word rather than two; what happens after that word is heard is
+/// below the loop — the trades, the last snapshot, and the save task awaited to
+/// the end. **This function returns only once the world is on disk**, which is
+/// what makes it something a caller may wait for.
 pub async fn run_shard(
     mut events: ServerEventRx,
     config: &Config,
     world: World,
     store: Arc<dyn Store>,
-    shutdown: Shutdown,
-    unwritten: Unwritten,
+    reins: Reins,
 ) {
+    let shutdown = reins.shutdown();
     // `Config::validate` (run by `Config::load`, which every `Config` reaching
     // here has been through) refuses an IPv6 `server.advertise`, so this is
     // always `Some` in practice.
@@ -376,7 +430,7 @@ pub async fn run_shard(
         .advertise_v4()
         .expect("Config::validate rejects an IPv6 server.advertise");
 
-    let (saves, snapshots) = snapshot_channel(unwritten);
+    let (saves, snapshots) = snapshot_channel(reins.unwritten());
     let (failed, mut failures) = failure_channel();
     let (verifier, mut verdicts) = Verifier::new();
 
@@ -1014,6 +1068,30 @@ mod tests {
             "a snapshot nobody took is not outstanding work"
         );
         assert_eq!(unwritten.rows(), 0);
+    }
+
+    #[test]
+    fn reins_over_a_stop_hold_that_stop_and_not_a_new_one() {
+        // The one thing `Reins::over` exists for: the caller already made the
+        // `Shutdown` — it went to the gateway, and a test's `Running` keeps a
+        // clone to stop the shard with — so the reins must be another hold on
+        // *that* stop. A `Shutdown::new()` inside here would compile, run, and
+        // leave every caller with a stop word the shard cannot hear.
+        let shutdown = Shutdown::new();
+        let reins = Reins::over(shutdown.clone());
+
+        shutdown.stop();
+        assert!(
+            reins.shutdown().is_stopping(),
+            "the reins hold the caller's stop, not one of their own"
+        );
+
+        // And a clone is a hold on the same tally, which is what makes it safe
+        // for the signal watcher and the shard to be handed one each.
+        let elsewhere = reins.clone();
+        reins.unwritten().queued(3);
+        assert_eq!(elsewhere.unwritten().writes(), 1, "one write is outstanding");
+        assert_eq!(elsewhere.unwritten().rows(), 3, "and it carries three rows");
     }
 
     #[test]

@@ -243,11 +243,13 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (Soc
 
             tokio::spawn(gateway.run());
             ready.send(address).expect("the caller is still waiting");
-            // A fresh tally nobody reads: what counts unwritten saves is there
-            // for the force-exit of `docs/shutdown.md` D2, and a test shard has
-            // no signals to force-exit on.
-            let unwritten = openshard_server::shard::Unwritten::new();
-            openshard_server::shard::run_shard(events, config, world, store, served, unwritten).await;
+            // The reins carry a fresh tally nobody reads: what counts unwritten
+            // saves is there for the force-exit of `docs/shutdown.md` D2, and a
+            // test shard has no signals to force-exit on. `over` rather than
+            // `new`, because the stop it is held by already exists — the caller
+            // is holding a clone of it in the `Running` below.
+            let reins = openshard_server::shard::Reins::over(served);
+            openshard_server::shard::run_shard(events, config, world, store, reins).await;
         });
     });
 

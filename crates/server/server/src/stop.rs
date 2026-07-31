@@ -60,18 +60,19 @@ pub fn install() -> io::Result<Signals> {
 ///
 /// Never returns: either the process is being stopped by something else and this
 /// task is dropped with it, or the second signal takes the whole process out.
-pub async fn watch(mut signals: Signals, shutdown: Shutdown, unwritten: Unwritten) {
+pub async fn watch(mut signals: Signals, reins: Reins) {
     let first = signals.next().await;
     info!(
         signal = first,
         "shutdown requested; saving the world. Signal again to exit at once, without the save."
     );
-    shutdown.stop();
+    reins.shutdown().stop();
 
     let second = signals.next().await;
     // Read before the line rather than inside it: the two counters are read one
     // after the other and this is the last thing that will ever read them, so
     // taking both at one point is worth the two locals.
+    let unwritten = reins.unwritten();
     let (writes, rows) = (unwritten.writes(), unwritten.rows());
     // `error!` and not `warn!`: whatever the save task had not written is gone,
     // and this line is the only record that it was a choice rather than a crash.
@@ -179,8 +180,9 @@ mod tests {
     #[tokio::test]
     async fn a_sigterm_asks_the_shard_to_stop() {
         let signals = install().expect("this platform lets a process handle its own signals");
-        let shutdown = Shutdown::new();
-        tokio::spawn(watch(signals, shutdown.clone(), Unwritten::new()));
+        let reins = Reins::new();
+        let shutdown = reins.shutdown();
+        tokio::spawn(watch(signals, reins));
 
         let killed = std::process::Command::new("kill")
             .args(["-TERM", &std::process::id().to_string()])
