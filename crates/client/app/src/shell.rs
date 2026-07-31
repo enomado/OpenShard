@@ -36,6 +36,7 @@
 
 use openshard_client_render::blit::ViewportRect;
 use openshard_client_render::camera::Camera;
+use openshard_uofiles::hues::Hues;
 use winit::window::Window;
 
 /// What the panels are asked to display.
@@ -60,15 +61,67 @@ pub struct Hud {
     pub mobiles: Vec<(u32, u16, openshard_protocol::world::Point)>,
     /// The ground items the view is holding: serial, graphic, position.
     pub items: Vec<(u32, u16, openshard_protocol::world::Point)>,
+    /// What tile the cursor is over right now, if it is over the world and on
+    /// the map. Live, and gone the instant the cursor leaves — see `selected`
+    /// for what a click keeps.
+    pub hover: Option<PickedTile>,
+    /// The tile a left click last landed on. Kept until the next click, which
+    /// is what makes its numbers holdable still long enough to copy — the
+    /// live hover moves out from under the cursor the moment it does.
+    pub selected: Option<PickedTile>,
+    /// The tile the body is walking to, while it still is.
+    ///
+    /// The one piece of feedback a move order needs: a click that named a tile
+    /// the shard then refuses to walk to looks exactly like a click that was
+    /// never registered, and this is what tells the two apart.
+    pub goal: Option<PickedTile>,
+    /// The dialogs the server has open on this client, waiting to be answered.
+    pub gumps: Vec<openshard_client_net::view::OpenGump>,
+    /// The last few lines the shard has said, oldest first.
+    ///
+    /// Not the journal M4 will build — see [`layout`]'s docs. What it is for is
+    /// that a system message has no mobile behind it, so it is drawn over
+    /// nobody's head and a client with only overhead speech never shows it. A
+    /// refused `.admin` says "you are not a game master" and nothing else, and
+    /// without this strip that answer is invisible.
+    pub said: Vec<String>,
+}
+
+/// A tile, read straight from the map — for telling a rendering artifact apart
+/// from a gameplay one: is the graphic under a glitch the tile the client
+/// thinks is there, or something else entirely?
+#[derive(Clone)]
+pub struct PickedTile {
+    /// The tile coordinate, resolved from the cursor via [`Camera::pick`] and
+    /// [`unproject`](openshard_client_render::camera::unproject).
+    pub x: u16,
+    /// The tile coordinate's other half.
+    pub y: u16,
+    /// The land tile's graphic id, if the block loaded.
+    pub land: Option<u16>,
+    /// The ground's height here.
+    pub land_z: i8,
+    /// Everything standing on top of the ground here: graphic id, height, hue.
+    pub statics: Vec<(u16, i8, u16)>,
 }
 
 /// What the panels asked for this frame.
-#[derive(Clone, Copy, Default, Debug)]
+///
+/// No longer `Copy`: two of these carry what the player typed. A request is
+/// built fresh each frame and spent by the caller, so cloning it is not a thing
+/// that happens on any path.
+#[derive(Clone, Default, Debug)]
 pub struct Request {
     /// Put the eye back on the body and lock it there.
     pub relock: bool,
     /// Let go of the body.
     pub unlock: bool,
+    /// A line the player pressed Enter on. Sent as speech exactly as typed —
+    /// a `.`-prefixed line is a staff command *on the server*, and a client that
+    /// recognised its own would be deciding what a shard's commands are.
+    pub say: Option<String>,
+    /// A dialog the player answered. See [`crate::gump`].
+    pub gump: Option<crate::link::GumpReply>,
 }
 
 /// egui, and the two crates that put it on a window and on a GPU.
@@ -82,6 +135,12 @@ pub struct Shell {
     viewport: ViewportRect,
     /// What the last [`Shell::run`] asked to be woken after.
     repaint_after: std::time::Duration,
+    /// What is in the chat line and not yet said. Lives here rather than in the
+    /// app for the reason [`Windows`](crate::gump::Windows) does: it is what a
+    /// widget is holding between frames, and nothing outside the UI reads it.
+    typed: String,
+    /// The state of the open dialogs — which page, which switches.
+    gumps: crate::gump::Windows,
 }
 
 impl Shell {
@@ -123,6 +182,8 @@ impl Shell {
             // Until the first frame has run there is nothing to wait for; the
             // animation clock is what wakes the loop.
             repaint_after: std::time::Duration::MAX,
+            typed: String::new(),
+            gumps: crate::gump::Windows::default(),
         }
     }
 
@@ -157,15 +218,17 @@ impl Shell {
     /// from the viewport this leaves *before* the world is drawn into it: a
     /// frame that laid out its UI after drawing the world would size the world
     /// from the previous frame's panels.
-    pub fn run(&mut self, window: &Window, hud: &Hud) -> (Request, egui::FullOutput) {
+    pub fn run(&mut self, window: &Window, hud: &Hud, hues: &Hues) -> (Request, egui::FullOutput) {
         let input = self.state.take_egui_input(window);
         let mut request = Request::default();
         // What the panels leave behind, taken from the root `Ui` *after* they
         // have claimed their edges. That rectangle is the world's viewport, so
         // a docked panel shrinks the world and a floating window sits over it.
         let mut free = egui::Rect::from_min_size(egui::Pos2::ZERO, self.context.content_rect().size());
+        let typed = &mut self.typed;
+        let gumps = &mut self.gumps;
         let output = self.context.run_ui(input, |ui| {
-            request = layout(ui, hud);
+            request = layout(ui, hud, typed, gumps, hues);
             free = ui.available_rect_before_wrap();
         });
         self.state
@@ -241,12 +304,20 @@ impl Shell {
     }
 }
 
-/// The three panels, and nothing else.
+/// The panels, the speech line, and the server's own dialogs.
 ///
-/// Deliberately absent: the journal, the paperdoll, containers. Those are M4 —
-/// see `docs/client.md` — and building them here would decide M4 without
-/// arguing it.
-fn layout(root: &mut egui::Ui, hud: &Hud) -> Request {
+/// Deliberately absent: the paperdoll, containers, and a journal worth the name.
+/// Those are M4 — see `docs/client.md` — and building them here would decide M4
+/// without arguing it. The speech line is not one of them: it is the only way to
+/// reach a shard's staff commands, which are `.`-prefixed *speech*, and a client
+/// that cannot say `.admin` cannot open the menu the server already draws.
+fn layout(
+    root: &mut egui::Ui,
+    hud: &Hud,
+    typed: &mut String,
+    gumps: &mut crate::gump::Windows,
+    hues: &Hues,
+) -> Request {
     let mut request = Request::default();
     // egui 0.35 hands the frame a root `Ui`: panels are shown inside it and
     // what is left of it is the world's viewport, while windows float over the
@@ -272,6 +343,42 @@ fn layout(root: &mut egui::Ui, hud: &Hud) -> Request {
             ui.label(format!("{:.1} ms", hud.frame_time.as_secs_f64() * 1_000.0));
         });
     });
+
+    // What the status panel above left free — the same rect `Shell::run` reads
+    // back afterwards, since only a panel narrows it and no window does. Read
+    // here rather than passed in, so this stays the one place that decides it.
+    let viewport_origin = root.available_rect_before_wrap().min;
+    if let Some(tile) = &hud.hover {
+        draw_tile_highlight(
+            root,
+            &hud.camera,
+            tile,
+            viewport_origin,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40),
+            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 180)),
+        );
+    }
+    if let Some(tile) = &hud.selected {
+        draw_tile_highlight(
+            root,
+            &hud.camera,
+            tile,
+            viewport_origin,
+            egui::Color32::from_rgba_unmultiplied(0, 220, 255, 60),
+            egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 220, 255)),
+        );
+    }
+    // Where the body is walking to, and gone the moment it arrives or gives up.
+    if let Some(tile) = &hud.goal {
+        draw_tile_highlight(
+            root,
+            &hud.camera,
+            tile,
+            viewport_origin,
+            egui::Color32::from_rgba_unmultiplied(0, 255, 120, 50),
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 120)),
+        );
+    }
 
     egui::Window::new("Camera")
         .default_pos([16.0, 48.0])
@@ -344,5 +451,125 @@ fn layout(root: &mut egui::Ui, hud: &Hud) -> Request {
             });
         });
 
+    egui::Window::new("Tile")
+        .default_pos([16.0, 520.0])
+        .show(&context, |ui| {
+            ui.label("hover — glows yellow, moves with the cursor");
+            tile_panel(ui, hud.hover.as_ref());
+            ui.separator();
+            ui.label("selected — glows cyan, click a tile to hold it here");
+            tile_panel(ui, hud.selected.as_ref());
+        });
+
+    request.say = speech_line(root, hud, typed);
+    // Over everything, and last: a dialog the shard opened is the one thing on
+    // screen that is waiting for an answer.
+    request.gump = gumps.show(&context, &hud.gumps, hues);
+
     request
+}
+
+/// The speech line, docked at the bottom, with what the shard last said above
+/// it.
+///
+/// Answers with a line to say, once, on the frame Enter was pressed.
+///
+/// # Why the field is refocused by hand
+///
+/// egui drops focus on Enter, which is right for a form and wrong for a chat
+/// box: a player says two things in a row. So the field asks for focus back on
+/// the same frame it loses it — which also means the walk keys stay out of the
+/// way while typing, since a focused text field consumes them (see
+/// [`Shell::on_window_event`], and `App::window_event`, which lets go of every
+/// held direction when the UI takes a key).
+fn speech_line(root: &mut egui::Ui, hud: &Hud, typed: &mut String) -> Option<String> {
+    let mut said = None;
+    egui::Panel::bottom("speech").show(root, |ui| {
+        // What the shard has said lately, newest last, so the eye ends up beside
+        // the line it is about to type into.
+        for line in &hud.said {
+            ui.label(egui::RichText::new(line).weak());
+        }
+        ui.horizontal(|ui| {
+            ui.label("say");
+            let field = ui.add(
+                egui::TextEdit::singleline(typed)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("type, and Enter to speak — a shard's staff commands start with '.'"),
+            );
+            let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if entered {
+                let line = std::mem::take(typed);
+                // An empty line is a stray Enter, not silence worth sending:
+                // the server would draw an empty message over the player's head.
+                if !line.trim().is_empty() {
+                    said = Some(line);
+                }
+                field.request_focus();
+            }
+        });
+    });
+    said
+}
+
+/// One tile's numbers, each beside a button that puts it on the clipboard —
+/// the whole point of holding a selection still is being able to paste one of
+/// these into a bug report.
+fn tile_panel(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
+    let Some(tile) = tile else {
+        ui.label("(none)");
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label(format!("tile {}, {}", tile.x, tile.y));
+    });
+    ui.horizontal(|ui| match tile.land {
+        Some(graphic) => {
+            ui.label(format!("land {graphic} (0x{graphic:04X})  z {}", tile.land_z));
+            if ui.small_button("copy").clicked() {
+                ui.ctx().copy_text(graphic.to_string());
+            }
+        }
+        None => {
+            ui.label("land: block not loaded");
+        }
+    });
+    for (graphic, z, hue) in &tile.statics {
+        ui.horizontal(|ui| {
+            ui.label(format!("static {graphic} (0x{graphic:04X})  z {z}  hue {hue}"));
+            if ui.small_button("copy").clicked() {
+                ui.ctx().copy_text(graphic.to_string());
+            }
+        });
+    }
+}
+
+/// The glow over a tile's diamond: [`Camera::tile_diamond`] gives the corners
+/// in *viewport* pixels, physical and post-blit, so they are scaled by
+/// `1 / pixels_per_point` and offset by where the viewport starts in the root
+/// `Ui`'s own space before a painter can use them — the same points-against-
+/// pixels conversion `Shell::run` does for the rect the other direction.
+fn draw_tile_highlight(
+    ui: &egui::Ui,
+    camera: &Camera,
+    tile: &PickedTile,
+    viewport_origin: egui::Pos2,
+    fill: egui::Color32,
+    stroke: egui::Stroke,
+) {
+    let point = openshard_protocol::world::Point {
+        x: tile.x,
+        y: tile.y,
+        z: tile.land_z,
+    };
+    let scale = 1.0 / ui.ctx().pixels_per_point();
+    let corners = camera
+        .tile_diamond(point)
+        .map(|(x, y)| viewport_origin + egui::vec2(x * scale, y * scale))
+        .to_vec();
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("tile-highlight"),
+    ));
+    painter.add(egui::Shape::convex_polygon(corners, fill, stroke));
 }

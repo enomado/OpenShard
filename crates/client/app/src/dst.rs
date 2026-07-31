@@ -31,15 +31,17 @@
 //! wire did. Every walking bug this client has had was a divergence between
 //! those two sets of knots.
 //!
-//! # The turn is the protocol's, not the oracle's physics
+//! # Not even the turn is a delay
 //!
-//! One rule of UO's is written into the oracle, and only one: a mobile asked for
-//! a direction it is not already facing *turns*, which is a whole step and moves
-//! it nowhere (`openshard_movement::intend`, and the client animates it). An
-//! oracle without it would demand that this client predict a step the server is
-//! going to refuse. It is stated as one branch in [`Oracle::build`] and it is a
-//! debt of the protocol, not an inertia of our own — everything else here is
-//! constant velocity from the moment of the ask.
+//! Turning is a whole step in UO: a mobile asked for a direction it is not
+//! facing turns, moves nowhere, and gets its own `0x22`
+//! (`openshard_movement::intend`). It is tempting to write that into the oracle
+//! as a hold of standing still, and it would be wrong — the shard answers a turn
+//! *before* it charges the pace budget (`Walker::request`), so the step the turn
+//! precedes is legal in the same instant. `steer.rs` sends both in one wake and
+//! the body sets off on the frame the key went down. So this oracle is constant
+//! velocity from the moment of the ask and nothing else: no turn tax, no ramp,
+//! no easing.
 //!
 //! # What is deliberately not covered
 //!
@@ -129,7 +131,7 @@ const fn release(millis: u64) -> Act {
 }
 
 /// One crossing on the intent timeline: where the body goes, from when, over
-/// how long. A turn is a knot that goes nowhere and still costs its time.
+/// how long.
 #[derive(Clone, Copy, Debug)]
 struct Knot {
     /// When the crossing starts.
@@ -160,16 +162,14 @@ impl Oracle {
     /// - a press takes a step *now* and the next is due a hold later — waiting a
     ///   whole step before the first one would put 400ms between the player and
     ///   their character, which is the thing this whole file exists to refuse;
-    /// - a step in the direction already faced crosses one tile over one hold,
-    ///   at a constant speed;
-    /// - a step in any other direction turns instead, and costs the same hold
-    ///   standing still (see the module docs: this one is the protocol's);
+    /// - every step crosses one tile over one hold at a constant speed,
+    ///   whichever way the body was facing when it was asked for — a turn is a
+    ///   packet, not a delay (see the module docs);
     /// - shift changes the pace of the *next* step and does not re-time the one
     ///   already due.
-    fn build(start: Point, facing: Direction, script: &[Act], until: Duration) -> Self {
+    fn build(start: Point, script: &[Act], until: Duration) -> Self {
         let mut knots = Vec::new();
         let mut position = (f64::from(start.x), f64::from(start.y));
-        let mut facing = facing;
         let mut running = false;
         let mut held: Option<Direction> = None;
         let mut due: Option<Duration> = None;
@@ -210,17 +210,15 @@ impl Oracle {
 
             let Some(direction) = held else { continue };
             let takes = if running { RUN_HOLD } else { WALK_HOLD };
-            let arrives = match direction == facing {
-                // The turn. One hold, no ground.
-                false => {
-                    facing = direction;
-                    position
-                }
-                true => {
-                    let (dx, dy) = direction.step();
-                    (position.0 + f64::from(dx), position.1 + f64::from(dy))
-                }
-            };
+            // A turn costs nothing. It is a `0x02` of its own — turning is a
+            // step in UO and the shard acks it — but it is not a *delay*: the
+            // shard answers a turn before it charges the pace budget, so the
+            // step it precedes leaves in the same instant, and the body sets off
+            // on the frame the key went down. So the direction asked for is the
+            // direction walked, from the first millisecond, and this oracle is
+            // constant velocity and nothing else.
+            let (dx, dy) = direction.step();
+            let arrives = (position.0 + f64::from(dx), position.1 + f64::from(dy));
             knots.push(Knot {
                 at: now,
                 takes,
@@ -439,7 +437,9 @@ impl Sim {
                 let act = acts.next().unwrap();
                 match act.input {
                     Input::Press(direction) => {
-                        if let Some(facing) = self.steering.press(direction, self.instant()) {
+                        if let Some(facing) =
+                            self.steering.press(direction, self.instant(), self.player.facing)
+                        {
                             self.send(facing);
                         }
                     }
@@ -521,7 +521,15 @@ impl Sim {
 
     /// The ten lines of `App::about_to_wait` that walking goes through.
     fn about_to_wait(&mut self) {
-        if let Some(facing) = self.steering.due(self.instant(), self.player.at) {
+        // Twice at most, exactly as `App::about_to_wait` does it: a turn costs
+        // no time, so the step it precedes leaves in the same wake.
+        for _ in 0..2 {
+            let Some(facing) = self
+                .steering
+                .due(self.instant(), self.player.at, self.player.facing)
+            else {
+                break;
+            };
             self.send(facing);
         }
         if self.now >= self.next_tick {
@@ -617,12 +625,7 @@ fn ten_steps_east() -> Vec<Act> {
 /// ten steps, four seconds, one tile per 400ms, and nothing in between.
 #[test]
 fn the_oracle_walks_ten_tiles_in_ten_holds() {
-    let oracle = Oracle::build(
-        START,
-        Direction::East,
-        &ten_steps_east(),
-        Duration::from_millis(4_000),
-    );
+    let oracle = Oracle::build(START, &ten_steps_east(), Duration::from_millis(4_000));
     assert_eq!(oracle.at(Duration::ZERO), (1000.0, 1000.0));
     assert_eq!(oracle.at(Duration::from_millis(200)), (1000.5, 1000.0));
     assert_eq!(oracle.at(WALK_HOLD), (1001.0, 1000.0));
@@ -635,19 +638,15 @@ fn the_oracle_walks_ten_tiles_in_ten_holds() {
     }
 }
 
-/// The turn is a whole step, and the oracle knows it: a body facing north asked
-/// to go east stands still for one hold and then walks ten tiles.
+/// A body facing north, asked to go east, is walking east this instant — it does
+/// not stand still for a hold first. See the module docs.
 #[test]
-fn the_oracle_charges_a_hold_for_the_turn() {
-    let oracle = Oracle::build(
-        START,
-        Direction::North,
-        &ten_steps_east(),
-        Duration::from_millis(4_400),
-    );
-    assert_eq!(oracle.at(WALK_HOLD / 2), (1000.0, 1000.0), "turning");
-    assert_eq!(oracle.at(WALK_HOLD), (1000.0, 1000.0), "turned");
-    assert_eq!(oracle.at(WALK_HOLD * 2), (1001.0, 1000.0), "and away");
+fn the_oracle_charges_nothing_for_the_turn() {
+    let oracle = Oracle::build(START, &ten_steps_east(), Duration::from_millis(4_000));
+    // The same walk as above, and the body was facing the other way when the
+    // key went down. It makes no difference: the turn is a packet, not a wait.
+    assert_eq!(oracle.at(WALK_HOLD / 2), (1000.5, 1000.0));
+    assert_eq!(oracle.at(WALK_HOLD * 10), (1010.0, 1000.0));
 }
 
 /// The headline: on a perfect wire and a punctual loop, the drawn body *is* the
@@ -656,7 +655,7 @@ fn the_oracle_charges_a_hold_for_the_turn() {
 fn ten_steps_on_a_perfect_wire_are_the_oracle() {
     let script = ten_steps_east();
     let until = Duration::from_millis(4_000);
-    let oracle = Oracle::build(START, Direction::East, &script, until);
+    let oracle = Oracle::build(START, &script, until);
     let mut sim = Sim::new(Direction::East, Net::default(), 1, Vec::new());
     sim.run(&script, until);
 
@@ -672,7 +671,7 @@ fn ten_steps_on_a_perfect_wire_are_the_oracle() {
 fn latency_and_jitter_do_not_reach_the_screen() {
     let script = ten_steps_east();
     let until = Duration::from_millis(4_000);
-    let oracle = Oracle::build(START, Direction::East, &script, until);
+    let oracle = Oracle::build(START, &script, until);
     for seed in 0..8 {
         let net = Net {
             latency: Duration::from_millis(150),
@@ -704,7 +703,7 @@ fn running_the_whole_way_is_never_refused_as_a_speedhack() {
         release(4_000),
     ];
     let until = Duration::from_millis(4_000);
-    let oracle = Oracle::build(START, Direction::East, &script, until);
+    let oracle = Oracle::build(START, &script, until);
     let net = Net {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(40),
@@ -716,6 +715,32 @@ fn running_the_whole_way_is_never_refused_as_a_speedhack() {
     tracks(&sim, &oracle, 0.02);
     assert_eq!(sim.refused, 0, "twenty steps at RUN_HOLD");
     assert_eq!(sim.shard.position, Point::new(1020, 1000, 0));
+}
+
+/// The complaint this rule came from: the body is facing one way and the player
+/// presses another. There is a turn in front of the walk, and it must cost
+/// nothing — the oracle is moving from the first millisecond, and so is the body.
+#[test]
+fn a_walk_that_starts_with_a_turn_leaves_at_once() {
+    let script = ten_steps_east();
+    let until = Duration::from_millis(4_000);
+    let oracle = Oracle::build(START, &script, until);
+    let net = Net {
+        latency: Duration::from_millis(120),
+        jitter: Duration::from_millis(40),
+        wake_jitter: Duration::ZERO,
+    };
+    // Facing north, asked for east.
+    let mut sim = Sim::new(Direction::North, net, 5, Vec::new());
+    sim.run(&script, until);
+
+    tracks(&sim, &oracle, 0.02);
+    assert_eq!(sim.refused, 0, "a turn is not charged to the pace budget");
+    assert_eq!(
+        sim.shard.position,
+        Point::new(1010, 1000, 0),
+        "ten tiles, not nine"
+    );
 }
 
 /// A walk that changes direction: five east, then five south-east. The turn
@@ -730,7 +755,7 @@ fn a_walk_that_turns_tracks_the_oracle_through_the_turn() {
         release(4_800),
     ];
     let until = Duration::from_millis(4_800);
-    let oracle = Oracle::build(START, Direction::East, &script, until);
+    let oracle = Oracle::build(START, &script, until);
     let net = Net {
         latency: Duration::from_millis(120),
         jitter: Duration::from_millis(30),
@@ -756,7 +781,7 @@ fn wake_up_jitter_does_not_accumulate() {
     // assertion about drift.
     let until = Duration::from_millis(16_000);
     let script = vec![press(0, Direction::East), release(16_000)];
-    let oracle = Oracle::build(START, Direction::East, &script, until);
+    let oracle = Oracle::build(START, &script, until);
     let late = Duration::from_millis(20);
     for seed in 0..8 {
         let net = Net {

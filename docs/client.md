@@ -1375,10 +1375,10 @@ own understanding had written.
 
   The oracle is the **intent** timeline: the body leaves the instant the key goes
   down and crosses one tile per hold, for ever. It is built from the script of
-  inputs alone and knows exactly one rule of UO's, the turn, which is a whole
-  step that covers no ground. Everything under test is the **event** timeline —
-  when the loop woke, what the wire did — and the claim is that the second
-  reproduces the first. Not a tautology: every walking bug this client has had
+  inputs alone, it is constant velocity and nothing else — no turn tax, no ramp,
+  no easing. Everything under test is the **event** timeline — when the loop
+  woke, what the wire did — and the claim is that the second reproduces the
+  first. Not a tautology: every walking bug this client has had
   is a divergence between those two sets of knots, and the harness found three
   more that four green unit suites did not.
 
@@ -1410,6 +1410,45 @@ own understanding had written.
   anyway feeds the loop's wake jitter into the crossing length, and consecutive
   gaps jitter in opposite directions, so the estimate was worse than the constant
   it replaced.
+
+- ~~**A turn cost the player 400ms of standing still.**~~ It costs nothing.
+  Turning is a whole step in UO — the mobile turns, moves nowhere, and gets its
+  own `0x22` — and `steer.rs` used to charge it a whole hold, so pressing a new
+  direction stood the character still for a step before it set off. Nothing asked
+  for that: the shard answers a turn *before* it charges the pace budget
+  (`Walker::request`, and the reference it is ported from does the same, because
+  spinning on the spot is something clients do and throttling it would be
+  absurd), so the step a turn precedes is legal in the same instant. `steer.rs`
+  arms it at once and `App::about_to_wait` takes up to two steps in one wake, so
+  the turn and the step it is for leave together. The oracle in `dst.rs` is what
+  states the requirement: it charges nothing for a turn, and a walk that starts
+  facing the wrong way tracks it from the first millisecond.
+
+- ~~**The animation clock was read when the timer fired, not when the frame was
+  built.**~~ A glide is a position read off a clock, so the moment that clock is
+  read has to be the moment the picture is built. `App::about_to_wait` advanced
+  the crowd and then asked for a redraw; between the two the loop laid out the
+  UI, grew an atlas and waited on the swapchain, and however long that took was
+  error in the body's position — error that varies frame to frame, which is what
+  an eye reads as a stutter rather than as lag. `App::draw` advances the clock at
+  the top of the frame now.
+
+  With it, the other half of the same judder: the timer's 16ms beat against the
+  display's 60Hz, so a frame landed on the wrong side of the beat about once a
+  second. A body mid-step asks for its next frame at the end of `draw` instead,
+  and the surface's FIFO presentation paces the walk at the display's own rate.
+  The timer stays for everything else — a still world redraws on the animation
+  clock and sleeps in between.
+
+- **The camera is on whole world pixels.** `Camera::eye` is an integer
+  `WorldPixel` and a step east crosses 22 of them in 400ms, so at 60Hz the ground
+  moves 1, 1, 0, 1 pixels a frame rather than 0.92 — a half-pixel wobble at zoom
+  1 and a whole one at zoom 2, which is the last quantisation left in a walk.
+  Fixing it means a fractional eye whose remainder is applied to the ground
+  diamonds and the sprite quads (both are already `f32` at the GPU), and it is
+  not free: a sprite quad on a fractional boundary samples its atlas unevenly, so
+  the art shimmers inside the sprite. Worth measuring before doing — the two
+  clock defects above were the visible share of this complaint.
 
 - **The walk has no home.** Two of those three defects lived *between*
   `App::user_event` and `App::about_to_wait` rather than in any of the four units

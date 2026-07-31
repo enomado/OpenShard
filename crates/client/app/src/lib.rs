@@ -766,7 +766,9 @@ impl ApplicationHandler<link::Update> for App {
                 // the operating system's repeat rate. See `keys.rs`.
                 if let Some(direction) = keys::Held::direction_of(code) {
                     let step = match event.state {
-                        ElementState::Pressed => self.steer.press(direction, Instant::now()),
+                        ElementState::Pressed => {
+                            self.steer.press(direction, Instant::now(), self.player.facing)
+                        }
                         ElementState::Released => {
                             self.steer.release(direction);
                             None
@@ -901,22 +903,26 @@ impl ApplicationHandler<link::Update> for App {
         // mouse held over the ground reports a move a pixel, and the fast half
         // of either is refused by the shard as a speedhack — which reads as the
         // walk stuttering. See `steer.rs`.
-        if let Some(facing) = self.steer.due(now, self.player.at) {
-            if self.walk(facing) {
-                if let Some(window) = self.window.as_ref() {
-                    window.window.request_redraw();
-                }
+        //
+        // Twice at most, because a turn is a step that covers no ground and
+        // costs no time against the shard's pace budget: the step it precedes is
+        // due the same instant, and holding that back to the next wake would put
+        // a frame of standing still exactly where the player asked for movement.
+        // Two and not a loop — the second ask is the step the turn was for, and
+        // anything past it is a rate, which is what the clock is for.
+        let mut moved = false;
+        for _ in 0..2 {
+            let Some(facing) = self.steer.due(now, self.player.at, self.player.facing) else {
+                break;
+            };
+            moved |= self.walk(facing);
+        }
+        if moved {
+            if let Some(window) = self.window.as_ref() {
+                window.window.request_redraw();
             }
         }
         if now >= self.next_tick {
-            // Whatever really passed — see `App::last_advance`. A stall longer
-            // than a frame, the window minimised or the machine asleep, moves
-            // the clock the whole way rather than queuing a burst of catch-up
-            // redraws for time nobody watched: a body that was walking through
-            // it has long since arrived.
-            self.crowd
-                .advance(now.saturating_duration_since(self.last_advance));
-            self.last_advance = now;
             self.next_tick = now + self.redraw_interval();
             if let Some(window) = self.window.as_ref() {
                 window.window.request_redraw();
@@ -1007,7 +1013,12 @@ impl App {
         let Some(tile) = self.pick_tile() else {
             return false;
         };
-        match self.steer.go_to((tile.x, tile.y), self.player.at, Instant::now()) {
+        match self.steer.go_to(
+            (tile.x, tile.y),
+            self.player.at,
+            Instant::now(),
+            self.player.facing,
+        ) {
             Some(facing) => {
                 // The marker under the destination has moved even when the step
                 // itself changes nothing on screen, so the redraw is not the
@@ -1579,6 +1590,28 @@ impl App {
 
     fn draw(&mut self) {
         let started = Instant::now();
+        // The animation clock moves here, at the top of the frame that is about
+        // to show its answer — not when the timer that asked for this frame
+        // fired.
+        //
+        // A glide is a position read off a clock, so the moment that clock is
+        // read has to be the moment the picture is built or the walk judders:
+        // the timer fires, the loop then lays out the UI, grows an atlas and
+        // waits on the swapchain, and however long that took is error in the
+        // body's position — error that varies frame to frame, which is exactly
+        // what an eye reads as a stutter. It also puts the sampling back in step
+        // with the display: `WaitUntil` is a floor, the timer's 16ms beats
+        // against a 60Hz refresh, and a frame drawn from the previous tick's
+        // clock lands on the wrong side of that beat every second or so.
+        //
+        // Whatever really passed — see `App::last_advance`. A stall longer than
+        // a frame, the window minimised or the machine asleep, moves the clock
+        // the whole way rather than queuing a burst of catch-up frames for time
+        // nobody watched: a body that was walking through it has long since
+        // arrived.
+        self.crowd
+            .advance(started.saturating_duration_since(self.last_advance));
+        self.last_advance = started;
 
         // The UI first, because what it leaves free is the world's viewport and
         // therefore the size of everything below. A frame that laid its panels
@@ -1887,6 +1920,15 @@ impl App {
         window.queue.submit([encoder.finish()]);
         // Presentation moved onto the queue in wgpu 30; the texture is consumed.
         window.queue.present(frame);
+        // A body mid-step asks for the next frame here rather than through the
+        // timer: the surface presents in FIFO, so asking again the moment a
+        // frame is on the queue paces the walk at the display's own rate instead
+        // of at a 16ms timer that beats against it. The timer stays for
+        // everything else — a still world redraws on the animation clock and
+        // sleeps in between, which is what it is for.
+        if self.crowd.anyone_gliding() {
+            window.window.request_redraw();
+        }
         self.frame_time = started.elapsed();
     }
 }

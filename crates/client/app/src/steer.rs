@@ -80,13 +80,21 @@ pub struct Steering {
     was: Option<Point>,
     /// How many steps in a row have left it there.
     stalled: u8,
+    /// The direction of the last step sent, once one has been.
+    ///
+    /// Which way the body is *going* to face, which is a step ahead of the way
+    /// it is drawn facing: the caller's facing comes back through the shard
+    /// thread, and a second step decided from it would turn twice. Absent until
+    /// this has asked for anything, and then the caller's facing is the only
+    /// answer there is.
+    asked: Option<Direction>,
 }
 
 impl Steering {
     /// An arrow went down. Answers the step to send now, if any.
     ///
     /// The destination goes with it: see the module docs.
-    pub fn press(&mut self, direction: Direction, now: Instant) -> Option<Facing> {
+    pub fn press(&mut self, direction: Direction, now: Instant, facing: Direction) -> Option<Facing> {
         if !self.keys.press(direction) {
             // The operating system repeating a key that is already the one being
             // obeyed. Its rate is not a walking speed.
@@ -95,8 +103,9 @@ impl Steering {
         self.goal = None;
         self.stalled = 0;
         self.was = None;
-        self.due = Some(now + self.interval());
-        self.keys.asking()
+        let asking = self.keys.asking();
+        self.charge(asking, now, facing);
+        asking
     }
 
     /// An arrow came up.
@@ -122,7 +131,13 @@ impl Steering {
     /// Called on a click and again on every mouse move while the button is held,
     /// which is what makes dragging steer: the destination is replaced and the
     /// cadence is untouched.
-    pub fn go_to(&mut self, tile: (u16, u16), from: Point, now: Instant) -> Option<Facing> {
+    pub fn go_to(
+        &mut self,
+        tile: (u16, u16),
+        from: Point,
+        now: Instant,
+        facing: Direction,
+    ) -> Option<Facing> {
         self.goal = Some(tile);
         self.stalled = 0;
         self.was = None;
@@ -131,7 +146,7 @@ impl Steering {
         if self.due.is_some() {
             return None;
         }
-        self.take(from, now)
+        self.take(from, now, facing)
     }
 
     /// Everything is up and nowhere is asked for.
@@ -157,9 +172,9 @@ impl Steering {
     /// charges one step per call rather than catching up on a stall: a window
     /// that was minimised for a minute has not banked a hundred and fifty steps,
     /// and sending them would be the flood this pacing exists to prevent.
-    pub fn due(&mut self, now: Instant, from: Point) -> Option<Facing> {
+    pub fn due(&mut self, now: Instant, from: Point, facing: Direction) -> Option<Facing> {
         match self.due {
-            Some(due) if now >= due => self.take(from, now),
+            Some(due) if now >= due => self.take(from, now, facing),
             _ => None,
         }
     }
@@ -171,7 +186,7 @@ impl Steering {
 
     /// Take the step that is due: work out which way, arm the next one, and give
     /// up on a destination that is not getting any closer.
-    fn take(&mut self, from: Point, now: Instant) -> Option<Facing> {
+    fn take(&mut self, from: Point, now: Instant, facing: Direction) -> Option<Facing> {
         // The stall check is the destination's alone. An arrow held against a
         // wall is the player's own doing and stops when they let go.
         if self.keys.asking().is_none() && self.goal.is_some() {
@@ -184,11 +199,12 @@ impl Steering {
             }
         }
 
-        match self.asking(from) {
-            Some(facing) => {
+        let asking = self.asking(from);
+        match asking {
+            Some(step) => {
                 self.was = Some(from);
-                self.due = Some(self.next_due(now));
-                Some(facing)
+                self.charge(asking, now, facing);
+                Some(step)
             }
             // Nothing left to ask for: the arrows are up and the body is
             // standing where it was sent. The clock stops with them, so the
@@ -198,6 +214,39 @@ impl Steering {
                 None
             }
         }
+    }
+
+    /// Arm the clock for whatever comes after the step just sent, and remember
+    /// which way that step went.
+    ///
+    /// # A turn is a step that costs no time
+    ///
+    /// Turning is a whole step in UO — a mobile asked for a direction it is not
+    /// facing turns and moves nowhere, and the shard answers it with its own
+    /// `0x22`. What it is *not* is a step against the pace budget: the reference
+    /// returns a turn before the bucket is touched, and so does ours
+    /// (`openshard_movement::Walker::request`), because spinning on the spot is
+    /// something clients genuinely do and throttling it would be absurd.
+    ///
+    /// So the step a turn precedes is due at once rather than a hold later. The
+    /// hold was ours and nothing asked for it: it put 400ms of standing still
+    /// between the player pressing a new direction and their character setting
+    /// off, which is not what the game does and not what anyone remembers it
+    /// doing. The caller takes both in one wake, so the two `0x02`s leave
+    /// together and the body starts moving on the frame the key went down.
+    fn charge(&mut self, asking: Option<Facing>, now: Instant, facing: Direction) {
+        let Some(step) = asking else {
+            self.disarm();
+            return;
+        };
+        // What the body will be facing, which is a step ahead of what the caller
+        // can see: our own last ask has not been round the shard thread yet.
+        let facing = self.asked.unwrap_or(facing);
+        self.asked = Some(step.direction);
+        self.due = Some(match step.direction == facing {
+            true => self.next_due(now),
+            false => now,
+        });
     }
 
     /// Which way to step from `from`, keyboard first. Clears a destination the
@@ -250,6 +299,9 @@ impl Steering {
         self.due = None;
         self.was = None;
         self.stalled = 0;
+        // And the facing goes with the clock: nothing is in flight, so the
+        // body's own is the truthful answer again by the time anything asks.
+        self.asked = None;
     }
 
     /// How long a step takes at the pace being asked for.
@@ -283,16 +335,16 @@ mod tests {
         let mut steering = Steering::default();
 
         assert_eq!(
-            steering.press(Direction::NorthWest, start),
+            steering.press(Direction::NorthWest, start, Direction::NorthWest),
             Some(Facing::walking(Direction::NorthWest))
         );
         // Nothing is due until a whole step has passed.
-        assert_eq!(steering.due(at(start, 399), here()), None);
+        assert_eq!(steering.due(at(start, 399), here(), Direction::NorthWest), None);
         assert_eq!(
-            steering.due(at(start, 400), here()),
+            steering.due(at(start, 400), here(), Direction::NorthWest),
             Some(Facing::walking(Direction::NorthWest))
         );
-        assert_eq!(steering.due(at(start, 401), here()), None);
+        assert_eq!(steering.due(at(start, 401), here(), Direction::NorthWest), None);
     }
 
     /// The operating system repeats a held key at its own rate, and that rate is
@@ -303,9 +355,14 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
 
-        steering.press(Direction::NorthWest, start).unwrap();
+        steering
+            .press(Direction::NorthWest, start, Direction::NorthWest)
+            .unwrap();
         for repeat in 1..30 {
-            assert_eq!(steering.press(Direction::NorthWest, at(start, repeat * 10)), None);
+            assert_eq!(
+                steering.press(Direction::NorthWest, at(start, repeat * 10), Direction::NorthWest),
+                None
+            );
         }
         assert_eq!(steering.deadline(), Some(at(start, 400)), "the first press's");
     }
@@ -317,12 +374,12 @@ mod tests {
         steering.set_running(true);
 
         assert_eq!(
-            steering.press(Direction::SouthEast, start),
+            steering.press(Direction::SouthEast, start, Direction::SouthEast),
             Some(Facing::running(Direction::SouthEast))
         );
-        assert_eq!(steering.due(at(start, 199), here()), None);
+        assert_eq!(steering.due(at(start, 199), here(), Direction::SouthEast), None);
         assert_eq!(
-            steering.due(at(start, 200), here()),
+            steering.due(at(start, 200), here(), Direction::SouthEast),
             Some(Facing::running(Direction::SouthEast))
         );
     }
@@ -334,20 +391,20 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
 
-        steering.press(Direction::North, start).unwrap();
+        steering.press(Direction::North, start, Direction::North).unwrap();
         steering.set_running(true);
         assert_eq!(
-            steering.due(at(start, 200), here()),
+            steering.due(at(start, 200), here(), Direction::North),
             None,
             "the walk's deadline stands"
         );
         assert_eq!(
-            steering.due(at(start, 400), here()),
+            steering.due(at(start, 400), here(), Direction::North),
             Some(Facing::running(Direction::North))
         );
         // And from there it is a runner's.
         assert_eq!(
-            steering.due(at(start, 600), here()),
+            steering.due(at(start, 600), here(), Direction::North),
             Some(Facing::running(Direction::North))
         );
     }
@@ -357,10 +414,10 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
 
-        steering.press(Direction::West, start).unwrap();
+        steering.press(Direction::West, start, Direction::West).unwrap();
         steering.release(Direction::West);
         assert_eq!(steering.deadline(), None);
-        assert_eq!(steering.due(at(start, 10_000), here()), None);
+        assert_eq!(steering.due(at(start, 10_000), here(), Direction::West), None);
     }
 
     /// A click walks toward the tile, a step at a time, and stops on it.
@@ -371,7 +428,7 @@ mod tests {
 
         // Three tiles east, at the same row.
         assert_eq!(
-            steering.go_to((103, 100), here(), start),
+            steering.go_to((103, 100), here(), start, Direction::East),
             Some(Facing::walking(Direction::East)),
             "the first step leaves at once"
         );
@@ -379,14 +436,17 @@ mod tests {
         for x in 101..=102 {
             now = at(start, 400 * u64::from(x - 100));
             assert_eq!(
-                steering.due(now, Point::new(x, 100, 0)),
+                steering.due(now, Point::new(x, 100, 0), Direction::East),
                 Some(Facing::walking(Direction::East)),
                 "still short of it"
             );
         }
         // Standing on it: nothing more is asked for, and the clock stops with
         // the asking.
-        assert_eq!(steering.due(at(now, 400), Point::new(103, 100, 0)), None);
+        assert_eq!(
+            steering.due(at(now, 400), Point::new(103, 100, 0), Direction::East),
+            None
+        );
         assert_eq!(steering.goal(), None);
         assert_eq!(steering.deadline(), None);
     }
@@ -398,7 +458,7 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
         assert_eq!(
-            steering.go_to((105, 105), here(), start),
+            steering.go_to((105, 105), here(), start, Direction::SouthEast),
             Some(Facing::walking(Direction::SouthEast))
         );
     }
@@ -410,10 +470,17 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
 
-        steering.go_to((110, 100), here(), start).unwrap();
+        steering
+            .go_to((110, 100), here(), start, Direction::East)
+            .unwrap();
         for tick in 1..20 {
             assert_eq!(
-                steering.go_to((110, 100 + tick as u16), here(), at(start, tick * 10)),
+                steering.go_to(
+                    (110, 100 + tick as u16),
+                    here(),
+                    at(start, tick * 10),
+                    Direction::East
+                ),
                 None
             );
         }
@@ -427,18 +494,22 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
 
-        steering.go_to((200, 100), here(), start).unwrap();
+        steering
+            .go_to((200, 100), here(), start, Direction::East)
+            .unwrap();
         // The body never moves: every step is refused by the server, which
         // snaps it back to where it was. The click's own step is the first of
         // the four, so three more are tried after it.
         for step in 1..u64::from(STUCK_STEPS) {
             assert!(
-                steering.due(at(start, 400 * step), here()).is_some(),
+                steering
+                    .due(at(start, 400 * step), here(), Direction::East)
+                    .is_some(),
                 "step {step} is still worth trying"
             );
         }
         assert_eq!(
-            steering.due(at(start, 400 * u64::from(STUCK_STEPS)), here()),
+            steering.due(at(start, 400 * u64::from(STUCK_STEPS)), here(), Direction::East),
             None
         );
         assert_eq!(steering.goal(), None, "and the destination is let go of");
@@ -450,14 +521,16 @@ mod tests {
     fn progress_resets_the_patience() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        steering.go_to((100, 130), here(), start).unwrap();
+        steering
+            .go_to((100, 130), here(), start, Direction::South)
+            .unwrap();
 
         for y in 101..=120u16 {
             let now = at(start, 400 * u64::from(y - 100));
             // Every other step is refused, which is what a body squeezing past
             // furniture looks like — it must not add up to a stall.
             let position = Point::new(100, y - u16::from(y % 2 == 0), 0);
-            assert!(steering.due(now, position).is_some(), "row {y}");
+            assert!(steering.due(now, position, Direction::South).is_some(), "row {y}");
         }
         assert_eq!(steering.goal(), Some((100, 130)));
     }
@@ -469,14 +542,16 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
 
-        steering.go_to((200, 100), here(), start).unwrap();
+        steering
+            .go_to((200, 100), here(), start, Direction::East)
+            .unwrap();
         assert_eq!(
-            steering.press(Direction::NorthWest, at(start, 50)),
+            steering.press(Direction::NorthWest, at(start, 50), Direction::East),
             Some(Facing::walking(Direction::NorthWest))
         );
         assert_eq!(steering.goal(), None);
         assert_eq!(
-            steering.due(at(start, 450), here()),
+            steering.due(at(start, 450), here(), Direction::NorthWest),
             Some(Facing::walking(Direction::NorthWest)),
             "the keyboard's step, not the destination's"
         );
@@ -488,11 +563,11 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
 
-        steering.press(Direction::South, start).unwrap();
-        steering.go_to((200, 200), here(), start);
+        steering.press(Direction::South, start, Direction::South).unwrap();
+        steering.go_to((200, 200), here(), start, Direction::South);
         steering.clear();
         assert_eq!(steering.goal(), None);
         assert_eq!(steering.deadline(), None);
-        assert_eq!(steering.due(at(start, 10_000), here()), None);
+        assert_eq!(steering.due(at(start, 10_000), here(), Direction::South), None);
     }
 }
