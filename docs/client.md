@@ -596,19 +596,31 @@ would not.
   panel next to the lock, is the cheap answer; the lock key already exists so
   this is polish rather than a hole.
 
-## M3b — many characters at once
+## M3b — many shards, many characters
 
-This client holds **sessions, plural**: several characters logged in from one
-process, a character select to say which one is on screen, a map of the whole
-facet to say where they all are, and the keyboard driving one of them or all of
-them at once, the way a strategy game drives a group.
+This client holds **sessions, plural**, and a session is a triple: a shard, an
+account on it, and a character. The natural shape is therefore `[shard →
+{characters}]` and not a flat list — several characters logged in to one shard
+is the common case, several shards at once is the same machinery with one more
+level, and neither is a special case of the other. A character select to say
+which session is on screen, a map of the facet to say where the bodies are, and
+the keyboard driving one of them or all of them at once, the way a strategy game
+drives a group.
 
 It is written down here, before M4, because it decides what "the client's state"
 means. Everything the gump layer builds — a journal, a paperdoll, a container —
 belongs to *a* character, and a status bar built against `App`'s fields rather
 than against a session is a status bar that has to be written twice.
 
-### One copy of the files, N of everything downstream of a socket
+**A serial is unique on a shard and nowhere else.** `0x2A` on one shard and
+`0x2A` on another are two creatures, so every map keyed by `Serial` — `Crowd`'s
+clocks, `WorldView`'s mobiles and items — is inside a session or it is wrong.
+This is the one mistake here that would not look like a bug: two characters on
+two shards standing near each other's serials would simply animate each other.
+The atlases are the other way round and are fine, because a graphic id belongs
+to the *files*, not to the shard.
+
+### One copy of the files per install, N of everything downstream of a socket
 
 The whole design is that split, and it is not a preference: `App` holds a facet
 of a few hundred megabytes plus `Art`, `TexMaps`, `TileData`, `HueRamp` and
@@ -616,12 +628,27 @@ of a few hundred megabytes plus `Art`, `TexMaps`, `TileData`, `HueRamp` and
 of those is not a client. So the client's own data is loaded once and shared, and
 everything that comes off a socket is per session and shared with nobody:
 
-- **Shared, immutable, `Arc`.** `Map`, `Art`, `TexMaps`, `TileData`, `HueRamp`.
-  The precedent exists — the facet is already an `Arc<Map>` handed to the shard
-  thread so `Walk::step` can predict a height. `Anim` is the exception and the
-  awkward one: `Anim::frames` takes `&mut self` because reading a frame seeks the
-  file, so it is shared behind a lock or it is read behind the atlas that already
-  caches what it produced.
+- **Shared, immutable, `Arc`, and keyed by install.** `Map`, `Art`, `TexMaps`,
+  `TileData`, `HueRamp`. The precedent exists — the facet is already an
+  `Arc<Map>` handed to the shard thread so `Walk::step` can predict a height.
+  `Anim` is the exception and the awkward one: `Anim::frames` takes `&mut self`
+  because reading a frame seeks the file, so it is shared behind a lock or it is
+  read behind the atlas that already caches what it produced.
+
+  *Keyed by install* is what multi-shard adds, and it is the reason
+  `OPENSHARD_CLIENT` cannot stay a single environment variable. A 5.x shard and a
+  7.x shard are not read from the same files, and a custom shard ships its own
+  map and its own art — `docs/client_versions.md` is the standing rule that
+  server and client must read the same `.mul`, and it applies once per shard
+  rather than once per process. So the cache key is `(install, facet)`, two
+  shards on the same install share everything, and two shards on different
+  installs share nothing but the process.
+- **Per shard.** The login server address, the relay it hands back, the feature
+  mask, the version this client claims, and the `.def`/cliloc set the install
+  supplies. **The version is the one that will bite**: it is a startup constant
+  today, and every `Feature` gate on both ends follows from it — see "Which
+  version we claim to be" below, which stops being one decision and becomes one
+  per shard.
 - **Per session, and never merged.** The connection, the `WorldView`, the
   `Walk`, the `Crowd`, the eye. `Walk` in particular: the step sequence and the
   fastwalk key are properties of *one* connection, and a shared one would ack the
@@ -634,10 +661,16 @@ All of it, and none of it deeply. `App` (`crates/client/app/src/main.rs`) holds
 one `link: Option<Link>`, one `crowd: Crowd`, one `control: Control`, one
 `player`, one `others`, one `items`, one `view`, one `connection` string. The
 window is woken with an `Update` that names no session, because there is only
-one to name.
+one to name. Outside the struct the same assumption is in the environment:
+`OPENSHARD_CLIENT`, `OPENSHARD_ACCOUNT` and `OPENSHARD_PASSWORD` are one install
+and one account, and the shard address and the claimed version are constants in
+`main`.
 
 The shape that replaces it:
 
+- A `Shard` — an address, an install, the version claimed to it, and the
+  accounts on it. This is the level `[shard → {characters}]` names, and the
+  level the file cache is keyed by.
 - A `Session` — the link, the last `WorldView`, the crowd, the projections the
   renderer reads, and the account it logged in as. `App` holds a list of them and
   which one is drawn.
@@ -674,6 +707,12 @@ image and shares nothing with the isometric renderer, which is what makes it
 cheap. It also answers the standing backlog item that a free camera can lose the
 character entirely, for every character at once.
 
+One map per `(install, facet)` and not one per client: two shards are two
+worlds even where the files agree, and a marker is placed on the map its session
+is standing in. Which is also the honest answer to what the character select
+shows — a tree of shards, each with the characters logged in to it, because that
+is the shape the state already has.
+
 ### The keyboard, and who hears it
 
 Three modes, and they are the same question the camera lock already asks:
@@ -705,16 +744,38 @@ Each session is its own account and its own pair of sockets. A shard may refuse
 several connections from one account or one address, and whether it should is
 the operator's rule, not this client's — what this client owes is to report the
 refusal *per session*, so one login failing is one row in the character select
-and not the client giving up.
+and not the client giving up. Across shards the question does not even arise:
+they have never heard of each other.
+
+### The list has to live somewhere, and that is a decision
+
+Three environment variables are a single session's worth of configuration. A
+list of shards, each with an install path, a claimed version and its accounts,
+is a file — and the moment it holds accounts it holds credentials, which is not
+a thing to arrive at by accident:
+
+- a password in a plaintext config is what every UO launcher has always done,
+  and it is still the thing that leaks;
+- the platform keyring is right and is a dependency and a headless problem;
+- asking at connect time is free, correct, and unusable for the ten-character
+  case this milestone exists to serve.
+
+Deliberately unresolved here. What is decided is that the file names shards and
+installs and *may* name accounts, and that whatever holds the password is behind
+one seam rather than read wherever a login is built — because there will be a
+lot of logins.
 
 ### Done when
 
 Two accounts log in from one process, the character select switches which one is
 drawn, the arrows drive the drawn one or all of them, and the facet map shows
-every body. `cargo test --workspace` is green, including a test with neither a
-window nor a GPU that two sessions share one facet — `Arc::ptr_eq`, because "the
-files are loaded once" is the one property the whole milestone rests on and it
-regresses silently.
+every body. Two shards are configured and at least one test drives both.
+`cargo test --workspace` is green, including a test with neither a window nor a
+GPU that two sessions on one shard share one facet and two sessions on different
+installs do not — `Arc::ptr_eq` both ways, because "the files are loaded once per
+install" is the property the whole milestone rests on and it regresses silently
+in either direction: a second copy is invisible until the memory runs out, and a
+wrongly shared one draws a 5.x shard's world out of a 7.x shard's art.
 
 ## M4 — the gump layer
 
@@ -729,11 +790,12 @@ targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
 
 ## Decisions to take before they are taken by accident
 
-- **The client is multi-session.** Several characters logged in from one
-  process, one of them drawn, all of them drivable — see M3b. It is a decision
-  and not a feature, because it says the client's data files are loaded once and
-  everything downstream of a socket is per session, and retrofitting that means
-  auditing every field `App` holds. The same argument as multi-era on the server.
+- **The client is multi-shard and multi-session**, `[shard → {characters}]` —
+  see M3b. It is a decision and not a feature, because it says three things that
+  are cheap now and an audit later: everything downstream of a socket is per
+  session, the data files are loaded once *per install* rather than once per
+  process, and the claimed version belongs to a shard rather than to the client.
+  The same argument as multi-era on the server, and for the same reason.
 - **Crates.** `crates/client/net`, `crates/client/render`, `crates/client/app`,
   plus `crates/common/uofiles`. The direction rule stands: a client crate
   depends on `common`, never on `server`.
@@ -758,7 +820,10 @@ targeting (`0x6C`, `0x6B`), speech (`0xAD`), war mode.
 - **Which version we claim to be.** The client announces one in its seed, and
   every `Feature` gate on the server follows from it. 7.0.45.65 — what
   ClassicUO opens with — keeps us on the modern packet set instead of the legacy
-  branches of every encoder.
+  branches of every encoder. **Per shard, not per client** (M3b): the whole point
+  of `Feature::since` is that a connection asks its own version, and a client
+  facing two shards at two versions is exactly the case an era check gets wrong
+  silently.
 - **A client that only speaks what our server happens to send is a mirror, not
   a UO client.** That is the right scope for M1–M3, and it is also how both
   ends quietly agree on the same mistake. Every packet this client learns should
