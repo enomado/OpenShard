@@ -173,3 +173,40 @@ async fn a_stop_tells_the_player_before_it_hangs_up() {
         "a stopping shard says why, and says it before it goes"
     );
 }
+
+#[tokio::test]
+async fn dialling_a_shard_that_has_stopped_gets_a_closed_pipe() {
+    // An `InProcess` is `Clone` and nothing ties a clone's life to the `Running`,
+    // so a dial after the stop is not a misuse anybody can be told off for — a
+    // virtual player holding one has no way to know the shard went. What it used
+    // to get was a connection spawned onto the shard's runtime just as that
+    // runtime was being dropped: no panic, but the task is dropped unpolled, so
+    // the login conversation simply never begins and the client waits on a pipe
+    // whose other end nobody is holding.
+    //
+    // Now the gate says so. What the caller gets is a stream that is already
+    // closed, which is the same thing it gets when a shard hangs up mid-session —
+    // one way for a shard to be gone, not two.
+    //
+    // This test passed before the gate learned to refuse, and it is kept knowing
+    // that. A dropped runtime cancels the task that owned the server end, which
+    // closes the pipe by accident and arrives at the same visible answer — so
+    // what fails without the refusal is `a_gate_that_is_stopping_serves_nobody`
+    // next to the code, which asks the question this one cannot see: whether an
+    // id was minted and the world told about a session that will never speak.
+    // What this one is for is the whole path — that a dial after a stop *ends*,
+    // by whichever mechanism, rather than hanging until a deadline.
+    let (dial, shard) = in_process::spawn(stock_config);
+
+    // Cloned before the stop, because that is the case: something took a dialler
+    // while the shard was up and still holds it afterwards.
+    let after = dial.clone();
+    shard.stop();
+
+    let entered = tokio::time::timeout(WAIT, enter_world_with(after, plan(), version())).await;
+    let ended = entered.expect("the login gave up rather than hanging on a dead shard");
+    assert!(
+        ended.is_err(),
+        "a shard that has stopped let a client in through a gate that was closed"
+    );
+}

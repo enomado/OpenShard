@@ -72,7 +72,9 @@ const PIPE: usize = 64 * 1024;
 /// The [`Running`] beside it stops the shard, and it must be held for as long as
 /// the shard is wanted — see there. Stopping ends the thread and with it the
 /// runtime the gate reads on, so an [`InProcess`] that outlives its `Running` is
-/// a dialler with nothing behind it.
+/// a dialler with nothing behind it: it still dials, and every stream it hands
+/// back is closed before the caller sees it. `Gate::serve` is what makes that
+/// deliberate rather than a race between the stop and the runtime going away.
 pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (InProcess, Running) {
     let (ready, opened) = std::sync::mpsc::channel();
 
@@ -137,9 +139,16 @@ impl InProcess {
     /// Both connections a login needs are this, which is why neither method
     /// below does anything else: the login socket and the game socket differ in
     /// what is *said* on them, and nothing about how they are opened.
+    ///
+    /// The id `Gate::serve` returns is dropped because nothing here has a use for
+    /// it — the world learns it from the `Connected` event — and so is the `None`
+    /// it returns once the shard is stopping: the gate has already dropped its end
+    /// of the pipe, so the stream handed back is a closed one, and a caller that
+    /// reads it finds out immediately. That is a better answer than an error,
+    /// because it is the same answer a shard that hung up mid-session gives.
     fn open(&self) -> DuplexStream {
         let (client, server) = tokio::io::duplex(PIPE);
-        self.gate.serve(server, NOMINAL);
+        let _served = self.gate.serve(server, NOMINAL);
         client
     }
 }

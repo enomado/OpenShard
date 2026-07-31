@@ -191,15 +191,32 @@ on. The rest are independent.
       `stop` leaves the handle already taken, so the `Drop` on the way out joins
       nothing — and that argument lives in the comment on `halt`.
 
-- [ ] **S5. A gate that has closed does not spawn onto a dead runtime.**
+- [x] **S5. A gate that has closed does not spawn onto a dead runtime.**
       `InProcess` is `Clone` and outlives its `Running`, so a dial after the stop
       reaches a `tokio::runtime::Handle` whose runtime is gone. `Gate::serve`
       returns early when `is_stopping()`, dropping the stream so the caller sees a
-      closed pipe rather than whatever `Handle::spawn` does there.
-      **DoD:** what `Handle::spawn` does after its runtime is dropped, checked
-      rather than assumed — the answer goes in the comment either way — plus a
-      test that clones an `InProcess`, stops the shard, dials, and gets a closed
-      stream.
+      closed pipe. Its return type is now `Option<ConnectionId>` — `None` means
+      "not served", and no id is minted for a session that will never exist.
+
+      **What `Handle::spawn` does there, checked rather than assumed:** it does
+      not panic and does not hang. The future is dropped without ever being
+      polled and the `JoinHandle` resolves to `JoinError::Cancelled`. So the
+      stream *was* already being closed — by dropping the task that owned it,
+      silently and by accident. The refusal makes the same outcome deliberate,
+      and covers the case the accident does not: a gate that is stopping while
+      its runtime is still alive, where a client would get a whole login
+      conversation whose events go onto a channel the tick has stopped draining.
+      The accept loop takes the same answer as its `biased` select does, for the
+      stop that lands between the two lines.
+      **DoD (met):** `a_gate_that_is_stopping_serves_nobody` in
+      `crates/server/gateway/src/server.rs` — no id, a closed stream, and no
+      `Connected` on the channel. Checked to fail without the guard.
+
+      ⚠️ The e2e half, `dialling_a_shard_that_has_stopped_gets_a_closed_pipe`,
+      **passed before the change too**, and is kept knowing that: the cancelled
+      task closes the pipe, so the client sees the same thing either way. It pins
+      the caller-visible contract — a dial after a stop ends rather than hangs —
+      and the unit test beside the code is what pins the mechanism.
 
 - [ ] **S6. Prove that a stop saves.** "`run_shard` returns only once the world
       is on disk" is the claim the whole shutdown tail exists for, and nothing
@@ -262,9 +279,10 @@ on. The rest are independent.
 S1 through S4 are in: a shard under systemd is asked rather than killed, an
 operator with a wedged save has a way out that is not `SIGKILL`, what the world
 queues on its way out reaches the wire, a player is told why their screen is
-about to go, and a shard thread that dies during a test's teardown fails that
-test instead of printing at it. S5 and S6 are the remaining sharp edge and the
-test that the whole tail exists for, and they are independent of each other. The commit that created this plan is the one that landed the stop
+about to go, a shard thread that dies during a test's teardown fails that test
+instead of printing at it, and a gate that has been asked to stop refuses rather
+than spawning onto a runtime that is going away. S6 is what is left: the test
+that the whole shutdown tail exists for. The commit that created this plan is the one that landed the stop
 itself; [`docs/client.md`](client.md) → "Stopping is one word, and everything
 hears it" is the design it is built on, and [`roadmap.md`](roadmap.md) §8 points
 here rather than repeating the list.

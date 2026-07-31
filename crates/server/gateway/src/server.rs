@@ -260,10 +260,34 @@ impl Gate {
     /// reading happens on the gate's own runtime. `address` is what the world is
     /// told the client's address is — a real peer for an accepted socket, and a
     /// stated one for anything else.
-    pub fn serve<S>(&self, stream: S, address: SocketAddr) -> ConnectionId
+    ///
+    /// # A gate that has been asked to stop serves nobody
+    ///
+    /// `None` means the shard is stopping and this stream was not served: it is
+    /// dropped here, so the caller's end closes rather than waiting. A gate
+    /// outlives the loop that feeds it — `ClientGatewayServer::run` returns on the
+    /// stop but a cloned `Gate` in an in-process dialler does not — so this is
+    /// reachable in two ways, and both end badly without it.
+    ///
+    /// While the shard's runtime is still alive, spawning here would hand a client
+    /// a login conversation whose events go onto a channel the tick has stopped
+    /// draining: a session that appears to connect and then answers nothing.
+    ///
+    /// Once that runtime is *gone*, `Handle::spawn` is not a panic and not a hang
+    /// — checked, not assumed: the future is dropped without ever being polled and
+    /// the `JoinHandle` resolves to `JoinError::Cancelled`. Which happens to close
+    /// the stream too, by dropping the task that owns it, but silently and by
+    /// accident. Saying it here makes the same outcome deliberate and gives the
+    /// caller an answer it can read.
+    pub fn serve<S>(&self, stream: S, address: SocketAddr) -> Option<ConnectionId>
     where
         S: AsyncRead + AsyncWrite + Send + 'static,
     {
+        if self.shutdown.is_stopping() {
+            debug!(%address, "a connection arrived at a gate that is stopping; not serving it");
+            return None;
+        }
+
         let id = self.session_ids.next();
         let events = self.events.clone();
         let shutdown = self.shutdown.clone();
@@ -274,7 +298,7 @@ impl Gate {
                 debug!(%id, %error, "connection ended");
             }
         });
-        id
+        Some(id)
     }
 }
 
@@ -345,7 +369,13 @@ impl ClientGatewayServer {
             // beats packet count. Here rather than in `serve`, which is the one
             // place a `TcpStream` is still a `TcpStream`.
             stream.set_nodelay(true)?;
-            self.gate.serve(stream, address);
+            if self.gate.serve(stream, address).is_none() {
+                // The stop landed between the select above and this line. The
+                // select is biased, so it wins every race it can see; this is the
+                // one it cannot, and it means the same thing.
+                info!("gateway stopping; not accepting any more connections");
+                return Ok(());
+            }
         }
     }
 }
@@ -714,7 +744,9 @@ mod tests {
     async fn a_gate_serves_a_stream_that_is_not_a_socket() {
         let (gate, mut events) = Gate::new(Shutdown::new());
         let (mut client, server) = tokio::io::duplex(4096);
-        let served = gate.serve(server, "127.0.0.1:0".parse().unwrap());
+        let served = gate
+            .serve(server, "127.0.0.1:0".parse().unwrap())
+            .expect("nothing has asked this gate to stop");
 
         let ServerEvent::Connected { id, outbox, .. } = events.recv().await.unwrap() else {
             panic!("expected Connected first");
@@ -746,7 +778,8 @@ mod tests {
     async fn dropping_the_outbox_ends_a_stream_connection_too() {
         let (gate, mut events) = Gate::new(Shutdown::new());
         let (mut client, server) = tokio::io::duplex(4096);
-        gate.serve(server, "127.0.0.1:0".parse().unwrap());
+        gate.serve(server, "127.0.0.1:0".parse().unwrap())
+            .expect("nothing has asked this gate to stop yet");
 
         let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
             panic!("expected Connected");
@@ -780,7 +813,8 @@ mod tests {
         let shutdown = Shutdown::new();
         let (gate, mut events) = Gate::new(shutdown.clone());
         let (mut client, server) = tokio::io::duplex(4096);
-        gate.serve(server, "127.0.0.1:0".parse().unwrap());
+        gate.serve(server, "127.0.0.1:0".parse().unwrap())
+            .expect("nothing has asked this gate to stop yet");
 
         let ServerEvent::Connected { outbox, .. } = events.recv().await.unwrap() else {
             panic!("expected Connected");
@@ -802,6 +836,45 @@ mod tests {
         let mut trailing = Vec::new();
         client.read_to_end(&mut trailing).await.unwrap();
         assert!(trailing.is_empty(), "and then the hang-up, in that order");
+    }
+
+    /// A gate outlives the loop that feeds it, so it has to refuse on its own.
+    ///
+    /// `ClientGatewayServer::run` returns on the stop and its listener goes with
+    /// it, which covers the socket. A cloned `Gate` covers nothing: an in-process
+    /// dialler holds one, and dialling after the stop used to spawn a login
+    /// conversation onto a runtime that was either about to die or already gone.
+    ///
+    /// Two things are asserted, and the second is the one that matters to the
+    /// caller: no id was minted, so nothing thinks a session exists; and the
+    /// stream this end kept is closed rather than silently unread.
+    #[tokio::test]
+    async fn a_gate_that_is_stopping_serves_nobody() {
+        let shutdown = Shutdown::new();
+        let (gate, mut events) = Gate::new(shutdown.clone());
+        shutdown.stop();
+
+        let (mut client, server) = tokio::io::duplex(4096);
+        assert!(
+            gate.serve(server, "127.0.0.1:0".parse().unwrap()).is_none(),
+            "a stopping gate handed out a connection id"
+        );
+
+        let mut trailing = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut trailing))
+            .await
+            .expect("the caller was left holding a pipe nobody closed")
+            .unwrap();
+        assert!(trailing.is_empty(), "and nothing was said on it");
+
+        // Dropping the gate drops the last sender, so this ends rather than
+        // pending — which is how the channel can be checked to be empty without
+        // waiting on a clock for something that will never arrive.
+        drop(gate);
+        assert!(
+            events.recv().await.is_none(),
+            "the world was told about a connection that was never served"
+        );
     }
 
     #[tokio::test]
