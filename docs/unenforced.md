@@ -3,8 +3,9 @@
 Living plan for the backlog that three finished sweeps left behind. Unlike
 [`protocol_newtypes.md`](protocol_newtypes.md) and
 [`connection_state.md`](connection_state.md), which each took one subject
-through one crate, this one is a shape found in four places at once, so the
-stages share a reason rather than a module.
+through one crate, this one is a shape found in four places at once — a fifth
+came out of the first while it was being done — so the stages share a reason
+rather than a module.
 
 As with both of those: when reality contradicts a decision here, change this
 file in the same commit that changes the code.
@@ -34,6 +35,7 @@ So the question this file asks about each item is not "is it correct today"
 | S2 | every recipe names a group that exists and leads with its system's skill | ~~an assertion in a test~~ **`crafting/build.rs`** | `cargo check`, before the crate compiles |
 | S3 | closing a refused connection tears down six things in order | ~~six doc comments, one per link~~ **`e2e/shard/tests/refused_teardown.rs`**, which walks all six | `cargo test`, on any machine — and it found link 4 half-missing |
 | S4 | the ground renderer's projection and visible set are correct | ~~`tests/frame.rs`, behind `OPENSHARD_CLIENT` **and** a GPU~~ **`ground.rs`'s own tests**, on a map built in memory | `cargo test`, on any machine |
+| S5 | `restore_items` runs before `restore_mobiles` | ~~a doc comment on each and the order of two lines in `boot::restore`~~ the signature: `restore_mobiles` takes what only `restore_items` returns | the compiler |
 
 ## Decisions
 
@@ -125,7 +127,7 @@ follows.
       `restore_mobiles` takes), at a cost this stage did not carry: eight test
       sites restore mobiles alone. Worth doing, cheaper than it looks, and left
       out of S1 because S1 said two functions and the shape is worth judging on
-      its own once.
+      its own once. *Judged, and done: S5.*
 
 - [x] **S2. The craft tables fail the build, not the test run.**
       `defs/mod.rs` asserts that every recipe names a group that exists and
@@ -359,6 +361,62 @@ follows.
       block — and it was left out because nothing needs it yet and an unused
       parameter is a worse thing to carry than a missing one.
 
+- [x] **S5. The other half of the restore order.**
+      S1 made `restore_characters` before `restore_items` a signature and left
+      the next link alone: `restore_items` must run before `restore_mobiles`,
+      which equips each NPC and each vendor out of the inventories the items
+      filed under its serial. Run them the other way round and every mobile comes
+      back naked, its gear filed under a serial nothing will ever ask for — and,
+      as with S1, nothing fails at boot or afterwards. The items are in the world,
+      bound, reachable by nobody, and the first to notice is a player buying from
+      a vendor with no stock.
+
+      The fix is S1's, one step on: `restore_items` returns a `RestoredItems` and
+      `restore_mobiles` takes one. The cost S1 named was eight test sites that
+      restore mobiles alone; that is the whole of the work beyond the two
+      signatures, and it is the reason this was worth judging separately rather
+      than riding along.
+
+      **DoD:** the two functions cannot be called out of order without a type
+      error; the token carries something the mobiles' restore actually depends
+      on rather than being a marker; no test-only constructor for the token (S1's
+      reason: an escape hatch inside the crate that defines the order is the
+      order back as a convention); `boot::restore`'s doc says what the types now
+      say; all four gates silent.
+
+      **Done.** `RestoredItems` carries the filed owners that are *not* among the
+      restored characters — which is to say the mobiles with gear waiting, since
+      an item's `owner` is the mobile at the top of whatever it is nested in.
+      `restore_mobiles` reads it for the boot log: `restore_inventory` already
+      returned whether it found anything, so the two numbers are "mobiles that
+      found gear" and "inventories that were filed for one", and their difference
+      is gear nobody came for. That is the failure this order exists to prevent,
+      and the count is the only thing at boot that would say it had happened.
+
+      Two things worth carrying forward:
+
+      - **The eight test sites became one helper, not one constructor.**
+        `tests::nothing_restored_first` walks the real restore with nothing in it
+        — `restore_characters(Vec::new())` then `restore_items(Vec::new(), …)` —
+        and hands back the token. It goes through the API rather than around it,
+        which is the distinction S1 drew: a helper that *runs the order* is not
+        an escape hatch from it, and it puts the reason in one doc comment
+        instead of eight copies of a two-line comment.
+      - **`boot::restore_items` returns the token on a store it could not read**,
+        for the reason `restore_characters` does. The alternative is an `Option`,
+        and an `Option` there hands the caller the question "does no items still
+        permit mobiles?" — which is the ordering rule back in prose, in the one
+        function whose whole job is to state it.
+
+      Left behind: `seed_configured_characters` is still prose. It runs after
+      `restore_characters` so a name in both the store and the config keeps the
+      row that describes it, and nothing but `boot::restore`'s doc says so. It is
+      the third link and it is *not* the same shape — the rule is about which of
+      two writers wins, not about a value one produces for the other — so a token
+      would be a marker here, and the honest fix is probably `enrol_character`
+      refusing to overwrite a described row, which is an invariant in the roster
+      rather than in the boot order.
+
 ## Order
 
 S1 and S2 first, and in either order — they are small, they are in `server` and
@@ -383,6 +441,12 @@ gateway is the part neither test could have been without.
 is about this: check `git status` for foreign edits in `crates/client/*` before
 starting, and if there are any, take S1 or S2 instead. There is no deadline
 here and there is no reason to reproduce a mixed working tree on purpose.
+
+**S5 was added after S1–S4 were done**, out of S1's own "left behind", and it
+collided with nobody: it is `world/src/tick/persist.rs` and `server/src/boot.rs`,
+which the renderer work does not touch. The one thing it does contend for is the
+place every stage here contends for — `tick/tests.rs` — and only by three lines
+in it.
 
 ## Deliberately not in this plan
 
@@ -410,3 +474,4 @@ here and there is no reason to reproduce a mixed working tree on purpose.
 | S2 — craft tables fail the build | done — `build.rs` reads both halves |
 | S3 — teardown chain, end to end | done — and it found link 4 half-missing |
 | S4 — a `Map` without an install | done — `Map::from_blocks`, and the ground tests left the gate |
+| S5 — the items→mobiles link | done — `RestoredItems`, the same signature one link on |

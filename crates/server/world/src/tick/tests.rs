@@ -104,6 +104,24 @@ pub(super) fn on_file(
     }])
 }
 
+/// Walk the boot restore up to the mobiles with nothing in it, for a test whose
+/// subject is the mobiles alone.
+///
+/// [`World::restore_mobiles`] takes the [`RestoredItems`] that only
+/// [`World::restore_items`] can hand back, which in turn takes what only
+/// [`World::restore_characters`] can — the ordering rule, as a signature. A test
+/// restoring mobiles out of a snapshot with no characters and no items in it
+/// still has to walk that, and this is the walk, written once rather than as two
+/// lines and a comment in eight places.
+///
+/// Deliberately not a constructor for the token: a way to build one without
+/// running the restore is the order back as a convention, inside the very crate
+/// that defines it.
+pub(super) fn nothing_restored_first(world: &mut World) -> RestoredItems {
+    let characters = world.restore_characters(Vec::new());
+    world.restore_items(Vec::new(), &characters)
+}
+
 /// Hand a connection over to the world as "admin", the way the shard loop does
 /// when the login conversation finishes. What the character screen's own packets
 /// need: the account, the authority and the client version all live on the
@@ -4536,7 +4554,8 @@ fn a_poisoned_creature_comes_back_poisoned() {
     );
 
     let mut shard = world();
-    shard.restore_mobiles(mobiles);
+    let filed = nothing_restored_first(&mut shard);
+    shard.restore_mobiles(mobiles, &filed);
     let creature = shard.registry().entity_of(mob).expect("the creature came back");
     assert_eq!(
         shard
@@ -8340,8 +8359,8 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
     // restore still runs in its order, and says so by handing the token over.
     let mut shard = world();
     let characters = shard.restore_characters(Vec::new());
-    shard.restore_items(items, &characters);
-    shard.restore_mobiles(mobiles);
+    let filed = shard.restore_items(items, &characters);
+    shard.restore_mobiles(mobiles, &filed);
 
     let vendor = shard
         .registry()
@@ -8449,7 +8468,8 @@ fn a_wounded_spawner_creature_survives_a_restart_and_is_counted() {
 
     let mut shard = world();
     shard.restore_spawners(spawners);
-    shard.restore_mobiles(mobiles);
+    let filed = nothing_restored_first(&mut shard);
+    shard.restore_mobiles(mobiles, &filed);
 
     let creature = shard
         .registry()
@@ -9832,7 +9852,8 @@ fn a_restored_townsperson_still_knows_its_trade() {
 
     // A fresh world restoring that sweep gets its trade and its beat back.
     let mut booted = World::new(START);
-    booted.restore_mobiles(records);
+    let filed = nothing_restored_first(&mut booted);
+    booted.restore_mobiles(records, &filed);
     let restored = booted
         .registry()
         .query::<openshard_state::components::Title>()
@@ -9874,7 +9895,8 @@ fn restored_townsfolk_do_not_all_beat_on_the_same_tick() {
     }
 
     let mut booted = World::new(START);
-    booted.restore_mobiles(world.mobile_records());
+    let filed = nothing_restored_first(&mut booted);
+    booted.restore_mobiles(world.mobile_records(), &filed);
     let beats: std::collections::BTreeSet<u64> = booted
         .registry()
         .query::<openshard_state::components::Npc>()

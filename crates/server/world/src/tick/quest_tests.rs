@@ -644,7 +644,8 @@ fn a_quest_giver_is_still_a_giver_after_a_restart() {
     // The restart: a fresh world restored from the records alone, and a player
     // who was never here when the giver was placed.
     let mut shard = super::tests::world();
-    shard.restore_mobiles(mobiles);
+    let filed = super::tests::nothing_restored_first(&mut shard);
+    shard.restore_mobiles(mobiles, &filed);
     shard.state.quests.set(vec![rat_cull()]);
     let connection = enter(&mut shard, now);
     let _ = packets_for(&mut shard, connection);
@@ -678,9 +679,10 @@ fn restoring_a_mobile_announces_it_as_restored_not_as_spawned() {
         .expect("the mobile sweep");
 
     let mut shard = super::tests::world();
+    let filed = super::tests::nothing_restored_first(&mut shard);
     let mut restored: Cursor<crate::events::MobileRestored> = shard.bus().cursor();
     let mut spawned: Cursor<openshard_npc::MobileSpawned> = shard.bus().cursor();
-    shard.restore_mobiles(mobiles);
+    shard.restore_mobiles(mobiles, &filed);
 
     let restores: Vec<_> = shard.bus().read(&mut restored).cloned().collect();
     assert!(
@@ -733,8 +735,9 @@ fn a_restore_announces_the_post_an_npc_belongs_to_not_where_it_wandered() {
         .expect("the mobile sweep");
 
     let mut shard = super::tests::world();
+    let filed = super::tests::nothing_restored_first(&mut shard);
     let mut restored: Cursor<crate::events::MobileRestored> = shard.bus().cursor();
-    shard.restore_mobiles(mobiles);
+    shard.restore_mobiles(mobiles, &filed);
     let event = shard
         .bus()
         .read(&mut restored)

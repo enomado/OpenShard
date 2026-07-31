@@ -117,7 +117,7 @@ pub use command::{
 };
 use defaults::*;
 pub use defaults::{SAVE_EVERY_TICKS, TICK_INTERVAL};
-pub use persist::RestoredCharacters;
+pub use persist::{RestoredCharacters, RestoredItems};
 use roster::Roster;
 
 // `Outbound`, `FacetState`, `HeldItem` and `Origin` are the world's runtime

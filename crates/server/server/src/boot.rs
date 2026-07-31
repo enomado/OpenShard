@@ -232,11 +232,11 @@ pub(crate) struct Restored {
 /// config's characters after the store's, so a name on both keeps the row that
 /// describes it. Each function's own doc says why it sits where it does.
 ///
-/// The first of those three is no longer only said: `restore_items` takes the
-/// [`RestoredCharacters`] that only `restore_characters` can hand back, so the
-/// pair cannot be swapped without a type error. The other two are still prose —
-/// `unenforced.md` S1 has the argument, and the mobiles link is the same shape
-/// one step further on.
+/// The first two of those three are no longer only said: `restore_items` takes
+/// the [`RestoredCharacters`] that only `restore_characters` can hand back and
+/// returns the [`RestoredItems`] that `restore_mobiles` will not compile
+/// without, so neither pair can be swapped without a type error. The config's
+/// characters are still prose — `unenforced.md` S1 and S5 have the argument.
 ///
 /// Nothing here is fatal. A store that cannot be read is logged at each step and
 /// the shard comes up with whatever it did get: a shard that refuses to start
@@ -247,8 +247,8 @@ pub(crate) async fn restore(store: &dyn Store, config: &Config, world: World) ->
     let mut world = world;
     let characters = restore_characters(store, &mut world).await;
     seed_configured_characters(config, &mut world);
-    restore_items(store, &mut world, &characters).await;
-    restore_mobiles(store, &mut world).await;
+    let items = restore_items(store, &mut world, &characters).await;
+    restore_mobiles(store, &mut world, &items).await;
     restore_decorations(store, &mut world).await;
     restore_spawners(store, &mut world).await;
     restore_regions(store, &mut world).await;
@@ -353,32 +353,44 @@ fn seed_configured_characters(config: &Config, world: &mut World) {
 /// ground clutter back where it lay, and files each character's carried
 /// inventory to re-equip when it logs in. It takes the characters' restore as an
 /// argument rather than trusting a comment about call order — the serials that
-/// restore reserved are the owners these records point at.
-async fn restore_items(store: &dyn Store, world: &mut World, characters: &RestoredCharacters) {
+/// restore reserved are the owners these records point at — and hands the same
+/// kind of token on to the mobiles.
+///
+/// A store that cannot be read restores nothing and still returns the token, for
+/// the reason [`restore_characters`] does: an `Option` here would make the caller
+/// decide what "no items" permits, which is the ordering rule back in prose.
+async fn restore_items(
+    store: &dyn Store,
+    world: &mut World,
+    characters: &RestoredCharacters,
+) -> RestoredItems {
     match store.items().await {
         Ok(items) => {
             if !items.is_empty() {
                 info!(items = items.len(), "restored saved items");
             }
-            world.restore_items(items, characters);
+            world.restore_items(items, characters)
         }
-        Err(error) => error!(%error, "could not read saved items; starting with none"),
+        Err(error) => {
+            error!(%error, "could not read saved items; starting with none");
+            world.restore_items(Vec::new(), characters)
+        }
     }
 }
 
 /// Bring back the world's NPC mobiles — townsfolk, vendors, creatures — each
-/// exactly as saved. Called after `restore_items`, so each mobile's gear and
-/// stock is already filed under its serial for `World::restore_mobiles` to
-/// equip. This is the whole-world model: the pack seeds a fresh world once (a
-/// staff Populate), and from then on the save is the truth — nothing respawns
-/// at boot.
-async fn restore_mobiles(store: &dyn Store, world: &mut World) {
+/// exactly as saved. Takes the items' restore rather than a comment about call
+/// order: each mobile's gear and stock is already filed under its serial for
+/// `World::restore_mobiles` to equip, and the token is what says so. This is the
+/// whole-world model: the pack seeds a fresh world once (a staff Populate), and
+/// from then on the save is the truth — nothing respawns at boot.
+async fn restore_mobiles(store: &dyn Store, world: &mut World, items: &RestoredItems) {
     match store.mobiles().await {
         Ok(mobiles) => {
             if !mobiles.is_empty() {
                 info!(mobiles = mobiles.len(), "restored the world's mobiles");
             }
-            world.restore_mobiles(mobiles);
+            world.restore_mobiles(mobiles, items);
         }
         Err(error) => error!(%error, "could not read saved mobiles; starting with none"),
     }
