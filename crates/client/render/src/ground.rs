@@ -11,7 +11,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 
 use crate::atlas::{LandAtlas, Region, TexmapAtlas};
-use crate::camera::Camera;
+use crate::camera::{Camera, TileBounds};
 use crate::depth;
 
 /// One ground quad: where it goes, how its corners stand, and what to sample.
@@ -104,10 +104,26 @@ impl GroundQuad {
 /// [`collect`]: the atlas has to exist before a quad can be given a region.
 pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
     let mut seen = BTreeSet::new();
-    for_each_visible_cell(map, camera, |_, _, cell| {
-        seen.insert(Graphic(cell.tile));
-    });
+    graphics_in(map, camera.visible_tiles(), &mut seen);
     seen
+}
+
+/// Every distinct land graphic on the cells of one rectangle, added to `out`.
+///
+/// The same walk [`visible_graphics`] does, over a rectangle somebody else
+/// chose. That somebody is the caller growing an atlas: what a frame needs that
+/// the atlas does not already hold is a question about the *edge* the camera
+/// crossed, and [`TileBounds::difference`] is what turns the viewport into the
+/// two or three thin bands that crossed it. Walking the whole rectangle instead
+/// is nine thousand cells at 1080p, on every frame, to discover that a camera
+/// which moved one tile introduced one row.
+///
+/// Accumulating into `out` rather than returning a set, because the caller has
+/// several bands and one atlas.
+pub fn graphics_in(map: &Map, bounds: TileBounds, out: &mut BTreeSet<Graphic>) {
+    for_each_cell_in(map, bounds, |_, _, cell| {
+        out.insert(Graphic(cell.tile));
+    });
 }
 
 /// The quads for everything visible, in the order they must be drawn.
@@ -120,7 +136,7 @@ pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas, texmaps: &TexmapAt
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, GroundQuad)> = Vec::new();
 
-    for_each_visible_cell(map, camera, |x, y, cell| {
+    for_each_cell_in(map, camera.visible_tiles(), |x, y, cell| {
         let Some(region) = atlas.region(Graphic(cell.tile)) else {
             return;
         };
@@ -188,17 +204,17 @@ fn corner_heights(map: &Map, x: u16, y: u16, own: i8) -> [f32; 4] {
     ]
 }
 
-/// Walk the visible rectangle, clamped to the map, calling back for each cell.
+/// Walk a rectangle, clamped to the map, calling back for each cell.
 ///
-/// The clamp is why the camera may hand back negative bounds: the edge of the
-/// world is the map's fact, not the camera's, and a camera that knew the map's
-/// size would have to be rebuilt whenever the facet changed.
-fn for_each_visible_cell(
+/// The clamp is why the bounds may be negative: the edge of the world is the
+/// map's fact, not the camera's, and a camera that knew the map's size would
+/// have to be rebuilt whenever the facet changed.
+fn for_each_cell_in(
     map: &Map,
-    camera: &Camera,
+    bounds: TileBounds,
     mut each: impl FnMut(u16, u16, openshard_uofiles::map::LandCell),
 ) {
-    let Some((xs, ys)) = camera.visible_tiles().clamp_to(map.width(), map.height()) else {
+    let Some((xs, ys)) = bounds.clamp_to(map.width(), map.height()) else {
         return;
     };
 

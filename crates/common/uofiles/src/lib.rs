@@ -18,6 +18,8 @@
 pub mod anim;
 pub mod art;
 pub mod color;
+pub mod font;
+pub mod gumpart;
 pub mod hues;
 pub mod image;
 pub mod map;

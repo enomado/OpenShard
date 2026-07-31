@@ -269,6 +269,74 @@ impl TileBounds {
         // no facet is wider than 7,168 tiles.
         Some((min_x as u16..=max_x as u16, min_y as u16..=max_y as u16))
     }
+
+    /// The parts of this rectangle that `covered` does not already contain.
+    ///
+    /// Up to four rectangles — a band above, a band below, and what is left of
+    /// the rows between them on either side — and none at all when `covered`
+    /// contains this one, which is the ordinary frame.
+    ///
+    /// This is what makes the atlases' growth proportional to the camera's
+    /// *movement* rather than to the viewport. Asking "does the atlas hold
+    /// every graphic on screen" walks nine thousand cells at 1080p on every
+    /// frame to answer a question about the edge the camera just crossed; a step
+    /// of one tile crosses one row of it. The invariant that makes the answer
+    /// sound is positional and belongs to the caller: every cell inside
+    /// `covered` has already been offered to the atlas, so a cell outside it is
+    /// the only place a graphic can be new.
+    ///
+    /// Saturating, because tile space is unbounded in both directions here — see
+    /// this type's own note — and `covered.min_x - 1` at `i32::MIN` is not a
+    /// rectangle anybody asked for.
+    pub fn difference(self, covered: TileBounds) -> [Option<TileBounds>; 4] {
+        // Disjoint: nothing to subtract, and doing the arithmetic anyway would
+        // produce the two bands *and* the two sides of an empty middle.
+        if self.max_x < covered.min_x
+            || self.min_x > covered.max_x
+            || self.max_y < covered.min_y
+            || self.min_y > covered.max_y
+        {
+            return [Some(self), None, None, None];
+        }
+
+        let rect = |min_x: i32, max_x: i32, min_y: i32, max_y: i32| {
+            (min_x <= max_x && min_y <= max_y).then_some(TileBounds {
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            })
+        };
+        // The rows the two rectangles share, which are the only ones with a left
+        // and a right piece: above and below them the whole width is uncovered.
+        let (from, to) = (self.min_y.max(covered.min_y), self.max_y.min(covered.max_y));
+        [
+            rect(
+                self.min_x,
+                self.max_x,
+                self.min_y,
+                self.max_y.min(covered.min_y.saturating_sub(1)),
+            ),
+            rect(
+                self.min_x,
+                self.max_x,
+                self.min_y.max(covered.max_y.saturating_add(1)),
+                self.max_y,
+            ),
+            rect(
+                self.min_x,
+                self.max_x.min(covered.min_x.saturating_sub(1)),
+                from,
+                to,
+            ),
+            rect(
+                self.min_x.max(covered.max_x.saturating_add(1)),
+                self.max_x,
+                from,
+                to,
+            ),
+        ]
+    }
 }
 
 /// What the view is looking at, how magnified, and how big the viewport is.
@@ -371,6 +439,55 @@ impl Camera {
     /// top-left corner. Outside it is ordinary and not an error.
     pub fn to_screen(&self, point: Point) -> ViewPixel {
         self.to_view(project(point))
+    }
+
+    /// Where a drawn-image pixel lands in the viewport, after the blit's scale.
+    ///
+    /// [`Camera::to_view`] stops at the offscreen image, which is drawn 1:1
+    /// and then blitted into the viewport at exactly the ratio
+    /// [`Zoom::world_pixels`] used to size it — so the inverse of that ratio is
+    /// what carries a render-space point the rest of the way to a pixel a
+    /// painter can use. `f32` because a highlight is drawn at whatever
+    /// magnification the blit lands on, not on a texel grid.
+    pub fn to_viewport(&self, at: ViewPixel) -> (f32, f32) {
+        let num = self.zoom.numerator() as f32;
+        let den = self.zoom.denominator() as f32;
+        let scale = num / den;
+        (
+            (at.x - self.render_width() as i32 / 2) as f32 * scale + self.width as f32 / 2.0,
+            (at.y - self.render_height() as i32 / 2) as f32 * scale + self.height as f32 / 2.0,
+        )
+    }
+
+    /// The four corners of a tile's diamond, in viewport pixels — top, right,
+    /// bottom, left.
+    ///
+    /// Read off the same square every ground quad is drawn from: the art is
+    /// 44 pixels on a side in render space regardless of zoom, and only the
+    /// blit in [`Camera::to_viewport`] scales it, so the offsets below are
+    /// taken before that conversion and not after.
+    pub fn tile_diamond(&self, point: Point) -> [(f32, f32); 4] {
+        let centre = self.to_screen(point);
+        let half = TILE_WIDTH / 2;
+        [
+            ViewPixel {
+                x: centre.x,
+                y: centre.y - half,
+            },
+            ViewPixel {
+                x: centre.x + half,
+                y: centre.y,
+            },
+            ViewPixel {
+                x: centre.x,
+                y: centre.y + half,
+            },
+            ViewPixel {
+                x: centre.x - half,
+                y: centre.y,
+            },
+        ]
+        .map(|corner| self.to_viewport(corner))
     }
 
     /// What world pixel the cursor is over, given where it is in the viewport.
@@ -726,5 +843,127 @@ mod tests {
             }
             zoom = next;
         }
+    }
+}
+
+#[cfg(test)]
+mod difference_tests {
+    use super::TileBounds;
+
+    fn bounds(min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> TileBounds {
+        TileBounds {
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        }
+    }
+
+    /// Every cell in a rectangle, as a set a test can compare.
+    fn cells(rect: TileBounds) -> std::collections::BTreeSet<(i32, i32)> {
+        let mut out = std::collections::BTreeSet::new();
+        for y in rect.min_y..=rect.max_y {
+            for x in rect.min_x..=rect.max_x {
+                out.insert((x, y));
+            }
+        }
+        out
+    }
+
+    /// The property the whole band walk rests on, stated over every pair of
+    /// rectangles in a small window: the pieces are exactly the cells of the
+    /// first that the second does not hold, and no cell appears twice.
+    ///
+    /// Both halves matter and they fail differently. A piece that is *missing*
+    /// is a graphic never offered to the atlas, which draws nothing where it
+    /// should have drawn a wall — silently, and only along one edge, and only
+    /// for the camera direction that produced it. A cell counted *twice* is
+    /// merely work done twice, which nothing would ever notice; asserting it
+    /// anyway is what keeps a lazily-widened rectangle from becoming the
+    /// "walk the whole viewport" this exists to replace.
+    #[test]
+    fn the_pieces_are_exactly_what_is_not_covered() {
+        let range = -2..=2;
+        for min_x in range.clone() {
+            for max_x in min_x..=2 {
+                for min_y in range.clone() {
+                    for max_y in min_y..=2 {
+                        let want = bounds(min_x, max_x, min_y, max_y);
+                        for cx in range.clone() {
+                            for cy in range.clone() {
+                                let covered = bounds(cx, cx + 1, cy, cy + 2);
+                                let pieces = want.difference(covered);
+
+                                let mut union = std::collections::BTreeSet::new();
+                                let mut total = 0;
+                                for piece in pieces.into_iter().flatten() {
+                                    let piece = cells(piece);
+                                    total += piece.len();
+                                    union.extend(piece);
+                                }
+                                assert_eq!(union.len(), total, "{want:?} minus {covered:?} overlaps itself");
+
+                                let expected: std::collections::BTreeSet<(i32, i32)> =
+                                    cells(want).difference(&cells(covered)).copied().collect();
+                                assert_eq!(union, expected, "{want:?} minus {covered:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A camera that has not moved asks for nothing, which is the frame this
+    /// whole arrangement exists to make free.
+    #[test]
+    fn a_rectangle_inside_the_covered_one_has_no_pieces() {
+        let covered = bounds(0, 100, 0, 100);
+        assert!(
+            covered
+                .difference(covered)
+                .into_iter()
+                .all(|piece| piece.is_none())
+        );
+        let inside = bounds(10, 20, 10, 20);
+        assert!(
+            inside
+                .difference(covered)
+                .into_iter()
+                .all(|piece| piece.is_none())
+        );
+    }
+
+    /// A step of one tile is one row, not a viewport. The number is the whole
+    /// point of the band walk, so it is asserted rather than described.
+    #[test]
+    fn a_step_of_one_tile_uncovers_one_row() {
+        let covered = bounds(0, 99, 0, 99);
+        let moved = bounds(0, 99, 1, 100);
+        let cells: usize = moved
+            .difference(covered)
+            .into_iter()
+            .flatten()
+            .map(|piece| cells(piece).len())
+            .sum();
+        assert_eq!(cells, 100, "one row of a 100-wide rectangle");
+    }
+
+    /// Nothing in common: the whole rectangle is new. A teleport, or a facet
+    /// wide enough that the camera left everything it knew.
+    #[test]
+    fn a_disjoint_rectangle_is_uncovered_whole() {
+        let covered = bounds(0, 10, 0, 10);
+        let elsewhere = bounds(100, 110, 100, 110);
+        let pieces: Vec<TileBounds> = elsewhere.difference(covered).into_iter().flatten().collect();
+        assert_eq!(pieces, vec![elsewhere]);
+    }
+
+    /// The saturating arithmetic, at the edge that would wrap without it.
+    #[test]
+    fn the_extremes_do_not_wrap() {
+        let covered = bounds(i32::MIN, i32::MAX, i32::MIN, i32::MAX);
+        let want = bounds(-5, 5, -5, 5);
+        assert!(want.difference(covered).into_iter().all(|piece| piece.is_none()));
     }
 }

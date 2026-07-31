@@ -42,3 +42,4 @@ pub mod mobiles;
 pub mod renderer;
 pub mod sprite;
 pub mod statics;
+pub mod text;

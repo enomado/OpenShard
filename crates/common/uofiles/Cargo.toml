@@ -13,3 +13,6 @@ workspace = true
 
 [dependencies]
 openshard-protocol.workspace = true
+# For gumpart: every entry in `gumpartLegacyMUL.uop` is zlib-compressed. See
+# the note on this dependency in the workspace `Cargo.toml`.
+miniz_oxide.workspace = true

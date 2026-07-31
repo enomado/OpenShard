@@ -1506,3 +1506,128 @@ fn dump_a_frame_of_britain() {
     std::fs::write(&path, ppm).expect("writing the frame");
     eprintln!("wrote {}", path.display());
 }
+
+/// A sprite packed into an atlas *after* its renderer was built is drawn, and
+/// drawn from its own pixels.
+///
+/// The load-bearing test for growing an atlas instead of rebuilding it. The
+/// whole saving is that a growth uploads a band of rows rather than a 16MB
+/// texture, and the band is the one thing in that arrangement with arithmetic in
+/// it: `write_rows` cuts a slice out of the atlas and names a `y` to start it at,
+/// and the two have to agree. If they do not, the sprite is drawn from whatever
+/// the texture held there — which on a fresh atlas is transparent, so the
+/// failure is a graphic that silently does not appear rather than one that
+/// appears wrong.
+///
+/// The first sprite is 2,040 wide on purpose: it fills the shelf, so the second
+/// starts a new row and the band has a non-zero origin. A band starting at zero
+/// passes with the offset arithmetic missing entirely.
+///
+/// No client files: the pictures are this test's own.
+#[test]
+fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const SHELF_FILLER: Graphic = Graphic(1);
+    const LATE: Graphic = Graphic(2);
+    let (width, height) = (24u16, 18u16);
+    let color = Color16(0b0_11111_00000_00000);
+
+    let mut atlas = StaticAtlas::pack([(
+        SHELF_FILLER,
+        Image::new(2040, 40, vec![Color16(0b0_00000_11111_00000); 2040 * 40]),
+    )])
+    .expect("one wide sprite fits");
+
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
+    // Built from the atlas as it stands, which is the point: the pass below is
+    // never rebuilt, exactly as `client/app` no longer rebuilds it.
+    let mut statics = SpriteRenderer::new(&device, &queue, format, atlas.pixels(), &hue_ramp);
+
+    atlas
+        .pack_more([(
+            LATE,
+            Image::new(
+                width,
+                height,
+                vec![color; usize::from(width) * usize::from(height)],
+            ),
+        )])
+        .expect("a second sprite fits");
+    let rows = atlas.take_dirty().expect("the growth wrote something");
+    assert!(
+        rows.start > 0,
+        "the second sprite should have started a new shelf"
+    );
+    statics.upload_rows(&queue, atlas.pixels(), rows);
+
+    let sprite = atlas.sprite(LATE).expect("packed");
+    let quads = [SpriteQuad {
+        x: 10.0,
+        y: 12.0,
+        width: f32::from(sprite.width),
+        height: f32::from(sprite.height),
+        region: sprite.region,
+        depth: 0.5,
+        hue: 0,
+    }];
+
+    let (frame_width, frame_height) = (128u32, 128u32);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("frame"),
+        size: wgpu::Extent3d {
+            width: frame_width,
+            height: frame_height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(&device, frame_width, frame_height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    // The ground pass clears; the sprite pass loads what it left. Given nothing
+    // to draw, it is the clear on its own.
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let mut ground = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target_view = Target {
+        view: &view,
+        depth: &depth_view,
+        width: frame_width,
+        height: frame_height,
+    };
+    ground.render(&device, &queue, &mut encoder, target_view, &[]);
+    statics.render(&device, &queue, &mut encoder, target_view, &quads);
+    queue.submit([encoder.finish()]);
+    let frame = read_back(&device, &queue, &target);
+
+    let (r, g, b) = color.rgb8();
+    let mut drawn = 0;
+    for y in 0..frame_height {
+        for x in 0..frame_width {
+            let inside =
+                (10..10 + u32::from(width)).contains(&x) && (12..12 + u32::from(height)).contains(&y);
+            let got = frame.pixel(x, y);
+            if !inside {
+                assert_eq!(got[3], 0, "({x}, {y}) is outside the sprite and was drawn");
+                continue;
+            }
+            assert_eq!(
+                got,
+                [r, g, b, u8::MAX],
+                "({x}, {y}) is not the late sprite's pixel"
+            );
+            drawn += 1;
+        }
+    }
+    assert_eq!(drawn, usize::from(width) * usize::from(height));
+}

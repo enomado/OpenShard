@@ -108,6 +108,13 @@ clap = { version = "4", features = ["derive", "env"] }
 # committed, which is why the file is in `.gitignore` and `.env.example` is the
 # version under review.
 dotenvy = "0.15"
+# `gumpartLegacyMUL.uop` marks every one of its 5,556 entries compression flag
+# 3, which is zlib, and only zlib — the flag also covers a second,
+# container-specific pass that this client never turns on. Pulled in directly
+# rather than through `flate2`'s `rust_backend`: that feature is this crate and
+# nothing else, so the extra layer buys nothing, and `unsafe_code = "deny"`
+# workspace-wide rules out `flate2`'s C backend anyway.
+miniz_oxide = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

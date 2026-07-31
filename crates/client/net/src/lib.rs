@@ -26,6 +26,7 @@
 
 pub mod connection;
 pub mod session;
+pub mod talk;
 pub mod transport;
 pub mod view;
 pub mod walk;

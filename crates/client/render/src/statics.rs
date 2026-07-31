@@ -23,7 +23,7 @@ use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
 use crate::atlas::{Sprite, StaticAtlas};
-use crate::camera::{Camera, TILE_HEIGHT};
+use crate::camera::{Camera, TILE_HEIGHT, TileBounds};
 use crate::depth;
 use crate::sprite::SpriteQuad;
 
@@ -52,10 +52,18 @@ pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> (f32, f32) {
 /// cannot be given a region until the atlas holding it exists.
 pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
     let mut seen = BTreeSet::new();
-    for_each_visible_static(map, camera, |item| {
-        seen.insert(Graphic(item.tile));
-    });
+    graphics_in(map, camera.visible_tiles(), &mut seen);
     seen
+}
+
+/// Every distinct static graphic standing on the cells of one rectangle, added
+/// to `out`. [`ground::graphics_in`](crate::ground::graphics_in) for the sprites
+/// rather than the ground, and it exists for the same reason: an atlas grows by
+/// the band the camera crossed, not by the viewport it is looking at.
+pub fn graphics_in(map: &Map, bounds: TileBounds, out: &mut BTreeSet<Graphic>) {
+    for_each_static_in(map, bounds, |item| {
+        out.insert(Graphic(item.tile));
+    });
 }
 
 /// The quads for every visible static.
@@ -74,7 +82,7 @@ pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAt
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
-    for_each_visible_static(map, camera, |item| {
+    for_each_static_in(map, camera.visible_tiles(), |item| {
         let graphic = Graphic(item.tile);
         let Some(sprite) = atlas.sprite(graphic) else {
             return;
@@ -117,12 +125,12 @@ pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAt
 /// by the whole `z` range in both directions, which is 512 pixels either way,
 /// so the sprites are covered by a margin that exists for another reason. Said
 /// here because it is a dependency between two modules and not an accident.
-fn for_each_visible_static(
+fn for_each_static_in(
     map: &Map,
-    camera: &Camera,
+    bounds: TileBounds,
     mut each: impl FnMut(&openshard_uofiles::map::StaticItem),
 ) {
-    let Some((xs, ys)) = camera.visible_tiles().clamp_to(map.width(), map.height()) else {
+    let Some((xs, ys)) = bounds.clamp_to(map.width(), map.height()) else {
         return;
     };
     for y in ys {

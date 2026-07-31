@@ -7,8 +7,9 @@
 //!
 //! It grows with the decoders. `0x1B`, `0x20`, `0x1D`, `0x77`, `0x78` and
 //! `0x1A` are decoded, so the player, every other mobile and every ground item
-//! this client has been shown are held here, and `0x1C` is kept as a journal of
-//! what has been said to it. `0x11` (a mobile's paperdoll numbers) decodes too,
+//! this client has been shown are held here, and `0x1C` and `0xAE` are kept as
+//! one journal of what has been said to it — see [`Heard`], which is why they
+//! are one and not two. `0x11` (a mobile's paperdoll numbers) decodes too,
 //! but is not folded in below: it is status-bar data, not a position or an
 //! appearance, and belongs with whatever eventually models the status bar rather
 //! than with a record of what is on screen.
@@ -22,10 +23,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use openshard_protocol::direction::Facing;
+use openshard_protocol::gump::layout::{Element, parse};
+use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
 use openshard_protocol::mobile::{Equipment, Notoriety, StatusFlags};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
-use openshard_protocol::speech::SpokenMessage;
+use openshard_protocol::speech::{Font, SpokenMessage, TalkMode, UnicodeMessage};
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{MapSize, PlayerStart, Point};
 
@@ -96,6 +99,71 @@ pub struct Mobile {
     pub equipment: Vec<Equipment>,
 }
 
+/// A line said to this client — `0x1C` or `0xAE`, folded into one shape.
+///
+/// The two packets are one event told two ways: `0x1C` carries it in Latin-1,
+/// `0xAE` in big-endian UTF-16 for the text `0x1C` cannot hold, and a client
+/// that spoke `0xAD` gets its own words back as `0xAE` — see
+/// `openshard_protocol::speech` module docs. A journal that held one of the
+/// two packet types and hoped the other never arrived would leave a client's
+/// own accented or non-Latin speech undecoded and invisible to itself, which
+/// is the bug this type exists to close. Everything a renderer wants is here
+/// regardless of which wire shape it came in as, so nothing downstream has to
+/// match on the packet again.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Heard {
+    /// The speaker, or `None` for the system.
+    pub serial: Option<Serial>,
+    /// The speaker's body graphic, or `None` for no mobile behind it.
+    pub graphic: Option<Graphic>,
+    /// How it is said.
+    pub mode: TalkMode,
+    /// The colour to draw it in.
+    pub hue: Hue,
+    /// The font to draw it in.
+    pub font: Font,
+    /// The speaker's name, or empty for the system.
+    pub name: String,
+    /// What was said.
+    pub text: String,
+}
+
+impl Heard {
+    /// From a `0x1C` — Latin-1 speech.
+    #[must_use]
+    pub fn ascii(message: &SpokenMessage) -> Self {
+        Self {
+            serial: message.serial,
+            graphic: message.graphic,
+            mode: message.mode,
+            hue: message.hue,
+            font: message.font,
+            name: message.name.clone(),
+            text: message.text.clone(),
+        }
+    }
+
+    /// From a `0xAE` — Unicode speech.
+    ///
+    /// The four-byte language tag on the wire is dropped here rather than
+    /// carried into the journal: nothing downstream reads it, and it names a
+    /// property of the *sender* (what client locale sent this), not of the
+    /// line itself — keeping it would be a field every future consumer has to
+    /// notice does nothing.
+    #[must_use]
+    pub fn unicode(message: &UnicodeMessage) -> Self {
+        Self {
+            serial: message.serial,
+            graphic: message.graphic,
+            mode: message.mode,
+            hue: message.hue,
+            font: message.font,
+            name: message.name.clone(),
+            text: message.text.clone(),
+        }
+    }
+}
+
 /// An item on the ground, as `0x1A` last described it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Item {
@@ -130,15 +198,61 @@ pub struct WorldView {
     /// What has been said to this client, oldest first, capped at
     /// [`JOURNAL_LINES`].
     ///
-    /// The whole `0x1C` and not a trimmed line: one packet is one entry here,
-    /// so there is nothing for a second type to reconcile, and a renderer that
-    /// wants the hue and the font it was told to draw in still has them.
+    /// One [`Heard`] per packet — `0x1C` or `0xAE` — so there is nothing for a
+    /// second type to reconcile, and a renderer that wants the hue and the
+    /// font it was told to draw in still has them.
     ///
     /// It is history, not state — which is why nothing removes from it except
     /// the cap. The first thing it holds, and the reason it exists at all, is
     /// the shard saying it is going away (`docs/shutdown.md` S3): a client that
     /// could decode that line and then dropped it was told and did not listen.
-    pub journal: VecDeque<SpokenMessage>,
+    pub journal: VecDeque<Heard>,
+    /// The dialogs the server has opened here and this client has not answered,
+    /// oldest first.
+    ///
+    /// A window is state on *both* ends: the server remembers it drew one and
+    /// waits for the `0xB1`, and until that arrives the client is the only place
+    /// that knows the window is up. That is why this is a list and not a
+    /// snapshot replaced by each packet — a shard may have several open at once,
+    /// and nothing on the wire says "these are all of them".
+    ///
+    /// Removed by [`gump_closed`](Self::gump_closed) when this client answers,
+    /// which is the one thing here the server does not tell us — see its docs.
+    pub gumps: Vec<OpenGump>,
+}
+
+/// A dialog the server has opened on this client, layout already read.
+///
+/// The elements are parsed once, when the packet arrives, rather than every time
+/// something draws: the layout string is what the wire carries and a list of
+/// elements is what anything above wants, and re-parsing per frame would be the
+/// same work sixty times a second. The lines travel beside them because an
+/// element names its text by index — see [`Element::Label`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OpenGump {
+    /// What the reply must echo. Opaque: the server chose it — see [`GumpKey`].
+    pub key: GumpKey,
+    /// Which dialog, and what the reply is routed by on the way back.
+    pub gump_id: GumpId,
+    /// Where on the screen the server asked for it.
+    pub at: GumpPoint,
+    /// What to draw, in the order the window draws it.
+    pub elements: Vec<Element>,
+    /// The text table the elements index into.
+    pub lines: Vec<String>,
+}
+
+impl OpenGump {
+    /// The line an element names, or `None` when the layout indexed past the
+    /// table it travelled with.
+    ///
+    /// Absent rather than empty on purpose: a layout naming a line that is not
+    /// there is a bug on the sending side, and a blank label would hide it. The
+    /// caller decides whether to draw a placeholder or nothing at all.
+    #[must_use]
+    pub fn line(&self, index: usize) -> Option<&str> {
+        self.lines.get(index).map(String::as_str)
+    }
 }
 
 impl WorldView {
@@ -159,17 +273,36 @@ impl WorldView {
             mobiles: HashMap::new(),
             items: HashMap::new(),
             journal: VecDeque::new(),
+            gumps: Vec::new(),
         }
+    }
+
+    /// Forget a dialog this client has just answered.
+    ///
+    /// The one thing about a gump the server never says. A reply button closes
+    /// the window *on the client* — that is what the reference client does, and
+    /// what the server assumes when it waits for one `0xB1` per window — so the
+    /// close is knowledge this end has and no packet carries, the same shape as
+    /// [`player_stepped`](Self::player_stepped) learning a position from an ack
+    /// that carries none.
+    ///
+    /// Answers whether anything was actually open under that id, so a caller can
+    /// tell a real close from a stale click on a window the server already
+    /// replaced.
+    pub fn gump_closed(&mut self, gump_id: GumpId) -> bool {
+        let before = self.gumps.len();
+        self.gumps.retain(|gump| gump.gump_id != gump_id);
+        self.gumps.len() != before
     }
 
     /// Write down a line the server said, dropping the oldest if the journal is
     /// full.
     ///
     /// Separate from [`apply`](Self::apply) only so the cap has one place to
-    /// live: everything that speaks to a client arrives as `0x1C` today, and
+    /// live: `0x1C` and `0xAE` both fold to [`Heard`] and land here, and
     /// whatever else learns to (a cliloc, an overhead message) lands here too
     /// rather than growing a second bound to keep in step.
-    fn heard(&mut self, line: SpokenMessage) {
+    fn heard(&mut self, line: Heard) {
         if self.journal.len() == JOURNAL_LINES {
             self.journal.pop_front();
         }
@@ -217,17 +350,53 @@ impl WorldView {
                 // all of it is stale; the journal is what the client was
                 // *told*, and restarting a session unsays none of it. A shard
                 // that announced a stop and then sent one more `0x1B` would
-                // otherwise have erased the announcement.
+                // otherwise have erased the announcement. Open windows do *not*
+                // cross it: a gump is keyed on a serial from the session that
+                // has just been restarted, so answering one afterwards would
+                // name a context the server no longer has.
                 std::mem::swap(&mut fresh.journal, &mut self.journal);
                 let changed = *self != fresh;
                 *self = fresh;
                 changed
             }
-            // Speech, a system line, an NPC — all one packet, all one journal.
+            // A window. Parsed here, once, rather than by whatever draws it —
+            // see `OpenGump`. A second `0xB0` under an id already open replaces
+            // that window rather than stacking a copy on it: the server sends a
+            // `0xBF 0x04` before re-drawing a dialog it means to replace, and a
+            // client that missed one would otherwise grow a pile of identical
+            // menus nobody can dismiss.
+            ServerPacket::GumpDisplay(display) => {
+                let fresh = OpenGump {
+                    key: display.serial,
+                    gump_id: display.gump_id,
+                    at: display.at,
+                    elements: parse(&display.layout),
+                    lines: display.lines.clone(),
+                };
+                match self.gumps.iter_mut().find(|open| open.gump_id == fresh.gump_id) {
+                    Some(open) if *open == fresh => false,
+                    Some(open) => {
+                        *open = fresh;
+                        true
+                    }
+                    None => {
+                        self.gumps.push(fresh);
+                        true
+                    }
+                }
+            }
+            // Speech, a system line, an NPC — all one journal, whichever of the
+            // two wire shapes it arrived as.
             ServerPacket::SpokenMessage(line) => {
-                self.heard(line.clone());
+                self.heard(Heard::ascii(line));
                 // Always a change: the same sentence said twice is two lines in
                 // a journal, unlike a position that is set twice to one tile.
+                true
+            }
+            // `0xAE`: the shape a client that spoke `0xAD` gets its own words
+            // back as — see `Heard`'s docs for why this cannot be skipped.
+            ServerPacket::UnicodeMessage(line) => {
+                self.heard(Heard::unicode(line));
                 true
             }
             ServerPacket::PlayerUpdate(update) => {
@@ -420,6 +589,95 @@ mod tests {
             view.journal.back().expect("a full journal has a last line").text,
             (JOURNAL_LINES + 1).to_string(),
             "and the newest is still the newest"
+        );
+    }
+
+    /// `0x1C` and `0xAE` are the same event in two encodings — see [`Heard`]'s
+    /// docs — so a client that spoke `0xAD` and gets its own accented words
+    /// back as `0xAE` must see that line in the same place as everything said
+    /// to it in plain ASCII: one journal, one order, one cap. Two journals, or
+    /// a `0xAE` that decoded but nowhere to put it, would leave a player's own
+    /// speech invisible even though the packet was read correctly.
+    #[test]
+    fn ascii_and_unicode_speech_share_one_journal_in_arrival_order_and_one_cap() {
+        let mut view = WorldView::entered(start());
+        let unicode = |text: &str| {
+            ServerPacket::UnicodeMessage(openshard_protocol::speech::UnicodeMessage {
+                serial: None,
+                graphic: None,
+                mode: openshard_protocol::speech::TalkMode::Regular,
+                hue: Hue(0x0035),
+                font: openshard_protocol::speech::Font::DEFAULT,
+                language: "ENU".to_owned(),
+                name: "System".to_owned(),
+                text: text.to_owned(),
+            })
+        };
+
+        assert!(view.apply(&ServerPacket::SpokenMessage(said("hello"))));
+        assert!(view.apply(&unicode("привет")));
+        assert!(view.apply(&ServerPacket::SpokenMessage(said("goodbye"))));
+
+        let lines: Vec<&str> = view.journal.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(
+            lines,
+            ["hello", "привет", "goodbye"],
+            "both encodings land in one journal, in the order they arrived"
+        );
+
+        // The cap is shared, not one budget per encoding: filling it with the
+        // *other* wire shape must still evict the oldest line.
+        for line in 0..JOURNAL_LINES {
+            view.apply(&unicode(&line.to_string()));
+        }
+        assert_eq!(view.journal.len(), JOURNAL_LINES, "one cap for both encodings");
+        assert_eq!(
+            view.journal.back().expect("a full journal has a last line").text,
+            (JOURNAL_LINES - 1).to_string()
+        );
+    }
+
+    /// The admin menu, arriving and being answered — the whole life of a window
+    /// as this end sees it. What it protects is the two halves nothing on the
+    /// wire says: that a second copy of a dialog *replaces* the open one, and
+    /// that answering closes it here, since no packet ever comes back to say so.
+    #[test]
+    fn a_dialog_replaces_its_own_open_copy_and_closes_when_it_is_answered() {
+        let mut view = WorldView::entered(start());
+        let menu = |title: &str| {
+            ServerPacket::GumpDisplay(openshard_protocol::gump::GumpDisplay {
+                serial: GumpKey::on(start().serial),
+                gump_id: GumpId(0x00AD_0001),
+                at: GumpPoint::new(100, 100),
+                layout: "{ resizepic 0 0 5054 300 270 }{ text 105 14 2100 0 }".to_owned(),
+                lines: vec![title.to_owned()],
+            })
+        };
+
+        assert!(view.apply(&menu("Admin")), "a window this client did not have");
+        assert_eq!(view.gumps.len(), 1);
+        assert_eq!(view.gumps[0].line(0), Some("Admin"));
+        assert_eq!(
+            view.gumps[0].elements.first(),
+            Some(&Element::Background {
+                x: 0,
+                y: 0,
+                width: 300,
+                height: 270,
+                gump: 5054,
+            }),
+            "the layout is read when it arrives, not when it is drawn"
+        );
+
+        assert!(!view.apply(&menu("Admin")), "the same window twice is no change");
+        assert!(view.apply(&menu("Admin II")), "a redrawn window is a change");
+        assert_eq!(view.gumps.len(), 1, "and it replaces rather than stacks");
+
+        assert!(view.gump_closed(GumpId(0x00AD_0001)), "it was open");
+        assert!(view.gumps.is_empty());
+        assert!(
+            !view.gump_closed(GumpId(0x00AD_0001)),
+            "answering twice closes nothing the second time"
         );
     }
 

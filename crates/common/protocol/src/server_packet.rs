@@ -205,11 +205,11 @@ impl ServerPacket {
             Self::SkillUpdate(_) => SkillUpdate::ID,
             Self::SpokenMessage(_) => <SpokenMessage as EncodePacket>::ID,
             Self::LocalizedMessage(_) => LocalizedMessage::ID,
-            Self::UnicodeMessage(_) => UnicodeMessage::ID,
+            Self::UnicodeMessage(_) => <UnicodeMessage as EncodePacket>::ID,
             Self::ContextMenu(_) => ContextMenu::ID,
             Self::SpellbookContent(_) => SpellbookContent::ID,
             Self::CloseGump(_) => CloseGump::ID,
-            Self::GumpDisplay(_) => GumpDisplay::ID,
+            Self::GumpDisplay(_) => <GumpDisplay as EncodePacket>::ID,
         }
     }
 
@@ -420,6 +420,12 @@ impl ServerPacket {
             <SpokenMessage as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::SpokenMessage)
                 .map_err(ServerDecodeError::SpokenMessage)?,
+            <UnicodeMessage as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::UnicodeMessage)
+                .map_err(ServerDecodeError::UnicodeMessage)?,
+            <GumpDisplay as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::GumpDisplay)
+                .map_err(ServerDecodeError::GumpDisplay)?,
             _ => return Ok(None),
         };
         Ok(Some(decoded))
@@ -464,6 +470,10 @@ pub enum ServerDecodeError {
     WalkReject(DecodeError),
     /// `0x1C` did not decode.
     SpokenMessage(DecodeError),
+    /// `0xAE` did not decode.
+    UnicodeMessage(DecodeError),
+    /// `0xB0` did not decode.
+    GumpDisplay(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -484,6 +494,8 @@ impl fmt::Display for ServerDecodeError {
             Self::WalkAck(error) => ("0x22 walk ack", error),
             Self::WalkReject(error) => ("0x21 walk reject", error),
             Self::SpokenMessage(error) => ("0x1C spoken message", error),
+            Self::UnicodeMessage(error) => ("0xAE unicode message", error),
+            Self::GumpDisplay(error) => ("0xB0 gump display", error),
         };
         write!(f, "{name}: {error}")
     }

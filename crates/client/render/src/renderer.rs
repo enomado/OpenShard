@@ -113,6 +113,15 @@ pub struct GroundRenderer {
     instances: wgpu::Buffer,
     /// Quads the instance buffer can hold before it has to be replaced.
     capacity: u64,
+    /// The two atlas textures, kept rather than only viewed.
+    ///
+    /// A view is all a bind group needs, and holding the texture as well is what
+    /// lets an atlas *grow* into the one already bound — see
+    /// [`GroundRenderer::upload_changes`]. Dropping them here meant a new
+    /// graphic at the edge of the view had to build a whole new renderer, which
+    /// recreates the pipeline behind it for two sprites' worth of pixels.
+    land_texture: wgpu::Texture,
+    texmap_texture: wgpu::Texture,
 }
 
 impl GroundRenderer {
@@ -132,7 +141,7 @@ impl GroundRenderer {
         // the textures a slope is stretched over. They stay apart because their
         // grids do — 44 pixels against 64 — and not because the shader could not
         // sample one texture.
-        let view = upload(
+        let land_texture = upload(
             device,
             queue,
             "land atlas",
@@ -140,7 +149,7 @@ impl GroundRenderer {
             LandAtlas::side(),
             atlas.pixels(),
         );
-        let texmap_view = upload(
+        let texmap_texture = upload(
             device,
             queue,
             "texmap atlas",
@@ -148,6 +157,8 @@ impl GroundRenderer {
             TexmapAtlas::side(),
             texmaps.pixels(),
         );
+        let view = land_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texmap_view = texmap_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Nearest, and clamped. UO art is pixel art on an exact grid: filtering
         // it would sample a neighbouring tile across the atlas seam, which shows
@@ -351,6 +362,26 @@ impl GroundRenderer {
             quad,
             instances,
             capacity: INITIAL_QUADS,
+            land_texture,
+            texmap_texture,
+        }
+    }
+
+    /// Send whatever the two atlases have grown by since this was last asked.
+    ///
+    /// The pair travels together because a ground quad asks both the same
+    /// question: a land graphic packed into one and not yet uploaded from the
+    /// other is a slope textured with somebody else's terrain for a frame.
+    ///
+    /// Nothing to upload is the ordinary frame — a camera standing still
+    /// introduces no graphics — and a growth is a band of rows rather than the
+    /// 16MB texture.
+    pub fn upload_changes(&self, queue: &wgpu::Queue, land: &mut LandAtlas, texmaps: &mut TexmapAtlas) {
+        if let Some(rows) = land.take_dirty() {
+            write_rows(queue, &self.land_texture, land.pixels(), rows);
+        }
+        if let Some(rows) = texmaps.take_dirty() {
+            write_rows(queue, &self.texmap_texture, texmaps.pixels(), rows);
         }
     }
 
@@ -457,6 +488,9 @@ pub struct SpriteRenderer {
     instances: wgpu::Buffer,
     /// Quads the instance buffer can hold before it has to be replaced.
     capacity: u64,
+    /// The atlas texture, kept so that it can be grown into rather than
+    /// replaced. See [`SpriteRenderer::upload_rows`].
+    atlas_texture: wgpu::Texture,
 }
 
 impl SpriteRenderer {
@@ -476,7 +510,7 @@ impl SpriteRenderer {
         pixels: &[u8],
         hue_ramp: &HueRamp,
     ) -> Self {
-        let view = upload(
+        let atlas_texture = upload(
             device,
             queue,
             "sprite atlas",
@@ -484,7 +518,8 @@ impl SpriteRenderer {
             SPRITE_ATLAS_SIDE,
             pixels,
         );
-        let ramp_view = upload(
+        let view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let ramp_texture = upload(
             device,
             queue,
             "hue ramp",
@@ -492,6 +527,7 @@ impl SpriteRenderer {
             hue_ramp.height(),
             hue_ramp.pixels(),
         );
+        let ramp_view = ramp_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Nearest and clamped, exactly as the ground: UO art is pixel art, and
         // filtering it samples whatever was packed next door. The ramp is looked
@@ -702,7 +738,21 @@ impl SpriteRenderer {
             quad,
             instances,
             capacity: INITIAL_QUADS,
+            atlas_texture,
         }
+    }
+
+    /// Send a band of an atlas that has grown since it was uploaded.
+    ///
+    /// `pixels` is the whole atlas and `rows` is what
+    /// [`StaticAtlas::take_dirty`](crate::atlas::StaticAtlas::take_dirty) — or
+    /// the animation atlas's — just handed back. Untyped for the same reason
+    /// [`SpriteRenderer::new`] is: this pass draws rectangles of somebody else's
+    /// picture and does not care which atlas they came from. The pairing is the
+    /// caller's, and taking the band is what makes it hard to get wrong — a
+    /// range only exists because something was written.
+    pub fn upload_rows(&self, queue: &wgpu::Queue, pixels: &[u8], rows: std::ops::Range<u32>) {
+        write_rows(queue, &self.atlas_texture, pixels, rows);
     }
 
     /// Draw `quads` into `target`, keeping what is already there.
@@ -801,7 +851,7 @@ fn upload(
     width: u32,
     height: u32,
     pixels: &[u8],
-) -> wgpu::TextureView {
+) -> wgpu::Texture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -835,7 +885,49 @@ fn upload(
             depth_or_array_layers: 1,
         },
     );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
+    texture
+}
+
+/// Write a band of rows into an atlas texture already on the device.
+///
+/// `rows` indexes the atlas, and `pixels` is the *whole* atlas — the band is cut
+/// out of it here, because `write_texture` wants a slice that starts at the
+/// first texel it will write and the caller should not have to do that
+/// arithmetic twice.
+///
+/// An empty or out-of-range band writes nothing rather than failing: the atlas
+/// that produced the range and the texture it is written into are the same size
+/// by construction, so a range outside it is a bug in this crate and not
+/// something a frame should die of.
+fn write_rows(queue: &wgpu::Queue, texture: &wgpu::Texture, pixels: &[u8], rows: std::ops::Range<u32>) {
+    let width = texture.width();
+    let height = texture.height();
+    let (top, bottom) = (rows.start.min(height), rows.end.min(height));
+    if top >= bottom {
+        return;
+    }
+    let stride = width as usize * 4;
+    let from = top as usize * stride;
+    let to = bottom as usize * stride;
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: 0, y: top, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels[from..to],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(bottom - top),
+        },
+        wgpu::Extent3d {
+            width,
+            height: bottom - top,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 fn new_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {

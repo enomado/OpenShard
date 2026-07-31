@@ -148,6 +148,66 @@ pub fn needed_animations(mobiles: &[Mobile]) -> Vec<(u16, u8, u8)> {
     wanted
 }
 
+/// Where a mobile's sprite lands, before hue and hold decide anything about
+/// how it is drawn.
+///
+/// Shared by [`collect`] and [`head_anchor`]: both need the same rectangle —
+/// one to draw it, the other to hang a label above it — and computing it twice
+/// is two chances for the anchor arithmetic to disagree with itself.
+struct Placement {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    region: crate::atlas::Region,
+    order: depth::Order,
+}
+
+/// The mobile's frame in the atlas, placed on screen — or `None` if the atlas
+/// holds no such frame.
+fn place(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Placement> {
+    let (direction, mirrored) = openshard_uofiles::anim::facing(mobile.facing);
+    let key = FrameKey {
+        body: mobile.body,
+        group: mobile.group,
+        direction,
+        frame: mobile.frame,
+    };
+    let packed = atlas.frame(key)?;
+
+    // The tile it is going to, not the pixels it is between: a body half a
+    // tile into a step is *on* the tile it stepped onto as far as anything it
+    // can walk behind is concerned, and an order that interpolated would have
+    // a mobile change sides of a wall in the middle of a step.
+    let order = depth::Order {
+        tile: i32::from(mobile.at.x) + i32::from(mobile.at.y),
+        priority_z: depth::mobile_priority_z(mobile.at.z),
+    };
+    let at = cell_centre(mobile, camera);
+    let (width, height) = (i32::from(packed.sprite.width), i32::from(packed.sprite.height));
+    // The anchor moves to the far edge when the picture is flipped, which is
+    // `MobileView.Draw`'s `isFlipped ? width - center_x : center_x`.
+    let anchor_x = if mirrored {
+        width - i32::from(packed.center_x)
+    } else {
+        i32::from(packed.center_x)
+    };
+    let region = if mirrored {
+        SpriteQuad::mirrored(packed.sprite.region)
+    } else {
+        packed.sprite.region
+    };
+
+    Some(Placement {
+        x: (at.x - anchor_x) as f32,
+        y: (at.y - (height + i32::from(packed.center_y))) as f32,
+        width: width as f32,
+        height: height as f32,
+        region,
+        order,
+    })
+}
+
 /// The quads for every mobile whose frame the atlas holds.
 ///
 /// A mobile the atlas has no frame for is dropped: the client ships no
@@ -160,50 +220,19 @@ pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas) -> Vec<Sp
     let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
     for mobile in mobiles {
-        let (direction, mirrored) = openshard_uofiles::anim::facing(mobile.facing);
-        let key = FrameKey {
-            body: mobile.body,
-            group: mobile.group,
-            direction,
-            frame: mobile.frame,
-        };
-        let Some(packed) = atlas.frame(key) else {
+        let Some(placement) = place(mobile, camera, atlas) else {
             continue;
         };
-
-        // The tile it is going to, not the pixels it is between: a body half a
-        // tile into a step is *on* the tile it stepped onto as far as anything
-        // it can walk behind is concerned, and an order that interpolated would
-        // have a mobile change sides of a wall in the middle of a step.
-        let order = depth::Order {
-            tile: i32::from(mobile.at.x) + i32::from(mobile.at.y),
-            priority_z: depth::mobile_priority_z(mobile.at.z),
-        };
-        let at = cell_centre(mobile, camera);
-        let (width, height) = (i32::from(packed.sprite.width), i32::from(packed.sprite.height));
-        // The anchor moves to the far edge when the picture is flipped, which
-        // is `MobileView.Draw`'s `isFlipped ? width - center_x : center_x`.
-        let anchor_x = if mirrored {
-            width - i32::from(packed.center_x)
-        } else {
-            i32::from(packed.center_x)
-        };
-        let region = if mirrored {
-            SpriteQuad::mirrored(packed.sprite.region)
-        } else {
-            packed.sprite.region
-        };
-
         quads.push((
-            order,
+            placement.order,
             mobile.body,
             SpriteQuad {
-                x: (at.x - anchor_x) as f32,
-                y: (at.y - (height + i32::from(packed.center_y))) as f32,
-                width: width as f32,
-                height: height as f32,
-                region,
-                depth: order.to_depth(base),
+                x: placement.x,
+                y: placement.y,
+                width: placement.width,
+                height: placement.height,
+                region: placement.region,
+                depth: placement.order.to_depth(base),
                 hue: u32::from(mobile.hue.0),
             },
         ));
@@ -213,6 +242,21 @@ pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas) -> Vec<Sp
     // this is for determinism, so the same world produces the same buffer.
     quads.sort_by_key(|(order, body, _)| (*order, *body));
     quads.into_iter().map(|(_, _, quad)| quad).collect()
+}
+
+/// Where a label belongs above this mobile's head, in view pixels — the
+/// horizontal centre of its sprite and its topmost edge, or `None` if
+/// [`collect`] would draw nothing for it either.
+///
+/// Not a fixed offset above [`cell_centre`]: a dragon and a rat stand on the
+/// same tile centre and hold their heads at wildly different heights, and only
+/// the packed frame's own rectangle knows which.
+pub fn head_anchor(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<ViewPixel> {
+    let placement = place(mobile, camera, atlas)?;
+    Some(ViewPixel {
+        x: (placement.x + placement.width / 2.0).round() as i32,
+        y: placement.y.round() as i32,
+    })
 }
 
 #[cfg(test)]
@@ -336,6 +380,46 @@ mod tests {
             collect(&[Mobile { frame: 0, ..missing }], &camera, &atlas).len(),
             1,
         );
+    }
+
+    /// The label anchor is the top-centre of exactly the rectangle `collect`
+    /// draws — computed once and read two ways, not two formulas that happen
+    /// to agree today.
+    #[test]
+    fn head_anchor_is_the_drawn_quads_top_centre() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let atlas = atlas(400, 0, 40, 60, (12, -3));
+        let mobile = Mobile {
+            at: Point::new(100, 100, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+            hue: Hue::NONE,
+            glide: None,
+        };
+        let quads = collect(&[mobile], &camera, &atlas);
+        let anchor = head_anchor(&mobile, &camera, &atlas).expect("packed");
+        assert_eq!(anchor.x as f32, quads[0].x + quads[0].width / 2.0);
+        assert_eq!(anchor.y as f32, quads[0].y);
+    }
+
+    /// A mobile the atlas has no frame for gets no anchor either — the same
+    /// case `collect` drops, asked the other way.
+    #[test]
+    fn head_anchor_is_none_for_an_unpacked_frame() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let atlas = atlas(400, 0, 40, 60, (12, -3));
+        let missing = Mobile {
+            at: Point::new(100, 100, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 1,
+            hue: Hue::NONE,
+            glide: None,
+        };
+        assert!(head_anchor(&missing, &camera, &atlas).is_none());
     }
 
     /// A body mid-step hangs between the two tiles, and the two ends of the

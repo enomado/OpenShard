@@ -18,7 +18,13 @@
 //! record of what the server said. The prediction lives here, in
 //! [`Walk::predicted`], and the view learns a position only once a `0x22` has
 //! confirmed the step that produced it. Anything on top that wants to draw
-//! ahead of the server can read the prediction and do so knowingly.
+//! ahead of the server can read the prediction and do so knowingly — and our own
+//! window does: `client/app`'s `link::Body` publishes [`Walk::predicted`]
+//! alongside the view every time a step is sent, so the body moves on the
+//! player's input rather than a round trip later, and a [`Moved::Snapped`] is
+//! the rollback. That is the lag compensation, and it is *outside* this type on
+//! purpose: the prediction and the record stay two values, so nothing downstream
+//! has to guess which one it is holding.
 //!
 //! It also holds no map. [`openshard_movement::intend`] carries `z` over
 //! unchanged, because neither end of it has terrain — so the height comes in as
