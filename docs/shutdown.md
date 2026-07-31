@@ -328,6 +328,14 @@ on. The rest are independent.
   something the test stated; it now names the id with `enter_as`. It was the only
   one, out of thirty-odd call sites — the rest bind what `connection()` hands
   back to a local and never asked for the id twice.
+- **Forty-nine hand-written `ConnectionId::from_raw(n)` in the world's tests,**
+  and the numbers mean nothing: `2` is "the other player" in a dozen files, `9`
+  is "the thief" in `region_tests`, `77` and `7` are one test each.
+  `MINTED_CONNECTIONS` makes them safe against the helper, but they are not safe
+  against *each other* — two literals that happen to agree inside one test is the
+  same silent conflation, one layer down, and `interest_tests` already names its
+  two `ALICE`/`BOB` because reading them as numbers did not work. The shape is
+  that pair, shared: a test that wants a second player asks for one by name.
 - **Nothing tests that the playground boots** — carried over from
   [`client.md`](client.md), and now with one more thing to get wrong, since the
   playground stops its shard after the window closes.
