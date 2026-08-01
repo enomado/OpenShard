@@ -112,6 +112,7 @@ use crowd::{Crowd, Who};
 use openshard_client_net::session::Plan;
 use openshard_client_net::transport::Dial;
 use openshard_client_net::view::WorldView;
+use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::atlas::{AnimAtlas, AtlasError, FontAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::bench::{self, Metrics, Scope, Script};
@@ -131,6 +132,7 @@ use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::Anim;
+use openshard_uofiles::animdata::AnimData;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::font::AsciiFonts;
 use openshard_uofiles::hues::Hues;
@@ -240,6 +242,18 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
             return ExitCode::FAILURE;
         }
     };
+    // What the animated statics cycle through. Read here and folded into
+    // `tile_animations` below, because it takes both files to know which
+    // graphics animate: the flag is `tiledata.mul`'s and the cycle is this one's.
+    // A client without the file animates nothing rather than failing to start —
+    // see `AnimData::load`.
+    let animdata = match AnimData::load(dir) {
+        Ok(animdata) => animdata,
+        Err(error) => {
+            eprintln!("opening animdata.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let hues = match Hues::load(dir.join("hues.mul")) {
         Ok(hues) => hues,
         Err(error) => {
@@ -319,6 +333,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
     });
 
     let mut app = App {
+        tile_animations: StaticAnimations::build(&animdata, &tiledata),
         map,
         art,
         texmaps,
@@ -547,13 +562,17 @@ fn wanted_in(
     bands: impl IntoIterator<Item = TileBounds>,
     items: &[GroundItem],
     drawn: &[Mobile],
+    animations: &StaticAnimations,
 ) -> Wanted {
     let mut wanted = Wanted::default();
     for band in bands {
         ground::graphics_in(map, band, &mut wanted.land);
-        statics::graphics_in(map, band, &mut wanted.statics);
+        // Every graphic of every cycle, and not the frame on screen: an atlas
+        // grown for what a fire is showing this instant is an atlas grown again
+        // when it stops showing it. See `StaticAnimations::cycle`.
+        statics::graphics_in(map, band, animations, &mut wanted.statics);
     }
-    wanted.statics.extend(items::needed_graphics(items));
+    wanted.statics.extend(items::needed_graphics(items, animations));
     wanted.animations.extend(mobiles::needed_animations(drawn));
     wanted
 }
@@ -615,6 +634,13 @@ struct App {
     /// The animations, open but not read: `anim.mul` is 195MB and frames come
     /// out of it a body at a time. `&mut` because reading one seeks the file.
     anim: Anim,
+    /// The statics that move on their own — fires, torches, water wheels — and
+    /// how far into their cycles they are.
+    ///
+    /// One of the clocks this app owns, and it is advanced from the same sampled
+    /// instant as the crowd and the eye. Its own module argues why it is a system
+    /// rather than a flag on a quad: see [`StaticAnimations`].
+    tile_animations: StaticAnimations,
     /// The camera, who is allowed to move it, and what a drag has not yet spent.
     ///
     /// All of it arithmetic, and all of it in `client/render` where it can be
@@ -1981,7 +2007,7 @@ impl App {
             .into_iter()
             .map(|(_, mobile)| mobile)
             .collect();
-        wanted_in(&self.map, bands, &self.items, &drawn)
+        wanted_in(&self.map, bands, &self.items, &drawn, &self.tile_animations)
     }
 
     fn draw(&mut self) {
@@ -2035,6 +2061,12 @@ impl App {
             self.control.resize(viewport.width, viewport.height);
         }
         self.crowd.advance(elapsed);
+        // The statics that move on their own, on the same span as everybody
+        // else. Its own clock inside — a fire's cycle has nothing to do with a
+        // walk's — and one *sample*, which is the whole rule: two clocks read
+        // from two `Instant::now()`s a few hundred microseconds apart would put
+        // a torch and the body that walks past it on two different instants.
+        self.tile_animations.advance(elapsed);
         self.last_advance = started;
         // Whatever scenario is being walked delivers its knots for the span that
         // just passed, before the eye is asked where the body is: a step that
@@ -2146,6 +2178,7 @@ impl App {
                         [camera.visible_tiles()],
                         &self.items,
                         &drawn.iter().map(|(_, mobile)| *mobile).collect::<Vec<_>>(),
+                        &self.tile_animations,
                     ),
                 ) {
                     Ok(atlases) => {
@@ -2295,7 +2328,13 @@ impl App {
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
         let quads = ground::collect(&self.map, &camera, &window.atlases.land, &window.atlases.texmaps);
-        let static_quads = statics::collect(&self.map, &camera, &self.tiledata, &window.atlases.statics);
+        let static_quads = statics::collect(
+            &self.map,
+            &camera,
+            &self.tiledata,
+            &self.tile_animations,
+            &window.atlases.statics,
+        );
         // Through the same pass as the map's statics, because they are the same
         // atlas: one draw call binds one texture, and what covers what is the
         // depth these carry rather than the order they are appended in.
@@ -2305,6 +2344,7 @@ impl App {
                 &self.items,
                 &camera,
                 &self.tiledata,
+                &self.tile_animations,
                 &window.atlases.statics,
             ));
             quads

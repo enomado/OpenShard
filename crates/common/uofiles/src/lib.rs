@@ -16,6 +16,7 @@
 //! fixture they agree with by construction.
 
 pub mod anim;
+pub mod animdata;
 pub mod art;
 pub mod color;
 pub mod font;

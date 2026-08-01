@@ -29,6 +29,7 @@
 //! that comes out of the frame — which would make an exact assertion in a test
 //! impossible and replace it with a tolerance nobody can justify.
 
+pub mod animate;
 pub mod animation;
 pub mod atlas;
 pub mod bench;
@@ -36,6 +37,7 @@ pub mod blit;
 pub mod camera;
 pub mod chart;
 pub mod control;
+pub mod cutaway;
 pub mod depth;
 pub mod follow;
 pub mod geometry;

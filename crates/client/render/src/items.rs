@@ -24,6 +24,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::tiledata::TileData;
 
+use crate::animate::StaticAnimations;
 use crate::atlas::StaticAtlas;
 use crate::camera::Camera;
 use crate::depth;
@@ -55,8 +56,16 @@ pub struct GroundItem {
 /// [`statics::visible_graphics`](crate::statics::visible_graphics) before the
 /// atlas is built: one atlas serves both passes, so the two sets are asked for
 /// together and packed once.
-pub fn needed_graphics(items: &[GroundItem]) -> BTreeSet<Graphic> {
-    items.iter().map(|item| item.graphic).collect()
+///
+/// An item's whole cycle, for the reason
+/// [`statics::graphics_in`](crate::statics::graphics_in) asks for one: a torch
+/// dropped on the ground animates exactly as a torch built into the map does,
+/// and the atlas has to hold every graphic it will turn into.
+pub fn needed_graphics(items: &[GroundItem], animations: &StaticAnimations) -> BTreeSet<Graphic> {
+    items
+        .iter()
+        .flat_map(|item| animations.cycle(item.graphic))
+        .collect()
 }
 
 /// The quads for every item whose graphic the atlas holds.
@@ -69,6 +78,7 @@ pub fn collect(
     items: &[GroundItem],
     camera: &Camera,
     tiledata: &TileData,
+    animations: &StaticAnimations,
     atlas: &StaticAtlas,
 ) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
@@ -76,7 +86,9 @@ pub fn collect(
     let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
     for item in items {
-        let Some(sprite) = atlas.sprite(item.graphic) else {
+        // The frame on screen; the *placed* graphic still decides the sort and
+        // the tiledata lookup below. See [`statics::collect`](crate::statics::collect).
+        let Some(sprite) = atlas.sprite(animations.showing(item.graphic)) else {
             continue;
         };
         // A ground item is ordered as a static is, and from the same table: the
@@ -151,6 +163,7 @@ mod tests {
             }],
             &camera,
             &tiledata,
+            &StaticAnimations::default(),
             &atlas,
         );
         assert_eq!(quads.len(), 1);
@@ -174,8 +187,14 @@ mod tests {
             graphic,
             hue: Hue::NONE,
         };
-        let floor = collect(&[at(0)], &camera, &tiledata, &atlas);
-        let table = collect(&[at(10)], &camera, &tiledata, &atlas);
+        let floor = collect(&[at(0)], &camera, &tiledata, &StaticAnimations::default(), &atlas);
+        let table = collect(
+            &[at(10)],
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+        );
         assert_eq!(table[0].rect.y, floor[0].rect.y - 40.0, "four pixels a unit");
         assert!(table[0].depth < floor[0].depth, "smaller is nearer");
     }
@@ -195,6 +214,7 @@ mod tests {
             }],
             &camera,
             &tiledata,
+            &StaticAnimations::default(),
             &atlas,
         );
         assert!(quads.is_empty());
@@ -215,7 +235,13 @@ mod tests {
             hue: Hue::NONE,
         };
         // Given nearest first, on purpose.
-        let quads = collect(&[item(101, 101), item(99, 99)], &camera, &tiledata, &atlas);
+        let quads = collect(
+            &[item(101, 101), item(99, 99)],
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+        );
         assert_eq!(quads.len(), 2);
         assert!(quads[0].depth > quads[1].depth, "the far one is drawn first");
     }
@@ -228,7 +254,10 @@ mod tests {
             graphic: Graphic(graphic),
             hue: Hue::NONE,
         };
-        let wanted = needed_graphics(&[item(0x0EED), item(0x0EED), item(0x0EEA)]);
+        let wanted = needed_graphics(
+            &[item(0x0EED), item(0x0EED), item(0x0EEA)],
+            &StaticAnimations::default(),
+        );
         assert_eq!(
             wanted.into_iter().collect::<Vec<_>>(),
             vec![Graphic(0x0EEA), Graphic(0x0EED)],

@@ -22,6 +22,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
+use crate::animate::StaticAnimations;
 use crate::atlas::{Sprite, StaticAtlas};
 use crate::camera::{Camera, TILE_HEIGHT, TileBounds};
 use crate::depth;
@@ -51,9 +52,9 @@ pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> Vec2 {
 /// Called before building the atlas, for the same reason
 /// [`ground::visible_graphics`](crate::ground::visible_graphics) is: a quad
 /// cannot be given a region until the atlas holding it exists.
-pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
+pub fn visible_graphics(map: &Map, camera: &Camera, animations: &StaticAnimations) -> BTreeSet<Graphic> {
     let mut seen = BTreeSet::new();
-    graphics_in(map, camera.visible_tiles(), &mut seen);
+    graphics_in(map, camera.visible_tiles(), animations, &mut seen);
     seen
 }
 
@@ -61,9 +62,19 @@ pub fn visible_graphics(map: &Map, camera: &Camera) -> BTreeSet<Graphic> {
 /// to `out`. [`ground::graphics_in`](crate::ground::graphics_in) for the sprites
 /// rather than the ground, and it exists for the same reason: an atlas grows by
 /// the band the camera crossed, not by the viewport it is looking at.
-pub fn graphics_in(map: &Map, bounds: TileBounds, out: &mut BTreeSet<Graphic>) {
+///
+/// An animated static contributes its **whole cycle** and not the graphic it is
+/// showing — see [`StaticAnimations::cycle`]. Offering the current one instead
+/// packs less and grows the atlas every time a fire ticks over, which is a band
+/// of rows uploaded to the GPU on whichever frame that happened to be.
+pub fn graphics_in(
+    map: &Map,
+    bounds: TileBounds,
+    animations: &StaticAnimations,
+    out: &mut BTreeSet<Graphic>,
+) {
     for_each_static_in(map, bounds, |item| {
-        out.insert(Graphic(item.tile));
+        out.extend(animations.cycle(Graphic(item.tile)));
     });
 }
 
@@ -78,13 +89,24 @@ pub fn graphics_in(map: &Map, bounds: TileBounds, out: &mut BTreeSet<Graphic>) {
 /// front, so that the same camera produces the same buffer byte for byte —
 /// which is what the frame tests assert on, and what a `HashMap` slipped in
 /// later would quietly take away.
-pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAtlas) -> Vec<SpriteQuad> {
+pub fn collect(
+    map: &Map,
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
-        let graphic = Graphic(item.tile);
+        // What this static is showing at the instant the frame was sampled. The
+        // *placed* graphic still decides the sort and the depth below: a fire's
+        // frames are different art of the same size standing in the same place,
+        // and ordering by whichever one is on screen would let a stack reshuffle
+        // itself every hundred milliseconds.
+        let graphic = animations.showing(Graphic(item.tile));
         let Some(sprite) = atlas.sprite(graphic) else {
             return;
         };
@@ -185,6 +207,87 @@ mod tests {
         )
     }
 
+    /// The contract between the animation clock and the atlas, on a real town:
+    /// every graphic a static will *show* over a whole cycle is one the atlas was
+    /// *offered*.
+    ///
+    /// Breaking it does not fail loudly — [`collect`] drops a graphic the atlas
+    /// has no sprite for, exactly as it does for art the client does not ship —
+    /// so a fire would simply vanish for five frames out of six and come back.
+    ///
+    /// The scene is checked for having something to prove first. A view of
+    /// Britain with no animated statics in it would pass this in silence, which
+    /// is the false green this repository keeps rediscovering.
+    ///
+    /// **What it does and does not catch, measured rather than assumed.** It
+    /// catches the wiring: `graphics_in` offering the frame on screen instead of
+    /// the cycle fails it. It does *not* catch a cycle that is short by one
+    /// frame, and that was checked by mutation rather than reasoned about — the
+    /// offer is a union over everything on screen, and a fire's neighbours cycle
+    /// through the same six graphics, so a frame this static did not ask for was
+    /// packed on its neighbour's behalf. The per-graphic property that has no
+    /// union to hide in lives beside the clock, in
+    /// [`animate`](crate::animate)'s own tests, and both of those do fail on
+    /// that mutation. This one is the integration: that the two ends are
+    /// connected on a real map.
+    #[test]
+    fn britain_offers_the_atlas_every_frame_its_fires_will_show() {
+        use crate::animate::{FRAME_STEP, StaticAnimations};
+        use openshard_uofiles::animdata::AnimData;
+
+        let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let map = Map::load_facet(&dir, 0).expect("Felucca");
+        let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+        let animdata = AnimData::load(&dir).expect("animdata.mul");
+        let mut animations = StaticAnimations::build(&animdata, &tiledata);
+
+        // The forge and the smithy east of the bank, which is where Britain
+        // keeps its fires.
+        let camera = Camera::new(Point::new(1420, 1683, 0), 768, 512);
+        let offered = visible_graphics(&map, &camera, &animations);
+
+        // The scene has something to say. Counted over the *placed* graphics, so
+        // this is "there are animated statics on screen" and not "the offer is
+        // bigger than the placed set", which the offer is by construction.
+        let mut placed = BTreeSet::new();
+        graphics_in(
+            &map,
+            camera.visible_tiles(),
+            &StaticAnimations::default(),
+            &mut placed,
+        );
+        let animating = placed
+            .iter()
+            .filter(|graphic| tiledata.static_tile(graphic.0).flags.is_animated())
+            .count();
+        assert!(
+            animating > 0,
+            "nothing on this screen animates: the test proves nothing"
+        );
+        assert!(
+            offered.len() > placed.len(),
+            "the cycles added no graphics at all"
+        );
+
+        let art = openshard_uofiles::art::Art::open(&dir).expect("artLegacyMUL.uop");
+        let atlas = StaticAtlas::build(&art, offered.iter().copied()).expect("a screen of statics fits");
+        // Ten seconds, which is longer than the slowest cycle in the file. The
+        // count of quads must not move: a graphic that was shown and not packed
+        // is a sprite that silently stops being drawn.
+        let first = collect(&map, &camera, &tiledata, &animations, &atlas).len();
+        assert!(first > 500, "only {first} statics on screen");
+        for step in 1..=100 {
+            animations.advance(FRAME_STEP);
+            let now = collect(&map, &camera, &tiledata, &animations, &atlas).len();
+            assert_eq!(
+                now, first,
+                "a static vanished {step} steps in: shown but never packed"
+            );
+        }
+    }
+
     /// On a real town, the quads come back sorted and every depth agrees with
     /// the sort — the ordering the depth buffer will enforce is the ordering
     /// the collector believes in.
@@ -208,14 +311,14 @@ mod tests {
         // Britain by the bank: buildings, walls, floors and signs, which is
         // what makes the ordering worth checking here rather than in a field.
         let camera = Camera::new(Point::new(1495, 1629, 0), 768, 512);
-        let wanted = visible_graphics(&map, &camera);
+        let wanted = visible_graphics(&map, &camera, &StaticAnimations::default());
         assert!(
             wanted.len() > 50,
             "only {} static graphics in the middle of Britain",
             wanted.len(),
         );
         let atlas = StaticAtlas::build(&art, wanted).expect("a screen of statics fits");
-        let quads = collect(&map, &camera, &tiledata, &atlas);
+        let quads = collect(&map, &camera, &tiledata, &StaticAnimations::default(), &atlas);
         assert!(quads.len() > 500, "only {} statics on screen", quads.len());
 
         let mut previous = f32::INFINITY;

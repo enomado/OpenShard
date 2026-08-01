@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
@@ -1624,9 +1625,15 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
     let texmaps = texmap_atlas(&dir, wanted);
     let quads = ground::collect(&map, &camera, &land, &texmaps);
 
-    let wanted_statics = statics::visible_graphics(&map, &camera);
+    let wanted_statics = statics::visible_graphics(&map, &camera, &StaticAnimations::default());
     let static_atlas = StaticAtlas::build(&art, wanted_statics).expect("a screen of statics fits");
-    let static_quads = statics::collect(&map, &camera, &tiledata, &static_atlas);
+    let static_quads = statics::collect(
+        &map,
+        &camera,
+        &tiledata,
+        &StaticAnimations::default(),
+        &static_atlas,
+    );
     assert!(
         static_quads.len() > 500,
         "only {} statics in the middle of Britain",
@@ -1704,9 +1711,18 @@ fn dump_a_frame_of_britain() {
     let texmaps = texmap_atlas(&dir, wanted);
     let quads = ground::collect(&map, &camera, &atlas, &texmaps);
 
-    let static_atlas =
-        StaticAtlas::build(&art, statics::visible_graphics(&map, &camera)).expect("statics fit");
-    let static_quads = statics::collect(&map, &camera, &tiledata, &static_atlas);
+    let static_atlas = StaticAtlas::build(
+        &art,
+        statics::visible_graphics(&map, &camera, &StaticAnimations::default()),
+    )
+    .expect("statics fit");
+    let static_quads = statics::collect(
+        &map,
+        &camera,
+        &tiledata,
+        &StaticAnimations::default(),
+        &static_atlas,
+    );
 
     // A character standing where the camera looks, facing each way in turn, so
     // the picture shows both the placement and the mirrored facings.

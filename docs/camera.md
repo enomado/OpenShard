@@ -1073,17 +1073,32 @@ Found while planning this, and not to be lost in it.
   `fn advance(&mut self, dt) -> Frame` followed by `fn present(&self, frame)`,
   where `present` cannot reach a `&mut self` at all — the same argument D8 makes
   for the rig being a pure function of one frame's input, one level up.
-- **The renderer must never read a clock, and statics will be the first test of
-  that.** It holds for mobiles today by D10: a sprite is drawn at `Mobile::drawn`
-  and how that number came about is `client/app`'s business. Animated statics
-  (`animdata.mul`, `AnimatedStaticsManager`) are the next thing that wants a
-  clock, and the temptation will be to put it in `client/render` beside the art.
-  It belongs in the animation layer with the crowd's: the graphic handed to the
-  atlas should already be resolved for the frame's instant. The atlas consequence
-  is worth writing down before it is discovered: an animated static cycles
-  through consecutive graphic ids, so `wanted_in` has to ask for the whole cycle,
-  or every animation step is an atlas growth — a periodic hitch manufactured by
-  the animation system.
+- ~~**The renderer must never read a clock, and statics will be the first test of
+  that.**~~ Built: `client/render`'s `animate::StaticAnimations` and
+  `common/uofiles`'s `animdata`. The rule turned out to be sharper than "the
+  renderer knows no time", because `follow::Follower` has lived in that crate
+  since C0 and integrates `dt`: what is banned is *reading* a clock, and the
+  invariant is that time is sampled **once a frame** and every clock in the
+  client is advanced from that one sample. So `StaticAnimations` takes `dt` like
+  the follower does, and `App::draw`'s write stage moves the crowd, the replay,
+  the eye and the fires from one `Instant`.
+
+  Three things are worth keeping from the build. The frame index is
+  `elapsed / step % count` rather than a counter the reference advances per poll,
+  so the picture is a pure function of the clock and two readers of one instant
+  cannot disagree — which also drops ClassicUO's trailing `+ 1` ms, an artefact
+  of scheduling against a polling loop. The *placed* graphic still decides the
+  depth sort while the *shown* one decides the sprite: ordering by the frame on
+  screen would let a stack reshuffle itself every hundred milliseconds. And
+  `wanted_in` asks for the whole cycle, which was the point — an animated static
+  is several ordinary statics, so offering the current one would grow the atlas
+  and upload a band of rows every time a fire ticks over, a periodic hitch
+  manufactured by the animation system.
+
+  What is not there: a mobile's own animation clock is still per body in `Crowd`,
+  which is right, but it means the client now has three clocks advanced from one
+  sample and nothing that *enforces* the one-sample rule. That is the same gap
+  the staging note above ends on, and it wants the same fix.
 - **The atlas eviction is a full repack in the middle of a frame.**
   `AtlasError::Full` rebuilds three `SpriteRenderer`s and repacks everything on
   screen (`crates/client/app/src/lib.rs:2045`), synchronously, on whichever frame
