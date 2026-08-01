@@ -119,6 +119,36 @@ impl TileFlags {
     pub const WINDOW: u64 = 0x0000_1000;
     /// UFLAG4_DOOR.
     pub const DOOR: u64 = 0x2000_0000;
+    /// ClassicUO's `TileFlag.Transparent`. Only the renderer reads it, and only
+    /// as one half of the pair that keeps a tile from cutting the roof away
+    /// above the player — see `openshard-render`'s `cutaway`.
+    pub const TRANSPARENT: u64 = 0x0000_0004;
+    /// Drawn at partial alpha whatever else is decided about it: a window pane,
+    /// a force field. ClassicUO's `TileFlag.Translucent`.
+    pub const TRANSLUCENT: u64 = 0x0000_0008;
+    /// Never drawn and never walked on: the client's own marker for a graphic
+    /// that exists in the tables and nowhere in the world. ClassicUO drops these
+    /// in `AddTileToRenderList` before anything else is asked about them.
+    pub const INTERNAL: u64 = 0x0001_0000;
+    /// A tree's leaves, a boat's mast — the things that fade when a body walks
+    /// behind them. ClassicUO's `TileFlag.Foliage`.
+    pub const FOLIAGE: u64 = 0x0002_0000;
+    /// A roof tile. This is what makes a building's inside visible at all: the
+    /// client stops drawing these once the player is under one.
+    ///
+    /// `0x1000_0000` — ClassicUO's `TileFlag.Roof`. Sphere's header has no name
+    /// for this bit, so ClassicUO is the only reference for it and the value is
+    /// pinned in a test beside the constant.
+    pub const ROOF: u64 = 0x1000_0000;
+    /// The static cycles through graphics on its own: a fire, a torch, a water
+    /// wheel. What it cycles through is `animdata.mul` — see
+    /// [`crate::animdata`] — and this bit is the only thing that says a graphic
+    /// animates at all, since that file has a zeroed entry for everything else.
+    ///
+    /// `0x0100_0000` in both references that name it: ClassicUO's
+    /// `TileFlag.Animation` and ServUO's. Pinned in a test beside the constant,
+    /// because a flag means what the engine *reads* it for.
+    pub const ANIMATION: u64 = 0x0100_0000;
 
     /// Wrap a raw flag word.
     pub const fn new(bits: u64) -> Self {
@@ -154,6 +184,34 @@ impl TileFlags {
     pub const fn is_climbable(self) -> bool {
         self.has(Self::CLIMBABLE)
     }
+
+    /// Whether this static plays a cycle of its own. See [`Self::ANIMATION`].
+    pub const fn is_animated(self) -> bool {
+        self.has(Self::ANIMATION)
+    }
+
+    /// Whether this is a roof. See [`Self::ROOF`].
+    pub const fn is_roof(self) -> bool {
+        self.has(Self::ROOF)
+    }
+
+    /// Whether the client never draws this. See [`Self::INTERNAL`].
+    pub const fn is_internal(self) -> bool {
+        self.has(Self::INTERNAL)
+    }
+
+    /// Whether this fades when a body walks behind it. See [`Self::FOLIAGE`].
+    pub const fn is_foliage(self) -> bool {
+        self.has(Self::FOLIAGE)
+    }
+
+    /// Whether this lies flat under whatever stands on it — a floor, a rug.
+    ///
+    /// ClassicUO calls the bit `Background`; this workspace named it after
+    /// Sphere's `UFLAG1_FLOOR`. One bit, two names.
+    pub const fn is_background(self) -> bool {
+        self.has(Self::FLOOR)
+    }
 }
 
 impl fmt::Debug for TileFlags {
@@ -169,6 +227,12 @@ impl fmt::Debug for TileFlags {
             (Self::CLIMBABLE, "CLIMBABLE"),
             (Self::WINDOW, "WINDOW"),
             (Self::DOOR, "DOOR"),
+            (Self::ANIMATION, "ANIMATION"),
+            (Self::TRANSPARENT, "TRANSPARENT"),
+            (Self::TRANSLUCENT, "TRANSLUCENT"),
+            (Self::INTERNAL, "INTERNAL"),
+            (Self::FOLIAGE, "FOLIAGE"),
+            (Self::ROOF, "ROOF"),
         ] {
             if self.has(mask) {
                 names.push(name);
@@ -480,6 +544,28 @@ pub fn pluralize_name(name: &str, plural: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bits the renderer reads, pinned against ClassicUO's `TileFlag`.
+    ///
+    /// None of these appear in Sphere's `uofiles_macros.h` under a name that
+    /// says what the client does with them, so ClassicUO is the only reference
+    /// and a wrong bit here is silent: the roof simply never lifts, or every
+    /// wall is treated as one. The values are `TileDataLoader.cs`'s enum.
+    #[test]
+    fn the_drawing_flags_are_classicuos_bits() {
+        assert_eq!(TileFlags::TRANSPARENT, 0x0000_0004);
+        assert_eq!(TileFlags::TRANSLUCENT, 0x0000_0008);
+        assert_eq!(TileFlags::INTERNAL, 0x0001_0000);
+        assert_eq!(TileFlags::FOLIAGE, 0x0002_0000);
+        assert_eq!(TileFlags::ROOF, 0x1000_0000);
+        // ClassicUO's `Surface` and `Bridge` are bits this workspace already
+        // named after Sphere. Asserted here rather than trusted, because the
+        // renderer is about to read them under the client's names: a surface is
+        // what a roof may still be drawn as, and a bridge is what
+        // `CalculateObjectHeight` halves.
+        assert_eq!(TileFlags::PLATFORM, 0x0000_0200, "ClassicUO's Surface");
+        assert_eq!(TileFlags::CLIMBABLE, 0x0000_0400, "ClassicUO's Bridge");
+    }
 
     #[test]
     fn pluralize_resolves_the_tiledata_markers() {
