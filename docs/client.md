@@ -1922,3 +1922,51 @@ Each is a seam the work made visible. None blocks the next milestone.
   about twice its area — so most of the ~9,800 cells walked at 1080p are not on
   screen. Correct and generous; worth measuring against a `u`/`v` walk if the
   per-frame cost ever matters in release.
+
+## Backlog, found while porting the client's cutaway and its culling
+
+`crates/client/render/src/cutaway.rs` is `GameScene.UpdateMaxDrawZ`,
+`Map.CalculateNearZ` and `CalculateObjectHeight`; the tie-break inside a tile is
+`LessEqual` in `renderer::depth_state` plus the pass order. What was found on
+the way and not done:
+
+- **The client fades where this cuts.** `CalculateAlpha` walks an object's alpha
+  down 25 a frame and drops it at zero, and `ProcessAlpha` is where the roof,
+  the storey above, `IsTranslucent` and the circle of transparency all land.
+  Nothing in the renderer blends — every pass writes depth and tests it — so
+  what is ported is the endpoint the fade settles on, about a fifth of a second
+  in. When a blended pass exists, the whole of `ProcessAlpha` belongs with it,
+  and `Cutaway`'s predicates become the two ends of a ramp rather than a
+  boolean. Foliage (`FOLIAGE_ALPHA`, `CheckIfBehindATree`, `IsFoliageUnion`),
+  the season test and `TreeToStumps`/`HideVegetation` are the same story: each
+  is a fade or a profile setting, and none changes what is drawn once it has
+  finished fading.
+- **The ground is not screen-culled and the statics now are.**
+  `statics::on_screen` rejects a sprite whose rectangle misses the image, which
+  is where most of the ±512-pixel `MAX_Z_LIFT` band goes. A land quad's screen
+  extent is its four corner heights rather than a sprite's size, so the same
+  test needs the stretched diamond's bounds — worth doing, and it is the same
+  band being walked.
+- **The atlas is still built from what the cutaway would hide.** `collect` drops
+  a roof; `visible_graphics` still packs its art. Deliberate for now — the
+  cutaway changes as the player walks and an atlas that shrank with it would
+  repack every time somebody stepped through a door — but it means the atlas is
+  sized for the widest case, which is worth remembering if packing ever fails.
+- **`Cutaway::at` is recomputed every frame.** The client caches it against the
+  player's `x`/`y`/`z` and recomputes on change. Two tiles and a flood fill is
+  cheap, but `near_roof_z` allocates a 4,096-entry visited grid per call, which
+  is a `Vec` per frame for nothing.
+- **`HasSurfaceOverhead` is not ported.** A mobile with a `NoShoot` or `Window`
+  static overhead is drawn differently in the client (`AllowedToDraw`), which is
+  what stops a body inside a doorway from being drawn through the arch. It needs
+  a 4x4 scan around each mobile and a cache keyed on `max_z`, and there is
+  nothing to see it with until the alpha pass exists.
+- **`Chunk.AddGameObject`'s `state == 1` arm is multis, and there are none.**
+  When multis land, a multi at an equal `PriorityZ` sorts after the land and
+  before everything else — which the current scheme (pass order plus
+  `LessEqual`) cannot express, because it has no pass of its own between ground
+  and statics. Either multis draw in the statics pass with an explicit sub-key
+  in `depth::Order`, or they get their own pass.
+- **`depth::mobile_priority_z` has no corpse or effect arm.** The client's
+  `AddGameObject` gives a corpse `z + 1` like a mobile and a `GameEffect`
+  `z + 2`. Both belong with whatever draws them.
