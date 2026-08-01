@@ -1035,6 +1035,63 @@ Found while planning this, and not to be lost in it.
   only. Nothing needed the stronger bound and the values on the lattice are
   exact, but `Camera` is compared in several tests and a float field is a thing
   to know about when the next one is written.
+- ~~**The overlay is drawn with the previous frame's camera.**~~ It was, and it is
+  the defect the frame's staging was written against. `App::draw` built the HUD —
+  and with it `hover`, `selected`, `goal` and `Hud::camera` — at the top of the
+  frame, *before* `Control::resize`, `fit_zoom_to_device` and `follow_player` had
+  moved the eye to this frame's instant; the world pass then drew from the moved
+  camera. So every egui-drawn world marker sat exactly one frame of camera motion
+  behind the terrain it was meant to be lying on — and that offset is not a
+  constant, it is whatever the display gave that frame, so the tile highlight
+  shivered against the ground while the map scrolled and jumped on every missed
+  interval. It was one frame behind on the *viewport* too, since the resize the
+  shell had just asked for was applied after its own layout.
+
+  `draw` is three stages now, in this order and with nothing between them:
+  **write** (apply what the HUD asked for last frame, resize from the viewport
+  the last layout left, advance every clock, move the eye), **snapshot** (`let
+  camera = *self.control.camera()`), **present** (the HUD and all four passes,
+  each handed that one value). The camera is copied out rather than borrowed back
+  per use for the reason the defect gives: `&Camera` read at five points is five
+  chances for something between them to have moved it, and `Camera` is `Copy`, so
+  a value costs nothing and cannot be fresh in one reader and stale in another.
+  What made the reorder possible is `App::pending` — the shell's request is held
+  and applied at the top of the *next* frame, because a request is laid out from
+  the snapshot and so cannot be honoured before it without writing to the world
+  mid-frame. That is a frame of latency on a button, which is the latency every
+  keyboard and mouse event here already has.
+- **A frame has no single instant, because the clocks are advanced from three
+  places.** `Crowd::advance` is called from `App::user_event`, `App::walk` and
+  `App::draw`, and `follow_player` from `draw` with the frame's span and from
+  `walk`/`entered` with `Duration::ZERO`. Each is individually argued and right —
+  a step has to be timestamped when it is *heard*, not when it is next drawn —
+  and together they mean there is no one line that says "everything is now at T".
+  The staging above makes that harmless inside a frame, since every writer runs
+  before the snapshot whatever moved the clock. What is still missing is the
+  type: `draw` is staged by comment and by discipline, not by a signature, so a
+  future line that writes after the snapshot compiles. The form that closes it is
+  `fn advance(&mut self, dt) -> Frame` followed by `fn present(&self, frame)`,
+  where `present` cannot reach a `&mut self` at all — the same argument D8 makes
+  for the rig being a pure function of one frame's input, one level up.
+- **The renderer must never read a clock, and statics will be the first test of
+  that.** It holds for mobiles today by D10: a sprite is drawn at `Mobile::drawn`
+  and how that number came about is `client/app`'s business. Animated statics
+  (`animdata.mul`, `AnimatedStaticsManager`) are the next thing that wants a
+  clock, and the temptation will be to put it in `client/render` beside the art.
+  It belongs in the animation layer with the crowd's: the graphic handed to the
+  atlas should already be resolved for the frame's instant. The atlas consequence
+  is worth writing down before it is discovered: an animated static cycles
+  through consecutive graphic ids, so `wanted_in` has to ask for the whole cycle,
+  or every animation step is an atlas growth — a periodic hitch manufactured by
+  the animation system.
+- **The atlas eviction is a full repack in the middle of a frame.**
+  `AtlasError::Full` rebuilds three `SpriteRenderer`s and repacks everything on
+  screen (`crates/client/app/src/lib.rs:2045`), synchronously, on whichever frame
+  happens to walk onto the graphic that did not fit. "Costly and rare" is
+  accurate and it is still a stall the player sees while scrolling, and there is
+  nothing on screen that says it happened — the `Frames` panel reports the spike
+  as world cost with no way to tell it from a heavy screen. A counter would name
+  it; doing the pack off the critical path is the real fix.
 - **`FRAMES_SPAN` is a constant the panel cannot change, again.** The same item
   the scope's span just stopped being, and left as a constant deliberately: the
   slider belongs to whichever of the two rings turns out to be looked at

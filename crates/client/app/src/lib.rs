@@ -362,6 +362,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         last_advance: Instant::now(),
         last_frame: Instant::now(),
         window: None,
+        pending: shell::Request::default(),
         selected_tile: None,
         covered: None,
         scope: Scope::new(SCOPE_SPAN),
@@ -703,6 +704,22 @@ struct App {
     /// show — the gap between two pictures — would be the one it does not.
     last_frame: Instant,
     window: Option<Screen>,
+    /// What the last frame's HUD asked for, waiting to be applied at the top of
+    /// the next one.
+    ///
+    /// **The shell's output is the next frame's input, and that is the rule the
+    /// frame's ordering rests on.** A request is laid out from a snapshot and
+    /// therefore only exists after that snapshot has been taken; applying it
+    /// straight away — which is what this used to do — mutates the world and the
+    /// camera *between* the readers of one frame, so the overlay egui had already
+    /// laid out was drawn against a camera the world pass no longer had. Held for
+    /// a frame instead, every writer runs before the snapshot and there is
+    /// nothing left in a frame that can move underneath it.
+    ///
+    /// The delay is a frame on a button press, which is the same latency every
+    /// keyboard and mouse event here already has: they arrive between frames and
+    /// land on the next one.
+    pending: shell::Request,
     /// The tile a left click last landed on, kept until the next click — see
     /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
     /// slide off the tile the moment the mouse does.
@@ -966,7 +983,11 @@ impl ApplicationHandler<link::Update> for App {
                 // panel — reached here and not through egui, because `consumed`
                 // above already sent every click the UI wanted to it.
                 if button == winit::event::MouseButton::Left && state == ElementState::Pressed {
-                    self.selected_tile = self.pick_tile().map(|tile| (tile.x, tile.y));
+                    // The camera as it stands, which between two frames is the
+                    // one the last frame was drawn with — the picture the player
+                    // is clicking on.
+                    let camera = *self.control.camera();
+                    self.selected_tile = self.pick_tile(camera).map(|tile| (tile.x, tile.y));
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }
@@ -1151,7 +1172,8 @@ impl App {
     /// nearest one — a move order nobody gave is worse than one that did
     /// nothing.
     fn walk_to_cursor(&mut self) -> bool {
-        let Some(tile) = self.pick_tile() else {
+        // As above: between frames, what is on screen is what the last frame drew.
+        let Some(tile) = self.pick_tile(*self.control.camera()) else {
             return false;
         };
         match self.steer.go_to(
@@ -1587,9 +1609,14 @@ impl App {
     /// a candidate tile, then re-picks at *that* tile's own height, which is
     /// exact wherever the two tiles agree and wrong only at a slope's edge,
     /// same as the client's own click-to-walk.
-    fn pick_tile(&self) -> Option<shell::PickedTile> {
+    ///
+    /// `camera` is the frame's own and not `self.control`'s, for the reason
+    /// [`App::hud`] takes one: what tile a pixel is over is a question about the
+    /// picture being drawn, and reading it from a camera that has moved since is
+    /// how the highlight ends up a frame away from the ground under it.
+    fn pick_tile(&self, camera: Camera) -> Option<shell::PickedTile> {
         let (cursor_x, cursor_y) = self.control.cursor();
-        let world_px = self.control.camera().pick(cursor_x, cursor_y);
+        let world_px = camera.pick(cursor_x, cursor_y);
         let mut z = self.player.at.z;
         let (mut x, mut y) = camera::unproject(world_px, z);
         if let Some((ux, uy)) = Self::in_bounds(x, y, &self.map) {
@@ -1602,8 +1629,59 @@ impl App {
         Some(self.tile_info(x, y))
     }
 
+    /// Do what the HUD asked for on the frame before this one.
+    ///
+    /// Every writer the shell has, in one place and at one moment: the top of a
+    /// frame, before anything reads. See [`App::pending`] for why it is a frame
+    /// late and why that is the point rather than a compromise.
+    ///
+    /// The viewport is deliberately not in here. It is not something a widget
+    /// *asked* for — it is what the layout left over, which `Shell` holds between
+    /// frames — and it is applied beside this call rather than through it.
+    fn apply(&mut self, request: shell::Request) {
+        if request.relock {
+            self.relock();
+        } else if request.unlock {
+            self.control.unlock();
+        }
+        if let Some(rig) = request.rig {
+            // The eye does not move — that is what `set_rig` promises — but the
+            // frames before the swap were flown by another camera, and measuring
+            // them together would average two rigs.
+            self.control.set_rig(rig);
+            self.scope.clear();
+        }
+        // The body's ease is not the rig and does not clear the scope: the frames
+        // either side of it were flown by the same camera, and what the scope
+        // measures is the eye against the body it was given.
+        if let Some(ease) = request.ease {
+            self.crowd.set_ease(ease);
+        }
+        // The window the metrics are taken over, and not a clear: the frames
+        // already held were flown by the same rig.
+        if let Some(span) = request.scope_span {
+            self.scope.set_span(span);
+        }
+        match request.script {
+            Some(shell::ScriptRequest::Run(name)) => self.start_replay(name),
+            Some(shell::ScriptRequest::Stop) => self.replay = None,
+            None => {}
+        }
+        if let Some(line) = request.say {
+            self.say(line);
+        }
+        if let Some(reply) = request.gump {
+            self.answer_gump(reply);
+        }
+    }
+
     /// What the panels are allowed to know, gathered each frame.
-    fn hud(&self) -> shell::Hud {
+    ///
+    /// `camera` is the frame's own, handed in rather than read back from
+    /// [`App::control`]: the overlay the shell draws from this and the world pass
+    /// below it are two readers of one picture, and the only way they cannot
+    /// disagree is for there to be one value. See [`App::draw`].
+    fn hud(&self, camera: Camera) -> shell::Hud {
         let (mobiles, items) = match self.view.as_ref() {
             Some(view) => {
                 let mut mobiles: Vec<_> = view
@@ -1629,7 +1707,7 @@ impl App {
             connection: self.connection.clone(),
             serial: self.view.as_ref().map(|view| view.player.serial.raw()),
             position: self.player.at,
-            camera: *self.control.camera(),
+            camera,
             locked: self.control.follow() == Follow::Body,
             rig: self.control.rig(),
             readings: bench::readings(self.scope.samples()),
@@ -1654,7 +1732,7 @@ impl App {
             offline: self.link.is_none(),
             mobiles,
             items,
-            hover: self.pick_tile(),
+            hover: self.pick_tile(camera),
             selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
             gumps: self
@@ -1875,8 +1953,12 @@ impl App {
     /// not even a graphic the client ships no art for. So a graphic can only be
     /// new outside `covered`, and anything that *does* make an atlas forget has
     /// to set `covered` back to `None` in the same breath.
-    fn wanted_since(&self, covered: Option<TileBounds>) -> Wanted {
-        let bounds = self.control.camera().visible_tiles();
+    ///
+    /// `camera` is the frame's snapshot — see [`App::hud`]. What the atlases are
+    /// grown for has to be what the passes below then draw, or a band is packed
+    /// for one rectangle and sampled for another.
+    fn wanted_since(&self, camera: Camera, covered: Option<TileBounds>) -> Wanted {
+        let bounds = camera.visible_tiles();
         let bands = match covered {
             Some(covered) => bounds.difference(covered),
             None => [Some(bounds), None, None, None],
@@ -1924,21 +2006,79 @@ impl App {
         // nobody watched: a body that was walking through it has long since
         // arrived.
         let elapsed = started.saturating_duration_since(self.last_advance);
+
+        // # The frame is three steps, and this is the first of them
+        //
+        // Everything that writes runs here, before anything reads. What the
+        // shell asked for last frame, then every clock, then the eye — and after
+        // this block nothing in the frame moves the world or the camera again.
+        //
+        // The defect it is written against: the HUD used to be built at the top
+        // of the frame and the eye moved a few lines further down, so the
+        // overlay egui laid out — the tile highlight, the hover, the walk goal —
+        // was drawn against the *previous* frame's camera while the world pass
+        // below drew from this one's. The gap between them is one frame of camera
+        // motion, which is not a constant: it is whatever the display gave this
+        // frame, so the markers shivered against the ground they were meant to be
+        // lying on, and every missed interval made them jump. Reordering two
+        // calls would have fixed today's version of it and left the shape that
+        // produced it, which is a second reader picking the camera up at a
+        // different moment. So the frame is staged instead, and the snapshot
+        // below is what both readers are handed.
+        let asked = std::mem::take(&mut self.pending);
+        self.apply(asked);
+        // The viewport the last frame's layout left free — `Shell` holds it
+        // between frames for exactly this. It has to be settled before the eye
+        // is, because it is what decides how much world a camera can see.
+        if let Some(shell) = self.shell.as_ref() {
+            let viewport = shell.viewport();
+            self.control.resize(viewport.width, viewport.height);
+        }
         self.crowd.advance(elapsed);
         self.last_advance = started;
+        // Whatever scenario is being walked delivers its knots for the span that
+        // just passed, before the eye is asked where the body is: a step that
+        // arrived this frame is one the camera has to answer this frame.
+        self.advance_replay(elapsed);
+        // A viewport that grew may have taken the world texture past what the
+        // device allows, which no zoom step asked for.
+        self.fit_zoom_to_device();
+        // And the eye goes where the body is *this frame*: a step arrives once
+        // and is then walked across for the next 400ms, so every frame in
+        // between has a different answer.
+        self.follow_player(elapsed);
 
-        // The UI first, because what it leaves free is the world's viewport and
-        // therefore the size of everything below. A frame that laid its panels
-        // out after drawing the world would size the world from the previous
-        // frame's panels — which is right until the first resize.
-        // Gathered before the shell is borrowed: the HUD is a projection of the
-        // whole app and the shell is part of it.
+        // # Step two: one snapshot, and it is a value
+        //
+        // The camera the whole frame is built from, copied out rather than read
+        // back from `self.control` at each use. A `&Camera` handed to five
+        // collectors is five reads of a field that something between them might
+        // have moved — which is the defect above, expressed as a borrow. A
+        // `Camera` is `Copy`, so this costs nothing and cannot be stale in one
+        // place and fresh in another.
+        let camera = *self.control.camera();
+
+        // Read before the window is borrowed below, for the same reason the line
+        // above is: the borrow is of `self`, and the pacing at the foot of this
+        // frame is a fact about the whole app rather than about it.
+        let watched = self.watched();
+
+        // # Step three: present. Nothing below this line writes the world.
+        //
+        // The UI first, because it is what the surface is composited from
+        // bottom-up and because its layout is what next frame's viewport comes
+        // from. Its request is *held* rather than applied — see [`App::pending`].
         //
         // Timed, and separately from the world below: the two halves of a frame
         // are built by two things that grow for different reasons, and a single
         // build time cannot say which of them ate the frame. See [`frames`].
+        //
+        // The `Instant`s from here down are instrumentation and not a clock the
+        // picture depends on: they measure what this frame cost, and no position
+        // in it is a function of them. The one sampling of time that the frame is
+        // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud();
+        let hud = self.hud(camera);
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {
@@ -1949,66 +2089,15 @@ impl App {
             _ => None,
         };
         let mut ui_cost = ui_started.elapsed();
-        if let Some((request, _, viewport)) = &ui {
-            if request.relock {
-                self.relock();
-            } else if request.unlock {
-                self.control.unlock();
-            }
-            self.control.resize(viewport.width, viewport.height);
-            if let Some(rig) = request.rig {
-                // The eye does not move — that is what `set_rig` promises — but
-                // the frames before the swap were flown by another camera, and
-                // measuring them together would average two rigs.
-                self.control.set_rig(rig);
-                self.scope.clear();
-            }
-            // The window the metrics are taken over, and not a clear: the
-            // frames already held were flown by the same rig.
-            // The body's ease is not the rig and does not clear the scope: the
-            // frames either side of it were flown by the same camera, and what
-            // the scope measures is the eye against the body it was given.
-            if let Some(ease) = request.ease {
-                self.crowd.set_ease(ease);
-            }
-            if let Some(span) = request.scope_span {
-                self.scope.set_span(span);
-            }
-            match request.script {
-                Some(shell::ScriptRequest::Run(name)) => self.start_replay(name),
-                Some(shell::ScriptRequest::Stop) => self.replay = None,
-                None => {}
-            }
-            if let Some(line) = request.say.clone() {
-                self.say(line);
-            }
-            if let Some(reply) = request.gump.clone() {
-                self.answer_gump(reply);
-            }
+        if let Some((request, _, _)) = &ui {
+            self.pending = request.clone();
         }
-        // Whatever scenario is being walked delivers its knots for the span that
-        // just passed, before the eye is asked where the body is: a step that
-        // arrived this frame is one the camera has to answer this frame.
-        self.advance_replay(elapsed);
-        // A viewport that grew may have taken the world texture past what the
-        // device allows, which no zoom step asked for.
-        self.fit_zoom_to_device();
-        // And the eye goes where the body is *this frame*, before anything asks
-        // the camera what is visible: a step arrives once and is then walked
-        // across for the next 400ms, so every frame in between has a different
-        // answer.
-        self.follow_player(elapsed);
-
-        // Read before the window is borrowed below, for the same reason the two
-        // lines above are: the borrow is of `self`, and the pacing at the foot
-        // of this frame is a fact about the whole app rather than about it.
-        let watched = self.watched();
 
         // What the camera has walked onto since the atlases were last grown.
         // Gathered before the window is borrowed, and not inside the borrow: it
         // reads the whole of `self`, and the window is part of it.
-        let want = self.control.camera().visible_tiles();
-        let wanted = self.wanted_since(self.covered);
+        let want = camera.visible_tiles();
+        let wanted = self.wanted_since(camera, self.covered);
         let mut drawn = self.drawn_mobiles();
 
         let Some(window) = self.window.as_mut() else {
@@ -2054,7 +2143,7 @@ impl App {
                     &mut self.anim,
                     &wanted_in(
                         &self.map,
-                        [self.control.camera().visible_tiles()],
+                        [camera.visible_tiles()],
                         &self.items,
                         &drawn.iter().map(|(_, mobile)| *mobile).collect::<Vec<_>>(),
                     ),
@@ -2133,7 +2222,7 @@ impl App {
             .iter()
             .filter_map(|(who, mobile)| {
                 let (text, font, hue) = self.crowd.speaking(*who)?;
-                let anchor = mobiles::head_anchor(mobile, self.control.camera(), &window.atlases.mobiles)?;
+                let anchor = mobiles::head_anchor(mobile, &camera, &window.atlases.mobiles)?;
                 Some((anchor, text.to_string(), font, hue))
             })
             .collect();
@@ -2196,7 +2285,7 @@ impl App {
         // argument, and the short of it is that an image of virtual resolution
         // cannot express an offset of one real pixel — which is the whole of
         // what made a magnified scroll coarser than the screen it was on.
-        let (render_width, render_height) = self.control.camera().image_size();
+        let (render_width, render_height) = camera.image_size();
         if window.world.width() != render_width || window.world.height() != render_height {
             window.world = blit::world_texture(&window.device, render_width, render_height);
             // Tested pixel for pixel against that image, so it is exactly its
@@ -2205,18 +2294,8 @@ impl App {
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let quads = ground::collect(
-            &self.map,
-            self.control.camera(),
-            &window.atlases.land,
-            &window.atlases.texmaps,
-        );
-        let static_quads = statics::collect(
-            &self.map,
-            self.control.camera(),
-            &self.tiledata,
-            &window.atlases.statics,
-        );
+        let quads = ground::collect(&self.map, &camera, &window.atlases.land, &window.atlases.texmaps);
+        let static_quads = statics::collect(&self.map, &camera, &self.tiledata, &window.atlases.statics);
         // Through the same pass as the map's statics, because they are the same
         // atlas: one draw call binds one texture, and what covers what is the
         // depth these carry rather than the order they are appended in.
@@ -2224,13 +2303,13 @@ impl App {
             let mut quads = static_quads;
             quads.extend(items::collect(
                 &self.items,
-                self.control.camera(),
+                &camera,
                 &self.tiledata,
                 &window.atlases.statics,
             ));
             quads
         };
-        let mobile_quads = mobiles::collect(&drawn, self.control.camera(), &window.atlases.mobiles);
+        let mobile_quads = mobiles::collect(&drawn, &camera, &window.atlases.mobiles);
         let labels: Vec<Label<'_>> = speech
             .iter()
             .map(|(anchor, line, font, hue)| Label {
@@ -2255,7 +2334,7 @@ impl App {
             depth: &depth_view,
             width: render_width,
             height: render_height,
-            projection: self.control.camera().projection(),
+            projection: camera.projection(),
         };
         let mut encoder = window
             .device
@@ -2285,7 +2364,7 @@ impl App {
             &mut encoder,
             &view,
             &world_view,
-            self.control.camera().zoom(),
+            camera.zoom(),
             viewport,
         );
         // The UI over it, with no depth attachment: the world's depth buffer
