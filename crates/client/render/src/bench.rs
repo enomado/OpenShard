@@ -287,7 +287,11 @@ pub fn run(rig: Rig, script: &Script, cadence: Cadence) -> Trace {
     let mut dt = Duration::ZERO;
     loop {
         let gaze = script.gaze_at(now);
-        let eye = follower.advance(gaze, dt);
+        // Rounded to a whole virtual pixel, which is the bench's own quantum:
+        // it flies at 1:1, where that is exactly the display's. A bench at a
+        // magnification would want `Camera::snap` and a zoom to hand it — see
+        // the backlog in `docs/camera.md`.
+        let eye = follower.advance(gaze, dt).pixel();
         samples.push(Sample {
             at: now,
             gaze,
@@ -828,7 +832,11 @@ mod tests {
         // produced before.
         while now < Duration::from_millis(3_000) {
             let gaze = script.gaze_at(now);
-            let eye = follower.advance(gaze, dt);
+            // Rounded to a whole virtual pixel, which is the bench's own quantum:
+            // it flies at 1:1, where that is exactly the display's. A bench at a
+            // magnification would want `Camera::snap` and a zoom to hand it — see
+            // the backlog in `docs/camera.md`.
+            let eye = follower.advance(gaze, dt).pixel();
             scope.record(dt, gaze, eye, follower.exact().unwrap());
             now += step;
             dt = step;

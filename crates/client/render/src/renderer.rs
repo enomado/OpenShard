@@ -88,13 +88,7 @@ impl<'a> Target<'a> {
             depth,
             width,
             height,
-            projection: Projection {
-                // Halved as an integer for the reason `Camera::projection`
-                // gives at length: `to_view` halves the extent the same way, and
-                // two roundings of one number have to be one rounding.
-                origin: ((width as i32 / 2) as f32, (height as i32 / 2) as f32),
-                scale: 1.0,
-            },
+            projection: Projection::one_to_one(width, height),
         }
     }
 }

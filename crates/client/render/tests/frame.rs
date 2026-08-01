@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, Zoom};
+use openshard_client_render::camera::{Camera, Projection, WorldPoint, Zoom};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::{self, Mobile};
@@ -109,6 +109,40 @@ fn render(
         (no_mobiles.pixels(), &[]),
         width,
         height,
+        Projection::one_to_one(width, height),
+    )
+}
+
+/// Draw ground through a camera's own projection, rather than 1:1.
+///
+/// The magnified path, which [`render`] cannot reach: it is the same ground pass
+/// and the same quads, and what differs is the two numbers the vertex shader
+/// ends on.
+#[allow(clippy::too_many_arguments)]
+fn render_projected(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    quads: &[GroundQuad],
+    width: u32,
+    height: u32,
+    camera: Camera,
+) -> Frame {
+    let empty = StaticAtlas::pack([]).expect("nothing always fits");
+    let no_mobiles = AnimAtlas::pack([]).expect("nothing always fits");
+    render_both(
+        device,
+        queue,
+        atlas,
+        texmaps,
+        quads,
+        &empty,
+        &[],
+        (no_mobiles.pixels(), &[]),
+        width,
+        height,
+        camera.projection(),
     )
 }
 
@@ -129,6 +163,7 @@ fn render_both(
     mobiles: (&[u8], &[SpriteQuad]),
     width: u32,
     height: u32,
+    projection: Projection,
 ) -> Frame {
     assert_eq!(width * 4 % 256, 0, "a row copy has to be 256-byte aligned");
 
@@ -174,7 +209,13 @@ fn render_both(
     // the whole of the difference between a static and a creature on the GPU.
     let mut people = SpriteRenderer::new(device, queue, format, mobiles.0, &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target::whole(&view, &depth_view, width, height);
+    let target_view = Target {
+        view: &view,
+        depth: &depth_view,
+        width,
+        height,
+        projection,
+    };
     renderer.render(device, queue, &mut encoder, target_view, quads);
     statics.render(device, queue, &mut encoder, target_view, static_quads);
     people.render(device, queue, &mut encoder, target_view, mobiles.1);
@@ -831,6 +872,7 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
         (none.pixels(), &[]),
         128,
         128,
+        Projection::one_to_one(128, 128),
     );
 
     let (green_r, green_g, green_b) = Color16(0b0_00000_11111_00000).rgb8();
@@ -1116,6 +1158,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         (none.pixels(), &[]),
         128,
         128,
+        Projection::one_to_one(128, 128),
     );
 
     let (green_r, green_g, green_b) = green.rgb8();
@@ -1148,6 +1191,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         (none.pixels(), &[]),
         128,
         128,
+        Projection::one_to_one(128, 128),
     );
     let covered = (0..128u32)
         .flat_map(|y| (0..128u32).map(move |x| (x, y)))
@@ -1249,6 +1293,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
             (atlas.pixels(), &quads),
             256,
             256,
+            Projection::one_to_one(256, 256),
         );
         // The two pixels the sprite covers, left and right.
         let x = quads[0].x as u32;
@@ -1332,6 +1377,219 @@ fn the_same_camera_renders_the_same_frame() {
     assert_ne!(frames[0], other.pixels, "moving the camera changed nothing");
 }
 
+/// The gate `docs/camera.md` D11 asks for, on the GPU: magnified, moving the
+/// eye by `1/zoom` of a virtual pixel moves the picture by exactly one real one.
+///
+/// Everything else about D11 is arithmetic that can be asserted without a
+/// device. This is the claim that cannot: that the shader's last two lines,
+/// the rasteriser and `nearest` sampling together produce a frame that is the
+/// other frame *translated*, rather than one resampled by a fraction of a texel.
+/// The second is what a magnification usually costs, it looks like a slight
+/// change in the art, and no arithmetic in `camera.rs` would notice it.
+///
+/// Two cameras a third of a virtual pixel apart at `3x`, which is one real pixel
+/// and is the finest step the display has. The quads are built once and shared
+/// deliberately: `to_view` measures from the eye *rounded*, and both eyes round
+/// to the same virtual pixel, so the only difference between the two frames is
+/// `Projection::origin` — which is exactly the claim.
+///
+/// A third and not a half, because a half is the one fraction that could be
+/// right for the wrong reason: it is on the lattice of `2x` as well, so a
+/// rounding that quietly went to the nearest *even* real pixel would pass it.
+#[test]
+fn a_third_of_a_virtual_pixel_moves_a_magnified_frame_one_real_pixel() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let map = Map::load_facet(&dir, 0).expect("Felucca");
+    let art = Art::open(&dir).expect("artLegacyMUL.uop");
+
+    let mut camera = Camera::new(Point::new(1495, 1629, 0), 512, 256);
+    let mut zoom = Zoom::ONE;
+    for _ in 0..4 {
+        zoom = zoom.scale_up();
+    }
+    camera.zoom_about(256, 128, zoom);
+    assert_eq!(camera.zoom().to_string(), "3x", "the rung this test is about");
+    assert!(
+        !camera.minifies(),
+        "and the world is drawn at the display's own size"
+    );
+
+    let wanted = ground::visible_graphics(&map, &camera);
+    let land = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
+    let texmaps = texmap_atlas(&dir, wanted);
+    let quads = ground::collect(&map, &camera, &land, &texmaps);
+
+    // Along `x` only: a diagonal move would pass on a frame shifted the right
+    // distance the wrong way round, and the two axes are separate lines of
+    // shader.
+    let mut shifted = camera;
+    let at = camera.eye_at();
+    shifted.look_at(WorldPoint {
+        x: at.x + camera.quantum(),
+        y: at.y,
+    });
+    assert_eq!(shifted.eye(), camera.eye(), "the same whole virtual pixel");
+    assert_ne!(shifted.projection(), camera.projection(), "and a different frame");
+
+    let (width, height) = (camera.width, camera.height);
+    let before = render_projected(&device, &queue, &land, &texmaps, &quads, width, height, camera);
+    let after = render_projected(&device, &queue, &land, &texmaps, &quads, width, height, shifted);
+    assert_ne!(before.pixels, after.pixels, "a real pixel moved nothing at all");
+
+    // The eye moved right, so the world moved left: what is at `x` in the second
+    // frame was at `x + 1` in the first. Compared over the interior, because the
+    // column the shift walks in from has no counterpart to be compared with.
+    let mut checked = 0usize;
+    let mut moved = 0usize;
+    let mut resampled = 0usize;
+    for y in 0..height {
+        for x in 0..width - 1 {
+            checked += 1;
+            if after.pixel(x, y) == before.pixel(x + 1, y) {
+                moved += 1;
+            } else {
+                resampled += 1;
+            }
+        }
+    }
+    // Counted and asserted, because "every pixel matched" and "no pixel was
+    // looked at" are the same green — this repository has produced the second
+    // one before.
+    assert_eq!(checked, (width as usize - 1) * height as usize);
+
+    // What is *not* an exact translation, and why it cannot be. A sloped tile is
+    // textured by stretching a square texmap over a diamond, so its `uv` is
+    // interpolated across a quad that is not axis-aligned and a fragment centre
+    // a third of a texel along lands on the other side of a texel boundary here
+    // and there. There is no placement of the quantiser that fixes that: it is
+    // what stretching a texture means. Everything drawn from the *art* — flat
+    // ground, statics, sprites — is texel-aligned and translates exactly, which
+    // is what the sprite half of this gate below asserts with no allowance at
+    // all.
+    //
+    // One in a thousand is a ceiling and not a measurement (it is one in seven
+    // thousand over Britain), and the mutation is what says a ceiling is enough:
+    // an origin that rounds its fraction away draws the *same* frame twice, so
+    // the number this is separating a correct camera from is not 1 in 7,000 but
+    // 130,815 in 130,816.
+    assert!(
+        resampled * 1000 < checked,
+        "{resampled} of {checked} pixels are not the frame before it, translated",
+    );
+    assert!(
+        moved > checked / 2,
+        "a frame that agreed nowhere is not a translation"
+    );
+
+    // And the guard against all of that holding vacuously. Comparing the two
+    // frames *without* the translation is not a good enough test on its own —
+    // ground is large flat regions of colour, so more than half the pixels have
+    // the same value one pixel over regardless — so what is asserted is that the
+    // translation explains strictly more of the frame than standing still does.
+    // Under the mutation the two are equal, which is what makes this the
+    // discriminating comparison rather than a restatement of the one above.
+    let still = (0..height)
+        .flat_map(|y| (0..width - 1).map(move |x| (x, y)))
+        .filter(|&(x, y)| after.pixel(x, y) == before.pixel(x, y))
+        .count();
+    assert!(
+        moved > still,
+        "translating explains {moved} pixels and standing still explains {still}",
+    );
+}
+
+/// And the half of that gate with no allowance in it: a *sprite* at `3x`,
+/// shifted a third of a virtual pixel, is the same picture one real pixel over.
+///
+/// Everything drawn from the art rather than from a texmap is texel-aligned —
+/// the quad is the sprite's own rectangle, so a fragment centre lands on a
+/// texel centre at every magnification — and a translation of the quad by a
+/// whole real pixel is therefore a translation of the picture, exactly, with no
+/// resampling anywhere. This is the claim the character's own smoothness rests
+/// on, so it is asserted without a tolerance.
+#[test]
+fn a_magnified_sprite_translates_texel_for_texel() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let art = Art::open(&dir).expect("artLegacyMUL.uop");
+
+    let mut camera = Camera::new(Point::new(200, 200, 0), 512, 256);
+    let mut zoom = Zoom::ONE;
+    for _ in 0..4 {
+        zoom = zoom.scale_up();
+    }
+    camera.zoom_about(256, 128, zoom);
+    assert_eq!(camera.zoom().to_string(), "3x");
+
+    // A static's sprite, drawn through the same pass a mobile uses: what is
+    // being asserted is the pass and the transform, and a static is the one this
+    // suite can build without an animation file.
+    let graphic = Graphic(0x0CE3);
+    let atlas = StaticAtlas::build(&art, [graphic]).expect("one sprite fits");
+    let sprite = atlas.sprite(graphic).expect("just packed");
+    let quads = vec![SpriteQuad {
+        x: (camera.render_width() as i32 / 2) as f32,
+        y: (camera.render_height() as i32 / 2) as f32,
+        width: f32::from(sprite.width),
+        height: f32::from(sprite.height),
+        region: sprite.region,
+        depth: 0.5,
+        hue: 0,
+    }];
+
+    let mut shifted = camera;
+    let at = camera.eye_at();
+    shifted.look_at(WorldPoint {
+        x: at.x + camera.quantum(),
+        y: at.y,
+    });
+
+    let land = LandAtlas::build(&art, []).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let none = AnimAtlas::pack([]).expect("nothing always fits");
+    let (width, height) = (camera.width, camera.height);
+    let frame = |camera: Camera| {
+        render_both(
+            &device,
+            &queue,
+            &land,
+            &texmaps,
+            &[],
+            &atlas,
+            &quads,
+            (none.pixels(), &[]),
+            width,
+            height,
+            camera.projection(),
+        )
+    };
+    let before = frame(camera);
+    let after = frame(shifted);
+
+    let mut drawn = 0usize;
+    for y in 0..height {
+        for x in 0..width - 1 {
+            assert_eq!(
+                after.pixel(x, y),
+                before.pixel(x + 1, y),
+                "({x}, {y}) is not the frame before it, translated",
+            );
+            if after.pixel(x, y)[3] != 0 {
+                drawn += 1;
+            }
+        }
+    }
+    // The sprite has to actually be on screen, or the assertion above compared
+    // a cleared frame with a cleared frame and passed for it.
+    assert!(
+        drawn > 1_000,
+        "only {drawn} pixels of sprite: a blank frame agrees"
+    );
+}
+
 /// A screen of Britain with its statics on it: the buildings cover a real part
 /// of the frame, and the ground still covers all of it.
 ///
@@ -1385,6 +1643,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         (none.pixels(), &[]),
         camera.width,
         camera.height,
+        camera.projection(),
     );
 
     // Still whole: every pixel drawn, exactly as with ground alone.
@@ -1479,6 +1738,7 @@ fn dump_a_frame_of_britain() {
         (mobile_atlas.pixels(), &mobile_quads),
         camera.width,
         camera.height,
+        camera.projection(),
     );
 
     let mut ppm = format!("P6\n{} {}\n255\n", camera.width, camera.height).into_bytes();

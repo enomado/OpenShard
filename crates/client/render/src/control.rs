@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use crate::camera::{Camera, WorldPixel, Zoom};
+use crate::camera::{Camera, WorldPoint, Zoom};
 use crate::follow::{Follower, Gaze, Rig};
 
 /// Whether the camera is tied to the body or the mouse.
@@ -33,13 +33,13 @@ pub enum Follow {
 
 /// What the mouse is doing to the camera.
 ///
-/// The fraction is the reason this is a struct and not a flag. At zoom 2 a
-/// one-pixel drag is half a world pixel, and an eye that carried the fraction
-/// would put every sprite on a half-texel boundary for half of all camera
-/// positions — the same class of defect as the half-texel inset the atlases
-/// apply, spread across the whole frame instead of one edge. So the remainder is
-/// accumulated here, in the input handler, and only whole world pixels reach
-/// [`Camera::look_at_pixel`].
+/// It used to carry a third field: the fraction of a virtual pixel a drag had
+/// dragged and not yet spent, because at `2x` a one-real-pixel drag was half a
+/// virtual one and the eye could only hold whole ones. Under D11 the eye is on
+/// the real pixel's lattice, so a drag of one real pixel is a position the eye
+/// can express exactly — there is no remainder to keep, and the drag that used
+/// to move nothing three times out of four now moves the world by exactly what
+/// the hand moved.
 #[derive(Clone, Copy, Default, Debug)]
 struct Drag {
     /// Where the cursor was last seen, in physical pixels from the viewport's
@@ -47,8 +47,6 @@ struct Drag {
     cursor: (i32, i32),
     /// Whether the middle button is down.
     panning: bool,
-    /// Viewport pixels dragged and not yet spent, numerator over the zoom's.
-    remainder: (i32, i32),
 }
 
 /// A zoom the device would not allocate the offscreen image for.
@@ -128,7 +126,7 @@ impl Control {
     /// [`Follower::settling`]. Only while it is the body's: an unlocked eye is
     /// wherever the hand left it and is converging on nothing.
     pub fn settling(&self) -> bool {
-        self.follow == Follow::Body && self.follower.settling()
+        self.follow == Follow::Body && self.follower.settling(self.camera.quantum())
     }
 
     /// Follow with another one, without moving the eye — see
@@ -187,7 +185,7 @@ impl Control {
     pub fn relock(&mut self, gaze: Gaze) {
         self.follow = Follow::Body;
         self.follower.cut();
-        self.camera.look_at_pixel(gaze.eye());
+        self.camera.look_at(gaze.eye());
     }
 
     /// Let the body walk off screen: the eye stops following it.
@@ -213,17 +211,13 @@ impl Control {
     pub fn follow_body(&mut self, gaze: Gaze, dt: Duration) {
         if self.follow == Follow::Body {
             let eye = self.follower.advance(gaze, dt);
-            self.camera.look_at_pixel(eye);
+            self.camera.look_at(eye);
         }
     }
 
     /// The middle button went down or came up.
-    ///
-    /// Whatever a previous drag was saving up is not owed to this one, so the
-    /// remainder is dropped on either edge.
     pub fn set_panning(&mut self, down: bool) {
         self.drag.panning = down;
-        self.drag.remainder = (0, 0);
     }
 
     /// The cursor moved to a viewport pixel, panning if the button is down.
@@ -237,30 +231,27 @@ impl Control {
         self.drag.panning && self.pan(dx, dy)
     }
 
-    /// Move the eye by a drag, in viewport pixels, spending whole world pixels.
+    /// Move the eye by a drag, in real pixels.
+    ///
+    /// One real pixel of hand is one real pixel of world, at every rung of the
+    /// ladder: the eye's lattice *is* the real pixel, so the conversion below is
+    /// exact and there is nothing left over. Before D11 this was the arithmetic
+    /// with the remainder in it, and what it bought was a camera that ignored
+    /// three drags in four at `4x` and then jumped four pixels.
     ///
     /// Unlocks: a hand on the camera outranks the server, until `Home` says
     /// otherwise. Answers whether the eye moved.
     pub fn pan(&mut self, dx: i32, dy: i32) -> bool {
         self.follow = Follow::Free;
-        let num = self.camera.zoom().numerator() as i32;
-        let den = self.camera.zoom().denominator() as i32;
-        // Viewport pixels times the denominator, kept as a numerator over `num`:
-        // the fraction stays here rather than in the eye.
-        let owed_x = self.drag.remainder.0 + dx * den;
-        let owed_y = self.drag.remainder.1 + dy * den;
-        // Towards zero, so the remainder keeps the sign of the debt and a drag
-        // back and forth ends where it started.
-        let (whole_x, whole_y) = (owed_x / num, owed_y / num);
-        self.drag.remainder = (owed_x - whole_x * num, owed_y - whole_y * num);
-        if whole_x == 0 && whole_y == 0 {
+        if dx == 0 && dy == 0 {
             return false;
         }
-        let eye = self.camera.eye();
+        let quantum = self.camera.quantum();
+        let eye = self.camera.eye_at();
         // The world follows the cursor, so the eye goes the other way.
-        self.camera.look_at_pixel(WorldPixel {
-            x: eye.x - whole_x,
-            y: eye.y - whole_y,
+        self.camera.look_at(WorldPoint {
+            x: eye.x - f64::from(dx) * quantum,
+            y: eye.y - f64::from(dy) * quantum,
         });
         true
     }
@@ -295,8 +286,6 @@ impl Control {
             return Err(refusal);
         }
         self.camera = probe;
-        // The fraction a drag was saving up belongs to the old zoom.
-        self.drag.remainder = (0, 0);
         Ok(true)
     }
 
@@ -396,86 +385,96 @@ mod tests {
         assert_eq!((out, back), (3, 8), "nine rungs, with 1:1 the fourth");
     }
 
-    /// The remainder is the point of `Drag`, and this is what it buys: at zoom 4
-    /// a single viewport pixel is a quarter of a world pixel, so three drags
-    /// move nothing and the fourth moves one.
+    /// The gate D11 names, on the input side: one real pixel of hand is one real
+    /// pixel of world, at every rung of the ladder.
+    ///
+    /// This is the test the old one is the negative of. Before D11 the eye held
+    /// whole *virtual* pixels, so at `4x` three drags in four moved nothing and
+    /// the fourth moved four real pixels at once — which read as a camera that
+    /// ignored small movements and then lurched, and which the remainder in
+    /// `Drag` was there to make orderly rather than to remove.
+    ///
+    /// Measured through `to_viewport`, and deliberately: `eye()` is rounded to a
+    /// virtual pixel and at `4x` it does not change at all for three drags out
+    /// of four, so an assertion on it would pass on the old arithmetic too. What
+    /// is asserted is where a fixed point of the *world* lands on the display.
     #[test]
-    fn a_drag_finer_than_a_world_pixel_accumulates() {
+    fn a_drag_of_one_real_pixel_moves_the_world_one_real_pixel() {
         let mut control = control();
-        for _ in 0..5 {
-            assert!(control.zoom(true).unwrap());
+        // From the bottom of the ladder, so the minifying rungs are walked too:
+        // there a real pixel is *coarser* than a virtual one and the eye moves
+        // by two at a time, which is the other side of the same promise and the
+        // side that goes through the blit rather than through the transform.
+        while control.zoom(false).unwrap() {}
+        let mut rung = 0;
+        loop {
+            // A tile well away from the eye, so nothing about this is a
+            // property of the origin.
+            let fixed = Point::new(340, 360, 0);
+            let before = control.camera().to_viewport(control.camera().to_screen(fixed));
+            assert!(control.pan(1, 1), "a real pixel is always a position at {rung}");
+            let after = control.camera().to_viewport(control.camera().to_screen(fixed));
+            assert_eq!(
+                (after.0 - before.0, after.1 - before.1),
+                (1.0, 1.0),
+                "the world did not follow the hand at rung {rung}",
+            );
+            if !control.zoom(true).unwrap() {
+                break;
+            }
+            rung += 1;
         }
-        assert_eq!(control.camera().zoom().to_string(), "4x");
-        let before = control.camera().eye();
-        assert!(!control.pan(1, 0), "a quarter pixel is not a pixel");
-        assert!(!control.pan(1, 0));
-        assert!(!control.pan(1, 0));
-        assert!(control.pan(1, 0), "four quarters are");
-        assert_eq!(control.camera().eye().x, before.x - 1);
+        assert_eq!(rung, 8, "every rung of the ladder was walked");
     }
 
     /// And the direction of the rounding: a drag out and back ends where it
-    /// started rather than a pixel to one side, which is what "towards zero"
-    /// with a signed remainder is for.
+    /// started rather than a pixel to one side.
+    ///
+    /// It survives D11 unchanged and is worth keeping for it — under the old
+    /// arithmetic it was a statement about a signed remainder truncating towards
+    /// zero, and under this one it holds because there is no remainder at all.
     #[test]
     fn a_drag_out_and_back_ends_where_it_started() {
         let mut control = control();
         assert!(control.zoom(true).unwrap());
-        let before = control.camera().eye();
+        let before = control.camera().eye_at();
         for _ in 0..7 {
             control.pan(1, 1);
         }
         for _ in 0..7 {
             control.pan(-1, -1);
         }
-        assert_eq!(control.camera().eye(), before);
+        assert_eq!(control.camera().eye_at(), before);
     }
 
-    /// Three quarters of a world pixel owed at 4x, and the zoom that leaves.
+    /// A drag finer than the display cannot exist, so a zoom has nothing to
+    /// forget — but the eye it leaves behind has to land on the *new* rung's
+    /// lattice, or it sits between two real pixels until somebody moves it.
     ///
-    /// The remainder belongs to the zoom that produced it: three quarters is not
-    /// three thirds, and a remainder carried across would pay for a pixel the
-    /// drag never asked for — the next single-pixel drag at 3x would move the eye
-    /// instead of saving up like the two after it.
+    /// Half a virtual pixel is a position at `2x` and is not one at `3x`, which
+    /// is the case this walks. The old test in this slot asserted that a zoom
+    /// dropped the fraction a drag was saving up; there is no such fraction now,
+    /// and the question it was really about — what happens to a sub-pixel offset
+    /// when the rung changes — is this.
     #[test]
-    fn a_zoom_forgets_what_a_drag_was_saving_up() {
+    fn a_zoom_leaves_the_eye_on_the_new_rungs_lattice() {
         let mut control = control();
-        for _ in 0..5 {
+        for _ in 0..3 {
             assert!(control.zoom(true).unwrap());
         }
-        for _ in 0..3 {
-            assert!(!control.pan(1, 0), "three quarters owed");
-        }
-        assert!(control.zoom(false).unwrap());
-        assert_eq!(control.camera().zoom().to_string(), "3x");
-        assert!(!control.pan(1, 0), "a third, not a third plus three quarters");
-        assert!(!control.pan(1, 0));
-        let before = control.camera().eye();
-        assert!(control.pan(1, 0), "three thirds");
-        assert_eq!(control.camera().eye().x, before.x - 1);
-    }
+        assert_eq!(control.camera().zoom().to_string(), "2x");
+        assert!(control.pan(1, 0), "half a virtual pixel, which 2x can express");
+        let half = control.camera().eye_at();
+        assert_eq!(half.x.fract().abs(), 0.5);
 
-    /// A press or a release does the same, for the same reason: the fraction one
-    /// drag left over is not owed to the next one.
-    #[test]
-    fn a_new_drag_does_not_inherit_a_remainder() {
-        let mut control = control();
-        for _ in 0..5 {
-            assert!(control.zoom(true).unwrap());
-        }
-        for _ in 0..3 {
-            assert!(!control.pan(1, 0));
-        }
-        control.set_panning(true);
-        for _ in 0..3 {
-            assert!(
-                !control.pan(1, 0),
-                "the owed three quarters went with the old drag"
-            );
-        }
-        let before = control.camera().eye();
-        assert!(control.pan(1, 0));
-        assert_eq!(control.camera().eye().x, before.x - 1);
+        assert!(control.zoom(true).unwrap());
+        assert_eq!(control.camera().zoom().to_string(), "3x");
+        let thirds = control.camera().eye_at();
+        assert_eq!(
+            thirds,
+            control.camera().snap(thirds),
+            "an eye off the lattice is a frame resampled by a fraction of a texel",
+        );
     }
 
     /// `cursor_moved` pans only while the button is down, and it pans by the

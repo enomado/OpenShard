@@ -90,6 +90,44 @@ pub struct WorldPixel {
     pub y: i32,
 }
 
+/// The same space as [`WorldPixel`], to a fraction of one.
+///
+/// What every position in this client actually is before anything rounds it: a
+/// body mid-step, an eased sprite, an eye converging on one. [`WorldPixel`] is
+/// what comes out of the quantiser, and `docs/camera.md` D11 is the rule for
+/// where that quantiser sits — the fraction it keeps is a fraction of a
+/// *virtual* pixel, because at `3x` a third of one is a whole pixel of the
+/// display and rounding it away is the judder the whole decision is about.
+///
+/// `f64` and not `f32`, and it is the rounding that decides it rather than any
+/// filter: the far corner of a 7,168-tile facet is 157,000 virtual pixels out,
+/// where an `f32` resolves to about a hundredth of a pixel — fine for a
+/// smoother, and a hundred times the margin at which two roundings of the same
+/// position disagree. The eye has to land on the pixel the sprite landed on.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct WorldPoint {
+    /// Rightwards.
+    pub x: f64,
+    /// Downwards.
+    pub y: f64,
+}
+
+impl WorldPoint {
+    /// Rounded to a whole virtual pixel.
+    ///
+    /// The *coarse* quantiser, and not what the screen is given: what a display
+    /// can show is [`Camera::snap`], which is finer than this at every
+    /// magnification above 1:1. This is for the things that reason about the
+    /// world rather than about a frame — which tile the eye is over, which tiles
+    /// are on screen — where the fraction it drops cannot change the answer.
+    pub fn pixel(self) -> WorldPixel {
+        WorldPixel {
+            x: self.x.round() as i32,
+            y: self.y.round() as i32,
+        }
+    }
+}
+
 /// A position in the image the world is drawn into, from its top-left corner.
 ///
 /// Outside it is ordinary and not an error — most of what a camera projects
@@ -386,24 +424,48 @@ pub struct Projection {
     pub scale: f32,
 }
 
+impl Projection {
+    /// The world drawn 1:1 into an image of this size, eye in the middle.
+    ///
+    /// What a frame test wants, and what the minifying path hands the passes:
+    /// there is no magnification in either, and in the second one the scaling is
+    /// the blit's.
+    pub fn one_to_one(width: u32, height: u32) -> Self {
+        Self {
+            // Halved as an integer for the reason `Camera::projection` gives at
+            // length: `to_view` halves the extent the same way, and two
+            // roundings of one number have to be one rounding.
+            origin: ((width as i32 / 2) as f32, (height as i32 / 2) as f32),
+            scale: 1.0,
+        }
+    }
+}
+
 /// What the view is looking at, how magnified, and how big the viewport is.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Camera {
     /// Where the middle of the viewport looks.
     ///
     /// Pixels and not a tile: a tile is 44 pixels across and a drag is one pixel
-    /// at a time. Whole world pixels, too — an eye carrying a fraction would put
-    /// every sprite on a half-texel boundary for half of all camera positions,
-    /// so a drag accumulates its remainder in the input handler and commits
-    /// whole pixels here.
+    /// at a time.
+    ///
+    /// **On the real pixel's lattice**, which is `docs/camera.md` D11 and is not
+    /// the same as whole virtual pixels — it is whole virtual pixels only at
+    /// 1:1. At `3x` this holds thirds, because a third of a virtual pixel is a
+    /// whole pixel of the display and an eye that could not express one would
+    /// move the world in threes. [`Camera::snap`] is the quantiser and
+    /// [`Camera::look_at`] is where it is applied, so nothing else has to
+    /// remember; what the type still refuses is a *free* fraction, which would
+    /// put every sprite on a half-texel boundary for half of all camera
+    /// positions.
     ///
     /// Private, because "where the camera looks" is the one piece of state two
     /// writers fight over: the thing that pins it to the player, and the thing
-    /// that pans it. [`Camera::look_at_pixel`] is the one door — and it takes a
-    /// pixel rather than a tile because everything upstream of it has one: a
-    /// body mid-step is between two tiles, and naming the tile throws away the
-    /// part of the answer the whole glide exists to produce.
-    eye: WorldPixel,
+    /// that pans it. [`Camera::look_at`] is the one door — and it takes a point
+    /// rather than a tile because everything upstream of it has one: a body
+    /// mid-step is between two tiles, and naming the tile throws away the part
+    /// of the answer the whole glide exists to produce.
+    eye: WorldPoint,
     zoom: Zoom,
     /// The viewport's width in *physical* pixels — the rect the UI leaves free,
     /// which is not the window.
@@ -415,22 +477,74 @@ pub struct Camera {
 impl Camera {
     /// A camera on a tile, unmagnified, for a viewport of this size.
     pub fn new(center: Point, width: u32, height: u32) -> Self {
+        let at = project(center);
         Self {
-            eye: project(center),
+            eye: WorldPoint {
+                x: f64::from(at.x),
+                y: f64::from(at.y),
+            },
             zoom: Zoom::ONE,
             width,
             height,
         }
     }
 
-    /// Where the middle of the viewport looks.
+    /// Where the middle of the viewport looks, rounded to a virtual pixel.
+    ///
+    /// What everything that reasons about the *world* wants — which tiles are on
+    /// screen, which tile the depth order is centred on, how far a drag moved.
+    /// The fraction it drops is a fraction of a virtual pixel and never more, so
+    /// no answer here changes by dropping it. [`Camera::eye_at`] is the one that
+    /// keeps it, and only the projection needs that.
     pub fn eye(&self) -> WorldPixel {
+        self.eye.pixel()
+    }
+
+    /// Where it looks, on the real pixel's lattice.
+    pub fn eye_at(&self) -> WorldPoint {
         self.eye
     }
 
-    /// Look at a world pixel.
+    /// How much of a virtual pixel one real pixel is.
+    ///
+    /// The quantum, and the whole of what D11 changed: `1` at 1:1, a third at
+    /// `3x`, and two above `1/2` — where a real pixel is *coarser* than a
+    /// virtual one and the lattice is the sparser of the two, which is honest
+    /// rather than a rounding error. Nothing finer than this can be shown, so
+    /// nothing finer than this is stored.
+    pub fn quantum(&self) -> f64 {
+        f64::from(self.zoom.denominator()) / f64::from(self.zoom.numerator())
+    }
+
+    /// The nearest position the display can actually distinguish.
+    ///
+    /// Public because the eye is not the only thing that has to sit on this
+    /// lattice: a body drawn between two of its points would be resampled
+    /// against a world that is not, which is a sprite whose texels change width
+    /// as it walks. See [`crate::mobiles::place`].
+    pub fn snap(&self, at: WorldPoint) -> WorldPoint {
+        let quantum = self.quantum();
+        WorldPoint {
+            x: (at.x / quantum).round() * quantum,
+            y: (at.y / quantum).round() * quantum,
+        }
+    }
+
+    /// Look at a point, on the nearest real pixel to it.
+    ///
+    /// The one door into the eye, and the one place the quantiser runs: a caller
+    /// that had to remember to snap is a caller that will not, and an eye off
+    /// the lattice is a whole frame resampled by a fraction of a texel.
+    pub fn look_at(&mut self, at: WorldPoint) {
+        self.eye = self.snap(at);
+    }
+
+    /// Look at a whole virtual pixel, which is on the lattice at every zoom.
     pub fn look_at_pixel(&mut self, eye: WorldPixel) {
-        self.eye = eye;
+        self.eye = WorldPoint {
+            x: f64::from(eye.x),
+            y: f64::from(eye.y),
+        };
     }
 
     /// The tile the eye is over, read at ground level.
@@ -440,7 +554,7 @@ impl Camera {
     /// resolution to spare, and `z` does not matter to that at all — it moves
     /// the answer by a tile or two out of a margin of five hundred.
     pub fn eye_tile(&self) -> (i32, i32) {
-        unproject(self.eye, 0)
+        unproject(self.eye(), 0)
     }
 
     /// The magnification.
@@ -507,9 +621,15 @@ impl Camera {
         // sitting a pixel and a half off centre at 3x, on some viewport widths
         // and not others. The two roundings have to be the same rounding, not
         // merely the same formula.
+        //
+        // And the eye's own fraction rides here, which is the whole of what
+        // makes the world move a real pixel at a time. `to_view` measures from
+        // the *rounded* eye, so what is left over is added once, to the point
+        // the target is centred on, instead of to every quad.
+        let rounded = self.eye();
         let origin = (
-            (self.render_width() as i32 / 2) as f32,
-            (self.render_height() as i32 / 2) as f32,
+            (self.render_width() as i32 / 2) as f32 + (self.eye.x - f64::from(rounded.x)) as f32,
+            (self.render_height() as i32 / 2) as f32 + (self.eye.y - f64::from(rounded.y)) as f32,
         );
         if self.minifies() {
             // 1:1 into an image of virtual resolution, which the blit then
@@ -524,19 +644,40 @@ impl Camera {
     }
 
     /// Where a world pixel lands in the drawn image.
+    ///
+    /// Measured from the eye *rounded*, and the fraction it therefore drops is
+    /// put back by [`Camera::projection`] — once, on the origin, rather than on
+    /// every quad. That is what keeps this integral: the quads a pass builds are
+    /// on the art's grid and stay comparable to the files texel for texel, and
+    /// the sub-pixel offset is a property of the frame rather than of any tile
+    /// in it.
     pub fn to_view(&self, at: WorldPixel) -> ViewPixel {
+        let eye = self.eye();
         ViewPixel {
-            x: at.x - self.eye.x + self.render_width() as i32 / 2,
-            y: at.y - self.eye.y + self.render_height() as i32 / 2,
+            x: at.x - eye.x + self.render_width() as i32 / 2,
+            y: at.y - eye.y + self.render_height() as i32 / 2,
         }
+    }
+
+    /// The same for something that is not on a whole virtual pixel.
+    ///
+    /// A body mid-step, and nothing else so far: everything the map holds is on
+    /// a tile, and a tile projects to a whole pixel by construction.
+    pub fn to_view_exact(&self, at: WorldPoint) -> (f32, f32) {
+        let eye = self.eye();
+        (
+            (at.x - f64::from(eye.x)) as f32 + (self.render_width() as i32 / 2) as f32,
+            (at.y - f64::from(eye.y)) as f32 + (self.render_height() as i32 / 2) as f32,
+        )
     }
 
     /// And back. The exact inverse of [`Camera::to_view`] — integers throughout,
     /// because the zoom is not in either of them.
     pub fn to_world(&self, at: ViewPixel) -> WorldPixel {
+        let eye = self.eye();
         WorldPixel {
-            x: at.x - self.render_width() as i32 / 2 + self.eye.x,
-            y: at.y - self.render_height() as i32 / 2 + self.eye.y,
+            x: at.x - self.render_width() as i32 / 2 + eye.x,
+            y: at.y - self.render_height() as i32 / 2 + eye.y,
         }
     }
 
@@ -555,12 +696,21 @@ impl Camera {
     /// painter can use. `f32` because a highlight is drawn at whatever
     /// magnification the blit lands on, not on a texel grid.
     pub fn to_viewport(&self, at: ViewPixel) -> (f32, f32) {
-        let num = self.zoom.numerator() as f32;
-        let den = self.zoom.denominator() as f32;
-        let scale = num / den;
+        // From `projection`'s origin and not from half the extent, so the eye's
+        // sub-virtual-pixel offset is in here too. Without it this lands where
+        // the world *would* be if the camera were on a whole virtual pixel,
+        // which at `4x` is up to four real pixels from where the world actually
+        // is — a tile highlight that slides off its tile as the camera moves,
+        // and a gate for the drag that reads correct while the picture is not.
+        let projection = self.projection();
+        // The zoom's own ratio and not `projection.scale`: minifying, the passes
+        // draw at 1:1 and it is the blit that shrinks, so the scale that reaches
+        // the viewport is the same number on both paths even though the one in
+        // the transform is not.
+        let scale = self.zoom.numerator() as f32 / self.zoom.denominator() as f32;
         (
-            (at.x - self.render_width() as i32 / 2) as f32 * scale + self.width as f32 / 2.0,
-            (at.y - self.render_height() as i32 / 2) as f32 * scale + self.height as f32 / 2.0,
+            (at.x as f32 - projection.origin.0) * scale + self.width as f32 / 2.0,
+            (at.y as f32 - projection.origin.1) * scale + self.height as f32 / 2.0,
         )
     }
 
@@ -610,9 +760,10 @@ impl Camera {
         // centres coincide whatever the rounding did to the edges.
         let dx = (x - self.width as i32 / 2) * den / num;
         let dy = (y - self.height as i32 / 2) * den / num;
+        let eye = self.eye();
         WorldPixel {
-            x: self.eye.x + dx,
-            y: self.eye.y + dy,
+            x: eye.x + dx,
+            y: eye.y + dy,
         }
     }
 
@@ -625,10 +776,14 @@ impl Camera {
         let before = self.pick(cursor_x, cursor_y);
         self.zoom = zoom;
         let after = self.pick(cursor_x, cursor_y);
-        self.eye = WorldPixel {
-            x: self.eye.x + before.x - after.x,
-            y: self.eye.y + before.y - after.y,
-        };
+        // Snapped to the *new* zoom's lattice, and by `look_at` rather than by
+        // hand: a third of a pixel is on the lattice at 3x and is not at 2x, so
+        // an eye carried across a rung unchanged would sit between two real
+        // pixels for as long as nobody moved it.
+        self.look_at(WorldPoint {
+            x: self.eye.x + f64::from(before.x - after.x),
+            y: self.eye.y + f64::from(before.y - after.y),
+        });
     }
 
     /// Every tile that could land inside the drawn image, over-covered.
@@ -653,10 +808,11 @@ impl Camera {
         // the viewport down into it. Widening only downwards passes every test
         // written at `z = 0` and loses a band of ground the moment the ground
         // goes negative.
-        let left = self.eye.x - half_w - TILE_WIDTH;
-        let right = self.eye.x + half_w + TILE_WIDTH;
-        let top = self.eye.y - half_h - TILE_HEIGHT - MAX_Z_LIFT;
-        let bottom = self.eye.y + half_h + TILE_HEIGHT + MAX_Z_LIFT;
+        let eye = self.eye();
+        let left = eye.x - half_w - TILE_WIDTH;
+        let right = eye.x + half_w + TILE_WIDTH;
+        let top = eye.y - half_h - TILE_HEIGHT - MAX_Z_LIFT;
+        let bottom = eye.y + half_h + TILE_HEIGHT + MAX_Z_LIFT;
 
         // `u = x - y` and `v = x + y`, in tiles. Dividing rounds towards zero,
         // which shrinks the range on the negative side, so each bound is pushed

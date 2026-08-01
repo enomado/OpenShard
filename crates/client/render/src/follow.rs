@@ -33,8 +33,11 @@
 //!    the anchor is a body, which is on the map by construction.
 //! 7. **Impulse** — shake, recoil, a hit's kick: additive, on the pose, never on
 //!    the filter's state. *Empty.*
-//! 8. **Quantise** — round to whole world pixels and keep the remainder in the
-//!    state.
+//! 8. **Quantise** — round to the pixel the *display* has and keep the remainder
+//!    in the state. Not to a whole pixel of the art, which above 1:1 is several
+//!    of the display's: see `docs/camera.md` D11. It is the one stage that does
+//!    not happen here, because it is the one that needs the magnification —
+//!    [`crate::camera::Camera::snap`] is where it lands.
 //!
 //! The empty ones are listed because order is where camera defects live: a clamp
 //! above the filter springs off its boundary, an impulse mixed into the filter's
@@ -47,7 +50,7 @@ use std::time::Duration;
 
 use openshard_protocol::world::Point;
 
-use crate::camera::{WorldPixel, Z_STEP, project};
+use crate::camera::{WorldPoint, Z_STEP, project};
 
 /// Where the eye is asked to look, before anything smooths it.
 ///
@@ -129,18 +132,22 @@ impl Gaze {
         (self.x, self.y - self.lift)
     }
 
-    /// The one world pixel this asks for.
+    /// The one point in the world this asks to be looked at.
     ///
-    /// The quantiser: whole pixels leave, the fraction stays in whatever held
-    /// this value. An eye carrying a fraction puts every sprite on a half-texel
-    /// boundary for half of all camera positions, which does not show on a
-    /// screenshot and boils the whole frame in motion.
-    pub fn eye(self) -> WorldPixel {
+    /// **No longer the quantiser**, and that is `docs/camera.md` D11: rounding
+    /// here rounds to a *virtual* pixel, which at `3x` is three pixels of the
+    /// display, and a camera that could only name one in three of the positions
+    /// a screen can show moves the world in jumps coarser than the screen. The
+    /// rounding that is left happens once, in [`crate::camera::Camera::snap`],
+    /// against the pixel a display actually has — and it is the camera that does
+    /// it because the camera is the thing that knows the magnification.
+    ///
+    /// What survives of D7 is the placement: the quantiser is still last, still
+    /// after the filter, and the fraction still stays in whatever held this
+    /// value. Only the size of its step changed.
+    pub fn eye(self) -> WorldPoint {
         let (x, y) = self.exact();
-        WorldPixel {
-            x: x.round() as i32,
-            y: y.round() as i32,
-        }
+        WorldPoint { x, y }
     }
 }
 
@@ -304,10 +311,21 @@ impl Follower {
     /// The test is the *drawn* pixel and not the remaining error, and that is
     /// exact rather than a tolerance somebody chose: each channel approaches its
     /// target monotonically, so if the eye and its target already round to the
-    /// same world pixel, every position between them does too — no later frame
-    /// can change what the screen is given until the target moves again.
-    pub fn settling(&self) -> bool {
-        self.last.is_some_and(|last| last.at.eye() != last.target.eye())
+    /// same pixel, every position between them does too — no later frame can
+    /// change what the screen is given until the target moves again.
+    ///
+    /// `quantum` is how much of a virtual pixel one of the display's is —
+    /// [`crate::camera::Camera::quantum`]. It is an argument and not a `Camera`
+    /// for the reason D8 gives about [`Follower::advance`]: what this type is
+    /// worth is that a bench can drive it without one. It matters here rather
+    /// than being a detail: magnified, the eye owes the screen a pixel for
+    /// longer, because the pixel it owes is smaller.
+    pub fn settling(&self, quantum: f64) -> bool {
+        let same = |a: f64, b: f64| (a / quantum).round() == (b / quantum).round();
+        self.last.is_some_and(|last| {
+            let (at, target) = (last.at.eye(), last.target.eye());
+            !same(at.x, target.x) || !same(at.y, target.y)
+        })
     }
 
     /// Forget where the eye was: the next [`Follower::advance`] places it on the
@@ -329,7 +347,7 @@ impl Follower {
     /// `Camera`, no window, no map. That is what lets the bench run ten thousand
     /// frames in under a millisecond and the DST harness drive the same code the
     /// window does.
-    pub fn advance(&mut self, gaze: Gaze, dt: Duration) -> WorldPixel {
+    pub fn advance(&mut self, gaze: Gaze, dt: Duration) -> WorldPoint {
         // Stages 2 and 3 sit here when they exist: the intent offsets are
         // summed onto `gaze`, and the zone reduces the gap before the filter
         // sees it.
@@ -388,6 +406,12 @@ pub fn approach(from: f64, to: f64, tau: f32, dt: Duration) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    /// The quantum at 1:1, where a virtual pixel and a real one are the same
+    /// thing. Every test in this module flies unmagnified — what a rig does is
+    /// not a function of the zoom, and D8 is the reason a `Follower` can be
+    /// driven without a `Camera` at all.
+    const ONE_TO_ONE: f64 = 1.0;
+
     use super::*;
 
     /// A tile far enough out that `f32` would have started rounding.
@@ -618,18 +642,18 @@ mod tests {
         let mut hard = Follower::new(Rig::HARD);
         hard.advance(Gaze::on(Point::new(500, 500, 0)), ms(16));
         hard.advance(Gaze::on(Point::new(501, 500, 0)), ms(16));
-        assert!(!hard.settling(), "the eye is the body, every frame");
+        assert!(!hard.settling(ONE_TO_ONE), "the eye is the body, every frame");
 
         let mut eased = Follower::new(eased(0.2));
         let target = Gaze::on(Point::new(500, 500, 0));
         eased.advance(target, ms(16));
         eased.advance(Gaze::on(Point::new(506, 500, 0)), ms(16));
-        assert!(eased.settling(), "six tiles away and one frame in");
+        assert!(eased.settling(ONE_TO_ONE), "six tiles away and one frame in");
         // Left alone on the same target, it arrives and stops asking — and it
         // does so in a bounded number of frames rather than approaching for ever.
         let arrived = (0..200).any(|_| {
             eased.advance(Gaze::on(Point::new(506, 500, 0)), ms(16));
-            !eased.settling()
+            !eased.settling(ONE_TO_ONE)
         });
         assert!(arrived, "an ease that never ends holds the loop at 60Hz");
     }
@@ -650,7 +674,7 @@ mod tests {
         for z in [i8::MIN, -40, -1, 0, 1, 44, i8::MAX] {
             for (x, y) in [(0, 0), (1, 0), (0, 1), (1495, 1629), (6143, 4095)] {
                 let point = Point::new(x, y, z);
-                assert_eq!(Gaze::on(point).eye(), project(point), "{point}");
+                assert_eq!(Gaze::on(point).eye().pixel(), project(point), "{point}");
             }
         }
     }
@@ -662,9 +686,9 @@ mod tests {
     fn a_step_ends_exactly_on_the_tile_it_was_going_to() {
         let from = Gaze::on(Point::new(1000, 1000, 0));
         let to = Point::new(1001, 1000, 20);
-        assert_eq!(Gaze::on(to).back_towards(from, 0.0).eye(), project(to));
+        assert_eq!(Gaze::on(to).back_towards(from, 0.0).eye().pixel(), project(to));
         assert_eq!(
-            Gaze::on(to).back_towards(from, 1.0).eye(),
+            Gaze::on(to).back_towards(from, 1.0).eye().pixel(),
             project(Point::new(1000, 1000, 0)),
         );
     }

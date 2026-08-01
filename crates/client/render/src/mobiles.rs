@@ -41,7 +41,7 @@ use openshard_protocol::wire::Hue;
 use openshard_protocol::world::Point;
 
 use crate::atlas::{AnimAtlas, FrameKey};
-use crate::camera::{Camera, ViewPixel, WorldPixel};
+use crate::camera::{Camera, ViewPixel, WorldPoint};
 use crate::depth;
 use crate::follow::Gaze;
 use crate::sprite::SpriteQuad;
@@ -102,19 +102,32 @@ pub fn gaze(mobile: &Mobile) -> Gaze {
     mobile.drawn
 }
 
-/// Where a mobile's sprite lands in world pixels, rounded.
+/// Where a mobile's sprite lands in the world's own pixel space.
 ///
 /// World pixels and not view pixels, and public for it: the camera that follows
 /// a body has to follow it *between* tiles too, or the world jumps a tile at a
 /// time under a character sliding smoothly across it — and an eye is a
-/// [`WorldPixel`], with no camera to convert with.
-pub fn world_position(mobile: &Mobile) -> WorldPixel {
+/// [`WorldPoint`], with no camera to convert with.
+pub fn world_position(mobile: &Mobile) -> WorldPoint {
     gaze(mobile).eye()
 }
 
-/// The same, where the camera puts it in the drawn image.
-fn cell_centre(mobile: &Mobile, camera: &Camera) -> ViewPixel {
-    camera.to_view(world_position(mobile))
+/// The same, where the camera puts it in the drawn image, to a fraction.
+///
+/// **Snapped to the same lattice the eye is on**, which is the half of
+/// `docs/camera.md` D11 that is not about the camera. Two things decide where a
+/// sprite lands on the display — where the body is and where the eye is — and
+/// if only one of them is on the real pixel's grid, the difference is not: the
+/// sprite is resampled by a fraction of a texel against a world that is not, so
+/// its texels change width as it walks. Under `Rig::HARD` the two are the same
+/// number and this is a no-op; under any easing rig, and under D10's eased
+/// *body*, they are not.
+///
+/// Fractional and not a [`ViewPixel`], because a third of a virtual pixel is a
+/// whole real one at `3x`: rounding here would put back exactly the quantum the
+/// snap above was chosen to keep.
+fn cell_centre(mobile: &Mobile, camera: &Camera) -> (f32, f32) {
+    camera.to_view_exact(camera.snap(world_position(mobile)))
 }
 
 /// The body, group and stored direction a set of mobiles needs packed.
@@ -187,8 +200,8 @@ fn place(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Placemen
     };
 
     Some(Placement {
-        x: (at.x - anchor_x) as f32,
-        y: (at.y - (height + i32::from(packed.center_y))) as f32,
+        x: at.0 - anchor_x as f32,
+        y: at.1 - (height + i32::from(packed.center_y)) as f32,
         width: width as f32,
         height: height as f32,
         region,

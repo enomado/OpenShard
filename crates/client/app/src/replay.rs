@@ -311,7 +311,9 @@ mod tests {
             // clock, and one read once freezes.
             mobile.drawn = crowd.drawn_for(None).expect("the crowd knows this body");
             let gaze = mobiles::gaze(&mobile);
-            let eye = follower.advance(gaze, frame);
+            // Rounded to a whole virtual pixel, which is what the scope and the
+            // bench both measure in — see `bench::run`.
+            let eye = follower.advance(gaze, frame).pixel();
             scope.record(frame, gaze, eye, follower.exact().unwrap());
             elapsed += frame;
         }

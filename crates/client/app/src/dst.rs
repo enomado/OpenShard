@@ -838,7 +838,7 @@ fn eye_is_the_body(sim: &Sim) {
     for sample in &sim.eyes {
         assert_eq!(
             sample.eye,
-            sample.gaze.eye(),
+            sample.gaze.eye().pixel(),
             "the eye was not on the body at {:?}",
             sample.at,
         );
@@ -1343,7 +1343,7 @@ fn the_camera_is_told_the_height_apart_from_the_ground() {
     // eye is the plane, exactly, with nothing of `z` folded into it.
     let gaze = mobiles::gaze(&sim.player);
     assert_eq!(gaze.lift, 0.0, "a flat field lifts nothing");
-    assert_eq!(gaze.eye().y, gaze.y.round() as i32);
+    assert_eq!(gaze.eye().pixel().y, gaze.y.round() as i32);
 
     // And a body standing twenty units up: the ground is unchanged and the lift
     // is the whole of the difference.
@@ -1356,7 +1356,7 @@ fn the_camera_is_told_the_height_apart_from_the_ground() {
     let up = mobiles::gaze(&raised);
     assert_eq!((up.x, up.y), (gaze.x, gaze.y), "the ground did not move");
     assert_eq!(up.lift, 80.0, "twenty units, four pixels each");
-    assert_eq!(up.eye().y, gaze.eye().y - 80);
+    assert_eq!(up.eye().pixel().y, gaze.eye().pixel().y - 80);
 }
 
 /// The mash: the arrows hammered at thirty presses a second, which is faster
