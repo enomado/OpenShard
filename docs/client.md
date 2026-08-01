@@ -1387,7 +1387,35 @@ own understanding had written.
   wants a `Terrain` over the client's own map**, which `common/movement`'s
   `find_path` would then take as it stands — the trait is one required method and
   the client already holds the map and `tiledata`. Worth doing, and not a reason
-  to have no click-to-walk until it exists.
+  to have no click-to-walk until it exists. Still open — see the next entry.
+
+- **A click-to-walk destination does not route around anything.** The live state
+  of the entry above, stated on its own so it stops reading as finished.
+  `Steering::asking` is `direction_toward(from, goal)` and nothing else
+  (`client/app/src/steer.rs`), so a body sent to a tile behind a wall walks into
+  the wall, is refused four times by `0x21`, and gives up standing next to it
+  (`STUCK_STEPS`). Against a house that is every destination on the far side of
+  it. The fix is not new pathfinding: `common/movement::find_path` is an A* over
+  the `Terrain` trait, already corner-aware, and the client holds `map0.uop` and
+  `tiledata.mul` — what is missing is a `Terrain` implementation on this side of
+  the wire. Three things it has to decide, and they are why this is an entry and
+  not a chore:
+
+  - **Where the check lives.** `MapTerrain::check` (`server/world/src/terrain.rs`)
+    is the tuned one — the ServUO/Sphere blend the walk ack depends on — and it is
+    in a `server` crate a client may not depend on. Reimplementing it here means
+    two copies of the rule the two ends must agree on, which is the failure the
+    blend was written to end. So the move is to lift the height check into
+    `common/` beside `find_path` and have `world` keep only what needs the
+    registry, not to write a second one.
+  - **A client cannot see the dynamic half.** Doors, placed impassables and fields
+    live in the server's `Obstructions`; this end knows only what `WorldView` has
+    been shown. So a planned route is a *guess* over the statics, and the `0x21`
+    stall detector stays as the correction — plan, then keep the give-up rule for
+    what the plan could not know.
+  - **Replanning cadence.** A refusal invalidates the route, and a route replanned
+    every step is A* at the walk rate. Plan on the click, replan on a `0x21`, drop
+    the goal on the same `STUCK_STEPS` rule.
 
 - ~~**The walk stuttered once a tile.**~~ Three causes, all of them in the same
   400ms:

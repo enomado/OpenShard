@@ -391,6 +391,36 @@ surfaced on stacked geometry (stairs, house floors). The whole of it is
 `MapTerrain::check` / `start_surface`, ported with the arithmetic audited as
 everywhere else.
 
+### Backlog: a mobile is not an obstacle
+
+The step check asks two things — `MapTerrain::check` for the client's files, and
+`Obstructions` for what the world has put on top (`state/src/obstruct.rs`,
+composed in `LiveTerrain::can_step`). Nothing registers a *mobile* in the second.
+Every `Obstructions::block` call is a door (`tick/decor.rs`), a placed impassable
+decoration, a restored item (`tick/persist.rs`) or a field spell
+(`tick/fields.rs`); no mobile is ever entered or removed. So a player walks
+through a standing NPC, a guard does not hold a doorway, and `find_path` plans
+straight through a crowd. ServUO blocks here (`Movement.CheckMovement` with
+`checkMobiles`), and so does the 2D client's expectation — bodies do not overlap.
+
+Two ways to close it, and the choice is the point:
+
+- **Register mobiles in `Obstructions`.** Cheap to read — the index is already on
+  the hot path — but it is a second copy of `Position`, updated on every step,
+  every spawn, every despawn and every teleport. That bargain is fine for a door
+  that flips twice an hour and much worse for a body that moves three times a
+  second; one missed `unblock` is a permanent invisible wall.
+- **Ask the sector grid.** `FacetState::sectors` is already the authoritative
+  index from tile to entity and is already kept honest by the step itself
+  (`tick/motion.rs` writes it beside `Position`). No second copy, and the cost is
+  one lookup per step. This is the one to take.
+
+Either way three rules come with it and none are in the code yet: the dead do not
+block (a corpse is an item, a ghost walks through), a mobile may always step *off*
+the tile it is standing on, and staff walking through bodies is the same
+permission as walking through walls — see `gm.rs`, which has no such bypass
+either.
+
 ### The tick
 
 `World::tick` is the deterministic half of the boundary the gateway's channel
