@@ -399,6 +399,37 @@ join is the one rule in `link.rs` and it is `fold`, tested without a socket or
 a window: fold only one of the two and the client's own body stands still while
 everyone else walks around it.
 
+### What is still M3: a pass that blends
+
+Everything drawn so far is opaque. Every pass writes depth and tests it, which
+is what makes one ordering span three passes — and it is also the reason
+`crates/client/render/src/cutaway.rs` *cuts* where the client *fades*. The port
+of `UpdateMaxDrawZ` landed as booleans: a roof over the player is gone this
+frame, where the client walks its alpha down 25 a frame and drops it at zero
+about a fifth of a second later.
+
+The blended pass is one step and it unlocks four things at once, which is why it
+is written here rather than left as four backlog lines:
+
+1. **`ProcessAlpha` whole.** `Cutaway::shows_static` and `shows_land` become the
+   two ends of a ramp instead of a predicate, and `CalculateAlpha` is the ramp.
+2. **`IsTranslucent`** — a window pane, a force field: alpha 178, and nothing to
+   do with the cutaway.
+3. **Foliage.** `CheckIfBehindATree`, `IsFoliageUnion` and `FOLIAGE_ALPHA`: a
+   tree fades where a body walks behind it, and a tree is a *union* of graphics
+   that has to fade as one or it fades in stripes.
+4. **`HasSurfaceOverhead`.** A mobile under a `NoShoot` or `Window` static is
+   drawn differently in the client (`AllowedToDraw`), which is what stops a body
+   standing in a doorway from showing through the arch. It needs a 4x4 scan per
+   mobile, cached on the mobile against `max_z`, and there is nothing to see it
+   with until this pass exists.
+
+The order matters: a blended quad must not write depth, or it blocks whatever is
+underneath it — which is exactly the note ClassicUO leaves on its own mesh path,
+where a fading static is pulled out of the GPU buffer and drawn through the CPU
+transparent list *after* the mobiles. So the pass is a fourth one, after the
+mobiles, reading the depth the other three wrote and writing none of its own.
+
 ## M3a — the camera, and a shell to look through
 
 **Built.** `cargo run -p openshard-client-app -- --client …` opens on
@@ -1930,17 +1961,14 @@ Each is a seam the work made visible. None blocks the next milestone.
 `LessEqual` in `renderer::depth_state` plus the pass order. What was found on
 the way and not done:
 
-- **The client fades where this cuts.** `CalculateAlpha` walks an object's alpha
-  down 25 a frame and drops it at zero, and `ProcessAlpha` is where the roof,
-  the storey above, `IsTranslucent` and the circle of transparency all land.
-  Nothing in the renderer blends — every pass writes depth and tests it — so
-  what is ported is the endpoint the fade settles on, about a fifth of a second
-  in. When a blended pass exists, the whole of `ProcessAlpha` belongs with it,
-  and `Cutaway`'s predicates become the two ends of a ramp rather than a
-  boolean. Foliage (`FOLIAGE_ALPHA`, `CheckIfBehindATree`, `IsFoliageUnion`),
-  the season test and `TreeToStumps`/`HideVegetation` are the same story: each
-  is a fade or a profile setting, and none changes what is drawn once it has
-  finished fading.
+- **The client fades where this cuts.** Promoted out of this backlog and into
+  the plan — see *What is still M3: a pass that blends*, which is where
+  `ProcessAlpha`, `IsTranslucent`, foliage and `HasSurfaceOverhead` all land
+  together, because they are one pass and not four features. What stays here is
+  the pair that is neither a fade nor blocked on one: the season test
+  (`IsFoliageVisibleAtSeason`) and the `TreeToStumps`/`HideVegetation` profile
+  settings, both of which decide whether a graphic is drawn at all and neither
+  of which has a profile to read yet.
 - **The ground is not screen-culled and the statics now are.**
   `statics::on_screen` rejects a sprite whose rectangle misses the image, which
   is where most of the ±512-pixel `MAX_Z_LIFT` band goes. A land quad's screen
@@ -1956,11 +1984,6 @@ the way and not done:
   player's `x`/`y`/`z` and recomputes on change. Two tiles and a flood fill is
   cheap, but `near_roof_z` allocates a 4,096-entry visited grid per call, which
   is a `Vec` per frame for nothing.
-- **`HasSurfaceOverhead` is not ported.** A mobile with a `NoShoot` or `Window`
-  static overhead is drawn differently in the client (`AllowedToDraw`), which is
-  what stops a body inside a doorway from being drawn through the arch. It needs
-  a 4x4 scan around each mobile and a cache keyed on `max_z`, and there is
-  nothing to see it with until the alpha pass exists.
 - **`Chunk.AddGameObject`'s `state == 1` arm is multis, and there are none.**
   When multis land, a multi at an equal `PriorityZ` sorts after the land and
   before everything else — which the current scheme (pass order plus
