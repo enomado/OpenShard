@@ -244,9 +244,16 @@ to the character, which is a second motion invented to hide the first.
 
 Three things follow, and each is what keeps this from being a new mechanism:
 
-**One time constant and one `approach`.** The body's filter is `follow::approach`
-called on a `Gaze`, exactly as the eye's is. Two implementations of a damper is
-the thing D1 exists to refuse.
+**One `approach`, two subjects.** The body's filter is `follow::approach` called
+on a `Gaze`, exactly as the eye's is — two implementations of a damper is the
+thing D1 exists to refuse. What it is *not* is a `Rig` field. A rig is the
+parameter set of the eye, and the eye's pipeline begins by being handed a body
+to look at; this is a property of that body, one stage earlier and one subject
+over. The two were one struct for a day, on the argument that they are tuned in
+the same sitting, and it read as though the camera were what moved the
+character. `crowd::Ease` is its own type, beside the state it drives, and the
+panel shows the two together because that is a fact about the sitting rather
+than about the types.
 
 **The state is per body, so it lives with the body.** The eye has one filter and
 there is one eye; every mobile on screen is eased, so the state is per tracked
@@ -262,10 +269,10 @@ the lift's cut onto an event, one layer down and already available.
 
 What it costs is a body drawn behind its tile for the length of a walk, and that
 cost is the ease: the catching-up at the end *is* the ease-out, for free and
-without a second rule. It is a `Rig` field like every other, zero in `HARD`, and
-the harness's corridors run at zero — a body deliberately behind the oracle is
-not a body that failed to keep up, and only a scenario that says which one it is
-measuring can tell them apart.
+without a second rule. `Ease::NONE` is what the harness's corridors
+run at — a body deliberately behind the oracle is not a body that failed to keep
+up, and only a scenario that says which one it is measuring can tell them
+apart.
 
 ## The bench
 
@@ -562,12 +569,12 @@ always will — see D10 — so what was actually wanted was the ease, and the ea
 is a lag. `dst::dump_the_ramp` is the table it was chosen on, over the real walk
 rather than the bench's scripted gaze, and the two placements are two rows of it:
 
-| rig | ramp | slide | trail | stop | peak |
+| eye / body | ramp | slide | trail | stop | peak |
 |---|---|---|---|---|---|
-| `HARD` | 22ms | 0.0px | 1.3px | 26ms | 80.3 px/s |
-| `EASED` — body, τ 0.08 | 202ms | **0.0px** | 6.5px | 373ms | 81.6 px/s |
-| body, τ 0.15 | 351ms | 0.0px | 11.9px | 373ms | 80.5 px/s |
-| eye, τ 0.08 | 202ms | **6.6px** | 1.3px | 373ms | 91.1 px/s |
+| `HARD` / `Ease::NONE` | 22ms | 0.0px | 1.3px | 26ms | 80.3 px/s |
+| `HARD` / **`Ease::WALK`** (τ 0.08) | 202ms | **0.0px** | 6.5px | 373ms | 81.6 px/s |
+| `HARD` / τ 0.15 | 351ms | 0.0px | 11.9px | 373ms | 80.5 px/s |
+| plane τ 0.08 / `NONE` | 202ms | **6.6px** | 1.3px | 373ms | 91.1 px/s |
 
 *Slide* is the eye against the sprite — the character drifting across the screen,
 its feet sliding over the ground. *Trail* is the sprite against the walk it is
@@ -577,9 +584,9 @@ different places, and that is the whole of D10 as a measurement. The eye-filtere
 row also peaks eleven per cent above a walk, because a filter that trails has to
 catch up.
 
-`Rig::EASED` is what the window opens with, and it is a preset chosen by looking
+`Ease::WALK` is what the window opens with, and it is a setting chosen by looking
 rather than a name given in advance — which is what D9 asks for and not a
-contradiction of it. The eye is still `HARD`: `plane_tau` is zero, so the
+contradiction of it. It is also not a camera: the rig is still `HARD`, so the
 character does not slide, and the spring proper is still this milestone's to
 build. What C3 has left is the dead zone, the idle recentre, and whether the eye
 wants damping *on top of* an eased body — which is now a question with an

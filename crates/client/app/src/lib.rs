@@ -66,20 +66,25 @@ mod replay;
 mod shell;
 mod steer;
 
-/// The rig this client opens with.
+/// The camera this client opens with: the reference one, the eye on the body to
+/// the pixel.
 ///
-/// **Not a default in the sense `docs/camera.md` D9 refuses**: D9 says no camera
-/// is named the default until one has won on the bench and in the window, and
-/// what makes this one different is that it was. `dst::dump_the_ramp` is the
-/// table it was read off and `docs/camera.md` C3 records the sitting — the eye
-/// is still the body to the pixel, and the only thing eased is where the body is
-/// drawn, which is D10's whole argument.
+/// Which rig it *ships* is undecided and is decided on a bench rather than here
+/// — `docs/camera.md` D9.
+const STARTUP_RIG: Rig = Rig::HARD;
+
+/// And how far the drawn body may lag the walk it is doing.
 ///
-/// Here rather than in `follow.rs` on purpose. `Rig::EASED` is a *preset* — a
-/// set of numbers that go together — and which preset a window opens with is a
-/// decision about this binary. The two being one line apart in one file is how a
-/// preset quietly becomes a default.
-const STARTUP_RIG: Rig = Rig::EASED;
+/// **Not a default in the sense D9 refuses.** D9 is about naming a camera before
+/// one has won; this one was looked at — `dst::dump_the_ramp` is the table and
+/// `docs/camera.md` C3 records the sitting. It is also not a camera: the eye is
+/// still `HARD` above, and what eases is where the body is drawn (D10).
+///
+/// Here rather than in `crowd.rs` on purpose. [`Ease::WALK`] is a *setting* — a
+/// number that was found to be right — and which setting a window opens with is
+/// a decision about this binary. The two being one line apart in one file is how
+/// a setting quietly becomes a default.
+const STARTUP_EASE: crowd::Ease = crowd::Ease::WALK;
 
 /// Read a `.env` from the working directory or an ancestor of it, if there is
 /// one, so that the binaries' `env =` options have something to fall back to.
@@ -348,11 +353,9 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         steer: steer::Steering::default(),
         aiming: false,
         crowd: {
-            // One rig, both halves of it. The eye's and the body's ease are two
-            // fields of one value and a client that started them apart would be
-            // drawing under two cameras until somebody touched the panel.
+            // The body's ease, which is not the camera's — see `STARTUP_EASE`.
             let mut crowd = Crowd::default();
-            crowd.set_rig(STARTUP_RIG);
+            crowd.set_ease(STARTUP_EASE);
             crowd
         },
         next_tick: Instant::now(),
@@ -1622,6 +1625,7 @@ impl App {
             None => (Vec::new(), Vec::new()),
         };
         shell::Hud {
+            ease: self.crowd.ease(),
             connection: self.connection.clone(),
             serial: self.view.as_ref().map(|view| view.player.serial.raw()),
             position: self.player.at,
@@ -1957,14 +1961,16 @@ impl App {
                 // the frames before the swap were flown by another camera, and
                 // measuring them together would average two rigs.
                 self.control.set_rig(rig);
-                // And the body's half of it: the ease is a rig field like every
-                // other, and a swap that reached the eye but not the body would
-                // draw a frame under half of each. See `docs/camera.md` D10.
-                self.crowd.set_rig(rig);
                 self.scope.clear();
             }
             // The window the metrics are taken over, and not a clear: the
             // frames already held were flown by the same rig.
+            // The body's ease is not the rig and does not clear the scope: the
+            // frames either side of it were flown by the same camera, and what
+            // the scope measures is the eye against the body it was given.
+            if let Some(ease) = request.ease {
+                self.crowd.set_ease(ease);
+            }
             if let Some(span) = request.scope_span {
                 self.scope.set_span(span);
             }

@@ -61,6 +61,9 @@ pub struct Hud {
     pub locked: bool,
     /// What the eye is following with — every number a camera is made of.
     pub rig: Rig,
+    /// How far the drawn bodies lag the walk they are doing. Beside the rig and
+    /// not inside it — see the slider.
+    pub ease: crate::crowd::Ease,
     /// The last few seconds of the eye, one entry per frame.
     ///
     /// Owned rather than borrowed because the HUD is a snapshot and not a view
@@ -166,6 +169,8 @@ pub struct Request {
     /// frame: the eye is not moved by a rig arriving, but a scope that cleared
     /// its trace on every frame would never have one to draw.
     pub rig: Option<Rig>,
+    /// A new body ease, if the slider moved.
+    pub ease: Option<crate::crowd::Ease>,
     /// Start or stop a scripted walk.
     pub script: Option<ScriptRequest>,
     /// How long a window the scope should keep from now on.
@@ -576,20 +581,10 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         if ui.button("LIFT").clicked() {
             rig = Rig::LIFT;
         }
-        if ui.button("EASED").clicked() {
-            rig = Rig::EASED;
-        }
     });
     egui::Grid::new("rig").num_columns(2).show(ui, |ui| {
         ui.label("plane τ");
         ui.add(egui::Slider::new(&mut rig.plane_tau, 0.0..=0.5).suffix(" s"));
-        ui.end_row();
-        // The body's own ease, and it is on this panel rather than a second one
-        // because it is the same filter and the same sitting: what is being
-        // chosen is how motion starts and stops, and whether the lag is carried
-        // by the eye or by the body is the choice, not two choices.
-        ui.label("body τ");
-        ui.add(egui::Slider::new(&mut rig.body_tau, 0.0..=0.5).suffix(" s"));
         ui.end_row();
         ui.label("lift τ");
         ui.add(egui::Slider::new(&mut rig.lift_tau, 0.0..=0.5).suffix(" s"));
@@ -621,6 +616,26 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         // that can be pasted into `follow.rs` and committed as the preset it
         // turned out to be.
         let literal = literal(&rig);
+        ui.label(egui::RichText::new(&literal).monospace().small());
+        if ui.small_button("copy").clicked() {
+            ui.ctx().copy_text(literal);
+        }
+    });
+
+    // The body's ease, under its own heading and with its own copy button,
+    // because it is not part of the rig: a rig is the eye's parameter set and
+    // this is a property of the body the eye is looking at (`docs/camera.md`
+    // D10). They are on one panel because they are looked at together — which
+    // is a fact about the sitting, not about the types.
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label("body ease");
+        let mut ease = hud.ease;
+        ui.add(egui::Slider::new(&mut ease.tau, 0.0..=0.5).suffix(" s"));
+        if ease != hud.ease {
+            request.ease = Some(ease);
+        }
+        let literal = format!("Ease {{ tau: {:?} }}", ease.tau);
         ui.label(egui::RichText::new(&literal).monospace().small());
         if ui.small_button("copy").clicked() {
             ui.ctx().copy_text(literal);
@@ -841,8 +856,8 @@ fn literal(rig: &Rig) -> String {
         false => "f32::INFINITY".to_string(),
     };
     format!(
-        "Rig {{ plane_tau: {:?}, lift_tau: {:?}, lift_cut: {cut}, body_tau: {:?} }}",
-        rig.plane_tau, rig.lift_tau, rig.body_tau,
+        "Rig {{ plane_tau: {:?}, lift_tau: {:?}, lift_cut: {cut} }}",
+        rig.plane_tau, rig.lift_tau,
     )
 }
 
@@ -1053,7 +1068,7 @@ mod tests {
     fn a_rig_prints_as_the_source_line_it_would_be() {
         assert_eq!(
             literal(&Rig::LIFT),
-            "Rig { plane_tau: 0.0, lift_tau: 0.15, lift_cut: 64.0, body_tau: 0.0 }",
+            "Rig { plane_tau: 0.0, lift_tau: 0.15, lift_cut: 64.0 }",
         );
         // `inf` is what `Display` would give, and it is not Rust.
         let never = Rig {
@@ -1062,7 +1077,7 @@ mod tests {
         };
         assert_eq!(
             literal(&never),
-            "Rig { plane_tau: 0.0, lift_tau: 0.0, lift_cut: f32::INFINITY, body_tau: 0.0 }",
+            "Rig { plane_tau: 0.0, lift_tau: 0.0, lift_cut: f32::INFINITY }",
         );
     }
 }

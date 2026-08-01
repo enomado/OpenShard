@@ -81,7 +81,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Point, WalkAck, WalkReject, WalkRequest};
 
 use crate::GLIDE_INTERVAL;
-use crate::crowd::{Crowd, Who};
+use crate::crowd::{Crowd, Ease, Who};
 
 /// The body every scenario walks.
 const BODY: Graphic = Graphic(0x0190);
@@ -421,7 +421,10 @@ impl Sim {
     /// A client standing at [`START`], facing `facing`, connected to a shard
     /// that agrees.
     fn new(facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
-        Self::flying(Rig::HARD, facing, net, seed, walls)
+        // The reference camera and no ease: every assertion in this file wants
+        // a divergence to be the walk's, and both of those are a filter that
+        // would answer for it.
+        Self::flying(Rig::HARD, Ease::NONE, facing, net, seed, walls)
     }
 
     /// The same, under a rig of the caller's choosing.
@@ -431,12 +434,10 @@ impl Sim {
     /// is the walk's and not a filter's. A rig is a parameter for the dump that
     /// looks at what a filter does to this walk — the same argument the bench
     /// makes offline, on the body the client actually draws.
-    fn flying(rig: Rig, facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
+    fn flying(rig: Rig, ease: Ease, facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
         let facing = Facing::walking(facing);
         let mut crowd = Crowd::default();
-        // One rig, both halves, exactly as `App` starts them: the eye's filter
-        // and the body's ease are two fields of one value.
-        crowd.set_rig(rig);
+        crowd.set_ease(ease);
         crowd.commanding(me());
         let player = crowd.see(me(), START, BODY, facing, Hue::NONE);
         Self {
@@ -1645,11 +1646,11 @@ fn speeds(frames: &[WalkFrame], of: fn(&WalkFrame) -> (f64, f64)) -> Vec<(Durati
 }
 
 /// A run of the ten-step walk under one wire and one rig, for the dumps below.
-fn walked(rig: Rig, net: Net, seed: u64) -> (Sim, Oracle) {
+fn walked(rig: Rig, ease: Ease, net: Net, seed: u64) -> (Sim, Oracle) {
     let script = ten_steps_east();
     let until = Duration::from_millis(4_400);
     let oracle = Oracle::build(START, &script, until);
-    let mut sim = Sim::flying(rig, Direction::East, net, seed, Vec::new());
+    let mut sim = Sim::flying(rig, ease, Direction::East, net, seed, Vec::new());
     sim.run(&script, until);
     (sim, oracle)
 }
@@ -1764,7 +1765,7 @@ fn dump_the_walk() {
         "wire", "frames", "mean px/s", "min", "max", "worst px"
     );
     for (name, net) in wires {
-        let (sim, oracle) = walked(Rig::HARD, net, 3);
+        let (sim, oracle) = walked(Rig::HARD, Ease::NONE, net, 3);
         let frames = walk_frames(&sim, &oracle);
         let body = speeds(&frames, |frame| frame.body);
         // The walk itself, without the stand at either end: the first frame has
@@ -1828,10 +1829,10 @@ fn dump_the_walk() {
 #[ignore = "writes a table and charts for a person, and asserts nothing"]
 fn dump_the_ramp() {
     let rigs = [
-        ("hard", Rig::HARD),
-        ("eased", Rig::EASED),
-        ("body_0.15", body(0.15)),
-        ("eye_0.08", plane(0.08)),
+        ("none", Rig::HARD, Ease::NONE),
+        ("body_0.08", Rig::HARD, Ease::WALK),
+        ("body_0.15", Rig::HARD, Ease { tau: 0.15 }),
+        ("eye_0.08", plane(0.08), Ease::NONE),
     ];
     let dir = dump_dir();
     std::fs::create_dir_all(&dir).expect("a directory to write into");
@@ -1840,8 +1841,8 @@ fn dump_the_ramp() {
         "rig", "ramp ms", "slide px", "trail px", "stop ms", "peak px/s"
     );
     let mut series = Vec::new();
-    for (name, rig) in rigs {
-        let (sim, oracle) = walked(rig, LIVE, 3);
+    for (name, rig, ease) in rigs {
+        let (sim, oracle) = walked(rig, ease, LIVE, 3);
         let frames = walk_frames(&sim, &oracle);
         let speed = speeds(&frames, |frame| frame.eye);
         // The walk's own speed, which every rig is ramping towards: a tile's
@@ -1916,17 +1917,6 @@ fn dump_the_ramp() {
 fn plane(tau: f32) -> Rig {
     Rig {
         plane_tau: tau,
-        ..Rig::HARD
-    }
-}
-
-/// A rig that eases the *body* and leaves the eye on it, at a chosen constant.
-///
-/// The other side of D10, so that the table has both and the difference between
-/// them is a row rather than an argument.
-fn body(tau: f32) -> Rig {
-    Rig {
-        body_tau: tau,
         ..Rig::HARD
     }
 }

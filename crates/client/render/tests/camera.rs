@@ -33,7 +33,6 @@ use openshard_protocol::world::Point;
 const PROBE: Rig = Rig {
     plane_tau: 0.12,
     lift_tau: 0.25,
-    body_tau: 0.0,
     lift_cut: FLOOR,
 };
 
@@ -174,7 +173,6 @@ fn a_stair_is_eased_and_a_floor_is_cut() {
     let uncut = Metrics::of(
         &run(
             Rig {
-                body_tau: 0.0,
                 lift_cut: f32::INFINITY,
                 ..Rig::LIFT
             },

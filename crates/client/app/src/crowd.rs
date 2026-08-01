@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use openshard_client_render::animation::AnimationClock;
-use openshard_client_render::follow::{Gaze, Rig};
+use openshard_client_render::follow::Gaze;
 use openshard_client_render::mobiles::Mobile;
 use openshard_movement::{RUN_HOLD, WALK_HOLD};
 use openshard_protocol::direction::{Direction, Facing};
@@ -65,6 +65,52 @@ struct Speech {
     font: Font,
     hue: Hue,
     started: Duration,
+}
+
+/// How a body's picture is allowed to lag the walk it is doing.
+///
+/// The ease into and out of a walk, and the whole of `docs/camera.md` D10 in one
+/// number. A step cannot itself be eased — a body has to cross one tile per hold
+/// and no profile that starts at rest does that without going faster than a walk
+/// somewhere in the middle — so what an ease *is* is a lag, and this is how much
+/// of one the drawn body may carry.
+///
+/// **Deliberately not a [`Rig`](openshard_client_render::follow::Rig) field.** A
+/// rig is the parameter set of the *eye*, and the eye's pipeline begins by being
+/// handed a body to look at; this is a property of that body, one stage earlier
+/// and one subject over. The two were one struct for a day, on the argument that
+/// they are tuned in the same sitting, and it read as though the camera were
+/// what moved the character. The arithmetic is still shared —
+/// [`Gaze::eased_towards`] is the eye's own [`approach`] per channel — because
+/// two dampers is what one pipeline exists to refuse.
+///
+/// [`approach`]: openshard_client_render::follow::approach
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Ease {
+    /// Seconds for the picture to close all but `1/e` of its gap to where the
+    /// walk says the body is. Zero draws it exactly there.
+    pub tau: f32,
+}
+
+impl Ease {
+    /// No ease: the picture is the walk, to the pixel, every frame.
+    ///
+    /// What this client did before there was an ease at all, and what every
+    /// measurement of the *walk* runs at — a body deliberately behind is not a
+    /// body that failed to keep up, and only a harness that says which one it is
+    /// measuring can tell them apart.
+    pub const NONE: Self = Self { tau: 0.0 };
+
+    /// The one the window opens with.
+    ///
+    /// `0.08` is chosen by what it costs, the way `Rig::LIFT`'s constant is. A
+    /// walk is 78 pixels a second, so the picture settles `78 * 0.08` behind —
+    /// 6.3 pixels, under a seventh of a tile, small enough that nobody can see
+    /// the body is not centred on its tile and large enough that the start and
+    /// the stop are visibly eased. The ease-out is the same number spent in
+    /// reverse and costs no second rule. `dst::dump_the_ramp` is the table it
+    /// was read off; `docs/camera.md` C3 records the sitting.
+    pub const WALK: Self = Self { tau: 0.08 };
 }
 
 /// Where between two tiles a body is, and how far along.
@@ -198,8 +244,8 @@ struct Tracked {
     ///
     /// The filter's state, and it is per body because every body is eased and
     /// there is one of these per body — `docs/camera.md` D10. Equal to the
-    /// unfiltered position under a rig whose `body_tau` is zero, which is what
-    /// makes the reference camera still exactly the reference camera.
+    /// unfiltered position under [`Ease::NONE`], which is what makes the
+    /// baseline still exactly the baseline.
     drawn: Gaze,
     /// Its own animation clock.
     ///
@@ -246,42 +292,41 @@ pub struct Crowd {
     /// was measured through the event loop's wake jitter on every path that
     /// forgot to.
     commanded: Who,
-    /// The rig, for the one field of it this layer owns: `body_tau`.
-    ///
-    /// The whole struct and not that field alone, so that a preset swapped in
-    /// the panel reaches the body and the eye as one value — two halves of a rig
-    /// arriving separately is a frame drawn under half of each. See
-    /// `docs/camera.md` D10 on why the body's ease is a rig field at all.
-    rig: Rig,
+    /// How far the drawn bodies may lag the walk they are doing. See [`Ease`].
+    ease: Ease,
 }
 
 impl Default for Crowd {
-    /// A crowd nobody is easing, which is the reference camera's body.
+    /// A crowd nobody is easing: the picture is the walk, to the pixel.
     ///
-    /// [`Rig::HARD`] rather than a preset, for the reason `Follower` starts
-    /// there too: the eye is the body and the body is its tile, so a test that
-    /// does not mention a rig is measuring the walk and not a filter (D9).
+    /// [`Ease::NONE`] for the reason `Follower` starts at `Rig::HARD` — a test
+    /// that does not mention an ease is measuring the walk and not a filter.
     fn default() -> Self {
         Self {
             tracked: HashMap::new(),
             speech: HashMap::new(),
             now: Duration::ZERO,
             commanded: None,
-            rig: Rig::HARD,
+            ease: Ease::NONE,
         }
     }
 }
 
 impl Crowd {
-    /// Fly a different rig from now on.
+    /// Ease every body by a different amount from now on.
     ///
-    /// The eased position is deliberately *not* reset: the body is where it is,
-    /// and a swap that teleported every sprite to its tile would be a jump per
+    /// The eased positions are deliberately *not* reset: a body is where it is,
+    /// and a swap that teleported every sprite onto its tile would be a jump per
     /// mobile at the exact moment somebody drags a slider. A tau that just went
     /// to zero closes the gap on the next frame anyway, which is one frame of
-    /// catching up and is what "no filter" means.
-    pub fn set_rig(&mut self, rig: Rig) {
-        self.rig = rig;
+    /// catching up and is what "no ease" means.
+    pub fn set_ease(&mut self, ease: Ease) {
+        self.ease = ease;
+    }
+
+    /// What it is easing by, for the panel that edits it.
+    pub const fn ease(&self) -> Ease {
+        self.ease
     }
 
     /// Name the body this client walks itself.
@@ -306,7 +351,7 @@ impl Crowd {
     pub fn advance(&mut self, dt: Duration) {
         let was = self.now;
         self.now += dt;
-        let (now, rig) = (self.now, self.rig);
+        let (now, ease) = (self.now, self.ease);
         for tracked in self.tracked.values_mut() {
             // Only the part of the span the body was actually covering ground
             // in — see [`Tracked::mid_stride`]. Not a whole-span test against
@@ -317,9 +362,7 @@ impl Crowd {
             // The ease, on the position the step arithmetic just produced. After
             // the clock and before anything is read, so every reader this frame
             // sees one answer — see [`Tracked::drawn`].
-            tracked.drawn = tracked
-                .drawn
-                .eased_towards(tracked.gaze_at(now), rig.body_tau, dt);
+            tracked.drawn = tracked.drawn.eased_towards(tracked.gaze_at(now), ease.tau, dt);
             // The *animation* outlives the crossing by half a step — see
             // `animation_hold`. The glide itself ends on time; this is only what
             // decides when the walk gives way to standing.
@@ -1351,7 +1394,7 @@ mod tests {
     #[test]
     fn the_drawn_body_trails_its_tile_and_always_catches_up() {
         let mut crowd = Crowd::default();
-        crowd.set_rig(Rig::EASED);
+        crowd.set_ease(Ease::WALK);
         crowd.commanding(None);
         let step = |crowd: &mut Crowd, x: u16| {
             crowd.see(
@@ -1362,7 +1405,7 @@ mod tests {
                 Hue::NONE,
             );
         };
-        // A walk is 78 pixels a second, so a `body_tau` of 0.08 settles the lag
+        // A walk is 78 pixels a second, so an `Ease` of 0.08 settles the lag
         // at about 6.3 pixels. Ten is the bound with room for the frame the ease
         // is sampled on; a hundred would pass for a body left behind entirely.
         const BOUND: f64 = 10.0;
@@ -1379,7 +1422,7 @@ mod tests {
                 // of the tile it is walking onto, and measuring that would call
                 // the step itself a lag. What the ease holds is the difference
                 // between where the body is drawn and where the step arithmetic
-                // says it is, which is the only thing `body_tau` controls.
+                // says it is, which is the only thing an `Ease` controls.
                 let behind = {
                     let walked = crowd.tracked[&None].gaze_at(crowd.now).exact();
                     (drawn.0 - walked.0).hypot(drawn.1 - walked.1)
@@ -1411,15 +1454,16 @@ mod tests {
         );
     }
 
-    /// And under the reference rig the two are the same number, to the bit.
+    /// And with no ease the two paths are the same number, to the bit.
     ///
-    /// What keeps `Rig::HARD` honest as a baseline (D1): if the eased path
-    /// cannot express "no ease at all" exactly, every measurement taken against
-    /// the reference is measuring a filter nobody asked for.
+    /// What keeps [`Ease::NONE`] honest as a baseline, the way `Rig::HARD` is
+    /// one (D1): if the eased path cannot express "no ease at all" exactly,
+    /// every measurement taken against the baseline is measuring a filter nobody
+    /// asked for.
     #[test]
-    fn the_reference_rig_draws_the_body_on_its_own_arithmetic() {
+    fn no_ease_draws_the_body_on_the_walks_own_arithmetic() {
         let mut eased = Crowd::default();
-        eased.set_rig(Rig::HARD);
+        eased.set_ease(Ease::NONE);
         let mut plain = Crowd::default();
         for tile in 11..16u16 {
             for crowd in [&mut eased, &mut plain] {
@@ -1438,7 +1482,7 @@ mod tests {
                 assert_eq!(
                     eased.drawn_for(serial(1)),
                     plain.drawn_for(serial(1)),
-                    "a rig of zero is not the same as no rig at tile {tile}",
+                    "an ease of zero is not the same as no ease at tile {tile}",
                 );
             }
         }
