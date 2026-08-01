@@ -12,6 +12,7 @@ use openshard_uofiles::map::Map;
 
 use crate::atlas::{LandAtlas, Region, TexmapAtlas};
 use crate::camera::{Camera, TileBounds};
+use crate::cutaway::Cutaway;
 use crate::depth;
 
 /// One ground quad: where it goes, how its corners stand, and what to sample.
@@ -131,12 +132,27 @@ pub fn graphics_in(map: &Map, bounds: TileBounds, out: &mut BTreeSet<Graphic>) {
 /// A tile whose graphic is not in the atlas is dropped: either the client ships
 /// no art for it, or the atlas was built for a different camera. Both are
 /// "nothing to draw here", and neither is worth failing a frame over.
-pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas, texmaps: &TexmapAtlas) -> Vec<GroundQuad> {
+///
+/// `cutaway` hides the ground above the player's head, which is the one case
+/// the client cuts land for at all: standing in a cave under a hill, the hill's
+/// own tiles would otherwise be drawn over the cave. A roof does *not* take the
+/// floor with it — see [`crate::cutaway`], where that is the client's odd last
+/// line and not an omission here.
+pub fn collect(
+    map: &Map,
+    camera: &Camera,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    cutaway: &Cutaway,
+) -> Vec<GroundQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, GroundQuad)> = Vec::new();
 
     for_each_cell_in(map, camera.visible_tiles(), |x, y, cell| {
+        if !cutaway.shows_land(cell.z) {
+            return;
+        }
         let Some(region) = atlas.region(Graphic(cell.tile)) else {
             return;
         };
@@ -296,7 +312,13 @@ mod tests {
     fn every_visible_cell_with_art_becomes_exactly_one_quad() {
         let map = hillside();
         let camera = camera();
-        let quads = collect(&map, &camera, &grass_atlas(), &TexmapAtlas::pack([]).unwrap());
+        let quads = collect(
+            &map,
+            &camera,
+            &grass_atlas(),
+            &TexmapAtlas::pack([]).unwrap(),
+            &Cutaway::OPEN,
+        );
 
         let (xs, ys) = camera
             .visible_tiles()
@@ -339,7 +361,13 @@ mod tests {
     fn a_tile_is_drawn_where_the_camera_puts_it() {
         let map = hillside();
         let camera = camera();
-        let quads = collect(&map, &camera, &grass_atlas(), &TexmapAtlas::pack([]).unwrap());
+        let quads = collect(
+            &map,
+            &camera,
+            &grass_atlas(),
+            &TexmapAtlas::pack([]).unwrap(),
+            &Cutaway::OPEN,
+        );
         let at = |point: Point| {
             let screen = camera.to_screen(point);
             quads
@@ -383,7 +411,7 @@ mod tests {
             z: 0,
         });
         let corners_by_position = |map: &Map| -> std::collections::BTreeMap<(i32, i32), [i32; 4]> {
-            collect(map, &camera, &atlas, &texmaps)
+            collect(map, &camera, &atlas, &texmaps, &Cutaway::OPEN)
                 .iter()
                 .map(|quad| ((quad.x as i32, quad.y as i32), quad.corners.map(|z| z as i32)))
                 .collect()
@@ -419,6 +447,7 @@ mod tests {
             &camera(),
             &grass_atlas(),
             &TexmapAtlas::pack([]).unwrap(),
+            &Cutaway::OPEN,
         );
         assert!(quads.len() > 1000);
 
@@ -442,7 +471,13 @@ mod tests {
         // The facet is 64 tiles square; this looks at a corner of the world far
         // beyond it, which `clamp_to` answers with `None`.
         let camera = Camera::new(Point::new(4000, 4000, 0), 200, 160);
-        let quads = collect(&map, &camera, &grass_atlas(), &TexmapAtlas::pack([]).unwrap());
+        let quads = collect(
+            &map,
+            &camera,
+            &grass_atlas(),
+            &TexmapAtlas::pack([]).unwrap(),
+            &Cutaway::OPEN,
+        );
         assert!(quads.is_empty(), "{} quads off the map", quads.len());
         assert!(visible_graphics(&map, &camera).is_empty());
     }

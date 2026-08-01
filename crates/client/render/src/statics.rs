@@ -25,6 +25,7 @@ use openshard_uofiles::tiledata::TileData;
 use crate::animate::StaticAnimations;
 use crate::atlas::{Sprite, StaticAtlas};
 use crate::camera::{Camera, TILE_HEIGHT, TileBounds};
+use crate::cutaway::{self, Cutaway};
 use crate::depth;
 use crate::geometry::{Rect, Vec2};
 use crate::sprite::SpriteQuad;
@@ -45,6 +46,27 @@ pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> Vec2 {
         (at.x - (i32::from(sprite.width) >> 1)) as f32,
         (at.y + TILE_HEIGHT / 2 - i32::from(sprite.height)) as f32,
     )
+}
+
+/// Whether a sprite placed here touches the drawn image at all.
+///
+/// `AddTileToRenderList` rejects an object whose screen position falls outside
+/// `_minPixel`/`_maxPixel` before it asks anything else about it, and the
+/// reason there is a reject at all is [`for_each_static_in`]'s: the cells walked
+/// are widened by the whole `z` range in both directions, which is 512 pixels
+/// either way, so a screenful of tiles is walked with a frame of cells around
+/// it that cannot draw anything.
+///
+/// The client tests the cell's own corner against bounds grown by a tile. This
+/// tests the sprite's actual rectangle, which is the same question asked
+/// exactly — a 250-pixel tree hangs five tiles up the screen out of its own
+/// cell, and a margin is what the client needs because it is testing a point
+/// that is not where the picture is.
+pub fn on_screen(camera: &Camera, at: Vec2, sprite: &Sprite) -> bool {
+    at.x + f32::from(sprite.width) > 0.0
+        && at.x < camera.render_width() as f32
+        && at.y + f32::from(sprite.height) > 0.0
+        && at.y < camera.render_height() as f32
 }
 
 /// Every distinct static graphic standing on the cells the camera can see.
@@ -89,18 +111,29 @@ pub fn graphics_in(
 /// front, so that the same camera produces the same buffer byte for byte —
 /// which is what the frame tests assert on, and what a `HashMap` slipped in
 /// later would quietly take away.
+///
+/// `cutaway` is what the frame has decided not to draw — the roof over the
+/// player and the storey above them. It is a parameter and not a lookup because
+/// it is one answer per frame: it is read from the tile the player is standing
+/// on and every quad in the frame is tested against the same three numbers. See
+/// [`crate::cutaway`].
 pub fn collect(
     map: &Map,
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
+    cutaway: &Cutaway,
 ) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
+        let tile = tiledata.static_tile(item.tile);
+        if !cutaway::shows(cutaway, item.z, tile) {
+            return;
+        }
         // What this static is showing at the instant the frame was sampled. The
         // *placed* graphic still decides the sort and the depth below: a fire's
         // frames are different art of the same size standing in the same place,
@@ -112,11 +145,14 @@ pub fn collect(
         };
         let order = depth::Order {
             tile: i32::from(item.x) + i32::from(item.y),
-            priority_z: depth::static_priority_z(item.z, tiledata.static_tile(item.tile)),
+            priority_z: depth::static_priority_z(item.z, tile),
         };
         // The cell's centre, height folded in: `to_screen` already lifts `z` by
         // four pixels a unit, which is the same lift the ground gets.
         let at = stand_on(camera, Point::new(item.x, item.y, item.z), &sprite);
+        if !on_screen(camera, at, &sprite) {
+            return;
+        }
         quads.push((
             order,
             SpriteQuad {
@@ -279,16 +315,95 @@ mod tests {
         // Ten seconds, which is longer than the slowest cycle in the file. The
         // count of quads must not move: a graphic that was shown and not packed
         // is a sprite that silently stops being drawn.
-        let first = collect(&map, &camera, &tiledata, &animations, &atlas).len();
-        assert!(first > 500, "only {first} statics on screen");
+        let first = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).len();
+        assert!(first > 300, "only {first} statics on screen");
         for step in 1..=100 {
             animations.advance(FRAME_STEP);
-            let now = collect(&map, &camera, &tiledata, &animations, &atlas).len();
+            let now = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).len();
             assert_eq!(
                 now, first,
                 "a static vanished {step} steps in: shown but never packed"
             );
         }
+    }
+
+    /// The four edges of the screen reject, and a pixel either side of each one
+    /// is the difference.
+    ///
+    /// Stated as a boundary rather than as "far away is out": the whole risk in
+    /// a cull is that it is one sprite too eager, and a test that places things
+    /// a hundred pixels off screen passes with any of the four comparisons
+    /// written the wrong way round.
+    #[test]
+    fn a_sprite_one_pixel_onto_the_screen_is_kept() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let sprite = Sprite {
+            width: 30,
+            height: 50,
+            region: crate::atlas::Region {
+                u: 0.0,
+                v: 0.0,
+                du: 0.0,
+                dv: 0.0,
+            },
+        };
+        let on = |x: f32, y: f32| on_screen(&camera, Vec2::new(x, y), &sprite);
+
+        // Off the left: the sprite's right edge is at x + 30, so -30 is the
+        // first placement with nothing on screen and -29 is the last with one
+        // column of it showing.
+        assert!(!on(-30.0, 300.0));
+        assert!(on(-29.0, 300.0));
+        // Off the right: 800 is the first column past the image.
+        assert!(!on(800.0, 300.0));
+        assert!(on(799.0, 300.0));
+        // Above, where a 250-pixel tree hangs out of its own cell.
+        assert!(!on(400.0, -50.0));
+        assert!(on(400.0, -49.0));
+        // And below.
+        assert!(!on(400.0, 600.0));
+        assert!(on(400.0, 599.0));
+    }
+
+    /// Standing under a roof in Britain draws fewer statics than standing
+    /// outside it, and the picture is not empty either way.
+    ///
+    /// The integration the unit tests in [`crate::cutaway`] cannot do: those
+    /// assert what a `Cutaway` decides, this asserts that the collector asks it
+    /// — which is a line that can be deleted with every one of them still
+    /// green.
+    ///
+    /// Skipped without the client's files.
+    #[test]
+    fn a_cutaway_takes_statics_out_of_the_frame() {
+        let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let map = Map::load_facet(&dir, 0).expect("Felucca");
+        let art = openshard_uofiles::art::Art::open(&dir).expect("artLegacyMUL.uop");
+        let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+
+        let camera = Camera::new(Point::new(1495, 1629, 0), 768, 512);
+        let animations = StaticAnimations::default();
+        let wanted = visible_graphics(&map, &camera, &animations);
+        let atlas = StaticAtlas::build(&art, wanted).expect("a screen of statics fits");
+        let open = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).len();
+
+        // A tile in this quarter of Britain that is under something. Found
+        // rather than named, for the reason `cutaway`'s own map test searches:
+        // a coordinate written down here is one more thing to be wrong about.
+        let indoors = (1620..1640u16)
+            .flat_map(|y| (1485..1505u16).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let z = map.land(x, y)?.z;
+                let cutaway = Cutaway::at(&map, &tiledata, Point::new(x, y, z), true);
+                (cutaway != Cutaway::OPEN).then_some(cutaway)
+            })
+            .expect("something in Britain is under a roof");
+        let cut = collect(&map, &camera, &tiledata, &animations, &atlas, &indoors).len();
+
+        assert!(cut < open, "the cutaway removed nothing: {cut} of {open}");
+        assert!(cut > 0, "the cutaway removed the whole town");
     }
 
     /// On a real town, the quads come back sorted and every depth agrees with
@@ -321,7 +436,14 @@ mod tests {
             wanted.len(),
         );
         let atlas = StaticAtlas::build(&art, wanted).expect("a screen of statics fits");
-        let quads = collect(&map, &camera, &tiledata, &StaticAnimations::default(), &atlas);
+        let quads = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+            &Cutaway::OPEN,
+        );
         assert!(quads.len() > 500, "only {} statics on screen", quads.len());
 
         let mut previous = f32::INFINITY;

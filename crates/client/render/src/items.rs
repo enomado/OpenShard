@@ -27,10 +27,11 @@ use openshard_uofiles::tiledata::TileData;
 use crate::animate::StaticAnimations;
 use crate::atlas::StaticAtlas;
 use crate::camera::Camera;
+use crate::cutaway::{self, Cutaway};
 use crate::depth;
 use crate::geometry::Rect;
 use crate::sprite::SpriteQuad;
-use crate::statics::stand_on;
+use crate::statics::{on_screen, stand_on};
 
 /// One thing lying on the ground, as the client has been told about it.
 ///
@@ -74,31 +75,44 @@ pub fn needed_graphics(items: &[GroundItem], animations: &StaticAnimations) -> B
 /// [`statics::collect`](crate::statics::collect): the client ships no art for
 /// it, or the atlas was built before this item arrived. Both are "nothing to
 /// draw", and drawing it from a neighbouring graphic would be worse.
+///
+/// `cutaway` is the same one the statics are tested against, and it is the same
+/// test: the client reads a ground item's tiledata row out of the static table,
+/// so a barrel on the floor above is hidden with that floor exactly as a wall
+/// built into the map is.
 pub fn collect(
     items: &[GroundItem],
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
+    cutaway: &Cutaway,
 ) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
     for item in items {
-        // The frame on screen; the *placed* graphic still decides the sort and
-        // the tiledata lookup below. See [`statics::collect`](crate::statics::collect).
-        let Some(sprite) = atlas.sprite(animations.showing(item.graphic)) else {
-            continue;
-        };
         // A ground item is ordered as a static is, and from the same table: the
         // client reads `tiledata`'s static entry for an item's graphic too, so a
         // wall lying on the floor and a wall built into the map sort alike.
+        let tile = tiledata.static_tile(item.graphic.0);
+        if !cutaway::shows(cutaway, item.at.z, tile) {
+            continue;
+        }
+        // The frame on screen; the *placed* graphic still decides the sort and
+        // the tiledata lookup above. See [`statics::collect`](crate::statics::collect).
+        let Some(sprite) = atlas.sprite(animations.showing(item.graphic)) else {
+            continue;
+        };
         let order = depth::Order {
             tile: i32::from(item.at.x) + i32::from(item.at.y),
-            priority_z: depth::static_priority_z(item.at.z, tiledata.static_tile(item.graphic.0)),
+            priority_z: depth::static_priority_z(item.at.z, tile),
         };
         let at = stand_on(camera, item.at, &sprite);
+        if !on_screen(camera, at, &sprite) {
+            continue;
+        }
         quads.push((
             order,
             SpriteQuad {
@@ -166,6 +180,7 @@ mod tests {
             &tiledata,
             &StaticAnimations::default(),
             &atlas,
+            &Cutaway::OPEN,
         );
         assert_eq!(quads.len(), 1);
         let sprite = atlas.sprite(graphic).expect("packed");
@@ -188,13 +203,21 @@ mod tests {
             graphic,
             hue: Hue::NONE,
         };
-        let floor = collect(&[at(0)], &camera, &tiledata, &StaticAnimations::default(), &atlas);
+        let floor = collect(
+            &[at(0)],
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+            &Cutaway::OPEN,
+        );
         let table = collect(
             &[at(10)],
             &camera,
             &tiledata,
             &StaticAnimations::default(),
             &atlas,
+            &Cutaway::OPEN,
         );
         assert_eq!(table[0].rect.y, floor[0].rect.y - 40.0, "four pixels a unit");
         assert!(table[0].depth < floor[0].depth, "smaller is nearer");
@@ -217,6 +240,7 @@ mod tests {
             &tiledata,
             &StaticAnimations::default(),
             &atlas,
+            &Cutaway::OPEN,
         );
         assert!(quads.is_empty());
     }
@@ -242,6 +266,7 @@ mod tests {
             &tiledata,
             &StaticAnimations::default(),
             &atlas,
+            &Cutaway::OPEN,
         );
         assert_eq!(quads.len(), 2);
         assert!(quads[0].depth > quads[1].depth, "the far one is drawn first");

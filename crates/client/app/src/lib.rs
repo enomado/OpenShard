@@ -119,6 +119,7 @@ use openshard_client_render::bench::{self, Metrics, Scope, Script};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
 use openshard_client_render::control::{Control, Follow};
+use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
@@ -2327,13 +2328,26 @@ impl App {
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let quads = ground::collect(&self.map, &camera, &window.atlases.land, &window.atlases.texmaps);
+        // What this frame does not draw, read once from the tile the player is
+        // standing on. Once, and from the *player's* tile rather than the
+        // camera's: a free camera looking at a rooftop three streets away has
+        // not walked indoors, and the client's rule is about where the body is.
+        // See `openshard_client_render::cutaway`.
+        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.player.at, true);
+        let quads = ground::collect(
+            &self.map,
+            &camera,
+            &window.atlases.land,
+            &window.atlases.texmaps,
+            &cutaway,
+        );
         let static_quads = statics::collect(
             &self.map,
             &camera,
             &self.tiledata,
             &self.tile_animations,
             &window.atlases.statics,
+            &cutaway,
         );
         // Through the same pass as the map's statics, because they are the same
         // atlas: one draw call binds one texture, and what covers what is the
@@ -2346,10 +2360,11 @@ impl App {
                 &self.tiledata,
                 &self.tile_animations,
                 &window.atlases.statics,
+                &cutaway,
             ));
             quads
         };
-        let mobile_quads = mobiles::collect(&drawn, &camera, &window.atlases.mobiles);
+        let mobile_quads = mobiles::collect(&drawn, &camera, &window.atlases.mobiles, &cutaway);
         let labels: Vec<Label<'_>> = speech
             .iter()
             .map(|(anchor, line, font, hue)| Label {

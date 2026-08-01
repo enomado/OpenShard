@@ -37,7 +37,7 @@
 //! season: each is a fade, and none of them changes what is drawn once it has
 //! finished fading.
 
-use openshard_uofiles::map::{Map, StaticItem};
+use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
 use crate::depth;
@@ -387,13 +387,14 @@ pub fn under_ceiling(priority_z: i32, tile: &StaticTile) -> bool {
     !tile.flags.is_internal() && top_of(priority_z, tile) <= DRAW_CEILING
 }
 
-/// A static the map holds, filtered by everything this module decides.
+/// Everything this module decides about one static, in one call.
 ///
-/// The whole test in one place, because it is asked in two — the map's statics
-/// and the server's ground items are the same picture standing the same way,
-/// and they were already sharing their placement.
-pub fn shows(cutaway: &Cutaway, item: &StaticItem, tile: &StaticTile) -> bool {
-    under_ceiling(depth::static_priority_z(item.z, tile), tile) && cutaway.shows_static(item.z, tile)
+/// Asked in two places — the map's statics and the server's ground items — for
+/// the same reason they already share their placement: they are the same
+/// picture standing the same way, and the client reads the same tiledata row
+/// for both.
+pub fn shows(cutaway: &Cutaway, z: i8, tile: &StaticTile) -> bool {
+    under_ceiling(depth::static_priority_z(z, tile), tile) && cutaway.shows_static(z, tile)
 }
 
 #[cfg(test)]

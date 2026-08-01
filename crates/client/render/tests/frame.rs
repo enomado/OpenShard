@@ -17,6 +17,7 @@ use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, Projection, WorldPoint, Zoom};
+use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::geometry::Rect;
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
@@ -376,7 +377,7 @@ fn level_ground_covers_every_pixel() {
     let wanted = ground::visible_graphics(&map, &camera);
     let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
     let texmaps = texmap_atlas(&dir, wanted);
-    let quads = ground::collect(&map, &camera, &atlas, &texmaps);
+    let quads = ground::collect(&map, &camera, &atlas, &texmaps, &Cutaway::OPEN);
     assert!(!quads.is_empty(), "the sea is made of land tiles too");
 
     let frame = render(
@@ -429,7 +430,7 @@ fn hilly_ground_covers_every_pixel() {
     let wanted = ground::visible_graphics(&map, &camera);
     let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
     let texmaps = texmap_atlas(&dir, wanted);
-    let quads = ground::collect(&map, &camera, &atlas, &texmaps);
+    let quads = ground::collect(&map, &camera, &atlas, &texmaps, &Cutaway::OPEN);
 
     // Every cell the camera can see became a quad: the client ships art for all
     // of them, so a missing quad would mean the atlas or the lookup lost one.
@@ -1377,6 +1378,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
             }],
             &camera,
             &atlas,
+            &Cutaway::OPEN,
         );
         assert_eq!(quads.len(), 1, "the frame is packed, so it draws");
         let frame = render_both(
@@ -1439,7 +1441,7 @@ fn the_same_camera_renders_the_same_frame() {
         let wanted = ground::visible_graphics(&map, &camera);
         let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
         let texmaps = texmap_atlas(&dir, wanted);
-        let quads = ground::collect(&map, &camera, &atlas, &texmaps);
+        let quads = ground::collect(&map, &camera, &atlas, &texmaps, &Cutaway::OPEN);
         frames.push(
             render(
                 &device,
@@ -1461,7 +1463,7 @@ fn the_same_camera_renders_the_same_frame() {
     let wanted = ground::visible_graphics(&map, &moved);
     let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
     let texmaps = texmap_atlas(&dir, wanted);
-    let quads = ground::collect(&map, &moved, &atlas, &texmaps);
+    let quads = ground::collect(&map, &moved, &atlas, &texmaps, &Cutaway::OPEN);
     let other = render(
         &device,
         &queue,
@@ -1516,7 +1518,7 @@ fn a_third_of_a_virtual_pixel_moves_a_magnified_frame_one_real_pixel() {
     let wanted = ground::visible_graphics(&map, &camera);
     let land = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
     let texmaps = texmap_atlas(&dir, wanted);
-    let quads = ground::collect(&map, &camera, &land, &texmaps);
+    let quads = ground::collect(&map, &camera, &land, &texmaps, &Cutaway::OPEN);
 
     // Along `x` only: a diagonal move would pass on a frame shifted the right
     // distance the wrong way round, and the two axes are separate lines of
@@ -1710,7 +1712,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
     let wanted = ground::visible_graphics(&map, &camera);
     let land = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
     let texmaps = texmap_atlas(&dir, wanted);
-    let quads = ground::collect(&map, &camera, &land, &texmaps);
+    let quads = ground::collect(&map, &camera, &land, &texmaps, &Cutaway::OPEN);
 
     let wanted_statics = statics::visible_graphics(&map, &camera, &StaticAnimations::default());
     let static_atlas = StaticAtlas::build(&art, wanted_statics).expect("a screen of statics fits");
@@ -1720,6 +1722,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         &tiledata,
         &StaticAnimations::default(),
         &static_atlas,
+        &Cutaway::OPEN,
     );
     assert!(
         static_quads.len() > 500,
@@ -1796,7 +1799,7 @@ fn dump_a_frame_of_britain() {
     let wanted = ground::visible_graphics(&map, &camera);
     let atlas = LandAtlas::build(&art, wanted.iter().copied()).expect("fits");
     let texmaps = texmap_atlas(&dir, wanted);
-    let quads = ground::collect(&map, &camera, &atlas, &texmaps);
+    let quads = ground::collect(&map, &camera, &atlas, &texmaps, &Cutaway::OPEN);
 
     let static_atlas = StaticAtlas::build(
         &art,
@@ -1809,6 +1812,7 @@ fn dump_a_frame_of_britain() {
         &tiledata,
         &StaticAnimations::default(),
         &static_atlas,
+        &Cutaway::OPEN,
     );
 
     // A character standing where the camera looks, facing each way in turn, so
@@ -1839,7 +1843,7 @@ fn dump_a_frame_of_britain() {
         })
         .collect();
     let mobile_atlas = AnimAtlas::build(&mut anim, mobiles::needed_animations(&people)).expect("a body fits");
-    let mobile_quads = mobiles::collect(&people, &camera, &mobile_atlas);
+    let mobile_quads = mobiles::collect(&people, &camera, &mobile_atlas, &Cutaway::OPEN);
 
     let frame = render_both(
         &device,

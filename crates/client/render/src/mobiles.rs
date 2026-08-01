@@ -42,6 +42,7 @@ use openshard_protocol::world::Point;
 
 use crate::atlas::{AnimAtlas, FrameKey};
 use crate::camera::{Camera, ViewPixel, WorldPoint};
+use crate::cutaway::Cutaway;
 use crate::depth;
 use crate::follow::Gaze;
 use crate::geometry::{Rect, Vec2};
@@ -215,12 +216,19 @@ fn place(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Placemen
 /// animation for that body and group, or the atlas was built before this one
 /// arrived. Both are "nothing to draw", and neither is worth failing a frame
 /// over — the alternative is a creature drawn from another creature's picture.
-pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas) -> Vec<SpriteQuad> {
+///
+/// `cutaway` hides a body on the storey above with that storey. It is the same
+/// `max_z` the statics are tested against and deliberately not `no_draw_roofs`:
+/// a mobile is never a roof, and the client asks it the one question.
+pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas, cutaway: &Cutaway) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
     for mobile in mobiles {
+        if !cutaway.shows_mobile(mobile.at.z) {
+            continue;
+        }
         let Some(placement) = place(mobile, camera, atlas) else {
             continue;
         };
@@ -313,6 +321,7 @@ mod tests {
             }],
             &camera,
             &atlas,
+            &Cutaway::OPEN,
         );
         assert_eq!(quads.len(), 1);
         // The camera puts its own tile's centre at (400, 300).
@@ -342,6 +351,7 @@ mod tests {
                 }],
                 &camera,
                 &atlas,
+                &Cutaway::OPEN,
             )
         };
         let plain = quads(Direction::South);
@@ -377,11 +387,11 @@ mod tests {
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
         };
-        assert!(collect(&[missing], &camera, &atlas).is_empty());
+        assert!(collect(&[missing], &camera, &atlas, &Cutaway::OPEN).is_empty());
         // And the same mobile at frame 0 is not, so the drop above is a
         // decision about the frame rather than about the body.
         assert_eq!(
-            collect(&[Mobile { frame: 0, ..missing }], &camera, &atlas).len(),
+            collect(&[Mobile { frame: 0, ..missing }], &camera, &atlas, &Cutaway::OPEN).len(),
             1,
         );
     }
@@ -402,7 +412,7 @@ mod tests {
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
         };
-        let quads = collect(&[mobile], &camera, &atlas);
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN);
         let anchor = head_anchor(&mobile, &camera, &atlas).expect("packed");
         assert_eq!(anchor.x as f32, quads[0].rect.x + quads[0].rect.width / 2.0);
         assert_eq!(anchor.y as f32, quads[0].rect.y);
@@ -446,7 +456,7 @@ mod tests {
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(101, 100, 0)),
         };
-        let standing = collect(&[on_its_tile], &camera, &atlas);
+        let standing = collect(&[on_its_tile], &camera, &atlas, &Cutaway::OPEN);
         // Half a tile back the way it came: a step east is eleven pixels right
         // and eleven down, so half of one is eleven of each.
         let mid_step = collect(
@@ -456,6 +466,7 @@ mod tests {
             }],
             &camera,
             &atlas,
+            &Cutaway::OPEN,
         );
         assert_eq!(standing.len(), 1);
         assert_eq!(mid_step.len(), 1);
