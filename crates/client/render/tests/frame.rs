@@ -1406,7 +1406,7 @@ fn a_third_of_a_virtual_pixel_moves_a_magnified_frame_one_real_pixel() {
 
     let mut camera = Camera::new(Point::new(1495, 1629, 0), 512, 256);
     let mut zoom = Zoom::ONE;
-    for _ in 0..4 {
+    for _ in 0..2 {
         zoom = zoom.scale_up();
     }
     camera.zoom_about(256, 128, zoom);
@@ -1518,7 +1518,7 @@ fn a_magnified_sprite_translates_texel_for_texel() {
 
     let mut camera = Camera::new(Point::new(200, 200, 0), 512, 256);
     let mut zoom = Zoom::ONE;
-    for _ in 0..4 {
+    for _ in 0..2 {
         zoom = zoom.scale_up();
     }
     camera.zoom_about(256, 128, zoom);

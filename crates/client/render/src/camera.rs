@@ -201,17 +201,23 @@ pub struct Zoom {
 ///
 /// Below 1 the world is minified and the offscreen target grows, which is what
 /// [`Camera::render_width`] and the GPU's texture limit have to agree about.
-const LADDER: [(u32, u32); 9] = [
-    (1, 2),
-    (2, 3),
-    (3, 4),
-    (1, 1),
-    (4, 3),
-    (3, 2),
-    (2, 1),
-    (3, 1),
-    (4, 1),
-];
+///
+/// **Whole above 1:1, fractional below it**, and the asymmetry is the point
+/// rather than an oversight — `docs/camera.md` D11. Magnifying, the world is
+/// drawn at the display's own resolution with `nearest` sampling, so a *whole*
+/// magnification puts every texel on exactly that many real pixels and a whole
+/// pixel of camera movement translates the picture; at `4/3` the texel widths
+/// alternate 1, 2, 1, 2 and the pattern crawls as the camera moves, which is a
+/// shimmer no placement of the quantiser fixes. It used to have `4/3` and `3/2`
+/// and they are gone: a coarse ladder of exact rungs reads better than a fine
+/// ladder of rungs that crawl.
+///
+/// Minifying, the same argument does not apply and the fractional rungs stay.
+/// Several virtual pixels land on one real one there, which is a filter's job
+/// and not a transform's, and the blit's linear sampler is that filter — so
+/// `2/3` is no worse behaved than `1/2`, and the three of them are what makes
+/// zooming out feel like a slider rather than a switch.
+const LADDER: [(u32, u32); 7] = [(1, 2), (2, 3), (3, 4), (1, 1), (2, 1), (3, 1), (4, 1)];
 
 /// Where `1:1` sits in [`LADDER`].
 const ONE_STEP: u8 = 3;

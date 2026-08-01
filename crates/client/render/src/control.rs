@@ -1,8 +1,8 @@
 //! What the mouse, the wheel and the lock key do to a [`Camera`].
 //!
-//! The arithmetic between an input event and an eye: a drag's fractional
-//! remainder, a wheel notch's anchor, the device's refusal to allocate the image
-//! a zoom asks for, and whether the eye is the body's or the mouse's. All of it
+//! The arithmetic between an input event and an eye: a drag in real pixels, a
+//! wheel notch's anchor, the device's refusal to allocate the image a zoom asks
+//! for, and whether the eye is the body's or the mouse's. All of it
 //! used to live in `client/app`, where it could not be reached from a test
 //! because the thing that owned it also owned a window, a GPU and a `Map`. None
 //! of it needs any of the three.
@@ -70,7 +70,7 @@ pub struct TooLarge {
     pub settled: Zoom,
 }
 
-/// A camera, who is allowed to move it, and what the mouse has not yet spent.
+/// A camera, who is allowed to move it, and where the mouse last was.
 #[derive(Clone, Copy, Debug)]
 pub struct Control {
     camera: Camera,
@@ -382,7 +382,7 @@ mod tests {
             assert!(back < 100, "the ladder has no top");
         }
         assert_eq!(control.camera().zoom().to_string(), "4x");
-        assert_eq!((out, back), (3, 8), "nine rungs, with 1:1 the fourth");
+        assert_eq!((out, back), (3, 6), "seven rungs, with 1:1 the fourth");
     }
 
     /// The gate D11 names, on the input side: one real pixel of hand is one real
@@ -424,7 +424,7 @@ mod tests {
             }
             rung += 1;
         }
-        assert_eq!(rung, 8, "every rung of the ladder was walked");
+        assert_eq!(rung, 6, "every rung of the ladder was walked");
     }
 
     /// And the direction of the rounding: a drag out and back ends where it
@@ -459,9 +459,7 @@ mod tests {
     #[test]
     fn a_zoom_leaves_the_eye_on_the_new_rungs_lattice() {
         let mut control = control();
-        for _ in 0..3 {
-            assert!(control.zoom(true).unwrap());
-        }
+        assert!(control.zoom(true).unwrap());
         assert_eq!(control.camera().zoom().to_string(), "2x");
         assert!(control.pan(1, 0), "half a virtual pixel, which 2x can express");
         let half = control.camera().eye_at();

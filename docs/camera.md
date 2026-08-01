@@ -338,12 +338,15 @@ now. Every pixel-exact assertion in those passes is about art space and survives
 untouched. What the client gains beyond smoothness is that a magnified world is
 drawn at the display's resolution instead of at half or a quarter of it.
 
-**The ladder becomes integral: 1x, 2x, 3x, 4x.** The fractional rungs bought a
-finer choice of magnification and cost the shimmer above, which is a bad trade
-once the motion is smooth — a coarse ladder of exact rungs reads better than a
-fine ladder of rungs that crawl. Minification is a different question and keeps
-the offscreen path with its linear sampler, which is where a filter belongs:
-below 1 the quantum is already finer than the display and nothing here is owed.
+**The ladder becomes integral above 1:1 — 1x, 2x, 3x, 4x — and keeps its
+fractional rungs below it.** The asymmetry is the argument rather than a
+compromise. Magnifying, `4/3` and `3/2` bought a finer choice and cost the
+shimmer above, which is a bad trade once the motion is smooth: a coarse ladder of
+exact rungs reads better than a fine ladder of rungs that crawl. Minifying, the
+same fractions cost nothing, because that path goes through the blit's linear
+sampler and a filter is exactly the right answer to several virtual pixels
+landing on one real one — so `1/2`, `2/3` and `3/4` all stay, and zooming out
+keeps feeling like a slider rather than a switch.
 
 **The gates.** Two, and the second is the one that catches what the first
 cannot: a shift of `1/zoom` of a virtual pixel moves the picture exactly one real
@@ -809,7 +812,7 @@ camera outranks the automation until it lets go. This is the RTS and HotS
 camera, and it is deliberately last, because it is the one whose shape is least
 constrained by anything above.
 
-### C7 — the real pixel
+### C7 — the real pixel — **built**
 
 D11, in three steps that each leave the client running.
 
@@ -825,7 +828,9 @@ D11, in three steps that each leave the client running.
    move onto real pixels with it — a drag's remainder is a real-pixel remainder
    now, and a click that resolved to a virtual pixel would be off by up to
    `zoom` of them against what it is pointing at.
-3. **The ladder becomes integral**, and the fractional rungs go.
+3. **The ladder becomes integral above 1:1**, and `4/3` and `3/2` go. The
+   minifying rungs stay: they are filtered rather than transformed, so the
+   shimmer that condemns the other two is not theirs.
 
 The order is forced: step 2 without step 1 changes nothing, because the offscreen
 cannot express what it computes, and step 1 without step 2 is a sharper picture
