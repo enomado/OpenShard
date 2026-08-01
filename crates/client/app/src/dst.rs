@@ -66,6 +66,7 @@ use std::time::{Duration, Instant};
 use openshard_client_net::walk::{Moved, Predicted, Walk};
 use openshard_client_render::bench::{Cadence, Metrics, Sample};
 use openshard_client_render::camera::Camera;
+use openshard_client_render::chart;
 use openshard_client_render::control::Control;
 use openshard_client_render::follow::Rig;
 use openshard_client_render::mobiles::{self, Mobile};
@@ -1464,4 +1465,203 @@ fn a_shard_that_goes_quiet_stops_the_body_rather_than_the_prediction() {
         "the body walked {last:?}, which is past the cap"
     );
     continuous(&sim, WALK_HOLD);
+}
+
+// --- The instrument --------------------------------------------------------
+
+/// One frame of a walk, in the numbers a curve is drawn from.
+///
+/// Both bodies and both derivatives in one row on purpose: the complaint the
+/// dump exists for is "the camera jerks", and the only way to answer it is to
+/// see whether the body under the camera jerked first.
+#[derive(Clone, Copy, Debug)]
+struct WalkFrame {
+    /// When, from the press.
+    at: Duration,
+    /// Where the oracle says the body should be, in world pixels.
+    want: (f64, f64),
+    /// Where it was drawn, in world pixels — the sprite's own gaze.
+    body: (f64, f64),
+    /// Where the eye was put, unrounded.
+    eye: (f64, f64),
+}
+
+/// Every frame of a run, against the oracle it is held to.
+fn walk_frames(sim: &Sim, oracle: &Oracle) -> Vec<WalkFrame> {
+    sim.eyes
+        .iter()
+        .map(|sample| {
+            let want = oracle.at(sample.at);
+            WalkFrame {
+                at: sample.at,
+                want: tile_pixels(want),
+                body: sample.gaze.exact(),
+                eye: sample.state.exact(),
+            }
+        })
+        .collect()
+}
+
+/// A fractional tile, projected the way `camera::project` projects a whole one.
+///
+/// The oracle speaks in tiles and everything else here in world pixels, and the
+/// comparison has to happen in one of the two. Pixels, because that is what the
+/// player's eye is measuring and what the camera's metrics are already in.
+fn tile_pixels(tile: (f64, f64)) -> (f64, f64) {
+    const HALF: f64 = 22.0;
+    ((tile.0 - tile.1) * HALF, (tile.0 + tile.1) * HALF)
+}
+
+/// The speed between consecutive frames, in world pixels a second.
+fn speeds(frames: &[WalkFrame], of: fn(&WalkFrame) -> (f64, f64)) -> Vec<(Duration, f64)> {
+    frames
+        .windows(2)
+        .filter_map(|pair| {
+            let dt = (pair[1].at - pair[0].at).as_secs_f64();
+            if dt <= 0.0 {
+                return None;
+            }
+            let (was, now) = (of(&pair[0]), of(&pair[1]));
+            Some((pair[1].at, (now.0 - was.0).hypot(now.1 - was.1) / dt))
+        })
+        .collect()
+}
+
+/// A run of the ten-step walk under one wire, for the dump below.
+fn walked(net: Net, seed: u64) -> (Sim, Oracle) {
+    let script = ten_steps_east();
+    let until = Duration::from_millis(4_400);
+    let oracle = Oracle::build(START, &script, until);
+    let mut sim = Sim::new(Direction::East, net, seed, Vec::new());
+    sim.run(&script, until);
+    (sim, oracle)
+}
+
+/// A run, drawn: where the drawn body and the eye were against where the
+/// oracle says they should have been, and how fast each was going.
+///
+/// Two panels rather than one, and the first is a *deviation* rather than a
+/// position: ten steps east is 220 pixels of ramp, and a chart of that ramp
+/// hides the one-pixel discontinuities the whole complaint is made of. The
+/// second is the speed, where the oracle is a flat line and every departure
+/// from it is a frame the world moved at the wrong rate.
+fn chart_of(name: &str, frames: &[WalkFrame]) -> String {
+    let offset = |of: fn(&WalkFrame) -> (f64, f64)| chart::Series {
+        name: String::new(),
+        points: frames
+            .iter()
+            .map(|frame| {
+                let (x, y) = of(frame);
+                (frame.at.as_secs_f64(), (x - frame.want.0).hypot(y - frame.want.1))
+            })
+            .collect(),
+    };
+    let speed = |of: fn(&WalkFrame) -> (f64, f64)| chart::Series {
+        name: String::new(),
+        points: speeds(frames, of)
+            .into_iter()
+            .map(|(at, speed)| (at.as_secs_f64(), speed))
+            .collect(),
+    };
+    let named = |series: chart::Series, called: &str| chart::Series {
+        name: called.to_string(),
+        ..series
+    };
+    // What the oracle walks at: one tile per hold, and a tile is 44 pixels
+    // across its diagonal — `sqrt(22² + 22²)` per `WALK_HOLD`.
+    let nominal = 22.0f64.hypot(22.0) / WALK_HOLD.as_secs_f64();
+    let panels = vec![
+        chart::Panel {
+            title: "how far from where the oracle says, pixels".to_string(),
+            series: vec![
+                named(offset(|frame| frame.body), "body"),
+                named(offset(|frame| frame.eye), "eye"),
+            ],
+            baseline: Some(0.0),
+        },
+        chart::Panel {
+            title: "speed, pixels per second".to_string(),
+            series: vec![
+                named(speed(|frame| frame.body), "body"),
+                named(speed(|frame| frame.eye), "eye"),
+            ],
+            baseline: Some(nominal),
+        },
+    ];
+    let seconds = frames.last().map_or(1.0, |frame| frame.at.as_secs_f64());
+    chart::svg(&format!("ten steps east — {name}"), seconds, &panels)
+}
+
+/// Where a dump goes: `OPENSHARD_CAMERA_DUMP`, or a directory of our own under
+/// the system temp.
+///
+/// Never the source tree — this writes a file per wire and none of them belongs
+/// in a diff. A unit test is handed no pointer to `target/`, which is why this
+/// is not the integration test's `CARGO_TARGET_TMPDIR` trick.
+fn dump_dir() -> std::path::PathBuf {
+    std::env::var_os("OPENSHARD_CAMERA_DUMP")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("openshard-camera"))
+}
+
+/// Ten steps east, measured rather than asserted: what the body's speed and the
+/// eye's speed actually do, frame by frame.
+///
+/// Asserts nothing and is ignored for it. The oracle says both should be flat at
+/// one tile per hold from the press to the last step, and every departure from
+/// flat is a jerk somebody can see.
+#[test]
+#[ignore = "writes a table and charts for a person, and asserts nothing"]
+fn dump_the_walk() {
+    let wires = [
+        ("perfect", Net::default()),
+        (
+            "wake_8ms",
+            Net {
+                latency: Duration::ZERO,
+                jitter: Duration::ZERO,
+                wake_jitter: Duration::from_millis(8),
+            },
+        ),
+        (
+            "live",
+            Net {
+                latency: Duration::from_millis(60),
+                jitter: Duration::from_millis(20),
+                wake_jitter: Duration::from_millis(8),
+            },
+        ),
+    ];
+    let dir = dump_dir();
+    std::fs::create_dir_all(&dir).expect("a directory to write into");
+    println!(
+        "\n{:<10} {:>6} {:>9} {:>8} {:>8} {:>9}",
+        "wire", "frames", "mean px/s", "min", "max", "worst px"
+    );
+    for (name, net) in wires {
+        let (sim, oracle) = walked(net, 3);
+        let frames = walk_frames(&sim, &oracle);
+        let body = speeds(&frames, |frame| frame.body);
+        // The walk itself, without the stand at either end: the first frame has
+        // nothing behind it and the last four are a body that has arrived, and
+        // averaging those in is how a still scene reports as a smooth one.
+        let walking: Vec<f64> = body
+            .iter()
+            .filter(|(at, _)| *at > Duration::from_millis(100) && *at < Duration::from_millis(3_900))
+            .map(|(_, speed)| *speed)
+            .collect();
+        let mean = walking.iter().sum::<f64>() / walking.len() as f64;
+        let worst = frames.iter().fold(0.0f64, |worst, frame| {
+            worst.max((frame.body.0 - frame.want.0).hypot(frame.body.1 - frame.want.1))
+        });
+        println!(
+            "{name:<10} {:>6} {mean:>9.1} {:>8.1} {:>8.1} {worst:>9.2}",
+            frames.len(),
+            walking.iter().copied().fold(f64::INFINITY, f64::min),
+            walking.iter().copied().fold(0.0f64, f64::max),
+        );
+        std::fs::write(dir.join(format!("walk-{name}.svg")), chart_of(name, &frames))
+            .expect("writing a chart");
+    }
+    println!("\nwrote {}", dir.display());
 }

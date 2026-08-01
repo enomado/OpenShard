@@ -34,6 +34,7 @@ pub mod atlas;
 pub mod bench;
 pub mod blit;
 pub mod camera;
+pub mod chart;
 pub mod control;
 pub mod depth;
 pub mod follow;

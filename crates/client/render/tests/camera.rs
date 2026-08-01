@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use openshard_client_render::bench::{self, Cadence, Metrics, Sample, Script, Trace, run, scripts};
+use openshard_client_render::chart;
 use openshard_client_render::follow::{FLOOR, Rig};
 use openshard_movement::WALK_HOLD;
 use openshard_protocol::direction::Direction;
@@ -429,13 +430,11 @@ fn csv(trace: &Trace) -> String {
 /// rig overlaid on each.
 ///
 /// Overlaid deliberately: one curve says nothing, and two on one axis is how
-/// raggedness stops being a feeling. Drawn by hand rather than by a plotting
-/// crate, because it is six lines of `<path>` and a dependency is for ever.
+/// raggedness stops being a feeling. The drawing itself is
+/// [`openshard_client_render::chart`], which the walk harness in `client/app`
+/// also draws with: two pictures of the same pipeline have to be readable
+/// against each other.
 fn chart(script: &Script, traces: &[(&str, Trace)]) -> String {
-    const COLOURS: [&str; 4] = ["#c0392b", "#2471a3", "#1e8449", "#8e44ad"];
-    let (width, height) = (900.0, 260.0);
-    let seconds = script.length.as_secs_f64().max(0.001);
-
     let speed = |trace: &Trace| derivative(trace);
     let lag = |trace: &Trace| {
         trace
@@ -449,36 +448,31 @@ fn chart(script: &Script, traces: &[(&str, Trace)]) -> String {
             .collect::<Vec<_>>()
     };
 
-    let mut out = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{}\" \
-         font-family=\"sans-serif\" font-size=\"12\">\n\
-         <rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n\
-         <text x=\"12\" y=\"22\" font-size=\"15\">{}</text>\n",
-        height * 2.0 + 60.0,
-        script.name,
-    );
-    for (index, (title, series)) in [
-        ("the eye's speed, pixels per second", speed_series(traces, speed)),
-        ("how far behind the body, pixels", speed_series(traces, lag)),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let top = 40.0 + index as f64 * (height + 20.0);
-        out.push_str(&panel(title, &series, top, width, height, seconds, &COLOURS));
-    }
-    out.push_str("</svg>\n");
-    out
+    let panels = vec![
+        chart::Panel {
+            title: "the eye's speed, pixels per second".to_string(),
+            series: speed_series(traces, speed),
+            baseline: None,
+        },
+        chart::Panel {
+            title: "how far behind the body, pixels".to_string(),
+            series: speed_series(traces, lag),
+            // The eye is meant to be on the body; the dashed line is what every
+            // rig is departing from.
+            baseline: Some(0.0),
+        },
+    ];
+    chart::svg(script.name, script.length.as_secs_f64(), &panels)
 }
 
 /// A named curve per rig, from whatever the caller measures.
-fn speed_series(
-    traces: &[(&str, Trace)],
-    of: impl Fn(&Trace) -> Vec<(f64, f64)>,
-) -> Vec<(String, Vec<(f64, f64)>)> {
+fn speed_series(traces: &[(&str, Trace)], of: impl Fn(&Trace) -> Vec<(f64, f64)>) -> Vec<chart::Series> {
     traces
         .iter()
-        .map(|(name, trace)| ((*name).to_string(), of(trace)))
+        .map(|(name, trace)| chart::Series {
+            name: (*name).to_string(),
+            points: of(trace),
+        })
         .collect()
 }
 
@@ -492,55 +486,6 @@ fn derivative(trace: &Trace) -> Vec<(f64, f64)> {
         .into_iter()
         .map(|reading| (reading.at.as_secs_f64(), reading.speed))
         .collect()
-}
-
-fn panel(
-    title: &str,
-    series: &[(String, Vec<(f64, f64)>)],
-    top: f64,
-    width: f64,
-    height: f64,
-    seconds: f64,
-    colours: &[&str],
-) -> String {
-    let left = 60.0;
-    let plot = width - left - 20.0;
-    let peak = series
-        .iter()
-        .flat_map(|(_, points)| points.iter().map(|(_, y)| *y))
-        .fold(1.0f64, f64::max);
-    let x = |t: f64| left + plot * (t / seconds);
-    let y = |value: f64| top + height - height * (value / peak);
-
-    let mut out = format!(
-        "<text x=\"{left}\" y=\"{}\">{title}</text>\n\
-         <line x1=\"{left}\" y1=\"{top}\" x2=\"{left}\" y2=\"{}\" stroke=\"#888\"/>\n\
-         <line x1=\"{left}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#888\"/>\n\
-         <text x=\"8\" y=\"{}\" fill=\"#555\">{peak:.0}</text>\n\
-         <text x=\"8\" y=\"{}\" fill=\"#555\">0</text>\n",
-        top - 8.0,
-        top + height,
-        top + height,
-        left + plot,
-        top + height,
-        top + 10.0,
-        top + height,
-    );
-    for (index, (name, points)) in series.iter().enumerate() {
-        let colour = colours[index % colours.len()];
-        let path: String = points
-            .iter()
-            .map(|(t, value)| format!("{:.1},{:.1}", x(*t), y(*value)))
-            .collect::<Vec<_>>()
-            .join(" ");
-        out.push_str(&format!(
-            "<polyline fill=\"none\" stroke=\"{colour}\" stroke-width=\"1.2\" points=\"{path}\"/>\n\
-             <text x=\"{}\" y=\"{}\" fill=\"{colour}\">{name}</text>\n",
-            left + plot - 70.0,
-            top + 14.0 + index as f64 * 16.0,
-        ));
-    }
-    out
 }
 
 /// A sample is a plain value and the metrics take a slice of them, which is
