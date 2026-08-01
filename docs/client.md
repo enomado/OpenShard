@@ -1580,7 +1580,14 @@ own understanding had written.
   4. ~~A rollback tells `Steering`, which it currently does not.~~ Done with the
      queue rule below: `Steering::corrected` takes the shard's facing and
      `App::entered` calls it whenever `link::Body::corrected` is set.
-  5. A cap on steps in flight, with the reference's five as the number.
+  5. ~~A cap on steps in flight, with the reference's five as the number.~~ Done:
+     `walk::MAX_IN_FLIGHT`, checked first thing in `Walk::step` as the reference
+     checks it first thing in `PlayerMobile.Walk`. It is not a second pace limit
+     — the shard's budget is the only judge of how fast a body walks — it is the
+     answer to a shard that has *stopped answering*, where every further step is
+     another tile of correction when the link comes back. `Walk::step` now
+     answers `NotSent`, which is that refusal and the world's edge in one type;
+     `link.rs` logs either and sends nothing, so the body waits where it is.
 
 - ~~**An input takes a step whenever it arrives, and the step under way is cut
   short.**~~ Fixed, and the rule it was fixed with is worth stating on its own
@@ -1637,20 +1644,40 @@ own understanding had written.
   jumped the body exactly like the defect being fixed. A deadline is only a
   cadence if a step was taken at it.
 
-- **An ack that arrives after a rollback ends the session.** Found by the
-  key-mashing scenario in `dst.rs` before the queue rule fixed the flood that
-  provoked it: a `0x21` voids everything in flight and resets both sequences, but
-  the steps already on the wire are still answered, so a `0x22` lands for a
-  sequence this end has forgotten. `Walk::acked` correctly refuses to guess which
-  step was meant and returns `UnexpectedAck` — and `link.rs`'s `play` turns any
-  error out of `fold` into `Update::Lost`, so the window disconnects. The race is
-  latency-shaped and not flood-shaped: one refused step with two more in flight
-  is enough, and a wall plus 150ms is enough to produce it. ClassicUO's answer is
-  the right one and is already read out above — an ack it is not waiting on sets
-  `WalkingFailed` and asks for a resync, and nothing is sent until the resync
-  lands. What we need is the same shape: `Moved` gains a variant for it, `Walk`
-  stops walking until the server speaks, and only a *protocol* error stays fatal.
-  A desync is a thing to recover from, not a reason to close a window.
+- ~~**An ack that arrives after a rollback ends the session.**~~ Fixed, and it was
+  two bugs wearing one hat. Found by the key-mashing scenario in `dst.rs` before
+  the queue rule removed the flood that provoked it: a `0x21` voids everything in
+  flight and resets both sequences, but the shard owes one answer per `0x02` and
+  the steps already on the wire are still answered — so an answer lands for a
+  sequence this end has forgotten.
+
+  Both halves were wrong. `Walk` called those answers a desync, which they are
+  not: the wire delivers in order, so while anything is owed from before the last
+  correction the next answer is one of *those*. `Walk::draining` counts them and
+  they are swallowed — including a stale `0x21`, which is the half that had no
+  symptom anybody would have named: applying it rolls the body back a second
+  time, onto a tile it has already walked away from, and clears the steps sent
+  since. The DST scenario measures exactly that, and without the counter the
+  drawn body ends four tiles behind the shard. An answer owed to *nobody* is
+  still an `UnexpectedAck`, so a real desync is still reported.
+
+  And `link.rs` turned any error out of `fold` into `Update::Lost`, so the window
+  closed. It logs and carries on now: the next `0x20`, `0x21` or `0x1B` is the
+  server saying where the body really is and all three reset both ends, so a
+  desync repairs itself. What is deliberately *not* copied from ClassicUO is
+  `WalkingFailed` — it stops the client walking until a resync request is
+  answered, and neither end here speaks that packet yet (the client's `0x22`
+  decodes as `ClientPacket::Unknown` on the shard), so the freeze would be
+  permanent. Which is the next item:
+
+- **Neither end speaks the resync request.** The client's `0x22` — three bytes,
+  "tell me where I am" — is what the reference sends when the walk falls out of
+  step, and our shard answers it with nothing because `ClientPacket::decode` has
+  no arm for it. Two small pieces: a `ClientPacket::Resync` and a handler that
+  replies with a `0x20`, and then `Walk` can stop asking after a desync the way
+  the reference does instead of carrying on hopefully. Worth doing together with
+  the local walkability prediction above, since both are about what the client
+  does when the two ends disagree.
 
 - **The walk has no home.** Two of those three defects lived *between*
   `App::user_event` and `App::about_to_wait` rather than in any of the four units

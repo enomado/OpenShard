@@ -390,6 +390,9 @@ struct Sim {
     /// in one instant. What the pace budget and the player's eye both care about
     /// is the gap between two *crossings*.
     stepped_at: Vec<Duration>,
+    /// Steps this end refused to send, and why. Empty in every scenario where
+    /// the shard is answering.
+    not_sent: Vec<(Duration, openshard_client_net::walk::NotSent)>,
     /// Where the body was *drawn*, every frame.
     trace: Vec<(Duration, (f64, f64))>,
 }
@@ -420,6 +423,7 @@ impl Sim {
             last_advance: Duration::ZERO,
             refused: 0,
             stepped_at: Vec::new(),
+            not_sent: Vec::new(),
             trace: Vec::new(),
         }
     }
@@ -594,7 +598,17 @@ impl Sim {
         let before = self.walk.predicted().position;
         // No map, so no height: `|_, _| None` is what a caller without one
         // passes, and the flat prediction is the honest answer.
-        let bytes = self.walk.step(facing, |_, _| None).unwrap();
+        //
+        // `link.rs` logs a refusal and sends nothing, and so does this: a step
+        // past the cap on unanswered ones is a shard that has gone quiet, and the
+        // body waits where it is.
+        let bytes = match self.walk.step(facing, |_, _| None) {
+            Ok(bytes) => bytes,
+            Err(refusal) => {
+                self.not_sent.push((self.now, refusal));
+                return;
+            }
+        };
         if self.walk.predicted().position != before {
             self.stepped_at.push(self.now);
         }
@@ -1126,4 +1140,115 @@ fn tapping_one_arrow_is_not_a_step_per_tap() {
         Duration::from_millis(2_000),
         "and the second is not held back"
     );
+}
+
+/// The wire's half of the rollback, and it used to close the window: a refusal
+/// voids the steps still in flight, the shard answers those steps anyway, and
+/// their answers name sequences this end has forgotten.
+///
+/// Latency is what makes it appear — a third of a second is two steps in flight
+/// when the wall is hit, so two answers arrive with nothing left to match — and
+/// `Sim::deliver` unwraps `Walk::on_packet` exactly as `link.rs` used to treat
+/// it as fatal, so a regression here is a panic and not a soft assertion. What
+/// the scenario asserts beyond surviving is that the walk *recovers*: the body
+/// ends where the shard says, having kept asking the whole way.
+#[test]
+fn the_answers_a_rollback_left_on_the_wire_do_not_end_the_session() {
+    // Into the wall, and then away from it — which is what makes the race
+    // *fatal* rather than merely ugly. Leaning on the wall produces refusals and
+    // nothing else, and a refusal for a step already voided is only a second
+    // rollback. Turning away means the step sent after the first rollback is one
+    // the shard *allows*, so its `0x22` comes back behind the refusals still on
+    // the wire — and that ack, arriving with nothing left to match, is what
+    // `link.rs` used to close the window over.
+    let script = vec![
+        press(0, Direction::East),
+        // The arrows are a stack (`keys.rs`), so east is let go of as north is
+        // taken: leaving it down would resume the walk into the wall the moment
+        // north came up, which is correct behaviour and not this scenario.
+        release(2_000, Direction::East),
+        press(2_000, Direction::North),
+        release(4_000, Direction::North),
+    ];
+    // Well past the last input: a round trip is 1.4 seconds here, so a run that
+    // stopped at the release would end with steps still in flight and the drawn
+    // body legitimately ahead of the shard — which is what predicting *is*, and
+    // not something to assert against.
+    let until = Duration::from_millis(6_500);
+    let net = Net {
+        latency: Duration::from_millis(700),
+        jitter: Duration::from_millis(60),
+        wake_jitter: Duration::ZERO,
+    };
+    for seed in 0..6 {
+        let mut sim = Sim::new(Direction::East, net, seed, vec![(1003, 1000)]);
+        sim.run(&script, until);
+
+        assert!(sim.refused > 0, "seed {seed}: the wall is on the way");
+        assert_eq!(
+            sim.shard.position.x, 1002,
+            "seed {seed}: the wall stopped it a tile short and it never got past"
+        );
+        // How far past the wall the body is drawn before the refusal arrives is
+        // the prediction's business, not this scenario's — nothing here predicts
+        // walkability, which is its own backlog item. What matters is where it
+        // ends up.
+        //
+        // Where the shard says, and this is the assertion the stale answers used
+        // to break in the other direction: a rollback applied twice puts the body
+        // back on a tile it had already walked away from.
+        let (_, last) = *sim.trace.last().unwrap();
+        assert!(
+            (last.0 - f64::from(sim.shard.position.x)).abs() < 0.01
+                && (last.1 - f64::from(sim.shard.position.y)).abs() < 0.01,
+            "seed {seed}: the screen says {last:?} and the shard says {:?}",
+            sim.shard.position
+        );
+        assert!(
+            sim.not_sent.is_empty(),
+            "seed {seed}: a shard that is answering never backs the client up: {:?}",
+            sim.not_sent
+        );
+    }
+}
+
+/// A shard that stops answering stops the walk five steps later, and the body
+/// waits rather than running off on its own.
+///
+/// The other half of the same debt. Without a cap the prediction walks for as
+/// long as the outage lasts and the correction when the link comes back is that
+/// whole distance — a body sliding backwards across half a screen, which is the
+/// worst picture in this file. The reference caps it at five
+/// (`Constants.MAX_STEP_COUNT`) and so do we.
+#[test]
+fn a_shard_that_goes_quiet_stops_the_body_rather_than_the_prediction() {
+    let script = vec![press(0, Direction::East), release(8_000, Direction::East)];
+    let until = Duration::from_millis(8_000);
+    // A wire that swallows everything: the `0x02`s arrive an hour from now, so
+    // nothing is ever answered.
+    let net = Net {
+        latency: Duration::from_secs(3_600),
+        jitter: Duration::ZERO,
+        wake_jitter: Duration::ZERO,
+    };
+    let mut sim = Sim::new(Direction::East, net, 12, Vec::new());
+    sim.run(&script, until);
+
+    assert_eq!(
+        sim.walk.in_flight(),
+        openshard_client_net::walk::MAX_IN_FLIGHT,
+        "five steps went out and none was answered"
+    );
+    assert!(
+        !sim.not_sent.is_empty(),
+        "and the sixth was refused by this end rather than sent"
+    );
+    // Twenty steps' worth of asking, five tiles of walking. The drawn body is
+    // one of those five and not twenty, which is the whole point.
+    let (_, last) = *sim.trace.last().unwrap();
+    assert!(
+        (last.0 - 1005.0).abs() < 0.01,
+        "the body walked {last:?}, which is past the cap"
+    );
+    continuous(&sim, WALK_HOLD);
 }

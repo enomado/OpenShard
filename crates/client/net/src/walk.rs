@@ -112,6 +112,10 @@ pub enum Moved {
 /// the steps were sent, one apiece, and a refused step gets a `0x21` instead. A
 /// caller has nothing local to repair — the server's idea of where the body is
 /// no longer matches this one's, and only the server can say so.
+///
+/// Deliberately *not* what a step voided by a rollback produces. Those are
+/// answered too — see [`Walk::draining`] — and reporting them here made a wall
+/// plus a slow link look exactly like a desync.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct UnexpectedAck {
     /// The sequence the server acked.
@@ -159,6 +163,60 @@ impl std::fmt::Display for AtTheWorldEdge {
 
 impl std::error::Error for AtTheWorldEdge {}
 
+/// How many steps may be in flight before this client stops asking for more.
+///
+/// The reference's number: `ClassicUO`'s `Constants.MAX_STEP_COUNT`, checked
+/// first thing in `PlayerMobile.Walk`, which refuses to queue a sixth.
+///
+/// It is not a second pace limit — the shard's `WalkPace` is the only judge of
+/// how fast a body may walk, and `steer.rs` is what keeps this end inside it.
+/// This is the answer to a *silent* shard: without it, a client whose server
+/// stopped answering keeps predicting itself further and further from where it
+/// really is, and the correction when the link comes back is the length of the
+/// outage. Five steps is two seconds of walking, which is longer than any
+/// hiccup worth predicting through.
+pub const MAX_IN_FLIGHT: usize = 5;
+
+/// Why a step was not sent.
+///
+/// Every variant is a refusal this end made on its own, before any bytes were
+/// written — the server refuses steps too, and that arrives as a `0x21`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotSent {
+    /// The step would leave the coordinate space. See [`AtTheWorldEdge`].
+    AtTheWorldEdge(AtTheWorldEdge),
+    /// [`MAX_IN_FLIGHT`] steps are already unanswered.
+    ///
+    /// The shard has gone quiet — nothing else can produce this, because
+    /// `steer.rs` asks for one step per step's length and a live shard answers
+    /// each of them within a round trip. A caller should draw the body where it
+    /// is and try again on the next ask, which is what walking into it looks
+    /// like: the character stops until the server speaks.
+    Backlogged {
+        /// How many are unanswered, which is [`MAX_IN_FLIGHT`].
+        in_flight: usize,
+    },
+}
+
+impl std::fmt::Display for NotSent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AtTheWorldEdge(edge) => edge.fmt(f),
+            Self::Backlogged { in_flight } => {
+                write!(f, "{in_flight} steps are unanswered: the shard has gone quiet")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NotSent {}
+
+impl From<AtTheWorldEdge> for NotSent {
+    fn from(edge: AtTheWorldEdge) -> Self {
+        Self::AtTheWorldEdge(edge)
+    }
+}
+
 /// Drives one character's walking.
 ///
 /// Built from wherever the character is standing — `Step::Entered`'s
@@ -172,6 +230,21 @@ pub struct Walk {
     predicted: Predicted,
     /// Steps sent and not yet answered, oldest first.
     pending: VecDeque<Pending>,
+    /// How many answers are still owed for steps a correction has already
+    /// voided.
+    ///
+    /// The shard answers every `0x02` it receives, one apiece — an ack or a
+    /// refusal — and a `0x21` voids the steps *this end* had in flight without
+    /// unsending them. Those bytes are already on the wire and their answers
+    /// come back after the rollback, naming a sequence this end has forgotten.
+    ///
+    /// Reported as an [`UnexpectedAck`] once, which the window turned into a
+    /// dropped connection: a wall and 150ms of latency was enough to close a
+    /// client's own session. They are not a desync at all — the wire delivers in
+    /// order, so while this is non-zero the next answer is one of the voided
+    /// ones and belongs to nobody. Counted rather than guessed at, so a *real*
+    /// desync is still reported.
+    draining: usize,
 }
 
 impl Walk {
@@ -183,6 +256,7 @@ impl Walk {
             counter: StepCounter::new(),
             predicted: Predicted { position, facing },
             pending: VecDeque::new(),
+            draining: 0,
         }
     }
 
@@ -194,11 +268,12 @@ impl Walk {
 
     /// How many steps have been sent and not yet answered.
     ///
-    /// Nothing here caps it. The server's own pace budget
-    /// (`openshard_movement::WalkPace`) is what stops a client walking faster
-    /// than a body can, and it answers with `0x21`; a second limit invented on
-    /// this side would only differ from it. A caller that wants to walk in step
-    /// waits for this to reach zero.
+    /// Capped at [`MAX_IN_FLIGHT`], and *not* as a pace limit: the server's own
+    /// budget (`openshard_movement::WalkPace`) is what stops a client walking
+    /// faster than a body can, and a second rate invented on this side would only
+    /// differ from it. The cap is what a client does when the shard stops
+    /// answering — see [`NotSent::Backlogged`]. A caller that wants to walk in
+    /// step waits for this to reach zero.
     #[must_use]
     pub fn in_flight(&self) -> usize {
         self.pending.len()
@@ -229,7 +304,17 @@ impl Walk {
         &mut self,
         facing: Facing,
         ground: impl Fn(u16, u16) -> Option<i8>,
-    ) -> Result<Vec<u8>, AtTheWorldEdge> {
+    ) -> Result<Vec<u8>, NotSent> {
+        // Before anything is decided about the geometry: a shard that has stopped
+        // answering is not somewhere to keep predicting into. The reference
+        // checks the same thing first (`PlayerMobile.Walk`), and for the same
+        // reason — every step past the cap is another tile of correction when the
+        // link comes back.
+        if self.pending.len() >= MAX_IN_FLIGHT {
+            return Err(NotSent::Backlogged {
+                in_flight: self.pending.len(),
+            });
+        }
         let (position, facing) = match intend(self.predicted.position, self.predicted.facing, facing) {
             Intent::Turned { facing } => (self.predicted.position, facing),
             Intent::Stepped { target, facing } => {
@@ -243,10 +328,10 @@ impl Walk {
                 (landed, facing)
             }
             Intent::OffTheMap => {
-                return Err(AtTheWorldEdge {
+                return Err(NotSent::AtTheWorldEdge(AtTheWorldEdge {
                     from: self.predicted.position,
                     facing,
-                });
+                }));
             }
         };
 
@@ -278,17 +363,32 @@ impl Walk {
     pub fn on_packet(&mut self, packet: &ServerPacket) -> Result<Moved, UnexpectedAck> {
         match packet {
             ServerPacket::WalkAck(ack) => self.acked(ack.sequence, ack.notoriety),
-            ServerPacket::WalkReject(reject) => Ok(self.snap(reject.position, reject.facing)),
-            ServerPacket::PlayerUpdate(update) => Ok(self.snap(update.position, update.facing)),
+            // A refusal for a step a previous refusal already voided. The wire
+            // delivers in order, so it is one of the answers still owed and the
+            // position it carries is older than the one already believed — the
+            // shard did not move on a refusal. Swallowed rather than applied:
+            // applying it would clear the steps sent *since* the rollback, which
+            // is a second rollback nobody asked for.
+            ServerPacket::WalkReject(_) if self.answered_from_before() => Ok(Moved::Idle),
+            // A `0x21` is the answer to one of the steps in flight; a `0x20` or a
+            // second `0x1B` is the answer to none of them.
+            ServerPacket::WalkReject(reject) => Ok(self.snap(reject.position, reject.facing, 1)),
+            ServerPacket::PlayerUpdate(update) => Ok(self.snap(update.position, update.facing, 0)),
             // A second `0x1B` restarts the session; the body it describes is
             // where this character now is, whatever was in flight.
-            ServerPacket::PlayerStart(start) => Ok(self.snap(start.position, start.facing)),
+            ServerPacket::PlayerStart(start) => Ok(self.snap(start.position, start.facing, 0)),
             _ => Ok(Moved::Idle),
         }
     }
 
     /// A `0x22`: the oldest step in flight is confirmed, and only that one.
     fn acked(&mut self, sequence: StepSequence, notoriety: Notoriety) -> Result<Moved, UnexpectedAck> {
+        // A step the shard allowed and a rollback has since voided. It changes
+        // nothing — the position it confirms was thrown away — and it is not a
+        // desync, so it is counted off rather than reported.
+        if self.answered_from_before() {
+            return Ok(Moved::Idle);
+        }
         let Some(pending) = self.pending.front().copied() else {
             return Err(UnexpectedAck {
                 got: sequence,
@@ -313,11 +413,31 @@ impl Walk {
     }
 
     /// The server put the body somewhere: believe it, and start over.
-    fn snap(&mut self, position: Point, facing: Facing) -> Moved {
+    ///
+    /// `answered` is how many of the steps in flight this packet is itself the
+    /// answer to — one for a `0x21`, which refuses a step that was asked for, and
+    /// none for a `0x20` or a second `0x1B`, which nobody asked for. The rest are
+    /// still coming back and are counted into [`Walk::draining`].
+    fn snap(&mut self, position: Point, facing: Facing, answered: usize) -> Moved {
         self.predicted = Predicted { position, facing };
+        self.draining += self.pending.len().saturating_sub(answered);
         self.pending.clear();
         self.counter.reset();
         Moved::Snapped { position, facing }
+    }
+
+    /// Whether the answer being handled belongs to a step a rollback has already
+    /// voided, counting it off if so.
+    ///
+    /// The wire delivers in order and every `0x02` is answered exactly once, so
+    /// while anything is owed from before the last correction, the next answer is
+    /// one of those and nothing newer can have overtaken it.
+    fn answered_from_before(&mut self) -> bool {
+        if self.draining == 0 {
+            return false;
+        }
+        self.draining -= 1;
+        true
     }
 }
 
@@ -561,10 +681,10 @@ mod tests {
         let mut walk = Walk::new(Point::new(0, 0, 0), Facing::walking(Direction::West));
         assert_eq!(
             walk.step(Facing::walking(Direction::West), |_, _| None),
-            Err(AtTheWorldEdge {
+            Err(NotSent::AtTheWorldEdge(AtTheWorldEdge {
                 from: Point::new(0, 0, 0),
                 facing: Facing::walking(Direction::West),
-            })
+            }))
         );
         assert_eq!(walk.in_flight(), 0, "nothing was sent, so nothing is pending");
         assert_eq!(
@@ -573,6 +693,130 @@ mod tests {
             Ok(0),
             "and the sequence was not spent on it"
         );
+    }
+
+    /// The race a wall and a slow link produce, and it used to close the
+    /// window: a refusal voids the steps still in flight, the shard answers
+    /// those steps anyway, and their answers name sequences this end has
+    /// forgotten.
+    ///
+    /// Reported as an [`UnexpectedAck`] once, which `client/app`'s `link` turns
+    /// into a lost connection. They are ordinary traffic — the shard owes one
+    /// answer per `0x02` and is delivering them — so they are counted off, and
+    /// only an answer owed to *nobody* is still a desync.
+    #[test]
+    fn the_answers_to_steps_a_rollback_voided_are_not_a_desync() {
+        let mut walk = walk();
+        for _ in 0..3 {
+            walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        }
+
+        // The shard refused the first of the three. That answers one of them;
+        // the other two are still coming.
+        let reject = ServerPacket::WalkReject(WalkReject {
+            sequence: StepSequence(0),
+            position: Point::new(100, 100, 0),
+            facing: Facing::walking(Direction::North),
+        });
+        assert!(matches!(walk.on_packet(&reject), Ok(Moved::Snapped { .. })));
+        assert_eq!(walk.in_flight(), 0);
+
+        // A step asked for after the rollback, which is what makes this hurt: a
+        // client that treated the stale answers as its own would confirm or
+        // roll back *this* step with them.
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+
+        // Now the two answers from before arrive. Whatever they are — the shard
+        // refuses out-of-sequence steps, so both are `0x21`s here — they change
+        // nothing.
+        for sequence in 1..=2 {
+            let stale = ServerPacket::WalkReject(WalkReject {
+                sequence: StepSequence(sequence),
+                position: Point::new(100, 100, 0),
+                facing: Facing::walking(Direction::North),
+            });
+            assert_eq!(walk.on_packet(&stale), Ok(Moved::Idle), "answer {sequence}");
+        }
+        assert_eq!(
+            walk.in_flight(),
+            1,
+            "the step sent after the rollback is still waiting for its own answer"
+        );
+
+        // And it gets it: the walk carries on with the sequence it restarted at.
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(0),
+                notoriety: Notoriety::Innocent,
+            })),
+            Ok(Moved::Stepped {
+                position: Point::new(100, 99, 0),
+                facing: Facing::walking(Direction::North),
+                notoriety: Notoriety::Innocent,
+            })
+        );
+    }
+
+    /// An ack owed to nobody is still reported. The drain is a count and not a
+    /// blanket "ignore what you do not recognise": swallowing everything would
+    /// turn a real desync into a body walking somewhere the server disagrees
+    /// with, silently and for ever.
+    #[test]
+    fn an_ack_owed_to_nobody_is_still_a_desync() {
+        let mut walk = walk();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        let reject = ServerPacket::WalkReject(WalkReject {
+            sequence: StepSequence(0),
+            position: Point::new(100, 100, 0),
+            facing: Facing::walking(Direction::North),
+        });
+        walk.on_packet(&reject).unwrap();
+        // One step, one answer: nothing is owed from before.
+        assert_eq!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(7),
+                notoriety: Notoriety::Innocent,
+            })),
+            Err(UnexpectedAck {
+                got: StepSequence(7),
+                expected: None,
+            })
+        );
+    }
+
+    /// A shard that stops answering stops this client walking, five steps later.
+    ///
+    /// Without the cap the prediction runs off on its own for as long as the
+    /// outage lasts, and the correction when the link comes back is that whole
+    /// distance — a body sliding back across half a screen. The reference's own
+    /// number, checked first thing in `PlayerMobile.Walk`.
+    #[test]
+    fn a_silent_shard_stops_the_walk_after_five_steps() {
+        let mut walk = Walk::new(Point::new(100, 1000, 0), Facing::walking(Direction::North));
+        for step in 0..MAX_IN_FLIGHT {
+            walk.step(Facing::walking(Direction::North), |_, _| None)
+                .unwrap_or_else(|_| panic!("step {step} is within the cap"));
+        }
+        assert_eq!(
+            walk.step(Facing::walking(Direction::North), |_, _| None),
+            Err(NotSent::Backlogged {
+                in_flight: MAX_IN_FLIGHT
+            })
+        );
+        assert_eq!(
+            walk.predicted().position,
+            Point::new(100, 995, 0),
+            "and the refused step predicted nothing: five tiles, not six"
+        );
+
+        // One answer is one step of room, and no more.
+        walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+            sequence: StepSequence(0),
+            notoriety: Notoriety::Innocent,
+        }))
+        .unwrap();
+        assert!(walk.step(Facing::walking(Direction::North), |_, _| None).is_ok());
+        assert!(walk.step(Facing::walking(Direction::North), |_, _| None).is_err());
     }
 
     #[test]

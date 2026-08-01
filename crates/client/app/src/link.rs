@@ -236,9 +236,27 @@ async fn play<D: Dial>(
                 };
                 let folded = match fold(&mut view, &mut walk, &packet) {
                     Ok(folded) => folded,
-                    // The ends have lost track of each other and only the
-                    // server can repair it. Reported rather than guessed at.
-                    Err(error) => return error.to_string(),
+                    // The two ends have lost track of each other over the walk,
+                    // and this end cannot repair it: the ack names a step it is
+                    // not holding, and guessing which one was meant would turn a
+                    // diagnosable desync into a silent one.
+                    //
+                    // What it is *not* is a reason to close the window. It used
+                    // to be, and the ordinary answers to steps a rollback had
+                    // voided reached here — so a wall and a slow link dropped the
+                    // player's own connection. Those are counted off in `Walk`
+                    // now and what is left is a genuine disagreement about the
+                    // sequence, which the next `0x20`, `0x21` or `0x1B` puts
+                    // right of its own accord: all three are the server saying
+                    // where the body really is, and all three reset both ends.
+                    // So it is logged and the session goes on, which is what the
+                    // reference does with the same event (`WalkingFailed`) —
+                    // minus the resync request, which neither end speaks yet. See
+                    // `docs/client.md`.
+                    Err(desync) => {
+                        tracing::warn!(%desync, "the walk is out of step with the shard");
+                        continue;
+                    }
                 };
                 // A correction is worth sending even when the view is unchanged:
                 // the view never held the prediction, so rolling one back moves
@@ -272,10 +290,13 @@ async fn play<D: Dial>(
                                 report(proxy, snapshot(&view, &walk, false));
                                 bytes
                             }
-                            // A step off the edge of the map. The server would refuse it
-                            // too; not sending it saves the round trip and the rollback.
-                            Err(edge) => {
-                                tracing::debug!(%edge, "not stepping");
+                            // A step this end refused on its own: the edge of the
+                            // map, which the server would refuse too, or a shard
+                            // that has stopped answering and is five steps behind
+                            // already. Neither is worth a round trip, and the
+                            // body simply stays where it is.
+                            Err(refusal) => {
+                                tracing::debug!(%refusal, "not stepping");
                                 continue;
                             }
                         }
