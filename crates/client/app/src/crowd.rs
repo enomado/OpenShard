@@ -126,6 +126,8 @@ fn glide_time(nominal: Duration, since: Option<Duration>) -> Duration {
 /// every single tile. Half a step of slack costs a body that has genuinely
 /// stopped 200ms of walking on the spot, which nobody notices, and it is what
 /// the reference client's own `m_AnimationInterval` slack is for.
+///
+/// What the slack must *not* do is play. See [`Tracked::striding`].
 fn animation_hold(takes: Duration) -> Duration {
     takes * 3 / 2
 }
@@ -228,10 +230,16 @@ impl Crowd {
 
     /// Move every clock forward, and stop whoever has finished their step.
     pub fn advance(&mut self, dt: Duration) {
+        let was = self.now;
         self.now += dt;
         let now = self.now;
         for tracked in self.tracked.values_mut() {
-            tracked.clock.advance(dt);
+            // Only the part of the span the body was actually covering ground
+            // in — see [`Tracked::mid_stride`]. Not a whole-span test against
+            // either end: a frame that straddles the moment the crossing ended
+            // would either play the whole span or none of it, and at 400ms a
+            // step the second one freezes the entire walk.
+            tracked.clock.advance(tracked.striding(was, dt));
             // The *animation* outlives the crossing by half a step — see
             // `animation_hold`. The glide itself ends on time; this is only what
             // decides when the walk gives way to standing.
@@ -451,6 +459,43 @@ impl Tracked {
         if self.group != group {
             self.group = group;
             self.clock = AnimationClock::default();
+        }
+    }
+
+    /// How much of a frame's span this body spent actually crossing its tile.
+    ///
+    /// The whole span for a body that is walking or standing, and only the part
+    /// before the crossing ended for one that arrived part way through it. `was`
+    /// is where the crowd's clock stood before the span.
+    ///
+    /// # Why a body that has arrived stops playing
+    ///
+    /// The window between the crossing ending and [`animation_hold`] expiring is
+    /// a foot in the air over ground already covered. The hold exists so that a
+    /// walker whose next step is a round trip away does not drop to standing for
+    /// a frame and restart the walk at frame zero — and *holding a group* is all
+    /// it was ever meant to do. Advancing the clock through it plays the rest of
+    /// the stride on the spot: 200ms at a walk, two and a half frames of a body
+    /// striding while its feet cover no ground, at the end of every walk. Which
+    /// is the complaint it came from — a step that plays itself out after the
+    /// walking has stopped.
+    ///
+    /// The reference draws exactly this line. `Mobile.NoIterateAnimIndex` is
+    /// true while `LastStepTime > Time.Ticks - Constants.WALKING_DELAY &&
+    /// Steps.Count == 0` — still counted as walking, no step left to walk, so
+    /// the frame index does not advance. The group is held and the picture is
+    /// frozen, and the next step carries the stride on from where it stopped.
+    fn striding(&self, was: Duration, dt: Duration) -> Duration {
+        let Some(step) = self.step else {
+            // Standing, and a standing animation plays: this is the walk's
+            // freeze, not a general one.
+            return dt;
+        };
+        let ends = step.started + step.takes;
+        match ends.checked_sub(was) {
+            Some(left) => dt.min(left),
+            // The crossing was already over when the span began.
+            None => Duration::ZERO,
         }
     }
 
@@ -741,6 +786,126 @@ mod tests {
             crowd.advance(WALK_HOLD + WALK_HOLD / 10);
             assert_eq!(step(&mut crowd, x).group, 0, "walking at tile {x}");
         }
+    }
+
+    /// The last step of a walk does not play itself out on the spot.
+    ///
+    /// The complaint: the character finishes walking and takes one more stride
+    /// where it stands. It is the animation hold — the walk's group is kept for
+    /// half a step past the crossing so that a walker does not flicker into
+    /// standing between two tiles — and the clock was running through it, which
+    /// is two and a half frames of stride over ground already covered.
+    ///
+    /// So the frame is frozen instead, which is what the reference does
+    /// (`Mobile.NoIterateAnimIndex`). Both halves are asserted: the frame stops
+    /// where the crossing ended, and the group is still the walk while it does —
+    /// a body that dropped to standing here would also have a still frame, and
+    /// it is the flicker the hold exists to prevent.
+    #[test]
+    fn the_last_step_of_a_walk_does_not_play_itself_out() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            )
+        };
+        step(&mut crowd, 10);
+        assert_eq!(step(&mut crowd, 11).group, 0, "walking");
+
+        // The crossing: the frame moves, because the body is covering ground.
+        crowd.advance(WALK_HOLD);
+        let arrived = crowd.frame_for(serial(1), 6);
+        assert!(arrived > 0, "the walk played while it walked");
+        assert_eq!(crowd.glide_for(serial(1)), None, "and the tile is crossed");
+
+        // The hold: the group is held and the picture is not. Three eighths of
+        // a step and not four, because the fourth lands exactly on
+        // `animation_hold` — where the body is *meant* to drop to standing, and
+        // a test that straddled the boundary would be asserting about which
+        // side of it a rounding fell on.
+        for _ in 0..3 {
+            crowd.advance(WALK_HOLD / 8);
+            assert_eq!(
+                crowd.frame_for(serial(1), 6),
+                arrived,
+                "the stride played on after the walking stopped",
+            );
+            assert_eq!(
+                step(&mut crowd, 11).group,
+                0,
+                "and it is still holding the walk rather than standing",
+            );
+        }
+        // And then it stands, which is a different group and its own clock.
+        crowd.advance(WALK_HOLD / 2);
+        assert_eq!(step(&mut crowd, 11).group, 4);
+        assert_eq!(crowd.frame_for(serial(1), 6), 0);
+    }
+
+    /// The companion, and it is the whole of what makes the test above an
+    /// assertion: a walk that is still walking keeps playing.
+    ///
+    /// A freeze applied to every frame would pass the test above and produce a
+    /// character that slides across the map with its feet still — which is the
+    /// same false green a still scene always is.
+    #[test]
+    fn a_walk_that_is_still_walking_keeps_playing() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            );
+        };
+        step(&mut crowd, 10);
+        let mut frames = std::collections::BTreeSet::new();
+        for x in 11..16u16 {
+            step(&mut crowd, x);
+            for _ in 0..5 {
+                crowd.advance(WALK_HOLD / 5);
+                frames.insert(crowd.frame_for(serial(1), 6));
+            }
+        }
+        assert!(
+            frames.len() >= 5,
+            "a walk of five tiles showed {} distinct frames",
+            frames.len(),
+        );
+    }
+
+    /// And the next step picks the stride up where it was frozen rather than
+    /// restarting it.
+    ///
+    /// Free, because the group has not changed and only a change restarts the
+    /// clock — and worth pinning, because the alternative reads as a body that
+    /// hesitates every time the wire is slow.
+    #[test]
+    fn a_step_after_the_freeze_carries_the_stride_on() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            );
+        };
+        step(&mut crowd, 10);
+        step(&mut crowd, 11);
+        crowd.advance(WALK_HOLD + WALK_HOLD / 4);
+        let frozen = crowd.frame_for(serial(1), 6);
+        step(&mut crowd, 12);
+        assert_eq!(crowd.frame_for(serial(1), 6), frozen, "no hesitation");
+        crowd.advance(Duration::from_millis(80));
+        assert_ne!(crowd.frame_for(serial(1), 6), frozen, "and it walks on");
     }
 
     /// The offline placeholder's steps are ours from the first frame, without
