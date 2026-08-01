@@ -512,6 +512,17 @@ per scenario. `crates/client/app/src/replay.rs` walks the scenarios.
 `bench::Scope` is the ring the panel draws, fed one frame at a time from
 `App::follow_player`, which is the single place the camera is advanced.
 
+**The loop got the same treatment as the camera, for the same reason.** A frame
+rate is two independent quantities — the interval between two drawn frames, and
+what one cost to build — and a drop in the first with the second flat is a
+*pacing* decision this client makes on purpose: `redraw_interval` falls back to
+the animation clock's 80ms the moment nobody is walking. `crates/client/app/src/frames.rs`
+is the ring and the **Frames** window draws both curves plus the cadence the loop
+is currently waiting on, which is what turns "it stutters when I stop" from an
+argument into a reading. It is not the scope: a frame drawn with the camera
+unlocked is still a frame, so it is fed every frame and never cleared by a rig
+swap.
+
 **A rig is copied out as a source line, and that is the output that lasts.** The
 panel prints `Rig { plane_tau: 0.15, .. }` beside a copy button, so a setting
 that felt right is pasted into `follow.rs` and committed as the preset it turned
@@ -608,15 +619,15 @@ Found while planning this, and not to be lost in it.
   outranking the lock — but it is enforced in `App::walk` rather than by the
   types, so a third writer would have to remember. The offline placeholder is
   the only body with two owners; naming who may move it is the fix.
-- **`crowd.commanding` is called when a replay starts and never unset.** It is
-  right — the offline placeholder's steps are always ours to issue, so the
-  nominal crossing is the true one — which means it belongs at construction
-  rather than in `start_replay`. One line, and it wants the test that says the
-  offline walk is not measured through the event loop's wake jitter.
-- **The scope's span is a constant and the panel cannot change it.** Four
-  seconds holds a reversal; a `teleport` is over in one, and a `back_and_forth`
-  worth reading is longer. A slider for it is trivial and was left out to keep
-  C4 to one subject.
+- ~~**`crowd.commanding` is called when a replay starts and never unset.**~~
+  `Crowd::commanded` is a `Who` rather than an `Option<Who>`: there is no state
+  where this client commands nobody, and `None` is the offline placeholder
+  rather than "not named yet". The test walks a placeholder half a step late and
+  asserts the crossing still takes exactly one step.
+- ~~**The scope's span is a constant and the panel cannot change it.**~~ A
+  logarithmic slider, half a second to twenty. `Scope::set_span` deliberately
+  does not clear the trace: the frames already held were flown by the same
+  camera, which is what makes it different from a rig swap.
 - **`relock` snaps unconditionally.** With a cut threshold it should ease when
   the body is on screen and cut when it is not, which is the same rule D6
   already states and one fewer special case.
@@ -624,15 +635,16 @@ Found while planning this, and not to be lost in it.
   docs say so. The camera adds a second reason to lift that loop into a headless
   unit both can drive, and the bench is the thing that would notice the copy
   drifting.
-- **`Camera::look_at(Point)` has one caller and takes a tile.** Once the gaze is
-  decomposed, looking at a tile is a lossy way to say what the camera wants; the
-  pixel form is the one to keep.
-- **The walk's pace is written down in two crates.** `crowd::WALK_HOLD` is the
-  client's and `bench::WALK_HOLD` is the bench's, because `client/render` cannot
-  depend on `client/app` and a bench needs a hold. A test in `dst.rs` asserts
-  they are equal, which is the cheapest thing that keeps a copy honest — but the
-  constant is really a *pace*, and a pace belongs with the movement rules in
-  `crates/common/movement`, where both could read it.
+- ~~**`Camera::look_at(Point)` has one caller and takes a tile.**~~ Gone.
+  `Control::relock` takes a `Gaze` and `look_at_pixel` is the one door into the
+  eye: a body relocked mid-step is between two tiles, and the tile it is
+  nominally on is up to half a tile from where its sprite is drawn.
+- ~~**The walk's pace is written down in two crates.**~~ `WALK_HOLD` and
+  `RUN_HOLD` live in `crates/common/movement`, beside the anti-speedhack floors
+  they are twice — which is the only place the two numbers make sense next to
+  each other. The equality test in `dst.rs` asserted nothing once there was one
+  constant, so it went, and `pace.rs` gained the pin against ServUO's
+  `WalkFoot`/`RunFoot` instead.
 - **The bench has its own SplitMix64 and so does `dst.rs`.** Six lines each, in
   two crates, for the same job. Worth one home if a third appears.
 - **`step_var` is a variance and the plan asked for a histogram.** The variance
@@ -653,3 +665,22 @@ Found while planning this, and not to be lost in it.
   channel appears, and the lift's cut should move onto it then.
 - **A free camera has no map clamp** and can be panned into the void. Harmless
   today, a stage-6 job when it stops being.
+- **The loop's own cadence had no instrument, and the camera's did.** "The frame
+  rate drops when the character stops" is a true observation about a rule this
+  plan already relies on — `redraw_interval` falls back to the animation clock's
+  80ms the moment nobody is walking — and there was nothing on screen that said
+  so, which makes a design decision read as a stall. The `Frames` panel is the
+  answer: the interval between two *drawn* frames and what each cost to build,
+  side by side, because a drop is either pacing or cost and the fixes are
+  opposite. Measured on its own `last_frame` and not on `App::last_advance`,
+  which an arriving packet also moves.
+- **And whether 80ms standing is *good* is still an open question.** The panel
+  has the checkbox that forces the glide cadence, so it is answerable by
+  looking. What it would cost to answer "no" is a term in `redraw_interval` —
+  a tail after the last motion, or the display's own rate while the window has
+  focus — and neither is free on a laptop. Nothing to decide until somebody has
+  looked with the switch on.
+- **`FRAMES_SPAN` is a constant the panel cannot change, again.** The same item
+  the scope's span just stopped being, and left as a constant deliberately: the
+  slider belongs to whichever of the two rings turns out to be looked at
+  longest, and one of them should probably drive both.
