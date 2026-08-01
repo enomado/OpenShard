@@ -14,8 +14,6 @@
 
 use std::time::Duration;
 
-use openshard_protocol::world::Point;
-
 use crate::camera::{Camera, WorldPixel, Zoom};
 use crate::follow::{Follower, Gaze, Rig};
 
@@ -179,10 +177,17 @@ impl Control {
     /// The cut is what makes that true for a rig that eases. Moving the camera
     /// without it would leave the follower's own idea of where the eye is on the
     /// far side of the map, and the next frame would ease all the way back.
-    pub fn relock(&mut self, at: Point) {
+    ///
+    /// A [`Gaze`] and not a tile, for the same reason [`Control::follow_body`]
+    /// takes one: a body relocked to mid-glide is between two tiles, and the
+    /// tile it is nominally on is up to half a tile from where it is drawn. The
+    /// pixel the eye is put on has to be the pixel the sprite is on, or the
+    /// first frame after a relock is off by that much and the second corrects
+    /// it — which is the jump the cut was there to avoid, one frame late.
+    pub fn relock(&mut self, gaze: Gaze) {
         self.follow = Follow::Body;
         self.follower.cut();
-        self.camera.look_at(at);
+        self.camera.look_at_pixel(gaze.eye());
     }
 
     /// Let the body walk off screen: the eye stops following it.
@@ -352,6 +357,8 @@ impl Control {
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::world::Point;
+
     use super::*;
 
     /// A device that will hold anything, so a test about panning is not also a
@@ -499,7 +506,7 @@ mod tests {
         control.follow_body(Gaze::on(Point::new(300, 300, 0)), FRAME);
         assert_eq!(control.camera().eye(), free, "the body no longer drags the eye");
 
-        control.relock(Point::new(300, 300, 0));
+        control.relock(Gaze::on(Point::new(300, 300, 0)));
         assert_eq!(control.follow(), Follow::Body);
         assert_eq!(
             control.camera().eye(),

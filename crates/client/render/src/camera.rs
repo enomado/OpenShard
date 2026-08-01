@@ -352,7 +352,10 @@ pub struct Camera {
     ///
     /// Private, because "where the camera looks" is the one piece of state two
     /// writers fight over: the thing that pins it to the player, and the thing
-    /// that pans it. [`Camera::look_at`] is the one door.
+    /// that pans it. [`Camera::look_at_pixel`] is the one door — and it takes a
+    /// pixel rather than a tile because everything upstream of it has one: a
+    /// body mid-step is between two tiles, and naming the tile throws away the
+    /// part of the answer the whole glide exists to produce.
     eye: WorldPixel,
     zoom: Zoom,
     /// The viewport's width in *physical* pixels — the rect the UI leaves free,
@@ -381,11 +384,6 @@ impl Camera {
     /// Look at a world pixel.
     pub fn look_at_pixel(&mut self, eye: WorldPixel) {
         self.eye = eye;
-    }
-
-    /// Look at a tile — its centre, height and all.
-    pub fn look_at(&mut self, center: Point) {
-        self.eye = project(center);
     }
 
     /// The tile the eye is over, read at ground level.

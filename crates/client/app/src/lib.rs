@@ -1137,8 +1137,13 @@ impl App {
     }
 
     /// Put the eye back on the body and lock it there.
+    ///
+    /// Where the body is *drawn* this frame, not the tile it is nominally on:
+    /// a relock mid-step would otherwise land up to half a tile from the sprite
+    /// and be corrected on the frame after.
     fn relock(&mut self) {
-        self.control.relock(self.player.at);
+        self.player.glide = self.crowd.glide_for(self.me());
+        self.control.relock(mobiles::gaze(&self.player));
     }
 
     /// How long until the next frame is worth drawing.
@@ -1202,7 +1207,7 @@ impl App {
             self.player = self
                 .crowd
                 .snap(self.me(), start, body, Facing::walking(self.player.facing), hue);
-            self.control.relock(start);
+            self.control.relock(mobiles::gaze(&self.player));
         }
         // The frames either side of a start are two different runs, and a metric
         // over both is a number about nothing.
