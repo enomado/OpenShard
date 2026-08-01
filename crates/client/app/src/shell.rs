@@ -75,6 +75,20 @@ pub struct Hud {
     pub metrics: Option<Metrics>,
     /// How long a window the scope keeps, for the chart's own axis.
     pub scope_span: Duration,
+    /// The last few seconds of the event loop, one entry per drawn frame.
+    pub frames: Vec<crate::frames::Frame>,
+    /// How long a window those cover, for that chart's own axis.
+    pub frames_span: Duration,
+    /// The worst frame rate in that window, and `None` before there is a frame
+    /// to have a rate.
+    pub worst_fps: Option<f64>,
+    /// How long the event loop is currently waiting between frames.
+    ///
+    /// Shown beside the rate because it is the *reason* for it whenever nothing
+    /// is moving: this client drops to the animation clock when nobody is
+    /// walking, so a still world is 12.5 frames a second on purpose and a panel
+    /// that only showed the rate would read that as a fault.
+    pub cadence: Duration,
     /// The bench's scenarios, by name, in the order it ships them.
     pub scripts: Vec<&'static str>,
     /// The one being replayed, and how far through it is from zero to one.
@@ -474,6 +488,13 @@ fn layout(
             rig_panel(ui, hud, &mut request);
         });
 
+    egui::Window::new("Frames")
+        .default_pos([16.0, 220.0])
+        .default_width(320.0)
+        .show(&context, |ui| {
+            frames_panel(ui, hud);
+        });
+
     egui::Window::new("World")
         .default_pos([16.0, 240.0])
         .show(&context, |ui| {
@@ -669,6 +690,74 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             }
         }
     }
+}
+
+/// The frame rate, and the two different things a drop in it can be.
+///
+/// A drop is either *cost* — the frame took too long to build — or *pacing*:
+/// nothing asked for a frame sooner. This client does the second on purpose, and
+/// visibly: the moment nobody is walking the loop falls back to the animation
+/// clock and draws 12.5 frames a second, which looks exactly like a stall and is
+/// not one. So both curves are here, and the cadence the loop is currently
+/// waiting on is printed beside them — with only the rate on screen, every drop
+/// looks like the same drop. See [`crate::frames`].
+fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
+    let cadence = hud.cadence.as_secs_f64() * 1_000.0;
+    egui::Grid::new("frames").num_columns(4).show(ui, |ui| {
+        ui.label("fps");
+        match hud.frames.last() {
+            // The last frame's own rate, not an average: the thing worth seeing
+            // is the one frame that took 80ms, and a mean over a second is
+            // exactly what hides it.
+            Some(frame) => ui.label(format!("{:.0}", frame.fps())),
+            None => ui.label("—"),
+        };
+        ui.label("worst");
+        match hud.worst_fps {
+            Some(worst) => ui.label(format!("{worst:.0}")),
+            None => ui.label("—"),
+        };
+        ui.end_row();
+        ui.label("build");
+        ui.label(format!("{:.1} ms", hud.frame_time.as_secs_f64() * 1_000.0));
+        ui.label("cadence");
+        ui.label(format!("{cadence:.0} ms"));
+        ui.end_row();
+    });
+    // The sentence that turns "the frame rate dropped when I stopped walking"
+    // from a bug report into a reading. Which clock the loop is on is the whole
+    // answer, and it is a rule rather than a symptom — see `App::redraw_interval`.
+    ui.label(
+        egui::RichText::new(match hud.cadence > Duration::from_millis(32) {
+            true => "nothing is moving: the loop is on the animation clock, and a still world costs one frame per 80ms by design",
+            false => "something is moving: the loop is on the glide clock, one frame per 16ms",
+        })
+        .weak()
+        .small(),
+    );
+
+    let span = hud.frames_span.as_secs_f32().max(0.001);
+    let last = hud.frames.last().map_or(0.0, |frame| frame.at.as_secs_f32());
+    let series = |of: fn(&crate::frames::Frame) -> f64| -> Vec<(f32, f32)> {
+        hud.frames
+            .iter()
+            .map(|frame| (frame.at.as_secs_f32() - (last - span), of(frame) as f32))
+            .collect()
+    };
+    strip(
+        ui,
+        "frames per second",
+        &series(|frame| frame.fps()),
+        span,
+        egui::Color32::from_rgb(120, 220, 120),
+    );
+    strip(
+        ui,
+        "what a frame cost to build, ms",
+        &series(|frame| frame.build.as_secs_f64() * 1_000.0),
+        span,
+        egui::Color32::from_rgb(220, 200, 90),
+    );
 }
 
 /// A rig as the source line it would be, for pasting into `follow.rs`.

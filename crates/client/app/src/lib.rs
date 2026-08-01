@@ -58,6 +58,7 @@ mod crowd;
 /// The walk, held against an oracle. Tests only — see its module docs.
 #[cfg(test)]
 mod dst;
+mod frames;
 mod gump;
 mod keys;
 mod link;
@@ -140,6 +141,14 @@ const VERSION: ClientVersion = ClientVersion::new(7, 0, 45, 65);
 /// monitor's: nothing here knows the refresh rate, and asking the surface would
 /// tie the animation to the present mode the adapter happened to offer.
 const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// How much of the event loop's recent past the frame panel keeps.
+///
+/// The same four seconds as the scope, and for the same reason: what is worth
+/// looking at is the last few steps, not the session. Its own constant because
+/// the two rings answer different questions and one of them is about to grow a
+/// slider — see `docs/camera.md`.
+const FRAMES_SPAN: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// How much of the eye's recent past the scope keeps.
 ///
@@ -332,10 +341,12 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         crowd: Crowd::default(),
         next_tick: Instant::now(),
         last_advance: Instant::now(),
+        last_frame: Instant::now(),
         window: None,
         selected_tile: None,
         covered: None,
         scope: Scope::new(SCOPE_SPAN),
+        frames: frames::Frames::new(FRAMES_SPAN),
         scripts: bench::scripts(),
         replay: None,
     };
@@ -664,6 +675,14 @@ struct App {
     /// clock fed the nominal step would run slow by however much it did — which
     /// a stepping animation hides and a glide does not.
     last_advance: Instant,
+    /// When the last frame was *drawn*, for the frame panel's interval.
+    ///
+    /// Not [`App::last_advance`], which is the clock the world is advanced on
+    /// and is moved by an arriving packet as well as by a frame. Measured
+    /// against that, a frame that followed a packet by a millisecond would be
+    /// reported as a thousand a second, and the one number the panel exists to
+    /// show — the gap between two pictures — would be the one it does not.
+    last_frame: Instant,
     window: Option<Screen>,
     /// The tile a left click last landed on, kept until the next click — see
     /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
@@ -685,6 +704,12 @@ struct App {
     /// the offline bench records, so the panel's numbers and the table's are one
     /// arithmetic. See [`Scope`].
     scope: Scope,
+    /// The last few seconds of the event loop, for the frame panel.
+    ///
+    /// Recorded every frame that is actually drawn, locked or not: this is a
+    /// number about the loop and not about the camera. See [`frames::Frames`]
+    /// for why it is not the scope.
+    frames: frames::Frames,
     /// The bench's scenarios, built once.
     ///
     /// Held rather than rebuilt per frame because the HUD lists their names, and
@@ -1498,6 +1523,13 @@ impl App {
             // smooth" on the frame the window opened.
             metrics: (self.scope.samples().len() > 2).then(|| Metrics::of(self.scope.samples())),
             scope_span: self.scope.span(),
+            frames: self.frames.frames().to_vec(),
+            frames_span: self.frames.span(),
+            worst_fps: self.frames.worst_fps(),
+            // What the loop is currently *asking* for, which is the other half
+            // of any answer about the frame rate: a picture drawn every 80ms is
+            // not a slow frame, it is a frame nobody asked for sooner.
+            cadence: self.redraw_interval(),
             scripts: self.scripts.iter().map(|script| script.name).collect(),
             replay: self.replay.as_ref().map(|replay| {
                 let length = replay.length().as_secs_f32().max(0.001);
@@ -2102,5 +2134,13 @@ impl App {
             window.window.request_redraw();
         }
         self.frame_time = started.elapsed();
+        // The interval between two *drawn* frames, and what it cost to build
+        // this one: the pacing and the price, which are the two things a drop
+        // in frame rate can be. See [`frames`].
+        self.frames.record(
+            started.saturating_duration_since(self.last_frame),
+            self.frame_time,
+        );
+        self.last_frame = started;
     }
 }
