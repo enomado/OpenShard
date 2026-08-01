@@ -95,6 +95,7 @@ use openshard_client_render::atlas::{AnimAtlas, AtlasError, FontAtlas, LandAtlas
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
 use openshard_client_render::control::{Control, Follow};
+use openshard_client_render::follow::Rig;
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::mobiles::{self, Mobile};
@@ -289,7 +290,12 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         anim,
         // The device's own limit replaces WebGL2's floor once there is a device
         // to ask; the floor is the smallest thing this has to run on.
-        control: Control::new(Camera::new(START, 1024, 768), 2048),
+        //
+        // `Rig::HARD` is the reference camera — the eye is the body, to the
+        // pixel — and it is what this client has always done. Which rig it
+        // *ships* is undecided and is decided on a bench rather than here: see
+        // `docs/camera.md`.
+        control: Control::new(Camera::new(START, 1024, 768), 2048, Rig::HARD),
         zoom_limit_reported: false,
         // 400 is the male human body. Its group and frame come from the crowd
         // on the first redraw, which is also what decides that a placeholder
@@ -996,7 +1002,10 @@ impl App {
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
         // questions, and `Home` is the answer to the second.
-        self.follow_player();
+        //
+        // No time has passed: this is an input, not a frame. A rig that filters
+        // integrates over the span it is given, and time passes in `App::draw`.
+        self.follow_player(std::time::Duration::ZERO);
         true
     }
 
@@ -1103,9 +1112,15 @@ impl App {
     /// body a few pixels per frame, and an eye that moved a tile at a time would
     /// jerk the whole world under it. Reads the crowd's clock straight, so it is
     /// also what keeps the eye and the sprite from disagreeing by a frame.
-    fn follow_player(&mut self) {
+    ///
+    /// `elapsed` is the same span the crowd's clock was just advanced by, and
+    /// deliberately the same value: a rig that filters is integrating over it,
+    /// and a camera integrating a different amount of time than the body moved
+    /// through lags by whatever the difference was — which varies frame to
+    /// frame, and varying lag is what an eye reads as a stutter.
+    fn follow_player(&mut self, elapsed: std::time::Duration) {
         self.player.glide = self.crowd.glide_for(self.me());
-        self.control.follow_body(mobiles::world_position(&self.player));
+        self.control.follow_body(mobiles::gaze(&self.player), elapsed);
     }
 
     /// A viewport that grew may have taken the world texture past what the
@@ -1274,7 +1289,11 @@ impl App {
         // is free to walk off the screen. `Home` puts it back. After the view is
         // stored, because that is what says who we are, and the glide is keyed
         // by it.
-        self.follow_player();
+        //
+        // Zero, for the reason `App::walk_offline` says: a packet is not a
+        // frame. The crowd's clock was brought up to date before this fold, so
+        // there is no elapsed time left to hand a rig anyway.
+        self.follow_player(std::time::Duration::ZERO);
     }
 
     /// Common code for the two lookups in [`App::pick_tile`]: `unproject` hands
@@ -1618,8 +1637,8 @@ impl App {
         // the whole way rather than queuing a burst of catch-up frames for time
         // nobody watched: a body that was walking through it has long since
         // arrived.
-        self.crowd
-            .advance(started.saturating_duration_since(self.last_advance));
+        let elapsed = started.saturating_duration_since(self.last_advance);
+        self.crowd.advance(elapsed);
         self.last_advance = started;
 
         // The UI first, because what it leaves free is the world's viewport and
@@ -1659,7 +1678,7 @@ impl App {
         // the camera what is visible: a step arrives once and is then walked
         // across for the next 400ms, so every frame in between has a different
         // answer.
-        self.follow_player();
+        self.follow_player(elapsed);
 
         // What the camera has walked onto since the atlases were last grown.
         // Gathered before the window is borrowed, and not inside the borrow: it

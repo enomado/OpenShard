@@ -35,6 +35,7 @@ pub mod blit;
 pub mod camera;
 pub mod control;
 pub mod depth;
+pub mod follow;
 pub mod ground;
 pub mod hue;
 pub mod items;

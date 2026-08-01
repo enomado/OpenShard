@@ -64,7 +64,10 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_client_net::walk::{Moved, Predicted, Walk};
-use openshard_client_render::mobiles::Mobile;
+use openshard_client_render::camera::{Camera, WorldPixel};
+use openshard_client_render::control::Control;
+use openshard_client_render::follow::Rig;
+use openshard_client_render::mobiles::{self, Mobile};
 use openshard_movement::{OpenWorld, Terrain, Walk as Handled, Walker};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
@@ -395,6 +398,16 @@ struct Sim {
     not_sent: Vec<(Duration, openshard_client_net::walk::NotSent)>,
     /// Where the body was *drawn*, every frame.
     trace: Vec<(Duration, (f64, f64))>,
+
+    /// The camera, driven exactly as `App::draw` drives it.
+    ///
+    /// Here because the eye is the one thing a walking bug shows up in that the
+    /// body's own trace cannot: the body is drawn against a world that the
+    /// camera is moving underneath it, so a defect in *either* is a jump on
+    /// screen and only one of them is what the trace above records.
+    control: Control,
+    /// Where the eye was and where the body was drawn, every frame.
+    eyes: Vec<(Duration, WorldPixel, WorldPixel)>,
 }
 
 impl Sim {
@@ -425,6 +438,11 @@ impl Sim {
             stepped_at: Vec::new(),
             not_sent: Vec::new(),
             trace: Vec::new(),
+            // A viewport of some size and a device that will hold anything: what
+            // is under test here is where the eye goes, and neither the zoom
+            // ladder nor the texture limit has a say in that.
+            control: Control::new(Camera::new(START, 800, 600), 1 << 20, Rig::HARD),
+            eyes: Vec::new(),
         }
     }
 
@@ -573,10 +591,11 @@ impl Sim {
             self.send(facing);
         }
         if self.now >= self.next_tick {
-            self.crowd.advance(self.now - self.last_advance);
+            let elapsed = self.now - self.last_advance;
+            self.crowd.advance(elapsed);
             self.last_advance = self.now;
             self.next_tick = self.now + self.redraw_interval();
-            self.sample();
+            self.sample(elapsed);
         }
     }
 
@@ -617,14 +636,16 @@ impl Sim {
         self.to_window.push_back((self.now, self.walk.predicted(), false));
     }
 
-    /// Where the body is drawn this frame, in tiles.
+    /// Where the body is drawn this frame, in tiles, and where the eye went.
     ///
     /// `App::draw` reads the glide from the crowd every frame rather than from
     /// the `Mobile` it last stored, and so does this: the stored one is as old
-    /// as the last packet.
-    fn sample(&mut self) {
+    /// as the last packet. `elapsed` is the span the crowd's clock was just
+    /// advanced by, which is the same value `App::draw` hands the camera.
+    fn sample(&mut self, elapsed: Duration) {
+        self.player.glide = self.crowd.glide_for(me());
         let at = self.player.at;
-        let position = match self.crowd.glide_for(me()) {
+        let position = match self.player.glide {
             Some(glide) => {
                 let progress = f64::from(glide.progress.clamp(0.0, 1.0));
                 (
@@ -635,6 +656,13 @@ impl Sim {
             None => (f64::from(at.x), f64::from(at.y)),
         };
         self.trace.push((self.now, position));
+        // `App::follow_player`, with the same gaze the sprite is placed from.
+        self.control.follow_body(mobiles::gaze(&self.player), elapsed);
+        self.eyes.push((
+            self.now,
+            self.control.camera().eye(),
+            mobiles::world_position(&self.player),
+        ));
     }
 
     /// The worst the drawn body ever was from where the oracle says it should
@@ -716,6 +744,41 @@ fn paced(sim: &Sim, hold: Duration) {
             "two steps left {gap:?} apart, which is faster than the {hold:?} a body walks"
         );
     }
+}
+
+/// Assert the reference rig put the eye exactly on the drawn body, every frame.
+///
+/// `Rig::HARD` *is* that sentence — it is every time constant at zero — so what
+/// this holds is not the arithmetic, which the two share by construction. It is
+/// the wiring: that the camera is advanced on every frame the body is, from the
+/// same gaze the sprite is placed from, with nothing accumulated between frames
+/// and nothing a frame late. That is the whole of what C0 transplanted, and
+/// every one of those is a way to be wrong without any test in
+/// `client/render` noticing.
+#[track_caller]
+fn eye_is_the_body(sim: &Sim) {
+    for (when, eye, body) in &sim.eyes {
+        assert_eq!(eye, body, "the eye was not on the body at {when:?}");
+    }
+    // A corridor nothing walked down is not an assertion — the same companion
+    // `tracks` carries, and for the same reason: an eye that never moved sits
+    // exactly on a body that never moved.
+    assert!(sim.eyes.len() > 100, "only {} frames were drawn", sim.eyes.len());
+    // Travelled rather than spanned, so a scenario that walks back and forth
+    // between two tiles counts as much as one that walks in a straight line.
+    let travel: i64 = sim
+        .eyes
+        .windows(2)
+        .map(|pair| {
+            let (before, after) = (pair[0].1, pair[1].1);
+            i64::from((after.x - before.x).abs() + (after.y - before.y).abs())
+        })
+        .sum();
+    assert!(
+        travel > 400,
+        "the eye travelled {travel} pixels across the whole run, \
+         so it was never really asked to follow anything",
+    );
 }
 
 /// Ten steps east, held from the first millisecond.
@@ -1041,7 +1104,97 @@ fn walking_back_and_forth_never_jumps_the_camera() {
     tracks(&sim, &oracle, 0.02);
     continuous(&sim, WALK_HOLD);
     paced(&sim, WALK_HOLD);
+    eye_is_the_body(&sim);
     assert_eq!(sim.refused, 0);
+}
+
+// --- The camera ------------------------------------------------------------
+//
+// The eye was `App`'s business until C0 and is `client/render`'s now: a `Rig`
+// of parameters, a `Follower` that holds where the eye has got to, and one
+// pipeline that every camera this client grows will be a value of. See
+// `docs/camera.md`.
+//
+// What that transplant must not have done is change anything, and the only
+// place that can be said honestly is here — the four units the walk is spread
+// across, on one clock, with a wire between two of them.
+
+/// C0's gate: the reference camera is still the reference camera.
+///
+/// Four scenarios rather than one, because the three ways the wiring could be
+/// wrong each need a different one to show: a frame that is never advanced
+/// needs a body that moves between packets (the glide), a frame that is a
+/// frame late needs a body that changes direction (the reversal), and a state
+/// that survives when it should not needs a body that is put back somewhere it
+/// never walked (the rollback).
+#[test]
+fn the_reference_rig_puts_the_eye_on_the_body_every_frame() {
+    let perfect = Net::default();
+    let real = Net {
+        latency: Duration::from_millis(90),
+        jitter: Duration::from_millis(20),
+        wake_jitter: Duration::from_millis(9),
+    };
+
+    // Ten steps east on a perfect wire, and the same over a real one.
+    for (net, seed) in [(perfect, 1), (real, 7)] {
+        let mut sim = Sim::new(Direction::East, net, seed, Vec::new());
+        sim.run(&ten_steps_east(), Duration::from_millis(4_000));
+        eye_is_the_body(&sim);
+    }
+
+    // A wall three tiles along: the shard refuses, and the body is put back on
+    // a tile it never walked to. The eye goes with it — it is the reference
+    // camera, and relaying a rollback whole is exactly what it does.
+    let mut refused = Sim::new(Direction::East, real, 11, vec![(1004, 1000)]);
+    refused.run(&ten_steps_east(), Duration::from_millis(4_000));
+    assert!(refused.refused > 0, "the wall is on the way");
+    eye_is_the_body(&refused);
+
+    // And a reversal every 270ms, which lands a press at every phase of a step.
+    let mut script = Vec::new();
+    let mut direction = Direction::East;
+    for tick in 0..20 {
+        script.push(press(270 * tick, direction));
+        direction = match direction {
+            Direction::East => Direction::West,
+            _ => Direction::East,
+        };
+    }
+    let mut kiting = Sim::new(Direction::East, real, 4, Vec::new());
+    kiting.run(&script, Duration::from_millis(270 * 20));
+    eye_is_the_body(&kiting);
+}
+
+/// The height reaches the camera as its own number, which is what a rig that
+/// smooths a stair away will filter and what a projected pixel cannot say.
+///
+/// Held here rather than in `client/render` because the value under test is the
+/// one that actually arrives — through the crowd, the glide and the packet that
+/// moved the body — and not one a unit test wrote by hand.
+#[test]
+fn the_camera_is_told_the_height_apart_from_the_ground() {
+    let mut sim = Sim::new(Direction::East, Net::default(), 3, Vec::new());
+    sim.run(&ten_steps_east(), Duration::from_millis(1_200));
+    // The field is flat, so every frame's lift is zero and the ground is the
+    // whole of the gaze — which is the case that would pass just as well if the
+    // two were still one number, so the assertion is the other way round: the
+    // eye is the plane, exactly, with nothing of `z` folded into it.
+    let gaze = mobiles::gaze(&sim.player);
+    assert_eq!(gaze.lift, 0.0, "a flat field lifts nothing");
+    assert_eq!(gaze.eye().y, gaze.y.round() as i32);
+
+    // And a body standing twenty units up: the ground is unchanged and the lift
+    // is the whole of the difference.
+    let raised = Mobile {
+        at: Point::new(sim.player.at.x, sim.player.at.y, 20),
+        glide: None,
+        ..sim.player
+    };
+    let up = mobiles::gaze(&raised);
+    assert_eq!((up.x, up.y), (gaze.x, gaze.y), "the ground did not move");
+    assert_eq!(up.lift, 80.0, "twenty units, four pixels each");
+    assert_eq!(up.eye().y, gaze.eye().y - 80);
 }
 
 /// The mash: the arrows hammered at thirty presses a second, which is faster

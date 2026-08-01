@@ -77,6 +77,15 @@ classic way to build a smoother that smooths nothing at low speed. The camera
 gets an unrounded, undecomposed-into-`z` sibling of it, and the rounding happens
 once, at the very end of the pipeline, where D7 puts it.
 
+**Built, and it went one step further than that.** `mobiles::gaze` is the
+formula and `world_position` is now `gaze(m).eye()` — one arithmetic, not two.
+Written as two they were a pixel apart on about one frame in five thousand,
+wherever the exact answer landed near a rounding boundary, and a camera and a
+body that round separately by a pixel is a shimmer nobody can name or reproduce.
+The cost is that "the eye is on the body" can no longer be proved by comparing
+two independent formulas; what pins the arithmetic instead is `project`, which
+is older than both — see C0's gate.
+
 ### D3 — every distance is a fraction of the screen; only time is time
 
 Dead zones, lead caps, lean caps and cut thresholds are stored as fractions of
@@ -156,20 +165,31 @@ and boils the whole frame in motion. This is the same rule the drag remainder in
 quantiser is last: quantise before the filter and a slow camera ratchets — it
 sits still until the accumulated error crosses a pixel and then jumps one.
 
-`f32` is enough for the state. The far corner of a 7168-tile facet is about
-157,000 world pixels out, where an `f32` resolves to a hundredth of a pixel —
-two orders below the quantiser. Written down because it is exactly the kind of
-thing that is true until a facet grows.
+**The state is `f64`, and the filter is not what decides that.** `f32` is
+plenty for a smoother: the far corner of a 7,168-tile facet is about 157,000
+world pixels out, where an `f32` still resolves to a hundredth of a pixel. It is
+the *rounding* that wants more. The eye has to land on the pixel the sprite
+landed on, and a hundredth of a pixel of slack is a hundred times the margin at
+which two roundings of the same position disagree — which is a shimmer that
+appears only far from the origin, on some frames, and never in a test written
+near tile zero.
 
 ### D8 — the rig is a pure function of one frame's input
 
 ```rust
-fn advance(&mut self, frame: &Frame) -> Pose
+fn advance(&mut self, gaze: Gaze, dt: Duration) -> WorldPixel
 ```
 
-`Frame` carries the gaze, the cursor's offset from the viewport centre, the
-image's half-extents, the zoom, `dt`, and any cut raised this frame. No
-`Instant`, no `Camera`, no window, no `Map`.
+What the pipeline is told is the gaze, the cursor's offset from the viewport
+centre, the image's half-extents, the zoom, `dt`, and any cut raised this frame.
+No `Instant`, no `Camera`, no window, no `Map`.
+
+**Two arguments and not a `Frame` struct, until there are more of them.** The
+plan said `advance(&Frame) -> Pose` and the code that came out of C0 says the
+line above: stages 2, 3 and 5 are empty, so the input really is a gaze and an
+elapsed time, and a wrapper around two values and a pose of one field is
+structure that carries nothing. The list above is what those arguments *become*
+— it is the shape of C5, not of today.
 
 That signature is the whole bench. It runs ten thousand frames in under a
 millisecond, it is what DST drives, it is what the app calls once per frame, and
@@ -271,19 +291,36 @@ runner and the live scope compute the same numbers from the same code.
 
 ## The milestones
 
-### C0 — the seam
+### C0 — the seam — **built**
 
-Lift the following rule out of `Control` into `Follower`: `Rig` (parameters),
-state, and `advance(&Frame) -> Pose`. Decompose the gaze per D2. Fix the order
-of the pipeline per D4 with stages 2, 3, 5, 6 and 7 empty.
+`crates/client/render/src/follow.rs`: `Gaze`, `Rig`, `Follower::advance`, with
+the order of D4 written out and stages 2, 3, 6 and 7 empty. `Control` keeps
+arbitrating who may move the eye and delegates how. `mobiles::gaze` is the
+decomposed target and `world_position` is it rounded. Nothing changed on screen,
+which was the point, and the pixel-exact frame tests agreeing is most of the
+evidence for that.
 
-`Rig::HARD` must reproduce today's eye exactly, and "exactly" is a gate and not
-a hope: a DST script run through the old path and the new one, asserting the two
-eye traces are equal frame for frame. Transplanting the storage under a rule
-that is not gated first is how a regression becomes indistinguishable from the
-new behaviour.
+**The gate came out differently, and the reason is worth keeping.** The plan
+said: run a DST script through the old path and the new one and assert the two
+eye traces are equal. That is not available once `world_position` is derived from
+`gaze` (D2) — the two paths are one formula, so the comparison is a tautology.
+The gate is therefore two assertions that are not:
 
-Nothing changes on screen. That is the point.
+- `Gaze::on(p).eye() == project(p)` over the whole `z` range, and a step's ends
+  landing exactly on the two tiles it is between. `project` is independently
+  written and pinned by its own tests, so the fold and the decomposition are held
+  against something older than either.
+- `the_reference_rig_puts_the_eye_on_the_body_every_frame` in `dst.rs`: over a
+  perfect wire, a jittery one, a rollback into a wall and a reversal every 270ms,
+  the eye is exactly the drawn body on every frame. The arithmetic is shared, so
+  what this pins is the *wiring* — that the camera is advanced on every frame the
+  body is, from the same gaze the sprite is placed from, with nothing accumulated
+  between frames and nothing a frame late. Every one of those is a way to break
+  the transplant that no test inside `client/render` would notice.
+
+Both carry the companion assertions the metrics will: the run drew more than a
+hundred frames and the eye travelled more than four hundred pixels, because an
+eye that never moved sits exactly on a body that never moved.
 
 ### C1 — the bench
 
@@ -363,9 +400,14 @@ which fights a discrete ladder and would breathe.
 
 Found while planning this, and not to be lost in it.
 
-- **`Control::follow_body` takes a rounded, `z`-folded pixel.** `world_position`
-  is the drawing function; the camera needs the unrounded, decomposed sibling
-  (D2). Until then any filter added upstream of it is filtering a staircase.
+- ~~**`Control::follow_body` takes a rounded, `z`-folded pixel.**~~ It takes a
+  `Gaze` (C0), and `world_position` is that rounded rather than a second formula.
+- **A packet is not a frame, and two call sites now say so with a zero.**
+  `App::entered` and `App::walk_offline` call `follow_player` with
+  `Duration::ZERO`, which is right — time passes in `draw` — and means that under
+  any rig but `HARD` those two calls move the eye not at all and are there only
+  to refresh the glide. When C3 lands, they want splitting into "the target
+  changed" and "a frame passed", which is a seam this plan has not argued yet.
 - **`redraw_interval` knows about gliding bodies and not about a settling eye.**
   The moment the filter exists, a frame is worth drawing while the eye is still
   converging even if nothing else moved — otherwise the tail of every ease

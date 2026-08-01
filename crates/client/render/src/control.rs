@@ -12,9 +12,12 @@
 //! a redraw and printing the refusal are the caller's, because a renderer with a
 //! stderr is a renderer that cannot be run twice in one process.
 
+use std::time::Duration;
+
 use openshard_protocol::world::Point;
 
 use crate::camera::{Camera, WorldPixel, Zoom};
+use crate::follow::{Follower, Gaze, Rig};
 
 /// Whether the camera is tied to the body or the mouse.
 ///
@@ -76,6 +79,11 @@ pub struct TooLarge {
 pub struct Control {
     camera: Camera,
     follow: Follow,
+    /// How the eye follows the body while [`Follow::Body`] holds — the rig and
+    /// where it has got to. Arbitrating *who* may move the eye is this type's
+    /// job; how it moves is [`crate::follow`]'s, and the two are separated
+    /// because only the second one can be put on a bench.
+    follower: Follower,
     drag: Drag,
     /// How far the ladder may be walked down before the offscreen texture is
     /// larger than the GPU allows.
@@ -86,11 +94,16 @@ pub struct Control {
 }
 
 impl Control {
-    /// A locked camera on this device.
-    pub fn new(camera: Camera, max_texture: u32) -> Self {
+    /// A locked camera on this device, following with this rig.
+    ///
+    /// The rig is an argument and not a default: which camera this client ships
+    /// is undecided, and a `new` that quietly picked one would be the decision
+    /// (`docs/camera.md`, D9).
+    pub fn new(camera: Camera, max_texture: u32, rig: Rig) -> Self {
         Self {
             camera,
             follow: Follow::Body,
+            follower: Follower::new(rig),
             drag: Drag::default(),
             max_texture,
         }
@@ -99,6 +112,17 @@ impl Control {
     /// The camera, for everything that draws from it.
     pub fn camera(&self) -> &Camera {
         &self.camera
+    }
+
+    /// The rig the eye is following with.
+    pub fn rig(&self) -> Rig {
+        self.follower.rig()
+    }
+
+    /// Follow with another one, without moving the eye — see
+    /// [`Follower::set_rig`].
+    pub fn set_rig(&mut self, rig: Rig) {
+        self.follower.set_rig(rig);
     }
 
     /// Whether the eye is the body's or the mouse's.
@@ -137,8 +161,13 @@ impl Control {
     /// interpolate across — easing it would be a second kind of motion, over a
     /// distance nothing bounds. A body's own step is [`Control::follow_body`],
     /// which glides.
+    ///
+    /// The cut is what makes that true for a rig that eases. Moving the camera
+    /// without it would leave the follower's own idea of where the eye is on the
+    /// far side of the map, and the next frame would ease all the way back.
     pub fn relock(&mut self, at: Point) {
         self.follow = Follow::Body;
+        self.follower.cut();
         self.camera.look_at(at);
     }
 
@@ -153,14 +182,19 @@ impl Control {
     /// than an `if` at each call site: `App::step` and `App::entered` are two
     /// writers of the same eye, and a third would forget.
     ///
-    /// A world pixel and not a tile, because a body between two tiles is where
-    /// the eye has to be: a camera that only moved when a `0x77` arrived would
-    /// jump the whole world a tile at a time under a character gliding smoothly
+    /// A [`Gaze`] and not a tile, because a body between two tiles is where the
+    /// eye has to be: a camera that only moved when a `0x77` arrived would jump
+    /// the whole world a tile at a time under a character gliding smoothly
     /// across it — which is worse than the teleport the glide removed, since it
-    /// is the *world* that jerks. `mobiles::world_position` is what to hand it.
-    pub fn follow_body(&mut self, at: WorldPixel) {
+    /// is the *world* that jerks. `mobiles::gaze` is what to hand it.
+    ///
+    /// Called every frame and not only when a step lands, whatever the rig: a
+    /// glide moves the body between packets, and a filtered rig is still
+    /// converging on frames where nothing arrived at all.
+    pub fn follow_body(&mut self, gaze: Gaze, dt: Duration) {
         if self.follow == Follow::Body {
-            self.camera.look_at_pixel(at);
+            let eye = self.follower.advance(gaze, dt);
+            self.camera.look_at_pixel(eye);
         }
     }
 
@@ -311,8 +345,11 @@ mod tests {
     const HUGE: u32 = 1 << 20;
 
     fn control() -> Control {
-        Control::new(Camera::new(Point::new(100, 100, 0), 800, 600), HUGE)
+        Control::new(Camera::new(Point::new(100, 100, 0), 800, 600), HUGE, Rig::HARD)
     }
+
+    /// A frame's worth of time, for the calls that take one and do not care.
+    const FRAME: Duration = Duration::from_millis(16);
 
     /// Zooming out four rungs from `1:1` and back in four lands on the same
     /// zoom, which is the ladder's whole promise.
@@ -436,7 +473,7 @@ mod tests {
     fn the_body_moves_the_eye_only_while_locked() {
         let mut control = control();
         assert_eq!(control.follow(), Follow::Body);
-        control.follow_body(crate::camera::project(Point::new(200, 200, 0)));
+        control.follow_body(Gaze::on(Point::new(200, 200, 0)), FRAME);
         assert_eq!(
             control.camera().eye(),
             crate::camera::project(Point::new(200, 200, 0))
@@ -445,7 +482,7 @@ mod tests {
         control.pan(30, 30);
         assert_eq!(control.follow(), Follow::Free, "a hand on the camera unlocks it");
         let free = control.camera().eye();
-        control.follow_body(crate::camera::project(Point::new(300, 300, 0)));
+        control.follow_body(Gaze::on(Point::new(300, 300, 0)), FRAME);
         assert_eq!(control.camera().eye(), free, "the body no longer drags the eye");
 
         control.relock(Point::new(300, 300, 0));
@@ -484,7 +521,7 @@ mod tests {
     #[test]
     fn a_device_that_cannot_hold_the_image_refuses_the_zoom() {
         // 800 wide at 3/4 wants 1068, which this device will not hold.
-        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 800, 600), 1024);
+        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 800, 600), 1024, Rig::HARD);
         let before = *control.camera();
         let refusal = control.zoom(false).unwrap_err();
         assert_eq!(*control.camera(), before, "a refusal moves nothing");
@@ -499,7 +536,7 @@ mod tests {
     /// used. Without this the next frame is a validation error.
     #[test]
     fn growing_the_viewport_steps_the_zoom_back_in() {
-        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 400, 300), 1024);
+        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 400, 300), 1024, Rig::HARD);
         assert!(control.zoom(false).unwrap(), "536 fits in 1024");
         assert_eq!(control.camera().zoom().to_string(), "3/4x");
         assert_eq!(control.fit_to_device(), None);
@@ -517,7 +554,7 @@ mod tests {
     /// prints it, and a caller that printed one per rung would be shouting.
     #[test]
     fn a_fit_that_climbs_several_rungs_reports_once() {
-        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 400, 300), 4096);
+        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 400, 300), 4096, Rig::HARD);
         assert!(control.zoom(false).unwrap());
         control.set_max_texture(512);
         control.resize(1200, 900);
@@ -531,7 +568,7 @@ mod tests {
     /// loop that steps in has to stop rather than spin at the top of the ladder.
     #[test]
     fn a_viewport_past_the_limit_stops_at_the_top_of_the_ladder() {
-        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 8192, 8192), 1024);
+        let mut control = Control::new(Camera::new(Point::new(100, 100, 0), 8192, 8192), 1024, Rig::HARD);
         let refusal = control.fit_to_device().expect("nothing here fits");
         assert_eq!(refusal.settled.to_string(), "4x", "climbed as far as it could");
         assert_eq!(control.camera().zoom().to_string(), "4x");
