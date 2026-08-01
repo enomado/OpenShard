@@ -669,7 +669,7 @@ impl Sim {
             at: self.now,
             gaze,
             eye: self.control.camera().eye(),
-            exact: self.control.eye_exact().expect("the eye was just placed"),
+            state: self.control.eye_exact().expect("the eye was just placed"),
         });
     }
 

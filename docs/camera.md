@@ -251,8 +251,10 @@ jittered.
 | `mash` | Direction changes faster than the walk can answer, which is where the queue rule shows through into the camera. |
 | `rollback` | A `0x21` mid-step. The correction must be absorbed, and *not* cut across. |
 | `teleport` | A recall. Must be cut, and must leave no tail. |
-| `stairs` | `z` up and down a few units at a time — the whole of C2. |
-| `dungeon` | A large drop at once: the boundary between the lift filter and a cut. |
+| `stairs` | `z` up a few units at a time, walked — which the glide already smooths, as C2 found out. |
+| `kerb` | Two units arriving *whole*, as a correction does. What the lift filter is really for, and what keeps the cut from firing on everything sudden. |
+| `ledge` | Fifteen units arriving whole — one short of the cut, so the worst case a filter is ever asked to absorb. What picked `lift_tau`. |
+| `dungeon` | A large drop at once: past the cut, and the boundary the rule is drawn at. |
 | `mouse_swirl` | The cursor circling while the body stands. Lean's own jitter, with nothing else moving. |
 | `frame_jitter` | Any of the above, with `dt` drawn from a jittery distribution. D5's property. |
 
@@ -416,12 +418,70 @@ tolerance nobody has shown to catch anything is not a tolerance.
 of each other. A rig fitted to a synthetic body with no wire behind it would be
 fitted to nothing, and this is what says the body is the right one.
 
-### C2 — the lift
+### C2 — the lift — **built**
 
-Damp `z` on its own clock, with its own cut threshold for a drop that is a
-change of floor rather than a stair. Scripts `stairs` and `dungeon`. The table
-grows a row and the first real decision — how slow the lift may be before a
-stair feels like a lift shaft — is taken by looking at two curves.
+`Rig::LIFT` — the reference plane, `lift_tau: 0.15`, `lift_cut: FLOOR` — and
+stage 5 is live on the one channel that has a rule yet.
+
+**The milestone's premise was wrong, and the bench is what said so.** The plan
+was "a stair rises over its step instead of jerking the world four pixels at a
+time". It already does: `Glide::from` carries the tile's height, so a climbed
+step's rise is spread across the whole 400ms by the glide, and there is nothing
+left in it for a filter to smooth. Worse, filtering it makes a climbed stair
+*slightly worse* — 4,643 px/s² against the reference's 3,452 — because the rise
+was **cancelling** part of the walk's own motion: walking east moves the eye down
+the screen and climbing moves it up, and delaying one half of a cancellation is a
+transient where there was none. That is pinned as an assertion rather than
+written down, so it fails if the shape ever changes.
+
+**What the lift filter is actually for is height that did not come from
+walking.** A `0x22` revising the ground under a standing body, a surface a hair
+different from the one predicted, a correction: those arrive *whole*, in one
+frame, and the reference camera relays every pixel of them. The `kerb` script is
+two units arriving that way, and it is 31,250 px/s² for `HARD` and 4,641 for
+`LIFT` — where 4,641 is the transient the *walk* itself makes, which the plane
+owns and C3 answers. The correction disappears under it.
+
+**The cut is a body's height, in one frame, and the constant is Sphere's.** A
+walked change of height comes through the glide a few pixels at a time, so
+everything that arrives whole is a floor changing, a teleporter, or a correction
+— and the ones worth easing are the small ones. `PLAYER_HEIGHT` is 16 units, so
+`FLOOR` is 64 pixels: below it, absorb; above it, cut. This is the one place D3's
+"every distance is a fraction of the screen" does not apply, and the reason is
+worth stating — whether a change of height is a stair or a storey is a fact about
+the world, and it does not become a different fact because somebody zoomed in.
+
+The cut takes the height alone. A floor giving way under a body does not move it
+sideways, and jerking the whole world across for a vertical event would be a
+second defect answering the first.
+
+**The time constant, from the sweep it was chosen on.** `stair lag` is how far
+the eye trails while climbing; `ledge px/s` is how fast it slides absorbing the
+largest jump it is allowed to see — fifteen units, one short of the cut:
+
+| `lift_tau` | stair lag | `kerb` accel | `ledge` px/s |
+|---|---|---|---|
+| 0.05 | 2.1 | 8,559 | 1,083 |
+| 0.10 | 4.6 | 4,635 | 612 |
+| **0.15** | **7.1** | **4,641** | **438** |
+| 0.20 | 9.6 | 4,733 | 348 |
+| 0.30 | 14.6 | 4,802 | 256 |
+| 0.50 | 24.6 | 4,839 | 182 |
+
+A riser is 20 pixels, so 0.15 trails by a third of one; at 0.30 it is
+three-quarters of a riser and that is the lift-shaft feel the milestone was
+named after. Below 0.10 a correction stops being absorbed at all — the `kerb`
+column climbs back above the walk's own transient. And the worst absorbable jump
+slides at 438 px/s, five times a walk and over in under half a second, which is
+fast enough not to float and slow enough not to be a jump. The sweep is printed
+by the dump, so disagreeing with the choice costs one run.
+
+**A third finding, about the metric rather than the camera.** `accel_max` is not
+a physical quantity where the target *jumps*: a filter's answer to a step has a
+velocity that changes instantly in continuous time, so what a frame-to-frame
+difference samples is `size / (tau * dt)` — it ranks two time constants correctly
+and it doubles if the frame rate doubles. Where the input is a jump, `speed_max`
+is the number that means something, and that is what the sweep's last column is.
 
 ### C3 — the spring
 
@@ -520,5 +580,17 @@ Found while planning this, and not to be lost in it.
   catches the ratchet the metric exists for; what it cannot show is *which* step
   sizes a rig produces, which is the thing to look at when two rigs have the same
   variance and look different.
+- **The DST harness walks a flat field, so the lift is never exercised on the
+  real pipeline.** `Field` answers `can_step` and nothing about height, which
+  means C2's whole subject — a `0x22` revising the ground, a stair, a trapdoor —
+  is tested only against the bench's scripted body. A terrain with heights in it
+  would close that, and it is the same gap that will hide the first real bug in
+  the lift cut.
+- **The lift cut is a detector where an event is available.** `mobiles::gaze`
+  can see whether the body is mid-glide, and `App::entered` knows a correction
+  arrived (`Moved::Snapped`) — either of which says "this height did not come
+  from walking" outright, where the threshold has to infer it. D6 says the
+  distance is a backstop and the event is the rule; C3 is where the event
+  channel appears, and the lift's cut should move onto it then.
 - **A free camera has no map clamp** and can be panned into the void. Harmless
   today, a stage-6 job when it stops being.

@@ -119,9 +119,10 @@ impl Control {
         self.follower.rig()
     }
 
-    /// Where the eye is to a fraction of a pixel, for a bench or a scope —
-    /// see [`Follower::exact`]. `None` before the first frame.
-    pub fn eye_exact(&self) -> Option<(f64, f64)> {
+    /// Where the eye is to a fraction of a pixel, channel by channel, for a
+    /// bench or a scope — see [`Follower::exact`]. `None` before the first
+    /// frame.
+    pub fn eye_exact(&self) -> Option<Gaze> {
         self.follower.exact()
     }
 

@@ -11,7 +11,7 @@
 //! # Two traces of the same eye, and each number takes one of them
 //!
 //! [`Sample`] carries the eye twice: [`Sample::eye`] is the whole pixel the
-//! screen was given and [`Sample::exact`] is what the filter had before the
+//! screen was given and [`Sample::state`] is what the filter had before the
 //! quantiser rounded it. That is not redundancy, it is the only way either
 //! number means anything.
 //!
@@ -227,9 +227,11 @@ pub struct Sample {
     pub gaze: Gaze,
     /// The whole pixel the screen was given.
     pub eye: WorldPixel,
-    /// What the filter had before the quantiser rounded it — see this module's
-    /// note on why both are kept.
-    pub exact: Pixels,
+    /// What the filter had before the quantiser rounded it, still in channels —
+    /// see this module's note on why both are kept. [`Gaze::exact`] folds it
+    /// into the pair the derivatives are taken on; the `lift` field is what
+    /// says how far the *height* is behind, which a folded number cannot.
+    pub state: Gaze,
 }
 
 /// A rig, a script, and every frame of the two together.
@@ -264,7 +266,7 @@ pub fn run(rig: Rig, script: &Script, cadence: Cadence) -> Trace {
             at: now,
             gaze,
             eye,
-            exact: follower.exact().expect("advance has just placed the eye"),
+            state: follower.exact().expect("advance has just placed the eye"),
         });
         if now >= script.length {
             break;
@@ -300,6 +302,13 @@ pub struct Metrics {
     pub lag_max: f64,
     /// Likewise.
     pub lag_rms: f64,
+    /// The worst the *height* alone was behind, in pixels.
+    ///
+    /// Apart from [`Metrics::lag_max`] because it is a different question with a
+    /// different answer: a stair is 20 pixels of rise, so an eye 10 behind is
+    /// half a riser down and one 40 behind is in a lift shaft. Folded into the
+    /// distance above it is indistinguishable from trailing on the flat.
+    pub lift_lag_max: f64,
     /// The furthest the eye got *ahead* of the body along its direction of
     /// travel — overshoot, and negative everywhere means there was none.
     pub ahead_max: f64,
@@ -308,6 +317,14 @@ pub struct Metrics {
     /// And how sharply that changed, at most. This is the reversal: an eye that
     /// stops dead and sets off the other way has an unbounded one, and a
     /// filtered eye's is its speed over its time constant.
+    ///
+    /// Comparable between rigs on the same run, and **not** a physical quantity
+    /// where the target *jumps*. A filter's answer to a step is a velocity that
+    /// changes instantly in continuous time, so what is sampled is
+    /// `size / (tau * dt)` — it ranks two time constants correctly and doubles
+    /// if the frame rate doubles. Where the input is a jump,
+    /// [`Metrics::speed_max`] is the number that means something: how fast the
+    /// eye actually slid.
     pub accel_max: f64,
     /// The RMS of the third difference. What "ragged" means when it is a number
     /// rather than a feeling.
@@ -336,6 +353,7 @@ impl Metrics {
             travel: 0.0,
             lag_max: 0.0,
             lag_rms: 0.0,
+            lift_lag_max: 0.0,
             ahead_max: f64::NEG_INFINITY,
             speed_max: 0.0,
             accel_max: 0.0,
@@ -355,6 +373,9 @@ impl Metrics {
             let lag = length(minus(eye, body));
             metrics.lag_max = metrics.lag_max.max(lag);
             lag_squares += lag * lag;
+            metrics.lift_lag_max = metrics
+                .lift_lag_max
+                .max((sample.state.lift - sample.gaze.lift).abs());
 
             let Some(previous) = index.checked_sub(1).map(|before| &samples[before]) else {
                 continue;
@@ -385,7 +406,7 @@ impl Metrics {
             }
 
             // The derivatives, on the unrounded trace.
-            let speed = scaled(minus(sample.exact, previous.exact), 1.0 / dt);
+            let speed = scaled(minus(sample.state.exact(), previous.state.exact()), 1.0 / dt);
             metrics.speed_max = metrics.speed_max.max(length(speed));
             if let Some(was) = last_speed {
                 let accel = scaled(minus(speed, was), 1.0 / dt);
@@ -488,6 +509,24 @@ pub fn scripts() -> Vec<Script> {
             .jump(Point::new(START.x + 1, START.y, -20))
             .stand(Duration::from_millis(600))
             .step(Direction::East, WALK_HOLD),
+        // And the case that keeps the cut honest: a correction the size of a
+        // kerb, arriving whole, exactly as a floor change does. A rule that
+        // fires on everything instantaneous would cut this too, and a `0x22`
+        // revising the ground by a unit is the one thing worth easing.
+        Script::new("kerb", START)
+            .step(Direction::East, WALK_HOLD)
+            .jump(Point::new(START.x + 1, START.y, 2))
+            .stand(Duration::from_millis(400))
+            .jump(Point::new(START.x + 1, START.y, 0))
+            .stand(Duration::from_millis(400)),
+        // The largest height a filter is ever asked to absorb: fifteen units,
+        // one short of the body that is the cut. Anything a rig does badly here
+        // it does badly on the worst case it is allowed to see, which is what
+        // picks a time constant — the small ones are easy for every setting.
+        Script::new("ledge", START)
+            .step(Direction::East, WALK_HOLD)
+            .jump(Point::new(START.x + 1, START.y, -15))
+            .stand(Duration::from_millis(800)),
         // A recall. Nothing between here and there is worth watching, and a rig
         // that eases across it draws a smear of world nobody is looking at.
         Script::new("teleport", START)

@@ -137,7 +137,36 @@ pub struct Rig {
     /// The same for the height, and its own because it is not the same
     /// question: a stair wants to be smoothed away and a walk does not.
     pub lift_tau: f32,
+    /// How much the height may change between two frames before it is a cut
+    /// rather than a climb, in pixels.
+    ///
+    /// A body's own height, by default — see [`FLOOR`]. Above it the ground did
+    /// not change because somebody walked up it, and easing across it would draw
+    /// the eye floating through a storey it was never on.
+    ///
+    /// In pixels and not in a fraction of the screen, which is the one place
+    /// D3's rule does not apply: whether a change of height is a stair or a
+    /// floor is a fact about the world, and it does not become a different fact
+    /// because somebody zoomed in.
+    ///
+    /// [`f32::INFINITY`] never cuts. [`Rig::HARD`]'s value is arbitrary, since
+    /// nothing is ever eased for it to interrupt.
+    pub lift_cut: f32,
 }
+
+/// The height a change has to exceed, in one frame, to be a change of floor.
+///
+/// A human is `PLAYER_HEIGHT` — 16 units, Sphere's own constant — so this is
+/// what a body is tall, in pixels of lift. The argument is not about comfort: a
+/// walked change of height arrives through the glide, spread across the whole
+/// step, so even a cliff delivers a few pixels per frame. Everything that
+/// arrives *whole* in one frame is a floor changing, a teleporter, or a
+/// correction — and the ones worth easing across are the small ones.
+///
+/// Frame-to-frame and not per second, deliberately. A loop that stalled for
+/// half a second and then drew has already teleported the body on screen, and
+/// cutting is the honest answer to that too.
+pub const FLOOR: f32 = 16.0 * Z_STEP as f32;
 
 impl Rig {
     /// The reference camera: the eye is the body, to the pixel, every frame.
@@ -148,29 +177,69 @@ impl Rig {
     pub const HARD: Self = Self {
         plane_tau: 0.0,
         lift_tau: 0.0,
+        lift_cut: FLOOR,
+    };
+
+    /// The reference camera with a clock on the height.
+    ///
+    /// The ground is still the body's, to the pixel — a walk is not smoothed at
+    /// all — and only `z` is filtered.
+    ///
+    /// **What that is for is not stairs.** A climbed step's rise arrives through
+    /// the glide, spread across the whole 400ms, so there is nothing left in it
+    /// to smooth; the bench says a filter makes a climbed stair marginally
+    /// *worse*, because the rise was cancelling part of the walk's own motion
+    /// down the screen and delaying half of a cancellation is a transient where
+    /// there was none. What this rig absorbs is height that did **not** come
+    /// from walking: a `0x22` revising the ground under a standing body, a
+    /// surface a hair different from the one that was predicted. The reference
+    /// camera relays every one of those whole, and there are a lot of them.
+    ///
+    /// `0.15` is chosen by what it costs rather than by what it buys: a stair
+    /// rises 5 units over a step, which is 50 pixels a second, so the eye
+    /// settles 7.5 pixels below the body — a third of one riser. Twice that and
+    /// the eye is half a storey behind while climbing, which is the lift-shaft
+    /// feel; half of it and a correction is back to arriving in two frames
+    /// instead of one. See `docs/camera.md`, C2.
+    pub const LIFT: Self = Self {
+        plane_tau: 0.0,
+        lift_tau: 0.15,
+        lift_cut: FLOOR,
     };
 }
 
-/// A rig, and where the eye it drives has got to.
+/// What one frame left behind for the next one.
 ///
-/// The state is a [`Gaze`] because it has exactly the channels the target has:
-/// the filter runs on each of them, and the fraction the quantiser does not
-/// spend stays in it.
+/// Both halves are [`Gaze`]s because both have exactly the channels the filter
+/// runs on. The second is not a duplicate of the first: a cut is a *target* that
+/// moved further than a body could have, which is a question about what was
+/// asked for and not about where the eye got to. Asking it of the eye instead
+/// would cut whenever a slow rig fell far enough behind — a camera that smooths
+/// by giving up.
+#[derive(Clone, Copy, Debug)]
+struct Eased {
+    /// Where the eye is, to a fraction of a pixel.
+    at: Gaze,
+    /// What it was asked for.
+    target: Gaze,
+}
+
+/// A rig, and where the eye it drives has got to.
 #[derive(Clone, Copy, Debug)]
 pub struct Follower {
     rig: Rig,
-    /// Where the eye is, to a fraction of a pixel.
+    /// The last frame, or nothing before the first.
     ///
     /// [`Option`] in its proper sense: before the first frame the eye is not at
     /// a stale position, it has no position, and the frame that finds it so
     /// places it rather than easing from a zero nobody chose.
-    at: Option<Gaze>,
+    last: Option<Eased>,
 }
 
 impl Follower {
     /// A follower that has not looked anywhere yet.
     pub fn new(rig: Rig) -> Self {
-        Self { rig, at: None }
+        Self { rig, last: None }
     }
 
     /// The parameters in force.
@@ -195,8 +264,8 @@ impl Follower {
     /// sixty frames a second, the acceleration of the *rounded* eye is
     /// dominated by the rounding and says nothing about the rig. See
     /// [`crate::bench`].
-    pub fn exact(&self) -> Option<(f64, f64)> {
-        self.at.map(Gaze::exact)
+    pub fn exact(&self) -> Option<Gaze> {
+        self.last.map(|last| last.at)
     }
 
     /// Forget where the eye was: the next [`Follower::advance`] places it on the
@@ -206,7 +275,7 @@ impl Follower {
     /// from across the map. It resets the state rather than moving it, so that
     /// nothing of the old position survives to be eased away afterwards.
     pub fn cut(&mut self) {
-        self.at = None;
+        self.last = None;
     }
 
     /// One frame: where the eye goes, given where it is asked to look.
@@ -222,20 +291,31 @@ impl Follower {
         // Stages 2 and 3 sit here when they exist: the intent offsets are
         // summed onto `gaze`, and the zone reduces the gap before the filter
         // sees it.
-        let at = match self.at {
-            // Stage 4, per channel. `x` and `y` share a time constant and not a
-            // state: the isometric screen is twice as wide as it is tall, so the
-            // day one of them wants a slower clock than the other, the split is
-            // a field and not a rewrite.
-            Some(was) => Gaze {
-                x: approach(was.x, gaze.x, self.rig.plane_tau, dt),
-                y: approach(was.y, gaze.y, self.rig.plane_tau, dt),
-                lift: approach(was.lift, gaze.lift, self.rig.lift_tau, dt),
+        let at = match self.last {
+            Some(last) => Gaze {
+                // Stage 4, per channel. `x` and `y` share a time constant and
+                // not a state: the isometric screen is twice as wide as it is
+                // tall, so the day one of them wants a slower clock than the
+                // other, the split is a field and not a rewrite.
+                x: approach(last.at.x, gaze.x, self.rig.plane_tau, dt),
+                y: approach(last.at.y, gaze.y, self.rig.plane_tau, dt),
+                // Stage 5, on the one channel that has a rule yet: a height
+                // that changed by more than a body is tall between two frames
+                // did not change because somebody walked up it. The plane is
+                // deliberately not cut with it — a floor giving way under a
+                // body does not move it sideways, and jerking the whole world
+                // sideways for a vertical event is a second defect answering
+                // the first.
+                lift: match (gaze.lift - last.target.lift).abs() > f64::from(self.rig.lift_cut) {
+                    true => gaze.lift,
+                    false => approach(last.at.lift, gaze.lift, self.rig.lift_tau, dt),
+                },
             },
-            // Stage 5, in its one live form: nothing to ease from.
+            // The other cut, and the one a caller raises by hand: nothing to
+            // ease from.
             None => gaze,
         };
-        self.at = Some(at);
+        self.last = Some(Eased { at, target: gaze });
         // Stages 6 and 7 sit here — the clamp on the filtered position, then the
         // impulse on the pose and never on what was just stored.
         at.eye()
@@ -275,6 +355,21 @@ mod tests {
         Duration::from_millis(millis)
     }
 
+    /// A rig that eases both channels at the same rate, for the tests that are
+    /// about the filter rather than about a camera.
+    fn eased(tau: f32) -> Rig {
+        Rig {
+            plane_tau: tau,
+            lift_tau: tau,
+            lift_cut: FLOOR,
+        }
+    }
+
+    /// Where the eye is, for a test that is about the filter's own state.
+    fn state(follower: &Follower) -> Gaze {
+        follower.exact().expect("the eye has been placed")
+    }
+
     /// The reference camera, and the property the whole of C0 is a transplant
     /// under: whatever the frame rate and wherever the body is, the eye is on it.
     #[test]
@@ -293,7 +388,7 @@ mod tests {
     fn a_still_frame_at_no_time_constant_is_not_a_nan() {
         let mut follower = Follower::new(Rig::HARD);
         follower.advance(Gaze::on(FAR), Duration::ZERO);
-        let state = follower.at.unwrap();
+        let state = state(&follower);
         assert!(state.x.is_finite() && state.y.is_finite() && state.lift.is_finite());
     }
 
@@ -301,10 +396,7 @@ mod tests {
     /// `tau` of elapsed time closes all but `1/e` of the gap.
     #[test]
     fn one_time_constant_closes_all_but_one_over_e() {
-        let mut follower = Follower::new(Rig {
-            plane_tau: 0.5,
-            lift_tau: 0.5,
-        });
+        let mut follower = Follower::new(eased(0.5));
         follower.advance(Gaze::default(), ms(16));
         let target = Gaze {
             x: 1000.0,
@@ -312,7 +404,7 @@ mod tests {
             lift: 0.0,
         };
         follower.advance(target, ms(500));
-        let left = 1000.0 - follower.at.unwrap().x;
+        let left = 1000.0 - state(&follower).x;
         assert!(
             (left - 1000.0 / std::f64::consts::E).abs() < 0.5,
             "{left} left of 1000 after one tau",
@@ -324,10 +416,7 @@ mod tests {
     /// arrives in. A `lerp(0.1)` fails this by a factor of three.
     #[test]
     fn the_same_span_lands_in_the_same_place_at_any_frame_rate() {
-        let rig = Rig {
-            plane_tau: 0.2,
-            lift_tau: 0.2,
-        };
+        let rig = eased(0.2);
         let target = Gaze {
             x: 900.0,
             y: -400.0,
@@ -343,7 +432,7 @@ mod tests {
             fast.advance(target, ms(10));
         }
 
-        let (slow, fast) = (slow.at.unwrap(), fast.at.unwrap());
+        let (slow, fast) = (state(&slow), state(&fast));
         assert!(
             (slow.x - fast.x).abs() < 1e-9 && (slow.lift - fast.lift).abs() < 1e-9,
             "{slow:?} in one frame against {fast:?} in ten",
@@ -357,25 +446,25 @@ mod tests {
         let mut follower = Follower::new(Rig {
             plane_tau: 0.0,
             lift_tau: 0.4,
+            lift_cut: FLOOR,
         });
         let ground = Gaze::on(Point::new(500, 500, 0));
         follower.advance(ground, ms(16));
-        // The same tile, twenty units up: only the lift moved.
-        let stair = Gaze::on(Point::new(500, 500, 20));
+        // The same tile, ten units up: only the lift moved. Ten and not twenty,
+        // because twenty is more than a body is tall and the cut below would
+        // take it — which is that rule working, not this one failing.
+        let stair = Gaze::on(Point::new(500, 500, 10));
         follower.advance(stair, ms(16));
-        let at = follower.at.unwrap();
+        let at = state(&follower);
         assert_eq!((at.x, at.y), (ground.x, ground.y), "the ground did not wait");
-        assert!(at.lift > 0.0 && at.lift < stair.lift, "{} of 80", at.lift);
+        assert!(at.lift > 0.0 && at.lift < stair.lift, "{} of 40", at.lift);
     }
 
     /// A cut leaves no tail: what the eye was doing before one is not eased
     /// away afterwards, it is gone.
     #[test]
     fn a_cut_places_the_eye_rather_than_easing_to_it() {
-        let mut follower = Follower::new(Rig {
-            plane_tau: 0.3,
-            lift_tau: 0.3,
-        });
+        let mut follower = Follower::new(eased(0.3));
         follower.advance(Gaze::on(Point::new(100, 100, 0)), ms(16));
         let away = Gaze::on(Point::new(3000, 3000, 0));
         let eased = follower.advance(away, ms(16));
@@ -388,16 +477,100 @@ mod tests {
     /// is for would start with a jump.
     #[test]
     fn changing_the_rig_keeps_where_the_eye_is() {
-        let mut follower = Follower::new(Rig {
-            plane_tau: 0.3,
-            lift_tau: 0.3,
-        });
+        let mut follower = Follower::new(eased(0.3));
         follower.advance(Gaze::on(Point::new(100, 100, 0)), ms(16));
         follower.advance(Gaze::on(Point::new(140, 100, 0)), ms(16));
-        let mid = follower.at.unwrap();
+        let mid = state(&follower);
         follower.set_rig(Rig::HARD);
-        assert_eq!(follower.at.unwrap(), mid);
+        assert_eq!(state(&follower), mid);
         assert_eq!(follower.rig(), Rig::HARD);
+    }
+
+    /// The lift cut, and the pair of cases it exists to tell apart.
+    ///
+    /// A stair arrives through the glide, spread over a whole step, so the
+    /// filter sees a few pixels a frame and smooths it. A floor changing arrives
+    /// whole, in one frame, and easing across it would float the eye through a
+    /// storey the body was never on.
+    #[test]
+    fn a_stair_is_eased_and_a_floor_is_cut() {
+        let ground = Point::new(500, 500, 0);
+        let mut follower = Follower::new(Rig::LIFT);
+        follower.advance(Gaze::on(ground), ms(16));
+
+        // Five units up, delivered the way a glide delivers it: a fraction of
+        // the rise per frame. The eye is behind, and it is behind by less than
+        // the rise.
+        let stair = Gaze::on(Point::new(500, 500, 5));
+        for step in 1..=25 {
+            let part = f64::from(step) / 25.0;
+            follower.advance(
+                Gaze {
+                    lift: stair.lift * part,
+                    ..stair
+                },
+                ms(16),
+            );
+        }
+        let lag = stair.lift - state(&follower).lift;
+        assert!(lag > 0.1 && lag < stair.lift, "{lag} of a 20 pixel rise");
+
+        // And the same total change delivered whole: cut, on the frame it
+        // arrives, with nothing left to ease away afterwards.
+        let mut follower = Follower::new(Rig::LIFT);
+        follower.advance(Gaze::on(ground), ms(16));
+        let floor = Gaze::on(Point::new(500, 500, -20));
+        assert_eq!(follower.advance(floor, ms(16)), floor.eye());
+        assert_eq!(state(&follower).lift, floor.lift, "a cut leaves no tail");
+    }
+
+    /// And it cuts the height alone.
+    ///
+    /// A floor giving way under a body does not move it sideways. Cutting the
+    /// plane with it would jerk the whole world across for a vertical event,
+    /// which is a second defect answering the first.
+    #[test]
+    fn a_lift_cut_does_not_move_the_ground() {
+        let mut follower = Follower::new(Rig {
+            plane_tau: 0.2,
+            lift_tau: 0.2,
+            lift_cut: FLOOR,
+        });
+        follower.advance(Gaze::on(Point::new(500, 500, 0)), ms(16));
+        // A trapdoor: a tile east and twenty units down, in one frame.
+        let below = Gaze::on(Point::new(501, 500, -20));
+        follower.advance(below, ms(16));
+        let at = state(&follower);
+        assert_eq!(at.lift, below.lift, "the height was cut");
+        assert!(
+            (at.x - below.x).abs() > 1.0,
+            "and the ground was not: {} against {}",
+            at.x,
+            below.x,
+        );
+    }
+
+    /// A correction the size of a kerb is absorbed rather than cut.
+    ///
+    /// The failure this guards is a cut rule that fires on everything
+    /// instantaneous: a `0x22` revising the ground by a unit or two arrives in
+    /// one frame like a trapdoor does, and it is the one case worth easing.
+    #[test]
+    fn a_small_correction_is_eased_rather_than_cut() {
+        let mut follower = Follower::new(Rig::LIFT);
+        follower.advance(Gaze::on(Point::new(500, 500, 0)), ms(16));
+        let kerb = Gaze::on(Point::new(500, 500, 2));
+        follower.advance(kerb, ms(16));
+        let at = state(&follower);
+        assert!(at.lift > 0.0 && at.lift < kerb.lift, "{} of 8 pixels", at.lift);
+    }
+
+    /// The threshold is a body's height, which is Sphere's own constant and not
+    /// a number somebody liked. Pinned next to it, because a value taken from a
+    /// reference is worth nothing once it has quietly drifted.
+    #[test]
+    fn the_floor_is_a_body_tall() {
+        assert_eq!(FLOOR, 64.0, "PLAYER_HEIGHT of 16, four pixels a unit");
     }
 
     /// `Gaze::on` is `project`, taken apart and put back together — held against

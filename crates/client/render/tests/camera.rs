@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use openshard_client_render::bench::{Cadence, Metrics, Sample, Script, Trace, WALK_HOLD, run, scripts};
-use openshard_client_render::follow::Rig;
+use openshard_client_render::follow::{FLOOR, Rig};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
@@ -31,6 +31,7 @@ use openshard_protocol::world::Point;
 const PROBE: Rig = Rig {
     plane_tau: 0.12,
     lift_tau: 0.25,
+    lift_cut: FLOOR,
 };
 
 /// Somewhere in the middle of a facet, as the scripts start.
@@ -51,6 +52,14 @@ fn walking() -> Script {
     (0..10).fold(Script::new("walking", START), |script, _| {
         script.step(Direction::East, WALK_HOLD)
     })
+}
+
+/// One of the bench's scenarios, by name.
+fn script(name: &str) -> Script {
+    scripts()
+        .into_iter()
+        .find(|script| script.name == name)
+        .unwrap_or_else(|| panic!("{name} is one of the bench's scripts"))
 }
 
 /// The reference camera is the body, over every scenario the bench has.
@@ -97,10 +106,7 @@ fn the_reference_rig_keeps_the_eye_on_the_body() {
 /// printing.
 #[test]
 fn a_filter_trades_lag_for_smoothness_and_the_bench_measures_both() {
-    let kite = scripts()
-        .into_iter()
-        .find(|script| script.name == "back_and_forth")
-        .expect("the kite is one of the scripts");
+    let kite = script("back_and_forth");
     let hard = Metrics::of(&run(Rig::HARD, &kite, FRAME).samples);
     let probe = Metrics::of(&run(PROBE, &kite, FRAME).samples);
 
@@ -120,6 +126,89 @@ fn a_filter_trades_lag_for_smoothness_and_the_bench_measures_both() {
     // is what makes the two numbers comparable at all.
     assert_eq!(hard.frames, probe.frames);
     assert!(hard.travel > 100.0 && probe.travel > 100.0);
+}
+
+/// C2's pair, and the only reason the lift cut is a rule rather than a taste: a
+/// stair and a floor are the same number of pixels and must not be the same
+/// event.
+///
+/// A stair arrives through the glide, a few pixels a frame across a whole step,
+/// and the eye is expected to trail it a little and smooth the corners. A floor
+/// arrives whole in one frame, and the eye must be on it immediately — an eye
+/// eased eighty pixels down through a storey is the lift shaft this milestone
+/// exists to avoid.
+///
+/// The mirror is the same rig with the cut turned off, because "the eye is on
+/// the body after a floor change" is also what a rig with no filter at all
+/// does, and a test that cannot tell those apart is testing nothing.
+#[test]
+fn a_stair_is_eased_and_a_floor_is_cut() {
+    let stairs = script("stairs");
+    let eased = Metrics::of(&run(Rig::LIFT, &stairs, FRAME).samples);
+    let reference = Metrics::of(&run(Rig::HARD, &stairs, FRAME).samples);
+    assert!(
+        eased.lift_lag_max > 2.0 && eased.lift_lag_max < 12.0,
+        "a climbed stair left the eye {:.1} pixels behind, and a riser is 20",
+        eased.lift_lag_max,
+    );
+    // And the finding this milestone turned on, pinned rather than described:
+    // a filter on the height makes a *climbed* stair slightly worse, not
+    // better. The glide already spreads a step's rise across the whole step, so
+    // there is nothing left to smooth — and the lift was *cancelling* part of
+    // the plane's motion, since walking east moves the eye down the screen and
+    // climbing moves it up. Delaying one half of a cancellation is a transient
+    // where there was none. If this ever reads the other way round, the rig has
+    // changed shape and `docs/camera.md` C2 is the thing to re-read.
+    assert!(
+        eased.accel_max > reference.accel_max && eased.accel_max < reference.accel_max * 1.5,
+        "a filtered stair was {:.0} against the reference's {:.0}",
+        eased.accel_max,
+        reference.accel_max,
+    );
+
+    let dungeon = script("dungeon");
+    let cut = Metrics::of(&run(Rig::LIFT, &dungeon, FRAME).samples);
+    let uncut = Metrics::of(
+        &run(
+            Rig {
+                lift_cut: f32::INFINITY,
+                ..Rig::LIFT
+            },
+            &dungeon,
+            FRAME,
+        )
+        .samples,
+    );
+    assert!(
+        cut.lift_lag_max < 1.0,
+        "the floor changed and the eye was {:.1} pixels above it",
+        cut.lift_lag_max,
+    );
+    assert!(
+        uncut.lift_lag_max > 40.0,
+        "with the cut off the same drop left the eye only {:.1} pixels behind, \
+         so this scenario does not exercise the cut at all",
+        uncut.lift_lag_max,
+    );
+
+    // And the kerb, which keeps the rule from being "cut on anything sudden":
+    // two units arriving whole is a correction, and it is eased.
+    let kerb = Metrics::of(&run(Rig::LIFT, &script("kerb"), FRAME).samples);
+    let reference = Metrics::of(&run(Rig::HARD, &script("kerb"), FRAME).samples);
+    assert!(
+        kerb.lift_lag_max > 1.0,
+        "a two-unit correction was cut rather than absorbed",
+    );
+    // Which is where the filter does pay: the correction arrives whole, and the
+    // reference relays all eight pixels of it in one frame. Absorbed, it
+    // disappears under the transient the *walk* itself makes — which the plane
+    // owns and C3 answers.
+    assert!(
+        kerb.accel_max * 5.0 < reference.accel_max,
+        "the correction was not absorbed: {:.0} against {:.0}",
+        kerb.accel_max,
+        reference.accel_max,
+    );
 }
 
 /// D5: the same span of time moves the eye to the same place, whatever the
@@ -153,8 +242,8 @@ fn the_same_span_lands_in_the_same_place_at_any_frame_rate() {
         Cadence::jittered(Duration::from_millis(16), Duration::from_millis(12), 9),
     );
     let (last, reference) = (
-        jittery.samples.last().unwrap().exact,
-        fine.samples.last().unwrap().exact,
+        jittery.samples.last().unwrap().state.exact(),
+        fine.samples.last().unwrap().state.exact(),
     );
     let off = (last.0 - reference.0).hypot(last.1 - reference.1);
     assert!(off < 2.0, "a jittery loop ended {off:.2} pixels out");
@@ -181,7 +270,7 @@ fn the_same_span_lands_in_the_same_place_at_any_frame_rate() {
 #[test]
 #[ignore = "writes a table and charts for a person, and asserts nothing"]
 fn dump_the_camera_bench() {
-    let rigs = [("hard", Rig::HARD), ("probe", PROBE)];
+    let rigs = [("hard", Rig::HARD), ("lift", Rig::LIFT), ("probe", PROBE)];
     let out = dump_dir();
     std::fs::create_dir_all(&out).expect("a directory under target");
 
@@ -213,7 +302,7 @@ fn dump_the_camera_bench() {
                 metrics.frames,
                 metrics.travel,
                 metrics.lag_max,
-                metrics.lag_rms,
+                metrics.lift_lag_max,
                 metrics.ahead_max,
                 metrics.speed_max,
                 metrics.accel_max,
@@ -226,6 +315,28 @@ fn dump_the_camera_bench() {
         let path = out.join(format!("{}.svg", script.name));
         std::fs::write(&path, chart(&script, &traces)).expect("writing a chart");
     }
+    // And the sweep the lift's time constant was chosen from: what a climb
+    // costs in trailing height, against what the same clock does to a
+    // correction that arrives whole. Printed rather than asserted — it is the
+    // shape of the trade, and the choice is `Rig::LIFT`.
+    println!(
+        "\n{:<10} {:>10} {:>12} {:>12} {:>12}",
+        "lift tau", "stair lag", "kerb accel", "ledge px/s", "stair accel"
+    );
+    for tau in [0.05, 0.10, 0.15, 0.20, 0.30, 0.50] {
+        let rig = Rig {
+            lift_tau: tau,
+            ..Rig::LIFT
+        };
+        let stairs = Metrics::of(&run(rig, &script("stairs"), FRAME).samples);
+        let kerb = Metrics::of(&run(rig, &script("kerb"), FRAME).samples);
+        let ledge = Metrics::of(&run(rig, &script("ledge"), FRAME).samples);
+        println!(
+            "{tau:<10.2} {:>10.1} {:>12.0} {:>12.0} {:>12.0}",
+            stairs.lift_lag_max, kerb.accel_max, ledge.speed_max, stairs.accel_max,
+        );
+    }
+
     println!("\nwrote {}", out.display());
 }
 
@@ -260,11 +371,11 @@ fn furthest_apart(coarse: &Trace, fine: &Trace) -> f64 {
         let found = fine
             .samples
             .binary_search_by_key(&sample.at, |other| other.at)
-            .map(|index| fine.samples[index].exact);
+            .map(|index| fine.samples[index].state.exact());
         let Ok(other) = found else {
             panic!("{:?} of the coarse run is not a frame of the fine one", sample.at);
         };
-        worst = worst.max((sample.exact.0 - other.0).hypot(sample.exact.1 - other.1));
+        worst = worst.max((sample.state.exact().0 - other.0).hypot(sample.state.exact().1 - other.1));
         compared += 1;
     }
     assert!(compared > 20, "only {compared} frames were compared");
@@ -294,19 +405,20 @@ fn naive_lerp(script: &Script, step: Duration) -> (f64, f64) {
 
 /// One run, frame by frame.
 fn csv(trace: &Trace) -> String {
-    let mut out = String::from("ms,body_x,body_y,body_lift,eye_x,eye_y,exact_x,exact_y\n");
+    let mut out = String::from("ms,body_x,body_y,body_lift,eye_x,eye_y,state_x,state_y,state_lift\n");
     for sample in &trace.samples {
         let body = sample.gaze.exact();
         out.push_str(&format!(
-            "{},{:.3},{:.3},{:.3},{},{},{:.3},{:.3}\n",
+            "{},{:.3},{:.3},{:.3},{},{},{:.3},{:.3},{:.3}\n",
             sample.at.as_millis(),
             body.0,
             body.1,
             sample.gaze.lift,
             sample.eye.x,
             sample.eye.y,
-            sample.exact.0,
-            sample.exact.1,
+            sample.state.x,
+            sample.state.y,
+            sample.state.lift,
         ));
     }
     out
@@ -378,10 +490,8 @@ fn derivative(trace: &Trace) -> Vec<(f64, f64)> {
         .filter_map(|pair| {
             let dt = (pair[1].at - pair[0].at).as_secs_f64();
             (dt > 0.0).then(|| {
-                let step = (
-                    pair[1].exact.0 - pair[0].exact.0,
-                    pair[1].exact.1 - pair[0].exact.1,
-                );
+                let (before, after) = (pair[0].state.exact(), pair[1].state.exact());
+                let step = (after.0 - before.0, after.1 - before.1);
                 (pair[1].at.as_secs_f64(), step.0.hypot(step.1) / dt)
             })
         })
