@@ -192,10 +192,19 @@ pub struct Crowd {
     now: Duration,
     /// Whose steps this client *commands* rather than merely hears about.
     ///
-    /// Our own body, once a shard has named it — and nobody at all before that.
-    /// The distinction is a pace: see [`glide_time`], and [`Crowd::commanding`]
-    /// for why one measurement is right and the other is not.
-    commanded: Option<Who>,
+    /// Our own body: the offline placeholder to begin with, and our serial from
+    /// the moment a shard names us. The distinction is a pace: see
+    /// [`glide_time`], and [`Crowd::commanding`] for why one measurement is
+    /// right and the other is not.
+    ///
+    /// A [`Who`] and not an `Option<Who>`, which is to say there is no state
+    /// where this client commands nobody. The placeholder's steps are always
+    /// ours to issue — nothing else can move it — so `None` is not "not named
+    /// yet", it is the body we walk before a shard has given it a serial. As an
+    /// `Option<Who>` it had to be armed by hand, which meant the offline walk
+    /// was measured through the event loop's wake jitter on every path that
+    /// forgot to.
+    commanded: Who,
 }
 
 impl Crowd {
@@ -210,8 +219,11 @@ impl Crowd {
     /// directions (late, then early), so the estimate is worse than the number
     /// it replaced: the body arrives early, stands, and is yanked. The walk
     /// oracle in `dst.rs` is what put a number on it.
+    ///
+    /// Said when a shard names our body, and not before: a client without one is
+    /// already commanding the offline placeholder — see the field.
     pub fn commanding(&mut self, who: Who) {
-        self.commanded = Some(who);
+        self.commanded = who;
     }
 
     /// Move every clock forward, and stop whoever has finished their step.
@@ -241,7 +253,7 @@ impl Crowd {
     pub fn see(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue) -> Mobile {
         let kind = BodyKind::of(body.0);
         let now = self.now;
-        let commanded = self.commanded == Some(who);
+        let commanded = self.commanded == who;
         let tracked = self.tracked.entry(who).or_insert(Tracked {
             at,
             facing: facing.direction,
@@ -729,6 +741,43 @@ mod tests {
             crowd.advance(WALK_HOLD + WALK_HOLD / 10);
             assert_eq!(step(&mut crowd, x).group, 0, "walking at tile {x}");
         }
+    }
+
+    /// The offline placeholder's steps are ours from the first frame, without
+    /// anything having to say so.
+    ///
+    /// A body we command crosses its tile in the nominal time — we sent the step
+    /// and we know when — where a body we merely hear about is glided over the
+    /// gap that was measured, wake jitter and all. Nothing but this client can
+    /// move the placeholder, so it is the first case, and it used to be armed by
+    /// hand in `App::start_replay`: every other path that walks it offline, and
+    /// there is one per key, measured the walk through the event loop instead.
+    #[test]
+    fn a_client_with_no_serial_commands_the_body_it_walks() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                None,
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            );
+        };
+        step(&mut crowd, 10);
+        // Half a step late, which is what a wake the loop slept through looks
+        // like. Measured, the next crossing would take one and a half steps.
+        crowd.advance(WALK_HOLD + WALK_HOLD / 2);
+        step(&mut crowd, 11);
+        crowd.advance(WALK_HOLD - Duration::from_millis(1));
+        let glide = crowd.glide_for(None).expect("still crossing");
+        assert!(glide.progress > 0.99, "all but arrived: {}", glide.progress);
+        crowd.advance(Duration::from_millis(1));
+        assert_eq!(
+            crowd.glide_for(None),
+            None,
+            "the nominal step, not the gap the loop happened to wake at",
+        );
     }
 
     /// And a walk already under way crosses each tile in the time the last one

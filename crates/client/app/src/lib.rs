@@ -1193,9 +1193,6 @@ impl App {
                 .snap(self.me(), start, body, Facing::walking(self.player.facing), hue);
             self.control.relock(start);
         }
-        // Our own steps, so the crossing is the nominal one rather than a gap
-        // measured through the event loop's wake jitter — see `Crowd::commanding`.
-        self.crowd.commanding(self.me());
         // The frames either side of a start are two different runs, and a metric
         // over both is a number about nothing.
         self.scope.clear();
