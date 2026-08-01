@@ -407,6 +407,11 @@ the camera to the body, and the three panels are on screen. What follows is the
 design as it was argued, with the places the code went another way marked — each
 of them found by writing it.
 
+**How the eye follows the body has a plan of its own from here on:**
+[`docs/camera.md`](camera.md). What is below is the projection, the zoom and the
+shell — the geometry the camera is made of, which is settled. Which camera runs
+on top of it is not, and the answer is a bench rather than an argument.
+
 This client is deliberately not a copy of the client. The camera zooms, pans
 freely, and can be unlocked from the body; the interface is egui windows and
 panels rather than a wall of gumps. Those are decided together rather than one
