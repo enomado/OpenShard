@@ -187,7 +187,12 @@ pub fn collect(map: &Map, camera: &Camera, atlas: &LandAtlas, texmaps: &TexmapAt
 /// Off the edge of the map there is no neighbour and the tile's own height
 /// stands in, which flattens the border tiles rather than dropping them off a
 /// cliff into nothing.
-fn corner_heights(map: &Map, x: u16, y: u16, own: i8) -> [f32; 4] {
+///
+/// Public because it is not only the ground pass's: a tile's four corners are
+/// what say how high the tile *is*, and [`crate::cutaway`] has to ask that of
+/// the tile the player is standing on before it can decide what to stop
+/// drawing. One copy of the neighbour walk, not two.
+pub fn corner_heights(map: &Map, x: u16, y: u16, own: i8) -> [f32; 4] {
     let at = |x: Option<u16>, y: Option<u16>| -> f32 {
         let height = match (x, y) {
             (Some(x), Some(y)) => map.land(x, y).map_or(own, |cell| cell.z),
