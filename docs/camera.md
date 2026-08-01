@@ -1004,6 +1004,37 @@ Found while planning this, and not to be lost in it.
   still wrong: it buys the smoothness at integer zooms and leaves the world drawn
   at a fraction of the display's resolution, which is the *other* half of what the
   coarse quantum was costing.
+- **A frame test with no client files passes, and says nothing.** `client_dir()`
+  returns `None` when `OPENSHARD_CLIENT` is unset and every test in
+  `render/tests/frame.rs` returns early — green, fast, and having asserted
+  nothing. C7's first two gates were written and "passed" that way before the
+  files were pointed at, which is the exact shape of false green this repository
+  keeps rediscovering. The honest fix is a signal rather than a failure: the
+  suite knows how many of its tests skipped and nothing prints it. A single test
+  that reports the count — and a CI job that asserts the count is zero — would
+  make "13 passed" mean what it looks like.
+- **The bench and the DST harness cannot see a magnified camera.** Both round the
+  eye to a whole *virtual* pixel (`WorldPoint::pixel`) because both fly at 1:1
+  and have no `Camera` to ask for a quantum — which is D8 working as intended,
+  and is also why every corridor in `dst.rs` was green throughout the life of the
+  defect C7 removed: a camera stepping four real pixels at `4x` is a camera on
+  the right virtual pixel. Giving `bench::run` and the harness a quantum is a
+  small change; deciding what the scripts should *assert* at `3x` is not, and it
+  is where the eye's own unevenness gate (below) should be built rather than at
+  1:1.
+- **A sloped tile does not translate.** The one artefact C7 leaves: a slope is a
+  square texmap stretched over a diamond, so its `uv` is interpolated across a
+  quad that is not axis-aligned and a camera moved one real pixel resamples a few
+  of its fragments rather than translating them — 19 pixels in 130,816 over
+  Britain. Nothing about the quantiser fixes it, and the honest fixes are both
+  real work: sample the texmap at the diamond's own resolution, or give the
+  stretched quads a `linear` sampler of their own and accept the softening on
+  slopes alone. Worth doing only if it is ever visible, and it is measured here
+  so that whoever sees it can tell it from a bug.
+- **`Camera` gave up `Eq`.** The eye is `f64` now, so the derive is `PartialEq`
+  only. Nothing needed the stronger bound and the values on the lattice are
+  exact, but `Camera` is compared in several tests and a float field is a thing
+  to know about when the next one is written.
 - **`FRAMES_SPAN` is a constant the panel cannot change, again.** The same item
   the scope's span just stopped being, and left as a constant deliberately: the
   slider belongs to whichever of the two rings turns out to be looked at
