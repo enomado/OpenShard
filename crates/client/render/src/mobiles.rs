@@ -23,14 +23,18 @@
 //! # And between two tiles while it is walking
 //!
 //! The wire moves a body a whole tile at a time, so a mobile drawn where the
-//! last packet put it teleports 44 pixels every step. [`Glide`] is the
-//! difference: where the body was when the step began and how far into the step
-//! it is, and the sprite hangs between the two. Nothing else changes — the
-//! *tile* is still where the server put it, which is what everything that is
-//! not a pixel keeps asking.
+//! last packet put it teleports 44 pixels every step. [`Mobile::drawn`] is the
+//! difference: the sub-pixel position the sprite actually hangs at, which
+//! mid-step is between two tiles and under an eased rig is behind the tile
+//! altogether. Nothing else changes — the *tile* is still where the server put
+//! it, which is what everything that is not a pixel keeps asking.
 //!
-//! Where it *began* and not the tile it stepped off, which is the same thing
-//! only when every packet arrives on time. See [`Glide::from`].
+//! **What that position is a function of is deliberately not here.** A step's
+//! progress is a clock, an ease is a filter with state, and both belong to the
+//! layer that ages what it sees — `client/app`'s `crowd.rs`. This crate reads no
+//! clocks (see the crate docs), so a mobile arrives with its position already
+//! decided and the renderer places a picture at it. `docs/camera.md` D10 is the
+//! argument for the ease living on the body rather than on the eye.
 
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Hue;
@@ -42,52 +46,21 @@ use crate::depth;
 use crate::follow::Gaze;
 use crate::sprite::SpriteQuad;
 
-/// A step still being taken, in the only two numbers drawing one needs.
-///
-/// Where the body came from and how far along it is. The tile it is going to is
-/// [`Mobile::at`] — a step's destination is where the server says the body *is*,
-/// and the glide is the part of it the eye has not caught up with yet.
-///
-/// Not `Eq`, and neither is [`Mobile`] any more: [`Glide::progress`] is a
-/// fraction of a step and there is no honest integer for it. Time is what
-/// advances it, and time does not land on tile boundaries.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Glide {
-    /// Where the body was when the step began — height kept apart, as a
-    /// [`Gaze`] keeps it.
-    ///
-    /// **Not the tile it stepped off**, and that is the whole of it. A step
-    /// begins when a packet arrives, and a packet arrives when the wire and the
-    /// event loop between them get round to it; the body at that instant is
-    /// wherever the *previous* step had reached, which on a late packet is its
-    /// destination and on an early one is short of it. Anchoring the new step to
-    /// the tile boundary rather than to that position is a discontinuity of
-    /// exactly the arrival's error, once per tile — and the camera is locked to
-    /// the body, so the whole world takes it.
-    ///
-    /// Sub-tile, therefore, and a [`Gaze`] rather than a pair: the height rides
-    /// with it, so a step up a hill rises over the step rather than snapping
-    /// four pixels at the end of it, and a body caught mid-rise carries the part
-    /// of the rise it had into the next one.
-    pub from: Gaze,
-    /// How far into the step: `0.0` at [`Glide::from`], `1.0` at [`Mobile::at`].
-    ///
-    /// Clamped by whoever reads it rather than by construction, because a value
-    /// outside the range means a clock ran past the step and the honest picture
-    /// of that is a body standing on its destination.
-    pub progress: f32,
-}
-
 /// One creature to draw, as the client knows it.
 ///
 /// Everything here comes from the server — `0x77`, `0x78` and `0x20` — except
-/// the frame, which is whatever the animation has advanced to, and the glide,
-/// which is *history*: only the previous packet says a body moved. Deliberately
-/// a plain value rather than a handle into a `WorldView`: this crate renders
-/// what it is given and owns no model of the world.
+/// the frame, which is whatever the animation has advanced to, and
+/// [`Mobile::drawn`], which is *history*: only the previous packet says a body
+/// moved. Deliberately a plain value rather than a handle into a `WorldView`:
+/// this crate renders what it is given and owns no model of the world.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Mobile {
-    /// Where it stands — or, mid-step, where it is going.
+    /// The tile the server put it on — or, mid-step, the one it is going to.
+    ///
+    /// Everything that is not a pixel reads this and not [`Mobile::drawn`]: the
+    /// depth order, so a body half a tile into a step is already *on* the tile it
+    /// stepped onto as far as anything it can walk behind is concerned; and the
+    /// height a mounted or gliding body is sorted at.
     pub at: Point,
     /// Its body id.
     pub body: u16,
@@ -104,51 +77,32 @@ pub struct Mobile {
     pub frame: u16,
     /// Its hue, or [`Hue::NONE`] for none.
     pub hue: Hue,
-    /// The step it is in the middle of, or `None` for a body standing still.
+    /// Where to actually draw it, sub-pixel and with its height kept apart.
     ///
-    /// [`Option`] in its proper sense: a standing body is not missing a glide,
-    /// it genuinely has none.
-    pub glide: Option<Glide>,
+    /// **Not derived from [`Mobile::at`], and that is the point.** A body
+    /// between two tiles is part way through a step; a body being eased is
+    /// behind its tile by whatever the filter is holding (`docs/camera.md` D10).
+    /// Neither is a function of the tile and both are a function of a clock, so
+    /// the caller that owns the clock owns this — `client/app`'s `crowd.rs` — and
+    /// this crate draws where it is told.
+    ///
+    /// A [`Gaze`] and not a [`WorldPixel`] because the camera filters it: the
+    /// height is kept out of the vertical axis so it can have its own clock, and
+    /// the rounding happens once, at the end (D2, D7).
+    pub drawn: Gaze,
 }
 
-/// Where a mobile is asking to be looked at, the step it is mid-way through
-/// included and its height kept apart.
+/// Where a mobile is asking to be looked at.
 ///
-/// The whole of the glide, in one place so that only the *position* moves: the
-/// depth order, the atlas key and the anchor arithmetic all still read
-/// [`Mobile::at`], which is the tile the server named.
-///
-/// Sub-pixel and undivided by `z`, because this is what a camera filters — see
-/// [`Gaze`]. What draws the sprite is [`world_position`], which is this rounded;
-/// the two are one formula on purpose, since a camera and a body that round
-/// separately disagree by a pixel and the disagreement is a shimmer nobody can
-/// name.
+/// One line, and it stays a function rather than a field access because the
+/// camera and the sprite must read the *same* number: a body and an eye that
+/// round separately disagree by a pixel, and the disagreement is a shimmer
+/// nobody can name.
 pub fn gaze(mobile: &Mobile) -> Gaze {
-    glided(mobile.at, mobile.glide)
+    mobile.drawn
 }
 
-/// The same, from the two fields it actually reads.
-///
-/// Public and separate because the layer that *owns* the glide has to ask this
-/// question too: a step begins from where the body was drawn, so whatever holds
-/// the clock has to place a body it has not built a [`Mobile`] for yet
-/// (`client/app`'s `crowd.rs`). One formula, because two would be a body and a
-/// step-start that disagree by a fraction of a pixel — which is a jump per tile,
-/// and the reason this signature exists at all.
-pub fn glided(at: Point, glide: Option<Glide>) -> Gaze {
-    let at = Gaze::on(at);
-    let Some(glide) = glide else {
-        return at;
-    };
-    // How much of the step has not been walked yet. Clamped rather than trusted:
-    // a progress past one means a clock ran past the step, and the honest
-    // picture of that is a body standing on its destination.
-    let left = f64::from(1.0 - glide.progress.clamp(0.0, 1.0));
-    at.back_towards(glide.from, left)
-}
-
-/// Where a mobile's cell centre falls in world pixels, the step it is mid-way
-/// through included.
+/// Where a mobile's sprite lands in world pixels, rounded.
 ///
 /// World pixels and not view pixels, and public for it: the camera that follows
 /// a body has to follow it *between* tiles too, or the world jumps a tile at a
@@ -300,7 +254,6 @@ mod tests {
     use openshard_uofiles::image::Image;
 
     use super::*;
-    use crate::camera;
 
     /// A frame packed at a known size, for placing.
     fn atlas(body: u16, direction: u8, width: u16, height: u16, center: (i16, i16)) -> AnimAtlas {
@@ -344,7 +297,7 @@ mod tests {
                 facing: Direction::SouthEast,
                 frame: 0,
                 hue: Hue::NONE,
-                glide: None,
+                drawn: Gaze::on(Point::new(100, 100, 0)),
             }],
             &camera,
             &atlas,
@@ -373,7 +326,7 @@ mod tests {
                     facing,
                     frame: 0,
                     hue: Hue::NONE,
-                    glide: None,
+                    drawn: Gaze::on(Point::new(100, 100, 0)),
                 }],
                 &camera,
                 &atlas,
@@ -406,7 +359,7 @@ mod tests {
             // One past the only frame packed.
             frame: 1,
             hue: Hue::NONE,
-            glide: None,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
         };
         assert!(collect(&[missing], &camera, &atlas).is_empty());
         // And the same mobile at frame 0 is not, so the drop above is a
@@ -431,7 +384,7 @@ mod tests {
             facing: Direction::SouthEast,
             frame: 0,
             hue: Hue::NONE,
-            glide: None,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
         };
         let quads = collect(&[mobile], &camera, &atlas);
         let anchor = head_anchor(&mobile, &camera, &atlas).expect("packed");
@@ -452,165 +405,38 @@ mod tests {
             facing: Direction::SouthEast,
             frame: 1,
             hue: Hue::NONE,
-            glide: None,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
         };
         assert!(head_anchor(&missing, &camera, &atlas).is_none());
     }
 
-    /// A body mid-step hangs between the two tiles, and the two ends of the
-    /// step are exact.
-    ///
-    /// The ends are the half worth pinning: a glide that ended a pixel short
-    /// leaves the body permanently off its tile, and one that started a pixel
-    /// late is the teleport this exists to remove, one pixel smaller.
-    #[test]
-    fn a_gliding_body_hangs_between_the_two_tiles() {
-        let from = Point::new(100, 100, 0);
-        let to = Point::new(101, 100, 0);
-        let stepping = |progress: f32| {
-            world_position(&Mobile {
-                at: to,
-                body: 400,
-                group: 0,
-                facing: Direction::NorthEast,
-                frame: 0,
-                hue: Hue::NONE,
-                glide: Some(Glide {
-                    from: Gaze::on(from),
-                    progress,
-                }),
-            })
-        };
-        assert_eq!(stepping(0.0), camera::project(from), "it starts where it was");
-        assert_eq!(stepping(1.0), camera::project(to), "and arrives exactly");
-        // A step east is half a tile right and half a tile down; half of it is
-        // half of that.
-        assert_eq!(stepping(0.5), WorldPixel { x: 11, y: 4411 });
-        assert_eq!(
-            camera::project(from),
-            WorldPixel { x: 0, y: 4400 },
-            "the ends the halfway point is between",
-        );
-        assert_eq!(camera::project(to), WorldPixel { x: 22, y: 4422 });
-        // A clock that overran is a body standing on its destination, not one
-        // sliding past it.
-        assert_eq!(stepping(4.0), camera::project(to));
-        assert_eq!(stepping(-1.0), camera::project(from));
-    }
-
-    /// A step up a hill rises over the step, rather than snapping at the end.
-    ///
-    /// Free, because the projection is linear in `z` — and worth a test because
-    /// a glide that interpolated only `x` and `y` would look right on the flat
-    /// and jerk vertically on every stair in the game.
-    #[test]
-    fn a_glide_carries_the_height_with_it() {
-        let flat = Point::new(100, 100, 0);
-        let up = Point::new(101, 100, 10);
-        let half = world_position(&Mobile {
-            at: up,
-            body: 400,
-            group: 0,
-            facing: Direction::NorthEast,
-            frame: 0,
-            hue: Hue::NONE,
-            glide: Some(Glide {
-                from: Gaze::on(flat),
-                progress: 0.5,
-            }),
-        });
-        let (low, high) = (camera::project(flat).y, camera::project(up).y);
-        assert_eq!(half.y, (low + high) / 2);
-        assert!(half.y < low, "and it is on the way up");
-    }
-
-    /// And the camera is told the two apart, which is what a filter over the
-    /// height needs and what a projected pixel cannot say.
-    ///
-    /// The case that names the difference is a body that changes only its
-    /// height — a lift, a teleporter, a step onto a tile of the same footprint.
-    /// Its ground position does not move at all, and everything about that is
-    /// invisible in [`world_position`], where the four pixels of `z` and the
-    /// zero pixels of ground are one number.
-    #[test]
-    fn the_ground_does_not_move_when_only_the_height_does() {
-        let ground = Point::new(100, 100, 0);
-        let raised = Point::new(100, 100, 20);
-        let lifting = |progress: f32| {
-            gaze(&Mobile {
-                at: raised,
-                body: 400,
-                group: 0,
-                facing: Direction::NorthEast,
-                frame: 0,
-                hue: Hue::NONE,
-                glide: Some(Glide {
-                    from: Gaze::on(ground),
-                    progress,
-                }),
-            })
-        };
-        let flat = Gaze::on(ground);
-        for progress in [0.0, 0.25, 0.5, 1.0] {
-            let at = lifting(progress);
-            assert_eq!((at.x, at.y), (flat.x, flat.y), "the ground moved at {progress}");
-        }
-        // The height is the only thing that did, and it is the whole rise.
-        assert_eq!(lifting(0.0).lift, 0.0);
-        assert_eq!(lifting(0.25).lift, 20.0);
-        assert_eq!(lifting(1.0).lift, 80.0, "twenty units, four pixels each");
-    }
-
-    /// Sub-pixel, and it has to be: the camera filters this, and a filter fed a
-    /// value that has already been rounded to whole pixels is a filter fed a
-    /// staircase — which is how a smoother ends up smoothing nothing at the
-    /// speeds a walk actually moves at.
-    #[test]
-    fn a_gaze_is_finer_than_a_pixel() {
-        let at = gaze(&Mobile {
-            at: Point::new(101, 100, 0),
-            body: 400,
-            group: 0,
-            facing: Direction::NorthEast,
-            frame: 0,
-            hue: Hue::NONE,
-            glide: Some(Glide {
-                from: Gaze::on(Point::new(100, 100, 0)),
-                progress: 0.1,
-            }),
-        });
-        // A tenth of a step east is 2.2 pixels right, not 2.
-        assert!((at.x - 2.2).abs() < 1e-6, "{}", at.x);
-        assert_eq!(at.eye().x, 2, "and the sprite still lands on a whole one");
-    }
-
-    /// The glide moves the sprite and nothing else: a body half a tile into a
-    /// step still sorts by the tile it stepped onto.
+    /// A body drawn between two tiles still sorts by the tile it is on.
     ///
     /// Which is what keeps it from changing sides of a wall halfway through a
     /// step — the depth buffer would draw it in front for two frames and behind
-    /// for the next two.
+    /// for the next two. The same rule covers an eased body, which is drawn
+    /// *behind* its tile by however much the filter is holding (D10): the tile
+    /// is what the server named and the drawn position is a picture.
     #[test]
-    fn a_glide_does_not_move_the_depth_order() {
+    fn where_a_body_is_drawn_does_not_move_its_depth_order() {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let atlas = atlas(400, 0, 40, 60, (12, -3));
-        let mobile = Mobile {
+        let on_its_tile = Mobile {
             at: Point::new(101, 100, 0),
             body: 400,
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
             hue: Hue::NONE,
-            glide: None,
+            drawn: Gaze::on(Point::new(101, 100, 0)),
         };
-        let standing = collect(&[mobile], &camera, &atlas);
+        let standing = collect(&[on_its_tile], &camera, &atlas);
+        // Half a tile back the way it came: a step east is eleven pixels right
+        // and eleven down, so half of one is eleven of each.
         let mid_step = collect(
             &[Mobile {
-                glide: Some(Glide {
-                    from: Gaze::on(Point::new(100, 100, 0)),
-                    progress: 0.5,
-                }),
-                ..mobile
+                drawn: Gaze::on(Point::new(101, 100, 0)).back_towards(Gaze::on(Point::new(100, 100, 0)), 0.5),
+                ..on_its_tile
             }],
             &camera,
             &atlas,
@@ -632,7 +458,7 @@ mod tests {
             facing,
             frame: 0,
             hue: Hue::NONE,
-            glide: None,
+            drawn: Gaze::on(Point::new(0, 0, 0)),
         };
         // East and South share a picture, so they are one animation to read.
         let wanted = needed_animations(&[

@@ -576,10 +576,20 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         if ui.button("LIFT").clicked() {
             rig = Rig::LIFT;
         }
+        if ui.button("EASED").clicked() {
+            rig = Rig::EASED;
+        }
     });
     egui::Grid::new("rig").num_columns(2).show(ui, |ui| {
         ui.label("plane τ");
         ui.add(egui::Slider::new(&mut rig.plane_tau, 0.0..=0.5).suffix(" s"));
+        ui.end_row();
+        // The body's own ease, and it is on this panel rather than a second one
+        // because it is the same filter and the same sitting: what is being
+        // chosen is how motion starts and stops, and whether the lag is carried
+        // by the eye or by the body is the choice, not two choices.
+        ui.label("body τ");
+        ui.add(egui::Slider::new(&mut rig.body_tau, 0.0..=0.5).suffix(" s"));
         ui.end_row();
         ui.label("lift τ");
         ui.add(egui::Slider::new(&mut rig.lift_tau, 0.0..=0.5).suffix(" s"));
@@ -831,8 +841,8 @@ fn literal(rig: &Rig) -> String {
         false => "f32::INFINITY".to_string(),
     };
     format!(
-        "Rig {{ plane_tau: {:?}, lift_tau: {:?}, lift_cut: {cut} }}",
-        rig.plane_tau, rig.lift_tau,
+        "Rig {{ plane_tau: {:?}, lift_tau: {:?}, lift_cut: {cut}, body_tau: {:?} }}",
+        rig.plane_tau, rig.lift_tau, rig.body_tau,
     )
 }
 
@@ -1043,7 +1053,7 @@ mod tests {
     fn a_rig_prints_as_the_source_line_it_would_be() {
         assert_eq!(
             literal(&Rig::LIFT),
-            "Rig { plane_tau: 0.0, lift_tau: 0.15, lift_cut: 64.0 }",
+            "Rig { plane_tau: 0.0, lift_tau: 0.15, lift_cut: 64.0, body_tau: 0.0 }",
         );
         // `inf` is what `Display` would give, and it is not Rust.
         let never = Rig {
@@ -1052,7 +1062,7 @@ mod tests {
         };
         assert_eq!(
             literal(&never),
-            "Rig { plane_tau: 0.0, lift_tau: 0.0, lift_cut: f32::INFINITY }",
+            "Rig { plane_tau: 0.0, lift_tau: 0.0, lift_cut: f32::INFINITY, body_tau: 0.0 }",
         );
     }
 }

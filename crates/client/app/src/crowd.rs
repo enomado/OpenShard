@@ -38,8 +38,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use openshard_client_render::animation::AnimationClock;
-use openshard_client_render::follow::Gaze;
-use openshard_client_render::mobiles::{Glide, Mobile};
+use openshard_client_render::follow::{Gaze, Rig};
+use openshard_client_render::mobiles::Mobile;
 use openshard_movement::{RUN_HOLD, WALK_HOLD};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::serial::Serial;
@@ -65,6 +65,27 @@ struct Speech {
     font: Font,
     hue: Hue,
     started: Duration,
+}
+
+/// Where between two tiles a body is, and how far along.
+///
+/// Was a public type in `client/render` until the renderer stopped deriving a
+/// position at all (D10): a sprite is drawn at [`Mobile::drawn`], and how that
+/// number came about — a step's clock, an ease's filter — is this layer's
+/// business and nobody else's. So it is private here, and the interpolation with
+/// it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Glide {
+    /// Where the body was drawn when the step began.
+    ///
+    /// **Not the tile it stepped off.** A step begins when a packet arrives, and
+    /// a packet arrives when the wire and the event loop between them get round
+    /// to it; the body at that instant is wherever the previous step had reached.
+    /// Anchoring to the tile boundary instead is a discontinuity of exactly the
+    /// arrival's error, once per tile.
+    from: Gaze,
+    /// How far into the step: `0.0` at [`Glide::from`], `1.0` at the tile.
+    progress: f32,
 }
 
 /// A step in progress: where it came from, when it started, and how long it
@@ -172,6 +193,14 @@ struct Tracked {
     /// of the last two packets, not of the one still being drawn. `None` until a
     /// body has been seen to move at all.
     stepped_at: Option<Duration>,
+    /// Where the sprite is actually drawn, which trails [`Tracked::gaze_at`] by
+    /// whatever the ease is holding.
+    ///
+    /// The filter's state, and it is per body because every body is eased and
+    /// there is one of these per body — `docs/camera.md` D10. Equal to the
+    /// unfiltered position under a rig whose `body_tau` is zero, which is what
+    /// makes the reference camera still exactly the reference camera.
+    drawn: Gaze,
     /// Its own animation clock.
     ///
     /// Per mobile, and reset when the group changes: one clock for everybody
@@ -191,7 +220,7 @@ struct Tracked {
 pub type Who = Option<Serial>;
 
 /// Everyone on screen, aged.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Crowd {
     tracked: HashMap<Who, Tracked>,
     /// The last line each serial was heard saying, if it is still within
@@ -217,9 +246,44 @@ pub struct Crowd {
     /// was measured through the event loop's wake jitter on every path that
     /// forgot to.
     commanded: Who,
+    /// The rig, for the one field of it this layer owns: `body_tau`.
+    ///
+    /// The whole struct and not that field alone, so that a preset swapped in
+    /// the panel reaches the body and the eye as one value — two halves of a rig
+    /// arriving separately is a frame drawn under half of each. See
+    /// `docs/camera.md` D10 on why the body's ease is a rig field at all.
+    rig: Rig,
+}
+
+impl Default for Crowd {
+    /// A crowd nobody is easing, which is the reference camera's body.
+    ///
+    /// [`Rig::HARD`] rather than a preset, for the reason `Follower` starts
+    /// there too: the eye is the body and the body is its tile, so a test that
+    /// does not mention a rig is measuring the walk and not a filter (D9).
+    fn default() -> Self {
+        Self {
+            tracked: HashMap::new(),
+            speech: HashMap::new(),
+            now: Duration::ZERO,
+            commanded: None,
+            rig: Rig::HARD,
+        }
+    }
 }
 
 impl Crowd {
+    /// Fly a different rig from now on.
+    ///
+    /// The eased position is deliberately *not* reset: the body is where it is,
+    /// and a swap that teleported every sprite to its tile would be a jump per
+    /// mobile at the exact moment somebody drags a slider. A tau that just went
+    /// to zero closes the gap on the next frame anyway, which is one frame of
+    /// catching up and is what "no filter" means.
+    pub fn set_rig(&mut self, rig: Rig) {
+        self.rig = rig;
+    }
+
     /// Name the body this client walks itself.
     ///
     /// Everybody else's pace has to be *measured*, because nothing on the wire
@@ -242,7 +306,7 @@ impl Crowd {
     pub fn advance(&mut self, dt: Duration) {
         let was = self.now;
         self.now += dt;
-        let now = self.now;
+        let (now, rig) = (self.now, self.rig);
         for tracked in self.tracked.values_mut() {
             // Only the part of the span the body was actually covering ground
             // in — see [`Tracked::mid_stride`]. Not a whole-span test against
@@ -250,6 +314,12 @@ impl Crowd {
             // would either play the whole span or none of it, and at 400ms a
             // step the second one freezes the entire walk.
             tracked.clock.advance(tracked.striding(was, dt));
+            // The ease, on the position the step arithmetic just produced. After
+            // the clock and before anything is read, so every reader this frame
+            // sees one answer — see [`Tracked::drawn`].
+            tracked.drawn = tracked
+                .drawn
+                .eased_towards(tracked.gaze_at(now), rig.body_tau, dt);
             // The *animation* outlives the crossing by half a step — see
             // `animation_hold`. The glide itself ends on time; this is only what
             // decides when the walk gives way to standing.
@@ -282,6 +352,11 @@ impl Crowd {
             group: kind.standing(),
             step: None,
             stepped_at: None,
+            // A body seen for the first time is drawn where it is. There is
+            // nothing to ease from: the alternative is easing in from wherever
+            // the last body with this serial stood, which is a stranger sliding
+            // in from off screen.
+            drawn: Gaze::on(at),
             clock: AnimationClock::default(),
         });
 
@@ -314,12 +389,23 @@ impl Crowd {
             // pick up from. Read before `at` is moved, because it is a question
             // about the step that is ending.
             let from = tracked.gaze_at(now);
+            let walked = is_one_step(was, at);
             tracked.at = at;
             tracked.step = Some(Step {
-                from: is_one_step(was, at).then_some(from),
+                from: walked.then_some(from),
                 started: now,
                 takes,
             });
+            // A move of more than one tile is a gate, a recall, a `0x20`. It is
+            // the same cut `Crowd::snap` makes and it has to be made here too:
+            // there is no step to walk, so the ease would have nothing between
+            // it and the destination but a time constant — and a body eased
+            // across half a facet is a smear of world nobody is looking at,
+            // which is D6's own argument for the distance backstop, arriving
+            // here as an event instead.
+            if !walked {
+                tracked.drawn = Gaze::on(at);
+            }
             tracked.stepped_at = Some(now);
             let moving = match (facing.running, kind.running()) {
                 (true, Some(running)) => running,
@@ -352,7 +438,7 @@ impl Crowd {
             facing: facing.direction,
             frame: 0,
             hue,
-            glide: tracked.glide(now),
+            drawn: tracked.drawn,
         }
     }
 
@@ -377,6 +463,11 @@ impl Crowd {
             group: kind.standing(),
             step: None,
             stepped_at: None,
+            // A body seen for the first time is drawn where it is. There is
+            // nothing to ease from: the alternative is easing in from wherever
+            // the last body with this serial stood, which is a stranger sliding
+            // in from off screen.
+            drawn: Gaze::on(at),
             clock: AnimationClock::default(),
         });
         tracked.at = at;
@@ -384,6 +475,13 @@ impl Crowd {
         tracked.body = body.0;
         tracked.step = None;
         tracked.stepped_at = None;
+        // The cut, and here it is an event rather than a threshold: this *is*
+        // the rollback, the teleport, the `0x20`. D6 says a cut is an event and
+        // the distance is a backstop for the ones nobody raised; at this level
+        // nobody has to infer anything. Easing across it would draw the body
+        // strolling over ground it never crossed, which is the same picture the
+        // glide is skipped for two lines above.
+        tracked.drawn = Gaze::on(at);
 
         Mobile {
             at,
@@ -392,7 +490,7 @@ impl Crowd {
             facing: facing.direction,
             frame: 0,
             hue,
-            glide: None,
+            drawn: tracked.drawn,
         }
     }
 
@@ -407,14 +505,19 @@ impl Crowd {
             .map_or(0, |tracked| tracked.clock.frame(frame_count))
     }
 
-    /// How far into its step this body is, if it is in one.
+    /// Where this body is drawn now, in the sub-pixel form the sprite and the
+    /// camera both read.
     ///
     /// Asked every frame and not only when a packet arrives, which is the whole
-    /// point: a glide read once and stored would freeze at whatever it was when
-    /// the `0x77` landed, and the body would jump a tile on the next one — the
-    /// teleport this exists to remove, arriving 400ms late.
-    pub fn glide_for(&self, who: Who) -> Option<Glide> {
-        self.tracked.get(&who)?.glide(self.now)
+    /// point: a position read once and stored would freeze at whatever it was
+    /// when the `0x77` landed, and the body would jump a tile on the next one —
+    /// the teleport this exists to remove, arriving 400ms late.
+    ///
+    /// `None` for a body this crowd is not tracking, which is absence and not a
+    /// default: the caller has a mobile the crowd has never been told about, and
+    /// the tile it would otherwise be given is a guess.
+    pub fn drawn_for(&self, who: Who) -> Option<Gaze> {
+        Some(self.tracked.get(&who)?.drawn)
     }
 
     /// Whether anybody is part way through a step.
@@ -533,10 +636,20 @@ impl Tracked {
     /// one is in the past — see [`began`]. A body with nothing in flight is on
     /// its tile.
     fn gaze_at(&self, when: Duration) -> Gaze {
-        // The renderer's own formula and not a copy of it: a step that started
-        // from a position a fraction of a pixel off where the sprite was drawn
-        // is the jump this exists to remove, one pixel smaller.
-        openshard_client_render::mobiles::glided(self.at, self.glide(when))
+        let at = Gaze::on(self.at);
+        let Some(glide) = self.glide(when) else {
+            return at;
+        };
+        // How much of the step has not been walked yet. Clamped rather than
+        // trusted: a progress past one means a clock ran past the step, and the
+        // honest picture of that is a body standing on its destination.
+        //
+        // Backwards from the destination rather than forwards from the origin,
+        // which is the form that lands *exactly* on the tile when the step is
+        // over — see [`Gaze::back_towards`]. A body that never quite arrives
+        // shimmers.
+        let left = f64::from(1.0 - glide.progress.clamp(0.0, 1.0));
+        at.back_towards(glide.from, left)
     }
 
     /// Where between two tiles this body is, at a moment on the crowd's clock.
@@ -818,8 +931,8 @@ mod tests {
         assert_eq!(crowd.frame_for(serial(1), 6), 0, "the walk starts at its start");
     }
 
-    /// A step is walked across, not jumped: the glide starts on the tile left
-    /// behind and reaches the new one exactly when the walk ends.
+    /// A step is walked across, not jumped: the body leaves the tile it was
+    /// standing on and reaches the new one exactly when the walk ends.
     #[test]
     fn a_step_is_glided_across_and_ends_on_its_tile() {
         let mut crowd = Crowd::default();
@@ -832,32 +945,54 @@ mod tests {
                 Hue::NONE,
             )
         };
-        assert_eq!(step(&mut crowd, 10).glide, None, "standing still is not a step");
+        let standing = step(&mut crowd, 10);
+        assert_eq!(
+            standing.drawn,
+            Gaze::on(Point::new(10, 10, 0)),
+            "standing still is on its tile",
+        );
 
         let stepped = step(&mut crowd, 11);
-        let glide = stepped.glide.expect("mid-step");
         assert_eq!(
-            glide.from,
+            stepped.drawn,
             Gaze::on(Point::new(10, 10, 0)),
-            "from where it was standing"
+            "a step begins where the body was, not where it is going",
         );
-        assert_eq!(glide.progress, 0.0, "and it has not moved yet");
 
-        crowd.advance(WALK_HOLD / 4);
-        assert_eq!(crowd.glide_for(serial(1)).expect("still stepping").progress, 0.25);
-        crowd.advance(WALK_HOLD / 4);
-        assert_eq!(crowd.glide_for(serial(1)).expect("still stepping").progress, 0.5);
-        // The instant the walk ends the body is on its tile and has no step
-        // left to be part of the way through — the two have to agree, or the
-        // sprite jumps the remaining pixels as the animation stops.
+        // A quarter and a half of the way across, in the pixels the sprite is
+        // actually placed at: a step south-east is 22 pixels down the screen and
+        // none across.
+        let quarter = crossed(&mut crowd, WALK_HOLD / 4);
+        assert!((quarter - 0.25).abs() < 1e-6, "{quarter}");
+        let half = crossed(&mut crowd, WALK_HOLD / 4);
+        assert!((half - 0.5).abs() < 1e-6, "{half}");
+
+        // The instant the walk ends the body is on its tile, exactly — the two
+        // have to agree, or the sprite jumps the remaining pixels as the
+        // animation stops.
         crowd.advance(WALK_HOLD / 2);
-        assert_eq!(crowd.glide_for(serial(1)), None);
+        assert_eq!(crowd.drawn_for(serial(1)), Some(Gaze::on(Point::new(11, 10, 0))));
         // And it keeps *playing* the walk for half a step longer, which is what
         // stops a body that is genuinely walking from standing for a frame
         // between two steps. See `animation_hold`.
         assert_eq!(step(&mut crowd, 11).group, 0, "still playing the walk");
         crowd.advance(WALK_HOLD / 2);
         assert_eq!(step(&mut crowd, 11).group, 4, "standing");
+    }
+
+    /// How far along a step south-east from `(10, 10)` the body is drawn, after
+    /// another span of the clock.
+    ///
+    /// In the drawn position and not in a progress field, because the drawn
+    /// position is the only thing anybody sees. A step south-east moves the
+    /// body one tile down the screen and nothing across, so the fraction is the
+    /// vertical distance over a tile's half-height.
+    fn crossed(crowd: &mut Crowd, dt: Duration) -> f64 {
+        crowd.advance(dt);
+        let at = crowd.drawn_for(serial(1)).expect("a tracked body");
+        let from = Gaze::on(Point::new(10, 10, 0));
+        let to = Gaze::on(Point::new(11, 10, 0));
+        (at.y - from.y) / (to.y - from.y)
     }
 
     /// The defect the split between the crossing and the animation was written
@@ -919,7 +1054,11 @@ mod tests {
         crowd.advance(WALK_HOLD);
         let arrived = crowd.frame_for(serial(1), 6);
         assert!(arrived > 0, "the walk played while it walked");
-        assert_eq!(crowd.glide_for(serial(1)), None, "and the tile is crossed");
+        assert_eq!(
+            crowd.drawn_for(serial(1)),
+            Some(Gaze::on(Point::new(11, 10, 0))),
+            "and the tile is crossed",
+        );
 
         // The hold: the group is held and the picture is not. Three eighths of
         // a step and not four, because the fourth lands exactly on
@@ -1034,12 +1173,15 @@ mod tests {
         crowd.advance(WALK_HOLD + WALK_HOLD / 2);
         step(&mut crowd, 11);
         crowd.advance(WALK_HOLD - Duration::from_millis(1));
-        let glide = crowd.glide_for(None).expect("still crossing");
-        assert!(glide.progress > 0.99, "all but arrived: {}", glide.progress);
+        let short = arrived(&crowd, None, Point::new(11, 10, 0));
+        assert!(
+            short > 0.0 && short < 0.2,
+            "all but arrived: {short} pixels short"
+        );
         crowd.advance(Duration::from_millis(1));
         assert_eq!(
-            crowd.glide_for(None),
-            None,
+            crowd.drawn_for(None),
+            Some(Gaze::on(Point::new(11, 10, 0))),
             "the nominal step, not the gap the loop happened to wake at",
         );
     }
@@ -1080,10 +1222,17 @@ mod tests {
         // body is on its tile — which is to say two tiles in two holds, and not
         // two tiles in two holds plus the two latenesses.
         crowd.advance(WALK_HOLD - late - Duration::from_millis(1));
-        let glide = crowd.glide_for(None).expect("still crossing");
-        assert!(glide.progress > 0.99, "all but arrived: {}", glide.progress);
+        let short = arrived(&crowd, None, Point::new(12, 10, 0));
+        assert!(
+            short > 0.0 && short < 0.2,
+            "all but arrived: {short} pixels short"
+        );
         crowd.advance(Duration::from_millis(1));
-        assert_eq!(crowd.glide_for(None), None, "on the beat");
+        assert_eq!(
+            crowd.drawn_for(None),
+            Some(Gaze::on(Point::new(12, 10, 0))),
+            "on the beat",
+        );
     }
 
     /// A step starts from where the body is drawn, not from the tile it is
@@ -1109,26 +1258,45 @@ mod tests {
         step(&mut crowd, 10);
         step(&mut crowd, 11);
         crowd.advance(WALK_HOLD * 3 / 4);
-        let before = drawn(&crowd, serial(1), Point::new(11, 10, 0));
+        let before = drawn(&crowd, serial(1));
+        let before_gaze = crowd.drawn_for(serial(1)).expect("a tracked body");
 
         let stepped = step(&mut crowd, 12);
-        let after = drawn(&crowd, serial(1), Point::new(12, 10, 0));
+        let after = drawn(&crowd, serial(1));
         assert_eq!(before, after, "the sprite moved on an arrival, not on a clock");
         assert_eq!(
-            stepped.glide.expect("mid-step").progress,
-            0.0,
-            "and the new step has not run yet",
+            stepped.drawn, before_gaze,
+            "and the mobile handed over says the same",
         );
     }
 
-    /// Where a body is drawn, through the renderer's own placement.
-    fn drawn(crowd: &Crowd, who: Who, at: Point) -> (i64, i64) {
-        let gaze = openshard_client_render::mobiles::glided(at, crowd.glide_for(who));
-        // Rounded to a thousandth of a pixel: the comparison is about a quarter
-        // of a tile, and an exact one would be asserting about the last bit of
-        // an `f64` division.
-        let (x, y) = gaze.exact();
+    /// Where a body is drawn, to a thousandth of a pixel.
+    ///
+    /// Rounded because the comparison is about a quarter of a tile, and an exact
+    /// one would be asserting about the last bit of an `f64` division.
+    fn drawn(crowd: &Crowd, who: Who) -> (i64, i64) {
+        let (x, y) = crowd.drawn_for(who).expect("a tracked body").exact();
         ((x * 1_000.0).round() as i64, (y * 1_000.0).round() as i64)
+    }
+
+    /// How far along the segment from `from` to `to` a body is drawn.
+    ///
+    /// The fraction in pixels, which is the only place it exists now: there is
+    /// no progress field to read, because the sprite's position is the answer
+    /// and a second number beside it could disagree with the picture.
+    fn halfway(crowd: &Crowd, who: Who, from: Point, to: Point) -> f64 {
+        let at = crowd.drawn_for(who).expect("a tracked body").exact();
+        let (from, to) = (Gaze::on(from).exact(), Gaze::on(to).exact());
+        let span = (to.0 - from.0).hypot(to.1 - from.1);
+        (at.0 - from.0).hypot(at.1 - from.1) / span
+    }
+
+    /// How far short of `tile` a body still is, in pixels.
+    fn arrived(crowd: &Crowd, who: Who, tile: Point) -> f64 {
+        let at = crowd.drawn_for(who).expect("a tracked body");
+        let (x, y) = at.exact();
+        let (tx, ty) = Gaze::on(tile).exact();
+        (x - tx).hypot(y - ty)
     }
 
     /// And a walk already under way crosses each tile in the time the last one
@@ -1154,10 +1322,129 @@ mod tests {
         crowd.advance(gap);
         step(&mut crowd, 12);
         crowd.advance(gap - Duration::from_millis(1));
-        let glide = crowd.glide_for(serial(1)).expect("still crossing");
-        assert!(glide.progress > 0.99, "all but arrived: {}", glide.progress);
+        let short = arrived(&crowd, serial(1), Point::new(12, 10, 0));
+        assert!(
+            short > 0.0 && short < 0.2,
+            "all but arrived: {short} pixels short"
+        );
         crowd.advance(Duration::from_millis(1));
-        assert_eq!(crowd.glide_for(serial(1)), None, "and arrived exactly on time");
+        assert_eq!(
+            crowd.drawn_for(serial(1)),
+            Some(Gaze::on(Point::new(12, 10, 0))),
+            "and arrived exactly on time",
+        );
+    }
+
+    /// The two representations are one body: the picture converges on the tile
+    /// and never leaves it by more than a walk's worth of lag.
+    ///
+    /// This is the whole contract between them. `at` is the server's word and
+    /// the only thing anything but the sprite reads — depth order, atlas key,
+    /// distance, targeting. `drawn` is the physical body: it accelerates,
+    /// coasts, and is behind while it does. They are allowed to disagree, and
+    /// what makes that safe rather than a second source of truth is that the
+    /// disagreement is **bounded while walking and zero at rest**.
+    ///
+    /// Both halves are here because either alone is satisfied by something
+    /// broken: a picture nailed to the tile converges trivially, and a picture
+    /// that drifts off and never comes back is bounded on any single frame.
+    #[test]
+    fn the_drawn_body_trails_its_tile_and_always_catches_up() {
+        let mut crowd = Crowd::default();
+        crowd.set_rig(Rig::EASED);
+        crowd.commanding(None);
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                None,
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            );
+        };
+        // A walk is 78 pixels a second, so a `body_tau` of 0.08 settles the lag
+        // at about 6.3 pixels. Ten is the bound with room for the frame the ease
+        // is sampled on; a hundred would pass for a body left behind entirely.
+        const BOUND: f64 = 10.0;
+        let mut worst = 0.0f64;
+        let mut moving = false;
+        step(&mut crowd, 10);
+        for tile in 11..21u16 {
+            step(&mut crowd, tile);
+            for _ in 0..25 {
+                crowd.advance(WALK_HOLD / 25);
+                let drawn = crowd.drawn_for(None).expect("a tracked body").exact();
+                // Against the *unfiltered* walk and not against the destination
+                // tile: mid-step the body is legitimately most of a tile short
+                // of the tile it is walking onto, and measuring that would call
+                // the step itself a lag. What the ease holds is the difference
+                // between where the body is drawn and where the step arithmetic
+                // says it is, which is the only thing `body_tau` controls.
+                let behind = {
+                    let walked = crowd.tracked[&None].gaze_at(crowd.now).exact();
+                    (drawn.0 - walked.0).hypot(drawn.1 - walked.1)
+                };
+                worst = worst.max(behind);
+                moving |= behind > 1.0;
+            }
+        }
+        assert!(moving, "nothing was ever behind: the ease did not happen");
+        assert!(
+            worst < BOUND,
+            "the picture fell {worst:.1} pixels behind its tile"
+        );
+
+        // And the walk stops. The lag is spent coasting — which *is* the
+        // ease-out — and what it converges on is the tile, exactly.
+        for _ in 0..200 {
+            crowd.advance(Duration::from_millis(16));
+        }
+        let at = crowd.tracked[&None].at;
+        let (drawn, tile) = (
+            crowd.drawn_for(None).expect("a tracked body").exact(),
+            Gaze::on(at).exact(),
+        );
+        let left = (drawn.0 - tile.0).hypot(drawn.1 - tile.1);
+        assert!(
+            left < 0.01,
+            "the body settled {left} pixels off the tile it is standing on",
+        );
+    }
+
+    /// And under the reference rig the two are the same number, to the bit.
+    ///
+    /// What keeps `Rig::HARD` honest as a baseline (D1): if the eased path
+    /// cannot express "no ease at all" exactly, every measurement taken against
+    /// the reference is measuring a filter nobody asked for.
+    #[test]
+    fn the_reference_rig_draws_the_body_on_its_own_arithmetic() {
+        let mut eased = Crowd::default();
+        eased.set_rig(Rig::HARD);
+        let mut plain = Crowd::default();
+        for tile in 11..16u16 {
+            for crowd in [&mut eased, &mut plain] {
+                crowd.see(
+                    serial(1),
+                    Point::new(tile, 10, 0),
+                    Graphic(PLAYER),
+                    Facing::walking(Direction::East),
+                    Hue::NONE,
+                );
+            }
+            for _ in 0..7 {
+                for crowd in [&mut eased, &mut plain] {
+                    crowd.advance(WALK_HOLD / 7);
+                }
+                assert_eq!(
+                    eased.drawn_for(serial(1)),
+                    plain.drawn_for(serial(1)),
+                    "a rig of zero is not the same as no rig at tile {tile}",
+                );
+            }
+        }
+        // The companion: the body did move, so the equality above is not two
+        // still pictures agreeing.
+        assert_ne!(plain.drawn_for(serial(1)), Some(Gaze::on(Point::new(11, 10, 0))));
     }
 
     /// A gap that is not a pace is not believed: a body that had stopped, or two
@@ -1202,10 +1489,14 @@ mod tests {
         };
         run(&mut crowd, 10);
         run(&mut crowd, 11);
+        let half = crossed(&mut crowd, RUN_HOLD / 2);
+        assert!((half - 0.5).abs() < 1e-6, "{half}");
         crowd.advance(RUN_HOLD / 2);
-        assert_eq!(crowd.glide_for(serial(1)).expect("mid-step").progress, 0.5);
-        crowd.advance(RUN_HOLD / 2);
-        assert_eq!(crowd.glide_for(serial(1)), None, "and it is there");
+        assert_eq!(
+            crowd.drawn_for(serial(1)),
+            Some(Gaze::on(Point::new(11, 10, 0))),
+            "and it is there",
+        );
         crowd.advance(RUN_HOLD / 2);
         assert_eq!(run(&mut crowd, 11).group, 4, "standing, half a walk early");
         assert_eq!(RUN_HOLD * 2, WALK_HOLD, "ServUO's RunFoot against its WalkFoot");
@@ -1228,13 +1519,21 @@ mod tests {
             facing,
             Hue::NONE,
         );
-        assert!(stepped.glide.is_some(), "the prediction is walked into");
+        assert_eq!(
+            stepped.drawn,
+            Gaze::on(at),
+            "the prediction is walked into, from here"
+        );
         crowd.advance(WALK_HOLD / 4);
 
         let back = crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
         assert_eq!(back.at, at);
-        assert_eq!(back.glide, None, "and back is a jump");
-        assert_eq!(crowd.glide_for(serial(1)), None);
+        assert_eq!(
+            back.drawn,
+            Gaze::on(at),
+            "and back is a jump, drawn there at once"
+        );
+        assert_eq!(crowd.drawn_for(serial(1)), Some(Gaze::on(at)));
         assert_eq!(back.group, 0, "still walking: the next step is already coming");
 
         // The gap between a step and a refusal is not a pace, so the next step
@@ -1249,7 +1548,7 @@ mod tests {
         );
         crowd.advance(WALK_HOLD / 2);
         assert_eq!(
-            crowd.glide_for(serial(1)).expect("mid-step").progress,
+            halfway(&crowd, serial(1), Point::new(10, 10, 0), Point::new(10, 11, 0)),
             0.5,
             "a full walk's crossing"
         );
@@ -1274,9 +1573,17 @@ mod tests {
         };
         go(&mut crowd, 10, 10);
         // A diagonal is one step: both axes move, and UO measures Chebyshev.
-        assert!(go(&mut crowd, 11, 11).glide.is_some(), "a diagonal is a step");
-        assert_eq!(go(&mut crowd, 1500, 1500).glide, None, "and this is not");
-        assert_eq!(crowd.glide_for(serial(1)), None);
+        assert_eq!(
+            go(&mut crowd, 11, 11).drawn,
+            Gaze::on(Point::new(10, 10, 0)),
+            "a diagonal is a step, and it starts where the body was",
+        );
+        let jumped = go(&mut crowd, 1500, 1500);
+        assert_eq!(
+            jumped.drawn,
+            Gaze::on(Point::new(1500, 1500, 0)),
+            "and this is not"
+        );
     }
 
     /// The window redraws fast only while there is something to redraw fast
@@ -1322,7 +1629,7 @@ mod tests {
             Facing::walking(Direction::North),
             Hue::NONE,
         );
-        assert_eq!(turned.glide, None);
+        assert_eq!(turned.drawn, Gaze::on(at), "a turn moves nobody");
     }
 
     /// Whoever the view no longer holds is forgotten, or the map grows for as

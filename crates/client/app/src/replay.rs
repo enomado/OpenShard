@@ -309,7 +309,7 @@ mod tests {
             }
             // Read every frame and not stored: a glide is a position off a
             // clock, and one read once freezes.
-            mobile.glide = crowd.glide_for(None);
+            mobile.drawn = crowd.drawn_for(None).expect("the crowd knows this body");
             let gaze = mobiles::gaze(&mobile);
             let eye = follower.advance(gaze, frame);
             scope.record(frame, gaze, eye, follower.exact().unwrap());

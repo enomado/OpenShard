@@ -209,6 +209,64 @@ The presets are named after their mechanism — `HARD`, `LIFT`, `SPRING`, `LEAD`
 and none of them is called `DEFAULT` until one has won on the bench and in the
 window. A plan that names a winner in advance builds the bench to confirm it.
 
+### D10 — the ease is one filter, and the question is which side of the sprite it is on
+
+A walk starts at full speed. It has to: a body crosses one tile per hold at a
+constant speed because that is what the wire says it does, and a sprite that
+eased into its first tile would either arrive late — desynchronised from the
+schedule everything else keeps — or exceed the walk's own speed in the middle of
+the step to make the distance back. There is no profile that starts at rest,
+covers a tile in a hold, and never goes faster than a walk. So an ease is not
+something a step can be given. It is a **lag**, and the only question is who
+carries it.
+
+Two placements, and they are *the same filter on the same signal* — stage 4,
+D5's form, one time constant:
+
+- **After the anchor**, which is what D4 already describes: the sprite is drawn
+  at the raw gaze and the eye trails it. The world eases and the character does
+  not, so the character slides across the screen by the lag while it walks — six
+  pixels at `tau = 0.08`, twenty at `0.25` — and its feet slide over the ground
+  by the same amount.
+- **Before the anchor**: the *drawn position of the body* is the filtered one,
+  and the eye is hard-locked to that. The character and the ground keep their
+  exact relative position and the pair eases as one picture. The lag is now
+  between the sprite and the tile the server named, which nothing on screen can
+  see, and nothing logical reads — the depth order, the atlas key and the anchor
+  arithmetic all take `Mobile::at`, which is untouched, and that was already true
+  for the glide (`mobiles.rs`).
+
+The second is what this client does, and the reason is that the first answers a
+question nobody asked. What is being smoothed is the *walk's* discontinuities —
+a step starting, a step stopping, a correction arriving — and all of them belong
+to the body. Filtering the eye instead smooths them by moving the world relative
+to the character, which is a second motion invented to hide the first.
+
+Three things follow, and each is what keeps this from being a new mechanism:
+
+**One time constant and one `approach`.** The body's filter is `follow::approach`
+called on a `Gaze`, exactly as the eye's is. Two implementations of a damper is
+the thing D1 exists to refuse.
+
+**The state is per body, so it lives with the body.** The eye has one filter and
+there is one eye; every mobile on screen is eased, so the state is per tracked
+mobile in `crowd.rs` — which already owns the per-mobile clock and the glide, and
+is already the layer that says where a body is drawn.
+
+**A correction is a cut, and here the event is in hand.** D6 says a cut is an
+event and the distance is a backstop; at this level there is no inference to
+make at all, because `Crowd::snap` *is* the event — a rollback, a teleport, a
+`0x20`. It resets the filter to the new position, so nothing eases across ground
+the body never crossed. That is the same argument the backlog makes for moving
+the lift's cut onto an event, one layer down and already available.
+
+What it costs is a body drawn behind its tile for the length of a walk, and that
+cost is the ease: the catching-up at the end *is* the ease-out, for free and
+without a second rule. It is a `Rig` field like every other, zero in `HARD`, and
+the harness's corridors run at zero — a body deliberately behind the oracle is
+not a body that failed to keep up, and only a scenario that says which one it is
+measuring can tell them apart.
+
 ## The bench
 
 The camera's failures have names, and each name is a script.
@@ -498,6 +556,35 @@ an order of magnitude against `HARD`, and both halves are asserted, because a
 camera that absorbs a rollback by never keeping up is not the camera anybody
 asked for.
 
+**Part of it landed early, from the other end: the body eases and the eye does
+not.** The complaint was that a walk starts at full speed, which it does and
+always will — see D10 — so what was actually wanted was the ease, and the ease
+is a lag. `dst::dump_the_ramp` is the table it was chosen on, over the real walk
+rather than the bench's scripted gaze, and the two placements are two rows of it:
+
+| rig | ramp | slide | trail | stop | peak |
+|---|---|---|---|---|---|
+| `HARD` | 22ms | 0.0px | 1.3px | 26ms | 80.3 px/s |
+| `EASED` — body, τ 0.08 | 202ms | **0.0px** | 6.5px | 373ms | 81.6 px/s |
+| body, τ 0.15 | 351ms | 0.0px | 11.9px | 373ms | 80.5 px/s |
+| eye, τ 0.08 | 202ms | **6.6px** | 1.3px | 373ms | 91.1 px/s |
+
+*Slide* is the eye against the sprite — the character drifting across the screen,
+its feet sliding over the ground. *Trail* is the sprite against the walk it is
+nominally doing, which nothing on screen can see because nothing marks the tile.
+The last two rows buy the same ramp for the same time constant and pay for it in
+different places, and that is the whole of D10 as a measurement. The eye-filtered
+row also peaks eleven per cent above a walk, because a filter that trails has to
+catch up.
+
+`Rig::EASED` is what the window opens with, and it is a preset chosen by looking
+rather than a name given in advance — which is what D9 asks for and not a
+contradiction of it. The eye is still `HARD`: `plane_tau` is zero, so the
+character does not slide, and the spring proper is still this milestone's to
+build. What C3 has left is the dead zone, the idle recentre, and whether the eye
+wants damping *on top of* an eased body — which is now a question with an
+instrument behind it rather than a matter of taste.
+
 ### C4 — the scope — **built, pulled ahead of C3**
 
 Sliders, presets and the strip chart in the shell, and a script runner that
@@ -765,6 +852,17 @@ Found while planning this, and not to be lost in it.
   throttle on *unchanged output* rather than on "nothing is moving", which is a
   question this client cannot currently answer — the world texture is rebuilt
   whether or not it would differ.
+- **An eased body is drawn behind the tile its depth order is taken from.** Six
+  pixels at `EASED`, and the order is the tile's on purpose (`mobiles.rs`) — so a
+  body walking behind a wall is sorted as past it while its picture is still a
+  few pixels short. The same class of artefact the glide has always had, six
+  pixels larger, and the honest fix if it ever shows is to sort on the drawn
+  position's tile rather than on the server's.
+- **Nothing eases the *first* frame a body is seen on.** A mobile that walks into
+  range is created at its tile and eases from there, which is right; one that
+  was already walking when it came into range starts from a standstill it was
+  never at. Invisible today because the crowd forgets a body the moment it leaves
+  range, so "already walking" and "just appeared" are the same event.
 - **This client hears about its own step one turn of the event loop late.** The
   prediction is made by `client/net`'s `Walk` on the net task and published back
   through an mpsc, so `about_to_wait` sends the `0x02` and the window learns

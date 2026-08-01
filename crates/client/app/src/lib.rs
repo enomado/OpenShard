@@ -66,6 +66,21 @@ mod replay;
 mod shell;
 mod steer;
 
+/// The rig this client opens with.
+///
+/// **Not a default in the sense `docs/camera.md` D9 refuses**: D9 says no camera
+/// is named the default until one has won on the bench and in the window, and
+/// what makes this one different is that it was. `dst::dump_the_ramp` is the
+/// table it was read off and `docs/camera.md` C3 records the sitting — the eye
+/// is still the body to the pixel, and the only thing eased is where the body is
+/// drawn, which is D10's whole argument.
+///
+/// Here rather than in `follow.rs` on purpose. `Rig::EASED` is a *preset* — a
+/// set of numbers that go together — and which preset a window opens with is a
+/// decision about this binary. The two being one line apart in one file is how a
+/// preset quietly becomes a default.
+const STARTUP_RIG: Rig = Rig::EASED;
+
 /// Read a `.env` from the working directory or an ancestor of it, if there is
 /// one, so that the binaries' `env =` options have something to fall back to.
 ///
@@ -98,7 +113,7 @@ use openshard_client_render::bench::{self, Metrics, Scope, Script};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
 use openshard_client_render::control::{Control, Follow};
-use openshard_client_render::follow::Rig;
+use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::mobiles::{self, Mobile};
@@ -309,12 +324,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         anim,
         // The device's own limit replaces WebGL2's floor once there is a device
         // to ask; the floor is the smallest thing this has to run on.
-        //
-        // `Rig::HARD` is the reference camera — the eye is the body, to the
-        // pixel — and it is what this client has always done. Which rig it
-        // *ships* is undecided and is decided on a bench rather than here: see
-        // `docs/camera.md`.
-        control: Control::new(Camera::new(START, 1024, 768), 2048, Rig::HARD),
+        control: Control::new(Camera::new(START, 1024, 768), 2048, STARTUP_RIG),
         zoom_limit_reported: false,
         // 400 is the male human body. Its group and frame come from the crowd
         // on the first redraw, which is also what decides that a placeholder
@@ -326,7 +336,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
             facing: Direction::SouthEast,
             frame: 0,
             hue: Hue::NONE,
-            glide: None,
+            drawn: Gaze::on(start),
         },
         others: Vec::new(),
         items: Vec::new(),
@@ -337,7 +347,14 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         facet_checked: false,
         steer: steer::Steering::default(),
         aiming: false,
-        crowd: Crowd::default(),
+        crowd: {
+            // One rig, both halves of it. The eye's and the body's ease are two
+            // fields of one value and a client that started them apart would be
+            // drawing under two cameras until somebody touched the panel.
+            let mut crowd = Crowd::default();
+            crowd.set_rig(STARTUP_RIG);
+            crowd
+        },
         next_tick: Instant::now(),
         last_advance: Instant::now(),
         last_frame: Instant::now(),
@@ -1190,8 +1207,22 @@ impl App {
     /// a relock mid-step would otherwise land up to half a tile from the sprite
     /// and be corrected on the frame after.
     fn relock(&mut self) {
-        self.player.glide = self.crowd.glide_for(self.me());
+        self.player.drawn = self.drawn_player();
         self.control.relock(mobiles::gaze(&self.player));
+    }
+
+    /// Where our own body is drawn this instant, off the crowd's clock.
+    ///
+    /// Read rather than stored, and this is the one place that reads it: the
+    /// position is a function of a clock and an ease's state, so one read once a
+    /// frame is what keeps the sprite, the camera and the scope on the same
+    /// number. A crowd that has never heard of us — before a shard names the
+    /// body, and for the frame a placeholder is created on — answers with the
+    /// tile, which is where a body nobody is easing stands.
+    fn drawn_player(&self) -> Gaze {
+        self.crowd
+            .drawn_for(self.me())
+            .unwrap_or_else(|| Gaze::on(self.player.at))
     }
 
     /// Whether there is anybody to show a frame to: the window has the keyboard
@@ -1326,7 +1357,7 @@ impl App {
     /// through lags by whatever the difference was — which varies frame to
     /// frame, and varying lag is what an eye reads as a stutter.
     fn follow_player(&mut self, elapsed: std::time::Duration) {
-        self.player.glide = self.crowd.glide_for(self.me());
+        self.player.drawn = self.drawn_player();
         let gaze = mobiles::gaze(&self.player);
         self.control.follow_body(gaze, elapsed);
         // What the eye was asked for, what the screen was given, and what the
@@ -1926,6 +1957,10 @@ impl App {
                 // the frames before the swap were flown by another camera, and
                 // measuring them together would average two rigs.
                 self.control.set_rig(rig);
+                // And the body's half of it: the ease is a rig field like every
+                // other, and a swap that reached the eye but not the body would
+                // draw a frame under half of each. See `docs/camera.md` D10.
+                self.crowd.set_rig(rig);
                 self.scope.clear();
             }
             // The window the metrics are taken over, and not a clear: the
@@ -2068,7 +2103,9 @@ impl App {
                 .mobiles
                 .frame_count(mobile.body, mobile.group, direction);
             mobile.frame = self.crowd.frame_for(*who, frame_count);
-            mobile.glide = self.crowd.glide_for(*who);
+            if let Some(drawn) = self.crowd.drawn_for(*who) {
+                mobile.drawn = drawn;
+            }
         }
         // Whoever the crowd is still holding a line for, hung above whichever
         // of `drawn`'s mobiles their serial belongs to. Read out here, before

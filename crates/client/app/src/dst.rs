@@ -434,6 +434,9 @@ impl Sim {
     fn flying(rig: Rig, facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
         let facing = Facing::walking(facing);
         let mut crowd = Crowd::default();
+        // One rig, both halves, exactly as `App` starts them: the eye's filter
+        // and the body's ease are two fields of one value.
+        crowd.set_rig(rig);
         crowd.commanding(me());
         let player = crowd.see(me(), START, BODY, facing, Hue::NONE);
         Self {
@@ -669,7 +672,7 @@ impl Sim {
     /// as the last packet. `elapsed` is the span the crowd's clock was just
     /// advanced by, which is the same value `App::draw` hands the camera.
     fn sample(&mut self, elapsed: Duration) {
-        self.player.glide = self.crowd.glide_for(me());
+        self.player.drawn = self.crowd.drawn_for(me()).expect("the crowd knows our body");
         // `App::follow_player`, with the same gaze the sprite is placed from.
         let gaze = mobiles::gaze(&self.player);
         // And the trace is that same gaze read back in tiles, rather than a
@@ -1343,9 +1346,10 @@ fn the_camera_is_told_the_height_apart_from_the_ground() {
 
     // And a body standing twenty units up: the ground is unchanged and the lift
     // is the whole of the difference.
+    let standing = Point::new(sim.player.at.x, sim.player.at.y, 20);
     let raised = Mobile {
-        at: Point::new(sim.player.at.x, sim.player.at.y, 20),
-        glide: None,
+        at: standing,
+        drawn: openshard_client_render::follow::Gaze::on(standing),
         ..sim.player
     };
     let up = mobiles::gaze(&raised);
@@ -1825,15 +1829,15 @@ fn dump_the_walk() {
 fn dump_the_ramp() {
     let rigs = [
         ("hard", Rig::HARD),
-        ("tau_0.08", plane(0.08)),
-        ("tau_0.15", plane(0.15)),
-        ("tau_0.25", plane(0.25)),
+        ("eased", Rig::EASED),
+        ("body_0.15", body(0.15)),
+        ("eye_0.08", plane(0.08)),
     ];
     let dir = dump_dir();
     std::fs::create_dir_all(&dir).expect("a directory to write into");
     println!(
-        "\n{:<10} {:>9} {:>9} {:>9} {:>9}",
-        "rig", "ramp ms", "lag px", "stop ms", "peak px/s"
+        "\n{:<10} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "rig", "ramp ms", "slide px", "trail px", "stop ms", "peak px/s"
     );
     let mut series = Vec::new();
     for (name, rig) in rigs {
@@ -1863,8 +1867,20 @@ fn dump_the_ramp() {
             .fold(0.0f64, |worst, frame| {
                 worst.max((frame.eye.0 - frame.body.0).hypot(frame.eye.1 - frame.body.1))
             });
+        // The two lags, and they are the point of the table. **slide** is the eye
+        // against the sprite — how far the character drifts from where it is
+        // drawn, which is what the player sees as the body sliding around the
+        // screen. **trail** is the sprite against the walk the oracle says it is
+        // doing, which is where an eased body's lag goes instead: invisible,
+        // because nothing on screen marks the tile.
+        let trail = frames
+            .iter()
+            .filter(|frame| frame.at > Duration::from_millis(1_000) && frame.at < walked_until)
+            .fold(0.0f64, |worst, frame| {
+                worst.max((frame.body.0 - frame.want.0).hypot(frame.body.1 - frame.want.1))
+            });
         println!(
-            "{name:<10} {:>9} {lag:>9.1} {:>9} {:>9.1}",
+            "{name:<10} {:>9} {lag:>9.1} {trail:>9.1} {:>9} {:>9.1}",
             ramp.as_millis(),
             stop.as_millis(),
             speed.iter().map(|(_, at)| *at).fold(0.0f64, f64::max),
@@ -1900,6 +1916,17 @@ fn dump_the_ramp() {
 fn plane(tau: f32) -> Rig {
     Rig {
         plane_tau: tau,
+        ..Rig::HARD
+    }
+}
+
+/// A rig that eases the *body* and leaves the eye on it, at a chosen constant.
+///
+/// The other side of D10, so that the table has both and the difference between
+/// them is a row rather than an argument.
+fn body(tau: f32) -> Rig {
+    Rig {
+        body_tau: tau,
         ..Rig::HARD
     }
 }

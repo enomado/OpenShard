@@ -1252,7 +1252,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
                 facing,
                 frame: 0,
                 hue: openshard_protocol::wire::Hue::NONE,
-                glide: None,
+                drawn: openshard_client_render::follow::Gaze::on(centre),
             }],
             &camera,
             &atlas,
@@ -1476,7 +1476,12 @@ fn dump_a_frame_of_britain() {
                 facing: *facing,
                 frame: 0,
                 hue: openshard_protocol::wire::Hue::NONE,
-                glide: None,
+                // Standing where the server put them: nothing here is walking.
+                drawn: openshard_client_render::follow::Gaze::on(Point::new(
+                    x,
+                    y,
+                    map.land(x, y).expect("inside the facet").z,
+                )),
             }
         })
         .collect();

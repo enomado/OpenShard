@@ -99,6 +99,25 @@ impl Gaze {
         }
     }
 
+    /// This gaze, one frame's worth closer to `target`, on every channel.
+    ///
+    /// The body's ease (`docs/camera.md` D10), and the eye's filter is the same
+    /// [`approach`] per channel — what the eye does that this does not is decide
+    /// a *cut* on the height first, which is a rule about where the target came
+    /// from and not about damping. So the two are one arithmetic and two
+    /// policies, rather than two arithmetics.
+    ///
+    /// All three channels on one time constant, because a body is one object: a
+    /// sprite whose feet and height eased at different rates would stretch on
+    /// every stair.
+    pub fn eased_towards(self, target: Self, tau: f32, dt: Duration) -> Self {
+        Self {
+            x: approach(self.x, target.x, tau, dt),
+            y: approach(self.y, target.y, tau, dt),
+            lift: approach(self.lift, target.lift, tau, dt),
+        }
+    }
+
     /// Where this lands in world pixel space, height folded back in, to a
     /// fraction of a pixel.
     pub fn exact(self) -> (f64, f64) {
@@ -152,6 +171,26 @@ pub struct Rig {
     /// [`f32::INFINITY`] never cuts. [`Rig::HARD`]'s value is arbitrary, since
     /// nothing is ever eased for it to interrupt.
     pub lift_cut: f32,
+    /// Seconds for a *body's drawn position* to close all but `1/e` of the gap
+    /// to the tile it is actually on. Zero draws it exactly there.
+    ///
+    /// The ease into and out of a walk, and it is on the body rather than on the
+    /// eye deliberately — `docs/camera.md` D10 is the argument. Briefly: a step
+    /// cannot ease, because a body has to cross one tile per hold and no profile
+    /// that starts at rest does that without going faster than a walk somewhere
+    /// in the middle. What an ease is, therefore, is a *lag*; and a lag carried
+    /// by the eye slides the character across the screen and its feet across the
+    /// ground, where a lag carried by the body moves the whole picture as one.
+    ///
+    /// In this struct and not in a second one because it is the same filter,
+    /// with the same [`approach`], on the same signal, one stage earlier — and
+    /// because it is tuned in the same sitting, against the same two numbers, and
+    /// pasted into the source as one literal.
+    ///
+    /// **The state it needs is not here.** Every mobile on screen is eased and
+    /// there is one eye, so the filter's state lives per body in `client/app`'s
+    /// `crowd.rs`, which already owns the per-mobile clock.
+    pub body_tau: f32,
 }
 
 /// The height a change has to exceed, in one frame, to be a change of floor.
@@ -178,6 +217,7 @@ impl Rig {
         plane_tau: 0.0,
         lift_tau: 0.0,
         lift_cut: FLOOR,
+        body_tau: 0.0,
     };
 
     /// The reference camera with a clock on the height.
@@ -205,6 +245,31 @@ impl Rig {
         plane_tau: 0.0,
         lift_tau: 0.15,
         lift_cut: FLOOR,
+        body_tau: 0.0,
+    };
+
+    /// The reference camera, with the *body* eased into and out of a walk.
+    ///
+    /// The eye is still the body to the pixel — `plane_tau` is zero — so the
+    /// character does not slide across the screen and its feet do not slide over
+    /// the ground. What moves is where the body is drawn: it sets off over about
+    /// two hundred milliseconds instead of instantly, trails its tile by six or
+    /// seven pixels for the length of the walk, and spends that lag coasting to a
+    /// stop when the walking ends. The ease-out is the same number as the ease-in
+    /// and costs no second rule, which is most of why the lag is the right thing
+    /// to pay with (D10).
+    ///
+    /// `0.08` is chosen by what it costs, as `LIFT`'s constant is. A walk is 78
+    /// pixels a second, so the lag settles at `78 * 0.08` — 6.3 pixels, under a
+    /// seventh of a tile, which is small enough that nobody can see the body is
+    /// not centred on its tile and large enough that the start and the stop are
+    /// visibly eased. `dst::dump_the_ramp` is the table it was read off, and
+    /// `docs/camera.md` C3 has the numbers.
+    pub const EASED: Self = Self {
+        plane_tau: 0.0,
+        lift_tau: 0.15,
+        lift_cut: FLOOR,
+        body_tau: 0.08,
     };
 }
 
@@ -354,7 +419,7 @@ impl Follower {
 /// stored, every comparison against it downstream is false, and the camera
 /// silently takes the other branch of every decision for the rest of the
 /// session. The reference rig is exactly this branch.
-fn approach(from: f64, to: f64, tau: f32, dt: Duration) -> f64 {
+pub fn approach(from: f64, to: f64, tau: f32, dt: Duration) -> f64 {
     if tau <= 0.0 {
         return to;
     }
@@ -379,6 +444,7 @@ mod tests {
         Rig {
             plane_tau: tau,
             lift_tau: tau,
+            body_tau: 0.0,
             lift_cut: FLOOR,
         }
     }
@@ -464,6 +530,7 @@ mod tests {
         let mut follower = Follower::new(Rig {
             plane_tau: 0.0,
             lift_tau: 0.4,
+            body_tau: 0.0,
             lift_cut: FLOOR,
         });
         let ground = Gaze::on(Point::new(500, 500, 0));
@@ -552,6 +619,7 @@ mod tests {
         let mut follower = Follower::new(Rig {
             plane_tau: 0.2,
             lift_tau: 0.2,
+            body_tau: 0.0,
             lift_cut: FLOOR,
         });
         follower.advance(Gaze::on(Point::new(500, 500, 0)), ms(16));
