@@ -119,6 +119,12 @@ impl Control {
         self.follower.rig()
     }
 
+    /// Where the eye is to a fraction of a pixel, for a bench or a scope —
+    /// see [`Follower::exact`]. `None` before the first frame.
+    pub fn eye_exact(&self) -> Option<(f64, f64)> {
+        self.follower.exact()
+    }
+
     /// Follow with another one, without moving the eye — see
     /// [`Follower::set_rig`].
     pub fn set_rig(&mut self, rig: Rig) {

@@ -31,6 +31,7 @@
 
 pub mod animation;
 pub mod atlas;
+pub mod bench;
 pub mod blit;
 pub mod camera;
 pub mod control;

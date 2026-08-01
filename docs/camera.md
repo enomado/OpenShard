@@ -215,18 +215,33 @@ The camera's failures have names, and each name is a script.
 
 ### Scripts
 
-A `Script` is a list of timed acts — the `Act` from `dst.rs` generalised to
-carry cursor motion as well as arrows. One type, three consumers, which is what
-keeps the three from measuring different things:
+**Built, and it is a body's path rather than a player's inputs.** The plan said
+one `Script` type for all three consumers, generalising `dst.rs`'s `Act`. That
+turned out to be two different things wearing one name: the bench needs a *body*
+(a gaze as a function of time, with no steer, no wire and no shard, which is what
+makes it fast enough to sweep), and the DST harness needs *inputs* (arrows, at
+instants, driving the real four units). Forcing one type would have meant either
+dragging a walk pipeline into `client/render` or measuring a camera against a
+body that arrived by magic.
 
-- the **pure bench** drives `Follower::advance` from a synthetic gaze;
+What is shared instead is the thing that has to be: `Sample` and `Metrics`. The
+DST harness records the same samples from the real pipeline and runs the same
+metrics over them, and a test holds the two walks against each other — the
+scripted body and the real one peak within five per cent. That is the claim
+"one type, three consumers" was really after, and it is the one that can be
+checked.
+
+- the **pure bench** drives `Follower::advance` from a scripted gaze;
 - the **DST sim** drives the real `steer.rs`, `Walk`, `Crowd` and a shard over a
   wire with latency and jitter on it, and feeds the camera what actually came
   out;
-- the **playground** replays the same script in the window, so a number and a
-  picture are about the same event.
+- the **playground** (C4) will replay an input script in the window.
 
-The scenarios, and what each is for:
+The scenarios, and what each is for. `mash` and `mouse_swirl` are not built:
+the first needs the input-level script the DST harness has and the bench does
+not, and the second needs the cursor, which is C5. `frame_jitter` turned out to
+be an axis rather than a scenario — `Cadence` — so every script can be run
+jittered.
 
 | Script | What it is for |
 |---|---|
@@ -243,29 +258,35 @@ The scenarios, and what each is for:
 
 ### What is measured
 
-Everything in **screen pixels at the current zoom**, because that is what an eye
-sees, and everything over the *eye's* trace, not the body's:
+Everything in **world pixels**, which is screen pixels at zoom 1 and the bench
+does not zoom, and everything over the *eye's* trace rather than the body's —
+but over **which** eye's trace is not a detail, and getting it wrong makes half
+of these measure the quantiser. See C1's first finding; the split is written
+next to each:
 
-- **lag** — max and RMS distance from the eye to the gaze. How far the camera
-  trails.
-- **velocity, acceleration, jerk** — the first, second and third differences per
-  unit time. Jerk is the number that means "ragged": a camera that changes its
-  acceleration abruptly is one the eye reads as stuttering even when its path is
-  smooth.
-- **step histogram** — the distribution of per-frame whole-pixel movements. This
-  is the one a continuous metric misses: at a constant body speed, an eye that
+- **lag** — max and RMS distance from the drawn eye to the body. How far the
+  camera trails.
+- **overshoot** (`ahead_max`) — the furthest the drawn eye got *past* the body
+  along its direction of travel. Negative everywhere means it never overshot,
+  and `NaN` means nothing walked, which is a different claim from zero.
+- **speed, acceleration, jerk** — the first, second and third differences per
+  unit time, off the **unrounded** trace. Jerk is the number that means
+  "ragged": a camera that changes its acceleration abruptly is one the eye reads
+  as stuttering even when its path is smooth.
+- **step variance** — the unevenness of the *drawn* eye's per-frame movement.
+  The one a continuous metric misses: at a constant body speed, an eye that
   moves `0,0,3,0,0,3` and one that moves `1,1,1,1,1,1` have the same mean
-  velocity and only the first is visibly a ratchet. The metric is the variance
-  of the per-frame step over a stretch where the body's speed is constant.
-- **overshoot and settle** — after a reversal, how far past the body the eye
-  goes and how long until it is within a pixel of steady state.
-- **cut count** — how many times the pipeline decided to cut. A camera that
-  smooths beautifully by cutting whenever it is behind has not smoothed
-  anything, and this is the number that says so.
+  velocity and only the first is a ratchet. Measured only over the frames where
+  the body was moving, and paired with `still_frames` — how often the body moved
+  and the eye did not.
+- **travel** — how far the drawn eye went in total. Half a metric and half a
+  companion: it is what says the run was a run.
+- **cut count** — not built, because nothing cuts yet. C3's, and the number that
+  catches a camera that smooths beautifully by cutting whenever it falls behind.
 
-Every one of them is asserted with a companion that says the data is real: the
-body moved at least *n* tiles, the trace has more than *k* frames, the reversal
-actually happened, the rollback was actually delivered. A metric over a scene
+Every one of them is asserted with a companion that says the data is real: more
+than *k* frames drawn, more than *n* pixels travelled, the rollback actually
+delivered, the two rigs given the same number of frames. A metric over a scene
 where nothing moved is green and means nothing, and this repository has produced
 that result before.
 
@@ -280,7 +301,10 @@ Three outputs, and the third is the one that decides anything:
    polyline this repository draws itself — no plotting dependency for six lines
    of `<path>` — and presets are **overlaid on one chart**, because two curves on
    one axis is how raggedness stops being a feeling. A number that disagrees with
-   the picture means the metric is wrong, and that has to be visible.
+   the picture means the metric is wrong, and that has to be visible. Two panels
+   per script: the eye's own speed, where a reversal is a square corner or a
+   rounded one, and how far behind the body it was, which is what that corner
+   cost.
 3. **A scope in the window** — a strip chart of the last few seconds of eye
    velocity and jerk, drawn with `egui::Painter` lines, beside a preset picker
    and a slider per `Rig` field. From the moment this exists, choosing a camera
@@ -322,13 +346,75 @@ Both carry the companion assertions the metrics will: the run drew more than a
 hundred frames and the eye travelled more than four hundred pixels, because an
 eye that never moved sits exactly on a body that never moved.
 
-### C1 — the bench
+### C1 — the bench — **built**
 
-`Script`, `Trace`, the metrics, the table, the CSV and the SVG, and D5's
-frame-rate property. Runs against the pure function only — no window, no shard.
+`crates/client/render/src/bench.rs` is the arithmetic — `Script`, `Cadence`,
+`Sample`, `Trace`, `Metrics` — and `tests/camera.rs` is the runner, because this
+crate opens no files. `cargo test -p openshard-client-render --test camera --
+--ignored --nocapture` prints the table and writes a CSV per run and a chart per
+script under `target/camera`.
 
-Green on `HARD`, with the metrics recording **how bad it is**. The baseline is
-the deliverable: every later milestone is a diff against it.
+**The baseline, at 16ms a frame.** Every number is world pixels, and the two
+`hard` rows that matter are the last three columns:
+
+| script | rig | lag max | speed max | accel max | jerk rms | step σ² |
+|---|---|---|---|---|---|---|
+| `ten_east` | hard | 0.68 | 77.8 | 4,861 | 26,006 | 0.21 |
+| `ten_east` | probe | 9.39 | 77.8 | 607 | 2,426 | 0.25 |
+| `back_and_forth` | hard | 0.68 | 77.8 | 9,723 | 160,383 | 0.21 |
+| `back_and_forth` | probe | 8.82 | 75.0 | 1,192 | 14,663 | 0.49 |
+| `rollback` | hard | 0.68 | 1,867 | 121,534 | 1,563,869 | 8.17 |
+| `rollback` | probe | 18.38 | 165 | 15,171 | 120,015 | 0.40 |
+| `dungeon` | hard | 0.68 | 5,055 | 315,956 | 5,187,447 | 122.6 |
+| `teleport` | hard | 0.00 | 140,223 | 8,763,940 | 144,679,101 | 0.00 |
+| `teleport` | probe | 1,963 | 17,504 | 1,093,974 | 11,099,251 | 0.00 |
+
+`probe` is not a preset and not a proposal — it is one filtered rig, there so
+that a table with one row and a chart with one curve cannot pretend to show a
+difference. What the baseline says, before anybody argues about feel:
+
+- **The reference camera's raggedness is all in the discontinuities.** A held
+  walk is 4,861 px/s² of acceleration and a reversal is 9,723 — exactly twice,
+  which is what a velocity that flips rather than stopping means.
+- **A filter of 0.12s buys an order of magnitude and costs 9.4 pixels** —
+  `speed × tau`, to two decimal places, which is also the arithmetic checking
+  out.
+- **`rollback` and `dungeon` are where the reference camera is worst by two
+  orders of magnitude**, and they are the two the player never asked for: a
+  correction is a tile the body did cross, and a floor changing is not a walk.
+- **`teleport` is why D6 exists, in numbers.** The filtered rig trails the body
+  by 1,963 pixels — most of a screen — for a second, which is the smear a cut
+  removes. Nobody has to be persuaded of the cut stage now; the row is there.
+
+**Two findings that changed how it measures.**
+
+The first: **derivatives cannot be taken on the drawn eye.** At one-pixel
+quantisation and sixty frames a second, a body walking at 78 px/s moves the eye
+1.2 pixels a frame, so the drawn eye moves `1, 1, 2, 1, 1, 2` — and the
+acceleration of *that* is thousands of px/s² of pure rounding, the same order as
+the reversal a camera exists to smooth. Differentiating it measures the
+quantiser and calls it the rig. So `Sample` carries the eye twice: the whole
+pixel the screen was given, and what the filter had before the quantiser. Speed,
+acceleration and jerk come off the second; lag, overshoot and travel — which are
+what the player sees — come off the first; and the quantiser gets its own metric,
+`step_var`, where the unevenness *is* the quantity.
+
+The second: **a bench that only measured smoothness would score a camera that
+never keeps up as the best one there is.** So the test that proves the bench
+discriminates asserts both directions on one run — the filtered rig's worst
+acceleration is a third of the reference's *and* it trails by ten times as much.
+Either one alone is passed by a rig nobody would ship.
+
+D5's property is tested with a mirror: the same script at 4ms and at 32ms lands
+within two pixels, and the banned form — `lerp` by a constant per frame, written
+out in the test — lands **fourteen** pixels apart on the same comparison. A
+tolerance nobody has shown to catch anything is not a tolerance.
+
+**And the bench is held against the real walk.** `dst.rs` records the same
+`Sample`s from the real `steer`/`Walk`/`Crowd`/shard pipeline and runs the same
+`Metrics` over them: the scripted walk and the real one peak within five per cent
+of each other. A rig fitted to a synthetic body with no wire behind it would be
+fitted to nothing, and this is what says the body is the right one.
 
 ### C2 — the lift
 
@@ -422,5 +508,17 @@ Found while planning this, and not to be lost in it.
 - **`Camera::look_at(Point)` has one caller and takes a tile.** Once the gaze is
   decomposed, looking at a tile is a lossy way to say what the camera wants; the
   pixel form is the one to keep.
+- **The walk's pace is written down in two crates.** `crowd::WALK_HOLD` is the
+  client's and `bench::WALK_HOLD` is the bench's, because `client/render` cannot
+  depend on `client/app` and a bench needs a hold. A test in `dst.rs` asserts
+  they are equal, which is the cheapest thing that keeps a copy honest — but the
+  constant is really a *pace*, and a pace belongs with the movement rules in
+  `crates/common/movement`, where both could read it.
+- **The bench has its own SplitMix64 and so does `dst.rs`.** Six lines each, in
+  two crates, for the same job. Worth one home if a third appears.
+- **`step_var` is a variance and the plan asked for a histogram.** The variance
+  catches the ratchet the metric exists for; what it cannot show is *which* step
+  sizes a rig produces, which is the thing to look at when two rigs have the same
+  variance and look different.
 - **A free camera has no map clamp** and can be panned into the void. Harmless
   today, a stage-6 job when it stops being.

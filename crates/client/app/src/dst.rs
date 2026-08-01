@@ -64,7 +64,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_client_net::walk::{Moved, Predicted, Walk};
-use openshard_client_render::camera::{Camera, WorldPixel};
+use openshard_client_render::bench::{Cadence, Metrics, Sample};
+use openshard_client_render::camera::Camera;
 use openshard_client_render::control::Control;
 use openshard_client_render::follow::Rig;
 use openshard_client_render::mobiles::{self, Mobile};
@@ -406,8 +407,13 @@ struct Sim {
     /// camera is moving underneath it, so a defect in *either* is a jump on
     /// screen and only one of them is what the trace above records.
     control: Control,
-    /// Where the eye was and where the body was drawn, every frame.
-    eyes: Vec<(Duration, WorldPixel, WorldPixel)>,
+    /// Every frame of the camera, in the shape the bench measures.
+    ///
+    /// The same [`Sample`] `crates/client/render/src/bench.rs` produces from a
+    /// scripted body, so the same [`Metrics`] can be run over both — which is
+    /// the only thing that says the bench's synthetic walk is not a scene the
+    /// rigs are being fitted to.
+    eyes: Vec<Sample>,
 }
 
 impl Sim {
@@ -657,12 +663,14 @@ impl Sim {
         };
         self.trace.push((self.now, position));
         // `App::follow_player`, with the same gaze the sprite is placed from.
-        self.control.follow_body(mobiles::gaze(&self.player), elapsed);
-        self.eyes.push((
-            self.now,
-            self.control.camera().eye(),
-            mobiles::world_position(&self.player),
-        ));
+        let gaze = mobiles::gaze(&self.player);
+        self.control.follow_body(gaze, elapsed);
+        self.eyes.push(Sample {
+            at: self.now,
+            gaze,
+            eye: self.control.camera().eye(),
+            exact: self.control.eye_exact().expect("the eye was just placed"),
+        });
     }
 
     /// The worst the drawn body ever was from where the oracle says it should
@@ -757,27 +765,32 @@ fn paced(sim: &Sim, hold: Duration) {
 /// `client/render` noticing.
 #[track_caller]
 fn eye_is_the_body(sim: &Sim) {
-    for (when, eye, body) in &sim.eyes {
-        assert_eq!(eye, body, "the eye was not on the body at {when:?}");
+    for sample in &sim.eyes {
+        assert_eq!(
+            sample.eye,
+            sample.gaze.eye(),
+            "the eye was not on the body at {:?}",
+            sample.at,
+        );
     }
     // A corridor nothing walked down is not an assertion — the same companion
     // `tracks` carries, and for the same reason: an eye that never moved sits
     // exactly on a body that never moved.
-    assert!(sim.eyes.len() > 100, "only {} frames were drawn", sim.eyes.len());
     // Travelled rather than spanned, so a scenario that walks back and forth
     // between two tiles counts as much as one that walks in a straight line.
-    let travel: i64 = sim
-        .eyes
-        .windows(2)
-        .map(|pair| {
-            let (before, after) = (pair[0].1, pair[1].1);
-            i64::from((after.x - before.x).abs() + (after.y - before.y).abs())
-        })
-        .sum();
+    // The bench's own measure, over the bench's own type, for the same reason
+    // the samples are that type: two harnesses that counted differently could
+    // not be compared.
+    let metrics = Metrics::of(&sim.eyes);
+    assert!(metrics.frames > 100, "only {} frames were drawn", metrics.frames);
+    // Two hundred pixels is six tiles of screen. Ten steps east is 311 and the
+    // shortest scenario here is a walk into a wall, so the bar is under all of
+    // them and nowhere near a scene where nothing happened.
     assert!(
-        travel > 400,
-        "the eye travelled {travel} pixels across the whole run, \
+        metrics.travel > 200.0,
+        "the eye travelled {:.0} pixels across the whole run, \
          so it was never really asked to follow anything",
+        metrics.travel,
     );
 }
 
@@ -1164,6 +1177,50 @@ fn the_reference_rig_puts_the_eye_on_the_body_every_frame() {
     let mut kiting = Sim::new(Direction::East, real, 4, Vec::new());
     kiting.run(&script, Duration::from_millis(270 * 20));
     eye_is_the_body(&kiting);
+}
+
+/// The bench's synthetic walk is the walk this client actually does.
+///
+/// The bench flies a rig over a scripted body with no wire, no prediction and
+/// no shard behind it — which is what makes it fast enough to sweep, and what
+/// would make a rig fitted to it worthless if the script were not the real
+/// kinematics. So the two are held against each other on the one scenario they
+/// share: ten steps east, the same pace, the same frame interval, the reference
+/// rig. If the synthetic body ever stops moving the way the real one does, this
+/// is what says so — and it fails long before anybody notices that a rig tuned
+/// on the bench feels wrong in the window.
+#[test]
+fn the_benchs_synthetic_walk_is_the_walk_this_client_does() {
+    // One pace, written down in two crates, because `client/render` cannot
+    // depend on `client/app` and the bench needs a hold. Pinned here rather
+    // than trusted: the copy is only safe while something compares them.
+    assert_eq!(openshard_client_render::bench::WALK_HOLD, WALK_HOLD);
+
+    let mut sim = Sim::new(Direction::East, Net::default(), 5, Vec::new());
+    sim.run(&ten_steps_east(), Duration::from_millis(4_000));
+    let real = Metrics::of(&sim.eyes);
+
+    let script = openshard_client_render::bench::scripts()
+        .into_iter()
+        .find(|script| script.name == "ten_east")
+        .expect("the baseline walk is one of the scripts");
+    let synthetic = Metrics::of(
+        &openshard_client_render::bench::run(Rig::HARD, &script, Cadence::steady(GLIDE_INTERVAL)).samples,
+    );
+
+    // How fast the eye moves is the whole of the kinematics: a tile in a hold,
+    // at a constant speed, whatever produced the steps. Five per cent, because
+    // the real loop wakes on a grid and a step's glide is measured from the gap
+    // between two wakes rather than from the nominal hold.
+    let apart = (real.speed_max - synthetic.speed_max).abs() / synthetic.speed_max;
+    assert!(
+        apart < 0.05,
+        "the real walk peaks at {:.1} px/s and the scripted one at {:.1}",
+        real.speed_max,
+        synthetic.speed_max,
+    );
+    // And both were really asked to walk.
+    assert!(real.travel > 300.0 && synthetic.travel > 300.0);
 }
 
 /// The height reaches the camera as its own number, which is what a rig that

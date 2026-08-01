@@ -99,16 +99,23 @@ impl Gaze {
         }
     }
 
-    /// The one world pixel this asks for, height folded back in.
+    /// Where this lands in world pixel space, height folded back in, to a
+    /// fraction of a pixel.
+    pub fn exact(self) -> (f64, f64) {
+        (self.x, self.y - self.lift)
+    }
+
+    /// The one world pixel this asks for.
     ///
     /// The quantiser: whole pixels leave, the fraction stays in whatever held
     /// this value. An eye carrying a fraction puts every sprite on a half-texel
     /// boundary for half of all camera positions, which does not show on a
     /// screenshot and boils the whole frame in motion.
     pub fn eye(self) -> WorldPixel {
+        let (x, y) = self.exact();
         WorldPixel {
-            x: self.x.round() as i32,
-            y: (self.y - self.lift).round() as i32,
+            x: x.round() as i32,
+            y: y.round() as i32,
         }
     }
 }
@@ -178,6 +185,18 @@ impl Follower {
     /// make every comparison start with a jump.
     pub fn set_rig(&mut self, rig: Rig) {
         self.rig = rig;
+    }
+
+    /// Where the eye is, to a fraction of a pixel — what the quantiser rounded,
+    /// and `None` before the first frame.
+    ///
+    /// For a bench and for a scope, and the reason it is worth exposing is that
+    /// the two traces answer different questions: at one-pixel quantisation and
+    /// sixty frames a second, the acceleration of the *rounded* eye is
+    /// dominated by the rounding and says nothing about the rig. See
+    /// [`crate::bench`].
+    pub fn exact(&self) -> Option<(f64, f64)> {
+        self.at.map(Gaze::exact)
     }
 
     /// Forget where the eye was: the next [`Follower::advance`] places it on the
