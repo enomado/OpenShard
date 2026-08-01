@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use openshard_client_render::animation::AnimationClock;
 use openshard_client_render::mobiles::{Glide, Mobile};
-use openshard_movement::{RUN_INTERVAL, WALK_INTERVAL};
+use openshard_movement::{RUN_HOLD, WALK_HOLD};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
@@ -65,25 +65,6 @@ struct Speech {
     hue: Hue,
     started: Duration,
 }
-
-/// How long a body keeps walking after the step that was last heard.
-///
-/// [`WALK_INTERVAL`] twice, and taken from there rather than written out: the
-/// interval is how often the server will *allow* a step, and twice it is how
-/// long one takes — 400ms, which `pace.rs`'s own test pins against ServUO's
-/// `WalkFoot`. Shorter than a step and a walking body flickers between two
-/// animations; much longer and it moonwalks on after it has stopped.
-pub const WALK_HOLD: Duration = Duration::from_millis(2 * WALK_INTERVAL.as_millis() as u64);
-
-/// The same, for a body the wire says is running.
-///
-/// [`RUN_INTERVAL`] doubled for the reason [`WALK_HOLD`] doubles its own: the
-/// intervals in `common/movement` are anti-speedhack *floors*, deliberately half
-/// the real rate, and ServUO's `RunFoot` is this. It has to be the real rate and
-/// not the floor, because it is also how long the glide takes — held for twice
-/// the step, a runner would be a whole tile behind itself and would jump forward
-/// half a tile every time the next step arrived.
-pub const RUN_HOLD: Duration = Duration::from_millis(2 * RUN_INTERVAL.as_millis() as u64);
 
 /// A step in progress: where it came from, when it started, and how long it
 /// takes.

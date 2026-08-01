@@ -5,8 +5,8 @@
 //! A held arrow says *which way*, and a click on the ground says *where to* —
 //! the strategy game's idiom, and the one this client is asked for. They are the
 //! same question a step at a time, so they are answered in one place: whichever
-//! is asking, a step leaves every [`crowd::WALK_HOLD`] (or every
-//! [`crowd::RUN_HOLD`] with shift down, which is what running is), and never two
+//! is asking, a step leaves every [`WALK_HOLD`] (or every
+//! [`RUN_HOLD`] with shift down, which is what running is), and never two
 //! at once. Two timers, one per input, would take two steps a beat the moment a
 //! player nudged an arrow while walking to a destination.
 //!
@@ -76,11 +76,10 @@
 
 use std::time::{Duration, Instant};
 
-use openshard_movement::direction_toward;
+use openshard_movement::{RUN_HOLD, WALK_HOLD, direction_toward};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
 
-use crate::crowd::{RUN_HOLD, WALK_HOLD};
 use crate::keys::Held;
 
 /// How many steps in a row may leave the body exactly where it was before a walk

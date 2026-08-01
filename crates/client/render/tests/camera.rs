@@ -16,10 +16,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use openshard_client_render::bench::{
-    self, Cadence, Metrics, Sample, Script, Trace, WALK_HOLD, run, scripts,
-};
+use openshard_client_render::bench::{self, Cadence, Metrics, Sample, Script, Trace, run, scripts};
 use openshard_client_render::follow::{FLOOR, Rig};
+use openshard_movement::WALK_HOLD;
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 

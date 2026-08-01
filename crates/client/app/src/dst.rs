@@ -69,7 +69,7 @@ use openshard_client_render::camera::Camera;
 use openshard_client_render::control::Control;
 use openshard_client_render::follow::Rig;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_movement::{OpenWorld, Terrain, Walk as Handled, Walker};
+use openshard_movement::{OpenWorld, RUN_HOLD, Terrain, WALK_HOLD, Walk as Handled, Walker};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::packet::decode_packet;
@@ -80,7 +80,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{Point, WalkAck, WalkReject, WalkRequest};
 
 use crate::GLIDE_INTERVAL;
-use crate::crowd::{Crowd, RUN_HOLD, WALK_HOLD, Who};
+use crate::crowd::{Crowd, Who};
 
 /// The body every scenario walks.
 const BODY: Graphic = Graphic(0x0190);
@@ -1191,11 +1191,6 @@ fn the_reference_rig_puts_the_eye_on_the_body_every_frame() {
 /// on the bench feels wrong in the window.
 #[test]
 fn the_benchs_synthetic_walk_is_the_walk_this_client_does() {
-    // One pace, written down in two crates, because `client/render` cannot
-    // depend on `client/app` and the bench needs a hold. Pinned here rather
-    // than trusted: the copy is only safe while something compares them.
-    assert_eq!(openshard_client_render::bench::WALK_HOLD, WALK_HOLD);
-
     let mut sim = Sim::new(Direction::East, Net::default(), 5, Vec::new());
     sim.run(&ten_steps_east(), Duration::from_millis(4_000));
     let real = Metrics::of(&sim.eyes);

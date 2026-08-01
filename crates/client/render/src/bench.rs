@@ -49,6 +49,7 @@
 
 use std::time::Duration;
 
+use openshard_movement::WALK_HOLD;
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
@@ -612,10 +613,6 @@ fn scaled(a: Pixels, by: f64) -> Pixels {
 fn length(a: Pixels) -> f64 {
     a.0.hypot(a.1)
 }
-
-/// How long one step takes at a walk. `crate::animation` has the frame rate;
-/// this is the pace, and it is the client's: one tile per 400ms walking.
-pub const WALK_HOLD: Duration = Duration::from_millis(400);
 
 /// Somewhere in the middle of a facet, far enough out that the arithmetic is
 /// working with the numbers a real position has.

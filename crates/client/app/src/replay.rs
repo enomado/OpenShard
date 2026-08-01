@@ -183,7 +183,8 @@ impl Replay {
 mod tests {
     use super::*;
 
-    use openshard_client_render::bench::{WALK_HOLD, scripts};
+    use openshard_client_render::bench::scripts;
+    use openshard_movement::WALK_HOLD;
 
     fn named(name: &str) -> Script {
         scripts()
