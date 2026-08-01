@@ -1210,6 +1210,93 @@ fn ground_in_front_hides_a_static_behind_it() {
     assert_eq!(covered, 0, "a static in front left ground showing through");
 }
 
+/// Two things at one depth are decided by which is drawn later, and that is the
+/// client's own tie-break rather than an accident of the pass order.
+///
+/// `Chunk.AddGameObject` inserts by `PriorityZ` and, on a tie, puts the land
+/// tile *first* in the per-tile list — so the flagstone lying at exactly the
+/// height of the ground under it is drawn second, and covers it. Here that is
+/// `LessEqual` in `renderer::depth_state` plus the order the passes already
+/// run in: the ground pass, then the statics, then the mobiles.
+///
+/// It needs a frame because the depth *state* is what is being asserted. Every
+/// number this crate computes can be right and this still be backwards, and
+/// under `Less` it was: the depths agreed with the client and the first writer
+/// kept the pixel, so the ground won every tie it should have lost.
+#[test]
+fn at_one_depth_the_later_pass_wins() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    let green = Color16(0b0_00000_11111_00000);
+    let red = Color16(0b0_11111_00000_00000);
+
+    let side = usize::from(LAND_TILE_SIZE);
+    let land = LandAtlas::pack([(
+        GRAPHIC,
+        Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![green; side * side]),
+    )])
+    .expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([(GRAPHIC, Image::new(60, 60, vec![red; 60 * 60]))]).expect("fits");
+    let region = land.region(GRAPHIC).expect("packed");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+
+    // The same depth, to the bit: not "very close", which the test would pass
+    // under either comparison.
+    const TIED: f32 = 0.5;
+    let ground = [GroundQuad {
+        x: 64.0,
+        y: 64.0,
+        corners: [0.0; 4],
+        region,
+        texmap: None,
+        depth: TIED,
+    }];
+    let flagstone = [SpriteQuad {
+        rect: Rect {
+            x: 64.0 - 30.0,
+            y: 64.0 - 30.0,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
+        region: sprite.region,
+        depth: TIED,
+        hue: 0,
+    }];
+    let none = AnimAtlas::pack([]).expect("nothing always fits");
+    let frame = render_both(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &ground,
+        &statics,
+        &flagstone,
+        (none.pixels(), &[]),
+        128,
+        128,
+        Projection::one_to_one(128, 128),
+    );
+
+    let (green_r, green_g, green_b) = green.rgb8();
+    let showing = (0..128u32)
+        .flat_map(|y| (0..128u32).map(move |x| (x, y)))
+        .filter(|&(x, y)| frame.pixel(x, y) == [green_r, green_g, green_b, u8::MAX])
+        .count();
+    assert_eq!(showing, 0, "the ground kept a pixel from the static tied with it");
+
+    // And the static really covered those pixels rather than the frame being
+    // empty: the sprite's whole rectangle is its own colour.
+    let (red_r, red_g, red_b) = red.rgb8();
+    let covered = (0..128u32)
+        .flat_map(|y| (0..128u32).map(move |x| (x, y)))
+        .filter(|&(x, y)| frame.pixel(x, y) == [red_r, red_g, red_b, u8::MAX])
+        .count();
+    assert_eq!(covered, 60 * 60, "the static did not draw its whole rectangle");
+}
+
 /// A mobile is drawn from its own atlas, in front of the ground it stands on,
 /// and a mirrored facing is the same picture backwards.
 ///

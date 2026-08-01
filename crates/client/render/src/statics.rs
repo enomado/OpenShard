@@ -98,7 +98,7 @@ pub fn collect(
 ) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
-    let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
+    let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
         // What this static is showing at the instant the frame was sampled. The
@@ -119,7 +119,6 @@ pub fn collect(
         let at = stand_on(camera, Point::new(item.x, item.y, item.z), &sprite);
         quads.push((
             order,
-            item.tile,
             SpriteQuad {
                 rect: Rect {
                     x: at.x,
@@ -134,11 +133,15 @@ pub fn collect(
         ));
     });
 
-    // Back to front, and the graphic breaks a tie: two identical statics on one
-    // tile at one height are the same picture, so which is "first" is arbitrary
-    // and only has to be *stable*.
-    quads.sort_by_key(|(order, graphic, _)| (*order, *graphic));
-    quads.into_iter().map(|(_, _, quad)| quad).collect()
+    // Back to front, and a *stable* sort on the order alone: two statics on one
+    // tile at one `PriorityZ` keep the order the file has them in, which is the
+    // order the client inserted them into its per-tile list and therefore the
+    // order it draws them. The depth test is `LessEqual`, so later drawn wins
+    // the tie — see `renderer::depth_state`. Sorting by the graphic as well
+    // would be just as deterministic and would resolve those ties by an
+    // accident of the art's numbering.
+    quads.sort_by_key(|(order, _)| *order);
+    quads.into_iter().map(|(_, quad)| quad).collect()
 }
 
 /// Walk every static on the visible cells, calling back for each.

@@ -83,7 +83,7 @@ pub fn collect(
 ) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
-    let mut quads: Vec<(depth::Order, u16, SpriteQuad)> = Vec::new();
+    let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
     for item in items {
         // The frame on screen; the *placed* graphic still decides the sort and
@@ -101,7 +101,6 @@ pub fn collect(
         let at = stand_on(camera, item.at, &sprite);
         quads.push((
             order,
-            item.graphic.0,
             SpriteQuad {
                 rect: Rect {
                     x: at.x,
@@ -116,11 +115,13 @@ pub fn collect(
         ));
     }
 
-    // Back to front, the graphic breaking the tie, and the sort is stable — so
-    // two identical items on one tile keep the caller's order, which is by
-    // serial. The depth buffer decides overlap; this is for determinism.
-    quads.sort_by_key(|(order, graphic, _)| (*order, *graphic));
-    quads.into_iter().map(|(_, _, quad)| quad).collect()
+    // Back to front, and a *stable* sort on the order alone: two items on one
+    // tile at one `PriorityZ` keep the caller's order, which is by serial —
+    // the order the server sent them and so the order the client's own
+    // per-tile list holds them in. The depth test is `LessEqual`, so the later
+    // one wins the tie; see `renderer::depth_state`.
+    quads.sort_by_key(|(order, _)| *order);
+    quads.into_iter().map(|(_, quad)| quad).collect()
 }
 
 #[cfg(test)]

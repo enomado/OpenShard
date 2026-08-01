@@ -117,14 +117,25 @@ pub fn depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 
 /// The depth-stencil state every pass here shares.
 ///
-/// `Less` and writing: nearer is smaller — see [`crate::depth`] — so an
-/// untouched buffer at 1.0 means "nothing drawn yet" and every quad that passes
-/// the test also records itself for the next one.
+/// Nearer is smaller — see [`crate::depth`] — so an untouched buffer at 1.0
+/// means "nothing drawn yet", and writing is on so every quad that passes the
+/// test also records itself for the next one.
+///
+/// `LessEqual` rather than `Less`, and that is the *tie-break*, not a rounding
+/// allowance. Two things at one depth are two things the client puts on one
+/// tile at one `PriorityZ`, and it draws them in the order it inserted them:
+/// the land tile first, then the map's statics in file order, then whatever
+/// arrived from the server. `Chunk.AddGameObject` is where that is decided, and
+/// the whole of it here is `LessEqual` plus the order the passes and their
+/// quads are already in — later drawn wins, so ground gives way to the
+/// flagstone lying on it, and the flagstone gives way to the body standing on
+/// the flagstone. Under `Less` every one of those ties resolved backwards, and
+/// silently: the depths were right and the first writer kept the pixel.
 fn depth_state() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: DEPTH_FORMAT,
         depth_write_enabled: Some(true),
-        depth_compare: Some(wgpu::CompareFunction::Less),
+        depth_compare: Some(wgpu::CompareFunction::LessEqual),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     }
