@@ -433,8 +433,8 @@ impl GroundRenderer {
             TILE_HEIGHT as f32,
             Z_STEP as f32,
             projection.scale,
-            projection.origin.0,
-            projection.origin.1,
+            projection.origin.x,
+            projection.origin.y,
         ] {
             uniform_bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -806,8 +806,8 @@ impl SpriteRenderer {
             target.height as f32,
             projection.scale,
             0.0,
-            projection.origin.0,
-            projection.origin.1,
+            projection.origin.x,
+            projection.origin.y,
             0.0,
             0.0,
         ] {

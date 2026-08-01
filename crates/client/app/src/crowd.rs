@@ -516,7 +516,19 @@ impl Crowd {
         tracked.at = at;
         tracked.facing = facing.direction;
         tracked.body = body.0;
-        tracked.step = None;
+        // Not cleared to `None`: `Crowd::advance`'s walk-to-standing check is
+        // gated on there being a step to time against, so clearing it left a
+        // body whose next step never came (a wall it gave up on, a paralyze)
+        // stuck playing its walk forever — nothing was left to expire.
+        //
+        // `started`/`takes` are kept as they were — that is what the
+        // `animation_hold` grace this body is still owed is measured
+        // against, so a refusal that *is* followed by another step right
+        // away does not flicker to standing between them. Only `from` drops,
+        // which kills the glide (the cut below) and — since [`Tracked::striding`]
+        // now stops the clock the moment `from` is gone — the walk playing
+        // itself out on a body that already stopped moving.
+        tracked.step = tracked.step.map(|step| Step { from: None, ..step });
         tracked.stepped_at = None;
         // The cut, and here it is an event rather than a threshold: this *is*
         // the rollback, the teleport, the `0x20`. D6 says a cut is an event and
@@ -561,6 +573,25 @@ impl Crowd {
     /// the tile it would otherwise be given is a guess.
     pub fn drawn_for(&self, who: Who) -> Option<Gaze> {
         Some(self.tracked.get(&who)?.drawn)
+    }
+
+    /// Which animation group this body is playing now, in the sub-pixel form
+    /// the sprite and the camera both read.
+    ///
+    /// Asked every frame for the same reason [`Crowd::drawn_for`] is: a group
+    /// read once, at the last `see`/`snap`, and cached from then on goes stale
+    /// the moment [`Crowd::advance`] drops a body from walking to standing on
+    /// its own — nothing calls `see` again just because a body stopped, so a
+    /// caller that only ever re-read the group off the packet that started
+    /// the walk would keep asking the atlas for the walking group's frames
+    /// forever, timed by a clock that had already moved on to the standing
+    /// group's. That mismatch is what "the character walks in place" turned
+    /// out to be: the position stopped, the clock kept advancing, and the
+    /// sprite was the walk's because nothing ever asked the crowd again.
+    ///
+    /// `None` for a body this crowd is not tracking, same as [`Crowd::drawn_for`].
+    pub fn group_for(&self, who: Who) -> Option<u8> {
+        Some(self.tracked.get(&who)?.group)
     }
 
     /// Whether anybody is part way through a step.
@@ -660,6 +691,19 @@ impl Tracked {
             // freeze, not a general one.
             return dt;
         };
+        // No ground being covered: a jump of more than one tile (`from` is
+        // never set for those — see [`Step::from`]), or a step a refusal
+        // snapped back to nothing but its timer — see [`Crowd::snap`]. Either
+        // way `started`/`takes` describe a crossing that was never actually
+        // walked, and letting the clock run through it plays the stride out
+        // on a body sitting still on its tile, which reads as walking in
+        // place. Traced with `trace_walking_in_place_after_an_unfollowed_refusal`:
+        // a body snapped back stayed put while its legs kept moving for most
+        // of a step. The group is still held, same as the tail of a genuine
+        // glide — only the clock stops.
+        if step.from.is_none() {
+            return Duration::ZERO;
+        }
         let ends = step.started + step.takes;
         match ends.checked_sub(was) {
             Some(left) => dt.min(left),
@@ -851,6 +895,65 @@ mod tests {
         assert_eq!(step(&mut crowd, 11).group, 0, "no new step, but not done yet");
         crowd.advance(WALK_HOLD);
         assert_eq!(step(&mut crowd, 11).group, 4, "and then it stands");
+    }
+
+    /// A single step of *our own* body, with nothing at all calling `see`
+    /// again afterwards — `App::walk` offline, one key press, then silence.
+    ///
+    /// `a_step_walks_and_silence_stands` above covers a body this client only
+    /// hears about, and re-asks `Crowd::see` at the same position on every
+    /// check — which itself pokes at the `Tracked` the same way a fresh
+    /// packet would. The one body that is never re-`see`n while it stands
+    /// still is the commanded one: `App::about_to_wait`'s safety-net timer
+    /// only ever calls `Crowd::advance`. If the walk-to-standing transition
+    /// depended on anything `see` does, this is the case that would miss it.
+    #[test]
+    fn the_commanded_body_stops_walking_when_nothing_asks_it_to_walk_again() {
+        let mut crowd = Crowd::default();
+        let facing = Facing::walking(Direction::East);
+        crowd.see(None, Point::new(10, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        let stepped = crowd.see(None, Point::new(11, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        assert_eq!(stepped.group, 0, "a step is a walk");
+
+        // Nothing walks it further. Advanced in `FRAME_DELAY`-sized ticks —
+        // the safety net's own granularity — well past any hold this step
+        // could be owed.
+        for _ in 0..40 {
+            crowd.advance(openshard_client_render::animation::FRAME_DELAY);
+        }
+        assert_eq!(
+            crowd.tracked.get(&None).expect("still tracked").group,
+            BodyKind::of(PLAYER).standing(),
+            "stopped walking once nothing was left to hold it there"
+        );
+    }
+
+    /// The `Mobile` a caller got back from `see`/`snap` is a snapshot, not a
+    /// window — its `group` does not follow the body's later automatically
+    /// once the walk gives up. `App::draw` used to read `mobile.group` off
+    /// exactly such a snapshot (`self.player`, cached from the last `see`)
+    /// instead of asking the crowd again every frame, which is the source of
+    /// the walking-in-place complaint this pair of tests chases: a body that
+    /// really had stopped, drawn from a `Mobile` that still said so.
+    /// [`Crowd::group_for`] is what a caller has to re-ask instead.
+    #[test]
+    fn a_returned_mobiles_group_goes_stale_but_group_for_does_not() {
+        let mut crowd = Crowd::default();
+        let facing = Facing::walking(Direction::East);
+        crowd.see(None, Point::new(10, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        let stepped = crowd.see(None, Point::new(11, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        assert_eq!(stepped.group, 0, "walking, in the snapshot returned");
+
+        crowd.advance(WALK_HOLD * 2);
+        assert_eq!(
+            stepped.group, 0,
+            "the snapshot itself cannot change — it is a plain value"
+        );
+        assert_eq!(
+            crowd.group_for(None),
+            Some(BodyKind::of(PLAYER).standing()),
+            "but the crowd, asked again, has moved on"
+        );
     }
 
     /// A body that keeps stepping keeps walking, however long it goes on.
@@ -1595,6 +1698,84 @@ mod tests {
             halfway(&crowd, serial(1), Point::new(10, 10, 0), Point::new(10, 11, 0)),
             0.5,
             "a full walk's crossing"
+        );
+    }
+
+    /// A refused step nothing follows up plays no more of its stride: the
+    /// body is not gliding (`Tracked::glide` is `None` throughout — it never
+    /// left the tile it was snapped back to), so the frame it is drawn on
+    /// must not keep changing underneath it either, or the picture is a body
+    /// standing still with its legs still moving.
+    ///
+    /// Caught by tracing this exact scenario frame by frame: before this
+    /// fix, `Tracked::striding` kept advancing the clock through the
+    /// refused step's original `takes` regardless of `from` being gone, so
+    /// the frame walked 1→2→3→4→5 over the next ~300ms while `drawn` sat
+    /// fixed the whole time.
+    #[test]
+    fn a_refused_step_with_nothing_gliding_does_not_advance_its_frame() {
+        let mut crowd = Crowd::default();
+        let at = Point::new(10, 10, 0);
+        let facing = Facing::walking(Direction::East);
+        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        crowd.see(
+            serial(1),
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+        );
+        // A quarter step in, the server refuses it — same timing as
+        // `a_refused_step_is_snapped_back_rather_than_glided`.
+        crowd.advance(WALK_HOLD / 4);
+        crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+
+        let frame_just_after_the_snap = crowd.frame_for(serial(1), 6);
+        for _ in 0..20 {
+            crowd.advance(Duration::from_millis(20));
+            assert!(!crowd.anyone_gliding(), "snapped back, never left the tile");
+            assert_eq!(
+                crowd.frame_for(serial(1), 6),
+                frame_just_after_the_snap,
+                "held on the spot, not walking in place"
+            );
+        }
+    }
+
+    /// A refused step with no step behind it to catch it up: the body has
+    /// genuinely stopped (a wall it gave up on, a paralyze), not merely
+    /// mispredicted its next tile.
+    ///
+    /// `Crowd::snap` used to clear the step entirely, and the only thing that
+    /// ever drops a walking group back to standing is gated on there being one
+    /// to time against — so with nothing left to expire, the walk played on
+    /// screen forever.
+    #[test]
+    fn a_refused_step_with_no_step_following_it_still_stops_walking() {
+        let mut crowd = Crowd::default();
+        let at = Point::new(10, 10, 0);
+        let facing = Facing::walking(Direction::East);
+        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        let stepped = crowd.see(
+            serial(1),
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+        );
+        assert_eq!(stepped.group, 0, "walking");
+
+        let back = crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        assert_eq!(back.group, 0, "still walking right after the refusal");
+
+        // Nothing steps again. The walk it was mid-stride of still has to give
+        // up eventually, the same way it would have had the step gone through.
+        crowd.advance(WALK_HOLD * 2);
+        let standing = BodyKind::of(PLAYER).standing();
+        assert_eq!(
+            crowd.tracked.get(&serial(1)).expect("still tracked").group,
+            standing,
+            "the walk gave up rather than playing forever"
         );
     }
 

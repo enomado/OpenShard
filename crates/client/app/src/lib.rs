@@ -2095,14 +2095,25 @@ impl App {
             Err(error) => eprintln!("growing the atlases: {error}"),
         }
 
-        // Both time-varying halves of a mobile, filled in per frame rather than
-        // per packet: the crowd is the only thing that knows what a clock has
-        // done since the `0x77` landed, and `self.player`/`self.others` were
-        // built when it did. The frame comes from how many the atlas actually
-        // packed — asking the atlas rather than remembering the count is what
-        // keeps "frame 7 of a 6-frame walk" from being expressible — and the
-        // glide is how far into its step the body has walked.
+        // Three time-varying halves of a mobile, filled in per frame rather
+        // than per packet: the crowd is the only thing that knows what a
+        // clock — and a group — has done since the `0x77` landed, and
+        // `self.player`/`self.others` were built when it did. The group is
+        // read back first and not only the frame and the glide: `Crowd::advance`
+        // drops a walking body to standing on its own timer, with nothing
+        // that looks like a packet to refresh `mobile.group` from — a group
+        // read once here and left stale plays the walking group's sprite
+        // forever, timed by a clock that already moved on to the standing
+        // group's, which is a body that has stopped walking but not stopped
+        // *looking* like it is. The frame comes from how many the atlas
+        // actually packed — asking the atlas rather than remembering the
+        // count is what keeps "frame 7 of a 6-frame walk" from being
+        // expressible — and the glide is how far into its step the body has
+        // walked.
         for (who, mobile) in &mut drawn {
+            if let Some(group) = self.crowd.group_for(*who) {
+                mobile.group = group;
+            }
             let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
             let frame_count = window
                 .atlases

@@ -44,6 +44,7 @@ use crate::atlas::{AnimAtlas, FrameKey};
 use crate::camera::{Camera, ViewPixel, WorldPoint};
 use crate::depth;
 use crate::follow::Gaze;
+use crate::geometry::{Rect, Vec2};
 use crate::sprite::SpriteQuad;
 
 /// One creature to draw, as the client knows it.
@@ -126,7 +127,7 @@ pub fn world_position(mobile: &Mobile) -> WorldPoint {
 /// Fractional and not a [`ViewPixel`], because a third of a virtual pixel is a
 /// whole real one at `3x`: rounding here would put back exactly the quantum the
 /// snap above was chosen to keep.
-fn cell_centre(mobile: &Mobile, camera: &Camera) -> (f32, f32) {
+fn cell_centre(mobile: &Mobile, camera: &Camera) -> Vec2 {
     camera.to_view_exact(camera.snap(world_position(mobile)))
 }
 
@@ -156,10 +157,7 @@ pub fn needed_animations(mobiles: &[Mobile]) -> Vec<(u16, u8, u8)> {
 /// one to draw it, the other to hang a label above it — and computing it twice
 /// is two chances for the anchor arithmetic to disagree with itself.
 struct Placement {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+    rect: Rect,
     region: crate::atlas::Region,
     order: depth::Order,
 }
@@ -200,10 +198,12 @@ fn place(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Placemen
     };
 
     Some(Placement {
-        x: at.0 - anchor_x as f32,
-        y: at.1 - (height + i32::from(packed.center_y)) as f32,
-        width: width as f32,
-        height: height as f32,
+        rect: Rect {
+            x: at.x - anchor_x as f32,
+            y: at.y - (height + i32::from(packed.center_y)) as f32,
+            width: width as f32,
+            height: height as f32,
+        },
         region,
         order,
     })
@@ -228,10 +228,7 @@ pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas) -> Vec<Sp
             placement.order,
             mobile.body,
             SpriteQuad {
-                x: placement.x,
-                y: placement.y,
-                width: placement.width,
-                height: placement.height,
+                rect: placement.rect,
                 region: placement.region,
                 depth: placement.order.to_depth(base),
                 hue: u32::from(mobile.hue.0),
@@ -255,8 +252,8 @@ pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas) -> Vec<Sp
 pub fn head_anchor(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<ViewPixel> {
     let placement = place(mobile, camera, atlas)?;
     Some(ViewPixel {
-        x: (placement.x + placement.width / 2.0).round() as i32,
-        y: placement.y.round() as i32,
+        x: (placement.rect.x + placement.rect.width / 2.0).round() as i32,
+        y: placement.rect.y.round() as i32,
     })
 }
 
@@ -317,9 +314,9 @@ mod tests {
         );
         assert_eq!(quads.len(), 1);
         // The camera puts its own tile's centre at (400, 300).
-        assert_eq!(quads[0].x, 400.0 - 12.0);
-        assert_eq!(quads[0].y, 300.0 - (60.0 - 3.0));
-        assert_eq!(quads[0].width, 40.0);
+        assert_eq!(quads[0].rect.x, 400.0 - 12.0);
+        assert_eq!(quads[0].rect.y, 300.0 - (60.0 - 3.0));
+        assert_eq!(quads[0].rect.width, 40.0);
     }
 
     /// A mirrored facing samples its picture backwards and hangs from the other
@@ -350,9 +347,13 @@ mod tests {
         assert_eq!(plain.len(), 1);
         assert_eq!(flipped.len(), 1);
 
-        assert_eq!(plain[0].x, 400.0 - 12.0);
-        assert_eq!(flipped[0].x, 400.0 - (40.0 - 12.0), "the anchor is the far edge");
-        assert_eq!(plain[0].y, flipped[0].y, "only x is mirrored");
+        assert_eq!(plain[0].rect.x, 400.0 - 12.0);
+        assert_eq!(
+            flipped[0].rect.x,
+            400.0 - (40.0 - 12.0),
+            "the anchor is the far edge"
+        );
+        assert_eq!(plain[0].rect.y, flipped[0].rect.y, "only x is mirrored");
         assert!(flipped[0].region.du < 0.0, "the picture is sampled backwards");
         assert!(plain[0].region.du > 0.0);
     }
@@ -401,8 +402,8 @@ mod tests {
         };
         let quads = collect(&[mobile], &camera, &atlas);
         let anchor = head_anchor(&mobile, &camera, &atlas).expect("packed");
-        assert_eq!(anchor.x as f32, quads[0].x + quads[0].width / 2.0);
-        assert_eq!(anchor.y as f32, quads[0].y);
+        assert_eq!(anchor.x as f32, quads[0].rect.x + quads[0].rect.width / 2.0);
+        assert_eq!(anchor.y as f32, quads[0].rect.y);
     }
 
     /// A mobile the atlas has no frame for gets no anchor either — the same
@@ -457,8 +458,12 @@ mod tests {
         assert_eq!(standing.len(), 1);
         assert_eq!(mid_step.len(), 1);
         assert_eq!(standing[0].depth, mid_step[0].depth, "the order is the tile's");
-        assert_eq!(mid_step[0].x, standing[0].x - 11.0, "and the sprite has moved");
-        assert_eq!(mid_step[0].y, standing[0].y - 11.0);
+        assert_eq!(
+            mid_step[0].rect.x,
+            standing[0].rect.x - 11.0,
+            "and the sprite has moved"
+        );
+        assert_eq!(mid_step[0].rect.y, standing[0].rect.y - 11.0);
     }
 
     /// Every distinct animation a set of mobiles needs, once each.

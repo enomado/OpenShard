@@ -17,6 +17,7 @@ use openshard_protocol::wire::Hue;
 
 use crate::atlas::FontAtlas;
 use crate::camera::ViewPixel;
+use crate::geometry::Rect;
 use crate::sprite::SpriteQuad;
 
 /// One line of overhead text, already resolved to where it hangs.
@@ -68,10 +69,12 @@ pub fn collect(labels: &[Label<'_>], atlas: &FontAtlas) -> Vec<SpriteQuad> {
         for sprite in glyphs {
             if sprite.width > 0 && sprite.height > 0 {
                 quads.push(SpriteQuad {
-                    x: x as f32,
-                    y: (label.anchor.y - i32::from(sprite.height)) as f32,
-                    width: f32::from(sprite.width),
-                    height: f32::from(sprite.height),
+                    rect: Rect {
+                        x: x as f32,
+                        y: (label.anchor.y - i32::from(sprite.height)) as f32,
+                        width: f32::from(sprite.width),
+                        height: f32::from(sprite.height),
+                    },
                     region: sprite.region,
                     depth: label.depth,
                     hue: u32::from(label.hue.0),
@@ -136,9 +139,13 @@ mod tests {
             &atlas,
         );
         assert_eq!(quads.len(), 2);
-        assert_eq!(quads[1].x, quads[0].x + quads[0].width, "i starts where H ends");
-        assert_eq!(quads[0].y, 40.0, "grows upward from the anchor, not down");
-        assert_eq!(quads[1].y, 40.0);
+        assert_eq!(
+            quads[1].rect.x,
+            quads[0].rect.x + quads[0].rect.width,
+            "i starts where H ends"
+        );
+        assert_eq!(quads[0].rect.y, 40.0, "grows upward from the anchor, not down");
+        assert_eq!(quads[1].rect.y, 40.0);
     }
 
     /// The whole line is centred on its anchor, not left-aligned to it: two
@@ -157,8 +164,8 @@ mod tests {
             }],
             &atlas,
         );
-        assert_eq!(quads[0].x, 96.0, "100 - 8/2");
-        assert_eq!(quads[1].x, 102.0);
+        assert_eq!(quads[0].rect.x, 96.0, "100 - 8/2");
+        assert_eq!(quads[1].rect.x, 102.0);
     }
 
     /// A byte the atlas has no glyph for — here, everything but 'H' and 'i' —
@@ -215,7 +222,7 @@ mod tests {
             &atlas,
         );
         assert_eq!(quads.len(), 2);
-        assert_eq!(quads[1].x, 300.0 - 1.0, "300 - 2/2");
-        assert_eq!(quads[1].y, 70.0, "80 - the glyph's own height");
+        assert_eq!(quads[1].rect.x, 300.0 - 1.0, "300 - 2/2");
+        assert_eq!(quads[1].rect.y, 70.0, "80 - the glyph's own height");
     }
 }

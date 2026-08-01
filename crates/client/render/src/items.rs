@@ -27,6 +27,7 @@ use openshard_uofiles::tiledata::TileData;
 use crate::atlas::StaticAtlas;
 use crate::camera::Camera;
 use crate::depth;
+use crate::geometry::Rect;
 use crate::sprite::SpriteQuad;
 use crate::statics::stand_on;
 
@@ -85,15 +86,17 @@ pub fn collect(
             tile: i32::from(item.at.x) + i32::from(item.at.y),
             priority_z: depth::static_priority_z(item.at.z, tiledata.static_tile(item.graphic.0)),
         };
-        let (x, y) = stand_on(camera, item.at, &sprite);
+        let at = stand_on(camera, item.at, &sprite);
         quads.push((
             order,
             item.graphic.0,
             SpriteQuad {
-                x,
-                y,
-                width: f32::from(sprite.width),
-                height: f32::from(sprite.height),
+                rect: Rect {
+                    x: at.x,
+                    y: at.y,
+                    width: f32::from(sprite.width),
+                    height: f32::from(sprite.height),
+                },
                 region: sprite.region,
                 depth: order.to_depth(base),
                 hue: u32::from(item.hue.0),
@@ -152,9 +155,9 @@ mod tests {
         );
         assert_eq!(quads.len(), 1);
         let sprite = atlas.sprite(graphic).expect("packed");
-        let (x, y) = stand_on(&camera, Point::new(100, 100, 0), &sprite);
-        assert_eq!((quads[0].x, quads[0].y), (x, y));
-        assert_eq!((quads[0].width, quads[0].height), (30.0, 50.0));
+        let at = stand_on(&camera, Point::new(100, 100, 0), &sprite);
+        assert_eq!((quads[0].rect.x, quads[0].rect.y), (at.x, at.y));
+        assert_eq!((quads[0].rect.width, quads[0].rect.height), (30.0, 50.0));
     }
 
     /// Height lifts an item off the floor the way it lifts everything else, and
@@ -173,7 +176,7 @@ mod tests {
         };
         let floor = collect(&[at(0)], &camera, &tiledata, &atlas);
         let table = collect(&[at(10)], &camera, &tiledata, &atlas);
-        assert_eq!(table[0].y, floor[0].y - 40.0, "four pixels a unit");
+        assert_eq!(table[0].rect.y, floor[0].rect.y - 40.0, "four pixels a unit");
         assert!(table[0].depth < floor[0].depth, "smaller is nearer");
     }
 

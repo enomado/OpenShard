@@ -1045,7 +1045,7 @@ fn draw_tile_highlight(
     let scale = 1.0 / ui.ctx().pixels_per_point();
     let corners = camera
         .tile_diamond(point)
-        .map(|(x, y)| viewport_origin + egui::vec2(x * scale, y * scale))
+        .map(|corner| viewport_origin + egui::vec2(corner.x * scale, corner.y * scale))
         .to_vec();
     let painter = ui.ctx().layer_painter(egui::LayerId::new(
         egui::Order::Foreground,

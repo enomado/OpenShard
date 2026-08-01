@@ -25,6 +25,7 @@ use openshard_uofiles::tiledata::TileData;
 use crate::atlas::{Sprite, StaticAtlas};
 use crate::camera::{Camera, TILE_HEIGHT, TileBounds};
 use crate::depth;
+use crate::geometry::{Rect, Vec2};
 use crate::sprite::SpriteQuad;
 
 /// Where a sprite standing on a tile lands, in viewport pixels.
@@ -34,9 +35,9 @@ use crate::sprite::SpriteQuad;
 /// the same picture standing the same way, and the second is
 /// [`crate::items`]. Centred on the tile's column, bottom edge on the
 /// diamond's bottom vertex — `View.DrawStatic`.
-pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> (f32, f32) {
+pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> Vec2 {
     let at = camera.to_screen(at);
-    (
+    Vec2::new(
         // `>> 1` and not `/ 2.0`: an odd-width sprite lands half a pixel off
         // centre in the client too, and rounding it the other way shifts every
         // one of them against the ground.
@@ -93,15 +94,17 @@ pub fn collect(map: &Map, camera: &Camera, tiledata: &TileData, atlas: &StaticAt
         };
         // The cell's centre, height folded in: `to_screen` already lifts `z` by
         // four pixels a unit, which is the same lift the ground gets.
-        let (x, y) = stand_on(camera, Point::new(item.x, item.y, item.z), &sprite);
+        let at = stand_on(camera, Point::new(item.x, item.y, item.z), &sprite);
         quads.push((
             order,
             item.tile,
             SpriteQuad {
-                x,
-                y,
-                width: f32::from(sprite.width),
-                height: f32::from(sprite.height),
+                rect: Rect {
+                    x: at.x,
+                    y: at.y,
+                    width: f32::from(sprite.width),
+                    height: f32::from(sprite.height),
+                },
                 region: sprite.region,
                 depth: order.to_depth(base),
                 hue: u32::from(item.hue),

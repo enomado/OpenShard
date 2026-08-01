@@ -13,24 +13,20 @@
 //! a region whose width is negative samples its own texels backwards.
 
 use crate::atlas::Region;
+use crate::geometry::Rect;
 
 /// One sprite: where it goes, how big it is, and what to sample.
 ///
-/// The position is the sprite's top-left corner in viewport pixels, height
-/// already folded in — unlike a [`GroundQuad`](crate::ground::GroundQuad),
+/// The rectangle is the sprite's top-left corner and size in viewport pixels,
+/// height already folded in — unlike a [`GroundQuad`](crate::ground::GroundQuad),
 /// whose corners the shader lifts individually. A sprite has one `z` and one
 /// picture, so there is nothing left for the shader to decide.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct SpriteQuad {
-    /// Left edge, in viewport pixels.
-    pub x: f32,
-    /// Top edge, in viewport pixels.
-    pub y: f32,
-    /// The sprite's width in pixels. The quad is exactly this wide, so the art
-    /// is drawn at its own scale and a texel is a pixel.
-    pub width: f32,
-    /// Its height in pixels.
-    pub height: f32,
+    /// Where it goes and how big it is, in viewport pixels. The quad is
+    /// exactly this size, so the art is drawn at its own scale and a texel is
+    /// a pixel.
+    pub rect: Rect,
     /// Where its picture lives in whichever atlas this pass is bound to.
     ///
     /// A negative width is a mirrored sprite — see [`SpriteQuad::mirrored`].
@@ -74,10 +70,10 @@ impl SpriteQuad {
     /// Append this quad to an instance buffer.
     pub fn write(&self, out: &mut Vec<u8>) {
         for value in [
-            self.x,
-            self.y,
-            self.width,
-            self.height,
+            self.rect.x,
+            self.rect.y,
+            self.rect.width,
+            self.rect.height,
             self.region.u,
             self.region.v,
             self.region.du,
@@ -98,10 +94,12 @@ mod tests {
     #[test]
     fn a_quad_writes_its_stride_and_nothing_more() {
         let quad = SpriteQuad {
-            x: 1.0,
-            y: 2.0,
-            width: 44.0,
-            height: 88.0,
+            rect: Rect {
+                x: 1.0,
+                y: 2.0,
+                width: 44.0,
+                height: 88.0,
+            },
             region: Region {
                 u: 0.25,
                 v: 0.5,

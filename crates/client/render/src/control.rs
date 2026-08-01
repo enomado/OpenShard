@@ -415,7 +415,7 @@ mod tests {
             assert!(control.pan(1, 1), "a real pixel is always a position at {rung}");
             let after = control.camera().to_viewport(control.camera().to_screen(fixed));
             assert_eq!(
-                (after.0 - before.0, after.1 - before.1),
+                (after.x - before.x, after.y - before.y),
                 (1.0, 1.0),
                 "the world did not follow the hand at rung {rung}",
             );

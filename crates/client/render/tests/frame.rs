@@ -16,6 +16,7 @@ use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, Projection, WorldPoint, Zoom};
+use openshard_client_render::geometry::Rect;
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::mobiles::{self, Mobile};
@@ -759,10 +760,12 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
     let atlas = StaticAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
     let sprite = atlas.sprite(GRAPHIC).expect("packed");
     let quads = [SpriteQuad {
-        x: 4.0,
-        y: 4.0,
-        width: f32::from(sprite.width),
-        height: f32::from(sprite.height),
+        rect: Rect {
+            x: 4.0,
+            y: 4.0,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
         region: sprite.region,
         depth: 0.5,
         hue: 0,
@@ -850,10 +853,12 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
     let sprite = atlas.sprite(GRAPHIC).expect("packed");
 
     let quads = [SpriteQuad {
-        x: 10.0,
-        y: 20.0,
-        width: f32::from(sprite.width),
-        height: f32::from(sprite.height),
+        rect: Rect {
+            x: 10.0,
+            y: 20.0,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
         region: sprite.region,
         depth: 0.5,
         hue: 0,
@@ -955,10 +960,12 @@ fn a_full_hue_replaces_the_pixel_by_its_red_channel_regardless_of_its_own_colour
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
 
     let quad = |hue: u32| SpriteQuad {
-        x: 0.0,
-        y: 0.0,
-        width: f32::from(sprite.width),
-        height: f32::from(sprite.height),
+        rect: Rect {
+            x: 0.0,
+            y: 0.0,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
         region: sprite.region,
         depth: 0.5,
         hue,
@@ -1138,10 +1145,12 @@ fn ground_in_front_hides_a_static_behind_it() {
         depth: 0.4,
     }];
     let wall = [SpriteQuad {
-        x: 64.0 - 30.0,
-        y: 64.0 - 30.0,
-        width: f32::from(sprite.width),
-        height: f32::from(sprite.height),
+        rect: Rect {
+            x: 64.0 - 30.0,
+            y: 64.0 - 30.0,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
         region: sprite.region,
         depth: 0.6,
         hue: 0,
@@ -1296,8 +1305,8 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
             Projection::one_to_one(256, 256),
         );
         // The two pixels the sprite covers, left and right.
-        let x = quads[0].x as u32;
-        let y = quads[0].y as u32;
+        let x = quads[0].rect.x as u32;
+        let y = quads[0].rect.y as u32;
         (frame.pixel(x, y), frame.pixel(x + 1, y))
     };
 
@@ -1531,10 +1540,12 @@ fn a_magnified_sprite_translates_texel_for_texel() {
     let atlas = StaticAtlas::build(&art, [graphic]).expect("one sprite fits");
     let sprite = atlas.sprite(graphic).expect("just packed");
     let quads = vec![SpriteQuad {
-        x: (camera.render_width() as i32 / 2) as f32,
-        y: (camera.render_height() as i32 / 2) as f32,
-        width: f32::from(sprite.width),
-        height: f32::from(sprite.height),
+        rect: Rect {
+            x: (camera.render_width() as i32 / 2) as f32,
+            y: (camera.render_height() as i32 / 2) as f32,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
         region: sprite.region,
         depth: 0.5,
         hue: 0,
@@ -1810,10 +1821,12 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
 
     let sprite = atlas.sprite(LATE).expect("packed");
     let quads = [SpriteQuad {
-        x: 10.0,
-        y: 12.0,
-        width: f32::from(sprite.width),
-        height: f32::from(sprite.height),
+        rect: Rect {
+            x: 10.0,
+            y: 12.0,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
         region: sprite.region,
         depth: 0.5,
         hue: 0,

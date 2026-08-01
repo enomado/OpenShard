@@ -38,6 +38,7 @@ pub mod chart;
 pub mod control;
 pub mod depth;
 pub mod follow;
+pub mod geometry;
 pub mod ground;
 pub mod hue;
 pub mod items;

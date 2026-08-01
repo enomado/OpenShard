@@ -54,6 +54,8 @@
 
 use openshard_protocol::world::Point;
 
+use crate::geometry::Vec2;
+
 /// A land tile's sprite is this wide. Statics vary; the ground never does.
 pub const TILE_WIDTH: i32 = 44;
 
@@ -425,7 +427,7 @@ pub struct Projection {
     /// pixel, so at `3x` it carries thirds of a virtual one, and the remainder
     /// has nowhere else to go. Rounding it here would put the quantum back where
     /// D11 took it from.
-    pub origin: (f32, f32),
+    pub origin: Vec2,
     /// Real pixels per virtual pixel.
     pub scale: f32,
 }
@@ -441,7 +443,7 @@ impl Projection {
             // Halved as an integer for the reason `Camera::projection` gives at
             // length: `to_view` halves the extent the same way, and two
             // roundings of one number have to be one rounding.
-            origin: ((width as i32 / 2) as f32, (height as i32 / 2) as f32),
+            origin: Vec2::new((width as i32 / 2) as f32, (height as i32 / 2) as f32),
             scale: 1.0,
         }
     }
@@ -633,7 +635,7 @@ impl Camera {
         // the *rounded* eye, so what is left over is added once, to the point
         // the target is centred on, instead of to every quad.
         let rounded = self.eye();
-        let origin = (
+        let origin = Vec2::new(
             (self.render_width() as i32 / 2) as f32 + (self.eye.x - f64::from(rounded.x)) as f32,
             (self.render_height() as i32 / 2) as f32 + (self.eye.y - f64::from(rounded.y)) as f32,
         );
@@ -669,9 +671,9 @@ impl Camera {
     ///
     /// A body mid-step, and nothing else so far: everything the map holds is on
     /// a tile, and a tile projects to a whole pixel by construction.
-    pub fn to_view_exact(&self, at: WorldPoint) -> (f32, f32) {
+    pub fn to_view_exact(&self, at: WorldPoint) -> Vec2 {
         let eye = self.eye();
-        (
+        Vec2::new(
             (at.x - f64::from(eye.x)) as f32 + (self.render_width() as i32 / 2) as f32,
             (at.y - f64::from(eye.y)) as f32 + (self.render_height() as i32 / 2) as f32,
         )
@@ -701,7 +703,7 @@ impl Camera {
     /// what carries a render-space point the rest of the way to a pixel a
     /// painter can use. `f32` because a highlight is drawn at whatever
     /// magnification the blit lands on, not on a texel grid.
-    pub fn to_viewport(&self, at: ViewPixel) -> (f32, f32) {
+    pub fn to_viewport(&self, at: ViewPixel) -> Vec2 {
         // From `projection`'s origin and not from half the extent, so the eye's
         // sub-virtual-pixel offset is in here too. Without it this lands where
         // the world *would* be if the camera were on a whole virtual pixel,
@@ -714,9 +716,9 @@ impl Camera {
         // the viewport is the same number on both paths even though the one in
         // the transform is not.
         let scale = self.zoom.numerator() as f32 / self.zoom.denominator() as f32;
-        (
-            (at.x as f32 - projection.origin.0) * scale + self.width as f32 / 2.0,
-            (at.y as f32 - projection.origin.1) * scale + self.height as f32 / 2.0,
+        Vec2::new(
+            (at.x as f32 - projection.origin.x) * scale + self.width as f32 / 2.0,
+            (at.y as f32 - projection.origin.y) * scale + self.height as f32 / 2.0,
         )
     }
 
@@ -727,7 +729,7 @@ impl Camera {
     /// 44 pixels on a side in render space regardless of zoom, and only the
     /// blit in [`Camera::to_viewport`] scales it, so the offsets below are
     /// taken before that conversion and not after.
-    pub fn tile_diamond(&self, point: Point) -> [(f32, f32); 4] {
+    pub fn tile_diamond(&self, point: Point) -> [Vec2; 4] {
         let centre = self.to_screen(point);
         let half = TILE_WIDTH / 2;
         [
@@ -850,10 +852,10 @@ mod tests {
     /// GPU, an atlas and the client's files to say anything at all about it. It
     /// is one expression, it is written out in `Projection`'s own doc comment,
     /// and the frame tests are what keep the two honest.
-    fn real(projection: Projection, target: (u32, u32), at: ViewPixel) -> (f32, f32) {
-        (
-            (at.x as f32 - projection.origin.0) * projection.scale + target.0 as f32 / 2.0,
-            (at.y as f32 - projection.origin.1) * projection.scale + target.1 as f32 / 2.0,
+    fn real(projection: Projection, target: (u32, u32), at: ViewPixel) -> Vec2 {
+        Vec2::new(
+            (at.x as f32 - projection.origin.x) * projection.scale + target.0 as f32 / 2.0,
+            (at.y as f32 - projection.origin.y) * projection.scale + target.1 as f32 / 2.0,
         )
     }
 
@@ -870,8 +872,8 @@ mod tests {
         assert_eq!(projection.scale, 1.0);
         for point in [Point::new(300, 300, 0), Point::new(305, 297, 12)] {
             let view = camera.to_screen(point);
-            let (x, y) = real(projection, camera.image_size(), view);
-            assert_eq!((x, y), (view.x as f32, view.y as f32));
+            let at = real(projection, camera.image_size(), view);
+            assert_eq!((at.x, at.y), (view.x as f32, view.y as f32));
         }
     }
 
@@ -896,8 +898,8 @@ mod tests {
 
             let projection = camera.projection();
             let eye = camera.to_view(camera.eye());
-            let (from_x, from_y) = real(projection, camera.image_size(), eye);
-            let (to_x, to_y) = real(
+            let from = real(projection, camera.image_size(), eye);
+            let to = real(
                 projection,
                 camera.image_size(),
                 ViewPixel {
@@ -912,7 +914,7 @@ mod tests {
             // however the arithmetic is done. That is the shimmer D11 gives as
             // its reason for the ladder ending up integral, and it is measured
             // here rather than asserted away.
-            let (dx, dy) = (to_x - from_x, to_y - from_y);
+            let (dx, dy) = (to.x - from.x, to.y - from.y);
             if zoom.denominator() == 1 {
                 assert_eq!((dx, dy), (expected, expected), "at {zoom}");
             } else {
@@ -959,7 +961,7 @@ mod tests {
             let (width, height) = camera.image_size();
             let middle = real(camera.projection(), (width, height), camera.to_view(camera.eye()));
             assert_eq!(
-                middle,
+                (middle.x, middle.y),
                 (width as f32 / 2.0, height as f32 / 2.0),
                 "the eye is off centre at {zoom}",
             );
