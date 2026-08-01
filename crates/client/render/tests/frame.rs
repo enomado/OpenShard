@@ -174,12 +174,7 @@ fn render_both(
     // the whole of the difference between a static and a creature on the GPU.
     let mut people = SpriteRenderer::new(device, queue, format, mobiles.0, &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target {
-        view: &view,
-        depth: &depth_view,
-        width,
-        height,
-    };
+    let target_view = Target::whole(&view, &depth_view, width, height);
     renderer.render(device, queue, &mut encoder, target_view, quads);
     statics.render(device, queue, &mut encoder, target_view, static_quads);
     people.render(device, queue, &mut encoder, target_view, mobiles.1);
@@ -633,12 +628,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
         &device,
         &queue,
         &mut encoder,
-        Target {
-            view: &world_view,
-            depth: &depth_view,
-            width,
-            height,
-        },
+        Target::whole(&world_view, &depth_view, width, height),
         &quads,
     );
     queue.submit([encoder.finish()]);
@@ -749,12 +739,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         &device,
         &queue,
         &mut encoder,
-        Target {
-            view: &world_view,
-            depth: &depth_view,
-            width,
-            height,
-        },
+        Target::whole(&world_view, &depth_view, width, height),
         &quads,
     );
 
@@ -1030,12 +1015,7 @@ fn render_hued(
     let mut ground = GroundRenderer::new(device, queue, format, land, texmaps);
     let mut statics = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target {
-        view: &view,
-        depth: &depth_view,
-        width,
-        height,
-    };
+    let target_view = Target::whole(&view, &depth_view, width, height);
     ground.render(device, queue, &mut encoder, target_view, &[]);
     statics.render(device, queue, &mut encoder, target_view, quads);
     encoder.copy_texture_to_buffer(
@@ -1604,12 +1584,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     let mut ground = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target {
-        view: &view,
-        depth: &depth_view,
-        width: frame_width,
-        height: frame_height,
-    };
+    let target_view = Target::whole(&view, &depth_view, frame_width, frame_height);
     ground.render(&device, &queue, &mut encoder, target_view, &[]);
     statics.render(&device, &queue, &mut encoder, target_view, &quads);
     queue.submit([encoder.finish()]);

@@ -157,8 +157,12 @@ threshold has a floor to stay above: several tiles, not one.
 
 ### D7 — the fraction lives in the state; the pose is whole pixels
 
-The pose the camera is given is whole world pixels, and the remainder stays in
-the filter's state. An eye carrying a fraction puts every sprite on a half-texel
+**Superseded in part by D11, which names *which* pixel.** What survives is the
+placement of the quantiser and the reason for it; what does not is the
+assumption that the pixel it rounds to is the art's.
+
+The pose the camera is given is whole pixels, and the remainder stays in the
+filter's state. An eye carrying a fraction puts every sprite on a half-texel
 boundary for half of all camera positions, which does not show on a screenshot
 and boils the whole frame in motion. This is the same rule the drag remainder in
 `control.rs` already follows, applied one stage later, and it is why the
@@ -273,6 +277,79 @@ without a second rule. `Ease::NONE` is what the harness's corridors
 run at — a body deliberately behind the oracle is not a body that failed to keep
 up, and only a scenario that says which one it is measuring can tell them
 apart.
+
+### D11 — two pixels, and the quantum is the real one
+
+There are two pixel sizes in this client and D7 did not distinguish them, which
+is the whole of the defect this decision exists to remove.
+
+**The virtual pixel** is the art's. The client's files fix it and we do not get
+to choose it: a land tile is 44×44, a step in `x` is 22 across and 22 down, a
+unit of height lifts four. Every sprite offset in the `.mul` is in it, and so is
+the projection, the depth order and the distance a walk covers. It does not know
+what a monitor is.
+
+**The real pixel** is the display's. `real = virtual × zoom`.
+
+At zoom 1 they are the same, which is why the difference stayed invisible for as
+long as it did — and why `camera.rs` could say, truthfully, that the third space
+has no type because nothing carries it. The rule is:
+
+> Motion is continuous, and the one rounding is to the **real** pixel.
+
+D7 put the quantiser last, which is right, and rounded to the virtual pixel,
+which is not. The offscreen image the world is drawn into is `viewport / zoom`,
+so at `2x` the eye's whole-virtual-pixel step is **two** pixels of the display
+and at `4x` it is four: a scroll visibly coarser than the screen it is on, and
+the same quantum under the drawn body, so a walk reads as juddering rather than
+as a slow pan. The arithmetic makes it worse the better the monitor. A cardinal
+step is 22 virtual pixels an axis over `WALK_HOLD`, which is 55/s — 0.92 of a
+pixel per frame at 60Hz and 0.38 at 144Hz. Under a whole-pixel quantiser that is
+an irregular run of zeroes and ones, so a higher refresh rate turns *more* of
+the motion into stalls rather than less, and the zoom multiplies each stall's
+height.
+
+**Rounding to the real pixel costs nothing in sharpness, and that is not
+obvious.** A shift of a whole real pixel at an integer zoom leaves every texel
+exactly `zoom` real pixels wide — uniformly translated, not resampled — so
+`nearest` still holds and the art stays as crisp as it is at 1:1. What buys that
+is the integer ladder (below); at a fractional zoom the texel widths alternate
+and the pattern crawls as the camera moves, which is a shimmer no placement of
+the quantiser fixes.
+
+**The state stays virtual, and only the rounding is real.** The tempting reading
+of "compute movement in real pixels" is to hold the position in them, and it is
+the wrong one: a walk covers 22 virtual pixels in 400ms because of what the art
+is, not because of what the display is, so holding the state in real pixels
+would rescale every filter's state and every glide's target on each notch of the
+wheel, and would put the zoom inside the kinematics instead of at its one exit.
+The picture on screen is identical either way — the quantum is the real pixel in
+both, because the rounding is single and last. What differs is how many places
+know about the zoom: one, or all of them.
+
+**Therefore the zoom leaves the blit and enters the vertex transform.** The
+offscreen-then-upscale arrangement *is* the coarse quantum: an image of virtual
+resolution cannot express a real-pixel offset, wherever the fraction is kept.
+The three world passes already take instance positions as `f32` and already
+convert to clip space against a `size` uniform, so what they gain is a `scale`
+and a centre that carries the eye's remainder — `screen = art * scale + centre`
+— and the CPU keeps doing its arithmetic in virtual pixels exactly as it does
+now. Every pixel-exact assertion in those passes is about art space and survives
+untouched. What the client gains beyond smoothness is that a magnified world is
+drawn at the display's resolution instead of at half or a quarter of it.
+
+**The ladder becomes integral: 1x, 2x, 3x, 4x.** The fractional rungs bought a
+finer choice of magnification and cost the shimmer above, which is a bad trade
+once the motion is smooth — a coarse ladder of exact rungs reads better than a
+fine ladder of rungs that crawl. Minification is a different question and keeps
+the offscreen path with its linear sampler, which is where a filter belongs:
+below 1 the quantum is already finer than the display and nothing here is owed.
+
+**The gates.** Two, and the second is the one that catches what the first
+cannot: a shift of `1/zoom` of a virtual pixel moves the picture exactly one real
+pixel, at every rung; and a texel of art occupies exactly `zoom` real pixels for
+*any* camera position, which is what fails the moment a fraction leaks past the
+quantiser.
 
 ## The bench
 
@@ -732,6 +809,28 @@ camera outranks the automation until it lets go. This is the RTS and HotS
 camera, and it is deliberately last, because it is the one whose shape is least
 constrained by anything above.
 
+### C7 — the real pixel
+
+D11, in three steps that each leave the client running.
+
+1. **The zoom moves into the vertex transform.** The three world passes gain a
+   `scale` and a centre in their existing uniform block and draw straight onto
+   the surface; the offscreen and the blit stay, for minification only. Nothing
+   about the quantum changes yet — at `2x` the world is drawn at the display's
+   resolution and still steps two real pixels at a time — so this step is
+   checkable on its own, against the frame tests, as "the same picture, sharper".
+2. **The quantum becomes the real pixel.** The eye stops rounding to a whole
+   virtual pixel and rounds to `1/zoom` of one; `Gaze::eye` gives up its `i32`s
+   and the rounding happens once, at the exit. `Control::pan` and `Camera::pick`
+   move onto real pixels with it — a drag's remainder is a real-pixel remainder
+   now, and a click that resolved to a virtual pixel would be off by up to
+   `zoom` of them against what it is pointing at.
+3. **The ladder becomes integral**, and the fractional rungs go.
+
+The order is forced: step 2 without step 1 changes nothing, because the offscreen
+cannot express what it computes, and step 1 without step 2 is a sharper picture
+moving in the same jumps.
+
 ## What of the general practice is taken, and what is not
 
 The catalogue this was cut from is the standard one for isometric ARPGs. What
@@ -741,7 +840,8 @@ this client takes:
 (D2, C0); frame-rate-independent damping (D5); dead zone with an idle recentre
 (C3); velocity look-ahead and cursor lean (C5); cuts as events with a distance
 backstop (D6); every screen-shaped quantity in screen fractions (D3); the camera
-as a pure function (D8); the sub-pixel accumulator (D7); following the
+as a pure function (D8); the sub-pixel accumulator, against the display's own
+pixel rather than the art's (D7, D11); following the
 *predicted* body so the frame does not lag by a round trip, with the correction
 absorbed rather than relayed (D6, C3).
 
@@ -889,6 +989,16 @@ Found while planning this, and not to be lost in it.
   Half to double the nominal, written out in both, because they are answering
   different questions with the same arithmetic. If a third one appears they want
   one home.
+- ~~**D7's quantum is a world pixel, and the blit multiplies it by the zoom.**~~
+  Found from the window rather than from the bench, which is worth saying: the
+  DST stand measures the eye against the *virtual* pixel it was quantised to, so
+  every corridor in `dst.rs` is green on a camera that steps four real pixels at
+  a time. It became **D11** and milestone **C7**, and the first patch considered
+  — keep the quantum and offset the blit's destination rect by
+  `round(frac * zoom)` real pixels — is written down here because it works and is
+  still wrong: it buys the smoothness at integer zooms and leaves the world drawn
+  at a fraction of the display's resolution, which is the *other* half of what the
+  coarse quantum was costing.
 - **`FRAMES_SPAN` is a constant the panel cannot change, again.** The same item
   the scope's span just stopped being, and left as a constant deliberately: the
   slider belongs to whichever of the two rings turns out to be looked at

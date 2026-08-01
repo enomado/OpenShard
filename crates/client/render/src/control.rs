@@ -339,7 +339,11 @@ impl Control {
     /// Whether the offscreen image this camera wants is larger than the device
     /// allows, and by how much.
     fn refuses(&self, camera: &Camera) -> Option<TooLarge> {
-        let (width, height) = (camera.render_width(), camera.render_height());
+        // The image as it will actually be allocated, which above 1:1 is the
+        // viewport's own size rather than the world's extent — a magnified
+        // camera asks for *less* texture than an unmagnified one, and asking
+        // `render_width` here would refuse a zoom that fits.
+        let (width, height) = camera.image_size();
         if width <= self.max_texture && height <= self.max_texture {
             return None;
         }

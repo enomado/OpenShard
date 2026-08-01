@@ -2162,13 +2162,30 @@ impl App {
         let wait = acquire_started.elapsed();
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Where the world goes on the surface: the rect the panels left free, so
+        // a docked panel shrinks the world rather than covering it.
+        let viewport = ui.as_ref().map_or(
+            ViewportRect {
+                x: 0,
+                y: 0,
+                width: window.config.width,
+                height: window.config.height,
+            },
+            |(_, _, viewport)| *viewport,
+        );
+
         // The image the world is drawn into. Its size is the camera's, so a
         // resize and a zoom step are the same event here — and recreating it is
         // the only thing either of them costs.
-        let (render_width, render_height) = (
-            self.control.camera().render_width(),
-            self.control.camera().render_height(),
-        );
+        //
+        // Magnified it is the *viewport's* size and the magnification rides in
+        // the vertex transform, so the world is drawn at the display's own
+        // resolution and the blit below is a copy; minified it is the world's
+        // own larger extent and the blit shrinks it. `docs/camera.md` D11 is the
+        // argument, and the short of it is that an image of virtual resolution
+        // cannot express an offset of one real pixel — which is the whole of
+        // what made a magnified scroll coarser than the screen it was on.
+        let (render_width, render_height) = self.control.camera().image_size();
         if window.world.width() != render_width || window.world.height() != render_height {
             window.world = blit::world_texture(&window.device, render_width, render_height);
             // Tested pixel for pixel against that image, so it is exactly its
@@ -2227,6 +2244,7 @@ impl App {
             depth: &depth_view,
             width: render_width,
             height: render_height,
+            projection: self.control.camera().projection(),
         };
         let mut encoder = window
             .device
@@ -2246,18 +2264,11 @@ impl App {
         window
             .text_pass
             .render(&window.device, &window.queue, &mut encoder, target, &text_quads);
-        // And the world onto the surface, which is where the zoom happens and
-        // the only place it does. Into the rect the panels left free, so a
-        // docked panel shrinks the world rather than covering it.
-        let viewport = ui.as_ref().map_or(
-            ViewportRect {
-                x: 0,
-                y: 0,
-                width: window.config.width,
-                height: window.config.height,
-            },
-            |(_, _, viewport)| *viewport,
-        );
+        // And the world image onto the surface, into the rect the panels left
+        // free. Magnified this is a copy — the image is already the viewport's
+        // size and the magnification happened in the vertex transform — and
+        // minified it is where the shrinking happens, which is why the zoom is
+        // still what picks the sampler.
         window.blit.render(
             &window.device,
             &mut encoder,

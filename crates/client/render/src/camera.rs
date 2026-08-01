@@ -25,17 +25,32 @@
 //! `From` or `Into` — the only thing allowed to move between them is a
 //! [`Camera`], and a conversion that needs a camera is a method.
 //!
-//! # Where the zoom is, and where it is not
+//! # Two pixel sizes, and where the zoom is
 //!
-//! It is not here, apart from the size of the image. The world is drawn at 1:1
-//! into an offscreen target of `ceil(viewport / zoom)` and *that* is blitted into
-//! the viewport, so every quad, every atlas region and every pixel-exact
-//! assertion downstream keeps meaning what it meant. [`ViewPixel`] is a pixel of
-//! that offscreen image, which at zoom 1 is the viewport itself.
+//! The client's art fixes a pixel size and the display has one of its own; they
+//! are the same only at 1:1. `docs/camera.md` D11 calls the first **virtual**
+//! and the second **real**, and the rule it settles is that motion is continuous
+//! and the one rounding is to the real pixel — because a scroll that stepped a
+//! whole *virtual* pixel would step `zoom` real ones, which is a world moving in
+//! jumps coarser than the screen it is on.
 //!
-//! The one place a viewport pixel enters is the cursor, and it leaves in the
-//! same call — [`Camera::pick`] takes one and hands back a [`WorldPixel`]. That
-//! is why the third space has no type: nothing carries it.
+//! [`WorldPixel`] and [`ViewPixel`] are both virtual, and everything this crate
+//! builds is measured in them: every quad, every atlas region and every
+//! pixel-exact assertion is about the art's own grid and says the same thing at
+//! every magnification. The zoom enters once, in [`Projection`], which the three
+//! world passes apply in their last two lines of vertex shader — so a magnified
+//! world is drawn at the display's resolution rather than drawn small and blown
+//! up.
+//!
+//! Below 1:1 there is nothing to win that way: several virtual pixels land on
+//! one real one, which is what a filter is for and not what a transform is, so
+//! the world is drawn 1:1 into an image larger than the viewport and the blit's
+//! linear sampler shrinks it. [`Camera::minifies`] is the branch, and it is the
+//! only one.
+//!
+//! The one place a *real* pixel enters is the cursor, and it leaves in the same
+//! call — [`Camera::pick`] takes one and hands back a [`WorldPixel`]. That is
+//! why the third space has no type: nothing carries it.
 
 use openshard_protocol::world::Point;
 
@@ -339,6 +354,38 @@ impl TileBounds {
     }
 }
 
+/// How the drawn image lands on the pixels a display actually has.
+///
+/// The one place the two pixel sizes of `docs/camera.md` D11 meet, and the
+/// reason it is a value rather than three arguments: the three world passes all
+/// need the same answer, and a pass that computed its own would draw a correct
+/// frame at a different scale from its neighbours — which is not a wrong picture,
+/// it is two pictures.
+///
+/// Every world pass reads it the same way, and this is the whole of the
+/// arithmetic:
+///
+/// ```text
+/// real = (virtual - origin) * scale + rect / 2
+/// ```
+///
+/// `virtual` is a [`ViewPixel`] — the art's own grid, which is what every quad
+/// this crate builds is measured in and what every pixel-exact test asserts
+/// about. Only this last step knows what a zoom is.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Projection {
+    /// The point of the drawn image that lands in the middle of the target, in
+    /// virtual pixels.
+    ///
+    /// Fractional, and that is the point: the eye is quantised to a *real*
+    /// pixel, so at `3x` it carries thirds of a virtual one, and the remainder
+    /// has nowhere else to go. Rounding it here would put the quantum back where
+    /// D11 took it from.
+    pub origin: (f32, f32),
+    /// Real pixels per virtual pixel.
+    pub scale: f32,
+}
+
 /// What the view is looking at, how magnified, and how big the viewport is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Camera {
@@ -401,19 +448,79 @@ impl Camera {
         self.zoom
     }
 
-    /// The width of the image the world is drawn into, in world pixels.
+    /// How much world the viewport shows across, in virtual pixels.
     ///
-    /// Bigger than the viewport when minifying, smaller when magnifying. This is
-    /// the offscreen texture's size, and the GPU's `max_texture_dimension_2d` is
-    /// what bounds how far the ladder can be walked down — see the caller that
-    /// clamps it.
+    /// Bigger than the viewport when minifying, smaller when magnifying. It is
+    /// what the world is *measured* in — [`Camera::visible_tiles`] covers it and
+    /// [`Camera::projection`] centres on half of it — and it is the image's size
+    /// in real pixels only on the minifying path, which is the one place the two
+    /// are the same number. [`Camera::image_size`] is the other question.
     pub fn render_width(&self) -> u32 {
         self.zoom.world_pixels(self.width)
     }
 
-    /// The height of that image.
+    /// And down.
     pub fn render_height(&self) -> u32 {
         self.zoom.world_pixels(self.height)
+    }
+
+    /// Whether the world image is coarser than the screen it ends up on.
+    ///
+    /// Only when minifying, and it decides the *whole* of what the zoom does.
+    /// Magnified, the world is drawn at the display's own resolution and the
+    /// magnification rides in [`Projection::scale`], so the image is already the
+    /// size of the rect it goes into and the blit that carries it there is a
+    /// copy. Minified, the image stays in the world's own pixels and the blit
+    /// shrinks it, which is where a filter belongs: several virtual pixels
+    /// landing on one real one is exactly the case `nearest` cannot answer.
+    ///
+    /// See `docs/camera.md` D11 for why the magnifying case cannot be left to
+    /// the blit — the short of it is that an image of virtual resolution cannot
+    /// express an offset of one real pixel, wherever the fraction is kept.
+    pub fn minifies(&self) -> bool {
+        self.zoom.numerator() < self.zoom.denominator()
+    }
+
+    /// The size of the image the world is drawn into, in real pixels.
+    ///
+    /// The viewport's own size when magnifying — the world is drawn at the
+    /// display's resolution and the blit is a copy — and the world's own extent
+    /// when minifying, which is larger than the viewport and is what the blit
+    /// shrinks.
+    pub fn image_size(&self) -> (u32, u32) {
+        if self.minifies() {
+            return (self.render_width(), self.render_height());
+        }
+        (self.width, self.height)
+    }
+
+    /// How that image's real pixels are reached from the world's virtual ones.
+    pub fn projection(&self) -> Projection {
+        // The middle of the drawn image, in its own virtual pixels. `to_view`
+        // puts the eye exactly here, so subtracting it hands the passes an
+        // offset from the eye — and the ceiling `render_width` applies cancels
+        // out between the two rather than shifting the world half a pixel.
+        //
+        // Halved as an integer and *then* widened, because `to_view` halves it
+        // as an integer too: at an odd extent the two disagree by half a virtual
+        // pixel, which the scale turns into half of `zoom` real ones — a world
+        // sitting a pixel and a half off centre at 3x, on some viewport widths
+        // and not others. The two roundings have to be the same rounding, not
+        // merely the same formula.
+        let origin = (
+            (self.render_width() as i32 / 2) as f32,
+            (self.render_height() as i32 / 2) as f32,
+        );
+        if self.minifies() {
+            // 1:1 into an image of virtual resolution, which the blit then
+            // shrinks. The passes cannot tell this apart from no zoom at all,
+            // and that is the point.
+            return Projection { origin, scale: 1.0 };
+        }
+        Projection {
+            origin,
+            scale: self.zoom.numerator() as f32 / self.zoom.denominator() as f32,
+        }
     }
 
     /// Where a world pixel lands in the drawn image.
@@ -573,6 +680,134 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The arithmetic `ground.wgsl` and `statics.wgsl` both end on, in Rust.
+    ///
+    /// A copy of two lines of shader, and worth it: everything below is an
+    /// assertion about what lands where on a display, and the alternative is a
+    /// GPU, an atlas and the client's files to say anything at all about it. It
+    /// is one expression, it is written out in `Projection`'s own doc comment,
+    /// and the frame tests are what keep the two honest.
+    fn real(projection: Projection, target: (u32, u32), at: ViewPixel) -> (f32, f32) {
+        (
+            (at.x as f32 - projection.origin.0) * projection.scale + target.0 as f32 / 2.0,
+            (at.y as f32 - projection.origin.1) * projection.scale + target.1 as f32 / 2.0,
+        )
+    }
+
+    /// Unmagnified, the whole of D11 is a no-op: a virtual pixel is a real one,
+    /// and the pixel a quad lands on is the one `to_view` named.
+    #[test]
+    fn at_one_to_one_the_projection_is_the_identity() {
+        let camera = Camera::new(Point::new(300, 300, 0), 800, 600);
+        assert_eq!(
+            camera.image_size(),
+            (camera.render_width(), camera.render_height())
+        );
+        let projection = camera.projection();
+        assert_eq!(projection.scale, 1.0);
+        for point in [Point::new(300, 300, 0), Point::new(305, 297, 12)] {
+            let view = camera.to_screen(point);
+            let (x, y) = real(projection, camera.image_size(), view);
+            assert_eq!((x, y), (view.x as f32, view.y as f32));
+        }
+    }
+
+    /// Magnified, the image is the viewport's own size — the world is drawn at
+    /// the display's resolution rather than at a fraction of it and blown up —
+    /// and one virtual pixel of separation is exactly `zoom` real ones.
+    ///
+    /// The second half is the gate D11 names: a texel that is not `zoom` real
+    /// pixels wide is a texel the magnification resampled, which is the artefact
+    /// the whole arrangement exists to avoid.
+    #[test]
+    fn magnified_a_virtual_pixel_is_exactly_zoom_real_ones() {
+        for rungs in 1..=5 {
+            let mut camera = Camera::new(Point::new(300, 300, 0), 800, 600);
+            let mut zoom = Zoom::ONE;
+            for _ in 0..rungs {
+                zoom = zoom.scale_up();
+            }
+            camera.zoom_about(400, 300, zoom);
+            assert!(!camera.minifies());
+            assert_eq!(camera.image_size(), (800, 600), "the viewport's own resolution");
+
+            let projection = camera.projection();
+            let eye = camera.to_view(camera.eye());
+            let (from_x, from_y) = real(projection, camera.image_size(), eye);
+            let (to_x, to_y) = real(
+                projection,
+                camera.image_size(),
+                ViewPixel {
+                    x: eye.x + 1,
+                    y: eye.y + 1,
+                },
+            );
+            let expected = zoom.numerator() as f32 / zoom.denominator() as f32;
+            // Exact at a whole magnification, and within a float's noise at a
+            // fractional one — where the promise is weaker anyway, because a
+            // texel of `4/3` real pixels cannot be a whole number of them
+            // however the arithmetic is done. That is the shimmer D11 gives as
+            // its reason for the ladder ending up integral, and it is measured
+            // here rather than asserted away.
+            let (dx, dy) = (to_x - from_x, to_y - from_y);
+            if zoom.denominator() == 1 {
+                assert_eq!((dx, dy), (expected, expected), "at {zoom}");
+            } else {
+                assert!((dx - expected).abs() < 1e-4, "at {zoom}: {dx} against {expected}");
+                assert!((dy - expected).abs() < 1e-4, "at {zoom}: {dy} against {expected}");
+            }
+        }
+    }
+
+    /// Minified, nothing moves into the transform: the passes draw 1:1 into an
+    /// image larger than the viewport and the blit's linear sampler shrinks it,
+    /// which is the one direction a filter is the right answer.
+    #[test]
+    fn minified_the_image_is_the_worlds_extent_and_the_scale_is_one() {
+        let mut camera = Camera::new(Point::new(300, 300, 0), 800, 600);
+        camera.zoom_about(400, 300, Zoom::ONE.scale_down());
+        assert!(camera.minifies());
+        assert_eq!(camera.projection().scale, 1.0);
+        assert_eq!(
+            camera.image_size(),
+            (camera.render_width(), camera.render_height())
+        );
+        assert!(camera.render_width() > 800, "more world across than viewport");
+    }
+
+    /// The eye lands in the middle of the image, at every rung of the ladder.
+    ///
+    /// One assertion and it covers both paths: it is what makes the two centres
+    /// coincide, which is the premise `Camera::pick` states out loud and the
+    /// reason a zoom about the middle does not move the world.
+    #[test]
+    fn the_eye_is_in_the_middle_whatever_the_zoom() {
+        let mut camera = Camera::new(Point::new(300, 300, 0), 800, 600);
+        let mut zoom = Zoom::ONE;
+        loop {
+            let down = zoom.scale_down();
+            if down == zoom {
+                break;
+            }
+            zoom = down;
+        }
+        loop {
+            camera.zoom_about(400, 300, zoom);
+            let (width, height) = camera.image_size();
+            let middle = real(camera.projection(), (width, height), camera.to_view(camera.eye()));
+            assert_eq!(
+                middle,
+                (width as f32 / 2.0, height as f32 / 2.0),
+                "the eye is off centre at {zoom}",
+            );
+            let up = zoom.scale_up();
+            if up == zoom {
+                break;
+            }
+            zoom = up;
+        }
+    }
 
     /// The four numbers the whole projection is made of. If these move, the art
     /// no longer tiles, so they are written out rather than derived.

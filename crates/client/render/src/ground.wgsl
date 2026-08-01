@@ -34,14 +34,22 @@
 // watertight and is textured approximately. See docs/client.md.
 
 struct Viewport {
-    // Pixels across, and down.
+    // The target's size in *real* pixels — the display's, which at a
+    // magnification above 1 is not the world's own. Only the last two lines of
+    // the vertex shader use it.
     size: vec2<f32>,
-    // The size of one land sprite in pixels: 44x44, from the file format.
+    // The size of one land sprite in virtual pixels: 44x44, from the file
+    // format.
     tile: vec2<f32>,
-    // Pixels one unit of height lifts a corner up the screen.
+    // Virtual pixels one unit of height lifts a corner up the screen.
     z_step: f32,
-    // Uniform blocks are sized in multiples of 16 bytes.
-    _padding: f32,
+    // Real pixels per virtual pixel. One when the world is being drawn into the
+    // offscreen image, which is the minifying path — see `camera::Projection`.
+    scale: f32,
+    // The point of the world's own grid that lands in the middle of the target,
+    // in virtual pixels. Fractional: the eye is quantised to a real pixel, so at
+    // 3x it carries thirds of a virtual one.
+    origin: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -110,11 +118,16 @@ fn vs_main(
     let local_uv = mix(slope_uv, flat_uv, is_flat);
     let pixel = origin + offset - vec2<f32>(0.0, height * viewport.z_step);
 
+    // Virtual pixels to real ones, and the only line in this pass that knows a
+    // magnification exists. Everything above is the art's own grid, which is
+    // what makes it comparable against the files texel for texel.
+    let real = (pixel - viewport.origin) * viewport.scale + viewport.size * 0.5;
+
     // Pixels to clip space. `y` flips: the viewport counts down from the top and
     // clip space counts up from the middle.
     let ndc = vec2<f32>(
-        pixel.x / viewport.size.x * 2.0 - 1.0,
-        1.0 - pixel.y / viewport.size.y * 2.0,
+        real.x / viewport.size.x * 2.0 - 1.0,
+        1.0 - real.y / viewport.size.y * 2.0,
     );
 
     var out: VertexOut;

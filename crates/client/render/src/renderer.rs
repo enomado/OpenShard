@@ -7,7 +7,7 @@
 
 use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 
-use crate::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
+use crate::camera::{Projection, TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use crate::ground::GroundQuad;
 use crate::hue::HueRamp;
 use crate::sprite::SpriteQuad;
@@ -25,8 +25,9 @@ pub const CLEAR: wgpu::Color = wgpu::Color {
     a: 0.0,
 };
 
-/// Bytes of the uniform block: two `vec2<f32>`, a height step, and the padding
-/// a uniform block's size is rounded up to.
+/// Bytes of the ground pass's uniform block: the target's size, the land
+/// sprite's, the height step, the scale, and the origin — eight floats, which is
+/// already a multiple of the sixteen a uniform block is rounded up to.
 const UNIFORM_BYTES: u64 = 32;
 
 /// The unit quad, as a triangle strip: (0,0) (1,0) (0,1) (1,1).
@@ -60,10 +61,42 @@ pub struct Target<'a> {
     /// buffer would be back to "everything drawn later wins", which puts every
     /// wall in front of every hill.
     pub depth: &'a wgpu::TextureView,
-    /// Its width in pixels.
+    /// Its width in real pixels.
     pub width: u32,
-    /// Its height in pixels.
+    /// Its height in real pixels.
     pub height: u32,
+    /// How the world's own virtual pixels land on those real ones — see
+    /// [`crate::camera::Projection`].
+    ///
+    /// A projection and not a zoom, because this crate's passes are not told
+    /// what a zoom is: they are told where the middle of what they are drawing
+    /// goes and how big a virtual pixel is, and those two answers are the same
+    /// shape whether the target is the surface or the offscreen image.
+    pub projection: Projection,
+}
+
+impl<'a> Target<'a> {
+    /// The whole of an image of this size, drawn 1:1 with the eye in the middle.
+    ///
+    /// What a frame test wants — it renders into a texture it owns and compares
+    /// the result against the art, where a magnification would be a resampling
+    /// step between the two — and what the minifying path hands the passes, for
+    /// the same reason in a different order: there the scaling is the blit's.
+    pub fn whole(view: &'a wgpu::TextureView, depth: &'a wgpu::TextureView, width: u32, height: u32) -> Self {
+        Self {
+            view,
+            depth,
+            width,
+            height,
+            projection: Projection {
+                // Halved as an integer for the reason `Camera::projection`
+                // gives at length: `to_view` halves the extent the same way, and
+                // two roundings of one number have to be one rounding.
+                origin: ((width as i32 / 2) as f32, (height as i32 / 2) as f32),
+                scale: 1.0,
+            },
+        }
+    }
 }
 
 /// Create the depth texture a [`Target`] needs, at a given size.
@@ -398,13 +431,16 @@ impl GroundRenderer {
         quads: &[GroundQuad],
     ) {
         let mut uniform_bytes = Vec::with_capacity(UNIFORM_BYTES as usize);
+        let projection = target.projection;
         for value in [
             target.width as f32,
             target.height as f32,
             TILE_WIDTH as f32,
             TILE_HEIGHT as f32,
             Z_STEP as f32,
-            0.0,
+            projection.scale,
+            projection.origin.0,
+            projection.origin.1,
         ] {
             uniform_bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -770,7 +806,17 @@ impl SpriteRenderer {
         quads: &[SpriteQuad],
     ) {
         let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
-        for value in [target.width as f32, target.height as f32, 0.0, 0.0] {
+        let projection = target.projection;
+        for value in [
+            target.width as f32,
+            target.height as f32,
+            projection.scale,
+            0.0,
+            projection.origin.0,
+            projection.origin.1,
+            0.0,
+            0.0,
+        ] {
             uniform_bytes.extend_from_slice(&value.to_le_bytes());
         }
         queue.write_buffer(&self.uniforms, 0, &uniform_bytes);
@@ -823,8 +869,9 @@ impl SpriteRenderer {
     }
 }
 
-/// Bytes of the statics uniform block: a `vec2<f32>` and its padding.
-const STATIC_UNIFORM_BYTES: u64 = 16;
+/// Bytes of the sprite pass's uniform block: the target's size, the scale, the
+/// origin, and the padding a uniform block's size is rounded up to.
+const STATIC_UNIFORM_BYTES: u64 = 32;
 
 fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {

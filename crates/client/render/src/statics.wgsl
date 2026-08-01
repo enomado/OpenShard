@@ -15,10 +15,18 @@
 // the formula is a second chance to disagree with it — see `crate::depth`.
 
 struct Viewport {
-    // Pixels across, and down.
+    // The target's size in *real* pixels — see `ground.wgsl`, which documents
+    // the same three fields at length; this pass reads them identically and
+    // deliberately, because two passes that scaled differently would draw two
+    // pictures rather than one wrong one.
     size: vec2<f32>,
+    // Real pixels per virtual pixel.
+    scale: f32,
+    _padding: f32,
+    // The virtual-pixel point that lands in the middle of the target.
+    origin: vec2<f32>,
     // Uniform blocks are sized in multiples of 16 bytes.
-    _padding: vec2<f32>,
+    _tail: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -55,13 +63,15 @@ fn vs_main(
     @location(5) hue: u32,
 ) -> VertexOut {
     let pixel = origin + corner * size;
+    // Virtual pixels to real ones, the same single line the ground pass ends on.
+    let real = (pixel - viewport.origin) * viewport.scale + viewport.size * 0.5;
 
     // Pixels to clip space, the same way the ground does it: `y` flips because
     // the viewport counts down from the top and clip space counts up from the
     // middle.
     let ndc = vec2<f32>(
-        pixel.x / viewport.size.x * 2.0 - 1.0,
-        1.0 - pixel.y / viewport.size.y * 2.0,
+        real.x / viewport.size.x * 2.0 - 1.0,
+        1.0 - real.y / viewport.size.y * 2.0,
     );
 
     var out: VertexOut;
