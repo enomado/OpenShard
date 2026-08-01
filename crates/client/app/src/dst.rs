@@ -421,6 +421,17 @@ impl Sim {
     /// A client standing at [`START`], facing `facing`, connected to a shard
     /// that agrees.
     fn new(facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
+        Self::flying(Rig::HARD, facing, net, seed, walls)
+    }
+
+    /// The same, under a rig of the caller's choosing.
+    ///
+    /// [`Sim::new`] is the reference camera because that is what every
+    /// *assertion* here wants: under `HARD` the eye is the body, so a divergence
+    /// is the walk's and not a filter's. A rig is a parameter for the dump that
+    /// looks at what a filter does to this walk — the same argument the bench
+    /// makes offline, on the body the client actually draws.
+    fn flying(rig: Rig, facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
         let facing = Facing::walking(facing);
         let mut crowd = Crowd::default();
         crowd.commanding(me());
@@ -448,7 +459,7 @@ impl Sim {
             // A viewport of some size and a device that will hold anything: what
             // is under test here is where the eye goes, and neither the zoom
             // ladder nor the texture limit has a say in that.
-            control: Control::new(Camera::new(START, 800, 600), 1 << 20, Rig::HARD),
+            control: Control::new(Camera::new(START, 800, 600), 1 << 20, rig),
             eyes: Vec::new(),
         }
     }
@@ -1629,15 +1640,23 @@ fn speeds(frames: &[WalkFrame], of: fn(&WalkFrame) -> (f64, f64)) -> Vec<(Durati
         .collect()
 }
 
-/// A run of the ten-step walk under one wire, for the dump below.
-fn walked(net: Net, seed: u64) -> (Sim, Oracle) {
+/// A run of the ten-step walk under one wire and one rig, for the dumps below.
+fn walked(rig: Rig, net: Net, seed: u64) -> (Sim, Oracle) {
     let script = ten_steps_east();
     let until = Duration::from_millis(4_400);
     let oracle = Oracle::build(START, &script, until);
-    let mut sim = Sim::new(Direction::East, net, seed, Vec::new());
+    let mut sim = Sim::flying(rig, Direction::East, net, seed, Vec::new());
     sim.run(&script, until);
     (sim, oracle)
 }
+
+/// A wire with a quiet desktop's wake jitter on it and a plausible shard behind
+/// it. What the dumps look at, because a perfect one has nothing to show.
+const LIVE: Net = Net {
+    latency: Duration::from_millis(60),
+    jitter: Duration::from_millis(20),
+    wake_jitter: Duration::from_millis(8),
+};
 
 /// A run, drawn: where the drawn body and the eye were against where the
 /// oracle says they should have been, and how fast each was going.
@@ -1741,7 +1760,7 @@ fn dump_the_walk() {
         "wire", "frames", "mean px/s", "min", "max", "worst px"
     );
     for (name, net) in wires {
-        let (sim, oracle) = walked(net, 3);
+        let (sim, oracle) = walked(Rig::HARD, net, 3);
         let frames = walk_frames(&sim, &oracle);
         let body = speeds(&frames, |frame| frame.body);
         // The walk itself, without the stand at either end: the first frame has
@@ -1783,4 +1802,104 @@ fn dump_the_walk() {
         std::fs::write(dir.join(format!("walk-{name}.csv")), csv).expect("writing a table");
     }
     println!("\nwrote {}", dir.display());
+}
+
+/// What a filter does to the start and the stop of a real walk, rig by rig.
+///
+/// `docs/camera.md` C3 is the milestone this is the instrument for, and D9 is
+/// why it is a dump and not a preset: no camera is chosen until one has been
+/// looked at. The reference rig is in the table as the row with no ramp at all —
+/// under `HARD` the eye *is* the body, so its start is the body's, which is
+/// instantaneous by construction and always will be. A body crosses one tile per
+/// hold at a constant speed because that is what the wire says it does; the only
+/// thing that can ease into a walk is the eye.
+///
+/// The two numbers a time constant is chosen between are printed side by side,
+/// because picking on either alone picks wrong. **Ramp** is how long the eye
+/// takes to reach nine tenths of the walk's speed — the ease-in somebody asked
+/// for. **Lag** is how far behind the body the eye then sits for the whole of
+/// the walk, which is that same constant times the speed and is the price:
+/// the character walks off centre and stays there until it stops.
+#[test]
+#[ignore = "writes a table and charts for a person, and asserts nothing"]
+fn dump_the_ramp() {
+    let rigs = [
+        ("hard", Rig::HARD),
+        ("tau_0.08", plane(0.08)),
+        ("tau_0.15", plane(0.15)),
+        ("tau_0.25", plane(0.25)),
+    ];
+    let dir = dump_dir();
+    std::fs::create_dir_all(&dir).expect("a directory to write into");
+    println!(
+        "\n{:<10} {:>9} {:>9} {:>9} {:>9}",
+        "rig", "ramp ms", "lag px", "stop ms", "peak px/s"
+    );
+    let mut series = Vec::new();
+    for (name, rig) in rigs {
+        let (sim, oracle) = walked(rig, LIVE, 3);
+        let frames = walk_frames(&sim, &oracle);
+        let speed = speeds(&frames, |frame| frame.eye);
+        // The walk's own speed, which every rig is ramping towards: a tile's
+        // diagonal per hold.
+        let nominal = 22.0f64.hypot(22.0) / WALK_HOLD.as_secs_f64();
+        let ramp = speed
+            .iter()
+            .find(|(_, at)| *at >= nominal * 0.9)
+            .map_or(Duration::MAX, |(at, _)| *at);
+        // And how long after the last step the eye is still moving. The stop is
+        // the half of the shape a ramp-in metric cannot see.
+        let walked_until = Duration::from_millis(4_000);
+        let stop = speed
+            .iter()
+            .filter(|(at, _)| *at > walked_until)
+            .filter(|(_, at)| *at > 1.0)
+            .map(|(at, _)| *at)
+            .next_back()
+            .map_or(Duration::ZERO, |at| at.saturating_sub(walked_until));
+        let lag = frames
+            .iter()
+            .filter(|frame| frame.at > Duration::from_millis(1_000) && frame.at < walked_until)
+            .fold(0.0f64, |worst, frame| {
+                worst.max((frame.eye.0 - frame.body.0).hypot(frame.eye.1 - frame.body.1))
+            });
+        println!(
+            "{name:<10} {:>9} {lag:>9.1} {:>9} {:>9.1}",
+            ramp.as_millis(),
+            stop.as_millis(),
+            speed.iter().map(|(_, at)| *at).fold(0.0f64, f64::max),
+        );
+        series.push(chart::Series {
+            name: name.to_string(),
+            points: speed
+                .into_iter()
+                .map(|(at, speed)| (at.as_secs_f64(), speed))
+                .collect(),
+        });
+        std::fs::write(dir.join(format!("ramp-{name}.svg")), chart_of(name, &frames))
+            .expect("writing a chart");
+    }
+    // And every rig on one axis, which is the picture the choice is made from.
+    let nominal = 22.0f64.hypot(22.0) / WALK_HOLD.as_secs_f64();
+    let panels = vec![chart::Panel {
+        title: "the eye's speed into and out of a ten-tile walk, pixels per second".to_string(),
+        series,
+        baseline: Some(nominal),
+    }];
+    std::fs::write(dir.join("ramp.svg"), chart::svg("plane_tau", 4.4, &panels))
+        .expect("writing the comparison");
+    println!("\nwrote {}", dir.display());
+}
+
+/// A rig that filters the ground plane and nothing else.
+///
+/// The height is left at the reference's zero deliberately: a climbed stair
+/// arrives through the glide already spread over its step, and `Rig::LIFT`'s own
+/// note is that filtering it again makes it marginally worse. What is under the
+/// eye here is the walk.
+fn plane(tau: f32) -> Rig {
+    Rig {
+        plane_tau: tau,
+        ..Rig::HARD
+    }
 }
