@@ -196,6 +196,9 @@ pub enum NotSent {
         /// How many are unanswered, which is [`MAX_IN_FLIGHT`].
         in_flight: usize,
     },
+    /// The walk is out of step with the server and has asked to be told where it
+    /// is. See [`Walk::out_of_step`].
+    OutOfStep,
 }
 
 impl std::fmt::Display for NotSent {
@@ -205,6 +208,7 @@ impl std::fmt::Display for NotSent {
             Self::Backlogged { in_flight } => {
                 write!(f, "{in_flight} steps are unanswered: the shard has gone quiet")
             }
+            Self::OutOfStep => f.write_str("the walk is out of step and waiting on a resync"),
         }
     }
 }
@@ -245,6 +249,11 @@ pub struct Walk {
     /// ones and belongs to nobody. Counted rather than guessed at, so a *real*
     /// desync is still reported.
     draining: usize,
+    /// Whether the two ends have lost track of each other and nothing may be
+    /// sent until the server says where this body is.
+    ///
+    /// See [`Walk::out_of_step`] for the whole of the rule.
+    out_of_step: bool,
 }
 
 impl Walk {
@@ -257,7 +266,29 @@ impl Walk {
             predicted: Predicted { position, facing },
             pending: VecDeque::new(),
             draining: 0,
+            out_of_step: false,
         }
+    }
+
+    /// Whether the walk has lost track of the server and is waiting to be told
+    /// where it is.
+    ///
+    /// Set by an answer this end cannot place — see [`UnexpectedAck`], and note
+    /// that the ordinary answers to steps a rollback voided are *not* that. While
+    /// it holds, [`Walk::step`] sends nothing: a `0x22` carries no position, so
+    /// there is no local repair, and every step sent on top of the disagreement
+    /// widens it.
+    ///
+    /// The caller is what asks — a [`ResyncRequest`](openshard_protocol::world::ResyncRequest)
+    /// — and it must, because this is only safe if something is guaranteed to
+    /// clear it. What clears it is the server saying where the body is: a `0x20`,
+    /// a `0x21` or a second `0x1B`, all of which reset both sequences. The
+    /// reference has the same pair and the same rule
+    /// (`WalkerManager.WalkingFailed`, set beside `Send_Resync`, cleared by the
+    /// `0x20` handler); a client that froze without asking would freeze for good.
+    #[must_use]
+    pub const fn out_of_step(&self) -> bool {
+        self.out_of_step
     }
 
     /// Where this client believes it will end up. See [`Predicted`].
@@ -305,11 +336,18 @@ impl Walk {
         facing: Facing,
         ground: impl Fn(u16, u16) -> Option<i8>,
     ) -> Result<Vec<u8>, NotSent> {
-        // Before anything is decided about the geometry: a shard that has stopped
-        // answering is not somewhere to keep predicting into. The reference
-        // checks the same thing first (`PlayerMobile.Walk`), and for the same
-        // reason — every step past the cap is another tile of correction when the
-        // link comes back.
+        // Two refusals before anything is decided about the geometry, and the
+        // reference checks the same two first thing in `PlayerMobile.Walk`.
+        //
+        // A walk that has lost track of the server has nothing to compute a step
+        // *from*: `predicted` is derived from a chain of asks the server has
+        // stopped agreeing with. Sending more only widens the disagreement.
+        if self.out_of_step {
+            return Err(NotSent::OutOfStep);
+        }
+        // And a shard that has stopped answering is not somewhere to keep
+        // predicting into: every step past the cap is another tile of correction
+        // when the link comes back.
         if self.pending.len() >= MAX_IN_FLIGHT {
             return Err(NotSent::Backlogged {
                 in_flight: self.pending.len(),
@@ -390,19 +428,19 @@ impl Walk {
             return Ok(Moved::Idle);
         }
         let Some(pending) = self.pending.front().copied() else {
-            return Err(UnexpectedAck {
+            return Err(self.lost_track(UnexpectedAck {
                 got: sequence,
                 expected: None,
-            });
+            }));
         };
         if pending.sequence != sequence {
             // Left in flight on purpose. The mismatch is not something this end
             // can repair by guessing which step was meant, and dropping the
             // queue would turn a diagnosable desync into a silent one.
-            return Err(UnexpectedAck {
+            return Err(self.lost_track(UnexpectedAck {
                 got: sequence,
                 expected: Some(pending.sequence),
-            });
+            }));
         }
         self.pending.pop_front();
         Ok(Moved::Stepped {
@@ -423,7 +461,21 @@ impl Walk {
         self.draining += self.pending.len().saturating_sub(answered);
         self.pending.clear();
         self.counter.reset();
+        // Whatever the two ends had lost track of, this is the server stating the
+        // answer — and it is the only thing that ever does. See
+        // [`Walk::out_of_step`].
+        self.out_of_step = false;
         Moved::Snapped { position, facing }
+    }
+
+    /// Stop walking: this end can no longer say where the body is.
+    ///
+    /// The error is handed back through here rather than returned directly so
+    /// that no arm can report a desync without also refusing to walk on top of
+    /// it — the two are one decision.
+    fn lost_track(&mut self, desync: UnexpectedAck) -> UnexpectedAck {
+        self.out_of_step = true;
+        desync
     }
 
     /// Whether the answer being handled belongs to a step a rollback has already
@@ -644,11 +696,16 @@ mod tests {
         assert_eq!(walk.in_flight(), 0);
     }
 
+    /// Two ways to be handed an answer that fits nothing, and neither is
+    /// swallowed. A `Walk` apiece, because the first one stops the walk — see
+    /// `a_desync_stops_the_walk_until_the_server_says_where_the_body_is` — so a
+    /// second step through the same value would be refused for that reason
+    /// instead, and this test would stop testing what it says.
     #[test]
     fn an_ack_for_a_step_nobody_sent_is_reported_not_swallowed() {
-        let mut walk = walk();
+        let mut nothing_in_flight = walk();
         assert_eq!(
-            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+            nothing_in_flight.on_packet(&ServerPacket::WalkAck(WalkAck {
                 sequence: StepSequence(0),
                 notoriety: Notoriety::Innocent,
             })),
@@ -658,6 +715,7 @@ mod tests {
             })
         );
 
+        let mut walk = walk();
         walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
         assert_eq!(
             walk.on_packet(&ServerPacket::WalkAck(WalkAck {
@@ -781,6 +839,60 @@ mod tests {
                 got: StepSequence(7),
                 expected: None,
             })
+        );
+    }
+
+    /// A desync stops the walk, and the server's answer starts it again.
+    ///
+    /// The freeze is only safe because the caller asks — `link.rs` sends the
+    /// `0x22` resync — and the shard answers with a position. Both halves are
+    /// asserted here: that nothing is sent while it holds, and that the `0x20`
+    /// clears it. A client that froze without the question would freeze for the
+    /// rest of the session.
+    #[test]
+    fn a_desync_stops_the_walk_until_the_server_says_where_the_body_is() {
+        let mut walk = walk();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        assert!(!walk.out_of_step());
+
+        // An ack for a step nobody sent, with nothing owed from a rollback: a
+        // real disagreement.
+        assert!(
+            walk.on_packet(&ServerPacket::WalkAck(WalkAck {
+                sequence: StepSequence(9),
+                notoriety: Notoriety::Innocent,
+            }))
+            .is_err()
+        );
+        assert!(walk.out_of_step(), "the walk stopped rather than guessing");
+        assert_eq!(
+            walk.step(Facing::walking(Direction::North), |_, _| None),
+            Err(NotSent::OutOfStep),
+            "and nothing is sent on top of the disagreement"
+        );
+
+        // The answer to the resync: a `0x20` saying where the body really is.
+        let update = PlayerUpdate {
+            serial: Serial::new(0x0000_002A).unwrap(),
+            body: Graphic(0x0190),
+            hue: Hue::NONE,
+            flags: openshard_protocol::mobile::StatusFlags::NONE,
+            position: Point::new(100, 100, 0),
+            facing: Facing::walking(Direction::North),
+        };
+        assert_eq!(
+            walk.on_packet(&ServerPacket::PlayerUpdate(update)),
+            Ok(Moved::Snapped {
+                position: Point::new(100, 100, 0),
+                facing: Facing::walking(Direction::North),
+            })
+        );
+        assert!(!walk.out_of_step(), "and the walk is free again");
+        assert_eq!(
+            walk.step(Facing::walking(Direction::North), |_, _| None)
+                .map(|bytes| sent(&bytes).1),
+            Ok(0),
+            "from a fresh sequence, which is what the server also went back to"
         );
     }
 

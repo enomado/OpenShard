@@ -27,6 +27,7 @@ use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::version::ClientVersion;
+use openshard_protocol::world::ResyncRequest;
 use openshard_uofiles::map::Map;
 use winit::event_loop::EventLoopProxy;
 
@@ -234,6 +235,10 @@ async fn play<D: Dial>(
                     Ok(None) => return "the shard closed the connection".to_owned(),
                     Err(error) => return error.to_string(),
                 };
+                // Before folding, because folding is what sets it: asking twice
+                // for the same disagreement is the burst ClassicUO's
+                // `ResendPacketResync` guards against.
+                let was_out_of_step = walk.out_of_step();
                 let folded = match fold(&mut view, &mut walk, &packet) {
                     Ok(folded) => folded,
                     // The two ends have lost track of each other over the walk,
@@ -245,16 +250,17 @@ async fn play<D: Dial>(
                     // to be, and the ordinary answers to steps a rollback had
                     // voided reached here — so a wall and a slow link dropped the
                     // player's own connection. Those are counted off in `Walk`
-                    // now and what is left is a genuine disagreement about the
-                    // sequence, which the next `0x20`, `0x21` or `0x1B` puts
-                    // right of its own accord: all three are the server saying
-                    // where the body really is, and all three reset both ends.
-                    // So it is logged and the session goes on, which is what the
-                    // reference does with the same event (`WalkingFailed`) —
-                    // minus the resync request, which neither end speaks yet. See
-                    // `docs/client.md`.
+                    // now, and what is left is a genuine disagreement, which has
+                    // an answer on the wire: ask where we are. `Walk` has already
+                    // stopped sending steps; this is the other half of that, and
+                    // it has to happen or the walk never starts again.
                     Err(desync) => {
-                        tracing::warn!(%desync, "the walk is out of step with the shard");
+                        if !was_out_of_step {
+                            tracing::warn!(%desync, "the walk is out of step: asking for a resync");
+                            if let Err(error) = socket.send(&ResyncRequest.encode()).await {
+                                return error.to_string();
+                            }
+                        }
                         continue;
                     }
                 };

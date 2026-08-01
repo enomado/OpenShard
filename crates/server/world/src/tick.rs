@@ -752,6 +752,17 @@ impl World {
                     self.send_status(connection, entity);
                 }
             }
+            Command::Resync { connection } => {
+                let Some(&entity) = self.state.players.get(&connection) else {
+                    debug!(%connection, "0x22 from a connection with no character");
+                    return;
+                };
+                // Worth a line in the log: a client only asks when the walk
+                // handshake has broken down, and the two ends disagreeing about a
+                // sequence is a thing to know about rather than a routine event.
+                debug!(%connection, "resync asked for: the walk fell out of step");
+                self.state.resync(entity);
+            }
             Command::LogoutRequest { connection } => {
                 // Say yes and stop. The client closes the connection itself, and
                 // the disconnect path saves and despawns as it does for any other

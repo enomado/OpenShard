@@ -1662,22 +1662,38 @@ own understanding had written.
   still an `UnexpectedAck`, so a real desync is still reported.
 
   And `link.rs` turned any error out of `fold` into `Update::Lost`, so the window
-  closed. It logs and carries on now: the next `0x20`, `0x21` or `0x1B` is the
-  server saying where the body really is and all three reset both ends, so a
-  desync repairs itself. What is deliberately *not* copied from ClassicUO is
-  `WalkingFailed` — it stops the client walking until a resync request is
-  answered, and neither end here speaks that packet yet (the client's `0x22`
-  decodes as `ClientPacket::Unknown` on the shard), so the freeze would be
-  permanent. Which is the next item:
+  closed. What is left after the drain is a genuine disagreement, and that has an
+  answer on the wire rather than a reason to hang up — which is the item below.
 
-- **Neither end speaks the resync request.** The client's `0x22` — three bytes,
-  "tell me where I am" — is what the reference sends when the walk falls out of
-  step, and our shard answers it with nothing because `ClientPacket::decode` has
-  no arm for it. Two small pieces: a `ClientPacket::Resync` and a handler that
-  replies with a `0x20`, and then `Walk` can stop asking after a desync the way
-  the reference does instead of carrying on hopefully. Worth doing together with
-  the local walkability prediction above, since both are about what the client
-  does when the two ends disagree.
+- ~~**Neither end speaks the resync request.**~~ Both do now, and it is what makes
+  stopping the walk safe. The whole cycle, and it is a request/response rather
+  than a hope — the argument, read out of both references, is in
+  `docs/findings.md`:
+
+  1. An answer this end cannot place sets `Walk::out_of_step`, and while it holds
+     `Walk::step` sends nothing (`NotSent::OutOfStep`). It has to: `predicted` is
+     a chain of asks the server has stopped agreeing with, so every step on top
+     widens the disagreement, and a `0x22` ack carries no position to correct it
+     with.
+  2. `link.rs` sends one `ResyncRequest` — the client's `0x22`, three bytes —
+     guarded on the flag not already being set, which is ClassicUO's
+     `ResendPacketResync` in one line.
+  3. The shard decodes it as `ClientPacket::ResyncRequest`, queues
+     `Command::Resync` like every other packet, and `WorldState::resync` answers
+     out of a tick: the walk sequence back to zero, this client's screen
+     forgotten so that `refresh_around` sends it again, and a `0x20` with the
+     real position. That is ServUO's `Resynchronize` list in our own terms.
+  4. The `0x20` snaps the client, which clears the flag, and the walk is free —
+     from a fresh sequence on both ends, which is why the step after a resync is
+     not refused.
+
+  `0x22` is **two different packets**, one per direction, three bytes each, with
+  nothing in the body to tell them apart. It costs us nothing because
+  `ClientPacket` and `ServerPacket` are separate tables, but it is exactly the
+  sort of thing a single id-to-type map gets silently wrong, so both types name
+  each other and sit together in `world.rs`. `crates/e2e/shard/tests/resync.rs`
+  is what proves the packet one end sends is the packet the other end decodes;
+  neither unit test can.
 
 - **The walk has no home.** Two of those three defects lived *between*
   `App::user_event` and `App::about_to_wait` rather than in any of the four units

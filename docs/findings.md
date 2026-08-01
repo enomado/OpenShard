@@ -104,6 +104,43 @@ machinery as `0x78`, encoder in `crates/common/protocol`, default in core and
 overridable in the pack off the domain event — the split combat and magic already
 use. This was a systemic miss for most of the project's life; do not add to it.
 
+**`0x22` is two different packets, one per direction, and both are three
+bytes.** Server to client it is the walk ack: sequence, notoriety. Client to
+server it is `Resynchronize`: the id and two bytes of nothing. Same id, same
+length, opposite meanings, and no field distinguishes them — only which way the
+bytes are going. ServUO registers `0x22, 3, true, Resynchronize` beside a `0x22`
+it also emits, ClassicUO has `Handler.Add(0x22, ConfirmWalk)` and
+`Send_Resync()` writing id `0x22`, and both are right. A packet table that
+resolves an id to one meaning is wrong for this one; ours is already two tables
+(`ClientPacket` and `ServerPacket`), which is what makes it a non-event here
+rather than a day.
+
+**The walk handshake has a repair leg, and it is a request/response.** Reading
+`WalkerManager.ConfirmWalk`, `DenyWalk` and `PacketHandlers.UpdatePlayer`
+together, the whole cycle is: an ack the client cannot place is a *bad step* →
+it sends one `0x22` resync (guarded by `ResendPacketResync`, so a burst of bad
+acks asks once) and sets `WalkingFailed`, which is the first condition in
+`PlayerMobile.Walk` and stops every further request → the server answers a
+resync with the player's real position (`0x20`), everything in view again, and
+its own sequence back to zero (ServUO's `Resynchronize`: `MobileUpdate`,
+`MobileIncoming`, `SendEverything`, `state.Sequence = 0`,
+`ClearFastwalkStack`) → the `0x20` handler clears `WalkingFailed` and
+`ResendPacketResync` and forces the tile. Freezing the walk is only safe because
+something is guaranteed to unfreeze it; a client that stopped walking on a
+desync *without* sending the resync would stop walking for good.
+
+**ClassicUO's ack is a search, not a queue pop, and that is a consequence of
+where its steps live.** `ConfirmWalk` scans the ≤5 remembered `StepInfo`s for
+the sequence and only marks the match `Accepted`; the step is *consumed* by the
+animation (`Mobile.ProcessSteps`, which pops when the step's time has run out
+and its `StepInfo` was accepted). Ours is a FIFO and the ack must match its
+front. Neither is a port of the other and ours is not the poorer: the wire
+answers each `0x02` exactly once and in order, so a queue is provably right,
+while a search cannot tell a *stale* answer — one to a step a rollback already
+voided — from a real desync at all. ClassicUO calls both a bad step, so every
+wall hit on a slow link costs it a needless resync. Counting what is still owed
+(`Walk::draining`) distinguishes them; see `docs/client.md`.
+
 ## The client's data files
 
 **The map is in the `.uop`, not the `.mul`.** Modern clients ship both and the
