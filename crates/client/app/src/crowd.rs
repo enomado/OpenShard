@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use openshard_client_render::animation::AnimationClock;
+use openshard_client_render::follow::Gaze;
 use openshard_client_render::mobiles::{Glide, Mobile};
 use openshard_movement::{RUN_HOLD, WALK_HOLD};
 use openshard_protocol::direction::{Direction, Facing};
@@ -70,14 +71,23 @@ struct Speech {
 /// takes.
 #[derive(Clone, Copy, Debug)]
 struct Step {
-    /// The tile stepped off, or `None` when the move was not a step at all.
+    /// Where the body was drawn when the step began, or `None` when the move was
+    /// not a step at all.
     ///
     /// Absent for a jump of more than one tile — a gate, a recall, a `0x22`
     /// putting a mispredicted body back. Interpolating one of those slides the
     /// character across the map over the length of a step, which is a far
     /// stranger picture than the teleport it is hiding.
-    from: Option<Point>,
-    /// When it was heard, on [`Crowd::now`]'s clock.
+    ///
+    /// The drawn position and not the tile stepped off: see
+    /// [`openshard_client_render::mobiles::Glide::from`], which this becomes.
+    /// The two are the same number when the previous step ended exactly as this
+    /// one began, and every millisecond they differ by is a jump on screen.
+    from: Option<Gaze>,
+    /// When it started, on [`Crowd::now`]'s clock: the instant it was heard.
+    ///
+    /// What is *not* read off the arrival is when it ends — for the body this
+    /// client commands, that comes from the cadence. See [`crossing`].
     started: Duration,
     /// How long it takes — see [`glide_time`]. Never zero, which is what lets
     /// [`Tracked::glide`] divide.
@@ -280,22 +290,35 @@ impl Crowd {
         // every step too, so treating it as movement would keep everyone
         // walking forever.
         if tracked.at != at {
-            let from = tracked.at;
-            tracked.at = at;
+            let was = tracked.at;
             let nominal = if facing.running { RUN_HOLD } else { WALK_HOLD };
-            // Measured against the step before this one, so a walk that is
-            // already under way crosses each tile in exactly the time the last
-            // one took — which is what makes it continuous. See `glide_time`.
-            // Nothing to measure for the body we command — see
-            // [`Crowd::commanding`].
-            let since = match commanded {
-                true => None,
-                false => tracked.stepped_at.map(|heard| now.saturating_sub(heard)),
+            // Two ways to know how long a tile takes, and which one is available
+            // is exactly what [`Crowd::commanded`] answers.
+            //
+            // A body we only hear about is glided over the gap *measured* since
+            // its last step — that already contains the round trip, the shard's
+            // tick and whatever pace the creature actually walks at, none of
+            // which this end can look up. See `glide_time`.
+            //
+            // The one we command has a cadence instead of a measurement: we sent
+            // the step and we know when the next is owed, so what is chained is
+            // the instant this crossing should *end*. See `crossing`.
+            let takes = match commanded {
+                true => crossing(tracked.step, commanded, now, nominal),
+                false => {
+                    let since = tracked.stepped_at.map(|heard| now.saturating_sub(heard));
+                    glide_time(nominal, since)
+                }
             };
+            // Where the body is drawn *now*, which is where the new step has to
+            // pick up from. Read before `at` is moved, because it is a question
+            // about the step that is ending.
+            let from = tracked.gaze_at(now);
+            tracked.at = at;
             tracked.step = Some(Step {
-                from: is_one_step(from, at).then_some(from),
+                from: is_one_step(was, at).then_some(from),
                 started: now,
-                takes: glide_time(nominal, since),
+                takes,
             });
             tracked.stepped_at = Some(now);
             let moving = match (facing.running, kind.running()) {
@@ -499,6 +522,23 @@ impl Tracked {
         }
     }
 
+    /// Where this body is drawn at a moment on the crowd's clock, sub-tile.
+    ///
+    /// The whole of what makes a step continuous: a new step starts here rather
+    /// than on the tile boundary, so an arrival that is early or late changes
+    /// the *speed* of the crossing that follows it and never the position. The
+    /// picture cannot jump, by construction, whatever the wire does.
+    ///
+    /// `when` is normally the instant a step is beginning, which for a chained
+    /// one is in the past — see [`began`]. A body with nothing in flight is on
+    /// its tile.
+    fn gaze_at(&self, when: Duration) -> Gaze {
+        // The renderer's own formula and not a copy of it: a step that started
+        // from a position a fraction of a pixel off where the sprite was drawn
+        // is the jump this exists to remove, one pixel smaller.
+        openshard_client_render::mobiles::glided(self.at, self.glide(when))
+    }
+
     /// Where between two tiles this body is, at a moment on the crowd's clock.
     fn glide(&self, now: Duration) -> Option<Glide> {
         let step = self.step?;
@@ -518,6 +558,61 @@ impl Tracked {
             from,
             progress: elapsed.as_secs_f32() / step.takes.as_secs_f32(),
         })
+    }
+}
+
+/// How long this crossing has left to run, for a body whose cadence is known.
+///
+/// # The arrival is noise and the cadence is not
+///
+/// A step is handed to this layer when the event loop wakes with it — after the
+/// wire, after an mpsc, after however late the operating system got round to the
+/// thread. The *cadence* underneath that has none of the noise in it: `steer.rs`
+/// arms each step from the previous one's deadline rather than from the wake it
+/// happened to be taken at, precisely so that lateness does not accumulate.
+///
+/// Crossing every tile in the nominal time *from the arrival* therefore
+/// re-randomises the phase of every tile: each crossing is the right length and
+/// starts a few milliseconds late, by a different few each time, so the body's
+/// position steps by the difference of two of them at every tile boundary. Eight
+/// milliseconds of wake jitter is a pixel a tile, once every 400ms — and the
+/// camera is locked to the body, so the whole world takes it. That is the jerk
+/// the walk dump in `dst.rs` was written to measure.
+///
+/// So what is chained is the *end* of the crossing and not its start. The step
+/// begins now, from where the body is now — which is what keeps the picture
+/// continuous, see [`Step::from`] — and it is given however long is left until
+/// the instant the cadence says it should arrive. The few milliseconds of
+/// lateness come out of the crossing's *speed*, where at eight milliseconds in
+/// four hundred they are two per cent and nobody can see them, instead of out of
+/// its position, where they are a pixel and everybody can.
+///
+/// Chaining the start instead would put it in the past, which is arithmetically
+/// the same schedule and a jump on screen: the body was drawn parked on its tile
+/// for the frames between the boundary and the arrival, and a retroactive start
+/// makes the next frame catch up all at once.
+///
+/// Believed only within half and double the nominal length, which is the band
+/// [`glide_time`] trusts a measurement in and for the same reason: outside it
+/// there is no cadence to chain from — a body that had stopped, a step answered
+/// after a stall, a rollback — and the wire's own claim is at least a walking
+/// speed. Everyone else gets the nominal length too, because nothing on the wire
+/// says when an NPC set off and a schedule invented for a guessed pace would
+/// move it somewhere it never was.
+fn crossing(previous: Option<Step>, commanded: bool, now: Duration, nominal: Duration) -> Duration {
+    if !commanded {
+        return nominal;
+    }
+    let Some(previous) = previous else { return nominal };
+    // Where the cadence says this crossing ends: the previous one's scheduled
+    // end, which is when this step set off, plus a step.
+    let ends = previous.started + previous.takes + nominal;
+    let Some(left) = ends.checked_sub(now) else {
+        return nominal;
+    };
+    match left >= nominal / 2 && left <= nominal * 2 {
+        true => left,
+        false => nominal,
     }
 }
 
@@ -741,7 +836,11 @@ mod tests {
 
         let stepped = step(&mut crowd, 11);
         let glide = stepped.glide.expect("mid-step");
-        assert_eq!(glide.from, Point::new(10, 10, 0), "from where it was");
+        assert_eq!(
+            glide.from,
+            Gaze::on(Point::new(10, 10, 0)),
+            "from where it was standing"
+        );
         assert_eq!(glide.progress, 0.0, "and it has not moved yet");
 
         crowd.advance(WALK_HOLD / 4);
@@ -943,6 +1042,93 @@ mod tests {
             None,
             "the nominal step, not the gap the loop happened to wake at",
         );
+    }
+
+    /// The step we command ends when the cadence says, whenever we heard about
+    /// it.
+    ///
+    /// The jerk this whole pair of rules came from: `steer.rs` arms each step
+    /// from the previous deadline, so the *asks* are an exact metronome, but the
+    /// news of each one reaches this layer whenever the loop wakes. A crossing
+    /// measured from the arrival is the right length starting at the wrong
+    /// instant, by a different wrong instant every tile — so the body's position
+    /// steps at every boundary and the camera, locked to it, takes the whole
+    /// world with it.
+    ///
+    /// Here the second step is heard a tenth of a step late and must still
+    /// arrive on the beat, which it does by being that much shorter.
+    #[test]
+    fn a_step_we_command_arrives_on_the_beat_however_late_it_was_heard() {
+        let mut crowd = Crowd::default();
+        crowd.commanding(None);
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                None,
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            );
+        };
+        let late = WALK_HOLD / 10;
+        step(&mut crowd, 10);
+        step(&mut crowd, 11);
+        crowd.advance(WALK_HOLD + late);
+        step(&mut crowd, 12);
+
+        // A hold after the *first* step's own deadline, less the lateness, the
+        // body is on its tile — which is to say two tiles in two holds, and not
+        // two tiles in two holds plus the two latenesses.
+        crowd.advance(WALK_HOLD - late - Duration::from_millis(1));
+        let glide = crowd.glide_for(None).expect("still crossing");
+        assert!(glide.progress > 0.99, "all but arrived: {}", glide.progress);
+        crowd.advance(Duration::from_millis(1));
+        assert_eq!(crowd.glide_for(None), None, "on the beat");
+    }
+
+    /// A step starts from where the body is drawn, not from the tile it is
+    /// leaving — so nothing an arrival does can move the sprite.
+    ///
+    /// The case that names the difference is the opposite of the one above: a
+    /// step heard *early*, while the previous crossing still has a quarter to
+    /// run. Anchored to the tile boundary the sprite jumps a quarter of a tile
+    /// backwards to start the new step; anchored to itself it carries on from
+    /// where it is and covers the extra ground by going a little faster.
+    #[test]
+    fn a_step_picks_up_from_where_the_body_is_drawn() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::East),
+                Hue::NONE,
+            )
+        };
+        step(&mut crowd, 10);
+        step(&mut crowd, 11);
+        crowd.advance(WALK_HOLD * 3 / 4);
+        let before = drawn(&crowd, serial(1), Point::new(11, 10, 0));
+
+        let stepped = step(&mut crowd, 12);
+        let after = drawn(&crowd, serial(1), Point::new(12, 10, 0));
+        assert_eq!(before, after, "the sprite moved on an arrival, not on a clock");
+        assert_eq!(
+            stepped.glide.expect("mid-step").progress,
+            0.0,
+            "and the new step has not run yet",
+        );
+    }
+
+    /// Where a body is drawn, through the renderer's own placement.
+    fn drawn(crowd: &Crowd, who: Who, at: Point) -> (i64, i64) {
+        let gaze = openshard_client_render::mobiles::glided(at, crowd.glide_for(who));
+        // Rounded to a thousandth of a pixel: the comparison is about a quarter
+        // of a tile, and an exact one would be asserting about the last bit of
+        // an `f64` division.
+        let (x, y) = gaze.exact();
+        ((x * 1_000.0).round() as i64, (y * 1_000.0).round() as i64)
     }
 
     /// And a walk already under way crosses each tile in the time the last one

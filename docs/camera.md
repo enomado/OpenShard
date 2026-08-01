@@ -584,6 +584,41 @@ the same world pixel, no later frame can change what the screen is given. Before
 it, the tail of every ease arrived 80ms late and whole — the stutter the filter
 exists to remove, arriving just after it.
 
+**And then it was pointed at the complaint it was built for, and found it.** A
+straight ten-tile walk should be flat: one tile per hold, a constant speed, and
+a rigid eye that is the body. Under a punctual loop it is — the dump's `perfect`
+run is 77.8 px/s to the decimal and never a pixel off the oracle. Add eight
+milliseconds of wake jitter, which is a quiet desktop, and one frame per tile
+covered 1.6 times a walk's ground.
+
+Neither the camera nor the frame rate: the *phase* of every tile. `steer.rs`
+arms each step from the previous deadline, so the asks are an exact metronome —
+but the news of each one reaches `crowd.rs` when the loop wakes, and a crossing
+timestamped there is the right length starting at the wrong instant, by a
+different wrong instant every tile. The body's position therefore stepped by the
+difference of two latenesses at every boundary, and the eye is the body.
+
+Two rules replaced it, and they answer different halves. **A step starts from
+where the body is drawn**, not from the tile it is leaving — `Glide::from` is a
+`Gaze` now — so no arrival can move the sprite at all, whatever the wire did;
+that is the general one, and it covers NPCs, rollbacks and anything else that
+arrives when it arrives. **And the crossing this client commands ends when the
+cadence says**, not a nominal hold after it was heard, so the lateness comes out
+of the crossing's *speed*, where two per cent is invisible, instead of its
+position, where a pixel is not. The worst frame over eight seeds went from 1.28
+–1.6 times a walk to 1.036, which is the two per cent and nothing else, and
+`dst.rs`'s `wake_up_jitter_does_not_reach_the_speed` is the gate — a corridor
+around the oracle never caught this, because a body that parks for a frame and
+then covers two sits inside every corridor in the file.
+
+What is left is named: the client learns about its *own* step one turn of the
+event loop late, because the prediction is made on the net task and comes back
+through an mpsc. So there are frames between the scheduled boundary and the news
+where the honest picture is a body parked on its tile — a stall of up to a frame,
+once per tile, where there used to be a jump. Drawing anything else there would
+be inventing motion; shortening the news is the fix, and it is a backlog item
+about the seam rather than about the camera.
+
 ### C5 — the intent
 
 Velocity look-ahead and cursor lean, each smoothed separately and capped
@@ -730,6 +765,25 @@ Found while planning this, and not to be lost in it.
   throttle on *unchanged output* rather than on "nothing is moving", which is a
   question this client cannot currently answer — the world texture is rebuilt
   whether or not it would differ.
+- **This client hears about its own step one turn of the event loop late.** The
+  prediction is made by `client/net`'s `Walk` on the net task and published back
+  through an mpsc, so `about_to_wait` sends the `0x02` and the window learns
+  where the body went on a later wake. With the crossing now on the cadence's
+  schedule that is the whole of what is left of the walk's unevenness: the frames
+  between the scheduled boundary and the news draw a body parked on its tile,
+  which is honest and is still a stall of up to a frame per tile. The offline
+  path does not have it — `App::walk` folds the step in the same wake — and the
+  fix for the online one is to predict on the window's side, which is a question
+  about the `link` seam and `docs/client.md`, not about the camera.
+- **The walk's unevenness has a gate and the eye's does not.**
+  `never_outran_a_walk` is over the drawn *body*; the eye's own `step_var` and
+  `still_frames` are computed by `Metrics` and asserted nowhere. Under `HARD`
+  they are the body's numbers plus the quantiser, so there is nothing to catch
+  yet — under C3's filter there will be, and that is the moment to bound them.
+- **`Crowd::crossing` trusts the same band as `glide_time` and says so twice.**
+  Half to double the nominal, written out in both, because they are answering
+  different questions with the same arithmetic. If a third one appears they want
+  one home.
 - **`FRAMES_SPAN` is a constant the panel cannot change, again.** The same item
   the scope's span just stopped being, and left as a constant deliberately: the
   slider belongs to whichever of the two rings turns out to be looked at

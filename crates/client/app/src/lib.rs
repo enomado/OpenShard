@@ -1088,6 +1088,18 @@ impl App {
         // buffer is for and what looks exactly like a mobile that failed to
         // draw.
         let ground = self.map.land(x, y).map_or(self.player.at.z, |cell| cell.z);
+        // The crowd's clock first, before the step is folded in, and for the
+        // same reason `App::user_event` does it for a step off the wire: a step
+        // is timestamped with `Crowd`'s own `now`, and this is called from
+        // `about_to_wait` — where that clock is as old as the last frame. A step
+        // recorded up to a frame in the past starts its crossing there, and
+        // `crowd::crossing` then measures the time it has left from the same
+        // stale instant. This is the offline half of the walk and it had the
+        // defect the online half was already fixed for.
+        let now = Instant::now();
+        self.crowd
+            .advance(now.saturating_duration_since(self.last_advance));
+        self.last_advance = now;
         // Through the crowd like anyone else, so the placeholder walks when it
         // walks and stands when it stops. `None` is who it is: no shard has
         // named it, so it has no serial.

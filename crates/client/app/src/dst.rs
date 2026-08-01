@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 
 use openshard_client_net::walk::{Moved, Predicted, Walk};
 use openshard_client_render::bench::{Cadence, Metrics, Sample};
-use openshard_client_render::camera::Camera;
+use openshard_client_render::camera::{Camera, TILE_HEIGHT, TILE_WIDTH};
 use openshard_client_render::chart;
 use openshard_client_render::control::Control;
 use openshard_client_render::follow::Rig;
@@ -659,20 +659,13 @@ impl Sim {
     /// advanced by, which is the same value `App::draw` hands the camera.
     fn sample(&mut self, elapsed: Duration) {
         self.player.glide = self.crowd.glide_for(me());
-        let at = self.player.at;
-        let position = match self.player.glide {
-            Some(glide) => {
-                let progress = f64::from(glide.progress.clamp(0.0, 1.0));
-                (
-                    f64::from(glide.from.x) + (f64::from(at.x) - f64::from(glide.from.x)) * progress,
-                    f64::from(glide.from.y) + (f64::from(at.y) - f64::from(glide.from.y)) * progress,
-                )
-            }
-            None => (f64::from(at.x), f64::from(at.y)),
-        };
-        self.trace.push((self.now, position));
         // `App::follow_player`, with the same gaze the sprite is placed from.
         let gaze = mobiles::gaze(&self.player);
+        // And the trace is that same gaze read back in tiles, rather than a
+        // second interpolation beside it: the oracle speaks in tiles and the
+        // renderer in pixels, and the conversion is exact both ways. A trace
+        // computed alongside the drawing is a trace of something nobody sees.
+        self.trace.push((self.now, tiles_of(gaze)));
         self.control.follow_body(gaze, elapsed);
         self.eyes.push(Sample {
             at: self.now,
@@ -761,6 +754,59 @@ fn paced(sim: &Sim, hold: Duration) {
             "two steps left {gap:?} apart, which is faster than the {hold:?} a body walks"
         );
     }
+}
+
+/// Assert the drawn body never *outran* a walk, over a whole scenario.
+///
+/// [`continuous`] is the same claim per frame pair, and it is not the same test:
+/// it allows a fiftieth of a tile of arithmetic slack per frame, which at sixty
+/// frames a second is a tile and a half a second of unnoticed burst. This one
+/// takes the worst frame in the run against the nominal step and reports the
+/// ratio, so a regression is a number that moved rather than a threshold that
+/// happened to still hold.
+///
+/// The bound comes from a mutation and not from the measurement's own headroom.
+/// With a crossing that starts on the tile boundary and runs for the nominal
+/// time from the arrival — which is what this repository shipped until the walk
+/// dump was written — ten steps under eight milliseconds of wake jitter peaked
+/// between 1.28 and 1.6 times a walk, one frame per tile. With the two rules
+/// that replaced it (`crowd::crossing`, and a step that starts from where the
+/// body is drawn) the worst frame over eight seeds is 1.036, which is the two
+/// per cent the lateness now costs in *speed* instead of in position. So 1.10 is
+/// a factor above what the fix produces and far under what the defect did.
+///
+/// Either rule alone suppresses the burst and neither is redundant: the schedule
+/// is what keeps the body from parking on its tile, and starting from the drawn
+/// position is what makes any arrival at all — a rollback, an NPC on a wire —
+/// continuous rather than merely well timed.
+#[track_caller]
+fn never_outran_a_walk(sim: &Sim, hold: Duration, times: f64) {
+    let (mut worst, mut when) = (0.0f64, Duration::ZERO);
+    for pair in sim.trace.windows(2) {
+        let ((before, was), (at, now)) = (pair[0], pair[1]);
+        let dt = (at - before).as_secs_f64();
+        // A frame of no elapsed time is not a speed, and the walk is over the
+        // axis a straight step moves along — see [`continuous`] on why not the
+        // distance.
+        if dt <= 0.0 {
+            continue;
+        }
+        let moved = (now.0 - was.0).abs().max((now.1 - was.1).abs());
+        let ratio = moved / (dt / hold.as_secs_f64());
+        if ratio > worst {
+            (worst, when) = (ratio, at);
+        }
+    }
+    assert!(
+        sim.trace.len() > 100,
+        "only {} frames: a ceiling nothing walked under is not an assertion",
+        sim.trace.len(),
+    );
+    assert!(
+        worst <= times,
+        "the body covered {worst:.2} times a walk's ground in one frame at {when:?}, \
+         which is a body yanked rather than a body walking"
+    );
 }
 
 /// Assert the reference rig put the eye exactly on the drawn body, every frame.
@@ -992,6 +1038,45 @@ fn wake_up_jitter_does_not_accumulate() {
         // deadline rather than from the wake is for.
         let corridor = 3.0 * late.as_secs_f64() / WALK_HOLD.as_secs_f64() + 0.02;
         tracks(&sim, &oracle, corridor);
+    }
+}
+
+/// And the other half of what a late wake must not do: reach the *speed*.
+///
+/// A corridor around the oracle bounds where the body is and says nothing about
+/// how it got there — a body that parks for a frame and then covers two frames
+/// of ground sits inside every corridor this file draws, and it is the jerk
+/// people actually report. It was real: a crossing timestamped at the arrival
+/// re-randomises its phase every tile, so the body's position stepped by the
+/// difference of two wake latenesses at every tile boundary, and one frame in
+/// four hundred milliseconds covered 1.6 times a walk's ground.
+///
+/// So this scenario asserts the ceiling directly, over the same walk at the
+/// same jitter, and the companion — the body did walk the whole way — is inside
+/// [`never_outran_a_walk`] and [`tracks`] both. `docs/camera.md` C4 has the
+/// picture this came out of; `dst::dump_the_walk` draws it.
+#[test]
+fn wake_up_jitter_does_not_reach_the_speed() {
+    let until = Duration::from_millis(4_400);
+    let script = vec![press(0, Direction::East), release(4_000, Direction::East)];
+    let oracle = Oracle::build(START, &script, until);
+    for seed in 0..8 {
+        let net = Net {
+            latency: Duration::from_millis(60),
+            jitter: Duration::from_millis(20),
+            wake_jitter: Duration::from_millis(8),
+        };
+        let mut sim = Sim::new(Direction::East, net, seed, Vec::new());
+        sim.run(&script, until);
+        never_outran_a_walk(&sim, WALK_HOLD, 1.10);
+        // A tile and a half of corridor would pass a body that never moved, so
+        // the position is held too — tightly, because this wire is a tenth of
+        // the jitter the drift scenario above runs at.
+        tracks(&sim, &oracle, 0.1);
+        assert_eq!(
+            sim.refused, 0,
+            "seed {seed}: a walk at the hold is not a speedhack"
+        );
     }
 }
 
@@ -1505,11 +1590,28 @@ fn walk_frames(sim: &Sim, oracle: &Oracle) -> Vec<WalkFrame> {
 /// A fractional tile, projected the way `camera::project` projects a whole one.
 ///
 /// The oracle speaks in tiles and everything else here in world pixels, and the
-/// comparison has to happen in one of the two. Pixels, because that is what the
-/// player's eye is measuring and what the camera's metrics are already in.
+/// comparison has to happen in one of the two.
 fn tile_pixels(tile: (f64, f64)) -> (f64, f64) {
-    const HALF: f64 = 22.0;
-    ((tile.0 - tile.1) * HALF, (tile.0 + tile.1) * HALF)
+    let half = f64::from(TILE_WIDTH) / 2.0;
+    ((tile.0 - tile.1) * half, (tile.0 + tile.1) * half)
+}
+
+/// And back: which fractional tile a gaze's ground position falls on.
+///
+/// The inverse of [`tile_pixels`] and exact — the projection is a linear map
+/// with a determinant of half a tile squared, so nothing is lost either way.
+/// `camera::unproject` is the same inverse rounded to a whole tile, which is
+/// what picking wants and what a trace must not do: rounding the body to a tile
+/// is exactly the teleport the glide exists to remove.
+///
+/// The *ground* position, so `lift` is not read: a body raised by its height has
+/// not moved along the map, and folding the two would put a walk up a stair in
+/// the wrong tile.
+fn tiles_of(gaze: openshard_client_render::follow::Gaze) -> (f64, f64) {
+    (
+        (gaze.x + gaze.y) / f64::from(TILE_WIDTH),
+        (gaze.y - gaze.x) / f64::from(TILE_HEIGHT),
+    )
 }
 
 /// The speed between consecutive frames, in world pixels a second.
@@ -1662,6 +1764,23 @@ fn dump_the_walk() {
         );
         std::fs::write(dir.join(format!("walk-{name}.svg")), chart_of(name, &frames))
             .expect("writing a chart");
+        // The same frames as numbers. The picture is what a shape is read from
+        // and the table is what a millisecond is read from, and every finding so
+        // far has needed both.
+        let mut csv = String::from("at_us,want_x,want_y,body_x,body_y,eye_x,eye_y\n");
+        for frame in &frames {
+            csv.push_str(&format!(
+                "{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}\n",
+                frame.at.as_micros(),
+                frame.want.0,
+                frame.want.1,
+                frame.body.0,
+                frame.body.1,
+                frame.eye.0,
+                frame.eye.1,
+            ));
+        }
+        std::fs::write(dir.join(format!("walk-{name}.csv")), csv).expect("writing a table");
     }
     println!("\nwrote {}", dir.display());
 }

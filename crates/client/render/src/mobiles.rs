@@ -24,10 +24,13 @@
 //!
 //! The wire moves a body a whole tile at a time, so a mobile drawn where the
 //! last packet put it teleports 44 pixels every step. [`Glide`] is the
-//! difference: the tile stepped off and how far into the step the body is, and
-//! the sprite hangs between the two projections. Nothing else changes — the
+//! difference: where the body was when the step began and how far into the step
+//! it is, and the sprite hangs between the two. Nothing else changes — the
 //! *tile* is still where the server put it, which is what everything that is
 //! not a pixel keeps asking.
+//!
+//! Where it *began* and not the tile it stepped off, which is the same thing
+//! only when every packet arrives on time. See [`Glide::from`].
 
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Hue;
@@ -50,12 +53,23 @@ use crate::sprite::SpriteQuad;
 /// advances it, and time does not land on tile boundaries.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Glide {
-    /// The tile the body stepped off, height and all.
+    /// Where the body was when the step began — height kept apart, as a
+    /// [`Gaze`] keeps it.
     ///
-    /// The height too, so a step up a hill rises over the step rather than
-    /// snapping four pixels at the end of it — [`crate::camera::project`] is
-    /// linear in `z`, so this costs nothing extra.
-    pub from: Point,
+    /// **Not the tile it stepped off**, and that is the whole of it. A step
+    /// begins when a packet arrives, and a packet arrives when the wire and the
+    /// event loop between them get round to it; the body at that instant is
+    /// wherever the *previous* step had reached, which on a late packet is its
+    /// destination and on an early one is short of it. Anchoring the new step to
+    /// the tile boundary rather than to that position is a discontinuity of
+    /// exactly the arrival's error, once per tile — and the camera is locked to
+    /// the body, so the whole world takes it.
+    ///
+    /// Sub-tile, therefore, and a [`Gaze`] rather than a pair: the height rides
+    /// with it, so a step up a hill rises over the step rather than snapping
+    /// four pixels at the end of it, and a body caught mid-rise carries the part
+    /// of the rise it had into the next one.
+    pub from: Gaze,
     /// How far into the step: `0.0` at [`Glide::from`], `1.0` at [`Mobile::at`].
     ///
     /// Clamped by whoever reads it rather than by construction, because a value
@@ -110,15 +124,27 @@ pub struct Mobile {
 /// separately disagree by a pixel and the disagreement is a shimmer nobody can
 /// name.
 pub fn gaze(mobile: &Mobile) -> Gaze {
-    let at = Gaze::on(mobile.at);
-    let Some(glide) = mobile.glide else {
+    glided(mobile.at, mobile.glide)
+}
+
+/// The same, from the two fields it actually reads.
+///
+/// Public and separate because the layer that *owns* the glide has to ask this
+/// question too: a step begins from where the body was drawn, so whatever holds
+/// the clock has to place a body it has not built a [`Mobile`] for yet
+/// (`client/app`'s `crowd.rs`). One formula, because two would be a body and a
+/// step-start that disagree by a fraction of a pixel — which is a jump per tile,
+/// and the reason this signature exists at all.
+pub fn glided(at: Point, glide: Option<Glide>) -> Gaze {
+    let at = Gaze::on(at);
+    let Some(glide) = glide else {
         return at;
     };
     // How much of the step has not been walked yet. Clamped rather than trusted:
     // a progress past one means a clock ran past the step, and the honest
     // picture of that is a body standing on its destination.
     let left = f64::from(1.0 - glide.progress.clamp(0.0, 1.0));
-    at.back_towards(Gaze::on(glide.from), left)
+    at.back_towards(glide.from, left)
 }
 
 /// Where a mobile's cell centre falls in world pixels, the step it is mid-way
@@ -449,7 +475,10 @@ mod tests {
                 facing: Direction::NorthEast,
                 frame: 0,
                 hue: Hue::NONE,
-                glide: Some(Glide { from, progress }),
+                glide: Some(Glide {
+                    from: Gaze::on(from),
+                    progress,
+                }),
             })
         };
         assert_eq!(stepping(0.0), camera::project(from), "it starts where it was");
@@ -486,7 +515,7 @@ mod tests {
             frame: 0,
             hue: Hue::NONE,
             glide: Some(Glide {
-                from: flat,
+                from: Gaze::on(flat),
                 progress: 0.5,
             }),
         });
@@ -516,7 +545,7 @@ mod tests {
                 frame: 0,
                 hue: Hue::NONE,
                 glide: Some(Glide {
-                    from: ground,
+                    from: Gaze::on(ground),
                     progress,
                 }),
             })
@@ -546,7 +575,7 @@ mod tests {
             frame: 0,
             hue: Hue::NONE,
             glide: Some(Glide {
-                from: Point::new(100, 100, 0),
+                from: Gaze::on(Point::new(100, 100, 0)),
                 progress: 0.1,
             }),
         });
@@ -578,7 +607,7 @@ mod tests {
         let mid_step = collect(
             &[Mobile {
                 glide: Some(Glide {
-                    from: Point::new(100, 100, 0),
+                    from: Gaze::on(Point::new(100, 100, 0)),
                     progress: 0.5,
                 }),
                 ..mobile
