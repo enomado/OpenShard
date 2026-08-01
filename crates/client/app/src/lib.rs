@@ -347,6 +347,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         covered: None,
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),
+        always_draw: false,
         scripts: bench::scripts(),
         replay: None,
     };
@@ -710,6 +711,12 @@ struct App {
     /// number about the loop and not about the camera. See [`frames::Frames`]
     /// for why it is not the scope.
     frames: frames::Frames,
+    /// Whether to keep the loop on the glide clock even when nothing is moving.
+    ///
+    /// Off, and it is an experiment rather than a setting — see
+    /// [`shell::Request::always_draw`]. A still world redrawn sixty times a
+    /// second is the same picture sixty times.
+    always_draw: bool,
     /// The bench's scenarios, built once.
     ///
     /// Held rather than rebuilt per frame because the HUD lists their names, and
@@ -1157,7 +1164,11 @@ impl App {
     /// the filter exists to remove, arriving just after it.
     fn redraw_interval(&self) -> std::time::Duration {
         let moving = self.crowd.anyone_gliding() || self.control.settling() || self.replay.is_some();
-        if moving { GLIDE_INTERVAL } else { FRAME_DELAY }
+        if moving || self.always_draw {
+            GLIDE_INTERVAL
+        } else {
+            FRAME_DELAY
+        }
     }
 
     /// Start walking one of the bench's scenarios in the window.
@@ -1527,6 +1538,7 @@ impl App {
             // of any answer about the frame rate: a picture drawn every 80ms is
             // not a slow frame, it is a frame nobody asked for sooner.
             cadence: self.redraw_interval(),
+            always_draw: self.always_draw,
             scripts: self.scripts.iter().map(|script| script.name).collect(),
             replay: self.replay.as_ref().map(|replay| {
                 let length = replay.length().as_secs_f32().max(0.001);
@@ -1827,6 +1839,9 @@ impl App {
                 // measuring them together would average two rigs.
                 self.control.set_rig(rig);
                 self.scope.clear();
+            }
+            if let Some(always) = request.always_draw {
+                self.always_draw = always;
             }
             match request.script {
                 Some(shell::ScriptRequest::Run(name)) => self.start_replay(name),

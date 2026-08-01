@@ -82,6 +82,9 @@ pub struct Hud {
     /// The worst frame rate in that window, and `None` before there is a frame
     /// to have a rate.
     pub worst_fps: Option<f64>,
+    /// Whether the loop has been asked to draw at the glide rate even when
+    /// nothing is moving. See [`Request::always_draw`].
+    pub always_draw: bool,
     /// How long the event loop is currently waiting between frames.
     ///
     /// Shown beside the rate because it is the *reason* for it whenever nothing
@@ -170,6 +173,16 @@ pub struct Request {
     pub rig: Option<Rig>,
     /// Start or stop a scripted walk.
     pub script: Option<ScriptRequest>,
+    /// Draw at the glide rate whether or not anything is moving.
+    ///
+    /// The experiment behind the frame panel rather than a setting anybody is
+    /// meant to ship with: a still world redrawn 60 times a second is the same
+    /// picture 60 times, at the cost of a busy machine. It is here because
+    /// "it drops to 12.5 when I stop walking" is answered by *looking* at both
+    /// cadences rather than by arguing about which one is the picture — and if
+    /// forcing the fast one changes nothing that can be seen, the cadence was
+    /// never the complaint.
+    pub always_draw: Option<bool>,
 }
 
 /// What the script picker asked for.
@@ -492,7 +505,7 @@ fn layout(
         .default_pos([16.0, 220.0])
         .default_width(320.0)
         .show(&context, |ui| {
-            frames_panel(ui, hud);
+            frames_panel(ui, hud, &mut request);
         });
 
     egui::Window::new("World")
@@ -701,7 +714,7 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
 /// not one. So both curves are here, and the cadence the loop is currently
 /// waiting on is printed beside them — with only the rate on screen, every drop
 /// looks like the same drop. See [`crate::frames`].
-fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
+fn frames_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     let cadence = hud.cadence.as_secs_f64() * 1_000.0;
     egui::Grid::new("frames").num_columns(4).show(ui, |ui| {
         ui.label("fps");
@@ -735,6 +748,15 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
         .weak()
         .small(),
     );
+
+    // The experiment, not a setting: see `Request::always_draw`.
+    let mut always = hud.always_draw;
+    if ui
+        .checkbox(&mut always, "draw at the glide rate even when nothing moves")
+        .changed()
+    {
+        request.always_draw = Some(always);
+    }
 
     let span = hud.frames_span.as_secs_f32().max(0.001);
     let last = hud.frames.last().map_or(0.0, |frame| frame.at.as_secs_f32());
