@@ -434,6 +434,16 @@ impl Scope {
         self.span
     }
 
+    /// Keep a different length of window from now on.
+    ///
+    /// The trace is not cleared: the frames already held were flown by the same
+    /// camera and are still a measurement of it — which is the difference
+    /// between this and a rig swap. A window that shrank drops what no longer
+    /// fits on the next frame recorded, from the front, the same way as always.
+    pub fn set_span(&mut self, span: Duration) {
+        self.span = span;
+    }
+
     /// The instant the last frame landed on, on this scope's own clock.
     pub fn at(&self) -> Duration {
         self.at

@@ -1845,6 +1845,11 @@ impl App {
                 self.control.set_rig(rig);
                 self.scope.clear();
             }
+            // The window the metrics are taken over, and not a clear: the
+            // frames already held were flown by the same rig.
+            if let Some(span) = request.scope_span {
+                self.scope.set_span(span);
+            }
             if let Some(always) = request.always_draw {
                 self.always_draw = always;
             }

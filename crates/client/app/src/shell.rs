@@ -173,6 +173,12 @@ pub struct Request {
     pub rig: Option<Rig>,
     /// Start or stop a scripted walk.
     pub script: Option<ScriptRequest>,
+    /// How long a window the scope should keep from now on.
+    ///
+    /// Four seconds holds a reversal and is wrong for both ends of the range a
+    /// scenario can be: a `teleport` is over in one, and a `back_and_forth`
+    /// worth reading is longer than the window that shows it.
+    pub scope_span: Option<Duration>,
     /// Draw at the glide rate whether or not anything is moving.
     ///
     /// The experiment behind the frame panel rather than a setting anybody is
@@ -615,6 +621,24 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         ui.label(egui::RichText::new(&literal).monospace().small());
         if ui.small_button("copy").clicked() {
             ui.ctx().copy_text(literal);
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("scope");
+        let mut span = hud.scope_span.as_secs_f32();
+        // Logarithmic: the useful settings are a second apart at one end and
+        // several seconds apart at the other, and a linear slider spends most
+        // of its length on the end nobody is looking at.
+        if ui
+            .add(
+                egui::Slider::new(&mut span, 0.5..=20.0)
+                    .logarithmic(true)
+                    .suffix(" s"),
+            )
+            .changed()
+        {
+            request.scope_span = Some(Duration::from_secs_f32(span));
         }
     });
 
