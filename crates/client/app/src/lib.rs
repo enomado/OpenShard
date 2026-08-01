@@ -356,6 +356,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
             group: openshard_uofiles::anim::BodyKind::of(400).standing(),
             facing: Direction::SouthEast,
             frame: 0,
+            from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(start),
         },
@@ -2246,6 +2247,10 @@ impl App {
             if let Some(drawn) = self.crowd.drawn_for(*who) {
                 mobile.drawn = drawn;
             }
+            // And which tile it sorts at, which is a step's own clock too: the
+            // crossing ends without a packet to say so, and a body still sorted
+            // on the tile it left would keep drawing over the ground behind it.
+            mobile.from = self.crowd.stepping_from(*who);
         }
         // Whoever the crowd is still holding a line for, hung above whichever
         // of `drawn`'s mobiles their serial belongs to. Read out here, before

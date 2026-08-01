@@ -194,35 +194,22 @@ pub fn collect(
 
 /// The heights of a tile's four corners, in [`GroundQuad::corners`] order.
 ///
-/// A land cell stores one height, and it is the height of the corner the tile
-/// shares with the tiles north of it — the diamond's top. The other three belong
-/// to the neighbours, which is exactly why the ground has no seams in the
-/// client: adjacent tiles do not merely abut, they are stretched over *the same*
-/// vertices, so a gap between them is not expressible.
+/// [`Map::land_corners`] as floats, and the walk itself lives there because the
+/// *server* reads the same four numbers: what a tile's corners are is a fact
+/// about the map, and the height a body stands at on it — the average — has to
+/// be one formula on both sides of the wire or every step up a slope
+/// rubber-bands.
 ///
-/// Off the edge of the map there is no neighbour and the tile's own height
-/// stands in, which flattens the border tiles rather than dropping them off a
-/// cliff into nothing.
+/// `own` stands in for a tile the map has no cell for at all, which is off its
+/// edge: there is nothing to average and nothing to draw, and the caller here
+/// has a cell in hand by construction.
 ///
 /// Public because it is not only the ground pass's: a tile's four corners are
 /// what say how high the tile *is*, and [`crate::cutaway`] has to ask that of
 /// the tile the player is standing on before it can decide what to stop
-/// drawing. One copy of the neighbour walk, not two.
+/// drawing.
 pub fn corner_heights(map: &Map, x: u16, y: u16, own: i8) -> [f32; 4] {
-    let at = |x: Option<u16>, y: Option<u16>| -> f32 {
-        let height = match (x, y) {
-            (Some(x), Some(y)) => map.land(x, y).map_or(own, |cell| cell.z),
-            _ => own,
-        };
-        f32::from(height)
-    };
-    let (east, south) = (x.checked_add(1), y.checked_add(1));
-    [
-        f32::from(own),
-        at(east, Some(y)),
-        at(Some(x), south),
-        at(east, south),
-    ]
+    map.land_corners(x, y).unwrap_or([own; 4]).map(f32::from)
 }
 
 /// Walk a rectangle, clamped to the map, calling back for each cell.

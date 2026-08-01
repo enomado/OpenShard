@@ -151,6 +151,14 @@ struct Step {
     /// The two are the same number when the previous step ended exactly as this
     /// one began, and every millisecond they differ by is a jump on screen.
     from: Option<Gaze>,
+    /// The tile it was standing on when the step began.
+    ///
+    /// The *tile* and not the pixels, which is exactly the distinction
+    /// [`Step::from`] is on the other side of: the picture starts wherever the
+    /// last crossing had got to, and the ordering is a question about grid cells
+    /// with no fractions in it. Read only while the glide is running, so its
+    /// value on a move that was not a step (`from` absent) is never asked for.
+    was: Point,
     /// When it started, on [`Crowd::now`]'s clock: the instant it was heard.
     ///
     /// What is *not* read off the arrival is when it ends — for the body this
@@ -436,6 +444,7 @@ impl Crowd {
             tracked.at = at;
             tracked.step = Some(Step {
                 from: walked.then_some(from),
+                was,
                 started: now,
                 takes,
             });
@@ -474,12 +483,19 @@ impl Crowd {
         tracked.facing = facing.direction;
         tracked.body = body.0;
 
+        // The same answer [`Crowd::stepping_from`] gives, and it has to be given
+        // here too: this mobile is drawn before the next frame re-reads it, and
+        // a step's first frame sorted on the wrong tile is the flicker the
+        // ordering exists to prevent.
+        let stepped_off = tracked.glide(now).and(tracked.step).map(|step| step.was);
+
         Mobile {
             at,
             body: body.0,
             group: tracked.group,
             facing: facing.direction,
             frame: 0,
+            from: stepped_off,
             hue,
             drawn: tracked.drawn,
         }
@@ -544,6 +560,10 @@ impl Crowd {
             group: tracked.group,
             facing: facing.direction,
             frame: 0,
+            // A body put somewhere is standing on the tile it was put on: the
+            // step's `from` was just dropped above, so there is no crossing left
+            // for the order to be between.
+            from: None,
             hue,
             drawn: tracked.drawn,
         }
@@ -573,6 +593,28 @@ impl Crowd {
     /// the tile it would otherwise be given is a guess.
     pub fn drawn_for(&self, who: Who) -> Option<Gaze> {
         Some(self.tracked.get(&who)?.drawn)
+    }
+
+    /// The tile this body is stepping *off*, while it is between two — `None`
+    /// once it has arrived, and for a body this crowd is not tracking.
+    ///
+    /// Asked every frame, like [`Crowd::drawn_for`] and for the same reason: a
+    /// step ends on a clock and nothing arrives to say so. What reads it is the
+    /// renderer's depth order — a sprite mid-step covers both tiles and has to
+    /// sort at the nearer of them (`depth::mobile_tile`).
+    ///
+    /// Tied to the *glide* and not to [`Tracked::step`], which outlives it: the
+    /// animation is deliberately held half a step past the crossing (see
+    /// `animation_hold`), and a body that has landed sorts on the tile it landed
+    /// on. And absent along with the glide for a move that was never a step —
+    /// a gate or a rollback covers no ground between two tiles.
+    pub fn stepping_from(&self, who: Who) -> Option<Point> {
+        let tracked = self.tracked.get(&who)?;
+        // The glide is what says a body is between two tiles at all: it is
+        // absent once the crossing is over, and absent from the start for a move
+        // that was never a step.
+        tracked.glide(self.now)?;
+        Some(tracked.step?.was)
     }
 
     /// Which animation group this body is playing now, in the sub-pixel form
@@ -1124,6 +1166,59 @@ mod tests {
         assert_eq!(step(&mut crowd, 11).group, 0, "still playing the walk");
         crowd.advance(WALK_HOLD / 2);
         assert_eq!(step(&mut crowd, 11).group, 4, "standing");
+    }
+
+    /// The tile a body is stepping off is reported for exactly the crossing:
+    /// from the packet that starts the step to the instant it lands, and not for
+    /// the half step the *animation* goes on playing afterwards.
+    ///
+    /// What reads it is the depth order — a sprite mid-step covers both tiles
+    /// and has to sort at the nearer of them — so the two ends matter for
+    /// different reasons. Report it too early and a standing body sorts a tile
+    /// in front of itself; too late and it keeps drawing over the ground behind
+    /// it after it has arrived.
+    #[test]
+    fn the_tile_being_stepped_off_lasts_exactly_as_long_as_the_crossing() {
+        let mut crowd = Crowd::default();
+        let step = |crowd: &mut Crowd, x: u16| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::SouthEast),
+                Hue::NONE,
+            )
+        };
+        assert_eq!(step(&mut crowd, 10).from, None, "standing still is on one tile");
+
+        let stepped = step(&mut crowd, 11);
+        assert_eq!(
+            stepped.from,
+            Some(Point::new(10, 10, 0)),
+            "the step's first frame is already between two tiles",
+        );
+        crowd.advance(WALK_HOLD / 2);
+        assert_eq!(crowd.stepping_from(serial(1)), Some(Point::new(10, 10, 0)));
+
+        // Landed. The animation is still the walk for half a step more — see
+        // `a_step_is_glided_across_and_ends_on_its_tile` — and the ordering is
+        // deliberately not tied to that.
+        crowd.advance(WALK_HOLD / 2);
+        assert_eq!(crowd.stepping_from(serial(1)), None, "arrived");
+        assert_eq!(step(&mut crowd, 11).group, 0, "though still playing the walk");
+
+        // A body put somewhere it did not walk to crossed nothing.
+        let snapped = crowd.snap(
+            serial(1),
+            Point::new(40, 40, 0),
+            Graphic(PLAYER),
+            Facing::walking(Direction::SouthEast),
+            Hue::NONE,
+        );
+        assert_eq!(snapped.from, None);
+        assert_eq!(crowd.stepping_from(serial(1)), None);
+        // And a body this crowd has never been told about has no tiles at all.
+        assert_eq!(crowd.stepping_from(serial(2)), None);
     }
 
     /// How far along a step south-east from `(10, 10)` the body is drawn, after

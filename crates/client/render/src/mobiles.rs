@@ -60,9 +60,9 @@ pub struct Mobile {
     /// The tile the server put it on — or, mid-step, the one it is going to.
     ///
     /// Everything that is not a pixel reads this and not [`Mobile::drawn`]: the
-    /// depth order, so a body half a tile into a step is already *on* the tile it
-    /// stepped onto as far as anything it can walk behind is concerned; and the
-    /// height a mounted or gliding body is sorted at.
+    /// height the body is sorted at, and — with [`Mobile::from`] — which tile
+    /// depth it sorts at. A step moves the order once, at the boundary, never
+    /// by a fraction.
     pub at: Point,
     /// Its body id.
     pub body: u16,
@@ -77,6 +77,17 @@ pub struct Mobile {
     pub facing: Direction,
     /// Which frame of that animation.
     pub frame: u16,
+    /// The tile it is stepping *off*, while a step is in flight — `None` for a
+    /// body standing still.
+    ///
+    /// Only the depth order reads it, and only through [`depth::mobile_tile`],
+    /// which is where the reason is: a sprite mid-step covers both tiles, so it
+    /// has to sort at the nearer of them or the ground it is walking off is
+    /// drawn over it. Not derived from [`Mobile::drawn`] — an eased body lags
+    /// its tile even when it is standing (`docs/camera.md` D10), so the pixel
+    /// offset cannot tell "walking" from "settling", and this is a question
+    /// about the step and not about the picture.
+    pub from: Option<Point>,
     /// Its hue, or [`Hue::NONE`] for none.
     pub hue: Hue,
     /// Where to actually draw it, sub-pixel and with its height kept apart.
@@ -175,12 +186,12 @@ fn place(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Placemen
     };
     let packed = atlas.frame(key)?;
 
-    // The tile it is going to, not the pixels it is between: a body half a
-    // tile into a step is *on* the tile it stepped onto as far as anything it
-    // can walk behind is concerned, and an order that interpolated would have
-    // a mobile change sides of a wall in the middle of a step.
+    // Tiles and not the pixels it is between: the order steps once, at the tile
+    // boundary, where an interpolated one would have a mobile change sides of a
+    // wall in the middle of a step. Which of the two tiles a step is between is
+    // `depth::mobile_tile`'s to say.
     let order = depth::Order {
-        tile: i32::from(mobile.at.x) + i32::from(mobile.at.y),
+        tile: depth::mobile_tile(mobile.at, mobile.from),
         priority_z: depth::mobile_priority_z(mobile.at.z),
     };
     let at = cell_centre(mobile, camera);
@@ -316,6 +327,7 @@ mod tests {
                 group: 4,
                 facing: Direction::SouthEast,
                 frame: 0,
+                from: None,
                 hue: Hue::NONE,
                 drawn: Gaze::on(Point::new(100, 100, 0)),
             }],
@@ -346,6 +358,7 @@ mod tests {
                     group: 4,
                     facing,
                     frame: 0,
+                    from: None,
                     hue: Hue::NONE,
                     drawn: Gaze::on(Point::new(100, 100, 0)),
                 }],
@@ -384,6 +397,7 @@ mod tests {
             facing: Direction::SouthEast,
             // One past the only frame packed.
             frame: 1,
+            from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
         };
@@ -409,6 +423,7 @@ mod tests {
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
+            from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
         };
@@ -430,6 +445,7 @@ mod tests {
             group: 4,
             facing: Direction::SouthEast,
             frame: 1,
+            from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
         };
@@ -453,6 +469,7 @@ mod tests {
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
+            from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(101, 100, 0)),
         };
@@ -479,6 +496,65 @@ mod tests {
         assert_eq!(mid_step[0].rect.y, standing[0].rect.y - 11.0);
     }
 
+    /// A body walking *up* the screen stays in front of the ground it is
+    /// stepping off, for the whole step.
+    ///
+    /// The symptom this is here for is the one a player reports as sinking
+    /// through the floor: the sprite spans both tiles for the whole crossing,
+    /// and sorting it at the destination — which for a northward step is the
+    /// *farther* tile — hands the tile behind it, and everything standing on
+    /// that tile, the right to be drawn over the walker. It only shows on four
+    /// of the eight headings, which is what makes it read as intermittent.
+    #[test]
+    fn a_body_stepping_north_stays_in_front_of_the_tile_it_is_leaving() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let (north, _) = openshard_uofiles::anim::facing(Direction::North);
+        let atlas = atlas(400, north, 40, 60, (12, -3));
+        let base = depth::base_for(100, 100);
+        // The ground it is walking off, sorted the way `ground::collect` sorts
+        // it: the tile's own depth, and the client's land priority.
+        let ground_left_behind = depth::Order {
+            tile: 200,
+            priority_z: depth::land_priority_z([0; 4]),
+        }
+        .to_depth(base);
+
+        let walking_north = Mobile {
+            at: Point::new(100, 99, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::North,
+            frame: 0,
+            from: Some(Point::new(100, 100, 0)),
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(100, 99, 0)).back_towards(Gaze::on(Point::new(100, 100, 0)), 0.5),
+        };
+        let quads = collect(&[walking_north], &camera, &atlas, &Cutaway::OPEN);
+        assert_eq!(quads.len(), 1);
+        assert!(
+            quads[0].depth < ground_left_behind,
+            "the walker is behind the ground it is stepping off: {} is not nearer than {ground_left_behind}",
+            quads[0].depth,
+        );
+
+        // And once the step is over the body drops back to its own tile, which
+        // is what puts it behind a wall on the tile it just left.
+        let arrived = collect(
+            &[Mobile {
+                from: None,
+                drawn: Gaze::on(Point::new(100, 99, 0)),
+                ..walking_north
+            }],
+            &camera,
+            &atlas,
+            &Cutaway::OPEN,
+        );
+        assert!(
+            arrived[0].depth > quads[0].depth,
+            "the order steps at the boundary"
+        );
+    }
+
     /// Every distinct animation a set of mobiles needs, once each.
     #[test]
     fn the_needed_animations_are_deduplicated_by_stored_direction() {
@@ -488,6 +564,7 @@ mod tests {
             group: 4,
             facing,
             frame: 0,
+            from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(0, 0, 0)),
         };

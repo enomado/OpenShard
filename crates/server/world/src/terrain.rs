@@ -38,14 +38,6 @@ const fn platform_surface(base: i32, height: i32, climbable: bool) -> (i32, i32)
     }
 }
 
-/// The average of two corner heights, floored toward negative infinity — RunUO's
-/// `FloorAverage`. A plain `(a + b) / 2` truncates toward zero, which rounds a
-/// negative slope the wrong way and disagrees with the client by a unit.
-const fn floor_average(a: i32, b: i32) -> i32 {
-    let sum = a + b;
-    if sum < 0 { (sum - 1) / 2 } else { sum / 2 }
-}
-
 /// The real world: ground heights, walls, water.
 ///
 /// Owns its map and tile data rather than borrowing, so the thing handed to
@@ -244,23 +236,15 @@ impl MapTerrain {
     /// `GetAverageZ`, which returns all three. The step check reaches the lowest,
     /// stands on the average, and never looks at the raw stored corner alone.
     fn land_heights(&self, x: u16, y: u16) -> (i32, i32, i32) {
-        let own = self.map.land(x, y).map_or(0, |c| i32::from(c.z));
-        // A missing neighbour (the map's edge) reads as this tile's own height, so
-        // the edge is flat rather than a cliff into z = 0.
-        let z = |nx: u16, ny: u16| self.map.land(nx, ny).map_or(own, |c| i32::from(c.z));
-        let top = own;
-        let left = z(x, y.wrapping_add(1));
-        let right = z(x.wrapping_add(1), y);
-        let bottom = z(x.wrapping_add(1), y.wrapping_add(1));
+        // The corner walk and the average both live on the map, because the
+        // client has to compute the very same numbers: the walk ack carries no
+        // `z`, so each end lands its own step, and two formulas that agree today
+        // are two formulas. Off the map there is no tile and no relief.
+        let corners = self.map.land_corners(x, y).unwrap_or([0; 4]);
+        let avg = i32::from(openshard_uofiles::map::average_corner_z(corners));
+        let [top, right, left, bottom] = corners.map(i32::from);
         let min = top.min(left).min(right).min(bottom);
         let max = top.max(left).max(right).max(bottom);
-        // Average the pair spanning the *gentler* slope — the one whose corners
-        // are closer — so a mobile stands level along the shallow axis.
-        let avg = if (top - bottom).abs() > (left - right).abs() {
-            floor_average(left, right)
-        } else {
-            floor_average(top, bottom)
-        };
         (min, avg, max)
     }
 
@@ -534,17 +518,6 @@ mod tests {
         // A solid platform of the same height is stepped onto at its top, which is
         // out of reach from the ground — you cannot step onto a tall table.
         assert_eq!(platform_surface(0, 10, false), (10, 10));
-    }
-
-    #[test]
-    fn the_land_average_floors_toward_negative_infinity() {
-        // RunUO's FloorAverage, the rule the client rounds a slope by: a plain
-        // truncating divide would round -3 and -4 to -3 (toward zero); the client
-        // and this floor both give -4.
-        assert_eq!(floor_average(4, 6), 5);
-        assert_eq!(floor_average(-3, -4), -4);
-        assert_eq!(floor_average(0, -1), -1);
-        assert_eq!(floor_average(-10, 10), 0);
     }
 
     /// Point `OPENSHARD_CLIENT` at a UO client install to run these.

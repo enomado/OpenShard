@@ -1175,6 +1175,48 @@ own understanding had written.
   indistinguishable from a mobile that failed to draw — it cost a debugging pass
   here. Whatever eventually feeds `WorldView` into this will get the height from
   the server and be fine; `client/app` reads it from the map.
+
+  *And read it from the wrong place, which is the second half of the same
+  entry.* A land cell stores **one** height and it is the diamond's northern
+  vertex, not the height of the tile: a body stands at the average of the four
+  corners (`Map::average_land_z`, RunUO's `GetAverageZ`, ClassicUO's
+  `Land.AverageZ`). `link.rs` predicted each step's `z` from the raw corner while
+  `MapTerrain::ground_z` on the server had always used the average — the two ends
+  each land their own step because a `0x22` carries no `z`, so the disagreement
+  was silent and permanent, up to the whole relief of a tile. On a slope that
+  draws the character sunk into the hillside *and* behind it: the ground's own
+  depth is that same average less two, so once the body's `z + 1` falls under it
+  the land is not merely near the walker, it is in front of him. One formula now,
+  on the map where both sides can reach it, with the corner walk beside it.
+- **A body between two tiles sorts at the nearer of them, and taking the
+  destination is wrong for half the compass.** `View.CalculateDepthZ` hides the
+  rule behind eight arms of a `switch` over the sprite's drift, because the
+  reference keeps `Mobile.X/Y` on the tile a step *started* from until the step
+  lands. Read whole, the eight arms are `max(from, to)` — plus one where the two
+  are equal, which is the north-east/south-west pair that moves straight across
+  the screen. Sorting at the destination unconditionally is that maximum only for
+  the four headings that go *down* the screen; for north, west and north-west the
+  destination is the farther tile, so the ground being stepped off — and every
+  wall standing on it — was drawn over the walker for the length of the step.
+  `depth::mobile_tile` is the rule, `Mobile::from` is what it needs, and
+  `Crowd::stepping_from` is where a step's clock decides it: tied to the *glide*
+  and not to `Tracked::step`, which outlives the crossing by the half step the
+  animation is deliberately held for.
+- **`CalculateDepthZ`'s `z += max(0, Offset.Z)` is not ported.** The reference
+  raises a body's priority by its mid-step *height* offset, on the east and south
+  arms only. Two of eight is the kind of asymmetry that is either load-bearing or
+  a leftover, and nothing here can tell which without stairs to walk up; the tile
+  half of the ordering is ported and this is not. Revisit when a body first walks
+  a staircase facing east.
+- **A tile with no texmap is stretched here and flat in the reference, and that
+  now reaches the *ordering* too.** `ground.wgsl` already records the divergence
+  in what is drawn. What is new is that `Land.ApplyStretch` gives such a tile
+  `AverageZ = MinZ = z` — the raw corner — so ClassicUO both draws it flat and
+  sorts it at the corner, where we draw it stretched and sort it at the average.
+  Ours agrees with the *server*, which is the agreement that matters for where a
+  body stands; but a client-side height that disagreed with the reference client
+  on the same map is worth knowing about before the flat/stretched decision is
+  ever revisited.
 - **Two sprite passes mean two atlases and two pipelines.** They are the same
   pipeline built twice, which is the cost of a draw call binding one texture. If
   a third sprite layer arrives — equipment — it is worth asking whether one

@@ -1373,6 +1373,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
                 group: 4,
                 facing,
                 frame: 0,
+                from: None,
                 hue: openshard_protocol::wire::Hue::NONE,
                 drawn: openshard_client_render::follow::Gaze::on(centre),
             }],
@@ -1823,22 +1824,27 @@ fn dump_a_frame_of_britain() {
         .enumerate()
         .map(|(index, facing)| {
             let (x, y) = (centre.x - 3 + index as u16 % 4, centre.y - 3 + index as u16 / 4);
+            // On the ground rather than at the camera's height: a mobile
+            // standing below the terrain is *correctly* hidden by it, which is
+            // what the first run of this dump showed.
+            //
+            // The tile's average and not its stored corner, which is where a
+            // body actually stands (`Map::average_land_z`): the corner is the
+            // diamond's northern vertex, and on a slope standing at it is
+            // standing under the floor — the ground sorts at that same average,
+            // less two, so it is drawn over the body rather than beside it.
+            let ground = Point::new(x, y, map.average_land_z(x, y).expect("inside the facet"));
             Mobile {
-                // On the ground rather than at the camera's height: a mobile
-                // standing below the terrain is *correctly* hidden by it, which
-                // is what the first run of this dump showed.
-                at: Point::new(x, y, map.land(x, y).expect("inside the facet").z),
+                at: ground,
                 body: 400,
                 group: 4,
                 facing: *facing,
                 frame: 0,
+                // Standing, so there is no second tile to sort between.
+                from: None,
                 hue: openshard_protocol::wire::Hue::NONE,
                 // Standing where the server put them: nothing here is walking.
-                drawn: openshard_client_render::follow::Gaze::on(Point::new(
-                    x,
-                    y,
-                    map.land(x, y).expect("inside the facet").z,
-                )),
+                drawn: openshard_client_render::follow::Gaze::on(ground),
             }
         })
         .collect();

@@ -497,6 +497,74 @@ impl Map {
     pub fn ground(&self, x: u16, y: u16) -> Option<Point> {
         self.land(x, y).map(|cell| Point::new(x, y, cell.z))
     }
+
+    /// The heights of a land tile's four corners: top, right, left, bottom —
+    /// `(x, y)`, `(x+1, y)`, `(x, y+1)`, `(x+1, y+1)`.
+    ///
+    /// A land cell stores *one* height, and it is the corner the tile shares
+    /// with the tiles north of it. The other three belong to the neighbours,
+    /// which is why the ground has no seams: adjacent tiles do not merely abut,
+    /// they are stretched over *the same* vertices, so a gap between them is not
+    /// expressible.
+    ///
+    /// Off the edge of the map there is no neighbour and the tile's own height
+    /// stands in, which flattens the border rather than dropping it off a cliff
+    /// into `z = 0`.
+    pub fn land_corners(&self, x: u16, y: u16) -> Option<[i8; 4]> {
+        let own = self.land(x, y)?.z;
+        let at = |x: Option<u16>, y: Option<u16>| match (x, y) {
+            (Some(x), Some(y)) => self.land(x, y).map_or(own, |cell| cell.z),
+            _ => own,
+        };
+        let (east, south) = (x.checked_add(1), y.checked_add(1));
+        Some([own, at(east, Some(y)), at(Some(x), south), at(east, south)])
+    }
+
+    /// The height a body stands at on the land tile at `(x, y)` — the *average*
+    /// of the four corners, not the raw north corner the cell stores.
+    ///
+    /// **Whoever asks where a character is standing asks this, on both sides of
+    /// the wire.** A land tile is a sloped diamond and you stand in the middle
+    /// of one; the raw corner is up to a tile's whole relief away from that. The
+    /// walk ack (`0x22`) carries no `z`, so the server and the client each
+    /// compute one, and a client that used the corner would draw its own body
+    /// buried in the hillside — the ground's draw order is this same average,
+    /// less two (`crate::tiledata` has no say in it; see the client's
+    /// `depth::land_priority_z`), so the tile is not merely near the body, it is
+    /// *in front of* it.
+    ///
+    /// Ported from RunUO's `Map.GetAverageZ`, which ClassicUO's `Land.AverageZ`
+    /// agrees with: average the pair spanning the *gentler* slope, so a body
+    /// stands level along the shallow axis.
+    pub fn average_land_z(&self, x: u16, y: u16) -> Option<i8> {
+        self.land_corners(x, y).map(average_corner_z)
+    }
+}
+
+/// [`Map::average_land_z`]'s arithmetic, for a caller that already has the four
+/// corners and would otherwise read them a second time.
+///
+/// `corners` is [`Map::land_corners`] order: top, right, left, bottom.
+pub fn average_corner_z(corners: [i8; 4]) -> i8 {
+    let [top, right, left, bottom] = corners.map(i32::from);
+    let average = if (top - bottom).abs() > (left - right).abs() {
+        floor_average(left, right)
+    } else {
+        floor_average(top, bottom)
+    };
+    // Every input is an `i8` and the mean of two of them is one: no branch here
+    // can leave the range, so the conversion cannot fail.
+    i8::try_from(average).unwrap()
+}
+
+/// The mean of two heights, floored towards minus infinity.
+///
+/// `>> 1` and not `/ 2`: they differ for an odd negative sum, which is every
+/// other tile of a dungeon floor, and the client floors. Getting this wrong puts
+/// a body one unit — four pixels — off the surface it is standing on, on half
+/// the tiles underground.
+const fn floor_average(a: i32, b: i32) -> i32 {
+    (a + b) >> 1
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, MapError> {
@@ -826,6 +894,65 @@ mod tests {
             .map(|(x, y)| built.land(x, y).unwrap().tile)
             .collect();
         assert_eq!(distinct.len(), 16 * 16);
+    }
+
+    /// A tile's corners are its own height and its three neighbours', and the
+    /// map's edge is flat rather than a cliff into zero.
+    #[test]
+    fn a_tiles_corners_are_its_neighbours_own_heights() {
+        // A ramp running south-east: z is x + y.
+        let map = Map::from_blocks(1, 1, |x, y| LandCell {
+            tile: 3,
+            z: (x + y) as i8,
+        });
+        assert_eq!(map.land_corners(2, 3), Some([5, 6, 6, 7]));
+        // The far corner of the facet has no eastern or southern neighbour, so
+        // all four corners are its own height.
+        assert_eq!(map.land_corners(7, 7), Some([14; 4]));
+        assert_eq!(map.land_corners(8, 0), None, "off the map is not a tile");
+    }
+
+    /// The height a body stands at, and the two halves of it that are easy to
+    /// get wrong: which axis is averaged, and which way the halving rounds.
+    ///
+    /// Both sides of the wire compute this and neither is told the other's
+    /// answer — the walk ack carries no `z` — so a unit of disagreement is a
+    /// step the server refuses for no reason the player can see.
+    #[test]
+    fn a_body_stands_at_the_average_of_the_gentler_axis() {
+        // Steep top-to-bottom (10), gentle left-to-right (2): the gentle pair is
+        // the one averaged.
+        assert_eq!(average_corner_z([0, 4, 6, 10]), 5);
+        // And the other way round, with the same numbers transposed.
+        assert_eq!(average_corner_z([0, 10, 0, 2]), 1);
+        // Flat ground is its own height whichever branch is taken.
+        assert_eq!(average_corner_z([-7; 4]), -7);
+        // RunUO's `FloorAverage`: a truncating divide would give -3 here, half a
+        // unit above where the client draws the floor. Every other tile of a
+        // dungeon is an odd negative pair.
+        assert_eq!(average_corner_z([-3, 10, 0, -4]), -4);
+        assert_eq!(average_corner_z([0, 9, 3, -1]), -1);
+        assert_eq!(average_corner_z([-10, 0, 0, 10]), 0);
+    }
+
+    /// And the map's own accessor is that formula over its own corners, so a
+    /// caller that has coordinates and a caller that has heights cannot drift.
+    #[test]
+    fn the_maps_average_is_the_average_of_its_corners() {
+        let map = Map::from_blocks(1, 1, |x, y| LandCell {
+            tile: 3,
+            z: ((x * 3) as i8).wrapping_sub((y * 2) as i8),
+        });
+        for y in 0..8u16 {
+            for x in 0..8u16 {
+                assert_eq!(
+                    map.average_land_z(x, y),
+                    map.land_corners(x, y).map(average_corner_z),
+                    "({x}, {y})",
+                );
+            }
+        }
+        assert_eq!(map.average_land_z(99, 0), None);
     }
 
     /// Every tile is asked for, once, by world coordinate — which is the contract

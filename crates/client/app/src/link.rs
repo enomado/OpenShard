@@ -286,7 +286,14 @@ async fn play<D: Dial>(
                         // is hidden by it — which looks exactly like one that failed to
                         // draw. The server lands the step on the ground and says
                         // nothing, since a `0x22` carries no position.
-                        match walk.step(facing, |x, y| map.land(x, y).map(|cell| cell.z)) {
+                        //
+                        // The tile's *average* and not the cell's stored corner,
+                        // which is the same number the shard's own `ground_z`
+                        // computes: on a slope the two differ by most of the
+                        // tile's relief, and a body predicted at the corner is
+                        // drawn sunk into the hill *and* sorted behind it — the
+                        // ground's own depth is that average, less two.
+                        match walk.step(facing, |x, y| map.average_land_z(x, y)) {
                             Ok(bytes) => {
                                 // The body moves *now*, on this end's own
                                 // prediction, rather than a round trip later
