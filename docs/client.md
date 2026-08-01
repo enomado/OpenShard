@@ -1577,12 +1577,80 @@ own understanding had written.
   3. `steer.rs`'s greedy route becomes `openshard_movement::find_path` — already
      A\* with a Chebyshev heuristic over the same `Terrain` — and `STUCK_STEPS`
      stops being the only answer to a wall.
-  4. A rollback tells `Steering`, which it currently does not: the facing it
-     believes it asked for (`Steering::asked`) survives a `0x21` that turned the
-     body somewhere else, and the step after a rollback is then mis-timed as a
-     turn or mis-timed as not one. `link::Body::corrected` already carries the
-     event to `App`; it just has nowhere to go from there.
+  4. ~~A rollback tells `Steering`, which it currently does not.~~ Done with the
+     queue rule below: `Steering::corrected` takes the shard's facing and
+     `App::entered` calls it whenever `link::Body::corrected` is set.
   5. A cap on steps in flight, with the reference's five as the number.
+
+- ~~**An input takes a step whenever it arrives, and the step under way is cut
+  short.**~~ Fixed, and the rule it was fixed with is worth stating on its own
+  because everything about walking now depends on it:
+
+  > **An input joins the queue or rebuilds it. A step already begun ticks out.**
+
+  Two complaints, one defect. Walking east and pressing west mid-stride jumped
+  the camera; mashing the arrows sent the body flying off its own position and
+  being dragged back. Both were `Steering` sending a step at the moment an input
+  arrived rather than at the moment the walk was free for one — a turn costs the
+  shard nothing, so the turn *and the step behind it* went out on every press,
+  and a release disarmed the clock entirely, so press-release-press bought a step
+  per tap.
+
+  Three things go wrong at once when a step leaves early, which is why the rule is
+  one rule and not three fixes:
+
+  - **The picture.** `crowd.rs` starts each glide at the tile the *previous* step
+    ended on, so a step issued half a hold early yanks the body forward to a tile
+    it has not reached — half a tile in one frame — and the camera is locked to
+    the drawn body, so the world jumps with it.
+  - **The pace.** The shard's `WalkPace` refuses a body asking for steps faster
+    than a body walks and answers `0x21`, which is the flying-off-and-being-
+    dragged-back.
+  - **The wire.** That rollback races the steps still in flight; their acks arrive
+    for a sequence this end has forgotten, and `Walk::on_packet` calls that an
+    `UnexpectedAck`. `link.rs` treats one as fatal, so a determined key-masher
+    could *drop their own connection* — see the backlog below.
+
+  The mechanism is small: `Steering::due` stops being "the walk is running" and
+  becomes a floor that nothing clears, `Steering::free` is the one gate every ask
+  goes through, and a turn no longer moves the deadline — it leaves in the same
+  wake as the step it precedes and that step is what charges the clock, so the
+  pair is one ask against the floor. What the queue *is* is `Steering::take`
+  reading the keys at the moment the step leaves rather than when they were
+  pressed: one step deep, rebuilt by every press for nothing.
+
+  The oracle in `dst.rs` gained the same rule — a press while a step is under way
+  moves no knot — and four scenarios hold the picture to it: the reversal, twenty
+  reversals at 270ms so every phase of a step is interrupted, thirty presses a
+  second through three directions, and one arrow tapped. Two assertions beyond
+  the corridor, because a corridor is blind to a jump forwards and back inside
+  it: `continuous` bounds how far the drawn body may move between two frames by
+  what a walk covers in that time, and `paced` bounds how close together two
+  crossings may be asked for. All four failed before the fix, by 0.5 tiles, 1.89
+  tiles, a dropped connection and 0.74 tiles respectively.
+
+  One trap found on the way, and it is the reason `Steering::walking` exists: the
+  next step is measured from the *deadline* rather than from the wake, which is
+  what stops a late loop accumulating drift — but a deadline that came and went
+  with the arrows up is not a cadence. Measuring from it made the step after a
+  fresh press due a fraction of a hold later, which cut the glide short and
+  jumped the body exactly like the defect being fixed. A deadline is only a
+  cadence if a step was taken at it.
+
+- **An ack that arrives after a rollback ends the session.** Found by the
+  key-mashing scenario in `dst.rs` before the queue rule fixed the flood that
+  provoked it: a `0x21` voids everything in flight and resets both sequences, but
+  the steps already on the wire are still answered, so a `0x22` lands for a
+  sequence this end has forgotten. `Walk::acked` correctly refuses to guess which
+  step was meant and returns `UnexpectedAck` — and `link.rs`'s `play` turns any
+  error out of `fold` into `Update::Lost`, so the window disconnects. The race is
+  latency-shaped and not flood-shaped: one refused step with two more in flight
+  is enough, and a wall plus 150ms is enough to produce it. ClassicUO's answer is
+  the right one and is already read out above — an ack it is not waiting on sets
+  `WalkingFailed` and asks for a resync, and nothing is sent until the resync
+  lands. What we need is the same shape: `Moved` gains a variant for it, `Walk`
+  stops walking until the server speaks, and only a *protocol* error stays fatal.
+  A desync is a thing to recover from, not a reason to close a window.
 
 - **The walk has no home.** Two of those three defects lived *between*
   `App::user_event` and `App::about_to_wait` rather than in any of the four units

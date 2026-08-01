@@ -1187,6 +1187,15 @@ impl App {
         // Said every update rather than once, because the serial is the shard's
         // to name and nothing here is told when it does.
         self.crowd.commanding(me);
+        // A rollback is also the one thing that makes `steer.rs`'s idea of which
+        // way this body was last sent a lie — it is a step ahead of the shard on
+        // purpose, and a refusal is the shard saying that step never happened.
+        // Left uncorrected, the step after a `0x21` is decided against a facing
+        // nobody has: it is timed as a turn when it is a step, or as a step when
+        // it is a turn, and either is a beat of the walk in the wrong place.
+        if body.corrected {
+            self.steer.corrected(body.predicted.facing.direction);
+        }
         self.player = match body.corrected {
             true => self.crowd.snap(
                 me,

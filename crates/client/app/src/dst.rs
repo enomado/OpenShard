@@ -19,6 +19,13 @@
 //! built from the script of inputs alone — it never sees a packet, a clock or a
 //! `Crowd` — and it is deliberately the simplest kinematics that could be right.
 //!
+//! It has exactly one rule beyond that, and it is the queue rule the client
+//! obeys (`steer.rs`, and `docs/client.md`): a press *while a step is under way*
+//! moves no knot. It changes which way the step already owed will go, and that
+//! step leaves at the deadline it always had. Without it the oracle would demand
+//! a body that changes direction mid-tile, which is not a thing a grid walk can
+//! do — the client that tried to give it one is what jumped the camera.
+//!
 //! The **event** timeline is everything below: a step is asked for when the
 //! event loop happens to wake, crosses an mpsc to the net task, is predicted,
 //! crosses back, and is glided over whatever [`crate::crowd::glide_time`] made
@@ -99,8 +106,8 @@ fn me() -> Who {
 enum Input {
     /// An arrow went down.
     Press(Direction),
-    /// The held arrow came up.
-    Release,
+    /// An arrow came up.
+    Release(Direction),
     /// Shift went down or came up.
     Running(bool),
 }
@@ -123,10 +130,10 @@ const fn press(millis: u64, direction: Direction) -> Act {
 }
 
 /// A release at `millis`.
-const fn release(millis: u64) -> Act {
+const fn release(millis: u64, direction: Direction) -> Act {
     Act {
         at: Duration::from_millis(millis),
-        input: Input::Release,
+        input: Input::Release(direction),
     }
 }
 
@@ -159,9 +166,15 @@ impl Oracle {
     ///
     /// The rules, all of them:
     ///
-    /// - a press takes a step *now* and the next is due a hold later — waiting a
-    ///   whole step before the first one would put 400ms between the player and
-    ///   their character, which is the thing this whole file exists to refuse;
+    /// - a press *while the body is standing* takes a step now, and the next is
+    ///   due a hold later — waiting a whole step before the first one would put
+    ///   400ms between the player and their character, which is the thing this
+    ///   whole file exists to refuse;
+    /// - a press *while a step is under way* takes no step at all. It changes
+    ///   which way the step already owed will go, and that step still leaves at
+    ///   the deadline the walk already had. This is the queue rule: an input
+    ///   rebuilds what is asked for next and never cuts short what is being
+    ///   walked — see `docs/client.md`;
     /// - every step crosses one tile over one hold at a constant speed,
     ///   whichever way the body was facing when it was asked for — a turn is a
     ///   packet, not a delay (see the module docs);
@@ -192,8 +205,17 @@ impl Oracle {
 
             if next_act == Some(now) {
                 match acts.next().unwrap().input {
-                    Input::Press(direction) => held = Some(direction),
-                    Input::Release => {
+                    Input::Press(direction) => {
+                        held = Some(direction);
+                        // The queue rule: a step already under way is not cut
+                        // short. The press says which way the step the walk
+                        // already owes will go, and that one leaves when it was
+                        // always going to.
+                        if due.is_some_and(|step| step > now) {
+                            continue;
+                        }
+                    }
+                    Input::Release(_) => {
                         held = None;
                         due = None;
                         continue;
@@ -360,6 +382,14 @@ struct Sim {
 
     /// How many steps the shard refused, for the assertions.
     refused: u32,
+    /// When each step that *moved the body* was asked for.
+    ///
+    /// Turns are deliberately not counted: a turn covers no ground, costs the
+    /// shard nothing, and leaves in the same wake as the step it precedes — so a
+    /// cadence measured over both would read every direction change as two steps
+    /// in one instant. What the pace budget and the player's eye both care about
+    /// is the gap between two *crossings*.
+    stepped_at: Vec<Duration>,
     /// Where the body was *drawn*, every frame.
     trace: Vec<(Duration, (f64, f64))>,
 }
@@ -389,6 +419,7 @@ impl Sim {
             next_tick: Duration::ZERO,
             last_advance: Duration::ZERO,
             refused: 0,
+            stepped_at: Vec::new(),
             trace: Vec::new(),
         }
     }
@@ -443,7 +474,7 @@ impl Sim {
                             self.send(facing);
                         }
                     }
-                    Input::Release => self.steering.clear(),
+                    Input::Release(direction) => self.steering.release(direction),
                     Input::Running(shift) => self.steering.set_running(shift),
                 }
             }
@@ -500,6 +531,11 @@ impl Sim {
             // frame and the *next* crossing is measured from there.
             self.crowd.advance(self.now - self.last_advance);
             self.last_advance = self.now;
+            // `App::entered`: a rollback is what makes the steering's idea of
+            // the facing it asked for a lie, and it is told so.
+            if corrected {
+                self.steering.corrected(predicted.facing.direction);
+            }
             // `App::entered`, for our own body.
             self.player = match corrected {
                 true => self
@@ -555,9 +591,13 @@ impl Sim {
     /// — they are a channel between two threads of one process — but modelled,
     /// because the *order* they impose is real.
     fn send(&mut self, facing: Facing) {
+        let before = self.walk.predicted().position;
         // No map, so no height: `|_, _| None` is what a caller without one
         // passes, and the flat prediction is the honest answer.
         let bytes = self.walk.step(facing, |_, _| None).unwrap();
+        if self.walk.predicted().position != before {
+            self.stepped_at.push(self.now);
+        }
         let at = self.now + self.hop();
         self.to_shard.push_back((at, bytes));
         self.to_window.push_back((self.now, self.walk.predicted(), false));
@@ -614,9 +654,59 @@ fn tracks(sim: &Sim, oracle: &Oracle, tiles: f64) {
     );
 }
 
+/// Assert the drawn body never moved faster than a body walks.
+///
+/// The complaint this exists for is a *jump*: the camera is locked to the drawn
+/// body, so a body that changes tile between two frames without walking there
+/// takes the whole world with it. A corridor around the oracle does not catch
+/// one on its own — a jump forwards and a jump back can both sit inside it — and
+/// this does: a walk covers one tile per `hold`, so between two frames `dt`
+/// apart no axis may move further than `dt / hold`.
+///
+/// Per axis rather than as a distance, because a diagonal step covers a whole
+/// tile on both axes in one hold and a Euclidean bound would have to be widened
+/// by `sqrt(2)` for it — which is exactly enough slack to hide a jump on a
+/// straight one.
+///
+/// Not for the rollback scenarios: a correction *is* a jump, deliberately, and
+/// it has its own assertions.
+#[track_caller]
+fn continuous(sim: &Sim, hold: Duration) {
+    for pair in sim.trace.windows(2) {
+        let ((before, was), (when, now)) = (pair[0], pair[1]);
+        let dt = (when - before).as_secs_f64();
+        // A frame's worth of walking, and a fiftieth of a tile for the arithmetic.
+        let allowed = dt / hold.as_secs_f64() + 0.02;
+        let moved = (now.0 - was.0).abs().max((now.1 - was.1).abs());
+        assert!(
+            moved <= allowed,
+            "the body jumped {moved:.4} tiles between {before:?} and {when:?}, \
+             which is more than the {allowed:.4} a walk covers in that time"
+        );
+    }
+}
+
+/// Assert no two crossings were asked for closer together than `hold`.
+///
+/// The other half of the queue rule, and the one the shard sees: a step that
+/// leaves early is one the pace budget has not paid for, and enough of them is a
+/// `0x21` and a body yanked backwards. Measured on the asks rather than on the
+/// acks, because this is the client's own cadence and it must be right before
+/// the wire is involved.
+#[track_caller]
+fn paced(sim: &Sim, hold: Duration) {
+    for pair in sim.stepped_at.windows(2) {
+        let gap = pair[1] - pair[0];
+        assert!(
+            gap + Duration::from_millis(1) >= hold,
+            "two steps left {gap:?} apart, which is faster than the {hold:?} a body walks"
+        );
+    }
+}
+
 /// Ten steps east, held from the first millisecond.
 fn ten_steps_east() -> Vec<Act> {
-    vec![press(0, Direction::East), release(4_000)]
+    vec![press(0, Direction::East), release(4_000, Direction::East)]
 }
 
 // --- The scenarios ---------------------------------------------------------
@@ -660,6 +750,8 @@ fn ten_steps_on_a_perfect_wire_are_the_oracle() {
     sim.run(&script, until);
 
     tracks(&sim, &oracle, 0.02);
+    continuous(&sim, WALK_HOLD);
+    paced(&sim, WALK_HOLD);
     assert_eq!(sim.refused, 0, "an open field refuses nothing");
     assert_eq!(sim.shard.position, Point::new(1010, 1000, 0));
 }
@@ -700,7 +792,7 @@ fn running_the_whole_way_is_never_refused_as_a_speedhack() {
             input: Input::Running(true),
         },
         press(0, Direction::East),
-        release(4_000),
+        release(4_000, Direction::East),
     ];
     let until = Duration::from_millis(4_000);
     let oracle = Oracle::build(START, &script, until);
@@ -750,9 +842,9 @@ fn a_walk_that_starts_with_a_turn_leaves_at_once() {
 fn a_walk_that_turns_tracks_the_oracle_through_the_turn() {
     let script = vec![
         press(0, Direction::East),
-        release(2_000),
+        release(2_000, Direction::East),
         press(2_000, Direction::SouthEast),
-        release(4_800),
+        release(4_800, Direction::SouthEast),
     ];
     let until = Duration::from_millis(4_800);
     let oracle = Oracle::build(START, &script, until);
@@ -780,7 +872,7 @@ fn wake_up_jitter_does_not_accumulate() {
     // whole tile by the fortieth. A corridor a walk of ten fits down is not an
     // assertion about drift.
     let until = Duration::from_millis(16_000);
-    let script = vec![press(0, Direction::East), release(16_000)];
+    let script = vec![press(0, Direction::East), release(16_000, Direction::East)];
     let oracle = Oracle::build(START, &script, until);
     let late = Duration::from_millis(20);
     for seed in 0..8 {
@@ -854,5 +946,184 @@ fn a_refusal_puts_the_body_back_without_walking_it_back() {
     assert!(
         sim.trace.iter().all(|(_, drawn)| drawn.0 <= 1004.0),
         "drawn past the wall"
+    );
+}
+
+// --- The queue rule --------------------------------------------------------
+//
+// Two complaints, one rule. Walking east and pressing west mid-stride jumped the
+// camera, and mashing the arrows sent the body flying off its own position and
+// being dragged back. Both are the same defect: an input was allowed to take a
+// step *now*, whenever it arrived, cutting short the step already being walked
+// and paying nothing into the pace budget for the privilege.
+//
+// The rule, and the thing these scenarios assert: an input goes into the queue
+// or rebuilds it, and a step already begun ticks out. See `docs/client.md`.
+
+/// The reversal, exactly as reported: walking east, west pressed halfway
+/// through the second step.
+///
+/// What must happen is one smooth step east and then one smooth step west: the
+/// step under way finishes on its own tile, and the reversal leaves at the
+/// deadline that step always had. What must not happen — and what did — is the
+/// body being yanked to the tile it had not reached yet so that the new step can
+/// start from there, which moves it half a tile in one frame and takes the
+/// camera with it.
+#[test]
+fn a_reversal_lets_the_step_under_way_finish() {
+    let script = vec![
+        press(0, Direction::East),
+        press(600, Direction::West),
+        release(2_400, Direction::West),
+    ];
+    let until = Duration::from_millis(2_400);
+    let oracle = Oracle::build(START, &script, until);
+    let net = Net {
+        latency: Duration::from_millis(120),
+        jitter: Duration::from_millis(30),
+        wake_jitter: Duration::ZERO,
+    };
+    let mut sim = Sim::new(Direction::East, net, 2, Vec::new());
+    sim.run(&script, until);
+
+    tracks(&sim, &oracle, 0.02);
+    continuous(&sim, WALK_HOLD);
+    paced(&sim, WALK_HOLD);
+    assert_eq!(
+        sim.refused, 0,
+        "a reversal at the walking rate is not a speedhack"
+    );
+}
+
+/// The same reversal, back and forth, over and over — which is what a player
+/// does when they are testing the feel of it, and what produced the complaint.
+///
+/// Every press lands at a different phase of the step it interrupts, so this is
+/// the phase sweep of the scenario above: a rule that only holds when the press
+/// happens to arrive near a tile boundary fails here.
+#[test]
+fn walking_back_and_forth_never_jumps_the_camera() {
+    let mut script = Vec::new();
+    let mut direction = Direction::East;
+    // 270ms: deliberately not a divisor of the 400ms hold, so the presses walk
+    // through every phase of a step rather than landing on the same one.
+    for tick in 0..20 {
+        script.push(press(270 * tick, direction));
+        direction = match direction {
+            Direction::East => Direction::West,
+            _ => Direction::East,
+        };
+    }
+    let until = Duration::from_millis(270 * 20);
+    let oracle = Oracle::build(START, &script, until);
+    let net = Net {
+        latency: Duration::from_millis(90),
+        jitter: Duration::from_millis(20),
+        wake_jitter: Duration::ZERO,
+    };
+    let mut sim = Sim::new(Direction::East, net, 4, Vec::new());
+    sim.run(&script, until);
+
+    tracks(&sim, &oracle, 0.02);
+    continuous(&sim, WALK_HOLD);
+    paced(&sim, WALK_HOLD);
+    assert_eq!(sim.refused, 0);
+}
+
+/// The mash: the arrows hammered at thirty presses a second, which is faster
+/// than any walk and is what a player does to a client they suspect.
+///
+/// The oracle has nothing to say about which tile the body ends on — that
+/// depends on which way the last press before each deadline pointed — so what is
+/// asserted is what the complaint was: the body never outruns a walk, never
+/// jumps, and is never refused. A refusal here would be the shard's pace budget
+/// catching the client asking for more steps than a body can take, and the
+/// rollback that follows it is the "flying away and being dragged back" that was
+/// reported.
+#[test]
+fn mashing_the_arrows_never_outruns_a_walk() {
+    let mut script = Vec::new();
+    let mut direction = Direction::East;
+    for tick in 0..90 {
+        script.push(press(33 * tick, direction));
+        direction = match direction {
+            Direction::East => Direction::SouthEast,
+            Direction::SouthEast => Direction::South,
+            _ => Direction::East,
+        };
+    }
+    let until = Duration::from_millis(4_000);
+    let net = Net {
+        latency: Duration::from_millis(100),
+        jitter: Duration::from_millis(40),
+        wake_jitter: Duration::ZERO,
+    };
+    for seed in 0..4 {
+        let mut sim = Sim::new(Direction::East, net, seed, Vec::new());
+        sim.run(&script, until);
+
+        continuous(&sim, WALK_HOLD);
+        paced(&sim, WALK_HOLD);
+        assert_eq!(
+            sim.refused, 0,
+            "seed {seed}: the client asked for more steps than a body can take"
+        );
+        // Ten holds in four seconds, and a body covers one tile in each. The
+        // Chebyshev distance is the map's own — a diagonal is one step — so a
+        // walk that stayed inside its cadence cannot be further than that from
+        // where it started, however the presses were ordered.
+        let travelled = i64::from(sim.shard.position.x)
+            .abs_diff(i64::from(START.x))
+            .max(i64::from(sim.shard.position.y).abs_diff(i64::from(START.y)));
+        assert!(
+            travelled <= 10,
+            "seed {seed}: {travelled} tiles in four seconds, which is more than ten holds of walking"
+        );
+    }
+}
+
+/// One arrow tapped rather than held: press, release, press, release, faster
+/// than the walk.
+///
+/// A separate scenario because a release used to *disarm the clock*, so the tap
+/// after it was treated as the first ask of a fresh walk and left at once — the
+/// rate floor was there and a player could step over it by letting go of the
+/// key. The floor has to outlive the release; what it must not do is outlive the
+/// walk itself, so the last assertion is that a body which stops for a second
+/// sets off immediately when the arrow goes down again.
+#[test]
+fn tapping_one_arrow_is_not_a_step_per_tap() {
+    let mut script = Vec::new();
+    for tick in 0..24 {
+        script.push(press(120 * tick, Direction::East));
+        script.push(release(120 * tick + 60, Direction::East));
+    }
+    let until = Duration::from_millis(4_000);
+    let mut sim = Sim::new(Direction::East, Net::default(), 6, Vec::new());
+    sim.run(&script, until);
+
+    continuous(&sim, WALK_HOLD);
+    paced(&sim, WALK_HOLD);
+    assert_eq!(sim.refused, 0, "a tapped arrow is not a speedhack either");
+
+    // And the floor is a floor and not a lockout: a walk that has genuinely
+    // stopped leaves on the next press, in the same millisecond.
+    let mut sim = Sim::new(Direction::East, Net::default(), 6, Vec::new());
+    let script = vec![
+        press(0, Direction::East),
+        release(60, Direction::East),
+        press(2_000, Direction::East),
+        release(2_060, Direction::East),
+    ];
+    sim.run(&script, Duration::from_millis(2_400));
+    assert_eq!(
+        sim.stepped_at.len(),
+        2,
+        "two presses two seconds apart are two steps"
+    );
+    assert_eq!(
+        sim.stepped_at[1],
+        Duration::from_millis(2_000),
+        "and the second is not held back"
     );
 }
