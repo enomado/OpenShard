@@ -235,7 +235,8 @@ checked.
 - the **DST sim** drives the real `steer.rs`, `Walk`, `Crowd` and a shard over a
   wire with latency and jitter on it, and feeds the camera what actually came
   out;
-- the **playground** (C4) will replay an input script in the window.
+- the **window** replays a script's *knots* as events into the real `Crowd`
+  (C4), so what the eye follows is the client's own glide rather than a formula.
 
 The scenarios, and what each is for. `mash` and `mouse_swirl` are not built:
 the first needs the input-level script the DST harness has and the bench does
@@ -310,10 +311,15 @@ Three outputs, and the third is the one that decides anything:
 3. **A scope in the window** — a strip chart of the last few seconds of eye
    velocity and jerk, drawn with `egui::Painter` lines, beside a preset picker
    and a slider per `Rig` field. From the moment this exists, choosing a camera
-   is looking rather than arguing.
+   is looking rather than arguing. **Built** — C4.
 
 The metric functions take a slice of samples and nothing else, so the offline
-runner and the live scope compute the same numbers from the same code.
+runner and the live scope compute the same numbers from the same code. C4 took
+that one step further: `bench::readings` is the *only* place a difference is
+taken, `Metrics` is its peaks and every curve — the SVG's, the window's — is its
+values. A number that disagrees with the picture beside it now means the metric
+is wrong, which was the claim; two differencing loops would have made it an
+argument.
 
 ## The milestones
 
@@ -492,13 +498,53 @@ an order of magnitude against `HARD`, and both halves are asserted, because a
 camera that absorbs a rollback by never keeping up is not the camera anybody
 asked for.
 
-### C4 — the scope
+### C4 — the scope — **built, pulled ahead of C3**
 
 Sliders, presets and the strip chart in the shell, and a script runner that
 walks a virtual player through the bench's scenarios in the window. Placed after
-C3 in the numbering and worth pulling forward the moment C2 lands: from here on
-every remaining decision is a matter of looking, and a slider is faster than a
-rebuild.
+C3 in the numbering and pulled forward the moment C2 landed, for the reason it
+was worth pulling forward: from here on every remaining decision is a matter of
+looking, and a slider is faster than a rebuild.
+
+`crates/client/app/src/shell.rs`'s **Rig** window is the panel — `HARD` and
+`LIFT`, a slider per field, the live `Metrics`, two strip charts, and a button
+per scenario. `crates/client/app/src/replay.rs` walks the scenarios.
+`bench::Scope` is the ring the panel draws, fed one frame at a time from
+`App::follow_player`, which is the single place the camera is advanced.
+
+**A rig is copied out as a source line, and that is the output that lasts.** The
+panel prints `Rig { plane_tau: 0.15, .. }` beside a copy button, so a setting
+that felt right is pasted into `follow.rs` and committed as the preset it turned
+out to be. It is a function with a test rather than a `format!` inside a widget,
+because `f32::INFINITY` prints as `inf` and `inf` is not Rust — a failure that
+would surface hours later, in another file, as a build error.
+
+**The scope is fed only while the eye is the body's.** Unlocked, the camera is
+wherever a hand left it, and a lag measured against a body it is not following
+is not a number about the rig. The trace is also cleared when a preset is
+swapped or a scenario started: the frames either side of either are two
+different runs, and metrics over both are a number about nothing.
+
+**The finding, and it was the harness rather than the camera.** The first
+replay of `ten_east` peaked at exactly twice the bench's speed, which is the
+shape of a body being yanked. `Replay::advance` was incrementing its clock
+*before* reading it, so the knot at zero fired on the frame ending at 16ms and
+the knot at 400 on the frame ending at 400 — the first gap a frame short. The
+crowd then started a new step while the last one still had a frame to run, and
+the eye covered two frames of ground in one. A harness that manufactures the
+stutter it is meant to measure is worse than no harness, so what pins it now is
+a cross-check rather than a comment: the replayed walk's peak is within five per
+cent of the bench's own, driven through the real `Crowd`, `mobiles::gaze` and a
+real `Follower`. That is the same claim C1 makes about the DST harness, at the
+other end of the pipeline.
+
+**And `redraw_interval` grew its third term** — the backlog item this milestone
+could not be built without. `Follower::settling` answers whether the eye still
+owes the screen a pixel, and the test is exact rather than a tolerance: each
+channel approaches monotonically, so if the eye and its target already round to
+the same world pixel, no later frame can change what the screen is given. Before
+it, the tail of every ease arrived 80ms late and whole — the stutter the filter
+exists to remove, arriving just after it.
 
 ### C5 — the intent
 
@@ -554,10 +600,23 @@ Found while planning this, and not to be lost in it.
   any rig but `HARD` those two calls move the eye not at all and are there only
   to refresh the glide. When C3 lands, they want splitting into "the target
   changed" and "a frame passed", which is a seam this plan has not argued yet.
-- **`redraw_interval` knows about gliding bodies and not about a settling eye.**
-  The moment the filter exists, a frame is worth drawing while the eye is still
-  converging even if nothing else moved — otherwise the tail of every ease
-  arrives 80ms late, in one jump. `Follower::settling()` is the term to add.
+- ~~**`redraw_interval` knows about gliding bodies and not about a settling
+  eye.**~~ It has three terms now (C4): a gliding body, a settling eye, and a
+  scenario waiting to deliver its next knot.
+- **A replay and the keyboard both write the player's position.** Walking
+  cancels the scenario, which is the same rule as a hand on the camera
+  outranking the lock — but it is enforced in `App::walk` rather than by the
+  types, so a third writer would have to remember. The offline placeholder is
+  the only body with two owners; naming who may move it is the fix.
+- **`crowd.commanding` is called when a replay starts and never unset.** It is
+  right — the offline placeholder's steps are always ours to issue, so the
+  nominal crossing is the true one — which means it belongs at construction
+  rather than in `start_replay`. One line, and it wants the test that says the
+  offline walk is not measured through the event loop's wake jitter.
+- **The scope's span is a constant and the panel cannot change it.** Four
+  seconds holds a reversal; a `teleport` is over in one, and a `back_and_forth`
+  worth reading is longer. A slider for it is trivial and was left out to keep
+  C4 to one subject.
 - **`relock` snaps unconditionally.** With a cut threshold it should ease when
   the body is on screen and cut when it is not, which is the same rule D6
   already states and one fewer special case.

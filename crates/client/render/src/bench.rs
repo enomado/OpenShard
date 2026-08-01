@@ -28,6 +28,15 @@
 //! What stays on the drawn trace is everything about position: the lag, the
 //! overshoot, the distance travelled. Those are what the player sees.
 //!
+//! # The same arithmetic, offline and live
+//!
+//! [`Metrics`] and [`readings`] take a slice of [`Sample`]s and nothing else, so
+//! the offline runner, the DST harness and the scope in the window compute the
+//! same numbers from the same code — which is the only reason a number from one
+//! of them can be compared with a number from another. [`Scope`] is the ring the
+//! window feeds: the last few seconds of frames, on a clock of elapsed spans
+//! rather than an [`std::time::Instant`], so this crate still reads no clock.
+//!
 //! # The kinematics are the oracle's, deliberately
 //!
 //! A scripted step crosses one tile at constant speed over one hold, through
@@ -55,13 +64,20 @@ type Pixels = (f64, f64);
 /// One crossing: where the body goes, from when, over how long.
 ///
 /// A `takes` of zero is a body put somewhere between two frames — a rollback, a
-/// recall, a floor changing under it — and not a very fast walk.
+/// recall, a floor changing under it — and not a very fast walk. That
+/// distinction is the whole of what a replay in the window needs to know, which
+/// is why the fields are public: a crossing is a step to glide and a jump is a
+/// body to put down.
 #[derive(Clone, Copy, Debug)]
-struct Knot {
-    at: Duration,
-    takes: Duration,
-    from: Point,
-    to: Point,
+pub struct Knot {
+    /// When it starts, from the start of the script.
+    pub at: Duration,
+    /// How long it takes. Zero is a jump.
+    pub takes: Duration,
+    /// The tile left behind.
+    pub from: Point,
+    /// The tile arrived at.
+    pub to: Point,
 }
 
 /// A body's whole path, as a function of a virtual instant.
@@ -139,6 +155,15 @@ impl Script {
         self.at = to;
         self.length += takes;
         self
+    }
+
+    /// Everything the body does, in order.
+    ///
+    /// For a replay that drives a real body rather than a gaze: the window walks
+    /// a crowd through these, and [`Script::gaze_at`] is what the bench uses.
+    /// Two readings of one script, and they agree because they are one list.
+    pub fn knots(&self) -> &[Knot] {
+        &self.knots
     }
 
     /// Where the body is at a virtual instant.
@@ -282,6 +307,147 @@ pub fn run(rig: Rig, script: &Script, cadence: Cadence) -> Trace {
     }
 }
 
+/// One frame's worth of the numbers a curve is drawn from.
+///
+/// What [`Metrics`] takes its maxima of, kept per frame because a chart needs
+/// the shape and a table needs the peak, and the two must not be two
+/// arithmetics: a number that disagrees with the picture beside it means one of
+/// them is wrong, and that has to be visible rather than arguable.
+///
+/// There is one of these per frame *after* the first, and none for a frame that
+/// took no time: the first has nothing behind it to difference against, and a
+/// zero-length frame would divide by it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Reading {
+    /// When, from the start of the run.
+    pub at: Duration,
+    /// How far the *drawn* eye was from the body — what the player sees.
+    pub lag: f64,
+    /// How fast the eye moved, off the unrounded trace. See this module's note
+    /// on why not the drawn one.
+    pub speed: f64,
+    /// And how sharply that changed. `None` on the first reading, which has no
+    /// speed before it.
+    pub accel: Option<f64>,
+    /// The third difference — what "ragged" is, as a number. `None` for the
+    /// first two, for the same reason.
+    pub jerk: Option<f64>,
+}
+
+/// Every frame's derivatives, in order.
+///
+/// The one place the differencing is written. [`Metrics`] folds these into its
+/// peaks and a chart draws them as they are, so a scope in the window and a
+/// table from the offline runner cannot drift apart.
+pub fn readings(samples: &[Sample]) -> Vec<Reading> {
+    let mut out = Vec::with_capacity(samples.len().saturating_sub(1));
+    // The previous frame's derivatives, for the ones above them. Deliberately
+    // *not* cleared by a skipped frame: a frame of no elapsed time did not
+    // happen as far as a difference is concerned, and forgetting the last
+    // velocity across one would report a spurious acceleration on the next.
+    let (mut last_speed, mut last_accel): (Option<Pixels>, Option<Pixels>) = (None, None);
+    for (index, sample) in samples.iter().enumerate() {
+        let Some(previous) = index.checked_sub(1).map(|before| &samples[before]) else {
+            continue;
+        };
+        let dt = (sample.at - previous.at).as_secs_f64();
+        if dt <= 0.0 {
+            continue;
+        }
+        let body = sample.gaze.exact();
+        let eye = (f64::from(sample.eye.x), f64::from(sample.eye.y));
+        let speed = scaled(minus(sample.state.exact(), previous.state.exact()), 1.0 / dt);
+        let accel = last_speed.map(|was| scaled(minus(speed, was), 1.0 / dt));
+        let jerk = match (accel, last_accel) {
+            (Some(accel), Some(before)) => Some(length(scaled(minus(accel, before), 1.0 / dt))),
+            _ => None,
+        };
+        out.push(Reading {
+            at: sample.at,
+            lag: length(minus(eye, body)),
+            speed: length(speed),
+            accel: accel.map(length),
+            jerk,
+        });
+        last_accel = accel.or(last_accel);
+        last_speed = Some(speed);
+    }
+    out
+}
+
+/// The last few seconds of a live run, and nothing older.
+///
+/// What the scope in the window draws and what the panel beside it measures.
+/// Its own clock, advanced by the span each frame covered rather than read from
+/// an [`std::time::Instant`], because this crate does not read clocks — which is
+/// also what lets a test hand it a cadence and get a trace it can assert on.
+#[derive(Clone, Debug)]
+pub struct Scope {
+    span: Duration,
+    at: Duration,
+    samples: Vec<Sample>,
+}
+
+impl Scope {
+    /// A scope holding `span` of frames.
+    pub fn new(span: Duration) -> Self {
+        Self {
+            span,
+            at: Duration::ZERO,
+            samples: Vec::new(),
+        }
+    }
+
+    /// One frame, `dt` after the last one.
+    ///
+    /// The three traces a [`Sample`] carries are the caller's to supply, and
+    /// they are what the camera already has: the gaze it was handed, the pixel
+    /// it gave the screen, and what the filter had before the quantiser.
+    pub fn record(&mut self, dt: Duration, gaze: Gaze, eye: WorldPixel, state: Gaze) {
+        self.at += dt;
+        self.samples.push(Sample {
+            at: self.at,
+            gaze,
+            eye,
+            state,
+        });
+        // Everything older than the span goes, from the front, so the trace is
+        // a window on the present rather than a session-long log: a chart of
+        // twenty minutes of walking is a solid block of ink.
+        let cutoff = self.at.saturating_sub(self.span);
+        let keep = self
+            .samples
+            .iter()
+            .position(|sample| sample.at >= cutoff)
+            .unwrap_or(self.samples.len());
+        self.samples.drain(..keep);
+    }
+
+    /// Every frame still held, oldest first.
+    pub fn samples(&self) -> &[Sample] {
+        &self.samples
+    }
+
+    /// How long a window this keeps.
+    pub fn span(&self) -> Duration {
+        self.span
+    }
+
+    /// The instant the last frame landed on, on this scope's own clock.
+    pub fn at(&self) -> Duration {
+        self.at
+    }
+
+    /// Throw the trace away and keep the clock.
+    ///
+    /// For a discontinuity that is not the camera's doing — a preset swapped, a
+    /// script started — where the frames either side of it are two different
+    /// runs and a metric over both is a number about nothing.
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+}
+
 /// What a run came to, in numbers.
 ///
 /// Each of these is in world pixels — which is screen pixels at zoom 1, and the
@@ -361,11 +527,21 @@ impl Metrics {
             step_var: 0.0,
             still_frames: 0,
         };
-        let (mut lag_squares, mut jerk_squares) = (0.0, 0);
-        let mut jerk_total = 0.0;
+        let mut lag_squares = 0.0;
         let (mut steps, mut step_total, mut step_squares) = (0usize, 0.0, 0.0);
-        // The previous frame's derivatives, for the ones above them.
-        let (mut last_speed, mut last_accel): (Option<Pixels>, Option<Pixels>) = (None, None);
+
+        // The derivatives, from the one place they are differenced.
+        let (mut jerk_total, mut jerk_squares) = (0.0, 0u32);
+        for reading in readings(samples) {
+            metrics.speed_max = metrics.speed_max.max(reading.speed);
+            if let Some(accel) = reading.accel {
+                metrics.accel_max = metrics.accel_max.max(accel);
+            }
+            if let Some(jerk) = reading.jerk {
+                jerk_total += jerk * jerk;
+                jerk_squares += 1;
+            }
+        }
 
         for (index, sample) in samples.iter().enumerate() {
             let body = sample.gaze.exact();
@@ -404,21 +580,6 @@ impl Metrics {
                     metrics.still_frames += 1;
                 }
             }
-
-            // The derivatives, on the unrounded trace.
-            let speed = scaled(minus(sample.state.exact(), previous.state.exact()), 1.0 / dt);
-            metrics.speed_max = metrics.speed_max.max(length(speed));
-            if let Some(was) = last_speed {
-                let accel = scaled(minus(speed, was), 1.0 / dt);
-                metrics.accel_max = metrics.accel_max.max(length(accel));
-                if let Some(before) = last_accel {
-                    let jerk = length(scaled(minus(accel, before), 1.0 / dt));
-                    jerk_total += jerk * jerk;
-                    jerk_squares += 1;
-                }
-                last_accel = Some(accel);
-            }
-            last_speed = Some(speed);
         }
 
         if metrics.frames > 0 {
@@ -619,6 +780,65 @@ mod tests {
         assert_eq!(metrics.travel, 0.0);
         assert_eq!(metrics.speed_max, 0.0);
         assert!(metrics.ahead_max.is_nan(), "nothing walked, so there is no ahead");
+    }
+
+    /// The table's peaks and the chart's curve are one arithmetic.
+    ///
+    /// The failure this guards is the one that makes a bench useless rather than
+    /// wrong: a number that disagrees with the picture printed beside it leaves
+    /// nobody able to say which of the two is lying.
+    #[test]
+    fn the_metrics_are_the_peaks_of_the_readings() {
+        let trace = run(Rig::LIFT, &ten_steps("ten", Direction::East), FRAME);
+        let metrics = Metrics::of(&trace.samples);
+        let readings = readings(&trace.samples);
+        assert!(readings.len() > 20, "{} readings", readings.len());
+        let peak = |of: fn(&Reading) -> Option<f64>| readings.iter().filter_map(of).fold(0.0f64, f64::max);
+        assert_eq!(metrics.speed_max, peak(|r| Some(r.speed)));
+        assert_eq!(metrics.accel_max, peak(|r| r.accel));
+        assert_eq!(metrics.lag_max, peak(|r| Some(r.lag)));
+        // And the first frames are the ones with nothing behind them, rather
+        // than a zero that would read as "it did not accelerate".
+        assert_eq!(readings[0].accel, None);
+        assert_eq!(readings[1].jerk, None);
+        assert!(readings[2].jerk.is_some());
+    }
+
+    /// A scope keeps its span and drops what fell out of it, and what it keeps
+    /// measures exactly as the same frames measure offline.
+    #[test]
+    fn a_scope_holds_the_last_few_seconds_and_nothing_older() {
+        let script = ten_steps("ten", Direction::East);
+        let mut scope = Scope::new(Duration::from_millis(500));
+        let mut follower = Follower::new(Rig::HARD);
+        let mut now = Duration::ZERO;
+        let step = Duration::from_millis(16);
+        // The first frame has no elapsed time behind it, as a first frame does.
+        let mut dt = Duration::ZERO;
+        // Stopped mid-walk rather than at the script's end: the last half second
+        // of `ten_east` is the body standing, and a window over that would be
+        // green with a travel of nothing — the false green this repository has
+        // produced before.
+        while now < Duration::from_millis(3_000) {
+            let gaze = script.gaze_at(now);
+            let eye = follower.advance(gaze, dt);
+            scope.record(dt, gaze, eye, follower.exact().unwrap());
+            now += step;
+            dt = step;
+        }
+        let held = scope.samples();
+        assert!(held.len() > 20, "{} frames", held.len());
+        let span = held.last().unwrap().at - held.first().unwrap().at;
+        assert!(span <= scope.span(), "{span:?} of a 500ms window");
+        assert!(span > Duration::from_millis(450), "{span:?}, and not a stub");
+        // The eye walked while the window slid, which is what says the trace is
+        // a live one rather than the first half-second kept for ever.
+        assert!(scope.at() > Duration::from_secs(2), "{:?}", scope.at());
+        assert!(Metrics::of(held).travel > 20.0);
+
+        scope.clear();
+        assert!(scope.samples().is_empty());
+        assert!(scope.at() > Duration::from_secs(2), "the clock is not the trace");
     }
 
     /// And over a body that walked: the eye's speed is the body's, because the

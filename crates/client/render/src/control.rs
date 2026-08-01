@@ -126,6 +126,13 @@ impl Control {
         self.follower.exact()
     }
 
+    /// Whether the eye still owes the screen a pixel — see
+    /// [`Follower::settling`]. Only while it is the body's: an unlocked eye is
+    /// wherever the hand left it and is converging on nothing.
+    pub fn settling(&self) -> bool {
+        self.follow == Follow::Body && self.follower.settling()
+    }
+
     /// Follow with another one, without moving the eye — see
     /// [`Follower::set_rig`].
     pub fn set_rig(&mut self, rig: Rig) {

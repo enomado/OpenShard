@@ -34,8 +34,12 @@
 //!    `pixels_per_point` before it becomes the camera's viewport. Getting this
 //!    wrong is invisible at scale factor 1 and wrong on every HiDPI screen.
 
+use std::time::Duration;
+
+use openshard_client_render::bench::{Metrics, Reading};
 use openshard_client_render::blit::ViewportRect;
 use openshard_client_render::camera::Camera;
+use openshard_client_render::follow::Rig;
 use openshard_uofiles::hues::Hues;
 use winit::window::Window;
 
@@ -57,6 +61,28 @@ pub struct Hud {
     pub camera: Camera,
     /// Whether the camera is locked to the body.
     pub locked: bool,
+    /// What the eye is following with — every number a camera is made of.
+    pub rig: Rig,
+    /// The last few seconds of the eye, one entry per frame.
+    ///
+    /// Owned rather than borrowed because the HUD is a snapshot and not a view
+    /// of the app; a few hundred `f64`s a frame is what that costs, and it is
+    /// what keeps the panels unable to reach back into the camera.
+    pub readings: Vec<Reading>,
+    /// What those frames come to, and `None` before there are enough of them to
+    /// difference. Absent rather than zeroed: a metric over one frame is not a
+    /// small number, it is not a number.
+    pub metrics: Option<Metrics>,
+    /// How long a window the scope keeps, for the chart's own axis.
+    pub scope_span: Duration,
+    /// The bench's scenarios, by name, in the order it ships them.
+    pub scripts: Vec<&'static str>,
+    /// The one being replayed, and how far through it is from zero to one.
+    pub replay: Option<(&'static str, f32)>,
+    /// Whether there is no shard, which is the only state a replay may run in:
+    /// connected, the body goes where the `0x22` says, and a second writer is
+    /// two clients fighting over one character.
+    pub offline: bool,
     /// Everyone else on screen: serial, body, position.
     pub mobiles: Vec<(u32, u16, openshard_protocol::world::Point)>,
     /// The ground items the view is holding: serial, graphic, position.
@@ -122,6 +148,23 @@ pub struct Request {
     pub say: Option<String>,
     /// A dialog the player answered. See [`crate::gump`].
     pub gump: Option<crate::link::GumpReply>,
+    /// Follow with these numbers from now on.
+    ///
+    /// Sent on the frame a slider moved or a preset was clicked, and not every
+    /// frame: the eye is not moved by a rig arriving, but a scope that cleared
+    /// its trace on every frame would never have one to draw.
+    pub rig: Option<Rig>,
+    /// Start or stop a scripted walk.
+    pub script: Option<ScriptRequest>,
+}
+
+/// What the script picker asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScriptRequest {
+    /// Walk this scenario from its start.
+    Run(&'static str),
+    /// Stop wherever it got to.
+    Stop,
 }
 
 /// egui, and the two crates that put it on a window and on a GPU.
@@ -424,6 +467,13 @@ fn layout(
             });
         });
 
+    egui::Window::new("Rig")
+        .default_pos([16.0, 200.0])
+        .default_width(320.0)
+        .show(&context, |ui| {
+            rig_panel(ui, hud, &mut request);
+        });
+
     egui::Window::new("World")
         .default_pos([16.0, 240.0])
         .show(&context, |ui| {
@@ -467,6 +517,215 @@ fn layout(
     request.gump = gumps.show(&context, &hud.gumps, hues);
 
     request
+}
+
+/// The scope: what the eye is doing, what it is doing it with, and a scenario
+/// to make it do it.
+///
+/// `docs/camera.md`, C4. From here on every remaining decision about the camera
+/// is a matter of looking rather than arguing, and this is what there is to look
+/// at: a preset and a slider per number, the last few seconds of the eye's own
+/// speed and jerk, the same [`Metrics`] the offline bench prints, and the bench's
+/// scenarios walked by the real body.
+///
+/// The numbers and the curves come off one arithmetic — `bench::readings` — so a
+/// figure that disagrees with the shape beside it means the metric is wrong,
+/// which is a thing to be able to see rather than to reason about.
+fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
+    let mut rig = hud.rig;
+    ui.horizontal(|ui| {
+        ui.label("preset");
+        // The two that exist, and neither is called `DEFAULT`: which camera
+        // this client ships is decided on this panel, not in a name.
+        if ui.button("HARD").clicked() {
+            rig = Rig::HARD;
+        }
+        if ui.button("LIFT").clicked() {
+            rig = Rig::LIFT;
+        }
+    });
+    egui::Grid::new("rig").num_columns(2).show(ui, |ui| {
+        ui.label("plane τ");
+        ui.add(egui::Slider::new(&mut rig.plane_tau, 0.0..=0.5).suffix(" s"));
+        ui.end_row();
+        ui.label("lift τ");
+        ui.add(egui::Slider::new(&mut rig.lift_tau, 0.0..=0.5).suffix(" s"));
+        ui.end_row();
+        ui.label("lift cut");
+        ui.horizontal(|ui| {
+            // Infinity is a real setting — it never cuts — and it is not a
+            // point on a slider, so it is the checkbox and the slider holds
+            // what the last finite value was.
+            let mut cuts = rig.lift_cut.is_finite();
+            let mut pixels = match rig.lift_cut.is_finite() {
+                true => rig.lift_cut,
+                false => openshard_client_render::follow::FLOOR,
+            };
+            ui.checkbox(&mut cuts, "");
+            ui.add_enabled(cuts, egui::Slider::new(&mut pixels, 0.0..=256.0).suffix(" px"));
+            rig.lift_cut = match cuts {
+                true => pixels,
+                false => f32::INFINITY,
+            };
+        });
+        ui.end_row();
+    });
+    if rig != hud.rig {
+        request.rig = Some(rig);
+    }
+    ui.horizontal(|ui| {
+        // The whole point of the sliders: a setting that felt right is a value
+        // that can be pasted into `follow.rs` and committed as the preset it
+        // turned out to be.
+        let literal = literal(&rig);
+        ui.label(egui::RichText::new(&literal).monospace().small());
+        if ui.small_button("copy").clicked() {
+            ui.ctx().copy_text(literal);
+        }
+    });
+
+    ui.separator();
+    match hud.metrics {
+        Some(metrics) => {
+            egui::Grid::new("metrics").num_columns(4).show(ui, |ui| {
+                ui.label("lag");
+                ui.label(format!("{:.1} px", metrics.lag_max));
+                ui.label("speed");
+                ui.label(format!("{:.0} px/s", metrics.speed_max));
+                ui.end_row();
+                ui.label("accel");
+                ui.label(format!("{:.0}", metrics.accel_max));
+                ui.label("jerk rms");
+                ui.label(format!("{:.0}", metrics.jerk_rms));
+                ui.end_row();
+                ui.label("step σ²");
+                ui.label(format!("{:.2}", metrics.step_var));
+                // The two companions, and they are on the panel rather than in
+                // a comment: a metric over a scene where nothing moved is
+                // green and means nothing, and this repository has produced
+                // that result before.
+                ui.label("travel");
+                ui.label(format!("{:.0} px / {} frames", metrics.travel, metrics.frames));
+                ui.end_row();
+            });
+        }
+        None => {
+            ui.label("no frames yet");
+        }
+    }
+
+    let span = hud.scope_span.as_secs_f32().max(0.001);
+    let last = hud
+        .readings
+        .last()
+        .map_or(0.0, |reading| reading.at.as_secs_f32());
+    let series = |of: fn(&Reading) -> Option<f64>| -> Vec<(f32, f32)> {
+        hud.readings
+            .iter()
+            .filter_map(|reading| {
+                of(reading).map(|value| (reading.at.as_secs_f32() - (last - span), value as f32))
+            })
+            .collect()
+    };
+    strip(
+        ui,
+        "the eye's speed, px/s",
+        &series(|reading| Some(reading.speed)),
+        span,
+        egui::Color32::from_rgb(80, 170, 255),
+    );
+    strip(
+        ui,
+        "jerk — what ragged is, as a number",
+        &series(|reading| reading.jerk),
+        span,
+        egui::Color32::from_rgb(255, 140, 90),
+    );
+
+    ui.separator();
+    match hud.replay {
+        Some((name, progress)) => {
+            ui.add(egui::ProgressBar::new(progress).text(name));
+            if ui.button("stop").clicked() {
+                request.script = Some(ScriptRequest::Stop);
+            }
+        }
+        None => {
+            ui.horizontal_wrapped(|ui| {
+                for name in &hud.scripts {
+                    if ui.add_enabled(hud.offline, egui::Button::new(*name)).clicked() {
+                        request.script = Some(ScriptRequest::Run(name));
+                    }
+                }
+            });
+            if !hud.offline {
+                ui.label(
+                    egui::RichText::new(
+                        "a scenario walks the body itself, so it needs a client with no shard",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
+        }
+    }
+}
+
+/// A rig as the source line it would be, for pasting into `follow.rs`.
+///
+/// The one output of this panel that outlives the session, which is why it is a
+/// function with a test rather than a `format!` in the middle of a widget.
+fn literal(rig: &Rig) -> String {
+    let cut = match rig.lift_cut.is_finite() {
+        true => format!("{:?}", rig.lift_cut),
+        // `inf` is not Rust, and a preset pasted with it in would not compile —
+        // which is a thing to find out here rather than in a build.
+        false => "f32::INFINITY".to_string(),
+    };
+    format!(
+        "Rig {{ plane_tau: {:?}, lift_tau: {:?}, lift_cut: {cut} }}",
+        rig.plane_tau, rig.lift_tau,
+    )
+}
+
+/// One strip chart: a curve of the last few seconds, scaled to its own peak.
+///
+/// Scaled to the peak of what is on screen and the peak printed on it, because
+/// the axis is not the point — the *shape* is, and a reversal that is a square
+/// corner on one rig and a rounded one on another is the whole reason this is
+/// drawn rather than tabulated. A fixed axis would flatten every scenario that
+/// is not a walk.
+fn strip(ui: &mut egui::Ui, title: &str, series: &[(f32, f32)], span: f32, colour: egui::Color32) {
+    let width = ui.available_width().max(180.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 56.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    let peak = series.iter().map(|(_, value)| *value).fold(0.0f32, f32::max);
+    // A flat run has a peak of zero and would divide by it. Drawn along the
+    // floor instead, which is what a still eye *is*.
+    let scale = match peak > 0.0 {
+        true => rect.height() / peak,
+        false => 0.0,
+    };
+    let points: Vec<egui::Pos2> = series
+        .iter()
+        .map(|(at, value)| {
+            egui::pos2(
+                rect.left() + rect.width() * (at / span).clamp(0.0, 1.0),
+                rect.bottom() - value * scale,
+            )
+        })
+        .collect();
+    if points.len() > 1 {
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, colour)));
+    }
+    painter.text(
+        rect.left_top() + egui::vec2(4.0, 2.0),
+        egui::Align2::LEFT_TOP,
+        format!("{title} — peak {peak:.0}"),
+        egui::FontId::proportional(10.0),
+        colour,
+    );
 }
 
 /// The speech line, docked at the bottom, with what the shard last said above
@@ -572,4 +831,32 @@ fn draw_tile_highlight(
         egui::Id::new("tile-highlight"),
     ));
     painter.add(egui::Shape::convex_polygon(corners, fill, stroke));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rig printed by the panel is a line that compiles.
+    ///
+    /// The promise the sliders are for: a setting that felt right in the window
+    /// is pasted into `follow.rs` and committed as the preset it turned out to
+    /// be. Pinned because the failure is silent at the point it is made — the
+    /// paste is a build error hours later, in another file.
+    #[test]
+    fn a_rig_prints_as_the_source_line_it_would_be() {
+        assert_eq!(
+            literal(&Rig::LIFT),
+            "Rig { plane_tau: 0.0, lift_tau: 0.15, lift_cut: 64.0 }",
+        );
+        // `inf` is what `Display` would give, and it is not Rust.
+        let never = Rig {
+            lift_cut: f32::INFINITY,
+            ..Rig::HARD
+        };
+        assert_eq!(
+            literal(&never),
+            "Rig { plane_tau: 0.0, lift_tau: 0.0, lift_cut: f32::INFINITY }",
+        );
+    }
 }

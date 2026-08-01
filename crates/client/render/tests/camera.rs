@@ -16,7 +16,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use openshard_client_render::bench::{Cadence, Metrics, Sample, Script, Trace, WALK_HOLD, run, scripts};
+use openshard_client_render::bench::{
+    self, Cadence, Metrics, Sample, Script, Trace, WALK_HOLD, run, scripts,
+};
 use openshard_client_render::follow::{FLOOR, Rig};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
@@ -481,20 +483,15 @@ fn speed_series(
         .collect()
 }
 
-/// The eye's speed over time, from the unrounded trace — see `bench.rs` on why
-/// not the drawn one.
+/// The eye's speed over time, from the one place the differencing is written.
+///
+/// `bench::readings` and not a copy of it here: the curve on this chart and the
+/// peak in the table above it have to be the same arithmetic, or a disagreement
+/// between the two says nothing about which is wrong.
 fn derivative(trace: &Trace) -> Vec<(f64, f64)> {
-    trace
-        .samples
-        .windows(2)
-        .filter_map(|pair| {
-            let dt = (pair[1].at - pair[0].at).as_secs_f64();
-            (dt > 0.0).then(|| {
-                let (before, after) = (pair[0].state.exact(), pair[1].state.exact());
-                let step = (after.0 - before.0, after.1 - before.1);
-                (pair[1].at.as_secs_f64(), step.0.hypot(step.1) / dt)
-            })
-        })
+    bench::readings(&trace.samples)
+        .into_iter()
+        .map(|reading| (reading.at.as_secs_f64(), reading.speed))
         .collect()
 }
 

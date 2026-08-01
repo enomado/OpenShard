@@ -61,6 +61,7 @@ mod dst;
 mod gump;
 mod keys;
 mod link;
+mod replay;
 mod shell;
 mod steer;
 
@@ -92,6 +93,7 @@ use openshard_client_net::transport::Dial;
 use openshard_client_net::view::WorldView;
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::atlas::{AnimAtlas, AtlasError, FontAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
+use openshard_client_render::bench::{self, Metrics, Scope, Script};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
 use openshard_client_render::control::{Control, Follow};
@@ -138,6 +140,14 @@ const VERSION: ClientVersion = ClientVersion::new(7, 0, 45, 65);
 /// monitor's: nothing here knows the refresh rate, and asking the surface would
 /// tie the animation to the present mode the adapter happened to offer.
 const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// How much of the eye's recent past the scope keeps.
+///
+/// Long enough to hold a whole reversal — a step is 400ms and `back_and_forth`
+/// turns round every one of them — and short enough that the curve on screen is
+/// the last thing that happened rather than a session's worth of ink. Four
+/// seconds is ten steps at a walk.
+const SCOPE_SPAN: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// How many of the shard's last lines the speech panel shows.
 ///
@@ -325,6 +335,9 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         window: None,
         selected_tile: None,
         covered: None,
+        scope: Scope::new(SCOPE_SPAN),
+        scripts: bench::scripts(),
+        replay: None,
     };
     match event_loop.run_app(&mut app) {
         Ok(()) => ExitCode::SUCCESS,
@@ -666,6 +679,20 @@ struct App {
     /// position. So it is set from exactly two places, both of which have just
     /// finished packing, and cleared before anything that forgets.
     covered: Option<TileBounds>,
+    /// The last few seconds of the eye, for the scope in the HUD.
+    ///
+    /// Recorded every frame the camera is advanced, from the same three values
+    /// the offline bench records, so the panel's numbers and the table's are one
+    /// arithmetic. See [`Scope`].
+    scope: Scope,
+    /// The bench's scenarios, built once.
+    ///
+    /// Held rather than rebuilt per frame because the HUD lists their names, and
+    /// a scenario is a `Vec` of knots: building nine of them to print nine
+    /// strings would be a small allocation storm on every frame that draws.
+    scripts: Vec<Script>,
+    /// The one being walked in the window, while it is.
+    replay: Option<replay::Replay>,
 }
 
 impl ApplicationHandler<link::Update> for App {
@@ -965,6 +992,11 @@ impl App {
     /// edge in UO is impossible, and a camera that wrapped would draw a seam
     /// between two sides of the world.
     fn walk(&mut self, facing: Facing) -> bool {
+        // A hand on the body outranks a scenario, the same way a hand on the
+        // camera outranks the lock: the two would otherwise both write the
+        // player's position and the picture would be neither.
+        self.replay = None;
+
         // Connected, the keyboard moves nothing: it asks. The body goes where
         // the `0x22` says it went, which is the whole point of the walk
         // handshake — a client that stepped locally and corrected later would
@@ -1090,11 +1122,80 @@ impl App {
     /// [`GLIDE_INTERVAL`] and not `ControlFlow::Poll`: polling is a busy loop
     /// unless the surface's present mode happens to block, and the present mode
     /// is whatever the adapter offered first.
+    /// Three reasons and not one, because they are three independent things
+    /// that move a pixel: a body mid-step, an eye still converging on one that
+    /// has stopped, and a scenario waiting to deliver its next knot.
+    ///
+    /// The eye is the one that was missing. A rig that filters is still settling
+    /// on frames where nothing else moved, and a loop that only woke for gliding
+    /// bodies delivered the tail of every ease 80ms late and whole — the stutter
+    /// the filter exists to remove, arriving just after it.
     fn redraw_interval(&self) -> std::time::Duration {
-        if self.crowd.anyone_gliding() {
-            GLIDE_INTERVAL
-        } else {
-            FRAME_DELAY
+        let moving = self.crowd.anyone_gliding() || self.control.settling() || self.replay.is_some();
+        if moving { GLIDE_INTERVAL } else { FRAME_DELAY }
+    }
+
+    /// Start walking one of the bench's scenarios in the window.
+    ///
+    /// Offline only: with a shard connected the body goes where the `0x22` says
+    /// it went, and a second writer would be two clients fighting over one
+    /// character. The panel does not offer the buttons in that state and this
+    /// refuses anyway, because a guard that only lives in a widget is a guard
+    /// until somebody adds a keybinding.
+    fn start_replay(&mut self, name: &str) {
+        if self.link.is_some() {
+            return;
+        }
+        let Some(script) = self.scripts.iter().find(|script| script.name == name).cloned() else {
+            return;
+        };
+        // The height the script's own `z = 0` means here. Read once, from the
+        // tile it starts on — see `Replay`'s docs on why not per tile.
+        let ground = script.knots().first().map_or(self.player.at.z, |knot| {
+            Self::in_bounds(i32::from(knot.from.x), i32::from(knot.from.y), &self.map)
+                .and_then(|(x, y)| self.map.land(x, y))
+                .map_or(self.player.at.z, |cell| cell.z)
+        });
+        let replay = replay::Replay::new(script, ground);
+        if let Some(start) = replay.start() {
+            // Put down rather than walked, and the camera cut to it: a body
+            // that strolled to the start of a scenario would be measured on the
+            // way there, and an eye that eased across a facet is a second
+            // motion on top of the one being looked at.
+            let (body, hue) = (Graphic(self.player.body), self.player.hue);
+            self.player = self
+                .crowd
+                .snap(self.me(), start, body, Facing::walking(self.player.facing), hue);
+            self.control.relock(start);
+        }
+        // Our own steps, so the crossing is the nominal one rather than a gap
+        // measured through the event loop's wake jitter — see `Crowd::commanding`.
+        self.crowd.commanding(self.me());
+        // The frames either side of a start are two different runs, and a metric
+        // over both is a number about nothing.
+        self.scope.clear();
+        self.replay = Some(replay);
+    }
+
+    /// One frame of whatever scenario is being walked.
+    ///
+    /// Every knot the span covered, in order, each handed to the crowd as the
+    /// packet it stands for: a crossing is glided and a jump is put down.
+    fn advance_replay(&mut self, elapsed: std::time::Duration) {
+        let Some(replay) = self.replay.as_mut() else {
+            return;
+        };
+        let moves = replay.advance(elapsed);
+        let finished = replay.finished();
+        for step in moves {
+            let (body, hue) = (Graphic(self.player.body), self.player.hue);
+            self.player = match step.glided {
+                true => self.crowd.see(self.me(), step.to, body, step.facing, hue),
+                false => self.crowd.snap(self.me(), step.to, body, step.facing, hue),
+            };
+        }
+        if finished {
+            self.replay = None;
         }
     }
 
@@ -1120,7 +1221,21 @@ impl App {
     /// frame, and varying lag is what an eye reads as a stutter.
     fn follow_player(&mut self, elapsed: std::time::Duration) {
         self.player.glide = self.crowd.glide_for(self.me());
-        self.control.follow_body(mobiles::gaze(&self.player), elapsed);
+        let gaze = mobiles::gaze(&self.player);
+        self.control.follow_body(gaze, elapsed);
+        // What the eye was asked for, what the screen was given, and what the
+        // filter had before the quantiser — the three the bench records, from
+        // the one place the camera is advanced.
+        //
+        // Only while the eye is the body's: unlocked, the camera is wherever a
+        // hand left it and a lag against a body it is not following is not a
+        // number about the rig.
+        if let Some(state) = self.control.eye_exact() {
+            if self.control.follow() == Follow::Body {
+                self.scope
+                    .record(elapsed, gaze, self.control.camera().eye(), state);
+            }
+        }
     }
 
     /// A viewport that grew may have taken the world texture past what the
@@ -1376,6 +1491,19 @@ impl App {
             frame_time: self.frame_time,
             camera: *self.control.camera(),
             locked: self.control.follow() == Follow::Body,
+            rig: self.control.rig(),
+            readings: bench::readings(self.scope.samples()),
+            // Two frames is one difference and no derivative of it. Absent
+            // rather than a zero, which would read as "the eye was perfectly
+            // smooth" on the frame the window opened.
+            metrics: (self.scope.samples().len() > 2).then(|| Metrics::of(self.scope.samples())),
+            scope_span: self.scope.span(),
+            scripts: self.scripts.iter().map(|script| script.name).collect(),
+            replay: self.replay.as_ref().map(|replay| {
+                let length = replay.length().as_secs_f32().max(0.001);
+                (replay.name(), replay.at().as_secs_f32() / length)
+            }),
+            offline: self.link.is_none(),
             mobiles,
             items,
             hover: self.pick_tile(),
@@ -1664,6 +1792,18 @@ impl App {
                 self.control.unlock();
             }
             self.control.resize(viewport.width, viewport.height);
+            if let Some(rig) = request.rig {
+                // The eye does not move — that is what `set_rig` promises — but
+                // the frames before the swap were flown by another camera, and
+                // measuring them together would average two rigs.
+                self.control.set_rig(rig);
+                self.scope.clear();
+            }
+            match request.script {
+                Some(shell::ScriptRequest::Run(name)) => self.start_replay(name),
+                Some(shell::ScriptRequest::Stop) => self.replay = None,
+                None => {}
+            }
             if let Some(line) = request.say.clone() {
                 self.say(line);
             }
@@ -1671,6 +1811,10 @@ impl App {
                 self.answer_gump(reply);
             }
         }
+        // Whatever scenario is being walked delivers its knots for the span that
+        // just passed, before the eye is asked where the body is: a step that
+        // arrived this frame is one the camera has to answer this frame.
+        self.advance_replay(elapsed);
         // A viewport that grew may have taken the world texture past what the
         // device allows, which no zoom step asked for.
         self.fit_zoom_to_device();

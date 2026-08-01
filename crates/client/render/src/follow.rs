@@ -268,6 +268,24 @@ impl Follower {
         self.last.map(|last| last.at)
     }
 
+    /// Whether the eye still owes the screen a pixel it has not been given.
+    ///
+    /// What the event loop asks to decide whether a frame is worth drawing when
+    /// nothing else moved: a rig that eases is still converging on frames where
+    /// no packet arrived and no body glided, and a loop that only woke for
+    /// gliding bodies would deliver the tail of every ease 80ms late, in one
+    /// jump — which is the stutter the filter exists to remove, arriving after
+    /// it.
+    ///
+    /// The test is the *drawn* pixel and not the remaining error, and that is
+    /// exact rather than a tolerance somebody chose: each channel approaches its
+    /// target monotonically, so if the eye and its target already round to the
+    /// same world pixel, every position between them does too — no later frame
+    /// can change what the screen is given until the target moves again.
+    pub fn settling(&self) -> bool {
+        self.last.is_some_and(|last| last.at.eye() != last.target.eye())
+    }
+
     /// Forget where the eye was: the next [`Follower::advance`] places it on the
     /// gaze instead of easing to it.
     ///
@@ -563,6 +581,33 @@ mod tests {
         follower.advance(kerb, ms(16));
         let at = state(&follower);
         assert!(at.lift > 0.0 && at.lift < kerb.lift, "{} of 8 pixels", at.lift);
+    }
+
+    /// A settling eye asks for frames until it has nothing left to give the
+    /// screen, and the reference rig never asks for one.
+    ///
+    /// Both halves matter: without the first the tail of every ease arrives late
+    /// and whole, and a rig that answered "still settling" for ever would hold
+    /// the loop at the glide rate while a client sits at a bank doing nothing.
+    #[test]
+    fn a_settling_eye_asks_for_frames_and_an_arrived_one_does_not() {
+        let mut hard = Follower::new(Rig::HARD);
+        hard.advance(Gaze::on(Point::new(500, 500, 0)), ms(16));
+        hard.advance(Gaze::on(Point::new(501, 500, 0)), ms(16));
+        assert!(!hard.settling(), "the eye is the body, every frame");
+
+        let mut eased = Follower::new(eased(0.2));
+        let target = Gaze::on(Point::new(500, 500, 0));
+        eased.advance(target, ms(16));
+        eased.advance(Gaze::on(Point::new(506, 500, 0)), ms(16));
+        assert!(eased.settling(), "six tiles away and one frame in");
+        // Left alone on the same target, it arrives and stops asking — and it
+        // does so in a bounded number of frames rather than approaching for ever.
+        let arrived = (0..200).any(|_| {
+            eased.advance(Gaze::on(Point::new(506, 500, 0)), ms(16));
+            !eased.settling()
+        });
+        assert!(arrived, "an ease that never ends holds the loop at 60Hz");
     }
 
     /// The threshold is a body's height, which is Sphere's own constant and not
