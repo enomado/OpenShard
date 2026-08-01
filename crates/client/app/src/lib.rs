@@ -332,7 +332,6 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         items: Vec::new(),
         view: None,
         connection: String::from("offline"),
-        frame_time: std::time::Duration::ZERO,
         shell: None,
         link,
         facet_checked: false,
@@ -347,7 +346,8 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         covered: None,
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),
-        always_draw: false,
+        focused: true,
+        occluded: false,
         scripts: bench::scripts(),
         replay: None,
     };
@@ -635,8 +635,6 @@ struct App {
     view: Option<Box<WorldView>>,
     /// What the connection is doing, for the status strip.
     connection: String,
-    /// How long the last frame took. Wall clock, like the animation.
-    frame_time: std::time::Duration,
     /// The dev HUD, once there is a window to put it on.
     shell: Option<shell::Shell>,
     /// The shard, if this run logged in to one.
@@ -711,12 +709,18 @@ struct App {
     /// number about the loop and not about the camera. See [`frames::Frames`]
     /// for why it is not the scope.
     frames: frames::Frames,
-    /// Whether to keep the loop on the glide clock even when nothing is moving.
+    /// Whether the window has the keyboard.
     ///
-    /// Off, and it is an experiment rather than a setting — see
-    /// [`shell::Request::always_draw`]. A still world redrawn sixty times a
-    /// second is the same picture sixty times.
-    always_draw: bool,
+    /// Half of [`App::watched`], and true at construction: a window is mapped
+    /// focused and winit sends no event to say the thing it has just done.
+    focused: bool,
+    /// Whether the compositor says the window is entirely covered.
+    ///
+    /// The other half of [`App::watched`]. Its own field rather than folded into
+    /// the first, because the two arrive as two events in an order nothing
+    /// promises, and one `bool` written by both would read the second one's
+    /// answer to the first one's question.
+    occluded: bool,
     /// The bench's scenarios, built once.
     ///
     /// Held rather than rebuilt per frame because the HUD lists their names, and
@@ -884,9 +888,33 @@ impl ApplicationHandler<link::Update> for App {
             // character that keeps walking into a wall while its player is in
             // another window is not what the key meant. The destination goes
             // with it, for the same reason: nobody is watching it be walked to.
-            WindowEvent::Focused(false) => {
-                self.steer.clear();
-                self.aiming = false;
+            //
+            // It is also half of what paces the loop — see [`App::watched`] —
+            // and regaining focus has to ask for a frame, because the redraw
+            // that would have asked for the next one is the one that stopped
+            // being drawn.
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if focused {
+                    if let Some(window) = self.window.as_ref() {
+                        window.window.request_redraw();
+                    }
+                } else {
+                    self.steer.clear();
+                    self.aiming = false;
+                }
+            }
+            // Entirely covered by another window: the compositor will not show
+            // anything drawn, so the loop stops drawing at the display's rate
+            // and falls back to the animation clock. Uncovered, it restarts the
+            // same way focus does.
+            WindowEvent::Occluded(occluded) => {
+                self.occluded = occluded;
+                if !occluded {
+                    if let Some(window) = self.window.as_ref() {
+                        window.window.request_redraw();
+                    }
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 // Relative to the *viewport* and not the window: the camera's
@@ -987,6 +1015,14 @@ impl ApplicationHandler<link::Update> for App {
                 window.window.request_redraw();
             }
         }
+        // The animation clock. Watched, this is a safety net rather than the
+        // pacer — `draw` asks for the next frame itself and the display answers
+        // — and it is kept for the paths where that ask does not happen: `draw`
+        // returns early with no window, with a swapchain it had to rebuild, and
+        // on a compositor that refused to hand over a texture. Without it, one
+        // of those would stop the loop dead until the next input event. The
+        // redraw requests coalesce, so a net that fires while the display is
+        // already pacing costs a wake and no frame.
         if now >= self.next_tick {
             self.next_tick = now + self.redraw_interval();
             if let Some(window) = self.window.as_ref() {
@@ -1146,20 +1182,35 @@ impl App {
         self.control.relock(mobiles::gaze(&self.player));
     }
 
-    /// How long until the next frame is worth drawing.
+    /// Whether there is anybody to show a frame to: the window has the keyboard
+    /// and is not covered.
     ///
-    /// Two rates, because there are two reasons for a frame and they are an
-    /// order of magnitude apart. A body's animation steps once every
-    /// [`FRAME_DELAY`] and nothing between two of those changes a pixel, so 80ms
-    /// is the whole cost of standing still. A *glide* moves a body a couple of
-    /// pixels at a time, and drawn on the animation clock it would arrive in
-    /// five visible jumps — which is the teleport it exists to remove, in
-    /// instalments.
+    /// What the loop's pacing hangs on, and the whole of what this client does
+    /// about power. A window in the background still ages its animations — the
+    /// crowd has to be where it would have been when the player comes back —
+    /// but it does it on the animation clock rather than at the display's rate.
+    fn watched(&self) -> bool {
+        self.focused && !self.occluded
+    }
+
+    /// What is deciding when the next frame is drawn.
     ///
-    /// [`GLIDE_INTERVAL`] and not `ControlFlow::Poll`: polling is a busy loop
-    /// unless the surface's present mode happens to block, and the present mode
-    /// is whatever the adapter offered first.
-    /// Three reasons and not one, because they are three independent things
+    /// Watched, it is the display and nothing else: [`App::draw`] asks for the
+    /// next frame the moment it has queued one, and `PresentMode::Fifo` blocks
+    /// the frame after that until the display has taken it. That is the loop
+    /// every other real-time client runs, and it is what makes a still screen
+    /// cost the same sixty frames a second as a moving one — which is the point,
+    /// because "the frame rate drops when I stand still" was true here and read
+    /// as a stall no matter how correct the reason was.
+    ///
+    /// Unwatched, there is nobody to show a frame to, and the timer below is
+    /// what the loop falls back to. Two rates there, because there are two
+    /// reasons for a frame and they are an order of magnitude apart: a body's
+    /// animation steps once every [`FRAME_DELAY`] and nothing between two of
+    /// those changes a pixel, while a *glide* moves a body a couple of pixels at
+    /// a time and drawn on the animation clock would arrive in five visible
+    /// jumps — the teleport it exists to remove, in instalments. Three reasons
+    /// for the fast one and not one, because they are three independent things
     /// that move a pixel: a body mid-step, an eye still converging on one that
     /// has stopped, and a scenario waiting to deliver its next knot.
     ///
@@ -1167,13 +1218,18 @@ impl App {
     /// on frames where nothing else moved, and a loop that only woke for gliding
     /// bodies delivered the tail of every ease 80ms late and whole — the stutter
     /// the filter exists to remove, arriving just after it.
+    fn pacing(&self) -> frames::Pacing {
+        if self.watched() {
+            return frames::Pacing::Display;
+        }
+        frames::Pacing::Timer(self.redraw_interval())
+    }
+
+    /// The fallback timer's interval. See [`App::pacing`] for when it is the one
+    /// that decides.
     fn redraw_interval(&self) -> std::time::Duration {
         let moving = self.crowd.anyone_gliding() || self.control.settling() || self.replay.is_some();
-        if moving || self.always_draw {
-            GLIDE_INTERVAL
-        } else {
-            FRAME_DELAY
-        }
+        if moving { GLIDE_INTERVAL } else { FRAME_DELAY }
     }
 
     /// Start walking one of the bench's scenarios in the window.
@@ -1526,7 +1582,6 @@ impl App {
             connection: self.connection.clone(),
             serial: self.view.as_ref().map(|view| view.player.serial.raw()),
             position: self.player.at,
-            frame_time: self.frame_time,
             camera: *self.control.camera(),
             locked: self.control.follow() == Follow::Body,
             rig: self.control.rig(),
@@ -1539,11 +1594,11 @@ impl App {
             frames: self.frames.frames().to_vec(),
             frames_span: self.frames.span(),
             worst_fps: self.frames.worst_fps(),
-            // What the loop is currently *asking* for, which is the other half
-            // of any answer about the frame rate: a picture drawn every 80ms is
-            // not a slow frame, it is a frame nobody asked for sooner.
-            cadence: self.redraw_interval(),
-            always_draw: self.always_draw,
+            // What is currently *asking* for frames, which is the other half of
+            // any answer about the frame rate: a picture drawn every 80ms is not
+            // a slow frame if the loop is on the animation clock, it is a frame
+            // nobody asked for sooner.
+            pacing: self.pacing(),
             scripts: self.scripts.iter().map(|script| script.name).collect(),
             replay: self.replay.as_ref().map(|replay| {
                 let length = replay.length().as_secs_f32().max(0.001);
@@ -1652,7 +1707,17 @@ impl App {
             color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: capabilities.present_modes[0],
+            // Named, and not `present_modes[0]`. This is the loop's pacer: a
+            // frame is drawn, `request_redraw` asks for the next one at once,
+            // and what makes that a rate rather than a spin is `get_current_texture`
+            // blocking here until the display has taken the last one. Whatever
+            // the adapter happened to offer first is `Mailbox` on some drivers
+            // and `Immediate` on others — neither of which blocks, so the same
+            // code is a 60Hz walk on one machine and a busy loop at a thousand
+            // frames a second on the next. `Fifo` is the one mode `wgpu`
+            // guarantees on every backend, which is why it can be asked for
+            // outright rather than searched for.
+            present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
             alpha_mode: capabilities.alpha_modes[0],
             view_formats: vec![],
@@ -1821,6 +1886,11 @@ impl App {
         // frame's panels — which is right until the first resize.
         // Gathered before the shell is borrowed: the HUD is a projection of the
         // whole app and the shell is part of it.
+        //
+        // Timed, and separately from the world below: the two halves of a frame
+        // are built by two things that grow for different reasons, and a single
+        // build time cannot say which of them ate the frame. See [`frames`].
+        let ui_started = Instant::now();
         let hud = self.hud();
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
@@ -1831,6 +1901,7 @@ impl App {
             }
             _ => None,
         };
+        let mut ui_cost = ui_started.elapsed();
         if let Some((request, _, viewport)) = &ui {
             if request.relock {
                 self.relock();
@@ -1849,9 +1920,6 @@ impl App {
             // frames already held were flown by the same rig.
             if let Some(span) = request.scope_span {
                 self.scope.set_span(span);
-            }
-            if let Some(always) = request.always_draw {
-                self.always_draw = always;
             }
             match request.script {
                 Some(shell::ScriptRequest::Run(name)) => self.start_replay(name),
@@ -1877,6 +1945,11 @@ impl App {
         // across for the next 400ms, so every frame in between has a different
         // answer.
         self.follow_player(elapsed);
+
+        // Read before the window is borrowed below, for the same reason the two
+        // lines above are: the borrow is of `self`, and the pacing at the foot
+        // of this frame is a fact about the whole app rather than about it.
+        let watched = self.watched();
 
         // What the camera has walked onto since the atlases were last grown.
         // Gathered before the window is borrowed, and not inside the borrow: it
@@ -2000,6 +2073,12 @@ impl App {
             .collect();
         let drawn: Vec<Mobile> = drawn.into_iter().map(|(_, mobile)| mobile).collect();
 
+        // The vsync wait, and the reason it is timed on its own: under
+        // `PresentMode::Fifo` this call blocks until the display has taken the
+        // frame before it, which on an idle client is most of the interval.
+        // Counted as build time it would report a client that is asleep as one
+        // at full load, and the panel exists to tell those two apart.
+        let acquire_started = Instant::now();
         let frame = match window.surface.get_current_texture() {
             // Suboptimal still draws: the surface wants reconfiguring, and the
             // next resize event will do it.
@@ -2025,6 +2104,7 @@ impl App {
                 return;
             }
         };
+        let wait = acquire_started.elapsed();
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // The image the world is drawn into. Its size is the camera's, so a
@@ -2134,6 +2214,7 @@ impl App {
         // The UI over it, with no depth attachment: the world's depth buffer
         // ordered the world, and this is drawn on the result.
         if let (Some(shell), Some((_, output, _))) = (self.shell.as_mut(), ui) {
+            let painting = Instant::now();
             shell.paint(
                 &window.device,
                 &window.queue,
@@ -2142,26 +2223,41 @@ impl App {
                 output,
                 [window.config.width, window.config.height],
             );
+            ui_cost += painting.elapsed();
         }
         window.queue.submit([encoder.finish()]);
         // Presentation moved onto the queue in wgpu 30; the texture is consumed.
         window.queue.present(frame);
-        // A body mid-step asks for the next frame here rather than through the
-        // timer: the surface presents in FIFO, so asking again the moment a
-        // frame is on the queue paces the walk at the display's own rate instead
-        // of at a 16ms timer that beats against it. The timer stays for
-        // everything else — a still world redraws on the animation clock and
-        // sleeps in between, which is what it is for.
-        if self.crowd.anyone_gliding() {
+        // And the next frame is asked for here rather than through the timer,
+        // unconditionally while somebody is watching. This is the pacer: the
+        // surface presents in FIFO, so `get_current_texture` above blocks the
+        // next frame until the display has taken this one, and asking again
+        // straight away runs the loop at the display's own rate instead of at a
+        // 16ms timer that beats against it.
+        //
+        // Every frame and not only the gliding ones, which is the change: a
+        // client that only redrew when something moved dropped to 12.5 frames a
+        // second the moment the player stood still, and however correct the
+        // reason was, what it looked like was a stall. The timer stays for the
+        // window nobody is looking at — see [`App::pacing`].
+        if watched {
             window.window.request_redraw();
         }
-        self.frame_time = started.elapsed();
-        // The interval between two *drawn* frames, and what it cost to build
-        // this one: the pacing and the price, which are the two things a drop
-        // in frame rate can be. See [`frames`].
+        let took = started.elapsed();
+        // The interval between two *drawn* frames, and where this one's time
+        // went: the pacing and the price, which are the two things a drop in
+        // frame rate can be — and the price split between the panels and the
+        // world, which are the two things the price can be. See [`frames`].
+        //
+        // The scene is what is left after the UI and the wait rather than a
+        // fourth clock, so the three always add up to the frame exactly: a
+        // fourth `Instant` would leave a remainder nobody could account for.
+        let scene = took.saturating_sub(ui_cost).saturating_sub(wait);
         self.frames.record(
             started.saturating_duration_since(self.last_frame),
-            self.frame_time,
+            ui_cost,
+            scene,
+            wait,
         );
         self.last_frame = started;
     }

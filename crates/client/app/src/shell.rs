@@ -55,8 +55,6 @@ pub struct Hud {
     pub serial: Option<u32>,
     /// Where our body stands, as the server last said.
     pub position: openshard_protocol::world::Point,
-    /// How long the last frame took to build and submit.
-    pub frame_time: std::time::Duration,
     /// The camera, read for its zoom, eye and viewport.
     pub camera: Camera,
     /// Whether the camera is locked to the body.
@@ -82,16 +80,13 @@ pub struct Hud {
     /// The worst frame rate in that window, and `None` before there is a frame
     /// to have a rate.
     pub worst_fps: Option<f64>,
-    /// Whether the loop has been asked to draw at the glide rate even when
-    /// nothing is moving. See [`Request::always_draw`].
-    pub always_draw: bool,
-    /// How long the event loop is currently waiting between frames.
+    /// What is currently asking for frames.
     ///
-    /// Shown beside the rate because it is the *reason* for it whenever nothing
-    /// is moving: this client drops to the animation clock when nobody is
-    /// walking, so a still world is 12.5 frames a second on purpose and a panel
-    /// that only showed the rate would read that as a fault.
-    pub cadence: Duration,
+    /// Shown beside the rate because it is the *reason* for it: a client paced
+    /// by the display and one paced by the animation clock report the same kind
+    /// of number and mean opposite things by it, and a panel that only showed
+    /// the rate would read the second as a fault.
+    pub pacing: crate::frames::Pacing,
     /// The bench's scenarios, by name, in the order it ships them.
     pub scripts: Vec<&'static str>,
     /// The one being replayed, and how far through it is from zero to one.
@@ -179,16 +174,6 @@ pub struct Request {
     /// scenario can be: a `teleport` is over in one, and a `back_and_forth`
     /// worth reading is longer than the window that shows it.
     pub scope_span: Option<Duration>,
-    /// Draw at the glide rate whether or not anything is moving.
-    ///
-    /// The experiment behind the frame panel rather than a setting anybody is
-    /// meant to ship with: a still world redrawn 60 times a second is the same
-    /// picture 60 times, at the cost of a busy machine. It is here because
-    /// "it drops to 12.5 when I stop walking" is answered by *looking* at both
-    /// cadences rather than by arguing about which one is the picture — and if
-    /// forcing the fast one changes nothing that can be seen, the cadence was
-    /// never the complaint.
-    pub always_draw: Option<bool>,
 }
 
 /// What the script picker asked for.
@@ -414,9 +399,17 @@ fn layout(
                 hud.position.x, hud.position.y, hud.position.z
             ));
             ui.separator();
-            // Milliseconds with one decimal: a frame is a millisecond or two
-            // here and an integer would read as zero.
-            ui.label(format!("{:.1} ms", hud.frame_time.as_secs_f64() * 1_000.0));
+            // What the frame cost to *build*, and not how long it took: paced by
+            // the display, every frame takes a refresh interval whatever it was
+            // doing, and the strip would read 16.7ms on an idle client for ever.
+            // Milliseconds with one decimal, because a frame is a millisecond or
+            // two here and an integer would read as zero.
+            ui.label(format!(
+                "{:.1} ms",
+                hud.frames
+                    .last()
+                    .map_or(0.0, |frame| frame.build().as_secs_f64() * 1_000.0)
+            ));
         });
     });
 
@@ -511,7 +504,7 @@ fn layout(
         .default_pos([16.0, 220.0])
         .default_width(320.0)
         .show(&context, |ui| {
-            frames_panel(ui, hud, &mut request);
+            frames_panel(ui, hud);
         });
 
     egui::Window::new("World")
@@ -729,20 +722,25 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     }
 }
 
-/// The frame rate, and the two different things a drop in it can be.
+/// The frame rate, what is setting it, and which half of the frame the time went
+/// into.
 ///
 /// A drop is either *cost* — the frame took too long to build — or *pacing*:
-/// nothing asked for a frame sooner. This client does the second on purpose, and
-/// visibly: the moment nobody is walking the loop falls back to the animation
-/// clock and draws 12.5 frames a second, which looks exactly like a stall and is
-/// not one. So both curves are here, and the cadence the loop is currently
-/// waiting on is printed beside them — with only the rate on screen, every drop
-/// looks like the same drop. See [`crate::frames`].
-fn frames_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
-    let cadence = hud.cadence.as_secs_f64() * 1_000.0;
+/// nothing asked for a frame sooner. Watched, this client is paced by the display
+/// and a drop is a cost; unwatched it falls back to the animation clock on
+/// purpose, and 12.5 frames a second there looks exactly like a stall and is not
+/// one. So the pacer is printed beside the rate.
+///
+/// And the cost is two curves rather than one, because a frame is built by two
+/// independent things: `egui` laying out the panels, and the world. The wait is
+/// neither — it is the display holding the last frame — and it is the number
+/// that says how much of the frame was still free. See [`crate::frames`].
+fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
+    let ms = |duration: Duration| duration.as_secs_f64() * 1_000.0;
+    let last = hud.frames.last();
     egui::Grid::new("frames").num_columns(4).show(ui, |ui| {
         ui.label("fps");
-        match hud.frames.last() {
+        match last {
             // The last frame's own rate, not an average: the thing worth seeing
             // is the one frame that took 80ms, and a mean over a second is
             // exactly what hides it.
@@ -755,39 +753,41 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             None => ui.label("—"),
         };
         ui.end_row();
+        ui.label("ui");
+        ui.label(last.map_or("—".to_string(), |frame| format!("{:.1} ms", ms(frame.ui))));
+        ui.label("world");
+        ui.label(last.map_or("—".to_string(), |frame| format!("{:.1} ms", ms(frame.scene))));
+        ui.end_row();
         ui.label("build");
-        ui.label(format!("{:.1} ms", hud.frame_time.as_secs_f64() * 1_000.0));
-        ui.label("cadence");
-        ui.label(format!("{cadence:.0} ms"));
+        ui.label(last.map_or("—".to_string(), |frame| format!("{:.1} ms", ms(frame.build()))));
+        // The vsync sleep, named as such: it is the slack in the frame and not
+        // work, and a client whose wait is most of the interval has room.
+        ui.label("waited");
+        ui.label(last.map_or("—".to_string(), |frame| format!("{:.1} ms", ms(frame.wait))));
         ui.end_row();
     });
-    // The sentence that turns "the frame rate dropped when I stopped walking"
-    // from a bug report into a reading. Which clock the loop is on is the whole
-    // answer, and it is a rule rather than a symptom — see `App::redraw_interval`.
+    // The sentence that turns "the frame rate dropped" from a bug report into a
+    // reading. What is asking for frames is the whole answer, and when it is the
+    // animation clock that is a rule rather than a symptom — see `App::pacing`.
     ui.label(
-        egui::RichText::new(match hud.cadence > Duration::from_millis(32) {
-            true => "nothing is moving: the loop is on the animation clock, and a still world costs one frame per 80ms by design",
-            false => "something is moving: the loop is on the glide clock, one frame per 16ms",
+        egui::RichText::new(match hud.pacing {
+            crate::frames::Pacing::Display => {
+                "the display is the pacer: a frame is asked for as soon as the last is queued, and the surface presents in FIFO"
+            }
+            crate::frames::Pacing::Timer(_) => {
+                "nobody is watching the window: the loop is on the animation clock and draws only what the animation needs"
+            }
         })
         .weak()
         .small(),
     );
 
-    // The experiment, not a setting: see `Request::always_draw`.
-    let mut always = hud.always_draw;
-    if ui
-        .checkbox(&mut always, "draw at the glide rate even when nothing moves")
-        .changed()
-    {
-        request.always_draw = Some(always);
-    }
-
     let span = hud.frames_span.as_secs_f32().max(0.001);
-    let last = hud.frames.last().map_or(0.0, |frame| frame.at.as_secs_f32());
+    let end = hud.frames.last().map_or(0.0, |frame| frame.at.as_secs_f32());
     let series = |of: fn(&crate::frames::Frame) -> f64| -> Vec<(f32, f32)> {
         hud.frames
             .iter()
-            .map(|frame| (frame.at.as_secs_f32() - (last - span), of(frame) as f32))
+            .map(|frame| (frame.at.as_secs_f32() - (end - span), of(frame) as f32))
             .collect()
     };
     strip(
@@ -797,12 +797,25 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         span,
         egui::Color32::from_rgb(120, 220, 120),
     );
-    strip(
+    // One chart and one scale for the two halves, deliberately: the question is
+    // which of them is the bigger, and two charts each normalised to their own
+    // peak would draw a tenth of a millisecond exactly as tall as ten.
+    strips(
         ui,
-        "what a frame cost to build, ms",
-        &series(|frame| frame.build.as_secs_f64() * 1_000.0),
+        "what a frame cost, ms",
+        &[
+            Curve {
+                name: "ui",
+                points: series(|frame| frame.ui.as_secs_f64() * 1_000.0),
+                colour: egui::Color32::from_rgb(150, 180, 240),
+            },
+            Curve {
+                name: "world",
+                points: series(|frame| frame.scene.as_secs_f64() * 1_000.0),
+                colour: egui::Color32::from_rgb(220, 200, 90),
+            },
+        ],
         span,
-        egui::Color32::from_rgb(220, 200, 90),
     );
 }
 
@@ -831,36 +844,84 @@ fn literal(rig: &Rig) -> String {
 /// drawn rather than tabulated. A fixed axis would flatten every scenario that
 /// is not a walk.
 fn strip(ui: &mut egui::Ui, title: &str, series: &[(f32, f32)], span: f32, colour: egui::Color32) {
+    strips(
+        ui,
+        title,
+        &[Curve {
+            // Unnamed, because a chart with one curve names it in the title.
+            name: "",
+            points: series.to_vec(),
+            colour,
+        }],
+        span,
+    );
+}
+
+/// One named curve of a strip chart: a point per frame, as (seconds into the
+/// window, value).
+struct Curve<'a> {
+    /// What to call it in the legend, or empty for the one-curve chart.
+    name: &'a str,
+    points: Vec<(f32, f32)>,
+    colour: egui::Color32,
+}
+
+/// Several curves in one chart, on one scale.
+///
+/// One scale and not one each, which is the whole reason this exists: two costs
+/// worth comparing are worth comparing, and a chart that normalised each curve
+/// to its own peak would draw a tenth of a millisecond exactly as tall as ten
+/// and answer the question backwards. Each curve is named in its own colour
+/// beside the peak they share.
+fn strips(ui: &mut egui::Ui, title: &str, series: &[Curve<'_>], span: f32) {
     let width = ui.available_width().max(180.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 56.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
-    let peak = series.iter().map(|(_, value)| *value).fold(0.0f32, f32::max);
+    let peak = series
+        .iter()
+        .flat_map(|curve| curve.points.iter().map(|(_, value)| *value))
+        .fold(0.0f32, f32::max);
     // A flat run has a peak of zero and would divide by it. Drawn along the
     // floor instead, which is what a still eye *is*.
     let scale = match peak > 0.0 {
         true => rect.height() / peak,
         false => 0.0,
     };
-    let points: Vec<egui::Pos2> = series
-        .iter()
-        .map(|(at, value)| {
-            egui::pos2(
-                rect.left() + rect.width() * (at / span).clamp(0.0, 1.0),
-                rect.bottom() - value * scale,
-            )
-        })
-        .collect();
-    if points.len() > 1 {
-        painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, colour)));
+    for curve in series {
+        let points: Vec<egui::Pos2> = curve
+            .points
+            .iter()
+            .map(|(at, value)| {
+                egui::pos2(
+                    rect.left() + rect.width() * (at / span).clamp(0.0, 1.0),
+                    rect.bottom() - value * scale,
+                )
+            })
+            .collect();
+        if points.len() > 1 {
+            painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, curve.colour)));
+        }
     }
-    painter.text(
-        rect.left_top() + egui::vec2(4.0, 2.0),
+    let mut at = rect.left_top() + egui::vec2(4.0, 2.0);
+    let font = egui::FontId::proportional(10.0);
+    let colour = series
+        .first()
+        .map_or(ui.visuals().text_color(), |curve| curve.colour);
+    let head = painter.text(
+        at,
         egui::Align2::LEFT_TOP,
         format!("{title} — peak {peak:.0}"),
-        egui::FontId::proportional(10.0),
+        font.clone(),
         colour,
     );
+    at.x = head.right() + 8.0;
+    // The legend, and only where there is one: a single curve is named by the
+    // title it was drawn under.
+    for curve in series.iter().filter(|curve| !curve.name.is_empty()) {
+        let drawn = painter.text(at, egui::Align2::LEFT_TOP, curve.name, font.clone(), curve.colour);
+        at.x = drawn.right() + 8.0;
+    }
 }
 
 /// The speech line, docked at the bottom, with what the shard last said above

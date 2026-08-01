@@ -605,7 +605,15 @@ impl Sim {
         }
     }
 
-    /// `App::redraw_interval`.
+    /// `App::redraw_interval` — the *timer*, which in the window is now only the
+    /// fallback for a window nobody is watching (`App::pacing`).
+    ///
+    /// Deliberately the timer and not the display: this harness has no surface
+    /// to block on, so "the display asks for the next frame as soon as the last
+    /// is queued" has no meaning here, and the fastest cadence it can model is
+    /// the glide clock's 16ms. That makes it the *coarser* of the two — a walk
+    /// that is smooth under this harness is smooth at 60Hz, and not the other
+    /// way round.
     fn redraw_interval(&self) -> Duration {
         match self.crowd.anyone_gliding() {
             true => GLIDE_INTERVAL,

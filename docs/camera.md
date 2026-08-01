@@ -515,13 +515,40 @@ per scenario. `crates/client/app/src/replay.rs` walks the scenarios.
 **The loop got the same treatment as the camera, for the same reason.** A frame
 rate is two independent quantities — the interval between two drawn frames, and
 what one cost to build — and a drop in the first with the second flat is a
-*pacing* decision this client makes on purpose: `redraw_interval` falls back to
-the animation clock's 80ms the moment nobody is walking. `crates/client/app/src/frames.rs`
-is the ring and the **Frames** window draws both curves plus the cadence the loop
-is currently waiting on, which is what turns "it stutters when I stop" from an
-argument into a reading. It is not the scope: a frame drawn with the camera
-unlocked is still a frame, so it is fed every frame and never cleared by a rig
-swap.
+*pacing* decision rather than a cost. `crates/client/app/src/frames.rs` is the
+ring and the **Frames** window draws the curves plus what is currently asking for
+frames, which is what turns "it stutters when I stop" from an argument into a
+reading. It is not the scope: a frame drawn with the camera unlocked is still a
+frame, so it is fed every frame and never cleared by a rig swap.
+
+**And then the instrument answered its own question: the display is the pacer.**
+The loop used to be a timer — 16ms while something glided, the animation clock's
+80ms otherwise — and the panel is what made that decision look like what it was.
+Every argument for it was correct and none of them survived being looked at: a
+still screen at 12.5 frames a second reads as a stall, whatever is true about the
+pixels not having changed. So the surface asks for `PresentMode::Fifo` by name
+rather than taking whatever the adapter offered first, and every frame ends by
+asking for the next one while the window is watched. What makes that a rate and
+not a spin is `get_current_texture` blocking until the display has taken the last
+frame, which is the loop every other real-time client runs.
+
+*Watched* is focused and not occluded, and it is the whole of what this client
+does about power: in the background the animation clock takes over, because a
+window nobody can see still has to age its animations to be in the right state
+when it comes back. The timer stays behind that as a safety net — `draw` returns
+early with no window, with a swapchain it had to rebuild, and when the compositor
+refuses a texture, and on each of those the frame that would have asked for the
+next one is the frame that did not happen.
+
+**The cost split in two when the pacing stopped being interesting.** Under vsync
+a frame always takes a refresh interval, so "how long did the frame take" stopped
+being a number about this client and the panel now charges `egui` and the world
+separately, with the vsync sleep as a third figure that is neither. Counted as
+build time that sleep would report an idle client at full load; separated, it is
+the slack, and `ui` against `world` is the one reading that says which half to go
+and look at. The rates are not split and are not meant to be: both halves go
+through one encoder into one surface texture, so they are on screen the same
+number of times a second by construction.
 
 **A rig is copied out as a source line, and that is the output that lasts.** The
 panel prints `Rig { plane_tau: 0.15, .. }` beside a copy button, so a setting
@@ -634,7 +661,12 @@ Found while planning this, and not to be lost in it.
 - **The DST harness copies ten lines of `App::about_to_wait`.** Its own module
   docs say so. The camera adds a second reason to lift that loop into a headless
   unit both can drive, and the bench is the thing that would notice the copy
-  drifting.
+  drifting. It has drifted once already in a way that is *safe* and should be
+  said out loud: the harness has no surface to block on, so it walks the timer's
+  16ms where the window now walks the display's refresh. That makes it the
+  coarser of the two — smooth under the harness implies smooth at 60Hz and not
+  the other way round — but it also means no test in this repository exercises
+  the loop the player actually runs.
 - ~~**`Camera::look_at(Point)` has one caller and takes a tile.**~~ Gone.
   `Control::relock` takes a `Gaze` and `look_at_pixel` is the one door into the
   eye: a body relocked mid-step is between two tiles, and the tile it is
@@ -667,19 +699,37 @@ Found while planning this, and not to be lost in it.
   today, a stage-6 job when it stops being.
 - **The loop's own cadence had no instrument, and the camera's did.** "The frame
   rate drops when the character stops" is a true observation about a rule this
-  plan already relies on — `redraw_interval` falls back to the animation clock's
-  80ms the moment nobody is walking — and there was nothing on screen that said
+  plan already relied on — `redraw_interval` fell back to the animation clock's
+  80ms the moment nobody was walking — and there was nothing on screen that said
   so, which makes a design decision read as a stall. The `Frames` panel is the
   answer: the interval between two *drawn* frames and what each cost to build,
   side by side, because a drop is either pacing or cost and the fixes are
   opposite. Measured on its own `last_frame` and not on `App::last_advance`,
   which an arriving packet also moves.
-- **And whether 80ms standing is *good* is still an open question.** The panel
-  has the checkbox that forces the glide cadence, so it is answerable by
-  looking. What it would cost to answer "no" is a term in `redraw_interval` —
-  a tail after the last motion, or the display's own rate while the window has
-  focus — and neither is free on a laptop. Nothing to decide until somebody has
-  looked with the switch on.
+- ~~**And whether 80ms standing is *good* is still an open question.**~~ It was
+  looked at with the switch on, and the answer was no. The loop is paced by the
+  display now (C4): `PresentMode::Fifo` by name, a redraw asked for at the foot
+  of every frame while the window is watched, and the animation clock kept for
+  the window nobody is looking at. The checkbox went with the question.
+- **The safety-net timer and the display both ask for frames.** With the display
+  pacing, `about_to_wait`'s animation clock is only there for the paths where
+  `draw` returns before it can ask for the next frame — no window, a rebuilt
+  swapchain, a refused texture. The requests coalesce so it costs a wake and no
+  frame, but "two things ask and one of them is redundant most of the time" is
+  the shape of a rule nobody can state later. Each early return asking for its
+  own frame would let the net go.
+- **`Frame::wait` is a lower bound on what was spent waiting for the display.**
+  It times `get_current_texture`, which is where `Fifo` blocks — but a backend is
+  free to make `submit` or `present` block instead, and that time lands in the
+  world's column as if the client had spent it. Worth pinning against a frame
+  counter from the surface if the world's cost ever reads high with nothing on
+  screen to explain it.
+- **Nothing throttles a watched window that is doing nothing.** Focused and idle
+  is now sixty frames a second of the same picture, which is what every other
+  client does and is still a laptop battery. The honest form of a fix is a
+  throttle on *unchanged output* rather than on "nothing is moving", which is a
+  question this client cannot currently answer — the world texture is rebuilt
+  whether or not it would differ.
 - **`FRAMES_SPAN` is a constant the panel cannot change, again.** The same item
   the scope's span just stopped being, and left as a constant deliberately: the
   slider belongs to whichever of the two rings turns out to be looked at
