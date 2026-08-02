@@ -317,18 +317,20 @@ impl Walk {
     /// and moves it nowhere — that is a whole step in UO, it gets its own
     /// sequence number and its own ack, and this predicts it as one.
     ///
-    /// `ground` answers the height to stand at on a tile, given where this end
-    /// currently believes it is standing, and it is what stops the prediction
-    /// drifting up a hill — or into the water under a pier: [`intend`] carries
-    /// `z` over unchanged because neither end of it has terrain, while the
-    /// server *does* read the map and lands the step wherever the ground (or a
-    /// static a body can stand on) is — and says nothing, since a `0x22` carries
-    /// no position. A caller with no map passes `|_, _, _| None` and gets the
-    /// old flat prediction, which is honest; a guessed height would be
+    /// `ground` answers the height to stand at on the target tile, given the
+    /// whole point this end believes it is standing at — tile *and* height, not
+    /// just the height, because the surface underfoot is what a step reaches
+    /// from and a staircase cannot be climbed without it. It is what stops the
+    /// prediction drifting up a hill — or into the water under a pier: [`intend`]
+    /// carries `z` over unchanged because neither end of it has terrain, while
+    /// the server *does* read the map and lands the step wherever the ground (or
+    /// a static a body can stand on) is — and says nothing, since a `0x22`
+    /// carries no position. A caller with no map passes `|_, _, _| None` and gets
+    /// the old flat prediction, which is honest; a guessed height would be
     /// indistinguishable from a real one. `openshard_movement::MapTerrain`'s
-    /// `predict_z` is the answer a caller with a map wants: it never refuses (see
-    /// below), and unlike the land alone it also weighs a pier's or a bridge's
-    /// deck, so a step onto one predicts the deck and not the water underneath.
+    /// `predict_step` is the answer a caller with a map wants: it is the server's
+    /// own step rule, so a stair climbs and a pier's deck is stood on rather than
+    /// the water under it, and it never refuses (see below).
     ///
     /// Deliberately not `openshard_movement::Terrain::can_step`: this predicts a
     /// *height*, and it must not predict a *refusal*. Whether a step is allowed
@@ -339,7 +341,7 @@ impl Walk {
     pub fn step(
         &mut self,
         facing: Facing,
-        ground: impl Fn(u16, u16, i8) -> Option<i8>,
+        ground: impl Fn(Point, u16, u16) -> Option<i8>,
     ) -> Result<Vec<u8>, NotSent> {
         // Two refusals before anything is decided about the geometry, and the
         // reference checks the same two first thing in `PlayerMobile.Walk`.
@@ -366,7 +368,7 @@ impl Walk {
                 // the map has no cell for is left at the height it came with
                 // rather than dropped to zero, which would put the body
                 // underground.
-                let landed = match ground(target.x, target.y, self.predicted.position.z) {
+                let landed = match ground(self.predicted.position, target.x, target.y) {
                     Some(z) => Point::new(target.x, target.y, z),
                     None => target,
                 };
@@ -527,7 +529,7 @@ mod tests {
     #[test]
     fn a_step_lands_on_the_ground_and_a_turn_does_not() {
         let mut walk = Walk::new(Point::new(100, 100, 20), Facing::walking(Direction::North));
-        let hill = |_x: u16, _y: u16, _near_z: i8| Some(25);
+        let hill = |_from: Point, _x: u16, _y: u16| Some(25);
 
         walk.step(Facing::walking(Direction::East), hill).unwrap();
         assert_eq!(

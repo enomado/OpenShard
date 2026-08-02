@@ -147,6 +147,33 @@ where
             .unwrap_or(near_z)
     }
 
+    /// The height a mobile stepping from `from` onto `(x, y)` lands at — the
+    /// prediction a client draws its own body at, and the one number that has to
+    /// be the server's.
+    ///
+    /// This is [`check`](Self::check) — the *whole* step rule, reached from the
+    /// top of the surface underfoot, standing on the highest surface within a
+    /// step — and not [`predict_z`](Self::predict_z), which knows only a tile and
+    /// a rough height and therefore picks the surface *nearest* that height. On
+    /// bare ground the two agree. On a staircase they cannot: a stair tile carries
+    /// the floor below it and the step above, the server climbs to the step
+    /// (`check`'s `GetFixPoint` rule) and the nearest-z guess stays on the floor —
+    /// so a body walked *through* the staircase at ground level while the shard
+    /// had it half way up, and nothing said so, because a `0x22` carries no
+    /// position and only a `0x20` would ever have corrected it.
+    ///
+    /// Still never a refusal, which is the contract every caller here relies on:
+    /// where `check` says the step is impossible this falls back to
+    /// [`predict_z`](Self::predict_z)'s guess rather than returning nothing.
+    /// Whether a step is allowed is the server's answer and arrives as a `0x21`;
+    /// this end only has to draw the body somewhere sane until it does.
+    pub fn predict_step(&self, from: Point, x: u16, y: u16) -> i32 {
+        let from_z = i32::from(from.z);
+        let (start_z, start_top) = self.start_surface(from.x, from.y, from_z);
+        self.check(x, y, start_z, start_top)
+            .unwrap_or_else(|| self.predict_z(x, y, from_z))
+    }
+
     /// The surface a mobile at `(x, y, loc_z)` is standing *on*: its base z and
     /// its top. Ported from ServUO/RunUO's `MovementImpl.GetStartZ`.
     ///
@@ -722,6 +749,69 @@ mod tests {
             }
         }
         assert!(checked > 10, "only {checked} stacked-surface tiles tested");
+    }
+
+    /// A client predicting a step must land where the shard lands it, and on a
+    /// staircase that is the *step*, not the floor the same tile carries.
+    ///
+    /// The bug: `predict_z` picks the surface nearest the height a body already
+    /// has, `check` stands on the highest surface within a step, and a stair tile
+    /// carries both. So the shard climbed, the client stayed on the floor, and
+    /// since a `0x22` carries no position nothing corrected it — the body walked
+    /// *through* the staircase. `predict_step` is `check`, which is why the two
+    /// now agree; the `disagreed` counter is what proves the test is not green
+    /// because the two rules happen to answer the same everywhere.
+    #[test]
+    fn a_client_predicting_a_step_climbs_the_stairs_the_shard_climbs() {
+        let Some(t) = real_terrain() else {
+            return;
+        };
+
+        let mut checked = 0;
+        let mut disagreed = 0;
+        for y in 1500..1900u16 {
+            for x in 1350..1650u16 {
+                let stair = t.map().statics_at(x, y).any(|item| {
+                    let tile = t.tiles().static_tile(item.tile);
+                    tile.flags.is_platform() && tile.flags.is_climbable()
+                });
+                if !stair {
+                    continue;
+                }
+                for dir in Direction::ALL {
+                    let (dx, dy) = dir.step();
+                    let (nx, ny) = ((i32::from(x) + dx) as u16, (i32::from(y) + dy) as u16);
+                    // Stand on the neighbour first: a step is only meaningful
+                    // from a surface a body could actually be on.
+                    let Some(stand) = t.surface_at(nx, ny, 0) else {
+                        continue;
+                    };
+                    let Ok(stand) = i8::try_from(stand) else {
+                        continue;
+                    };
+                    let from = Point::new(nx, ny, stand);
+                    let Some(landed) = t.can_step(from, Point::new(x, y, stand)) else {
+                        continue;
+                    };
+                    assert_eq!(
+                        i8::try_from(t.predict_step(from, x, y)).ok(),
+                        Some(landed.z),
+                        "({nx},{ny},{stand}) -{dir:?}-> ({x},{y}): the client predicted a \
+                         different height than the shard landed the step at",
+                    );
+                    checked += 1;
+                    if i32::from(landed.z) != t.predict_z(x, y, i32::from(stand)) {
+                        disagreed += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 50, "only {checked} steps onto a stair tested");
+        assert!(
+            disagreed > 5,
+            "only {disagreed} of {checked} steps are ones the nearest-height guess got \
+             wrong — the sweep is not reaching real staircases"
+        );
     }
 
     #[test]

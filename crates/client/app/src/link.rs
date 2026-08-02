@@ -303,20 +303,24 @@ async fn play<D: Dial>(
                         // stands — the ground, or a platform static — and says
                         // nothing, since a `0x22` carries no position.
                         //
-                        // `MapTerrain::predict_z` weighs both: the land's *average*
-                        // (the same number the shard's own `ground_z` computes — on a
-                        // slope the raw corner differs by most of the tile's relief,
-                        // and a body predicted at the corner is drawn sunk into the
-                        // hill and sorted behind it), and the stand height of every
-                        // platform static on the tile, a pier's or a bridge's deck
-                        // among them, picking whichever is nearest where the body
-                        // already is. Never a refusal — see `predict_z`'s own doc —
-                        // so it cannot desync from a server that disagrees; it can only
-                        // draw the wrong deck for one step, corrected by the next
-                        // `0x20`.
+                        // `MapTerrain::predict_step` is the shard's own step rule run
+                        // on this end: it weighs the land's *average* (the same number
+                        // the shard's own `ground_z` computes — on a slope the raw
+                        // corner differs by most of the tile's relief, and a body
+                        // predicted at the corner is drawn sunk into the hill and
+                        // sorted behind it) against every platform static on the tile,
+                        // a pier's or a bridge's deck among them, reaching from the top
+                        // of the surface underfoot and standing on the highest surface
+                        // within a step. That last part is what climbs a staircase, and
+                        // it is why this is not `predict_z`: the nearest-height guess
+                        // stays on the floor a stair tile also carries, and the body
+                        // walks *through* the stairs while the shard has it half way
+                        // up. Never a refusal — see `predict_step`'s own doc — so it
+                        // cannot desync from a server that disagrees; it can only draw
+                        // the wrong deck for one step, corrected by the next `0x20`.
                         let terrain = openshard_movement::MapTerrain::new(map, tiles);
-                        match walk.step(facing, |x, y, near_z| {
-                            i8::try_from(terrain.predict_z(x, y, i32::from(near_z))).ok()
+                        match walk.step(facing, |from, x, y| {
+                            i8::try_from(terrain.predict_step(from, x, y)).ok()
                         }) {
                             Ok(bytes) => {
                                 // The body moves *now*, on this end's own
