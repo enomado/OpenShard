@@ -462,6 +462,18 @@ Found while building the observability and the sun:
 
 Found while drawing the boxes:
 
+- **A pier is two thousand occluders, and they are floors.** The first frame of
+  the wireframe was Britain's docks, and the grid held **2011 cells** — one thin
+  slab on every plank, because a floor is exactly what you cannot shoot *through*
+  to the storey above and the membership test is the shooting flags. It is not
+  wrong; it is what makes the picture unreadable, and it is why the view draws
+  only what stands above the floor the player is on. What it raises and does not
+  answer: a fragment standing on that deck is *inside* one of those cells, and
+  the walk exempts the light's own tile (decision 3) but not the fragment's — so
+  whether a floor dims the light falling on the thing standing on it is an open
+  question with a scene-shaped answer. Nothing in the frame looks wrong today,
+  which is exactly why it is written down rather than assumed.
+
 - **The overlay walks the map a second time in the same frame.** The HUD is built
   before the world passes and the frame's `Lighting` after them, so the wireframe
   cannot read the grid the shader is about to be given — it builds its own from

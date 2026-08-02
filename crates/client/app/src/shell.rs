@@ -688,25 +688,28 @@ fn layout(
             ui.separator();
             let mut boxes = hud.show_occluders;
             if ui
-                .checkbox(&mut boxes, "occluders — what stops light: wall red, pane cyan")
+                .checkbox(
+                    &mut boxes,
+                    "occluders — what stops light above your feet: wall red, pane cyan",
+                )
                 .changed()
             {
                 request.show_occluders = Some(boxes);
             }
             match &hud.occluders {
-                // The count is this overlay's companion for the same reason the
-                // terrain one has counts: an empty picture is a grid with
-                // nothing standing in it and a grid that was never built, and on
-                // screen those two are one thing.
-                // Both numbers, because the second is the one the picture does
-                // not show: a view that silently drops most of the grid reads as
-                // a grid with nothing in it, which is the failure this whole
-                // overlay exists to make impossible. See [`stands`].
+                // Both numbers, and the second is the one the picture does not
+                // show: an empty picture is a grid with nothing in it and a grid
+                // that was never built, and on screen those two are one thing —
+                // the same reason the terrain overlay has counts. See [`stands`]
+                // for what the second number is made of.
                 Some(occluders) => {
                     let total = occluders.boxes().count();
-                    let drawn = occluders.boxes().filter(|(_, _, cell)| stands(cell)).count();
+                    let drawn = occluders
+                        .boxes()
+                        .filter(|(_, _, cell)| stands(cell, hud.position.z))
+                        .count();
                     ui.label(format!(
-                        "{drawn} boxes standing, {} flat and not drawn",
+                        "{drawn} boxes above your feet, {} below and not drawn",
                         total - drawn
                     ));
                 }
@@ -770,7 +773,7 @@ fn layout(
     // boxes are read against the ground the wash colours, and a highlight the
     // player is pointing with must not be hidden by a diagnostic.
     if let Some(occluders) = &hud.occluders {
-        draw_occluders(&world, &hud.camera, occluders, viewport.min);
+        draw_occluders(&world, &hud.camera, occluders, hud.position.z, viewport.min);
     }
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
@@ -1416,20 +1419,25 @@ fn draw_terrain(
     }
 }
 
-/// Whether a cell is a box or a sheet.
+/// Whether a cell is above the height the looker is standing at.
 ///
-/// The first frame of the wireframe was a dock, and it was **2011 boxes** — one
-/// flat diamond on every plank of the pier, because a deck static is in the grid
-/// like everything else that stops an arrow. Nothing was wrong with the picture
-/// and nothing was readable in it either: the walls a person is looking for were
-/// drawn on top of a red hatch covering the whole ground.
+/// The first frame of this wireframe was a dock, and it was **2011 boxes**: a
+/// deck plank stops an arrow — a floor is what you cannot shoot *through* to the
+/// storey above — so every tile of the pier is a thin slab in the grid, and the
+/// picture was a red hatch over the whole ground with the walls somewhere inside
+/// it. Nothing about it was wrong and nothing in it was readable.
 ///
-/// So the view draws what stands up, and the panel counts what it dropped. A
-/// zero-height cell stops a ray only at exactly its own `z`, which is a thing to
-/// know about the *grid* rather than a thing to see in a picture of it — and if
-/// it turns out to matter, the number beside the checkbox is what says so.
-fn stands(cell: &openshard_client_render::occlusion::Cell) -> bool {
-    cell.top > cell.bottom
+/// So the view draws what is above the floor the *player* is standing on. It is
+/// a datum and not a threshold: the deck underfoot has its top at exactly the
+/// height the body stands at and drops out, a wall beside it is twenty units
+/// tall and stays, the floor of the storey above stays because it is a lid, and
+/// the cellar below drops. Nothing is invented and nothing is tuned.
+///
+/// What it hides, the panel counts — a view that silently drops most of a grid
+/// reads as a grid with nothing in it, which is the one failure an instrument
+/// may not have.
+fn stands(cell: &openshard_client_render::occlusion::Cell, floor: i8) -> bool {
+    cell.top > i32::from(floor)
 }
 
 /// The occlusion grid, drawn as the boxes it is.
@@ -1457,12 +1465,13 @@ fn draw_occluders(
     painter: &egui::Painter,
     camera: &Camera,
     occluders: &openshard_client_render::occlusion::Occlusion,
+    floor: i8,
     viewport_origin: egui::Pos2,
 ) {
     use openshard_client_render::occlusion::{OPAQUE, PANE};
 
     let clip = painter.clip_rect();
-    for (x, y, cell) in occluders.boxes().filter(|(_, _, cell)| stands(cell)) {
+    for (x, y, cell) in occluders.boxes().filter(|(_, _, cell)| stands(cell, floor)) {
         // The grid is grown past the map's own corner by the widest pool's
         // reach — see `light::lit_tiles` — so a tile of it can be off the map
         // entirely. Skipped rather than clamped, for `Occlusion::add`'s reason:
