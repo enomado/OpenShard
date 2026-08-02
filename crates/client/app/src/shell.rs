@@ -686,7 +686,7 @@ fn layout(
             ui.separator();
             let mut boxes = hud.show_occluders;
             if ui
-                .checkbox(&mut boxes, "occluders — what stops light: wall white, pane blue")
+                .checkbox(&mut boxes, "occluders — what stops light: wall red, pane cyan")
                 .changed()
             {
                 request.show_occluders = Some(boxes);
@@ -1422,7 +1422,7 @@ fn draw_terrain(
 /// half a wireframe would otherwise drop: a pane and a wall stop the same ray by
 /// different amounts, and a picture that drew them alike would make
 /// [`PANE`](openshard_client_render::occlusion::PANE) invisible in the very view
-/// meant to check it.
+/// meant to check it. Opaque and saturated, for the reason stated at the stroke.
 fn draw_occluders(
     painter: &egui::Painter,
     camera: &Camera,
@@ -1465,12 +1465,20 @@ fn draw_occluders(
         if !clip.intersects(bounds) {
             continue;
         }
-        // A wall is bone, a pane is glass, and anything a shard invented between
+        // A wall is red, a pane is cyan, and anything a shard invented between
         // them lands between them.
+        //
+        // **Opaque, and saturated.** The first version of this was a pale blue
+        // at a third alpha, on the theory that a diagnostic should be quiet — and
+        // it read as dirt: the strokes are one pixel over lit art of every hue,
+        // so a translucent line takes its colour from whatever is under it and
+        // twelve of them crossing say nothing at all. The terrain wash can be
+        // faint because it is a *fill* read against the art; a wireframe is read
+        // against itself, and it has to win every pixel it claims.
         let stroke = egui::Stroke::new(1.0, {
             let t = f32::from(cell.opacity.saturating_sub(PANE)) / f32::from(OPAQUE - PANE);
             let lerp = |pane: f32, wall: f32| (pane + (wall - pane) * t.clamp(0.0, 1.0)) as u8;
-            egui::Color32::from_rgba_unmultiplied(lerp(90.0, 230.0), lerp(190.0, 230.0), 255, 110)
+            egui::Color32::from_rgb(lerp(0.0, 255.0), lerp(200.0, 45.0), lerp(255.0, 45.0))
         });
         painter.add(egui::Shape::closed_line(floor.clone(), stroke));
         painter.add(egui::Shape::closed_line(lid.clone(), stroke));
