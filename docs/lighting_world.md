@@ -7,6 +7,20 @@ into the world and learned that a wall stops a flame. That is the hard half and
 it is built. This is the other half, and its subject is not shadows — it is
 **where the light in a frame comes from when nothing is burning**.
 
+## Where the next session starts
+
+**Nothing here is built yet.** Step 1 is first and depends on nothing in this
+file: the sky field is a column test over a grid that already exists, and it is
+the single largest visible change in the list — a room stops being as bright as
+the street. Steps 2 and 3 follow it because they are what the field is *for*.
+Steps 9 and 10 are blocked on [`lighting.md`](lighting.md)'s steps 15 and 16 and
+should not be started before them; step 8 wants its step 14 first, for the reason
+decision 9 gives.
+
+Step 7, the tonal response, is the one to take when the appetite is for a
+screenshot rather than for a subsystem: it touches one shader, it is judged by
+eye against a before/after pair, and it is independent of everything else here.
+
 ## The thing worth copying
 
 Nox (Westwood, 2000) is the isometric game whose lighting still reads as right,
@@ -39,8 +53,31 @@ first one.
 is not asked for a single new byte and `0x4F`/`0x4E` remain the whole protocol
 surface (decision 3 says what that costs). The raggedness of a lit wall — the
 per-pixel fraction along an upright sprite's face — is
-[`lighting.md`](lighting.md)'s decision 13 and is being fixed elsewhere; nothing
-here depends on it, and nothing here should touch `statics.wgsl`.
+[`lighting.md`](lighting.md)'s decisions 13 and 14 and its steps 15 and 16, and
+is being worked elsewhere; nothing here should touch `statics.wgsl`.
+
+## Where this meets the flame plan
+
+[`lighting.md`](lighting.md) is not finished — its steps 14 (the occluder boxes,
+drawn), 15 (a wall's facing measured from its art), 16 (the window's aperture)
+and 6 (the measurement) are open, and three of the four are load-bearing here.
+The seam, stated once so neither plan has to guess at the other:
+
+- **Step 14 is this plan's instrument too.** The boxes are the grid drawn as
+  wireframe in `shell::world_painter`, and everything below adds to that same
+  grid: a sky byte per cell (decision 1), a body that moves through it
+  (decision 9). Neither gets its own visualiser — that is
+  [`lighting.md`](lighting.md)'s decision 8, and it holds here: a second copy of
+  the unpacking answers about its copy of the frame.
+- **Step 15 is what a wall's ambient waits for** — decision 13 below.
+- **Step 16 is what a lit room at noon waits for** — decision 14 below.
+- **One widening of the occlusion cell, not three.** The cell is `Rgba8Uint` and
+  full; step 16 already says its aperture needs room. The sky byte needs room,
+  and a soft body's opacity would like a fifth answer. That is one format
+  decision with three callers, and it belongs to whichever step lands first —
+  which by the order above is this plan's step 1.
+- **Step 6's measurement gates both.** Nothing here turns on by default before
+  the number the other plan owes.
 
 ## Decisions
 
@@ -157,13 +194,23 @@ wrong it looks. Nox's art was drawn for Nox's lighting; ours was not. The
 practical consequence is that the curve's job is as much restraint as reach, and
 that any value here is held by a scene rather than by a formula.
 
-**9. A body between a flame and a wall makes a shadow.**
+**9. A body between a flame and a wall makes a shadow, and it is a box that
+moves.**
 Mobiles are not in the occlusion grid, so a crowd around a campfire is a crowd of
 things standing in a light that goes straight through them. A mobile is a short,
 soft occluder — a partial opacity over a span of about a body's height — and the
 grid takes it the same way it takes a static. The reference does not do this;
 that is not an argument against it, it is the reason it needs its own scene and
 its own value.
+
+It is also the first cell in the grid whose *contents change while nothing about
+the map does*, and that is why it waits for [`lighting.md`](lighting.md)'s step
+14: a box drawn over a walking body is the only cheap way to see whether it is
+the right height, whether it is snapped to the tile while the sprite slides
+(decision 5's mistake, arriving from the other side), and whether it is left
+behind when the body moves on. A soft occluder that is wrong is not a visible
+bug — it is a slightly darker wall — so without the instrument this step cannot
+be judged at all.
 
 **10. Sight is not light, and this client cannot enforce either.**
 Nox's other famous half is that you see only what your character sees. It could
@@ -184,7 +231,41 @@ rather than argued into existence. The existing list of invented values
 (`occlusion::PANE`, `light::flame`, `FLAME_SPREAD`) is already the longest
 section of the other plan's backlog; this one should not lengthen it silently.
 
-**12. Nothing here lands ahead of the measurement.**
+**13. A wall's face takes the ambient of the tile it looks at.**
+Decision 1 gives every tile its own share of the sky, and then a wall tile makes
+the split visible in the worst way: it is one tile with a face on each side, one
+of which is a room and the other a street. Sampled at its own cell it is either
+too bright indoors or too dark outdoors, and no per-tile answer fixes that,
+because the two faces are not in the same place — they are on opposite edges of
+one cell.
+
+[`lighting.md`](lighting.md)'s step 15 is exactly the missing measurement: a face
+read out of the art, and a pixel's `v` along it. With a facing, a wall's pixels
+sample the sky field at the tile the face **looks into** — `(x, y-1)` for a north
+face and so on — and a house's outer walls are lit by the day while its inner
+walls are lit by whatever is burning inside. Without a facing they sample their
+own cell, which is today's behaviour and stays the fallback for every graphic the
+detector refuses. That refusal is the important half: step 15's detector must be
+able to say *undecided*, and this is the consumer that shows why — a corner post
+guessed wrong is a wall lit from the wrong world.
+
+**14. A window passes sky, not only sun.**
+Decision 1 will read a room with four glazed walls as a cellar, because the sky
+test is a column and the sky does not come through the roof. That is right for
+the roof and wrong for the room: at noon a windowed hall is *daylit*, and it is
+daylit by the sky rather than by the disc of the sun — the sunbeam is a patch on
+the floor, the daylight is everywhere.
+
+So the aperture of [`lighting.md`](lighting.md)'s step 16 has a second consumer.
+Where a cell carries one, it seeds the sky field with the sky visible through it,
+and decision 2's blur is what spreads it into the room — a fall-off from the
+window inwards, which is what a window does. Before step 16 lands there is a
+cruder version that is still better than nothing and worth having in the
+meantime: a cell whose opacity is `PANE` rather than `OPAQUE` passes its share of
+the sky to the tile behind it. That is one line in the same column test, it needs
+no new data, and it means a chapel is not a crypt.
+
+**15. Nothing here lands ahead of the measurement.**
 [`lighting.md`](lighting.md)'s step 6 — a frame time at the widest zoom — is
 still open, and three decisions here add per-fragment or per-frame cost (1 and 2
 a grid pass, 5 more lights, 8 a curve on every pixel). The number comes first,
@@ -193,10 +274,19 @@ and each step states what it cost.
 ## Steps
 
 - [ ] **1. The sky field.** `occlusion.rs` gains a per-tile sky byte from the
-      un-cut column test of decision 1/3, and the blur of decision 2. Uploaded as
-      an `R8Unorm` over the same bounds as the occlusion texture. Unit-tested
-      without client files on `scene`'s room: floor tiles under a roof read 0,
-      the doorway reads between, the street reads 1.
+      un-cut column test of decision 1/3, the `PANE` leak of decision 14, and the
+      blur of decision 2. This step owns the widening the cell needs — a second
+      texture beside the occlusion one, or a wider format — and it takes
+      [`lighting.md`](lighting.md)'s step 16 into account when it chooses, so
+      that the aperture has somewhere to go and the format is decided once.
+      Unit-tested without client files on `scene`'s room: floor tiles under a
+      roof read 0, the doorway reads between, the street reads 1, and the room
+      with a window reads above the room without one.
+
+      Drawn, not only asserted: the sky byte shades the boxes
+      [`lighting.md`](lighting.md)'s step 14 strokes, under the same checkbox.
+      A field this cheap to compute is a field it is cheap to be wrong about
+      everywhere at once.
 - [ ] **2. The two ambients.** `Lighting::ambient` splits into a sky colour and a
       ground colour; `blit.wgsl` reads the sky field and mixes. `light::sample`
       gains the same term in the same commit — the parity test of the other
@@ -218,9 +308,19 @@ and each step states what it cost.
       toned shadow lift, dither. This is the step most likely to be argued about
       and the one most obviously judged by a screenshot — a before/after pair of
       the same scene belongs in the commit.
-- [ ] **8. Bodies as occluders.** Decision 9, behind its own scene.
-- [ ] **9. The optional curtain.** Decision 10, off by default, and documented as
-      cosmetic where a reader will see it.
+- [ ] **8. Bodies as occluders.** Decision 9, behind its own scene — and behind
+      [`lighting.md`](lighting.md)'s step 14, which is what it is judged with.
+- [ ] **9. A wall's face takes its own side's ambient.** Decision 13, after
+      [`lighting.md`](lighting.md)'s step 15 has a facing to offer. Held to a
+      frame test of a house at noon: the outer face of a wall is day, the inner
+      face of the same tile is not, and a graphic the detector refused looks
+      exactly as it does today.
+- [ ] **10. Sky through the aperture.** Decision 14's second half, after
+      [`lighting.md`](lighting.md)'s step 16. The `PANE` approximation of step 1
+      is what it replaces, and the test is that it replaces it *upwards* — the
+      hall does not get darker when the real aperture arrives.
+- [ ] **11. The optional curtain.** Decision 10, off by default, and documented
+      as cosmetic where a reader will see it.
 
 ## Backlog
 
@@ -248,6 +348,22 @@ Written while drafting this, and not to be lost:
   torch on the player's tile (decision 5) is right for the torch and wrong for
   night sight, which is not a light at all but a change to how dark the dark is
   *for one viewer*. Both want to exist: a source, and a floor under the ambient.
+- **A box is drawn for what stands, and the sky is what does not.** The wireframe
+  of [`lighting.md`](lighting.md)'s step 14 shows occluders; the failure this
+  plan will actually hit is a tile that is *wrongly open* — an eave that did not
+  cover the floor under it, a roof whose statics stand one tile over. Shading the
+  boxes by the sky byte (step 1) shows the second kind only where there is a box
+  at all, so a hole in a roof is invisible in the very view meant to find it. The
+  honest instrument is the field drawn on the ground, as the terrain overlay
+  already draws a per-tile number, and it is worth remembering before adding a
+  third view rather than a second use of that one.
+- **`FLOOR` may be the roof test that already exists.** Step 15's facing tells a
+  wall's edge apart, but the sky test does not need an edge — it needs "is this
+  static a lid". `place::Stance`, which is `TileFlags::FLOOR`, is exactly that
+  question already answered for the attachment, and a roof tile is a floor that
+  happens to be above you. If it holds, decision 1's column test is a flag lookup
+  rather than a height comparison, and roofs and floors of upper storeys come out
+  right for one reason instead of two.
 - **Nothing in this plan knows about weather.** An overcast sky is exactly the
   sky term of decision 1 multiplied by a number, and rain is the same with a
   colour — which is to say this arrives almost for free once the sky field is a
