@@ -197,6 +197,42 @@ simply a 65th light:
   needs a cheaper bound (stop as soon as the ray is above the tallest occluder
   the grid holds) before it is on by default.
 
+**13. A sprite says which way its picture faces, and that is where its pixels
+are.** The attachment carries where in its tile a pixel is, and a sprite used to
+write the middle of the tile for every one of its pixels — which is right for
+nothing and wrong for two different reasons. A *floor* static is a picture of the
+tile's diamond, so its pixels are spread across the tile and its height is the
+tile's; a room's floor written as one place came out as flat 44-pixel diamonds
+with a step at every seam, which is most of what a pool of light was accused of
+looking like. A *wall* is a billboard: what runs down its picture is height, and
+the only horizontal thing it knows is how far across the tile's column a pixel
+is, which is `1/44` of a tile along the screen's own `x - y` axis.
+
+Which of the two it is comes from the client: `TileFlags::FLOOR` — `UFLAG1_FLOOR`
+in Sphere, `Background` in ClassicUO — is set on floors, rugs and roads and on
+nothing that stands up. Not `PLATFORM`: a table is `BLOCK | PLATFORM` and is a
+picture of a table, not of the ground. `place::Stance` is the pair, and it rides
+above the kind in the instance's place word — never in the attachment, whose
+fourth channel is two bits of kind and fourteen of fraction with nothing spare.
+
+**14. The shadow ray walks the cells it crosses, and spends the length of each
+crossing.** Not a fixed number of samples along the segment: at two tiles apart
+that was one interior point, so whether a fragment was in shadow was decided at
+the resolution of a tile and every shadow in the frame had a tile's straight
+side. A grid traversal visits exactly the cells the ray passes through, and it
+knows how long each crossing is and what share of it falls inside the span the
+tile occupies.
+
+Having the length is what makes the edge a gradient: a ray clipping a wall tile's
+corner keeps most of its light, and one grazing the top of a wall is dimmed
+rather than switched. How wide that gradient is is not one number — a flame is a
+body, not a point, so an occluder against the thing it shadows draws a sharp edge
+and a distant one draws a penumbra. Its width is `FLAME_SPREAD * t / (1 - t)`,
+`t` being how far along the ray the occluder is from the lit end: the ordinary
+similar-triangles answer, for one division rather than a second ray. It is capped
+below a tile, because a wall crossed squarely must stop *all* of the light or
+rooms leak — which is the same conservative direction decision 5's union takes.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -322,27 +358,31 @@ Found while asking why a house's windows burn:
   `PANE` rather than `OPAQUE`. The older ones do not carry `NO_SHOOT` either, so
   nothing rescues them. The pane is the hole in the wall, not the wall.
 
-Found while asking why the light steps from tile to tile:
+Found while asking why the light steps from tile to tile — decisions 13 and 14
+are what came of the first three, and these are what is left:
 
-- **A sprite's sub-tile fraction is the middle of its tile, always.**
-  `statics.wgsl`'s `SUB_TILE_MIDDLE` — a billboard has no side of its tile to be
-  on, so what varies down a wall's picture is `z` alone. Across a *row* of wall
-  tiles, then, the light is one value per tile with a step at every seam, which
-  is the blockiness a person sees first. The horizontal offset is recoverable: a
-  pixel `dx` from the sprite's centre is `dx / 44` of a tile along the screen's
-  own `(x - y)` axis, which is a fraction this shader can write for the same cost
-  as the constant.
-- **The ray is sampled at fixed fractions, not at the cells it crosses.**
-  `reaches` takes `max(|dx|, |dy|)` steps and samples at `i / steps`, so a flame
-  two tiles away is tested at one interior point and the shadow's edge is decided
-  at that resolution. A DDA that stepped to each cell boundary would be exact
-  *and* cheaper, and it is the same walk the diagonal-leak note above wants.
-- **Every shadow is hard, because every flame is a point.** No penumbra: a wall's
-  edge cuts the pool at one pixel. A flame is an area, and the two ways to say so
-  both live inside `reaches` — a few jittered rays to points on a sphere of the
-  flame's own size, or the raymarch penumbra estimate (the closest the ray passed
-  to an occluder, over how far along it was). Decision 9 is the price either way:
-  whatever `reaches` learns, `light::sample` learns too.
+- **The sun's ray still steps a whole tile at a time.** `sunlight` and
+  `light::walk_sun` sample one point per tile along the direction, which is the
+  arrangement decision 14 replaced for flames: at a low elevation the ray skips
+  cells, and what it does hit is tested all-or-nothing, so a sunlit frame has the
+  tile-edged shadows a torchlit one no longer does. The traversal is written and
+  wants lifting into a shape both walks can use — the only difference is that the
+  sun's has no endpoint.
+- **The penumbra is a width, not an area light.** Decision 14's `t / (1 - t)` is
+  the right *shape* off one ray, but it softens by how far the ray ran inside the
+  cell rather than by how much of the flame the cell hides. Where an opening is a
+  tile wide and the ground is right behind it — a doorway — the honest answer is
+  still nearly a hard edge, which is what a point light through a one-tile
+  aperture is. Several jittered rays to points on a sphere of the flame's size
+  would be the real thing, at that many times the walk.
+- **`FLAME_SPREAD` and its two bounds are invented**, like `occlusion::PANE` and
+  `light::flame`. What holds them is a scene, not a file.
+- **An upright sprite's fraction is clamped at its tile's edge.** A tree is a
+  hundred pixels across and the attachment holds one tile per pixel, so the
+  outermost columns of a wide sprite all claim the edge of the tile the thing
+  stands on. It is the honest answer available — a billboard's pixels are not
+  anywhere in particular — but it means a very wide sprite's lighting flattens
+  towards its edges.
 
 Found while writing this plan:
 
