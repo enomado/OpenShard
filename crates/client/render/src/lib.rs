@@ -47,6 +47,8 @@ pub mod items;
 pub mod light;
 pub mod mobiles;
 pub mod occlusion;
+pub mod outline;
+pub mod place;
 pub mod renderer;
 pub mod sprite;
 pub mod statics;

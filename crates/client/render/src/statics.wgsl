@@ -44,6 +44,18 @@ struct VertexOut {
     // Zero is "no hue"; otherwise the wire value `Hue` carries, index and
     // partial-flag both, untouched until the fragment shader needs them.
     @location(1) @interpolate(flat) hue: u32,
+    // Where in the world this sprite stands, flat across the instance — see
+    // `crate::place`. A wall's picture is 44 pixels above the tile it stands on,
+    // and this is what says so: the lighting pass reads the tile rather than
+    // guessing it back from the pixel's position on the screen.
+    @location(2) @interpolate(flat) place: vec2<u32>,
+};
+
+// What one fragment of a world pass writes: the picture, and where in the world
+// it came from.
+struct FragmentOut {
+    @location(0) color: vec4<f32>,
+    @location(1) place: vec4<u32>,
 };
 
 @vertex
@@ -61,6 +73,9 @@ fn vs_main(
     @location(4) depth: f32,
     // Per instance: the wire hue, or 0 for none.
     @location(5) hue: u32,
+    // Per instance: the tile and height, packed as
+    // `crate::place::Place::packed` writes it.
+    @location(6) place: vec2<u32>,
 ) -> VertexOut {
     let pixel = origin + corner * size;
     // Virtual pixels to real ones, the same single line the ground pass ends on.
@@ -82,6 +97,7 @@ fn vs_main(
     // here samples the far edge of the region at a vertex.
     out.uv = region.xy + corner * region.zw;
     out.hue = hue;
+    out.place = place;
     return out;
 }
 
@@ -92,7 +108,7 @@ const HUE_INDEX_MASK: u32 = 0x3FFFu;
 const HUE_PARTIAL_FLAG: u32 = 0x8000u;
 
 @fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOut) -> FragmentOut {
     let color = textureSample(atlas_texture, atlas_sampler, in.uv);
 
     // The sprite's shape. Discarding rather than blending is what keeps the
@@ -119,5 +135,17 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             rgb = textureLoad(hue_ramp, vec2<i32>(index, row), 0).rgb;
         }
     }
-    return vec4<f32>(rgb, 1.0);
+
+    var out: FragmentOut;
+    out.color = vec4<f32>(rgb, 1.0);
+    // The tile, the height and the kind, taken apart the way
+    // `crate::place::Place::packed` put them together. A discarded fragment
+    // never reaches this line, so what the attachment holds is what is visible.
+    out.place = vec4<u32>(
+        in.place.x & 0xFFFFu,
+        in.place.x >> 16u,
+        in.place.y & 0xFFu,
+        in.place.y >> 8u,
+    );
+    return out;
 }

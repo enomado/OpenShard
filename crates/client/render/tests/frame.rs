@@ -18,10 +18,13 @@ use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAt
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, Projection, WorldPoint, Zoom};
 use openshard_client_render::cutaway::Cutaway;
-use openshard_client_render::geometry::Rect;
+use openshard_client_render::geometry::{Rect, Vec2};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
+use openshard_client_render::light::{Light, Lighting};
 use openshard_client_render::mobiles::{self, Mobile};
+use openshard_client_render::outline::{self, Outline, Ring};
+use openshard_client_render::place::Place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::statics;
@@ -200,6 +203,8 @@ fn render_both(
     // would not be testing the thing that makes them agree.
     let depth = renderer::depth_texture(device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
 
     // None of these frames ask for a hue — every quad built below carries
     // `hue: 0` — so an empty ramp is a real texture the shader can bind rather
@@ -214,6 +219,7 @@ fn render_both(
     let mut people = SpriteRenderer::new(device, queue, format, mobiles.0, &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target {
+        place: &place_view,
         view: &view,
         depth: &depth_view,
         width,
@@ -299,6 +305,7 @@ fn a_lone_sprite_matches_the_art_it_came_from() {
         // Anything inside clip space: this frame holds one quad, so there is
         // nothing for the depth test to decide.
         depth: 0.5,
+        place: Place::land(0, 0),
     }];
     let side = u32::from(LAND_TILE_SIZE);
     let empty = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -515,6 +522,7 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
             region,
             texmap: Some(texmap),
             depth: 0.5,
+            place: Place::land(1, 1),
         },
         GroundQuad {
             // Its own corner raised and its neighbours level: a hillock, and
@@ -526,6 +534,7 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
             region,
             texmap: Some(texmap),
             depth: 0.5,
+            place: Place::land(2, 2),
         },
     ];
     let frame = render(&device, &queue, &atlas, &texmaps, &quads, 256, 256);
@@ -658,6 +667,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
             region,
             texmap: None,
             depth: 0.5,
+            place: Place::land(1, 1),
         })
         .collect();
 
@@ -666,6 +676,8 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(&device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut ground_pass = GroundRenderer::new(&device, &queue, format, &atlas, &texmaps);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -673,7 +685,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
         &device,
         &queue,
         &mut encoder,
-        Target::whole(&world_view, &depth_view, width, height),
+        Target::whole(&world_view, &depth_view, &place_view, width, height),
         &quads,
     );
     queue.submit([encoder.finish()]);
@@ -699,16 +711,24 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
         &device,
+        &queue,
         &mut encoder,
-        &surface_view,
-        &world_view,
-        Zoom::ONE,
-        ViewportRect {
-            x: 0,
-            y: 0,
-            width,
-            height,
+        // Qualified: this file has a `Frame` of its own, which is a read-back
+        // picture rather than a blit's arguments.
+        openshard_client_render::blit::Frame {
+            target: &surface_view,
+            world: &world_view,
+            zoom: Zoom::ONE,
+            rect: ViewportRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
         },
+        // The identity: this test is about the blit being a copy, and lighting
+        // is a multiplication by one for it.
+        &Lighting::NONE,
     );
     queue.submit([encoder.finish()]);
 
@@ -734,6 +754,172 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
     }
 }
 
+/// A light brightens the pixels under it and nothing else, and the ambient
+/// darkens everything the light does not reach.
+///
+/// The only oracle the lighting shader has: everything else about it is CPU
+/// arithmetic with tests of its own in `light.rs`, and the part that is neither
+/// — the falloff, the multiply, the loop bound by a count in a uniform — exists
+/// only as WGSL and can only be read back off a GPU.
+///
+/// The scene is a flat grey world image, deliberately: this test is about what
+/// the *lighting* did to a pixel, and a gradient underneath would make every
+/// comparison between two pixels a statement about the art as well.
+#[test]
+fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (256, 256);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let world = openshard_client_render::blit::world_texture(&device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(&device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(&device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // A flat grey field: one land graphic whose art is a single value, drawn
+    // over the whole frame. Mid-grey and not white, so that "brighter" is
+    // expressible in both directions.
+    const GRAPHIC: Graphic = Graphic(1);
+    let side = usize::from(LAND_TILE_SIZE);
+    let grey = Color16(15 << 10 | 15 << 5 | 15);
+    let art = Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![grey; side * side]);
+    let atlas = LandAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let region = atlas.region(GRAPHIC).expect("packed");
+    let mut quads = Vec::new();
+    for y in (0..height as i32 + 44).step_by(22) {
+        for x in (-44..width as i32 + 44).step_by(44) {
+            quads.push(GroundQuad {
+                x: (x + (y / 22 % 2) * 22) as f32,
+                y: y as f32,
+                corners: [0.0; 4],
+                region,
+                texmap: None,
+                depth: 0.5,
+                place: Place::land(1, 1),
+            });
+        }
+    }
+    let mut ground_pass = GroundRenderer::new(&device, &queue, format, &atlas, &texmaps);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    ground_pass.render(
+        &device,
+        &queue,
+        &mut encoder,
+        Target::whole(&world_view, &depth_view, &place_view, width, height),
+        &quads,
+    );
+    queue.submit([encoder.finish()]);
+
+    let surface = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+    let blit = Blit::new(&device, format);
+
+    // One flame in the middle, reaching a quarter of the frame.
+    let lighting = Lighting {
+        image: Vec2::new(width as f32, height as f32),
+        ambient: openshard_client_render::light::NIGHT,
+        lights: vec![Light {
+            at: Vec2::new(128.0, 128.0),
+            radius: 64.0,
+            color: [1.0, 0.7, 0.35],
+            intensity: 1.0,
+        }],
+    };
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    blit.render(
+        &device,
+        &queue,
+        &mut encoder,
+        openshard_client_render::blit::Frame {
+            target: &surface_view,
+            world: &world_view,
+            zoom: Zoom::ONE,
+            rect: ViewportRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+        },
+        &lighting,
+    );
+    queue.submit([encoder.finish()]);
+
+    let drawn = read_back(&device, &queue, &world);
+    let lit = read_back(&device, &queue, &surface);
+    // The scene has to have something in it, or every comparison below is
+    // between two black pixels and holds for any shader at all.
+    assert!(drawn.drawn() > 60_000, "the world image is mostly empty");
+
+    let luma = |pixel: [u8; 4]| u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]);
+    let centre = luma(lit.pixel(128, 128));
+    // Half way out, not at the rim: the falloff is quadratic, so the last
+    // fifth of the radius contributes less than a byte of the eight bits this
+    // is read back at and would compare equal to the dark outside it.
+    let edge_of_pool = luma(lit.pixel(128 + 32, 128));
+    // Well outside the radius, and outside it in both axes so that a light
+    // placed at the wrong one of them still fails here.
+    let far = luma(lit.pixel(16, 240));
+    let unlit = luma(drawn.pixel(16, 240));
+
+    assert!(
+        far < unlit,
+        "the ambient did not darken the frame: {far} against {unlit}"
+    );
+    assert!(
+        centre > far * 2,
+        "the pool is not brighter than the dark around it: {centre} against {far}",
+    );
+    assert!(
+        edge_of_pool > far && edge_of_pool < centre,
+        "the falloff is not monotonic: centre {centre}, edge {edge_of_pool}, outside {far}",
+    );
+    // The pool is warm, not white: a light whose colour was dropped would pass
+    // every brightness assertion above.
+    let middle = lit.pixel(128, 128);
+    assert!(
+        middle[0] > middle[2],
+        "the light's colour was ignored: {middle:?}",
+    );
+    // And nothing outside the radius is touched by the light at all — the
+    // ambient alone accounts for it, which is what makes the pool a shape.
+    let outside = lit.pixel(16, 240);
+    for (channel, (got, (drawn, ambient))) in outside
+        .iter()
+        .zip(
+            drawn
+                .pixel(16, 240)
+                .iter()
+                .zip(openshard_client_render::light::NIGHT),
+        )
+        .take(3)
+        .enumerate()
+    {
+        let expected = (f32::from(*drawn) * ambient).round() as i32;
+        assert!(
+            (i32::from(*got) - expected).abs() <= 1,
+            "outside the pool, channel {channel} is {got} against the ambient's {expected}",
+        );
+    }
+}
+
 /// The world passes draw into the world texture on a surface that is not
 /// `Rgba8Unorm`.
 ///
@@ -754,6 +940,8 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(&device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
 
     // A sprite made here rather than read from a client, and one real quad: a
     // pass handed nothing returns before it binds its pipeline, which is the
@@ -772,6 +960,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         region: sprite.region,
         depth: 0.5,
         hue: 0,
+        place: Place::NOWHERE,
     }];
     let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
     let mut sprites = SpriteRenderer::new(
@@ -786,7 +975,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         &device,
         &queue,
         &mut encoder,
-        Target::whole(&world_view, &depth_view, width, height),
+        Target::whole(&world_view, &depth_view, &place_view, width, height),
         &quads,
     );
 
@@ -811,16 +1000,24 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
     let blit = Blit::new(&device, surface_format);
     blit.render(
         &device,
+        &queue,
         &mut encoder,
-        &surface_view,
-        &world_view,
-        Zoom::ONE,
-        ViewportRect {
-            x: 0,
-            y: 0,
-            width,
-            height,
+        // Qualified: this file has a `Frame` of its own, which is a read-back
+        // picture rather than a blit's arguments.
+        openshard_client_render::blit::Frame {
+            target: &surface_view,
+            world: &world_view,
+            zoom: Zoom::ONE,
+            rect: ViewportRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
         },
+        // The identity: this test is about the blit being a copy, and lighting
+        // is a multiplication by one for it.
+        &Lighting::NONE,
     );
     queue.submit([encoder.finish()]);
     device
@@ -865,6 +1062,7 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
         region: sprite.region,
         depth: 0.5,
         hue: 0,
+        place: Place::NOWHERE,
     }];
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -972,6 +1170,7 @@ fn a_full_hue_replaces_the_pixel_by_its_red_channel_regardless_of_its_own_colour
         region: sprite.region,
         depth: 0.5,
         hue,
+        place: Place::NOWHERE,
     };
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1063,11 +1262,13 @@ fn render_hued(
     });
     let depth = renderer::depth_texture(device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
 
     let mut ground = GroundRenderer::new(device, queue, format, land, texmaps);
     let mut statics = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target::whole(&view, &depth_view, width, height);
+    let target_view = Target::whole(&view, &depth_view, &place_view, width, height);
     ground.render(device, queue, &mut encoder, target_view, &[]);
     statics.render(device, queue, &mut encoder, target_view, quads);
     encoder.copy_texture_to_buffer(
@@ -1109,6 +1310,173 @@ fn render_hued(
     Frame { width, pixels }
 }
 
+/// Every pixel says which tile it came from, and a wall's pixels say the
+/// wall's tile rather than the ground's.
+///
+/// The attachment `docs/lighting.md` turns on, and the claim that makes it worth
+/// having: a wall's picture stands 44 pixels above the tile it is on, so the
+/// ground behind it and the wall itself are neighbouring pixels of one image
+/// that belong to different tiles at different heights. Everything the lighting
+/// pass does rests on being able to tell those two apart, and nothing else in
+/// this suite would notice if the channel held the ground's tile everywhere.
+#[test]
+fn every_pixel_names_the_tile_it_came_from() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    let green = Color16(0b0_00000_11111_00000);
+    let red = Color16(0b0_11111_00000_00000);
+
+    let side = usize::from(LAND_TILE_SIZE);
+    let land = LandAtlas::pack([(
+        GRAPHIC,
+        Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![green; side * side]),
+    )])
+    .expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([(GRAPHIC, Image::new(20, 20, vec![red; 20 * 20]))]).expect("fits");
+    let region = land.region(GRAPHIC).expect("packed");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+
+    // The ground tile fills the middle of the image; the wall stands on the
+    // *next* tile at a height of its own and is drawn over part of it, which is
+    // exactly the pair of pixels this is about.
+    let ground = [GroundQuad {
+        x: 64.0,
+        y: 64.0,
+        corners: [0.0; 4],
+        region,
+        texmap: None,
+        depth: 0.6,
+        place: Place::land(300, 400),
+    }];
+    let wall = [SpriteQuad {
+        rect: Rect {
+            x: 60.0,
+            y: 60.0,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
+        region: sprite.region,
+        depth: 0.4,
+        hue: 0,
+        place: Place::of_static(Point::new(301, 400, 15)),
+    }];
+
+    let places = render_places(&device, &queue, &land, &texmaps, &ground, &statics, &wall, 128);
+
+    // A pixel of the wall: its own tile, its own height, and the static's kind.
+    assert_eq!(
+        places.at(64, 64),
+        [301, 400, (15 + 128) as u16, 2],
+        "a wall's pixel named something else",
+    );
+    // A pixel of the ground beside it: the tile under the wall, at the height
+    // the corners gave it, and the land kind.
+    assert_eq!(
+        places.at(64, 84),
+        [300, 400, 128, 1],
+        "the ground beside the wall named something else",
+    );
+    // And a corner nothing was drawn on stays the clear value, whose kind is
+    // `Nothing` — a background the lighting must leave alone.
+    assert_eq!(places.at(2, 2)[3], 0, "an untouched pixel claimed a tile");
+}
+
+/// Draw ground and one sprite and read back the *place* attachment rather than
+/// the picture. `size * 8` must be a multiple of 256, as every readback here.
+#[allow(clippy::too_many_arguments)]
+fn render_places(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    quads: &[GroundQuad],
+    static_atlas: &StaticAtlas,
+    static_quads: &[SpriteQuad],
+    size: u32,
+) -> Places {
+    assert_eq!(size * 8 % 256, 0, "a row copy has to be 256-byte aligned");
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let world = openshard_client_render::blit::world_texture(device, size, size);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(device, size, size);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(device, size, size);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
+
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("places"),
+        size: u64::from(size) * u64::from(size) * 8,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut ground_pass = GroundRenderer::new(device, queue, format, atlas, texmaps);
+    let mut sprite_pass = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), &hue_ramp);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target = Target::whole(&world_view, &depth_view, &place_view, size, size);
+    ground_pass.render(device, queue, &mut encoder, target, quads);
+    sprite_pass.render(device, queue, &mut encoder, target, static_quads);
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &place,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 8),
+                rows_per_image: Some(size),
+            },
+        },
+        wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping a buffer this test just wrote");
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting on our own submission");
+    let bytes = slice
+        .get_mapped_range()
+        .expect("the map completed above")
+        .to_vec();
+    readback.unmap();
+    Places { width: size, bytes }
+}
+
+/// The place attachment read back: four `u16` channels a texel.
+struct Places {
+    width: u32,
+    bytes: Vec<u8>,
+}
+
+impl Places {
+    /// `(x, y, z + 128, kind)` at one pixel.
+    fn at(&self, x: u32, y: u32) -> [u16; 4] {
+        let start = ((y * self.width + x) * 8) as usize;
+        let mut out = [0u16; 4];
+        for (channel, slot) in out.iter_mut().enumerate() {
+            let at = start + channel * 2;
+            *slot = u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]]);
+        }
+        out
+    }
+}
+
 /// A hill in front hides a wall behind it.
 ///
 /// The assertion the depth buffer exists for, and the one no pass order can
@@ -1146,6 +1514,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         region,
         texmap: None,
         depth: 0.4,
+        place: Place::land(1, 1),
     }];
     let wall = [SpriteQuad {
         rect: Rect {
@@ -1157,6 +1526,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         region: sprite.region,
         depth: 0.6,
         hue: 0,
+        place: Place::NOWHERE,
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -1255,6 +1625,7 @@ fn at_one_depth_the_later_pass_wins() {
         region,
         texmap: None,
         depth: TIED,
+        place: Place::land(1, 1),
     }];
     let flagstone = [SpriteQuad {
         rect: Rect {
@@ -1266,6 +1637,7 @@ fn at_one_depth_the_later_pass_wins() {
         region: sprite.region,
         depth: TIED,
         hue: 0,
+        place: Place::NOWHERE,
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -1364,6 +1736,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
             priority_z: openshard_client_render::depth::land_priority_z([0; 4]),
         }
         .to_depth(openshard_client_render::depth::base_for(100, 100)),
+        place: Place::land(100, 100),
     }];
 
     let colours = |facing| {
@@ -1643,6 +2016,7 @@ fn a_magnified_sprite_translates_texel_for_texel() {
         region: sprite.region,
         depth: 0.5,
         hue: 0,
+        place: Place::NOWHERE,
     }];
 
     let mut shifted = camera;
@@ -1949,6 +2323,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
         region: sprite.region,
         depth: 0.5,
         hue: 0,
+        place: Place::NOWHERE,
     }];
 
     let (frame_width, frame_height) = (128u32, 128u32);
@@ -1969,6 +2344,8 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, frame_width, frame_height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(&device, frame_width, frame_height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
     // The ground pass clears; the sprite pass loads what it left. Given nothing
     // to draw, it is the clear on its own.
     let land = LandAtlas::pack([]).expect("nothing always fits");
@@ -1976,7 +2353,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     let mut ground = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target::whole(&view, &depth_view, frame_width, frame_height);
+    let target_view = Target::whole(&view, &depth_view, &place_view, frame_width, frame_height);
     ground.render(&device, &queue, &mut encoder, target_view, &[]);
     statics.render(&device, &queue, &mut encoder, target_view, &quads);
     queue.submit([encoder.finish()]);
@@ -2002,4 +2379,249 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
         }
     }
     assert_eq!(drawn, usize::from(width) * usize::from(height));
+}
+
+/// Draw `quads` into a world image, ring the ones in `outlined`, blit the lot
+/// onto a surface and read the surface back.
+///
+/// The whole outline pipeline in one helper, in the order the client runs it:
+/// the picture, then the silhouette mask against the picture's own depth, then
+/// the blit, then the ring over it. A test that skipped a step would be
+/// asserting about a pipeline nothing draws.
+#[allow(clippy::too_many_arguments)]
+fn render_outlined(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &StaticAtlas,
+    quads: &[SpriteQuad],
+    outlined: &[SpriteQuad],
+    width: u32,
+    height: u32,
+    ring: Ring,
+) -> Frame {
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let world = openshard_client_render::blit::world_texture(device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let mask = outline::mask_texture(device, width, height);
+    let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
+    let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
+
+    let target = Target::whole(&world_view, &depth_view, &place_view, width, height);
+    let empty_land = LandAtlas::pack([]).expect("nothing always fits");
+    let empty_texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    // The ground pass with nothing in it, purely to clear the world image: it is
+    // the pass that owns the clear, and a world texture nobody cleared holds
+    // whatever the driver left there.
+    let mut ground_pass = GroundRenderer::new(device, queue, format, &empty_land, &empty_texmaps);
+    let mut sprites = SpriteRenderer::new(device, queue, format, atlas.pixels(), &hue_ramp);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    ground_pass.render(device, queue, &mut encoder, target, &[]);
+    sprites.render(device, queue, &mut encoder, target, quads);
+    sprites.render_mask(device, queue, &mut encoder, target, &mask_view, outlined);
+
+    let surface = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+    let rect = ViewportRect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    Blit::new(device, format).render(
+        device,
+        queue,
+        &mut encoder,
+        openshard_client_render::blit::Frame {
+            target: &surface_view,
+            world: &world_view,
+            zoom: Zoom::ONE,
+            rect,
+        },
+        &Lighting::NONE,
+    );
+    Outline::new(device, format).render(
+        device,
+        queue,
+        &mut encoder,
+        openshard_client_render::outline::Frame {
+            target: &surface_view,
+            mask: &mask_view,
+            mask_size: (width, height),
+            rect,
+        },
+        ring,
+    );
+    queue.submit([encoder.finish()]);
+
+    read_back(device, queue, &surface)
+}
+
+/// A solid square of one colour, packed alone.
+fn square(graphic: Graphic, side: u16, color: Color16) -> StaticAtlas {
+    StaticAtlas::pack([(
+        graphic,
+        Image::new(side, side, vec![color; usize::from(side) * usize::from(side)]),
+    )])
+    .expect("one sprite fits")
+}
+
+/// The ring is exactly the pixels next to the silhouette and outside it — and
+/// the sprite itself is left alone.
+///
+/// Both halves are the assertion. A dilation that drew the *whole* grown shape
+/// instead of the grown-minus-original ring passes any test that only looks at
+/// the border, and it covers the art it was supposed to be pointing at.
+#[test]
+fn a_ring_is_drawn_around_a_silhouette_and_not_over_it() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    const SIDE: u16 = 16;
+    let green = Color16(0b0_00000_11111_00000);
+    let atlas = square(GRAPHIC, SIDE, green);
+    let sprite = atlas.sprite(GRAPHIC).expect("packed");
+    let (x, y) = (40.0, 50.0);
+    let quads = [SpriteQuad {
+        rect: Rect {
+            x,
+            y,
+            width: f32::from(SIDE),
+            height: f32::from(SIDE),
+        },
+        region: sprite.region,
+        depth: 0.5,
+        hue: 0,
+        place: Place::NOWHERE,
+    }];
+
+    let (width, height) = (128, 128);
+    let frame = render_outlined(
+        &device,
+        &queue,
+        &atlas,
+        &quads,
+        &quads,
+        width,
+        height,
+        Ring::DEFAULT,
+    );
+
+    let (green_r, green_g, green_b) = green.rgb8();
+    let white = [u8::MAX; 4];
+    let (left, top) = (x as u32, y as u32);
+    let (right, bottom) = (left + u32::from(SIDE), top + u32::from(SIDE));
+    let mut ringed = 0;
+    for py in 0..height {
+        for px in 0..width {
+            let inside = (left..right).contains(&px) && (top..bottom).contains(&py);
+            // One pixel out on every side, corners included: an eight-tap
+            // neighbourhood rings the diagonal too, and a four-tap one does not
+            // — which is the difference between a closed ring and one with four
+            // holes in it.
+            let bordering = (left - 1..right + 1).contains(&px) && (top - 1..bottom + 1).contains(&py);
+            let got = frame.pixel(px, py);
+            if inside {
+                assert_eq!(
+                    got,
+                    [green_r, green_g, green_b, u8::MAX],
+                    "({px}, {py}) is inside the sprite and the ring painted over it",
+                );
+            } else if bordering {
+                assert_eq!(got, white, "({px}, {py}) borders the sprite and was not ringed");
+                ringed += 1;
+            } else {
+                assert_eq!(got[3], 0, "({px}, {py}) is nowhere near the sprite");
+            }
+        }
+    }
+    // The frame of a 16x16 square grown by one: 18² - 16².
+    assert_eq!(ringed, 18 * 18 - 16 * 16);
+}
+
+/// Two outlined sprites that touch keep one ring each.
+///
+/// This is the whole reason the mask holds an *id* rather than a coverage bit.
+/// With coverage the shared edge is interior to the union — every neighbour of
+/// it is "drawn" — so no ring is grown there and the pair comes out outlined as
+/// a single blob. The seam below is the pixel column where that shows.
+#[test]
+fn two_touching_silhouettes_are_ringed_separately() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    const SIDE: u16 = 16;
+    let green = Color16(0b0_00000_11111_00000);
+    let atlas = square(GRAPHIC, SIDE, green);
+    let sprite = atlas.sprite(GRAPHIC).expect("packed");
+    let (x, y) = (40.0f32, 50.0f32);
+    // Edge to edge, sharing no pixel: the left one ends where the right begins.
+    let quads: Vec<SpriteQuad> = [x, x + f32::from(SIDE)]
+        .into_iter()
+        .map(|at| SpriteQuad {
+            rect: Rect {
+                x: at,
+                y,
+                width: f32::from(SIDE),
+                height: f32::from(SIDE),
+            },
+            region: sprite.region,
+            depth: 0.5,
+            hue: 0,
+            place: Place::NOWHERE,
+        })
+        .collect();
+
+    let (width, height) = (128, 128);
+    let frame = render_outlined(
+        &device,
+        &queue,
+        &atlas,
+        &quads,
+        &quads,
+        width,
+        height,
+        Ring::DEFAULT,
+    );
+
+    let white = [u8::MAX; 4];
+    let seam = x as u32 + u32::from(SIDE);
+    let middle = y as u32 + u32::from(SIDE) / 2;
+    assert_eq!(
+        frame.pixel(seam - 1, middle),
+        white,
+        "the left sprite's own edge against the right one was not ringed — \
+         the mask is behaving like coverage rather than an identity",
+    );
+    assert_eq!(
+        frame.pixel(seam, middle),
+        white,
+        "and neither was the right sprite's edge against the left one",
+    );
+    // The outer edges are still there: a rule that only ever fired between two
+    // ids would ring the seam and nothing else.
+    assert_eq!(frame.pixel(x as u32 - 1, middle), white, "the pair's left edge");
+    assert_eq!(
+        frame.pixel(x as u32 + 2 * u32::from(SIDE), middle),
+        white,
+        "the pair's right edge",
+    );
 }

@@ -126,12 +126,16 @@ use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
+use openshard_client_render::light::{self, Lighting};
 use openshard_client_render::mobiles::{self, Mobile};
+use openshard_client_render::outline::{self, Outline, Ring};
+use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
 use openshard_movement::{Heading, Lean, Leeway, Terrain};
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::{Graphic, Hue};
@@ -170,6 +174,17 @@ const VERSION: ClientVersion = ClientVersion::new(7, 0, 45, 65);
 /// monitor's: nothing here knows the refresh rate, and asking the surface would
 /// tie the animation to the present mode the adapter happened to offer.
 const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// How close together two left clicks have to land to be a double-click.
+///
+/// ClassicUO's `Mouse.MOUSE_DELAY_DOUBLE_CLICK`
+/// (`src/ClassicUO.Client/Input/Mouse.cs`), taken as it stands: 350ms is what
+/// players' hands are used to on this game, and a client that picked its own
+/// number would be one where doors sometimes do not open. Distance is
+/// deliberately *not* part of the test — the reference does not check it
+/// either, and a mouse that slips a pixel between two clicks has not stopped
+/// double-clicking.
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
 
 /// How much of the event loop's recent past the frame panel keeps.
 ///
@@ -395,6 +410,10 @@ pub fn run<D: Dial + Send + 'static>(
 
     let mut app = App {
         tile_animations: StaticAnimations::build(&animdata, &tiledata),
+        // Daylight until asked otherwise: the lighting pass is then exactly the
+        // copy the blit has always been.
+        night: false,
+        flame_clock: std::time::Duration::ZERO,
         map,
         art,
         texmaps,
@@ -426,6 +445,7 @@ pub fn run<D: Dial + Send + 'static>(
         cutaway_at: start,
         others: Vec::new(),
         items: Vec::new(),
+        item_serials: Vec::new(),
         clutter: clutter::Clutter::default(),
         view: None,
         connection: String::from("offline"),
@@ -461,6 +481,8 @@ pub fn run<D: Dial + Send + 'static>(
         window: None,
         pending: shell::Request::default(),
         selected_tile: None,
+        // No click has landed, so the next one cannot be the second of a pair.
+        last_click: None,
         // Nobody has pointed at anything yet, and a window that opens under a
         // resting cursor hears `CursorEntered` on the first move.
         pointer_inside: false,
@@ -688,6 +710,12 @@ struct Screen {
     /// [`Screen::world`]: it has to be exactly the size of the image it is
     /// tested against.
     depth: wgpu::Texture,
+    /// Which tile each world pixel came from, written by the same three passes
+    /// and read by the blit to light the frame in world coordinates — see
+    /// `openshard_client_render::place`. Recreated with [`Screen::world`] for
+    /// the reason [`Screen::depth`] is: it is an attachment of the same passes
+    /// and must be exactly that image's size.
+    place: wgpu::Texture,
     /// The pass that draws the mobiles, which is the statics pass again with
     /// another atlas bound: a sprite is a sprite, and the two differ only in
     /// where the quad goes.
@@ -710,6 +738,16 @@ struct Screen {
     /// atlas is (see `App::draw`'s handling of [`AtlasError::Full`] there).
     /// `None` exactly when `ttf_atlas` is.
     ttf_pass: Option<SpriteRenderer>,
+    /// Which outlined object each world pixel belongs to, or zero for none.
+    ///
+    /// Filled by the statics pass drawing silhouettes into it and read by
+    /// [`Screen::outline`] after the blit. Recreated with [`Screen::world`] for
+    /// the reason [`Screen::depth`] is: it is a colour attachment of a pass whose
+    /// depth attachment is that buffer, and the two must be the same size.
+    outline_mask: wgpu::Texture,
+    /// The pass that turns that mask into a ring on the surface — see
+    /// `openshard_client_render::outline`.
+    outline: Outline,
 }
 
 struct App {
@@ -754,6 +792,23 @@ struct App {
     /// instant as the crowd and the eye. Its own module argues why it is a system
     /// rather than a flag on a quad: see [`StaticAnimations`].
     tile_animations: StaticAnimations,
+    /// Whether the world is drawn as if it were night: dark ambient, and the
+    /// fires on the map lighting what is around them. Toggled with F10.
+    ///
+    /// A local switch and not the shard's clock, because there is no time of day
+    /// on the wire yet. When there is, this is the field it writes to and
+    /// nothing below it changes — the ambient is already a colour per frame
+    /// rather than a constant read by the shader.
+    night: bool,
+    /// How long the flames have been burning, in the same span every other clock
+    /// in the frame is advanced by.
+    ///
+    /// Its own accumulator rather than an `Instant`, for the reason
+    /// [`StaticAnimations`] has one: `openshard-client-render` reads no clock,
+    /// so the time arrives as a number, and a number sampled once per frame is
+    /// what keeps a torch's flicker on the same instant as the body walking
+    /// past it.
+    flame_clock: std::time::Duration,
     /// The camera, who is allowed to move it, and what a drag has not yet spent.
     ///
     /// All of it arithmetic, and all of it in `client/render` where it can be
@@ -804,6 +859,14 @@ struct App {
     /// is a static's picture. Two lists rather than one because the map's
     /// furniture never moves and these come and go with every packet.
     items: Vec<GroundItem>,
+    /// What each of those items is called on the wire, at the same index.
+    ///
+    /// The renderer drops the serial — it draws pictures and owns no model of
+    /// the world — and a click has to put it back, because "use this" is a
+    /// serial and nothing else. Built in the same pass as [`App::items`] and
+    /// never separately: two loops over one map is how the lists drift, and a
+    /// drifted index sends the shard a double-click on whatever was next.
+    item_serials: Vec<Serial>,
     /// Which of those items a step cannot go through, indexed by tile.
     ///
     /// A third projection of the view beside [`App::items`] and [`App::others`],
@@ -893,6 +956,16 @@ struct App {
     /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
     /// slide off the tile the moment the mouse does.
     selected_tile: Option<(u16, u16)>,
+    /// When the last left click landed, or `None` when the one before it
+    /// already made a pair.
+    ///
+    /// The whole of this client's double-click detection, and the reason it is
+    /// here rather than asked of the window system: the world's clicks do not go
+    /// through egui — see the `MouseInput` arm — and `winit` reports presses,
+    /// not gestures. Cleared when a pair fires, which is what stops three clicks
+    /// from being two double-clicks; ClassicUO's `GameController` zeroes its own
+    /// `lastClickTime` in the same place and for the same reason.
+    last_click: Option<Instant>,
     /// Whether the cursor is inside the window at all.
     ///
     /// The other half of "does the world own the mouse", and the half no egui
@@ -1114,6 +1187,14 @@ impl ApplicationHandler<link::Update> for App {
                         self.say("AbCdEfGh The Quick Brown Fox 123".to_owned());
                         false
                     }
+                    // Night on and off. A key and not a setting because the
+                    // only honest test of firelight is the two pictures side
+                    // by side, and there is no time of day on the wire yet for
+                    // it to follow — see `App::night`.
+                    KeyCode::F10 => {
+                        self.night = !self.night;
+                        true
+                    }
                     _ => false,
                 };
                 if changed {
@@ -1216,6 +1297,20 @@ impl ApplicationHandler<link::Update> for App {
                     // is clicking on.
                     let camera = *self.control.camera();
                     self.selected_tile = self.pick_tile(camera).map(|tile| (tile.x, tile.y));
+                    // And the second click of a pair is a *use*: a door opens, a
+                    // container opens, food is eaten. Which of those it is, is
+                    // the shard's answer and not this end's — see
+                    // `openshard_client_net::interact`.
+                    let now = Instant::now();
+                    let paired = self
+                        .last_click
+                        .is_some_and(|last| now.duration_since(last) <= DOUBLE_CLICK);
+                    // Cleared on a pair rather than restarted, so a third click
+                    // starts a fresh one — ClassicUO's own reset.
+                    self.last_click = (!paired).then_some(now);
+                    if paired {
+                        self.use_under_cursor(camera);
+                    }
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }
@@ -1522,6 +1617,59 @@ impl App {
         // The body's *drawn* pixel, height and all: what a player aims relative
         // to is the sprite they can see, not the tile beneath it.
         heading_between(camera::project(self.player.at), camera.pick(cursor_x, cursor_y))
+    }
+
+    /// Double-click whatever the cursor is over: ask the shard to use it.
+    ///
+    /// **Picked against the picture, not against the tile.** A door's leaf is
+    /// drawn two tiles up the screen from the tile it stands on, so the tile
+    /// under the cursor is the one *behind* it — the answer
+    /// [`App::pick_tile`] gives, which is right for the Tile panel and wrong for
+    /// this. [`items::pick`] hits the sprite's own opaque texels instead, which
+    /// is what the player thinks they clicked on.
+    ///
+    /// Ground items only, so far: the map's statics are not entities and have no
+    /// serial to name, and a mobile is a paperdoll request rather than a use —
+    /// a different arm of the same packet, waiting on a paperdoll to show. What
+    /// this covers is doors, containers and everything else the shard has put on
+    /// the ground.
+    ///
+    /// Nothing is done locally on the way out. The door swings when the `0x1A`
+    /// that redraws it arrives; a client that also opened it itself would show
+    /// a door the shard may have refused (a lock, or reach) standing open.
+    fn use_under_cursor(&self, camera: Camera) {
+        // The same question the highlight is drawn from, so the two cannot
+        // disagree about whether the world owns the mouse: a click that arrives
+        // while a panel holds the pointer is the panel's.
+        if !self.world_owns_pointer() {
+            return;
+        }
+        // The atlas is the frame's, and it is where the art the click is tested
+        // against lives — offline, or before the first frame, there is nothing
+        // drawn to have clicked on.
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        // The same cutaway the frame was drawn with, computed the same way: a
+        // barrel hidden under a roof this client is not drawing is not something
+        // the player can have pointed at.
+        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
+        let Some(index) = items::pick(
+            &self.items,
+            &camera,
+            &self.tiledata,
+            &self.tile_animations,
+            &window.atlases.statics,
+            &cutaway,
+            self.control.cursor(),
+        ) else {
+            return;
+        };
+        let serial = self.item_serials[index];
+        match self.link.as_ref() {
+            Some(link) => link.use_object(serial),
+            None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),
+        }
     }
 
     /// Say a line out loud, if there is a shard to hear it.
@@ -1852,14 +2000,16 @@ impl App {
         // folded in is part of that.
         let mut items: Vec<_> = view.items.iter().collect();
         items.sort_unstable_by_key(|(serial, _)| serial.raw());
-        self.items = items
-            .into_iter()
-            .map(|(_, item)| GroundItem {
+        self.items.clear();
+        self.item_serials.clear();
+        for (serial, item) in items {
+            self.items.push(GroundItem {
                 at: item.position,
                 graphic: item.graphic,
                 hue: item.hue,
-            })
-            .collect();
+            });
+            self.item_serials.push(*serial);
+        }
         // The same list read for a second question — not what to draw, but what
         // a step cannot go through. Rebuilt here rather than per decision: one
         // click plans a route over hundreds of tiles, and each of them would
@@ -1958,11 +2108,24 @@ impl App {
             .statics_at(x, y)
             .map(|item| (item.tile, item.z, item.hue))
             .collect();
+        // The height anything drawn *on* this tile belongs at: the surface a body
+        // would stand on, not the ground under it. On a pier those are thirteen
+        // z-units apart — the land is water at -15 and the planks are at -3 — and
+        // a marker drawn at the land's height sits a tile and a half down the
+        // screen from the boards it is meant to be lying on, which is what made
+        // the cursor unable to hit a pier tile at all. `predict_z` is the same
+        // "which surface, coming from here" the walk itself uses, asked from the
+        // body's own height so a floor overhead does not win over the street.
+        let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+        let stand = terrain.predict_z(x, y, i32::from(self.player.at.z));
         shell::PickedTile {
             x,
             y,
             land: land.map(|cell| cell.tile),
             land_z: land.map_or(0, |cell| cell.z),
+            // Clamped rather than unwrapped: a `z` outside `i8` is a corrupt
+            // block, and a diamond at the wrong height beats a panic in a HUD.
+            stand_z: stand.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8,
             statics,
         }
     }
@@ -1975,6 +2138,13 @@ impl App {
     /// exact wherever the two tiles agree and wrong only at a slope's edge,
     /// same as the client's own click-to-walk.
     ///
+    /// That height is the *surface*, not the land: a pier's planks stand at `-3`
+    /// over water at `-15`, and reading the pixel at the water's height resolved
+    /// every pier tile to one more than a tile away — the cursor could not be
+    /// put on the boards at all, which is what this is written against. The
+    /// same `predict_z` the walk uses, so the tile the cursor names and the tile
+    /// a step lands on are one answer rather than two.
+    ///
     /// `camera` is the frame's own and not `self.control`'s, for the reason
     /// [`App::hud`] takes one: what tile a pixel is over is a question about the
     /// picture being drawn, and reading it from a camera that has moved since is
@@ -1982,13 +2152,13 @@ impl App {
     fn pick_tile(&self, camera: Camera) -> Option<shell::PickedTile> {
         let (cursor_x, cursor_y) = self.control.cursor();
         let world_px = camera.pick(cursor_x, cursor_y);
-        let mut z = self.player.at.z;
-        let (mut x, mut y) = camera::unproject(world_px, z);
+        let near = i32::from(self.player.at.z);
+        let (mut x, mut y) = camera::unproject(world_px, self.player.at.z);
         if let Some((ux, uy)) = Self::in_bounds(x, y, &self.map) {
-            if let Some(cell) = self.map.land(ux, uy) {
-                z = cell.z;
-                (x, y) = camera::unproject(world_px, z);
-            }
+            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+            let z = terrain.predict_z(ux, uy, near);
+            let z = z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
+            (x, y) = camera::unproject(world_px, z);
         }
         let (x, y) = Self::in_bounds(x, y, &self.map)?;
         Some(self.tile_info(x, y))
@@ -2031,23 +2201,26 @@ impl App {
             for y in ys {
                 for x in xs.clone() {
                     let tile = Tile::new(x, y);
-                    let stand = terrain
-                        .spawn_z(tile, near)
-                        .filter(|&z| terrain.can_fit(tile, z, PLAYER_HEIGHT));
-                    match stand {
-                        // `saturating` rather than `unwrap`: a `z` outside `i8`
-                        // is a corrupt block and not an invariant of ours, and a
-                        // diamond drawn at the wrong height is a better answer
-                        // than a panic in a debugging overlay.
-                        Some(z) => open.push(Point {
-                            x,
-                            y,
-                            z: z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8,
-                        }),
+                    // The height the diamond is drawn at, and the height the
+                    // question is asked about, are one number — the surface a
+                    // body would stand on here. A *blocked* tile has one too:
+                    // the barrels on a pier stand on the planks, and washing
+                    // their tile at the land's height (water, thirteen units
+                    // down) drew the refusal a tile and a half away from the
+                    // barrel that caused it. `ground_z` is only the fallback for
+                    // a tile with no surface at all.
+                    let surface = terrain.spawn_z(tile, near);
+                    // `clamp` rather than `unwrap`: a `z` outside `i8` is a
+                    // corrupt block and not an invariant of ours, and a diamond
+                    // drawn at the wrong height is a better answer than a panic
+                    // in a debugging overlay.
+                    let drawn_z = |z: i32| z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
+                    match surface.filter(|&z| terrain.can_fit(tile, z, PLAYER_HEIGHT)) {
+                        Some(z) => open.push(Point { x, y, z: drawn_z(z) }),
                         None => blocked.push(Point {
                             x,
                             y,
-                            z: terrain.ground_z(tile).unwrap_or(0),
+                            z: surface.map_or_else(|| terrain.ground_z(tile).unwrap_or(0), drawn_z),
                         }),
                     }
                 }
@@ -2060,10 +2233,12 @@ impl App {
         let mut steps: Vec<Direction> = self.steer.route().collect();
         if steps.is_empty() {
             if let Some(tile) = hover {
+                // The surface, like everything else here: a route planned to the
+                // water under a pier is a route to somewhere nobody is standing.
                 let to = Point {
                     x: tile.x,
                     y: tile.y,
-                    z: tile.land_z,
+                    z: tile.stand_z,
                 };
                 steps = find_path(&terrain, self.player.at, to, steer::PLAN_BUDGET).unwrap_or_default();
             }
@@ -2139,14 +2314,20 @@ impl App {
     /// [`App::control`]: the overlay the shell draws from this and the world pass
     /// below it are two readers of one picture, and the only way they cannot
     /// disagree is for there to be one value. See [`App::draw`].
+    /// Whether the world may read the cursor at all.
+    ///
+    /// Asked once and answered for the whole frame. A pointer over a panel picks
+    /// no tile and lights no item, so nothing is highlighted under the panel and
+    /// nothing is highlighted where the pointer *was* when it went over one; a
+    /// pointer that has left the window is the other half, and the one no egui
+    /// state can answer — see [`App::pointer_inside`] and
+    /// [`shell::Shell::holds_pointer`].
+    fn world_owns_pointer(&self) -> bool {
+        self.pointer_inside && !self.shell.as_ref().is_some_and(shell::Shell::holds_pointer)
+    }
+
     fn hud(&self, camera: Camera) -> shell::Hud {
-        // Who owns the mouse, asked once and answered for the whole frame. The
-        // world may only read the cursor when the UI is not holding it: a
-        // pointer over a panel picks no tile, so nothing is highlighted under
-        // the panel and nothing is highlighted where the pointer *was* when it
-        // went over one. See [`shell::Shell::holds_pointer`].
-        let ui_holds = self.shell.as_ref().is_some_and(shell::Shell::holds_pointer);
-        let hover = match self.pointer_inside && !ui_holds {
+        let hover = match self.world_owns_pointer() {
             true => self.pick_tile(camera),
             false => None,
         };
@@ -2408,7 +2589,21 @@ impl App {
             self.control.camera().render_width(),
             self.control.camera().render_height(),
         );
+        let outline_mask = outline::mask_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        let place = place::texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
         let blit = Blit::new(&device, format);
+        // The surface's format and not the world's: the ring is drawn over the
+        // blit's output, so that a highlight is not dimmed by the night the way
+        // the picture under it is.
+        let outline = Outline::new(&device, format);
         // The HUD, with the surface's own format: egui picks its fragment entry
         // point from whether that format is sRGB, and this one deliberately is
         // not.
@@ -2425,11 +2620,14 @@ impl App {
             world,
             blit,
             depth,
+            place,
             mobile_pass,
             atlases,
             text_pass,
             ttf_atlas,
             ttf_pass,
+            outline_mask,
+            outline,
         })
     }
 
@@ -2552,6 +2750,10 @@ impl App {
         // from two `Instant::now()`s a few hundred microseconds apart would put
         // a torch and the body that walks past it on two different instants.
         self.tile_animations.advance(elapsed);
+        // And the flames, off the same span: a fire's animation frame and the
+        // brightness of the pool it casts are two clocks describing one fire,
+        // and they are advanced together or they describe two.
+        self.flame_clock += elapsed;
         self.last_advance = started;
         // Whatever scenario is being walked delivers its knots for the span that
         // just passed, before the eye is asked where the body is: a step that
@@ -2579,6 +2781,10 @@ impl App {
         // above is: the borrow is of `self`, and the pacing at the foot of this
         // frame is a fact about the whole app rather than about it.
         let watched = self.watched();
+        // The same, for the two the item highlight needs — both are questions
+        // about the whole of `self` and are asked once, here.
+        let owns_pointer = self.world_owns_pointer();
+        let cursor = self.control.cursor();
 
         // # Step three: present. Nothing below this line writes the world.
         //
@@ -2821,6 +3027,13 @@ impl App {
             // Tested pixel for pixel against that image, so it is exactly its
             // size or it is nothing.
             window.depth = renderer::depth_texture(&window.device, render_width, render_height);
+            // And the mask with it: it is the colour attachment of a pass whose
+            // depth attachment is that buffer, and wgpu requires the two to be
+            // one size.
+            window.outline_mask = outline::mask_texture(&window.device, render_width, render_height);
+            // And the place channel, which is an attachment of those same
+            // passes and is read texel for texel against that image.
+            window.place = place::texture(&window.device, render_width, render_height);
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -2852,6 +3065,39 @@ impl App {
         // Through the same pass as the map's statics, because they are the same
         // atlas: one draw call binds one texture, and what covers what is the
         // depth these carry rather than the order they are appended in.
+        // What the cursor is over, asked here rather than remembered from the
+        // last click: the picture moves under a still mouse — the body walks,
+        // the camera follows, a door swings — so where the cursor is pointing is
+        // a question about *this* frame's picture and has to be asked against
+        // this frame's camera. The same `items::pick` a double-click asks, so
+        // what is lit is what would be used.
+        //
+        // Asked once and answered to two passes: the hue the picture is drawn in
+        // and the silhouette the ring is grown from. Two picks would be two
+        // chances to disagree about what the cursor is on.
+        let highlight = match owns_pointer {
+            true => items::pick(
+                &self.items,
+                &camera,
+                &self.tiledata,
+                &self.tile_animations,
+                &window.atlases.statics,
+                &cutaway,
+                cursor,
+            ),
+            false => None,
+        };
+        // The same quads as the picture's, so the ring lands on the sprite
+        // rather than beside it — see `items::outlined`.
+        let outline_quads = items::outlined(
+            &self.items,
+            &camera,
+            &self.tiledata,
+            &self.tile_animations,
+            &window.atlases.statics,
+            &cutaway,
+            highlight,
+        );
         let static_quads = {
             let mut quads = static_quads;
             quads.extend(items::collect(
@@ -2861,6 +3107,7 @@ impl App {
                 &self.tile_animations,
                 &window.atlases.statics,
                 &cutaway,
+                highlight,
             ));
             quads
         };
@@ -2920,9 +3167,11 @@ impl App {
             text::collect(&labels, &self.font_atlas)
         };
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let place_view = window.place.create_view(&wgpu::TextureViewDescriptor::default());
         let target = Target {
             view: &world_view,
             depth: &depth_view,
+            place: &place_view,
             width: render_width,
             height: render_height,
             projection: camera.projection(),
@@ -2942,6 +3191,21 @@ impl App {
         window
             .mobile_pass
             .render(&window.device, &window.queue, &mut encoder, target, &mobile_quads);
+        // The silhouettes, here and not later: the mask is depth-tested against
+        // what the three world passes have drawn, so a barrel behind a wall is
+        // kept out of it — and the text pass below writes depth at the near
+        // plane over everything, which would punch the mask through.
+        let mask_view = window
+            .outline_mask
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        window.statics.render_mask(
+            &window.device,
+            &window.queue,
+            &mut encoder,
+            target,
+            &mask_view,
+            &outline_quads,
+        );
         // `ttf_pass` when the run is drawing through it — bound to a
         // different texture than `text_pass`, so a mix of the two within one
         // frame would sample one atlas with quads packed for the other.
@@ -2955,14 +3219,54 @@ impl App {
         // size and the magnification happened in the vertex transform — and
         // minified it is where the shrinking happens, which is why the zoom is
         // still what picks the sampler.
+        //
+        // The lights are collected here, from the same camera, cutaway and item
+        // list the passes above drew from — so a torch that was not drawn casts
+        // nothing, and a torch that was is lighting the pixels it is standing
+        // in rather than the pixels it stood in last frame.
+        let lighting = match self.night {
+            true => light::collect(
+                &self.map,
+                &self.items,
+                &camera,
+                &self.tiledata,
+                &cutaway,
+                light::NIGHT,
+                self.flame_clock.as_secs_f32(),
+            ),
+            false => Lighting::NONE,
+        };
         window.blit.render(
             &window.device,
+            &window.queue,
             &mut encoder,
-            &view,
-            &world_view,
-            camera.zoom(),
-            viewport,
+            blit::Frame {
+                target: &view,
+                world: &world_view,
+                zoom: camera.zoom(),
+                rect: viewport,
+            },
+            &lighting,
         );
+        // And the ring on top of that, over the same rectangle — after the blit
+        // so it is drawn in screen pixels and unlit: a highlight that dimmed at
+        // night would stop working exactly when the picture is hardest to read.
+        // Skipped entirely on the ordinary frame, where nothing is under the
+        // cursor and the mask is empty.
+        if !outline_quads.is_empty() {
+            window.outline.render(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                outline::Frame {
+                    target: &view,
+                    mask: &mask_view,
+                    mask_size: (render_width, render_height),
+                    rect: viewport,
+                },
+                Ring::DEFAULT,
+            );
+        }
         // The UI over it, with no depth attachment: the world's depth buffer
         // ordered the world, and this is drawn on the result.
         if let (Some(shell), Some((_, output, _))) = (self.shell.as_mut(), ui) {

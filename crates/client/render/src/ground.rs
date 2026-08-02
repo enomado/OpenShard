@@ -53,17 +53,25 @@ pub struct GroundQuad {
     /// standing behind it, and the pass order alone would put every static in
     /// front of every tile.
     pub depth: f32,
+    /// Which tile this is, for the lighting pass.
+    ///
+    /// [`Place::land`](crate::place::Place::land), and the height in it is not
+    /// read: the shader lifts each corner by its own, so the height a pixel of a
+    /// hillside carries is the interpolated one rather than the tile's base. See
+    /// [`crate::place`].
+    pub place: crate::place::Place,
 }
 
 impl GroundQuad {
     /// Bytes one quad occupies in the instance buffer.
     ///
-    /// Fifteen floats: position, the four corner heights, the land region, the
-    /// texture region and the depth. Written by hand rather than cast from a
-    /// struct — `bytemuck`'s derive emits `unsafe impl`, and this workspace
-    /// denies `unsafe_code` outright. Fifteen `to_le_bytes` is a cheaper price
-    /// than an exception to that rule.
-    pub const STRIDE: u64 = 15 * 4;
+    /// Fifteen floats and the two words of [`crate::place::Place`]: position,
+    /// the four corner heights, the land region, the texture region, the depth
+    /// and the tile. Written by hand rather than cast from a struct —
+    /// `bytemuck`'s derive emits `unsafe impl`, and this workspace denies
+    /// `unsafe_code` outright. Seventeen `to_le_bytes` is a cheaper price than
+    /// an exception to that rule.
+    pub const STRIDE: u64 = 17 * 4;
 
     /// Append this quad to an instance buffer.
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -95,6 +103,9 @@ impl GroundQuad {
             self.depth,
         ] {
             out.extend_from_slice(&value.to_le_bytes());
+        }
+        for word in self.place.packed() {
+            out.extend_from_slice(&word.to_le_bytes());
         }
     }
 }
@@ -181,6 +192,7 @@ pub fn collect(
                 region,
                 texmap,
                 depth: order.to_depth(base),
+                place: crate::place::Place::land(x, y),
             },
         ));
     });
@@ -505,6 +517,7 @@ mod tests {
                 du: 0.03125,
                 dv: 0.03125,
             }),
+            place: crate::place::Place::land(7, 9),
         };
         let mut out = Vec::new();
         quad.write(&mut out);
@@ -518,6 +531,8 @@ mod tests {
         // And the texture region is the last four, at offset 40.
         assert_eq!(&out[40..44], &0.75f32.to_le_bytes());
         assert_eq!(&out[52..56], &0.03125f32.to_le_bytes());
+        // The tile follows the depth, as two words rather than floats.
+        assert_eq!(&out[60..64], &(7u32 | 9 << 16).to_le_bytes(), "the tile");
     }
 
     /// A tile with no texture still writes a full instance — the buffer is a
@@ -537,6 +552,7 @@ mod tests {
             },
             texmap: None,
             depth: 0.25,
+            place: crate::place::Place::land(0, 0),
         };
         let mut out = Vec::new();
         quad.write(&mut out);

@@ -27,6 +27,7 @@ use openshard_uofiles::font::{AsciiFonts, FONT_COUNT};
 use openshard_uofiles::image::Image;
 use openshard_uofiles::texmaps::{TexMapError, TexMaps};
 use openshard_uofiles::tiledata::TileData;
+use openshard_uofiles::ttf_font::{TtfFont, TtfGlyph};
 
 /// The atlas texture's side, in pixels.
 ///
@@ -68,6 +69,20 @@ pub enum AtlasError {
         /// How tall.
         height: u16,
     },
+    /// A rasterized TrueType glyph is bigger than the whole atlas.
+    ///
+    /// [`Oversized`](Self::Oversized) is keyed by a wire `Graphic`, which a
+    /// Unicode code point is not — a face rasterized at a sane pixel height
+    /// never approaches 2048 pixels, so this means the caller asked for an
+    /// implausible size rather than that a real character is this shape.
+    OversizedGlyph {
+        /// The character.
+        char: char,
+        /// How wide it rasterized to.
+        width: u16,
+        /// How tall.
+        height: u16,
+    },
     /// The art container refused a graphic.
     Art(ArtError),
     /// The animation files refused a body.
@@ -90,6 +105,10 @@ impl fmt::Display for AtlasError {
                 f,
                 "{graphic:?} is {width}x{height}, which does not fit an atlas {ATLAS_SIDE} on a side",
             ),
+            Self::OversizedGlyph { char, width, height } => write!(
+                f,
+                "{char:?} rasterized to {width}x{height}, which does not fit an atlas {ATLAS_SIDE} on a side",
+            ),
             Self::Art(source) => write!(f, "reading land art: {source}"),
             Self::Anim(source) => write!(f, "reading an animation: {source}"),
             Self::TexMaps(source) => write!(f, "reading a land texture: {source}"),
@@ -100,7 +119,7 @@ impl fmt::Display for AtlasError {
 impl std::error::Error for AtlasError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Full { .. } | Self::Oversized { .. } => None,
+            Self::Full { .. } | Self::Oversized { .. } | Self::OversizedGlyph { .. } => None,
             Self::Art(source) => Some(source),
             Self::Anim(source) => Some(source),
             Self::TexMaps(source) => Some(source),
@@ -697,7 +716,7 @@ pub struct Sprite {
 /// the land graphic [`LandAtlas`] is keyed by, and the two overlap numerically —
 /// which is exactly why they are separate atlases rather than one with a prefix.
 pub struct StaticAtlas {
-    sprites: BTreeMap<Graphic, Sprite>,
+    sprites: BTreeMap<Graphic, Packed>,
     /// Every graphic ever offered, whether or not the client ships art for it.
     ///
     /// The one that most needed writing down: "does the atlas hold everything
@@ -857,10 +876,13 @@ impl StaticAtlas {
 
             self.sprites.insert(
                 graphic,
-                Sprite {
-                    region: region_at(origin_x, origin_y, width, height),
-                    width,
-                    height,
+                Packed {
+                    sprite: Sprite {
+                        region: region_at(origin_x, origin_y, width, height),
+                        width,
+                        height,
+                    },
+                    origin: (origin_x, origin_y),
                 },
             );
         }
@@ -890,8 +912,51 @@ impl StaticAtlas {
 
     /// Where a graphic sits and how big it is, or `None` if it is not packed.
     pub fn sprite(&self, graphic: Graphic) -> Option<Sprite> {
-        self.sprites.get(&graphic).copied()
+        self.sprites.get(&graphic).map(|packed| packed.sprite)
     }
+
+    /// Whether the pixel at `(x, y)` *within* a graphic's own picture is drawn
+    /// rather than transparent — the alpha the fragment shader discards on, read
+    /// back on the CPU.
+    ///
+    /// This is what makes picking hit the *picture* and not its bounding box. A
+    /// static's box is mostly empty — a door's leaf is a slim diagonal in a tall
+    /// rectangle, and two of them in a shopfront overlap boxes without ever
+    /// overlapping a pixel — so a box test picks a door the player is pointing
+    /// past. The shader draws a texel exactly when its alpha is non-zero (see
+    /// [`copy_sprite`], where zero *is* absent, the client's own rule), and this
+    /// asks the same texel the same question.
+    ///
+    /// `false` for a graphic that is not packed and for a coordinate outside the
+    /// picture: neither is a pixel the player can have clicked on.
+    pub fn opaque_at(&self, graphic: Graphic, x: u16, y: u16) -> bool {
+        let Some(packed) = self.sprites.get(&graphic) else {
+            return false;
+        };
+        if x >= packed.sprite.width || y >= packed.sprite.height {
+            return false;
+        }
+        let side = ATLAS_SIDE as usize;
+        let (origin_x, origin_y) = packed.origin;
+        let at = ((origin_y as usize + usize::from(y)) * side + origin_x as usize + usize::from(x)) * 4;
+        self.pixels[at + 3] != 0
+    }
+}
+
+/// One picture in the static atlas: what to draw it with, and where its pixels
+/// actually are.
+///
+/// The origin is kept beside the region rather than recovered from it. A region
+/// is normalised — the whole reason [`Sprite`] carries its size in pixels as
+/// well — and multiplying `u * side` back to an integer is a second answer to a
+/// question that already has one, off by a texel wherever the rounding falls the
+/// other way. Reading the *wrong* texel is exactly the bug picking cannot
+/// afford, since a one-pixel miss along a sprite's edge is invisible until a
+/// player is pointing at something and nothing happens.
+struct Packed {
+    sprite: Sprite,
+    /// Its top-left corner in atlas pixels.
+    origin: (u32, u32),
 }
 
 /// Which picture of an animation this is.
@@ -1325,6 +1390,223 @@ impl FontAtlas {
     /// `fonts.mul`'s 224-entry table.
     pub fn glyph(&self, font: Font, char: u8) -> Option<Sprite> {
         self.sprites.get(&GlyphKey { font, char }).copied()
+    }
+}
+
+/// One rasterized TrueType glyph, packed and ready to place.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct TtfSprite {
+    /// Where it sits, and how big it is. A glyph with no ink — a space — packs
+    /// to a zero-sized [`Sprite`] with nothing copied into the texture, the
+    /// way [`SpriteQuad`](crate::sprite::SpriteQuad) already treats a zero
+    /// width or height as nothing to draw.
+    pub sprite: Sprite,
+    /// How far below the glyph's own top edge the baseline sits, in pixels.
+    /// See [`openshard_uofiles::ttf_font::TtfGlyph::baseline_from_top`].
+    pub baseline_from_top: i32,
+    /// How far to move the pen afterwards, in pixels.
+    pub advance: u16,
+}
+
+/// A TrueType face's glyphs, packed into one texture and grown on demand.
+///
+/// Unlike [`FontAtlas`], there is no fixed table to pack once: a TrueType face
+/// answers for any Unicode code point, so building "every glyph" up front has
+/// no upper bound. This is a shelf instead — the same packer
+/// [`StaticAtlas`] uses — keyed by the character itself and grown the first
+/// time each one is asked for, the way [`StaticAtlas::add`] grows for graphics
+/// newly on screen.
+///
+/// A space — real ink-free glyphs generally — is still inserted, with a
+/// zero-sized [`Sprite`] and a real [`TtfSprite::advance`]: unlike
+/// [`FontAtlas`], which skips a zero-sized glyph entirely (see
+/// [`FontAtlas::build`]) because `fonts.mul` gives it no way to tell "no ink"
+/// from "not packed", the caller can tell the two apart here, and
+/// `crate::text::collect_ttf` needs the advance to land the next character in
+/// the right place — see its doc for what happens to a byte this atlas never
+/// packed.
+pub struct TtfAtlas {
+    /// The pixel height every glyph in this atlas is rasterized at. One face,
+    /// one size — see the "One face, not ten" note in
+    /// `openshard_uofiles::ttf_font`.
+    pixel_height: f32,
+    sprites: BTreeMap<char, TtfSprite>,
+    /// Every character ever asked for, whether or not it drew ink. Same
+    /// purpose as the other atlases' `asked` sets: a character with no
+    /// glyph — impossible for a TrueType face, which always has `.notdef` —
+    /// would otherwise be rasterized once per frame forever.
+    asked: BTreeSet<char>,
+    shelf: Shelf,
+    /// `ATLAS_SIDE * ATLAS_SIDE` RGBA8 pixels, row-major.
+    pixels: Vec<u8>,
+    dirty: Dirty,
+}
+
+impl fmt::Debug for TtfAtlas {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TtfAtlas")
+            .field("glyphs", &self.sprites.len())
+            .field("pixel_height", &self.pixel_height)
+            .field("side", &ATLAS_SIDE)
+            .finish()
+    }
+}
+
+impl TtfAtlas {
+    /// An atlas holding nothing, ready to be grown into.
+    #[must_use]
+    pub fn empty(pixel_height: f32) -> Self {
+        let side = ATLAS_SIDE as usize;
+        Self {
+            pixel_height,
+            sprites: BTreeMap::new(),
+            asked: BTreeSet::new(),
+            shelf: Shelf::default(),
+            pixels: vec![0u8; side * side * 4],
+            dirty: Dirty::default(),
+        }
+    }
+
+    /// The pixel height this atlas rasterizes at.
+    pub fn pixel_height(&self) -> f32 {
+        self.pixel_height
+    }
+
+    /// Rasterize and pack whichever of `wanted` this atlas has not been
+    /// offered before. [`StaticAtlas::add`], for characters instead of
+    /// graphics.
+    pub fn add(&mut self, font: &TtfFont, wanted: impl IntoIterator<Item = char>) -> Result<(), AtlasError> {
+        let wanted: BTreeSet<char> = wanted.into_iter().collect();
+        let fresh: Vec<char> = wanted.into_iter().filter(|ch| !self.asked.contains(ch)).collect();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let glyphs: Vec<(char, TtfGlyph)> = fresh
+            .iter()
+            .map(|&ch| (ch, font.glyph(ch, self.pixel_height)))
+            .collect();
+        self.insert(glyphs)?;
+        self.asked.extend(fresh);
+        Ok(())
+    }
+
+    /// The rows written since this was last asked, cleared. See
+    /// [`LandAtlas::take_dirty`].
+    pub fn take_dirty(&mut self) -> Option<std::ops::Range<u32>> {
+        self.dirty.take()
+    }
+
+    /// Pack glyphs somebody else rasterized.
+    ///
+    /// The way in that needs no bundled font at all — a test hands this the
+    /// glyphs it chose and asserts on the pixels the frame comes back with,
+    /// exactly as [`StaticAtlas::pack`] does for graphics.
+    pub fn pack(
+        glyphs: impl IntoIterator<Item = (char, TtfGlyph)>,
+        pixel_height: f32,
+    ) -> Result<Self, AtlasError> {
+        let mut atlas = Self::empty(pixel_height);
+        let glyphs: Vec<(char, TtfGlyph)> = glyphs.into_iter().collect();
+        atlas.asked.extend(glyphs.iter().map(|(ch, _)| *ch));
+        atlas.insert(glyphs)?;
+        atlas.dirty.take();
+        Ok(atlas)
+    }
+
+    /// Shelve glyphs beside what is already packed, marking the rows written.
+    ///
+    /// Tallest first, for the reason [`StaticAtlas::insert`] is — and a glyph
+    /// with no ink sorts to the very end, where its zero height means it never
+    /// starts a row for anything else to waste space under.
+    fn insert(&mut self, glyphs: impl IntoIterator<Item = (char, TtfGlyph)>) -> Result<(), AtlasError> {
+        let glyphs: BTreeMap<char, TtfGlyph> = glyphs.into_iter().collect();
+        let wanted = self.sprites.len() + glyphs.len();
+        let mut order: Vec<(char, TtfGlyph)> = glyphs.into_iter().collect();
+        order.sort_by_key(|(_, glyph)| std::cmp::Reverse(glyph.image.height()));
+
+        for (ch, glyph) in order {
+            if self.sprites.contains_key(&ch) {
+                continue;
+            }
+            let (width, height) = (glyph.image.width(), glyph.image.height());
+            // No ink — a space, ordinarily. Nothing to shelve or copy, but the
+            // advance still has to be kept: see the type doc for why this is
+            // inserted rather than left for `glyph()` to answer `None`.
+            if width == 0 || height == 0 {
+                self.sprites.insert(
+                    ch,
+                    TtfSprite {
+                        sprite: Sprite {
+                            region: Region {
+                                u: 0.0,
+                                v: 0.0,
+                                du: 0.0,
+                                dv: 0.0,
+                            },
+                            width: 0,
+                            height: 0,
+                        },
+                        baseline_from_top: glyph.baseline_from_top,
+                        advance: glyph.advance,
+                    },
+                );
+                continue;
+            }
+            if u32::from(width) > ATLAS_SIDE || u32::from(height) > ATLAS_SIDE {
+                return Err(AtlasError::OversizedGlyph {
+                    char: ch,
+                    width,
+                    height,
+                });
+            }
+            let Some((origin_x, origin_y)) = self.shelf.take(u32::from(width), u32::from(height)) else {
+                return Err(AtlasError::Full {
+                    wanted,
+                    capacity: self.sprites.len(),
+                });
+            };
+            self.dirty.mark(origin_y, u32::from(height));
+            copy_sprite(&mut self.pixels, &glyph.image, origin_x, origin_y);
+            self.sprites.insert(
+                ch,
+                TtfSprite {
+                    sprite: Sprite {
+                        region: region_at(origin_x, origin_y, width, height),
+                        width,
+                        height,
+                    },
+                    baseline_from_top: glyph.baseline_from_top,
+                    advance: glyph.advance,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    /// The atlas texture's side in pixels. Square, like every other atlas here.
+    pub const fn side() -> u32 {
+        ATLAS_SIDE
+    }
+
+    /// Its pixels, RGBA8 and row-major, ready for `write_texture`.
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// How many characters landed in it.
+    pub fn len(&self) -> usize {
+        self.sprites.len()
+    }
+
+    /// Whether nothing did.
+    pub fn is_empty(&self) -> bool {
+        self.sprites.is_empty()
+    }
+
+    /// A character's packed glyph, or `None` if it was never asked for.
+    pub fn glyph(&self, ch: char) -> Option<TtfSprite> {
+        self.sprites.get(&ch).copied()
     }
 }
 
@@ -1766,10 +2048,11 @@ mod tests {
     #[test]
     fn build_packs_every_real_glyph_and_skips_the_zero_sized_ones() {
         let mut bytes = Vec::new();
+        let a_index = usize::from(b'A' - openshard_uofiles::font::GLYPH_BASE);
         for _font in 0..FONT_COUNT {
             bytes.push(0); // the font header byte
             for char in 0..openshard_uofiles::font::CHARS_PER_FONT {
-                if char == usize::from(b'A') {
+                if char == a_index {
                     bytes.push(2);
                     bytes.push(2);
                     bytes.push(0);
@@ -1788,6 +2071,113 @@ mod tests {
         assert_eq!(atlas.len(), FONT_COUNT);
         assert!(atlas.glyph(Font(0), b'A').is_some());
         assert!(atlas.glyph(Font(0), b'B').is_none(), "zero-sized, not packed");
+    }
+
+    /// A synthetic rasterized glyph: `width`x`height` of one grey level, the
+    /// baseline `baseline_from_top` pixels down from the top, advancing the
+    /// pen by `advance`.
+    fn ttf_glyph(width: u16, height: u16, baseline_from_top: i32, advance: u16) -> TtfGlyph {
+        TtfGlyph {
+            image: Image::new(
+                width,
+                height,
+                vec![Color16(0x1F); usize::from(width) * usize::from(height)],
+            ),
+            baseline_from_top,
+            advance,
+        }
+    }
+
+    /// A packed glyph reports back exactly the advance and baseline it was
+    /// rasterized with — `TtfAtlas` only relocates pixels, it does not touch
+    /// the placement numbers `crate::text::collect_ttf` depends on.
+    #[test]
+    fn a_packed_ttf_glyph_keeps_its_advance_and_baseline() {
+        let atlas = TtfAtlas::pack([('A', ttf_glyph(10, 14, 11, 12))], 16.0).expect("one glyph fits");
+        let glyph = atlas.glyph('A').expect("packed");
+        assert_eq!((glyph.sprite.width, glyph.sprite.height), (10, 14));
+        assert_eq!(glyph.baseline_from_top, 11);
+        assert_eq!(glyph.advance, 12);
+    }
+
+    /// A space has no ink to pack, but a caller still needs to move the pen
+    /// past it — the whole reason [`TtfAtlas`] inserts a zero-sized entry
+    /// instead of leaving it out the way [`FontAtlas`] leaves out a zero-sized
+    /// `fonts.mul` glyph.
+    #[test]
+    fn a_glyph_with_no_ink_is_still_packed_with_its_advance() {
+        let atlas = TtfAtlas::pack([(' ', ttf_glyph(0, 0, 0, 6))], 16.0).expect("packs");
+        let glyph = atlas.glyph(' ').expect("a space is packed, just empty");
+        assert_eq!((glyph.sprite.width, glyph.sprite.height), (0, 0));
+        assert_eq!(glyph.advance, 6);
+    }
+
+    /// A character nobody asked for answers `None`, not a made-up glyph — the
+    /// same contract [`FontAtlas::glyph`] and [`StaticAtlas::sprite`] give.
+    #[test]
+    fn an_unpacked_ttf_character_is_none() {
+        let atlas = TtfAtlas::pack([('A', ttf_glyph(10, 14, 11, 12))], 16.0).expect("packs");
+        assert!(atlas.glyph('Z').is_none());
+    }
+
+    /// The property every shelf-packed atlas needs: two glyphs never claim the
+    /// same pixels, whatever order they were handed in.
+    #[test]
+    fn packed_ttf_glyphs_never_overlap_and_never_leave_the_atlas() {
+        let glyphs: Vec<(char, TtfGlyph)> = ('a'..='z')
+            .enumerate()
+            .map(|(i, ch)| (ch, ttf_glyph(6 + (i as u16) % 5, 10 + (i as u16) % 7, 8, 8)))
+            .collect();
+        let atlas = TtfAtlas::pack(glyphs.clone(), 16.0).expect("26 small glyphs fit");
+
+        let side = ATLAS_SIDE as usize;
+        let mut claimed = vec![None; side * side];
+        for (ch, glyph) in glyphs {
+            let packed = atlas.glyph(ch).expect("packed");
+            assert_eq!(
+                (packed.sprite.width, packed.sprite.height),
+                (glyph.image.width(), glyph.image.height())
+            );
+            let x = (packed.sprite.region.u * ATLAS_SIDE as f32) as usize;
+            let y = (packed.sprite.region.v * ATLAS_SIDE as f32) as usize;
+            for row in y..y + usize::from(packed.sprite.height) {
+                for column in x..x + usize::from(packed.sprite.width) {
+                    let cell = &mut claimed[row * side + column];
+                    assert_eq!(*cell, None, "{ch:?} overlaps {cell:?}");
+                    *cell = Some(ch);
+                }
+            }
+        }
+    }
+
+    /// A real face, read from wherever `OPENSHARD_TTF_FONT_TEST` points.
+    /// Skipped, not failed, when it is unset: nothing is bundled with the
+    /// engine (see `openshard_uofiles::ttf_font`'s doc), so there is no font
+    /// this crate can assume exists on the machine running the test.
+    fn test_ttf_font() -> Option<TtfFont> {
+        let path = std::env::var_os("OPENSHARD_TTF_FONT_TEST")?;
+        Some(TtfFont::open(path).expect("OPENSHARD_TTF_FONT_TEST names a readable TrueType face"))
+    }
+
+    /// A character already packed is not rasterized again — the reason
+    /// [`TtfAtlas::add`] keeps its own `asked` set rather than calling
+    /// [`TtfFont::glyph`] unconditionally, the way [`StaticAtlas::add`] does
+    /// for graphics it already offered.
+    #[test]
+    fn a_character_already_packed_is_not_rasterized_again() {
+        let Some(font) = test_ttf_font() else { return };
+        let mut atlas = TtfAtlas::empty(16.0);
+        atlas.add(&font, ['H', 'i']).expect("packs");
+        let before = atlas.glyph('H').expect("packed");
+
+        // Asking again, alongside something new, must not disturb 'H' — if it
+        // were rasterized and re-inserted it would still look the same here,
+        // which is exactly why the real regression this guards is `len()`
+        // growing every time a line repeats a letter, not a pixel changing.
+        atlas.add(&font, ['H', '!']).expect("packs");
+        let after = atlas.glyph('H').expect("still packed");
+        assert_eq!(before, after);
+        assert_eq!(atlas.len(), 3, "'H', 'i' and '!' — not 'H' twice");
     }
 }
 

@@ -40,17 +40,24 @@ pub struct SpriteQuad {
     /// belongs at the boundary the value crosses into it. See
     /// [`crate::hue::HueRamp`] for what a nonzero value means to the shader.
     pub hue: u32,
+    /// Which tile in the world these pixels are, for the lighting pass.
+    ///
+    /// [`Place::NOWHERE`](crate::place::Place::NOWHERE) for a sprite that is not
+    /// a thing standing in the street — the letters over a speaker's head are
+    /// the case, and they are left unlit rather than dimmed by the night. See
+    /// [`crate::place`].
+    pub place: crate::place::Place,
 }
 
 impl SpriteQuad {
     /// Bytes one quad occupies in the instance buffer.
     ///
-    /// Nine floats and a `u32`: position, size, region, depth, hue. Written by
-    /// hand for the same reason
-    /// [`GroundQuad::STRIDE`](crate::ground::GroundQuad::STRIDE) is —
+    /// Nine floats and three `u32`s: position, size, region, depth, hue, and
+    /// the two words of [`crate::place::Place`]. Written by hand for the same
+    /// reason [`GroundQuad::STRIDE`](crate::ground::GroundQuad::STRIDE) is —
     /// `bytemuck`'s derive emits `unsafe impl` and this workspace denies
     /// `unsafe_code`.
-    pub const STRIDE: u64 = 10 * 4;
+    pub const STRIDE: u64 = 12 * 4;
 
     /// The same region, sampled right to left.
     ///
@@ -83,6 +90,9 @@ impl SpriteQuad {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out.extend_from_slice(&self.hue.to_le_bytes());
+        for word in self.place.packed() {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
     }
 }
 
@@ -108,10 +118,13 @@ mod tests {
             },
             depth: 0.75,
             hue: 0x8021,
+            place: crate::place::Place::of_static(openshard_protocol::world::Point::new(7, 9, -2)),
         };
         let mut out = Vec::new();
         quad.write(&mut out);
         assert_eq!(out.len() as u64, SpriteQuad::STRIDE);
+        assert_eq!(&out[40..44], &(7u32 | 9 << 16).to_le_bytes(), "the tile");
+        assert_eq!(&out[44..48], &(126u32 | 2 << 8).to_le_bytes(), "z, then the kind");
         assert_eq!(&out[..4], &1.0f32.to_le_bytes());
         assert_eq!(&out[8..12], &44.0f32.to_le_bytes());
         assert_eq!(&out[16..20], &0.25f32.to_le_bytes());

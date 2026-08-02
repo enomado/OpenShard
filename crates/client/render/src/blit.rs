@@ -17,6 +17,16 @@
 //! [`Camera::render_height`]: crate::camera::Camera::render_height
 
 use crate::camera::Zoom;
+use crate::light::Lighting;
+
+/// How many lights the uniform block holds. `blit.wgsl`'s `MAX_LIGHTS`, and the
+/// two are one number: the array's length is fixed at shader compile time, so a
+/// buffer written to a different one is rejected by wgpu rather than drawn
+/// wrongly.
+const MAX_LIGHTS: usize = Lighting::MAX;
+
+/// The uniform block's size: two header `vec4`s, then two per light.
+const LIGHTING_BYTES: u64 = (2 + 2 * MAX_LIGHTS as u64) * 16;
 
 /// Where the world image goes on the surface, in physical pixels.
 ///
@@ -34,6 +44,25 @@ pub struct ViewportRect {
     pub height: u32,
 }
 
+/// What one blit draws, and where.
+///
+/// The four values that describe *this frame's* picture, grouped for the reason
+/// [`Target`](crate::renderer::Target) is: they always travel together, and a
+/// `render` that took them one by one alongside a device, a queue, an encoder
+/// and the lighting would be a call whose arguments are told apart by position
+/// alone.
+#[derive(Clone, Copy, Debug)]
+pub struct Frame<'a> {
+    /// Where the picture goes — the surface.
+    pub target: &'a wgpu::TextureView,
+    /// The world image it comes from.
+    pub world: &'a wgpu::TextureView,
+    /// Which way the scaling goes, and so which sampler is right.
+    pub zoom: Zoom,
+    /// The rectangle of `target` the world gets.
+    pub rect: ViewportRect,
+}
+
 /// Draws one texture over a rectangle of another.
 #[derive(Debug)]
 pub struct Blit {
@@ -44,6 +73,8 @@ pub struct Blit {
     /// For minifying: nearest would sample one texel in four and the ground
     /// would shimmer as the camera walks.
     linear: wgpu::Sampler,
+    /// The frame's lights, rewritten every frame — see [`crate::light`].
+    lighting: wgpu::Buffer,
 }
 
 impl Blit {
@@ -85,7 +116,27 @@ impl Blit {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
+        });
+
+        // Zeroed at creation, which is *not* the identity — a zero ambient is
+        // black — so the first frame writes it before drawing. Every frame
+        // does; this only has to be a buffer of the right size to bind.
+        let lighting = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lighting"),
+            size: LIGHTING_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -142,6 +193,7 @@ impl Blit {
             layout,
             nearest: sampler("blit nearest", wgpu::FilterMode::Nearest),
             linear: sampler("blit linear", wgpu::FilterMode::Linear),
+            lighting,
         }
     }
 
@@ -151,15 +203,25 @@ impl Blit {
     /// minifying. Two rules rather than one, because pixel art wants its texels
     /// square when they are grown and wants them averaged when four of them have
     /// to become one.
+    ///
+    /// `lighting` is what the frame's flames do to the image on the way past —
+    /// see [`crate::light`]. [`Lighting::NONE`] leaves it a copy, which is what
+    /// a daylit frame and every frame test pass.
     pub fn render(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        world: &wgpu::TextureView,
-        zoom: Zoom,
-        rect: ViewportRect,
+        frame: Frame<'_>,
+        lighting: &Lighting,
     ) {
+        let Frame {
+            target,
+            world,
+            zoom,
+            rect,
+        } = frame;
+        queue.write_buffer(&self.lighting, 0, &lighting_bytes(lighting));
         // A bind group per call rather than per `Blit`: the world texture is
         // recreated on every resize and every zoom step, and a cached group
         // would be a handle to a texture that is no longer being drawn into.
@@ -179,6 +241,10 @@ impl Blit {
                     } else {
                         &self.linear
                     }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.lighting.as_entire_binding(),
                 },
             ],
         });
@@ -223,6 +289,50 @@ impl Blit {
         );
         pass.draw(0..4, 0..1);
     }
+}
+
+/// The uniform block `blit.wgsl` reads, laid out by hand.
+///
+/// Written as bytes rather than through a `#[repr(C)]` struct for the reason
+/// every other pass here does it: the layout is a contract with text the Rust
+/// compiler never sees, and a field order stated once in the shader and once in
+/// a struct is two statements that can disagree. This way the writing order is
+/// the shader's declaration order, in one place.
+///
+/// Lights past [`Lighting::MAX`] are dropped rather than wrapping the array —
+/// [`crate::light::collect`] already keeps only the nearest that many, so this
+/// is the second half of one rule and not a policy of its own.
+fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(LIGHTING_BYTES as usize);
+    let mut push = |value: f32| bytes.extend_from_slice(&value.to_le_bytes());
+    let count = lighting.lights.len().min(MAX_LIGHTS);
+
+    // `image`: the size being lit, then how many lights follow.
+    push(lighting.image.x);
+    push(lighting.image.y);
+    push(count as f32);
+    push(0.0);
+    // `ambient`, with the fourth channel unused.
+    for channel in lighting.ambient {
+        push(channel);
+    }
+    push(0.0);
+
+    for light in &lighting.lights[..count] {
+        push(light.at.x);
+        push(light.at.y);
+        push(light.radius);
+        push(light.intensity);
+        for channel in light.color {
+            push(channel);
+        }
+        push(0.0);
+    }
+    // The tail of the array is never read — the shader stops at `count` — but
+    // the buffer is bound whole, and a short write leaves whatever the last
+    // frame put there. Zeroed, so a partial upload cannot be mistaken for one.
+    bytes.resize(LIGHTING_BYTES as usize, 0);
+    bytes
 }
 
 /// The format of the texture the world is drawn into.

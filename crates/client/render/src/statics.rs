@@ -163,6 +163,7 @@ pub fn collect(
                     height: f32::from(sprite.height),
                 },
                 region: sprite.region,
+                place: crate::place::Place::of_static(Point::new(item.x, item.y, item.z)),
                 depth: order.to_depth(base),
                 hue: u32::from(item.hue),
             },
@@ -189,7 +190,11 @@ pub fn collect(
 /// by the whole `z` range in both directions, which is 512 pixels either way,
 /// so the sprites are covered by a margin that exists for another reason. Said
 /// here because it is a dependency between two modules and not an accident.
-fn for_each_static_in(
+/// `pub(crate)` for [`crate::light`], which walks the same cells to find what
+/// on them burns: one walk written twice would be two answers to "which statics
+/// is this frame about", and the lights would drift from the sprites making
+/// them.
+pub(crate) fn for_each_static_in(
     map: &Map,
     bounds: TileBounds,
     mut each: impl FnMut(&openshard_uofiles::map::StaticItem),

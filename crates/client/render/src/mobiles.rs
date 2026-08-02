@@ -303,6 +303,7 @@ pub fn collect(
                 region: placement.region,
                 depth: order.to_depth(base),
                 hue: u32::from(mobile.hue.0),
+                place: crate::place::Place::of_mobile(mobile.at),
             },
         ));
 
@@ -323,6 +324,9 @@ pub fn collect(
                     region: worn.region,
                     depth: order.to_depth(base),
                     hue: u32::from(hue.0),
+                    // The body's tile, not the sprite's: a hat is lit as the
+                    // head under it is, and it has no tile of its own.
+                    place: crate::place::Place::of_mobile(mobile.at),
                 },
             ));
         }

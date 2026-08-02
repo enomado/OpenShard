@@ -61,6 +61,13 @@ pub struct Target<'a> {
     /// buffer would be back to "everything drawn later wins", which puts every
     /// wall in front of every hill.
     pub depth: &'a wgpu::TextureView,
+    /// Where every pass writes which tile its pixels came from.
+    ///
+    /// Shared for the same reason the depth buffer is, and filled by the same
+    /// draws: it is one answer per pixel about one frame, and a pass that wrote
+    /// its own would leave the lighting reading the ground's tile under a wall's
+    /// picture. See [`crate::place`].
+    pub place: &'a wgpu::TextureView,
     /// Its width in real pixels.
     pub width: u32,
     /// Its height in real pixels.
@@ -82,10 +89,17 @@ impl<'a> Target<'a> {
     /// the result against the art, where a magnification would be a resampling
     /// step between the two — and what the minifying path hands the passes, for
     /// the same reason in a different order: there the scaling is the blit's.
-    pub fn whole(view: &'a wgpu::TextureView, depth: &'a wgpu::TextureView, width: u32, height: u32) -> Self {
+    pub fn whole(
+        view: &'a wgpu::TextureView,
+        depth: &'a wgpu::TextureView,
+        place: &'a wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> Self {
         Self {
             view,
             depth,
+            place,
             width,
             height,
             projection: Projection::one_to_one(width, height),
@@ -131,6 +145,18 @@ pub fn depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 /// flagstone lying on it, and the flagstone gives way to the body standing on
 /// the flagstone. Under `Less` every one of those ties resolved backwards, and
 /// silently: the depths were right and the first writer kept the pixel.
+/// The second colour target every world pass writes: which tile a pixel is.
+///
+/// Shared by the ground and the sprite pipelines because it is one attachment
+/// and one format — see [`crate::place`]. No blending, like the picture beside
+/// it: a place is an identity, and averaging two of them names a third tile that
+/// nothing was drawn on.
+const PLACE_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
+    format: crate::place::FORMAT,
+    blend: None,
+    write_mask: wgpu::ColorWrites::ALL,
+};
+
 fn depth_state() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: DEPTH_FORMAT,
@@ -347,6 +373,13 @@ impl GroundRenderer {
                                 offset: 56,
                                 shader_location: 5,
                             },
+                            // The tile, as `crate::place::Place::packed` wrote
+                            // it: two words after the depth.
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x2,
+                                offset: 60,
+                                shader_location: 6,
+                            },
                         ],
                     }),
                 ],
@@ -355,13 +388,17 @@ impl GroundRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    // No blending: the shader discards transparent texels, so
-                    // every fragment that survives is opaque.
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        // No blending: the shader discards transparent texels,
+                        // so every fragment that survives is opaque.
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    // And the same fragments say where in the world they are.
+                    Some(PLACE_TARGET),
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -467,15 +504,29 @@ impl GroundRenderer {
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ground"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target.view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(CLEAR),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                // Cleared with the picture and by the same pass, for the same
+                // reason the depth buffer is: this is the frame's first pass,
+                // and what it leaves is what the passes after it load.
+                Some(wgpu::RenderPassColorAttachment {
+                    view: target.place,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::place::CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             // Cleared to the far plane here, because this is the frame's first
             // pass. Whatever runs after it loads what this left behind, which
             // is how one ordering spans two passes.
@@ -523,12 +574,26 @@ pub const SPRITE_ATLAS_SIDE: u32 = StaticAtlas::side();
 #[derive(Debug)]
 pub struct SpriteRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// The same sprites as shapes rather than pictures — see
+    /// [`SpriteRenderer::render_mask`] and [`crate::outline`].
+    ///
+    /// Here rather than in a renderer of its own because a silhouette is drawn
+    /// from *this* pass's atlas, sampler, uniform block and unit quad. A
+    /// separate type would have to be handed all four, and the one thing it
+    /// must not get wrong — that the silhouette lands exactly where the picture
+    /// did — is guaranteed by sharing them.
+    mask_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     quad: wgpu::Buffer,
     instances: wgpu::Buffer,
     /// Quads the instance buffer can hold before it has to be replaced.
     capacity: u64,
+    /// The silhouette pass's own instances, kept apart from `instances`
+    /// because the two lists are drawn in the same frame and one is a handful
+    /// of quads while the other is the whole screen.
+    mask_instances: wgpu::Buffer,
+    mask_capacity: u64,
     /// The atlas texture, kept so that it can be grown into rather than
     /// replaced. See [`SpriteRenderer::upload_rows`].
     atlas_texture: wgpu::Texture,
@@ -727,6 +792,13 @@ impl SpriteRenderer {
                                 offset: 36,
                                 shader_location: 5,
                             },
+                            // The tile and height, as
+                            // `crate::place::Place::packed` wrote them.
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x2,
+                                offset: 40,
+                                shader_location: 6,
+                            },
                         ],
                     }),
                 ],
@@ -735,10 +807,95 @@ impl SpriteRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        // No blending: the shader discards transparent texels,
+                        // so every fragment that survives is opaque.
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    // And the same fragments say where in the world they are.
+                    Some(PLACE_TARGET),
+                ],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(depth_state()),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // The same sprites as shapes. Built here, where the bind group layout
+        // and the shared uniform block are still in scope, and from a cut-down
+        // vertex layout: a silhouette has no hue and no place, so those two
+        // attributes are simply not declared. A vertex buffer may carry more
+        // than a pipeline reads.
+        let mask_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("silhouette"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("silhouette.wgsl").into()),
+        });
+        let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("silhouette"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &mask_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 8,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        }],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: SpriteQuad::STRIDE,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 0,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 8,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 16,
+                                shader_location: 3,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32,
+                                offset: 32,
+                                shader_location: 4,
+                            },
+                        ],
+                    }),
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &mask_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    // No blending: the shader discards transparent texels, so
-                    // every fragment that survives is opaque.
+                    // Never `format`: the mask is ids, not colour — see
+                    // [`crate::outline::MASK_FORMAT`].
+                    format: crate::outline::MASK_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -752,7 +909,17 @@ impl SpriteRenderer {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: Some(depth_state()),
+            // Tested against the world's depth and *not* written: the ordering
+            // was settled by the passes that drew the picture, and a silhouette
+            // that wrote depth would settle it again, differently, for whatever
+            // pass came after. See [`SpriteRenderer::render_mask`].
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -771,14 +938,22 @@ impl SpriteRenderer {
         queue.write_buffer(&quad, 0, &quad_bytes);
 
         let instances = new_static_instance_buffer(device, INITIAL_QUADS);
+        // One quad is the frame that has an item under the cursor and the
+        // common case; the buffer grows the same way the big one does if a
+        // caller ever outlines more.
+        let mask_capacity = 8;
+        let mask_instances = new_static_instance_buffer(device, mask_capacity);
 
         Self {
             pipeline,
+            mask_pipeline,
             bind_group,
             uniforms,
             quad,
             instances,
             capacity: INITIAL_QUADS,
+            mask_instances,
+            mask_capacity,
             atlas_texture,
         }
     }
@@ -844,15 +1019,28 @@ impl SpriteRenderer {
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("statics"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target.view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                // Loaded, not cleared: the ground pass wrote the tiles under
+                // these sprites, and a wall keeps only the pixels it drew.
+                Some(wgpu::RenderPassColorAttachment {
+                    view: target.place,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: target.depth,
                 depth_ops: Some(wgpu::Operations {
@@ -870,6 +1058,103 @@ impl SpriteRenderer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
+        pass.draw(0..4, 0..quads.len() as u32);
+    }
+
+    /// Draw `quads` into an outline mask as shapes, one id each.
+    ///
+    /// `quads` is *only* what is to be outlined, not the frame — the id a
+    /// silhouette is written in is its position in this list plus one, so the
+    /// list is the numbering and nothing on [`SpriteQuad`] carries it. Past
+    /// [`MAX_OUTLINED`](crate::outline::MAX_OUTLINED) the tail is dropped rather
+    /// than wrapped: an id that wrapped to another object's would ring the two
+    /// as one, silently.
+    ///
+    /// `target`'s `view` is ignored and `mask` is drawn into instead; everything
+    /// else about it — the size, the projection, the depth buffer — is the
+    /// frame's own, and has to be, or the silhouette lands somewhere the picture
+    /// did not. The mask is cleared here, so this is the pass that owns it.
+    ///
+    /// Must run **after** the passes that drew the picture and **before**
+    /// anything that writes depth over it (the text pass does): the depth test
+    /// is what keeps a barrel behind a wall out of the mask, and it can only
+    /// answer that once the wall is in the buffer.
+    pub fn render_mask(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Target<'_>,
+        mask: &wgpu::TextureView,
+        quads: &[SpriteQuad],
+    ) {
+        // The same uniform block the picture pass writes, written again rather
+        // than assumed: this is called with the frame's own target and the two
+        // calls are only adjacent by convention.
+        let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
+        let projection = target.projection;
+        for value in [
+            target.width as f32,
+            target.height as f32,
+            projection.scale,
+            0.0,
+            projection.origin.x,
+            projection.origin.y,
+            0.0,
+            0.0,
+        ] {
+            uniform_bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        queue.write_buffer(&self.uniforms, 0, &uniform_bytes);
+
+        let quads = &quads[..quads.len().min(crate::outline::MAX_OUTLINED)];
+        if quads.len() as u64 > self.mask_capacity {
+            self.mask_capacity = (quads.len() as u64).next_power_of_two();
+            self.mask_instances = new_static_instance_buffer(device, self.mask_capacity);
+        }
+        let mut instance_bytes = Vec::with_capacity(quads.len() * SpriteQuad::STRIDE as usize);
+        for quad in quads {
+            quad.write(&mut instance_bytes);
+        }
+        if !instance_bytes.is_empty() {
+            queue.write_buffer(&self.mask_instances, 0, &instance_bytes);
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("silhouette"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: mask,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // Zero is "nothing here", so clearing is what makes last
+                    // frame's ring go away when the cursor moves off.
+                    load: wgpu::LoadOp::Clear(CLEAR),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: target.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        if quads.is_empty() {
+            // The clear still happened, which is the frame with nothing lit.
+            return;
+        }
+
+        pass.set_pipeline(&self.mask_pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.quad.slice(..));
+        pass.set_vertex_buffer(1, self.mask_instances.slice(..));
         pass.draw(0..4, 0..quads.len() as u32);
     }
 }

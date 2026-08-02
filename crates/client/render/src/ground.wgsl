@@ -66,6 +66,24 @@ struct VertexOut {
     // Where to sample the texture atlas, and whether there is anything there.
     @location(2) texmap_uv: vec2<f32>,
     @location(3) has_texmap: f32,
+    // The tile these pixels are, flat across the instance — see `crate::place`.
+    @location(4) @interpolate(flat) place: vec2<u32>,
+    // And the height, which is *not* flat: a hillside's pixels each carry the
+    // one their corner interpolation gave them, which is the height the light
+    // has to reach. Taking the tile's base instead would light a hilltop as if
+    // it were the valley floor.
+    @location(5) place_z: f32,
+};
+
+// What a pixel of the ground is, in `crate::place::Kind`'s numbering. The Rust
+// side pins these values in a test; nothing else can compare the two.
+const KIND_LAND: u32 = 1u;
+
+// What one fragment of a world pass writes: the picture, and where in the world
+// it came from.
+struct FragmentOut {
+    @location(0) color: vec4<f32>,
+    @location(1) place: vec4<u32>,
 };
 
 @vertex
@@ -86,6 +104,8 @@ fn vs_main(
     // statics included. Computed on the CPU — see `crate::depth` — because it
     // is one ordering shared by two passes and neither may derive its own.
     @location(5) depth: f32,
+    // Per instance: the tile, packed as `crate::place::Place::packed` writes it.
+    @location(6) place: vec2<u32>,
 ) -> VertexOut {
     let half = viewport.tile * 0.5;
     let is_flat = f32(all(heights == vec4<f32>(heights.x)));
@@ -140,16 +160,29 @@ fn vs_main(
     // Corner to corner: the unit quad's own coordinates *are* the texture's.
     out.texmap_uv = texmap.xy + corner * texmap.zw;
     out.has_texmap = f32(texmap.z > 0.0);
+    out.place = place;
+    out.place_z = height;
     return out;
 }
 
+// Where in the world this fragment's pixel is: the instance's tile, the
+// interpolated corner height, and "this is ground".
+fn place_of(in: VertexOut) -> vec4<u32> {
+    let z = u32(clamp(round(in.place_z), -128.0, 127.0) + 128.0);
+    return vec4<u32>(in.place.x & 0xFFFFu, in.place.x >> 16u, z, KIND_LAND);
+}
+
 @fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOut) -> FragmentOut {
+    var out: FragmentOut;
+    out.place = place_of(in);
+
     // A slope with a texture of its own takes it, and nothing else about the
     // tile changes: the shape is still the diamond its four corners make.
     if in.is_flat < 0.5 && in.has_texmap > 0.5 {
         let textured = textureSample(texmap_texture, atlas_sampler, in.texmap_uv);
-        return vec4<f32>(textured.rgb, 1.0);
+        out.color = vec4<f32>(textured.rgb, 1.0);
+        return out;
     }
 
     let color = textureSample(atlas_texture, atlas_sampler, in.uv);
@@ -167,5 +200,6 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if in.is_flat > 0.5 && color.a < 0.5 {
         discard;
     }
-    return vec4<f32>(color.rgb, 1.0);
+    out.color = vec4<f32>(color.rgb, 1.0);
+    return out;
 }
