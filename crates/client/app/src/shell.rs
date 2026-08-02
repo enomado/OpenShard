@@ -1356,7 +1356,25 @@ fn tile_centre(
     viewport_origin + egui::vec2(centre.x * scale, centre.y * scale)
 }
 
-/// The glow over one tile's diamond.
+/// The glow over one tile, drawn as the box the tile actually occupies: the
+/// diamond at the height a body would stand at, and the column from `z = 0` up
+/// to it.
+///
+/// A diamond alone is ambiguous in an isometric picture — the same screen
+/// position is every height on that column, so a marker on a pier's deck and a
+/// marker in the water beside it are drawn a few pixels apart and read as the
+/// same place. The column removes the ambiguity by drawing the height itself:
+/// the base sits at the world's own datum, `z = 0`, and how far the top floats
+/// above it *is* the tile's height, legible without reading the panel.
+///
+/// `z = 0` and not the land's height, because the base has to be the same datum
+/// under every tile — a base that moved with the ground would make the column a
+/// difference between two unknowns rather than a height.
+///
+/// The two south-facing sides are filled and the two behind them are not: they
+/// are the faces the eye can see, and filling all four would make the box a
+/// solid blob with no depth to it. Sides go down before the top, so the diamond —
+/// the thing being pointed at — stays on top of its own column.
 fn draw_tile_highlight(
     painter: &egui::Painter,
     camera: &Camera,
@@ -1367,13 +1385,49 @@ fn draw_tile_highlight(
 ) {
     // The surface, not the land: on a pier the two are thirteen z-units apart
     // and the land's height puts the diamond in the water beside the boards.
-    let point = openshard_protocol::world::Point {
-        x: tile.x,
-        y: tile.y,
-        z: tile.stand_z,
+    let at = |z: i8| {
+        tile_corners(
+            painter,
+            camera,
+            openshard_protocol::world::Point {
+                x: tile.x,
+                y: tile.y,
+                z,
+            },
+            viewport_origin,
+        )
     };
-    let corners = tile_corners(painter, camera, point, viewport_origin);
-    painter.add(egui::Shape::convex_polygon(corners, fill, stroke));
+    let top = at(tile.stand_z);
+    // A tile at the datum has no column, and the loop below would draw four
+    // zero-length segments over the diamond's own edges.
+    if tile.stand_z != 0 {
+        let base = at(0);
+        // The sides are quieter than the diamond: the column is context for the
+        // marker, not a second marker. A fill at full strength doubled up over
+        // the ground wash and read as the brighter of the two shapes.
+        let side = egui::Color32::from_rgba_unmultiplied(
+            fill.r(),
+            fill.g(),
+            fill.b(),
+            fill.a().saturating_sub(fill.a() / 3),
+        );
+        let edge = egui::Stroke::new(stroke.width * 0.6, stroke.color);
+        // Corners run north, east, south, west (`Camera::tile_diamond`), so the
+        // faces the eye sees are east-south and south-west — the two whose
+        // screen positions are lower than the tile's centre.
+        for (a, b) in [(1, 2), (2, 3)] {
+            painter.add(egui::Shape::convex_polygon(
+                vec![top[a], top[b], base[b], base[a]],
+                side,
+                egui::Stroke::NONE,
+            ));
+        }
+        painter.add(egui::Shape::closed_line(base.clone(), edge));
+        for (top, base) in top.iter().zip(base) {
+            painter.line_segment([*top, base], edge);
+        }
+    }
+    painter.add(egui::Shape::convex_polygon(top, fill, stroke));
 }
 
 /// The walkability wash and the route over it.
