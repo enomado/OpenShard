@@ -127,6 +127,18 @@ pub struct Hud {
     /// and not here, because it is the answer to "is there an item under the
     /// cursor", which is a question about the world rather than about the HUD.
     pub hover_lit: bool,
+    /// What the two object picks answered this frame: the creature under the
+    /// cursor and the item under it, as indices into the lists the passes draw
+    /// from.
+    ///
+    /// An instrument, and one worth its line: "nothing is highlighted" has two
+    /// completely different causes — a pick that found nothing, and a pick that
+    /// found something the ring pass then failed to draw — and from the picture
+    /// alone they are the same blank screen.
+    pub lit_mobile: Option<usize>,
+    /// The item half of the same. Never `Some` at the same time as
+    /// [`Hud::lit_mobile`]: one highlight a frame, and creatures win.
+    pub lit_item: Option<usize>,
     /// Which of the two the cursor may light, for the picker that says so.
     pub highlight: HighlightTarget,
     /// And how an item says it, when it is the one lit.
@@ -745,6 +757,17 @@ fn layout(
                 }
             });
             ui.separator();
+            ui.label(format!(
+                "under cursor — mobile {}, item {}",
+                match hud.lit_mobile {
+                    Some(index) => index.to_string(),
+                    None => "—".to_string(),
+                },
+                match hud.lit_item {
+                    Some(index) => index.to_string(),
+                    None => "—".to_string(),
+                },
+            ));
             ui.label("hover — glows yellow, moves with the cursor");
             tile_panel(ui, hud.hover.as_ref());
             ui.separator();

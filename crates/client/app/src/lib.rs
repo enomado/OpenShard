@@ -528,7 +528,7 @@ pub fn run<D: Dial + Send + 'static>(
         // resting cursor hears `CursorEntered` on the first move.
         pointer_inside: false,
         show_terrain: false,
-        show_occluders: true,
+        show_occluders: false,
         // The item under the cursor, ringed and lit, and the ground otherwise:
         // see `shell::HighlightTarget` and `shell::HighlightStyle`.
         highlight: shell::HighlightTarget::default(),
@@ -2532,6 +2532,8 @@ impl App {
                 shell::HighlightTarget::Items => false,
                 shell::HighlightTarget::Tiles => true,
             },
+            lit_mobile,
+            lit_item,
             highlight: self.highlight,
             highlight_style: self.highlight_style,
             terrain: self
@@ -3556,8 +3558,11 @@ impl App {
         // so it is drawn in screen pixels and unlit: a highlight that dimmed at
         // night would stop working exactly when the picture is hardest to read.
         // Skipped entirely on the ordinary frame, where nothing is under the
-        // cursor and the mask is empty.
-        if !outline_quads.is_empty() {
+        // cursor and the mask is empty. **Both silhouette lists**, or a ringed
+        // creature draws its mask into a texture no pass ever reads and the
+        // highlight is simply absent — which is what an item-only test of this
+        // condition looked like from the outside.
+        if !outline_quads.is_empty() || !mobile_outline.is_empty() {
             window.outline.render(
                 &window.device,
                 &window.queue,
