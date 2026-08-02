@@ -36,10 +36,16 @@
 //! That is the whole input, which is why [`Around::new`] can state a scene
 //! outright and every case of this can be enumerated rather than sampled.
 //!
-//! # The state is which flank is being slid along
+//! # Three states: walking, sliding, standing
 //!
-//! [`Detour`] is a two-state machine and the state is memory of the last slide.
-//! It exists because the tie-break between two open flanks has to be *stable
+//! [`Detour`] is the machine, and its states are what a body is doing about
+//! what is in front of it. Two of them are moving — freely, or along the face
+//! of something — and the third is not moving at all, which is a real thing a
+//! body does and not an error. See [`Detour::Standing`] for why it is a state
+//! rather than only an answer.
+//!
+//! The memory in [`Detour::Sliding`] — which flank got past the last obstacle —
+//! exists because the tie-break between two open flanks has to be *stable
 //! across tiles*, not merely deterministic. A fixed order — always the
 //! clockwise one first — is deterministic and still loops: at a doorway or a
 //! building corner the two flanks alternate which one is open from one tile to
@@ -132,32 +138,50 @@ pub enum Step {
     Stuck,
 }
 
-/// Which flank a body is sliding along, if it is sliding along one.
+/// How a body is getting along with what is in front of it: walking freely,
+/// sliding along something, or standing because there is nowhere to go.
 ///
-/// The two states are the whole machine; the transitions are decided by the
-/// scene it is handed. See the module docs for why the memory is here at all —
-/// without it, two tiles at a pinch point send each other back and forth
-/// forever.
+/// Three states, and the third is not bookkeeping. **Not moving is one of the
+/// things a body does**, and it is a different thing from moving freely — a
+/// machine that says `Clear` for both is telling the caller that nothing was in
+/// the way while the body is wedged in the corner of a building. It was written
+/// that way first, and every question worth asking of it afterwards ("is this
+/// walk getting anywhere", "why was nothing sent") had to be answered by
+/// re-deriving the scene, because the state had thrown the answer away.
+///
+/// The transitions are decided entirely by the scene handed to
+/// [`Detour::step`]; see the module docs for why the memory in
+/// [`Detour::Sliding`] is here at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Detour {
-    /// Nothing was in the way the last time this was asked, so nothing is owed
-    /// to what got past it.
+    /// Walking freely: nothing was in the way the last time this was asked, so
+    /// nothing is owed to what got past it.
     #[default]
     Clear,
-    /// The flank that got past the last obstacle, preferred again while the
-    /// obstacle lasts.
+    /// Sliding along something, on the flank that got past it — preferred again
+    /// while the obstacle lasts.
     Sliding(Direction),
+    /// Standing: the intent is blocked and so is every flank of it. The inside
+    /// corner of a building, with the body pushed at the corner.
+    ///
+    /// A state and not just an answer, because it *persists* — the player is
+    /// still leaning on the key and every beat asks again — and because what a
+    /// caller does about it differs from what it does about a step. It is left
+    /// the moment the scene offers anything, which is what makes a walk pick
+    /// itself back up when a door opens with no fresh input.
+    Standing,
 }
 
 impl Detour {
     /// Where to actually step, given what is around and what was wanted.
     ///
-    /// The transitions, in full: an open intent returns to [`Detour::Clear`] —
+    /// The transitions, in full. An open intent goes to [`Detour::Clear`] —
     /// whatever was being slid along is behind the body now, and biasing the
     /// next obstacle by it would be memory of the wrong thing. A blocked intent
-    /// with an open flank commits to that flank, preferring the one already
-    /// committed to when it is still a candidate. Nothing open clears the state
-    /// too: there is no slide in progress to remember.
+    /// with an open flank goes to [`Detour::Sliding`] on that flank, preferring
+    /// the one already committed to when it is still a candidate. Nothing open
+    /// at all goes to [`Detour::Standing`]: there is no slide to remember, and
+    /// no pretending there was nothing in the way either.
     pub fn step(&mut self, around: &Around) -> Step {
         if around.ahead {
             *self = Self::Clear;
@@ -175,12 +199,13 @@ impl Detour {
                 return Step::Aside(direction);
             }
         }
-        *self = Self::Clear;
+        *self = Self::Standing;
         Step::Stuck
     }
 
-    /// The walk stopped: forget the flank, so a heading picked up later at some
-    /// other obstacle starts from the fixed order rather than from this one.
+    /// The walk stopped — the key came up, the window lost focus. Forget both
+    /// the flank and the corner, so a heading picked up later somewhere else
+    /// starts from the fixed order and from no assumption about being stuck.
     pub fn forget(&mut self) {
         *self = Self::Clear;
     }
@@ -209,8 +234,21 @@ const fn flanks(intent: Direction) -> [Direction; 2] {
 mod tests {
     use super::*;
 
+    /// Every state the machine can be in, for the enumerations below: the two
+    /// slides are both flanks, because which one is remembered is exactly what
+    /// the tie-break turns on.
+    fn every_state(intent: Direction) -> [Detour; 4] {
+        let [cw, ccw] = flanks(intent);
+        [
+            Detour::Clear,
+            Detour::Sliding(cw),
+            Detour::Sliding(ccw),
+            Detour::Standing,
+        ]
+    }
+
     /// Every scene there is, at every intent, from every state the machine can
-    /// be in: 8 directions x 8 open/shut combinations x 3 states. The claim is
+    /// be in: 8 directions x 8 open/shut combinations x 4 states. The claim is
     /// the one that matters on the wire — **what comes back is never a
     /// direction the scene says is shut** — and it is checked by enumeration
     /// rather than by drawing walls and hoping the interesting one was drawn.
@@ -221,7 +259,7 @@ mod tests {
             for scene in 0..8u8 {
                 let (ahead, clockwise, counter) = (scene & 1 != 0, scene & 2 != 0, scene & 4 != 0);
                 let around = Around::new(intent, ahead, clockwise, counter);
-                for mut detour in [Detour::Clear, Detour::Sliding(cw), Detour::Sliding(ccw)] {
+                for mut detour in every_state(intent) {
                     let open = |direction| match direction {
                         d if d == intent => ahead,
                         d if d == cw => clockwise,
@@ -245,6 +283,35 @@ mod tests {
                             "{intent:?}/{scene}: gave up with somewhere to go"
                         ),
                     }
+                }
+            }
+        }
+    }
+
+    /// And the state it is left in says which of those three happened, from
+    /// every state and at every scene. Not bookkeeping: a machine that
+    /// answered `Stuck` and then called itself `Clear` was claiming nothing had
+    /// been in the way of a body wedged in a corner — the one question the
+    /// state exists to answer, answered wrong. Standing is a state a body is
+    /// *in*, for as long as the player leans on the key.
+    #[test]
+    fn the_state_left_behind_says_which_of_the_three_the_body_is_doing() {
+        for &intent in &Direction::ALL {
+            for scene in 0..8u8 {
+                let (ahead, clockwise, counter) = (scene & 1 != 0, scene & 2 != 0, scene & 4 != 0);
+                let around = Around::new(intent, ahead, clockwise, counter);
+                for mut detour in every_state(intent) {
+                    let was = detour;
+                    let step = detour.step(&around);
+                    let expected = match step {
+                        Step::Ahead(_) => Detour::Clear,
+                        Step::Aside(direction) => Detour::Sliding(direction),
+                        Step::Stuck => Detour::Standing,
+                    };
+                    assert_eq!(
+                        detour, expected,
+                        "{intent:?}/{scene} from {was:?}: answered {step:?} and calls itself {detour:?}"
+                    );
                 }
             }
         }
@@ -314,16 +381,37 @@ mod tests {
         assert_ne!(cw, ccw);
     }
 
-    /// Boxed in: nothing to send, and the state does not quietly keep a flank
-    /// it never took.
+    /// Boxed in: nothing to send, the flank that is no longer working is not
+    /// kept — and the body is *standing*, which is what it stays until the
+    /// scene offers something, however long the player leans on the key.
     #[test]
-    fn nothing_open_is_stuck_and_forgets() {
+    fn nothing_open_is_stuck_and_stands_there() {
+        let corner = Around::new(Direction::East, false, false, false);
         let mut detour = Detour::Sliding(Direction::North);
+
+        assert_eq!(detour.step(&corner), Step::Stuck);
+        assert_eq!(detour, Detour::Standing);
+        for beat in 0..10 {
+            assert_eq!(detour.step(&corner), Step::Stuck, "beat {beat}");
+            assert_eq!(detour, Detour::Standing, "beat {beat}: still nowhere to go");
+        }
+        // A door opens somewhere in front of it, with nothing else asked for:
+        // the walk resumes and the standing is over.
         assert_eq!(
-            detour.step(&Around::new(Direction::East, false, false, false)),
-            Step::Stuck
+            detour.step(&Around::new(Direction::East, true, false, false)),
+            Step::Ahead(Direction::East)
         );
+        assert_eq!(detour, Detour::Clear, "the standing is over");
+    }
+
+    /// Letting go is not the same as being stuck: a heading picked up later,
+    /// somewhere else, must not start out believing it is in a corner.
+    #[test]
+    fn forgetting_leaves_the_corner_behind() {
+        let mut detour = Detour::Standing;
+        detour.forget();
         assert_eq!(detour, Detour::Clear);
+        assert_eq!(detour, Detour::Clear, "the standing is over");
     }
 
     /// The scene read from a world agrees with the scene stated outright — the

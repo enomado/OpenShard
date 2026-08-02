@@ -1572,8 +1572,18 @@ own understanding had written.
     Both halves then stopped being a special case buried in the input handling
     and became a rule with a name: `common/movement`'s
     [`detour`](../crates/common/movement/src/detour.rs) — a scene (`Around`),
-    an intent, a two-state machine (`Detour::Clear` / `Sliding`), and an answer
-    (`Step::Ahead` / `Aside` / `Stuck`). Its whole input is **four tiles**:
+    an intent, a three-state machine (`Detour::Clear` / `Sliding` / `Standing`)
+    and an answer (`Step::Ahead` / `Aside` / `Stuck`). The third state is the
+    one the first cut of this got wrong: it answered `Stuck` and then set
+    itself back to `Clear`, which says *nothing was in the way* about a body
+    wedged in the corner of a building. **Not moving is one of the things a
+    body does**, it persists for as long as the player leans on the key, and a
+    machine that throws it away can only answer "is this walk getting
+    anywhere" by re-deriving the scene it just read.
+    `the_state_left_behind_says_which_of_the_three_the_body_is_doing` pins the
+    state to the answer at every scene, from every state.
+
+    Its whole input is **four tiles**:
     where you stand, where you meant to go, and the two flanks that could take
     its place. Not eight, and that is the argument rather than a
     simplification — which two flanks are candidates is fixed by the intent
