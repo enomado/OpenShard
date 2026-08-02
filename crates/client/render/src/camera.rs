@@ -303,6 +303,20 @@ pub struct TileBounds {
 }
 
 impl TileBounds {
+    /// How many tiles across, counting both edges.
+    ///
+    /// Never negative: a rectangle whose `max` is below its `min` is empty, and
+    /// a caller sizing a buffer from this would otherwise be sizing it from a
+    /// negative number.
+    pub fn width(self) -> i32 {
+        (self.max_x - self.min_x + 1).max(0)
+    }
+
+    /// How many tiles down, counting both edges. See [`TileBounds::width`].
+    pub fn height(self) -> i32 {
+        (self.max_y - self.min_y + 1).max(0)
+    }
+
     /// The same rectangle with everything outside a map of this size removed.
     ///
     /// `None` when nothing is left, which happens for a camera looking off the

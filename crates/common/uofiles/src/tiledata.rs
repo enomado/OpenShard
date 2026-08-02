@@ -140,6 +140,18 @@ impl TileFlags {
     /// for this bit, so ClassicUO is the only reference for it and the value is
     /// pinned in a test beside the constant.
     pub const ROOF: u64 = 0x1000_0000;
+    /// The static gives off light: a torch, a candle, a brazier, a lantern.
+    ///
+    /// `0x0080_0000` — ClassicUO's `TileFlag.LightSource`, read in
+    /// `TileDataLoader`'s `IsLight`, and ServUO's `TileFlag.LightSource` at the
+    /// same value. It says *that* a graphic burns and nothing about how big or
+    /// what colour: the client takes those from `light.mul`, keyed by an id this
+    /// reader does not carry yet. See `openshard-client-render`'s `light`, which
+    /// picks a flame by graphic until that file is read.
+    ///
+    /// Pinned in a test beside the constant, because a flag means what the
+    /// engine *reads* it for.
+    pub const LIGHT_SOURCE: u64 = 0x0080_0000;
     /// The static cycles through graphics on its own: a fire, a torch, a water
     /// wheel. What it cycles through is `animdata.mul` — see
     /// [`crate::animdata`] — and this bit is the only thing that says a graphic
@@ -160,7 +172,11 @@ impl TileFlags {
         self.0
     }
 
-    /// Whether every bit in `mask` is set.
+    /// Whether *any* bit in `mask` is set.
+    ///
+    /// Any and not all, which is what a caller passing a pair of alternatives
+    /// wants — `has(WINDOW | NO_SHOOT)` is "does this stop an arrow", the pair
+    /// ServUO's `Map.LineOfSight` tests together, and no tile carries both.
     pub const fn has(self, mask: u64) -> bool {
         self.0 & mask != 0
     }
@@ -188,6 +204,12 @@ impl TileFlags {
     /// Whether this static plays a cycle of its own. See [`Self::ANIMATION`].
     pub const fn is_animated(self) -> bool {
         self.has(Self::ANIMATION)
+    }
+
+    /// Whether this burns, glows or otherwise lights its surroundings. See
+    /// [`Self::LIGHT_SOURCE`].
+    pub const fn is_light_source(self) -> bool {
+        self.has(Self::LIGHT_SOURCE)
     }
 
     /// Whether this is a roof. See [`Self::ROOF`].
@@ -228,6 +250,7 @@ impl fmt::Debug for TileFlags {
             (Self::WINDOW, "WINDOW"),
             (Self::DOOR, "DOOR"),
             (Self::ANIMATION, "ANIMATION"),
+            (Self::LIGHT_SOURCE, "LIGHT_SOURCE"),
             (Self::TRANSPARENT, "TRANSPARENT"),
             (Self::TRANSLUCENT, "TRANSLUCENT"),
             (Self::INTERNAL, "INTERNAL"),
@@ -449,6 +472,22 @@ impl TileData {
         &self.statics[id as usize]
     }
 
+    /// Put one entry into the table, replacing whatever was there.
+    ///
+    /// For tests that need a tiledata saying one specific thing — a graphic that
+    /// is a light source, a roof, a wall — the way [`TileData::empty`] is for
+    /// tests that need it to say nothing. It is `pub` and not `#[cfg(test)]`
+    /// because the tests that want it are in other crates: a renderer's test
+    /// about what a flag makes it draw cannot read a real install, since this
+    /// repository ships no client files.
+    ///
+    /// Nothing in the engine calls it, and nothing should: what a graphic can do
+    /// is the client's file talking, and an entry written over at runtime is a
+    /// disagreement between the two ends of the wire about the same graphic.
+    pub fn set_static_tile(&mut self, id: u16, tile: StaticTile) {
+        self.statics[id as usize] = tile;
+    }
+
     fn parse_land(bytes: &[u8], format: TileDataFormat, index: usize) -> Option<LandTile> {
         let entry = format.land_entry();
         let offset = (index / GROUP_SIZE) * (GROUP_HEADER + GROUP_SIZE * entry)
@@ -582,6 +621,14 @@ mod tests {
         // `CalculateObjectHeight` halves.
         assert_eq!(TileFlags::PLATFORM, 0x0000_0200, "ClassicUO's Surface");
         assert_eq!(TileFlags::CLIMBABLE, 0x0000_0400, "ClassicUO's Bridge");
+        // `TileFlag.LightSource`, which `TileDataLoader.IsLight` reads and
+        // ServUO's `TileData` gives the same value. One bit off is a torch that
+        // lights nothing and a bookshelf that burns: `0x0040_0000` next door is
+        // `Wearable` and `0x0100_0000` above it is `Animation`, and both are
+        // set on plenty of graphics that are not on fire.
+        assert_eq!(TileFlags::LIGHT_SOURCE, 0x0080_0000);
+        assert!(TileFlags::new(TileFlags::LIGHT_SOURCE).is_light_source());
+        assert!(!TileFlags::new(TileFlags::ANIMATION).is_light_source());
     }
 
     #[test]
