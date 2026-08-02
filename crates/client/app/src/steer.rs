@@ -1636,6 +1636,9 @@ mod tests {
     fn a_held_heading_detours_around_a_single_tile_obstacle() {
         let start = Instant::now();
         let mut steering = Steering::default();
+        // The sliding preference, stated: the default is to stop against
+        // what you walked into, and this is the rule for the other one.
+        steering.set_when_blocked(WhenBlocked::Slide);
         // Directly in the heading's path; both cardinal sidesteps are open.
         let wall = Wall { blocked: (101, 100) };
 
@@ -1663,6 +1666,9 @@ mod tests {
     fn a_held_diagonal_heading_detours_onto_an_open_cardinal() {
         let start = Instant::now();
         let mut steering = Steering::default();
+        // The sliding preference, stated: the default is to stop against
+        // what you walked into, and this is the rule for the other one.
+        steering.set_when_blocked(WhenBlocked::Slide);
         // North-east is blocked; north and east, the cardinals it splits
         // into, are both open — the detour must take one of them.
         let corner = Wall { blocked: (101, 99) };
@@ -1689,22 +1695,27 @@ mod tests {
         );
     }
 
-    /// The same single-tile obstacle, for a shard whose players asked for the
-    /// classic client's answer instead: the body stops against it and stays
-    /// stopped, and — the part that matters on the wire — the step it will not
-    /// take is not sent either. Standing against something is standing, not a
-    /// refusal a hold.
+    /// The same single-tile obstacle, at the setting a fresh `Steering` has:
+    /// the body stops against it and stays stopped, and — the part that
+    /// matters on the wire — the step it will not take is not sent either.
+    /// Standing against something is standing, not a refusal a hold.
     ///
-    /// This is the seam a client config will set (`Steering::set_when_blocked`)
-    /// and the reason the preference is threaded at all rather than chosen once
+    /// **This is what pins the default.** Deliberately without a
+    /// `set_when_blocked` call of its own: a body only ever goes where it was
+    /// pointed unless a player asks for otherwise, and a default that flipped
+    /// by accident would be every walk in the game changing character with
+    /// nothing to catch it. The sliding tests above state their preference
+    /// outright for the same reason.
+    ///
+    /// `Steering::set_when_blocked` is the seam a client config will set, and
+    /// the reason the preference is threaded at all rather than settled once
     /// in `common/movement`: both answers are correct play.
     #[test]
-    fn told_to_stand_a_heading_stops_at_the_obstacle_instead_of_sliding() {
+    fn a_heading_stops_at_an_obstacle_by_default_and_slides_only_when_asked() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        steering.set_when_blocked(WhenBlocked::Stand);
         // Directly in the heading's path, with both sidesteps wide open — the
-        // scene the default answers with a sidestep.
+        // scene `WhenBlocked::Slide` answers with a sidestep.
         let wall = Wall { blocked: (101, 100) };
 
         assert_eq!(
@@ -1752,6 +1763,9 @@ mod tests {
     fn a_diagonal_that_cuts_a_wall_corner_sidesteps_instead_of_asking_for_it() {
         let start = Instant::now();
         let mut steering = Steering::default();
+        // The sliding preference, stated: the default is to stop against
+        // what you walked into, and this is the rule for the other one.
+        steering.set_when_blocked(WhenBlocked::Slide);
         // The south-east tile is open ground. Due east is the wall's last
         // tile, so a step south-east clips the corner where it ends —
         // refused on the wire, and `Wall` alone cannot tell.
@@ -1789,6 +1803,9 @@ mod tests {
     fn a_repeated_detour_prefers_the_flank_it_already_took() {
         let start = Instant::now();
         let mut steering = Steering::default();
+        // The sliding preference, stated: the default is to stop against
+        // what you walked into, and this is the rule for the other one.
+        steering.set_when_blocked(WhenBlocked::Slide);
         // East is walled the whole way; south of the start tile is also
         // blocked, so the very first detour is forced onto north — the
         // non-default flank. From there, both south (back to the start) and
@@ -1861,6 +1878,9 @@ mod tests {
             let terrain = AheadBlocked { ahead };
 
             let mut steering = Steering::default();
+            // The sliding preference, stated: the default is to stop against
+            // what you walked into, and this is the rule for the other one.
+            steering.set_when_blocked(WhenBlocked::Slide);
             let answer = steering
                 .steer(Some(direction), here(), start, direction, &terrain)
                 .unwrap_or_else(|| panic!("{direction:?}: a heading never gives up, even on the first ask"));

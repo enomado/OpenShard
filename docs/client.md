@@ -1322,6 +1322,48 @@ own understanding had written.
   separate reader again and is not started; `fonts.mul` was picked first
   because it is what `speech::Font` already names.
 
+- **`fonts.mul`'s faces do not survive a non-integer scale, and nothing here
+  picks an integer one.** The classic faces are what the game is supposed to
+  look like, and they are ~6×10 one-bit glyphs: at 1× on a 1440p screen they
+  are unreadably small, and at any fractional scale the filter turns them to
+  mush. Three ways out, in the order they should be tried, because each is
+  more work than the one before and the cheap one may be enough:
+
+  1. **Render the atlas at an integer multiple of 1×** and pick the multiple
+     from the window's DPI. This is what every pixel-art renderer does and the
+     only option that keeps the face *itself* — no resampling, no new asset,
+     no derivative of a client file. It should be tried and looked at before
+     anything below is planned.
+  2. **Depixelize to outlines, then MSDF.** Kopf & Lischinski's
+     *Depixelizing Pixel Art* (SIGGRAPH 2011) — the algorithm behind
+     Inkscape's "Trace Bitmap → Pixel art" — resolves 8-neighbourhood
+     connectivity and emits real curves rather than tracing the staircase, and
+     `msdfgen` over those curves gives one atlas that stays sharp at any
+     scale. **A generative upscaler is the wrong tool here**: at ~60 pixels of
+     input there is nothing to reconstruct, and a per-glyph model has no idea
+     the glyphs form one typeface — weights and x-heights drift apart between
+     letters, which is the first thing anyone notices.
+  3. **Redraw the face by hand as a real TrueType** and load it through
+     [`ttf_font.rs`](../crates/common/uofiles/src/ttf_font.rs), which already
+     reads a face from a path. Best quality — an autotracer cannot make the
+     calls that 60 pixels do not contain, such as which bump is a serif and
+     which is a rasterisation artefact — and it collapses two render paths
+     into one, since the Unicode face already goes through that reader.
+
+  **What may and may not be committed.** (2) produces a mechanical derivative
+  of a copyrighted client file, so it is a build tool the player runs against
+  their own install, writing to a cache beside `OPENSHARD_CLIENT` — the same
+  rule as every other `.mul`, and the same shape as `ttf_font.rs` reading a
+  path instead of embedding bytes. (3) is a different question: in the US a
+  *typeface* is not copyrightable (*Eltra v. Ringer*) and the Copyright Office
+  holds bitmap fonts uncopyrightable for the same reason, while a scalable
+  font *program* is protected as software — so a hand-drawn face in the same
+  letterforms is a much stronger position than a traced one, and is the only
+  one of the three whose output could plausibly ship in this repository. Other
+  jurisdictions do not all follow the US here (Germany protects typeface
+  designs outright), so that is a question for someone qualified before
+  anything is licensed, not a decision this file makes.
+
 - **A repack that fails is a `eprintln!` and a frame that draws anyway.**
   *Half answered — the atlases now evict, so "full" is recoverable.* When a
   growth returns `AtlasError::Full`, `App::draw` packs an atlas for what is on
@@ -1591,9 +1633,15 @@ own understanding had written.
     twenty years reads an unasked-for sidestep as the character disobeying. It
     is a parameter and not a field on the machine, because a state and a
     setting must stay two values — and being read where the decision is made is
-    what lets it change mid-walk with no state to reset. There is no client
-    config to read it from yet; `Steering::set_when_blocked` is the single line
-    one will set, called at `App`'s construction today with the default.
+    what lets it change mid-walk with no state to reset. **`Stand` is the
+    default**: a body that only ever goes where it was pointed surprises
+    nobody, and sliding is what a player opts into. There is no client config
+    to read it from yet; `Steering::set_when_blocked` is the single line one
+    will set, written out at `App`'s construction today.
+    `a_heading_stops_at_an_obstacle_by_default_and_slides_only_when_asked` is
+    what pins the default — deliberately the one test that sets nothing, since
+    a default flipping by accident is every walk in the game changing character
+    with nothing to catch it.
 
     Its whole input is **four tiles**:
     where you stand, where you meant to go, and the two flanks that could take

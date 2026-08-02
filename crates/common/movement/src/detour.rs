@@ -146,6 +146,8 @@ pub enum Step {
 /// brushing past furniture does and what keeps a runner running; standing is
 /// the classic client's own answer, and a player who has walked that way for
 /// twenty years reads an unasked-for sidestep as the character disobeying.
+/// Standing is the default: a body that only ever goes where it was pointed
+/// surprises nobody, and the other one is a thing a player opts into.
 ///
 /// It is passed to [`Detour::step`] per call rather than kept anywhere, so
 /// whoever owns the setting owns it — today a default, and a shard's config
@@ -154,15 +156,21 @@ pub enum Step {
 pub enum WhenBlocked {
     /// Take the nearest legal way past: one step along the flank. The body
     /// keeps moving, which is what a heading is for.
-    #[default]
     Slide,
     /// Take nothing. A body that walks into a wall stops against it, and the
     /// player is the one who decides where to go next.
+    ///
+    /// The default, because it is what the client this engine has to feel like
+    /// does, and because it is the answer that never surprises: a body only
+    /// ever goes where it was pointed. A sidestep nobody asked for is a
+    /// character disobeying — right up until the player wanted it, which is
+    /// what the other one is for.
     ///
     /// The answer is [`Step::Stuck`], exactly as if there were no way past at
     /// all — because from the player's side there is not one they asked for.
     /// What a caller does with that is unchanged: turn into it, and send no
     /// step.
+    #[default]
     Stand,
 }
 

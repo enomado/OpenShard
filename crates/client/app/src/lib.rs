@@ -436,8 +436,13 @@ pub fn run<D: Dial + Send + 'static>(
             // slides past it or stops against it. Stated here, at the top,
             // because this is the line a client config replaces when there is
             // one — nothing further down the walk has to learn about it.
+            //
+            // Stopping is the default and is written out rather than left
+            // implicit: it is the classic client's own behaviour, and a body
+            // that only ever goes where it was pointed is the one that
+            // surprises nobody. Sliding is what a player opts into.
             let mut steer = steer::Steering::default();
-            steer.set_when_blocked(WhenBlocked::Slide);
+            steer.set_when_blocked(WhenBlocked::Stand);
             steer
         },
         aiming: false,
