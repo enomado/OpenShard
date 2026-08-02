@@ -40,6 +40,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use openshard_protocol::gump::layout::Element;
+use openshard_protocol::gump::{RawButtonId, RawSwitchId};
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::gumpart::{GumpError, Gumps};
 use openshard_uofiles::image::Image;
@@ -442,6 +444,160 @@ pub fn resize(atlas: &GumpAtlas, graphic: Graphic, at: GumpPixel, width: i32, he
 /// graphic the server named. `ResizePic.GetTexture`'s remap, flattened.
 const RESIZE_PIECES: [u16; 9] = [0, 1, 2, 3, 5, 6, 7, 8, 4];
 
+/// One line of a window's text, resolved to where it goes.
+///
+/// The line itself is *not* here: a layout names a row of the text table that
+/// arrived beside it, and looking that up needs the whole
+/// [`OpenGump`](openshard_client_net::view::OpenGump) rather than the layout —
+/// which this crate has never heard of and should not. So this carries the
+/// index, and whoever holds the table turns it into glyphs through
+/// [`crate::text`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Caption {
+    /// Its top-left corner, in the window's own gump pixels.
+    pub at: GumpPixel,
+    /// The hue the layout asked for.
+    pub hue: Hue,
+    /// Which line of the gump's text table.
+    pub line: usize,
+    /// The box it is clipped to — `{ croppedtext }` — or `None` for a
+    /// `{ text }`, which overflows rather than clipping.
+    pub clip: Option<(i32, i32)>,
+}
+
+/// A window, laid out: what to draw and what to write on it.
+///
+/// Two lists and not one, because they are drawn through two atlases — gump art
+/// and a font — and a draw call binds one texture. Their order relative to each
+/// other is fixed rather than interleaved: every picture, then every caption,
+/// which is what the reference does by drawing text controls after the
+/// background they sit on. A layout that put a picture *over* a label would
+/// draw it under one here, and no gump in the wild does.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Window {
+    /// The art, in painter's order.
+    pub pictures: Vec<Picture>,
+    /// The text on top of it.
+    pub captions: Vec<Caption>,
+}
+
+/// Lay a parsed layout out at `at`, showing `page`.
+///
+/// The three pieces of state a window has that the wire does not carry, and
+/// each one is why this takes an argument rather than reading the layout alone:
+///
+/// - `page` — `{ button ... 0 N id }` flips pages inside the client and the
+///   server never hears about it. Page `0` is drawn on every page, which is the
+///   client's rule and the reason a background declared before the first
+///   `{ page 1 }` is on all of them.
+/// - `on` — which switches are set. `{ checkbox }` carries its *initial* state
+///   and nothing else; after the player has touched one, the layout is stale.
+/// - `held` — which button is being pressed right now, drawn in its second
+///   picture. Nothing sends this and nothing records it: it is the mouse.
+///
+/// `{ checkertrans }` is not drawn. It is a darkened translucent rectangle and
+/// this pass has no blending — see [`GumpRenderer`] — so it is left out rather
+/// than drawn opaque, which would black out whatever it was meant to shade.
+pub fn window(
+    elements: &[Element],
+    at: GumpPixel,
+    page: u32,
+    on: &BTreeSet<RawSwitchId>,
+    held: Option<RawButtonId>,
+    atlas: &GumpAtlas,
+) -> Window {
+    let mut drawn = Window::default();
+    // Everything before the first `{ page }` belongs to page 0 — the layer every
+    // page shows — which is where a background and a frame almost always are.
+    let mut current = 0;
+    let art = |gump: u32| Graphic(gump as u16);
+    for element in elements {
+        if let Element::Page(number) = element {
+            current = *number;
+            continue;
+        }
+        if current != 0 && current != page {
+            continue;
+        }
+        match element {
+            Element::Background {
+                x,
+                y,
+                width,
+                height,
+                gump,
+            } => drawn.pictures.extend(resize(
+                atlas,
+                art(*gump),
+                at.offset(GumpPixel::new(*x, *y)),
+                *width,
+                *height,
+            )),
+            Element::Image { x, y, gump, hue } => drawn.pictures.push(
+                Picture::plain(art(*gump), at.offset(GumpPixel::new(*x, *y)))
+                    .hued(Hue(hue.unwrap_or(0) as u16)),
+            ),
+            Element::ImageTiled {
+                x,
+                y,
+                width,
+                height,
+                gump,
+            } => drawn
+                .pictures
+                .push(Picture::plain(art(*gump), at.offset(GumpPixel::new(*x, *y))).tiled(*width, *height)),
+            Element::Button {
+                x,
+                y,
+                normal,
+                pressed,
+                id,
+                ..
+            } => {
+                let face = if held == Some(*id) { *pressed } else { *normal };
+                drawn
+                    .pictures
+                    .push(Picture::plain(art(face), at.offset(GumpPixel::new(*x, *y))));
+            }
+            Element::Check(switch) | Element::Radio(switch) => {
+                let set = if on.contains(&switch.id) {
+                    switch.on
+                } else {
+                    switch.off
+                };
+                drawn.pictures.push(Picture::plain(
+                    art(set),
+                    at.offset(GumpPixel::new(switch.x, switch.y)),
+                ));
+            }
+            Element::Label { x, y, hue, line } => drawn.captions.push(Caption {
+                at: at.offset(GumpPixel::new(*x, *y)),
+                hue: Hue(*hue as u16),
+                line: *line,
+                clip: None,
+            }),
+            Element::CroppedLabel {
+                x,
+                y,
+                width,
+                height,
+                hue,
+                line,
+            } => drawn.captions.push(Caption {
+                at: at.offset(GumpPixel::new(*x, *y)),
+                hue: Hue(*hue as u16),
+                line: *line,
+                clip: Some((*width, *height)),
+            }),
+            // Everything else is either state the caller already read (a flag),
+            // text this crate cannot lay out yet (html, an input box), or the
+            // translucent rectangle the module docs above account for.
+            _ => {}
+        }
+    }
+    drawn
+}
+
 /// Where a gump frame is being drawn, and how big its pixels are.
 #[derive(Clone, Copy, Debug)]
 pub struct Frame<'a> {
@@ -782,6 +938,7 @@ impl GumpRenderer {
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::gump::layout::Switch;
     use openshard_uofiles::color::Color16;
 
     use super::*;
@@ -863,6 +1020,97 @@ mod tests {
             pieces[7].graphic,
             Graphic(108),
             "the bottom-right corner is the last piece, not the ninth graphic"
+        );
+    }
+
+    /// Page 0 is every page, and a numbered page is only its own. The rule the
+    /// wire never states and the one a two-page window is unreadable without.
+    #[test]
+    fn a_layout_draws_page_zero_and_the_page_showing() {
+        let atlas = atlas_of([
+            (Graphic(10), block(4, 4)),
+            (Graphic(11), block(4, 4)),
+            (Graphic(12), block(4, 4)),
+        ]);
+        let elements = vec![
+            Element::Image {
+                x: 0,
+                y: 0,
+                gump: 10,
+                hue: None,
+            },
+            Element::Page(1),
+            Element::Image {
+                x: 0,
+                y: 0,
+                gump: 11,
+                hue: None,
+            },
+            Element::Page(2),
+            Element::Image {
+                x: 0,
+                y: 0,
+                gump: 12,
+                hue: None,
+            },
+        ];
+        let showing = window(&elements, GumpPixel::default(), 2, &BTreeSet::new(), None, &atlas);
+        let graphics: Vec<Graphic> = showing.pictures.iter().map(|picture| picture.graphic).collect();
+        assert_eq!(graphics, vec![Graphic(10), Graphic(12)]);
+    }
+
+    /// A button held down is drawn in its second picture, and only the one that
+    /// is held. Nothing on the wire says this — it is the mouse.
+    #[test]
+    fn a_held_button_draws_its_pressed_art() {
+        let atlas = atlas_of((0..4).map(|piece| (Graphic(20 + piece), block(4, 4))));
+        let button = |normal, pressed, id| Element::Button {
+            x: 0,
+            y: 0,
+            normal,
+            pressed,
+            kind: openshard_protocol::gump::GumpButton::Reply,
+            page: 0,
+            id: RawButtonId(id),
+        };
+        let elements = vec![button(20, 21, 1), button(22, 23, 2)];
+        let showing = window(
+            &elements,
+            GumpPixel::default(),
+            0,
+            &BTreeSet::new(),
+            Some(RawButtonId(2)),
+            &atlas,
+        );
+        let graphics: Vec<Graphic> = showing.pictures.iter().map(|picture| picture.graphic).collect();
+        assert_eq!(
+            graphics,
+            vec![Graphic(20), Graphic(23)],
+            "the untouched button is up and the held one is down"
+        );
+    }
+
+    /// A switch is drawn from what the *player* has done to it, not from the
+    /// `initial` the layout carried: after the first click the layout is stale
+    /// and the server is not told until the reply.
+    #[test]
+    fn a_switch_is_drawn_from_the_set_and_not_from_its_initial() {
+        let atlas = atlas_of((0..2).map(|piece| (Graphic(30 + piece), block(4, 4))));
+        let elements = vec![Element::Check(Switch {
+            x: 0,
+            y: 0,
+            off: 30,
+            on: 31,
+            initial: false,
+            id: RawSwitchId(7),
+        })];
+        let mut set = BTreeSet::new();
+        set.insert(RawSwitchId(7));
+        let showing = window(&elements, GumpPixel::default(), 0, &set, None, &atlas);
+        assert_eq!(
+            showing.pictures[0].graphic,
+            Graphic(31),
+            "on, despite initial: false"
         );
     }
 
