@@ -181,7 +181,14 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(u16
     let mut wanted: Vec<(u16, u8, u8)> = Vec::new();
     for mobile in mobiles {
         let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
-        wanted.push((mobile.body, mobile.group, direction));
+        // The body the *file* holds, which for a ghost is the living body it is
+        // drawn from — see `anim::animation_body`. Packed under that key, so
+        // `place` below finds it under the same one.
+        wanted.push((
+            openshard_uofiles::anim::animation_body(mobile.body),
+            mobile.group,
+            direction,
+        ));
         for layer in &mobile.equipment {
             let graphic = equip_conv
                 .resolve(mobile.body, layer.graphic)
@@ -209,10 +216,13 @@ struct Placement {
 /// The mobile's frame in the atlas, placed on screen — or `None` if the atlas
 /// holds no such frame.
 ///
-/// `body` is the atlas key's body id and not always [`Mobile::body`]: an
-/// equipment layer's picture lives under its *resolved* body-anim graphic
-/// (see [`EquipConv`]), read at the same group, direction and frame as the
-/// mobile wearing it — a worn item has no clock of its own.
+/// `body` is the atlas key's body id and not always [`Mobile::body`], for two
+/// reasons. An equipment layer's picture lives under its *resolved* body-anim
+/// graphic (see [`EquipConv`]), read at the same group, direction and frame as
+/// the mobile wearing it — a worn item has no clock of its own. And a body the
+/// files hold no animation for is read under the one they do:
+/// `openshard_uofiles::anim::animation_body`, which is what draws a ghost. Every
+/// caller passes the key it packed with, so this never re-derives either.
 fn place(mobile: &Mobile, body: u16, camera: &Camera, atlas: &AnimAtlas) -> Option<Placement> {
     let (direction, mirrored) = openshard_uofiles::anim::facing(mobile.facing);
     let key = FrameKey {
@@ -292,7 +302,12 @@ pub fn collect(
         if !cutaway.shows_mobile(mobile.at.z) {
             continue;
         }
-        let Some(placement) = place(mobile, mobile.body, camera, atlas) else {
+        let Some(placement) = place(
+            mobile,
+            openshard_uofiles::anim::animation_body(mobile.body),
+            camera,
+            atlas,
+        ) else {
             continue;
         };
         let order = placement.order;
@@ -349,7 +364,12 @@ pub fn collect(
 /// same tile centre and hold their heads at wildly different heights, and only
 /// the packed frame's own rectangle knows which.
 pub fn head_anchor(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<ViewPixel> {
-    let placement = place(mobile, mobile.body, camera, atlas)?;
+    let placement = place(
+        mobile,
+        openshard_uofiles::anim::animation_body(mobile.body),
+        camera,
+        atlas,
+    )?;
     Some(ViewPixel {
         x: (placement.rect.x + placement.rect.width / 2.0).round() as i32,
         y: placement.rect.y.round() as i32,

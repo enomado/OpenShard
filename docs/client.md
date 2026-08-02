@@ -2610,6 +2610,25 @@ the way and not done:
   hole does not open; the ordering is an accident and not an invariant, and the
   silent drop is what makes it undiagnosable when it does.
 
+- **And the sprite really did disappear, for none of the reasons above: the
+  player had died.** A dead character relogs a ghost, so the shard names body
+  `0x0192`, and `anim.mul` has no index block for `0x0192` or `0x0193` at all —
+  the client's `Mobile.GetGraphicForAnimation` reads the living body two below
+  it, and this end had no port of that function. `anim::animation_body` is that
+  port now, applied where the atlas is packed and where the frame is looked up,
+  and `the_ghost_bodies_are_in_no_index_block_and_the_bodies_they_map_to_are`
+  asserts against the shipped files that the remap is necessary rather than
+  decorative. What is *not* done: a ghost is drawn as a solid living body. The
+  client draws it translucent, and until it does here a ghost and a living
+  player are the same picture.
+- **The silent drop cost a third hunt, so it should stop being silent.** Twice
+  above this is named as a hazard and once below as an accident; this time it
+  was the whole defect, and from outside it is indistinguishable from the
+  cutaway hiding the body, from the atlas missing a group, and from the mobile
+  never arriving. `mobiles::collect` should count what it dropped and why, and
+  the shell's World panel should show it — a body the shard sent and this end
+  did not draw is a fact the client already knows and refuses to say.
+
 ## Backlog, found while giving the client firelight
 
 The pass itself: `client/render/src/light.rs` collects the flames a frame can
