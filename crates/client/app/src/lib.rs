@@ -2268,6 +2268,40 @@ impl App {
         }
     }
 
+    /// The eight tiles around one, for the wireframe the HUD draws beside the
+    /// marker.
+    ///
+    /// A box on its own says how high its tile is; a box among its neighbours
+    /// says which way the ground *runs*, which is the question actually being
+    /// asked while looking for the reason a step was refused or a marker sits
+    /// where it does. The ring is what makes the relief readable — a stair's
+    /// tread against its riser, a cliff edge one tile from level ground.
+    ///
+    /// Off the map is simply absent: `checked_add`/`checked_sub` at the world's
+    /// corner, and [`Map::land`](openshard_uofiles::map::Map::land) answers
+    /// nothing for a block that never loaded, which `tile_info` already reports
+    /// as `land: None`.
+    ///
+    /// Eight tiles and not a radius: each of these costs a `predict_z` and the
+    /// statics list under it, per frame, and eight is what a slope needs to be
+    /// legible. A wider ring is the terrain overlay's job, and it has one.
+    fn tile_ring(&self, centre: &shell::PickedTile) -> Vec<shell::PickedTile> {
+        let mut ring = Vec::with_capacity(8);
+        for dy in [-1i32, 0, 1] {
+            for dx in [-1i32, 0, 1] {
+                if (dx, dy) == (0, 0) {
+                    continue;
+                }
+                let x = i32::from(centre.x) + dx;
+                let y = i32::from(centre.y) + dy;
+                if let Some((x, y)) = Self::in_bounds(x, y, &self.map) {
+                    ring.push(self.tile_info(x, y));
+                }
+            }
+        }
+        ring
+    }
+
     /// What tile the cursor is over, read straight from the map.
     ///
     /// `unproject` needs the height the pixel is meant to be read at, and the
@@ -2496,6 +2530,7 @@ impl App {
             true => self.pick_tile(camera),
             false => None,
         };
+        let neighbours = hover.as_ref().map_or_else(Vec::new, |tile| self.tile_ring(tile));
         let (mobiles, items) = match self.view.as_ref() {
             Some(view) => {
                 let mut mobiles: Vec<_> = view
@@ -2585,6 +2620,7 @@ impl App {
                 )
             }),
             hover,
+            neighbours,
             selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
             gumps: self

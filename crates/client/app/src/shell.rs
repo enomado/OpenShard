@@ -121,6 +121,12 @@ pub struct Hud {
     /// and so does the route the terrain overlay draws. Whether the marker is
     /// drawn on it is [`Hud::hover_lit`].
     pub hover: Option<PickedTile>,
+    /// The eight tiles around [`Hud::hover`], drawn as bare wireframes beside
+    /// its box so the ground's *slope* is visible and not just its height.
+    ///
+    /// Empty when nothing is hovered, and short by however many of the eight
+    /// fell off the map.
+    pub neighbours: Vec<PickedTile>,
     /// Whether the tile marker is this frame's highlight.
     ///
     /// False when an item took it — see [`HighlightTarget`]. Decided by the app
@@ -813,6 +819,25 @@ fn layout(
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
     // the client answering "what would a click do here" twice.
+    //
+    // The ring first and underneath: it is the relief the marker is read
+    // against — which way the ground runs, where the stair's next tread is —
+    // and a neighbour drawn over the tile being pointed at would compete with
+    // the answer instead of framing it. Bare wireframes, no fill: eight filled
+    // boxes around one is a lantern, and the tile under the cursor stops being
+    // the brightest thing on screen.
+    if hud.hover_lit {
+        for tile in &hud.neighbours {
+            draw_tile_highlight(
+                &world,
+                &hud.camera,
+                tile,
+                viewport.min,
+                egui::Color32::TRANSPARENT,
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 70)),
+            );
+        }
+    }
     if let Some(tile) = hud.hover.as_ref().filter(|_| hud.hover_lit) {
         draw_tile_highlight(
             &world,
