@@ -2621,6 +2621,13 @@ the way and not done:
   decorative. What is *not* done: a ghost is drawn as a solid living body. The
   client draws it translucent, and until it does here a ghost and a living
   player are the same picture.
+- **A standing body is one frame, and nothing plays the fidgets.** Group 4
+  (`PeopleAnimationGroup.Stand`) holds exactly one frame for bodies 400 and 401
+  in this install — a body that is standing is *supposed* to be still — and what
+  makes the client look alive is the fidget groups beside it (5 and 6, five
+  frames each), played now and then off a timer. `Crowd` has no notion of them:
+  it holds standing, walking and running, so a character that is not moving is a
+  frozen picture and reads as "the animation is broken" whether or not it is.
 - **The silent drop cost a third hunt, so it should stop being silent.** Twice
   above this is named as a hazard and once below as an accident; this time it
   was the whole defect, and from outside it is indistinguishable from the

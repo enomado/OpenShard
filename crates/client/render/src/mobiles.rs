@@ -535,6 +535,67 @@ mod tests {
         );
     }
 
+    /// A ghost is packed and looked up under one key: the living body it
+    /// borrows its pictures from.
+    ///
+    /// The two halves have to be asserted together, because either alone is
+    /// green while the client draws nothing. `needed_animations` names what the
+    /// atlas holds and `collect` asks for what it draws, and the defect this is
+    /// written against is the pair disagreeing: `anim.mul` has no block for
+    /// body `0x0192` at all, so an atlas packed under the wire's body is an
+    /// atlas with nothing in it and the mobile is dropped in silence.
+    ///
+    /// The same disagreement, one field over, is a body that is drawn and never
+    /// animates: a frame count asked under a key nothing was packed under is
+    /// zero, and a clock with no frames to choose between stops on the first.
+    /// That is `client/app`'s call and it uses this same function.
+    #[test]
+    fn a_ghost_is_packed_and_drawn_under_the_living_body() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let ghost = Mobile {
+            at: Point::new(100, 100, 0),
+            // 0x0192, the male ghost: a body the client's files have no
+            // animation for.
+            body: 402,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+            from: None,
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: Vec::new(),
+        };
+        assert_eq!(
+            needed_animations(std::slice::from_ref(&ghost), &no_equip()),
+            vec![(400, 4, 0)],
+            "the atlas is asked for the living body",
+        );
+        // And an atlas holding exactly that draws it.
+        assert_eq!(
+            collect(
+                std::slice::from_ref(&ghost),
+                &camera,
+                &atlas(400, 0, 40, 60, (12, -3)),
+                &Cutaway::OPEN,
+                &no_equip(),
+            )
+            .len(),
+            1,
+        );
+        // While one packed under the body the shard named holds nothing this
+        // asks for — which is what the files themselves look like.
+        assert!(
+            collect(
+                std::slice::from_ref(&ghost),
+                &camera,
+                &atlas(402, 0, 40, 60, (12, -3)),
+                &Cutaway::OPEN,
+                &no_equip(),
+            )
+            .is_empty()
+        );
+    }
+
     /// The label anchor is the top-centre of exactly the rectangle `collect`
     /// draws — computed once and read two ways, not two formulas that happen
     /// to agree today.

@@ -3014,10 +3014,17 @@ impl App {
                 mobile.group = group;
             }
             let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
-            let frame_count = window
-                .atlases
-                .mobiles
-                .frame_count(mobile.body, mobile.group, direction);
+            // Under the body the *atlas* packed, which for a ghost is the
+            // living body it borrows its pictures from — the same
+            // `anim::animation_body` `mobiles::collect` looks its frame up with.
+            // Asked under the wire's body instead, a ghost counts zero frames
+            // and every clock lands on frame 0: the sprite is drawn and never
+            // moves, which is a walking body that slides along standing still.
+            let frame_count = window.atlases.mobiles.frame_count(
+                openshard_uofiles::anim::animation_body(mobile.body),
+                mobile.group,
+                direction,
+            );
             mobile.frame = self.crowd.frame_for(*who, frame_count);
             if let Some(drawn) = self.crowd.drawn_for(*who) {
                 mobile.drawn = drawn;
