@@ -7,9 +7,10 @@ ramp does. That is the reference's whole vocabulary for it and it works.
 
 This plan is the **second** way of saying it, wanted alongside the first rather
 than instead of it: an **outline** — a hard one-pixel edge round the sprite's
-silhouette first, and later the same edge blurred into a glow. The two must
-compose: an item can be hued *and* outlined at once, which is the first thing
-this plan decides.
+silhouette first, and then the same silhouette blurred into a glow behind it.
+Both are built. The two must compose: an item can be hued *and* outlined at once,
+which is the first thing this plan decides, and which of them a frame actually
+draws is D7's switch.
 
 Written against `crates/client/render/`: `items.rs`, `sprite.rs`, `atlas.rs`,
 `statics.wgsl`, `renderer.rs`, `blit.rs`, and `crates/client/app/src/lib.rs`'s
@@ -142,10 +143,15 @@ gave: not resolution but lighting. A ring drawn into the world image would be
 multiplied by the night, and a highlight that dims exactly when the picture is
 hardest to read is a highlight that stops working.
 
-What this costs is at *minification*: below 1x a one-texel ring is thinner than a
-screen pixel and starts to break up. `Ring::width` searches a denser
-neighbourhood and is the knob; nothing sets it from the zoom yet — see the
-backlog.
+What this costs is at *minification*, and it is worse than "thinner": the
+composite reads the mask with `textureLoad` at the **surface's** resolution, so
+below 1:1 the mask is *point-sampled*. At `1/2` only every other texel is ever
+looked at, and a one-texel ring does not thin — it loses whichever of its sides
+falls on the parity nothing samples. `Ring::for_zoom` widens it to
+`denominator / numerator`, two texels at every rung below 1:1, which puts at
+least one ring texel in every screen pixel's footprint;
+`a_minified_ring_keeps_every_side` pins it, and its companion half pins that the
+naive ring really does come back with edges missing.
 
 ### D5 — one mask, two effects
 
@@ -162,6 +168,16 @@ The pipeline that makes the pixel outline and the glow the *same* work:
 Steps 2 and 3 are **one pass**, not two: the grow is nine texel loads in the
 composite's own fragment shader, so there is no second target and no second
 draw. A separate dilation target buys nothing until the blur arrives.
+
+**Built, and the blur has arrived without changing that.** The glow is a chain
+*before* the composite rather than a second pass after it — `glow.wgsl` seeds
+coverage out of the id mask at half resolution and three Kawase iterations
+spread it — and the composite reads the result alongside the mask it was already
+reading. What made one pass enough for both halves is the blend state:
+**premultiplied alpha**, where `dst = src.rgb + dst * (1 - src.a)`. A fragment
+with a colour and no alpha is then pure addition, which is the glow; one with
+both is the ordinary blend, which is the ring. Straight alpha would have needed a
+second pass with a second blend state, and then a target to read it from.
 
 **The mask holds an id, not a coverage bit**, and that one choice is what keeps
 two rings apart. With coverage the second half of the rule reads "and the
@@ -190,6 +206,35 @@ Ground items only, for now, for the reason the picking has: statics are not
 entities and mobiles are the paperdoll arm of `0x06`. Both are listed in
 `docs/client.md`'s M5 backlog and neither changes anything here — the pass takes
 a list of quads and does not care where they came from.
+
+### D7 — the tile marker and the item highlight are one answer, not two
+
+A tile marker says *the ground a click would walk to*; an item highlight says
+*the thing a click would use*. Drawn together over one cursor they are the client
+answering the same question twice, and on a littered street the diamond under a
+ringed barrel is the wrong half being read.
+
+So one of them wins per frame, and `shell::HighlightTarget` is who: `Auto` — the
+item if the pick found one, the tile otherwise — with `Items` and `Tiles` to pin
+it. `Hud::hover` stays the *fact* either way, because the panel reads it and the
+terrain overlay routes to it; what the mode decides is `Hud::hover_lit`, which is
+only whether the marker is drawn.
+
+**The pick moved to the top of the frame for this.** The HUD is laid out before
+the world passes run, so a tile marker that decides from the *previous* frame's
+pick flickers along every item's edge. `items::pick` is therefore asked once in
+the frame's snapshot, beside the camera and the cutaway, and its answer is handed
+to all three readers — the hue, the silhouette, and the marker. What that gives
+up is one frame of freshness in the *atlas*: the pick now runs before the frame
+grows it, so an item that came on screen this very frame has no rectangle to be
+pointed at until the next one. A flicker along an edge is seen every time; that
+is not.
+
+The style is the second axis and the switch this plan asked for:
+`shell::HighlightStyle` is `Hue`, `Outline` or `Both`, and it is `None` on the
+pick handed to each pass rather than a mode either pass has to branch on. The
+default is `Outline` — the ring and its glow *add* a statement, where the hue
+ramp replaces the picture with one.
 
 ## Techniques: what to search for
 
@@ -223,11 +268,18 @@ a list of quads and does not care where they came from.
       the ring's shape both ways — the border is ringed and the sprite is not —
       and `two_touching_silhouettes_are_ringed_separately` is what an id mask
       buys over a coverage one.
-- [ ] The switch: hue highlight, outline, or both — a field on the HUD's request
-      (`shell::Request`), so it can be looked at before it is a setting. Both are
-      drawn today.
-- [ ] The glow: `Ring` grows a blur radius, the composite gains a downsampled
-      kawase pass and additive blending. Steps 1 and 3 do not change.
+- [x] The switch: hue highlight, outline, or both — `shell::HighlightStyle` on
+      the HUD's request, and `shell::HighlightTarget` beside it for the second
+      axis D7 found: item or tile. Both are pickers in the Tile window.
+- [x] The glow: `Ring::glow` carries a reach and a colour, `glow.wgsl` seeds
+      coverage at half resolution and Kawase-spreads it, and the composite adds
+      it under the ring. Steps 1 and 3 did not change — the blend state did, see
+      D5.
+- [ ] Nothing drives the glow from the *shard*: its colour is one uniform for
+      the frame, so "hostile red, party blue" — Fallout's own use of the effect
+      — needs the mask's id looked up in a small palette. The id is already
+      there; what is missing is a table beside `items::outlined` saying what each
+      entry means.
 
 ## Backlog, in advance
 
@@ -235,19 +287,28 @@ a list of quads and does not care where they came from.
   pass needs the mobile atlas too.** It is a second texture bound to the same
   pipeline, not a second pipeline; worth knowing before the mask draw is
   written against `StaticAtlas` alone.
-- **The ring does not thin gracefully under minification.** `Ring::width` is
-  fixed at one mask texel, which is one *virtual* pixel — below 1x that is less
-  than a screen pixel and the ring starts to break up. The knob exists and
-  searches a denser neighbourhood; what is missing is driving it from
-  `Zoom::numerator`/`denominator`, and a test that says a minified ring is still
-  continuous. See D4.
-- **Both highlights are drawn at once.** A pointed-at item is redrawn in
-  `HIGHLIGHT_HUE` *and* ringed. The two were designed to compose and they do,
-  but nothing chooses between them yet — see the switch in Steps.
-- **The mask is allocated for every frame, whether anything is outlined or
-  not.** One byte per world pixel, cleared each frame by a pass that usually
-  draws nothing. Trivial next to the world image, and worth remembering only if
-  the mask ever grows a channel.
+- **A wall under the cursor lights the ground.** `HighlightTarget::Auto` falls
+  back to the tile when the *item* pick finds nothing, and a static is not an
+  item — so pointing at a house front says "you would walk here", which is not
+  what a click there does. The gap is the picking's, not this pass's: give
+  `items::pick` a static-shaped sibling and both the ring and the fallback are
+  right, since the silhouette pass takes quads and does not care where they came
+  from. See `docs/client.md`'s M5 backlog.
+- **The mask and the glow's pair are allocated for every frame, whether anything
+  is outlined or not.** One byte per world pixel and two RGBA quarter-images,
+  cleared each frame by passes that usually draw nothing. Trivial next to the
+  world image; worth remembering if the mask grows a channel or the glow grows a
+  resolution.
+- **Three Kawase iterations are a constant.** `Glow::radius` scales the offsets,
+  so a large reach is spread by the same three passes and the falloff coarsens
+  as it widens. Nothing above a dozen virtual pixels has been asked for; past
+  that the iteration count is what has to grow, and `step_offsets` is where.
+- **The glow is not lit and not occluded past what the mask says.** It is added
+  after the blit like the ring, so it is un-dimmed at night by design (D4) — but
+  it also spills over whatever is in front of the sprite's *neighbourhood*, since
+  only the silhouette itself was depth-tested. A barrel behind a shopfront glows
+  a little onto the shopfront. Fallout has the same artefact and it reads as
+  light rather than as a bug, which is why it is a note and not a step.
 - **The click still picks against a camera it reads back from `self.control`**
   (`App::use_under_cursor`), while the highlight picks against the frame's own.
   See `docs/client.md`'s M5 backlog: the outline makes this more visible, since

@@ -116,7 +116,21 @@ pub struct Hud {
     /// What tile the cursor is over right now, if it is over the world and on
     /// the map. Live, and gone the instant the cursor leaves — see `selected`
     /// for what a click keeps.
+    ///
+    /// The *fact*, always answered: the panel reads it whatever is highlighted,
+    /// and so does the route the terrain overlay draws. Whether the marker is
+    /// drawn on it is [`Hud::hover_lit`].
     pub hover: Option<PickedTile>,
+    /// Whether the tile marker is this frame's highlight.
+    ///
+    /// False when an item took it — see [`HighlightTarget`]. Decided by the app
+    /// and not here, because it is the answer to "is there an item under the
+    /// cursor", which is a question about the world rather than about the HUD.
+    pub hover_lit: bool,
+    /// Which of the two the cursor may light, for the picker that says so.
+    pub highlight: HighlightTarget,
+    /// And how an item says it, when it is the one lit.
+    pub highlight_style: HighlightStyle,
     /// The tile a left click last landed on. Kept until the next click, which
     /// is what makes its numbers holdable still long enough to copy — the
     /// live hover moves out from under the cursor the moment it does.
@@ -156,8 +170,20 @@ pub struct PickedTile {
     pub y: u16,
     /// The land tile's graphic id, if the block loaded.
     pub land: Option<u16>,
-    /// The ground's height here.
+    /// The ground's height here — what the land block stores, and nothing else.
+    /// Shown in the panel as a fact about the map; it is *not* where a body
+    /// stands, and nothing is drawn at it. See [`PickedTile::stand_z`].
     pub land_z: i8,
+    /// The height a body would stand at here: the ground, or the deck of
+    /// whatever platform is on top of it.
+    ///
+    /// Everything the HUD draws over a tile uses this. A pier is the case that
+    /// forced it apart from [`PickedTile::land_z`]: the land under one is water
+    /// at `-15` and the planks are at `-3`, so a diamond drawn at the land's
+    /// height lies a tile and a half away from the boards on screen — and since
+    /// the cursor is resolved against the same height, a pier tile could not be
+    /// pointed at at all.
+    pub stand_z: i8,
     /// Everything standing on top of the ground here: graphic id, height, hue.
     pub statics: Vec<(u16, i8, u16)>,
 }
@@ -216,12 +242,70 @@ pub struct Request {
     pub show_terrain: Option<bool>,
     /// Start or stop a scripted walk.
     pub script: Option<ScriptRequest>,
+    /// What the cursor may light from now on, on the frame the picker moved.
+    pub highlight: Option<HighlightTarget>,
+    /// And how an item says it, likewise.
+    pub highlight_style: Option<HighlightStyle>,
     /// How long a window the scope should keep from now on.
     ///
     /// Four seconds holds a reversal and is wrong for both ends of the range a
     /// scenario can be: a `teleport` is over in one, and a `back_and_forth`
     /// worth reading is longer than the window that shows it.
     pub scope_span: Option<Duration>,
+}
+
+/// What the cursor is allowed to light up.
+///
+/// Two kinds of highlight exist and they say different things: a *tile* marker
+/// is the ground the click would walk to, and an *item* highlight is the thing
+/// the click would use. Drawn together they contradict each other — the ring
+/// round a barrel and a diamond on the ground under it are two answers to one
+/// question — so one of them wins per frame, and this is who.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HighlightTarget {
+    /// The item under the cursor when there is one, the tile under it
+    /// otherwise. What a player wants without being asked: pointing at a barrel
+    /// lights the barrel, pointing at the road beside it lights the road.
+    #[default]
+    Auto,
+    /// Items only. The ground stays unmarked even where there is no item — for
+    /// looking at what is *takeable* on a crowded floor without the diamond
+    /// under it moving as well.
+    Items,
+    /// Tiles only. An item under the cursor is drawn like any other, which is
+    /// what walking somewhere across a littered street wants.
+    Tiles,
+}
+
+/// How an item says it is the one under the cursor.
+///
+/// Both were designed to compose — they are two passes over different pixels,
+/// see `docs/outline.md` — and for a while both were simply drawn. This is the
+/// switch that decision was deferred behind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HighlightStyle {
+    /// The art redrawn in [`items::HIGHLIGHT_HUE`](openshard_client_render::items::HIGHLIGHT_HUE),
+    /// which is what the reference client does and all it does.
+    Hue,
+    /// A ring round the silhouette and a glow behind it, leaving the art its own
+    /// colours. The default, because it *adds* a statement rather than
+    /// replacing the picture with one.
+    #[default]
+    Outline,
+    /// Both at once.
+    Both,
+}
+
+impl HighlightStyle {
+    /// Whether the item's own art is replaced by the highlight ramp.
+    pub fn hues(self) -> bool {
+        matches!(self, Self::Hue | Self::Both)
+    }
+
+    /// Whether a silhouette is drawn for it to be ringed and lit from.
+    pub fn rings(self) -> bool {
+        matches!(self, Self::Outline | Self::Both)
+    }
 }
 
 /// What the script picker asked for.
@@ -585,6 +669,33 @@ fn layout(
                 }
             }
             ui.separator();
+            // The two axes of the highlight, side by side because they are read
+            // together: what may be lit, and how an item says it is.
+            ui.horizontal(|ui| {
+                ui.label("highlight");
+                for (target, name) in [
+                    (HighlightTarget::Auto, "item, else tile"),
+                    (HighlightTarget::Items, "items"),
+                    (HighlightTarget::Tiles, "tiles"),
+                ] {
+                    if ui.selectable_label(hud.highlight == target, name).clicked() {
+                        request.highlight = Some(target);
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("item shows as");
+                for (style, name) in [
+                    (HighlightStyle::Hue, "hue"),
+                    (HighlightStyle::Outline, "outline"),
+                    (HighlightStyle::Both, "both"),
+                ] {
+                    if ui.selectable_label(hud.highlight_style == style, name).clicked() {
+                        request.highlight_style = Some(style);
+                    }
+                }
+            });
+            ui.separator();
             ui.label("hover — glows yellow, moves with the cursor");
             tile_panel(ui, hud.hover.as_ref());
             ui.separator();
@@ -609,7 +720,10 @@ fn layout(
     if let Some(terrain) = &hud.terrain {
         draw_terrain(&world, &hud.camera, terrain, viewport.min);
     }
-    if let Some(tile) = &hud.hover {
+    // The tile marker, and only when the tile is what is lit: an item under the
+    // cursor takes the highlight, and a diamond drawn under its ring would be
+    // the client answering "what would a click do here" twice.
+    if let Some(tile) = hud.hover.as_ref().filter(|_| hud.hover_lit) {
         draw_tile_highlight(
             &world,
             &hud.camera,
@@ -1106,7 +1220,10 @@ fn tile_panel(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
         return;
     };
     ui.horizontal(|ui| {
-        ui.label(format!("tile {}, {}", tile.x, tile.y));
+        // Both heights, because the gap between them is the thing worth seeing:
+        // on a pier the land is water far below the deck a body stands on, and
+        // every marker on this tile is drawn at the second one.
+        ui.label(format!("tile {}, {}   stand z {}", tile.x, tile.y, tile.stand_z));
     });
     ui.horizontal(|ui| match tile.land {
         Some(graphic) => {
@@ -1193,10 +1310,12 @@ fn draw_tile_highlight(
     fill: egui::Color32,
     stroke: egui::Stroke,
 ) {
+    // The surface, not the land: on a pier the two are thirteen z-units apart
+    // and the land's height puts the diamond in the water beside the boards.
     let point = openshard_protocol::world::Point {
         x: tile.x,
         y: tile.y,
-        z: tile.land_z,
+        z: tile.stand_z,
     };
     let corners = tile_corners(painter, camera, point, viewport_origin);
     painter.add(egui::Shape::convex_polygon(corners, fill, stroke));

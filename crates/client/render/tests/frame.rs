@@ -2629,6 +2629,9 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
 /// the picture, then the silhouette mask against the picture's own depth, then
 /// the blit, then the ring over it. A test that skipped a step would be
 /// asserting about a pipeline nothing draws.
+/// `width` and `height` are the *world image*'s, as the client's are; the
+/// surface comes out at `zoom` of them, which is where a minified ring is
+/// point-sampled and can lose half of itself. See `Ring::for_zoom`.
 #[allow(clippy::too_many_arguments)]
 fn render_outlined(
     device: &wgpu::Device,
@@ -2638,6 +2641,7 @@ fn render_outlined(
     outlined: &[SpriteQuad],
     width: u32,
     height: u32,
+    zoom: Zoom,
     ring: Ring,
 ) -> Frame {
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -2664,11 +2668,15 @@ fn render_outlined(
     sprites.render(device, queue, &mut encoder, target, quads);
     sprites.render_mask(device, queue, &mut encoder, target, &mask_view, outlined);
 
+    let (surface_width, surface_height) = (
+        width * zoom.numerator() / zoom.denominator(),
+        height * zoom.numerator() / zoom.denominator(),
+    );
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface"),
         size: wgpu::Extent3d {
-            width,
-            height,
+            width: surface_width,
+            height: surface_height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -2682,8 +2690,8 @@ fn render_outlined(
     let rect = ViewportRect {
         x: 0,
         y: 0,
-        width,
-        height,
+        width: surface_width,
+        height: surface_height,
     };
     Blit::new(device, format).render(
         device,
@@ -2693,7 +2701,7 @@ fn render_outlined(
             target: &surface_view,
             world: &world_view,
             place: &place_view,
-            zoom: Zoom::ONE,
+            zoom,
             rect,
         },
         &Lighting::NONE,
@@ -2763,6 +2771,7 @@ fn a_ring_is_drawn_around_a_silhouette_and_not_over_it() {
         &quads,
         width,
         height,
+        Zoom::ONE,
         Ring::DEFAULT,
     );
 
@@ -2841,6 +2850,7 @@ fn two_touching_silhouettes_are_ringed_separately() {
         &quads,
         width,
         height,
+        Zoom::ONE,
         Ring::DEFAULT,
     );
 
@@ -2866,4 +2876,218 @@ fn two_touching_silhouettes_are_ringed_separately() {
         white,
         "the pair's right edge",
     );
+}
+
+/// The glow reaches past the ring, fades with distance, and leaves the art it
+/// is pointing at alone.
+///
+/// All three halves are the assertion, and the third is the one a blur gets
+/// wrong: an additive wash that covered the silhouette too would brighten
+/// exactly the pixels the player is being asked to look at, and it would still
+/// look like a glow in a screenshot.
+#[test]
+fn a_glow_reaches_past_the_ring_and_fades_with_distance() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    const SIDE: u16 = 16;
+    let green = Color16(0b0_00000_11111_00000);
+    let atlas = square(GRAPHIC, SIDE, green);
+    let sprite = atlas.sprite(GRAPHIC).expect("packed");
+    let (x, y) = (40.0, 50.0);
+    let quads = [SpriteQuad {
+        rect: Rect {
+            x,
+            y,
+            width: f32::from(SIDE),
+            height: f32::from(SIDE),
+        },
+        region: sprite.region,
+        depth: 0.5,
+        hue: 0,
+        place: Place::NOWHERE,
+    }];
+
+    let (width, height) = (128, 128);
+    let frame = render_outlined(
+        &device,
+        &queue,
+        &atlas,
+        &quads,
+        &quads,
+        width,
+        height,
+        Zoom::ONE,
+        Ring::SOFT,
+    );
+
+    let (green_r, green_g, green_b) = green.rgb8();
+    let right = x as u32 + u32::from(SIDE);
+    let middle = y as u32 + u32::from(SIDE) / 2;
+    // Just past the ring, and further out. Read on the red channel: the glow is
+    // white and the background is the ground pass's cleared black, so every
+    // channel carries the same number and one of them is the measurement.
+    let near = frame.pixel(right + 1, middle)[0];
+    let far = frame.pixel(right + 4, middle)[0];
+    assert!(near > 0, "nothing is lit one pixel past the ring");
+    assert!(
+        near > far,
+        "the glow does not fade: {near} at one pixel out against {far} at four",
+    );
+    assert!(far > 0, "the glow stops dead at four pixels rather than fading");
+    // Well past `Glow::DEFAULT`'s reach of six.
+    assert_eq!(
+        frame.pixel(right + 24, middle)[0],
+        0,
+        "the glow reaches 24 pixels, which is most of a static",
+    );
+    // And the sprite is exactly its own colour still.
+    assert_eq!(
+        frame.pixel(x as u32 + 2, middle),
+        [green_r, green_g, green_b, u8::MAX],
+        "the glow was added over the art it is pointing at",
+    );
+}
+
+/// A minified ring keeps all four of its sides.
+///
+/// The mask is the world image and the composite reads it at the *surface*'s
+/// resolution, so below 1:1 it is point-sampled: at `1/2` only every other mask
+/// texel is ever looked at, and a one-texel ring loses whichever of its sides
+/// falls on the parity nothing samples. `Ring::for_zoom` is the fix and the
+/// second half of this test is why it is not imagined — the same frame with a
+/// fixed one-texel ring comes back with edges missing.
+#[test]
+fn a_minified_ring_keeps_every_side() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    const SIDE: u16 = 16;
+    let green = Color16(0b0_00000_11111_00000);
+    let atlas = square(GRAPHIC, SIDE, green);
+    let sprite = atlas.sprite(GRAPHIC).expect("packed");
+    let (x, y) = (40.0, 50.0);
+    let quads = [SpriteQuad {
+        rect: Rect {
+            x,
+            y,
+            width: f32::from(SIDE),
+            height: f32::from(SIDE),
+        },
+        region: sprite.region,
+        depth: 0.5,
+        hue: 0,
+        place: Place::NOWHERE,
+    }];
+
+    let (width, height) = (128, 128);
+    // Half, the widest rung of the ladder and the worst case for this.
+    let zoom = Zoom::ONE.scale_down().scale_down().scale_down();
+    assert_eq!(
+        (zoom.numerator(), zoom.denominator()),
+        (1, 2),
+        "the rung this is about"
+    );
+
+    // Where each side of the ring lands on a half-sized surface: one screen
+    // pixel outside the sprite's own screen rectangle, on the middle of each
+    // side.
+    let (left, top) = (x as u32 / 2, y as u32 / 2);
+    let side = u32::from(SIDE) / 2;
+    let (middle_x, middle_y) = (left + side / 2, top + side / 2);
+    let edges = [
+        ("left", left - 1, middle_y),
+        ("right", left + side, middle_y),
+        ("top", middle_x, top - 1),
+        ("bottom", middle_x, top + side),
+    ];
+
+    let lit = |ring: Ring| {
+        let frame = render_outlined(&device, &queue, &atlas, &quads, &quads, width, height, zoom, ring);
+        edges
+            .into_iter()
+            .filter(|(_, px, py)| frame.pixel(*px, *py) == [u8::MAX; 4])
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        lit(Ring::DEFAULT.for_zoom(zoom)).len(),
+        edges.len(),
+        "a ring widened for the zoom lost a side",
+    );
+    // The companion: without it the ring is not merely thinner, it is gone on
+    // two sides — so the assertion above is measuring something.
+    let naive = lit(Ring::DEFAULT);
+    assert!(
+        naive.len() < edges.len(),
+        "a one-texel ring survived being point-sampled at half, so this test \
+         proves nothing: {naive:?}",
+    );
+}
+
+/// Write the soft highlight out as a picture, for a person to look at.
+///
+/// Ignored, for the reason [`dump_a_frame_of_britain`] is: the tests above count
+/// the glow's pixels and counting cannot say whether it *reads* as a highlight.
+/// A grey slab stands in for the world behind it, because a glow is additive and
+/// what matters is how far it lifts a picture that is already there.
+///
+/// ```sh
+/// cargo test -p openshard-client-render --test frame -- --ignored dump_a_glow
+/// ```
+#[test]
+#[ignore = "writes a picture for a person, and asserts nothing"]
+fn dump_a_glowing_sprite() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const BACKDROP: Graphic = Graphic(1);
+    const ITEM: Graphic = Graphic(2);
+    let grey = Color16(0b0_01100_01100_01100);
+    let green = Color16(0b0_00110_11000_00110);
+    let atlas = StaticAtlas::pack([
+        (BACKDROP, Image::new(96, 96, vec![grey; 96 * 96])),
+        (ITEM, Image::new(20, 20, vec![green; 20 * 20])),
+    ])
+    .expect("two sprites fit");
+
+    let quad = |graphic: Graphic, x: f32, y: f32, side: f32, depth: f32| SpriteQuad {
+        rect: Rect {
+            x,
+            y,
+            width: side,
+            height: side,
+        },
+        region: atlas.sprite(graphic).expect("packed").region,
+        depth,
+        hue: 0,
+        place: Place::NOWHERE,
+    };
+    let backdrop = quad(BACKDROP, 16.0, 16.0, 96.0, 0.9);
+    let item = quad(ITEM, 54.0, 54.0, 20.0, 0.5);
+
+    let frame = render_outlined(
+        &device,
+        &queue,
+        &atlas,
+        &[backdrop, item],
+        &[item],
+        128,
+        128,
+        Zoom::ONE,
+        Ring::SOFT,
+    );
+
+    let mut ppm = b"P6\n128 128\n255\n".to_vec();
+    for pixel in frame.pixels.chunks_exact(4) {
+        ppm.extend_from_slice(&pixel[..3]);
+    }
+    let path = std::env::var_os("OPENSHARD_FRAME_DUMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("glow.ppm"));
+    std::fs::write(&path, ppm).expect("writing the frame");
+    eprintln!("wrote {}", path.display());
 }

@@ -487,6 +487,10 @@ pub fn run<D: Dial + Send + 'static>(
         // resting cursor hears `CursorEntered` on the first move.
         pointer_inside: false,
         show_terrain: false,
+        // The item under the cursor, ringed and lit, and the ground otherwise:
+        // see `shell::HighlightTarget` and `shell::HighlightStyle`.
+        highlight: shell::HighlightTarget::default(),
+        highlight_style: shell::HighlightStyle::default(),
         covered: None,
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),
@@ -982,6 +986,10 @@ struct App {
     /// which is a bill worth a debugging picture and not worth a frame nobody is
     /// looking at.
     show_terrain: bool,
+    /// What the cursor is allowed to light up, and how an item says it is the
+    /// one lit. Both are the HUD's to set — see [`shell::HighlightTarget`].
+    highlight: shell::HighlightTarget,
+    highlight_style: shell::HighlightStyle,
     /// The tile rectangle whose land and statics have been offered to the
     /// atlases, or `None` when nothing has.
     ///
@@ -2290,6 +2298,12 @@ impl App {
         if let Some(show) = request.show_terrain {
             self.show_terrain = show;
         }
+        if let Some(target) = request.highlight {
+            self.highlight = target;
+        }
+        if let Some(style) = request.highlight_style {
+            self.highlight_style = style;
+        }
         // The window the metrics are taken over, and not a clear: the frames
         // already held were flown by the same rig.
         if let Some(span) = request.scope_span {
@@ -2326,7 +2340,13 @@ impl App {
         self.pointer_inside && !self.shell.as_ref().is_some_and(shell::Shell::holds_pointer)
     }
 
-    fn hud(&self, camera: Camera) -> shell::Hud {
+    /// `lit_item` is what [`items::pick`] answered for this frame, handed in
+    /// rather than asked again: the HUD and the world passes are two readers of
+    /// one picture, and the tile marker is drawn or not drawn on the strength of
+    /// whether an item took the highlight. Asking twice would be two answers to
+    /// "what is the cursor on", and the frame where they disagree is the frame a
+    /// barrel is ringed *and* the ground under it is diamonded.
+    fn hud(&self, camera: Camera, lit_item: Option<usize>) -> shell::Hud {
         let hover = match self.world_owns_pointer() {
             true => self.pick_tile(camera),
             false => None,
@@ -2383,6 +2403,16 @@ impl App {
             mobiles,
             items,
             show_terrain: self.show_terrain,
+            // The tile is lit when nothing else took the highlight. Under
+            // `Items` nothing ever does, which is the mode's whole content; the
+            // ground is still hovered and the panel still reads it.
+            hover_lit: match self.highlight {
+                shell::HighlightTarget::Auto => lit_item.is_none(),
+                shell::HighlightTarget::Items => false,
+                shell::HighlightTarget::Tiles => true,
+            },
+            highlight: self.highlight,
+            highlight_style: self.highlight_style,
             terrain: self
                 .show_terrain
                 .then(|| self.terrain_overlay(camera, hover.as_ref())),
@@ -2786,6 +2816,54 @@ impl App {
         let owns_pointer = self.world_owns_pointer();
         let cursor = self.control.cursor();
 
+        // What this frame does not draw, read once from the tile the player is
+        // standing on. Once, and from the *player's* tile rather than the
+        // camera's: a free camera looking at a rooftop three streets away has
+        // not walked indoors, and the client's rule is about where the body is.
+        // See `openshard_client_render::cutaway`.
+        //
+        // `self.cutaway_at`, not `self.player.at`: the latter is this end's
+        // own unconfirmed prediction, which for one frame can be a tile a
+        // held direction was refused on — see the field's own doc.
+        //
+        // Here, in the snapshot, and not beside the passes that draw from it:
+        // the item pick below needs it, and the pick has to be answered before
+        // the HUD is built — see the next paragraph.
+        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
+        // What the cursor is over, asked here rather than remembered from the
+        // last click: the picture moves under a still mouse — the body walks,
+        // the camera follows, a door swings — so where the cursor is pointing is
+        // a question about *this* frame's picture and has to be asked against
+        // this frame's camera. The same `items::pick` a double-click asks, so
+        // what is lit is what would be used.
+        //
+        // Asked once and answered to three readers: the hue the picture is drawn
+        // in, the silhouette the ring is grown from, and whether the HUD marks
+        // the tile under the cursor at all. Two picks would be two chances to
+        // disagree about what the cursor is on, and the visible form of that
+        // disagreement is a barrel ringed with the ground under it diamonded.
+        //
+        // Against the atlas as it stands *before* this frame grows it, which is
+        // the one thing given up by asking this early. An item that came on
+        // screen this very frame has no sprite packed yet and so no rectangle to
+        // be pointed at, and is pickable a frame later; the alternative was a
+        // tile marker that decides whether to draw itself from the previous
+        // frame's answer, which flickers along every item's edge.
+        let lit_item = match owns_pointer && self.highlight != shell::HighlightTarget::Tiles {
+            true => self.window.as_ref().and_then(|window| {
+                items::pick(
+                    &self.items,
+                    &camera,
+                    &self.tiledata,
+                    &self.tile_animations,
+                    &window.atlases.statics,
+                    &cutaway,
+                    cursor,
+                )
+            }),
+            false => None,
+        };
+
         // # Step three: present. Nothing below this line writes the world.
         //
         // The UI first, because it is what the surface is composited from
@@ -2801,7 +2879,7 @@ impl App {
         // in it is a function of them. The one sampling of time that the frame is
         // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud(camera);
+        let hud = self.hud(camera, lit_item);
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {
@@ -3037,16 +3115,6 @@ impl App {
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // What this frame does not draw, read once from the tile the player is
-        // standing on. Once, and from the *player's* tile rather than the
-        // camera's: a free camera looking at a rooftop three streets away has
-        // not walked indoors, and the client's rule is about where the body is.
-        // See `openshard_client_render::cutaway`.
-        //
-        // `self.cutaway_at`, not `self.player.at`: the latter is this end's
-        // own unconfirmed prediction, which for one frame can be a tile a
-        // held direction was refused on — see the field's own doc.
-        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
         let quads = ground::collect(
             &self.map,
             &camera,
@@ -3065,28 +3133,13 @@ impl App {
         // Through the same pass as the map's statics, because they are the same
         // atlas: one draw call binds one texture, and what covers what is the
         // depth these carry rather than the order they are appended in.
-        // What the cursor is over, asked here rather than remembered from the
-        // last click: the picture moves under a still mouse — the body walks,
-        // the camera follows, a door swings — so where the cursor is pointing is
-        // a question about *this* frame's picture and has to be asked against
-        // this frame's camera. The same `items::pick` a double-click asks, so
-        // what is lit is what would be used.
-        //
-        // Asked once and answered to two passes: the hue the picture is drawn in
-        // and the silhouette the ring is grown from. Two picks would be two
-        // chances to disagree about what the cursor is on.
-        let highlight = match owns_pointer {
-            true => items::pick(
-                &self.items,
-                &camera,
-                &self.tiledata,
-                &self.tile_animations,
-                &window.atlases.statics,
-                &cutaway,
-                cursor,
-            ),
-            false => None,
-        };
+        // One pick (`lit_item`, at the top of the frame), two effects, and the
+        // style decides which of them is asked for. `None` is how each is
+        // switched off, so neither pass has a mode to branch on: the hue pass
+        // draws an item that is not highlighted, and the silhouette pass is
+        // handed an empty list.
+        let hued = self.highlight_style.hues().then_some(lit_item).flatten();
+        let ringed = self.highlight_style.rings().then_some(lit_item).flatten();
         // The same quads as the picture's, so the ring lands on the sprite
         // rather than beside it — see `items::outlined`.
         let outline_quads = items::outlined(
@@ -3096,7 +3149,7 @@ impl App {
             &self.tile_animations,
             &window.atlases.statics,
             &cutaway,
-            highlight,
+            ringed,
         );
         let static_quads = {
             let mut quads = static_quads;
@@ -3107,7 +3160,7 @@ impl App {
                 &self.tile_animations,
                 &window.atlases.statics,
                 &cutaway,
-                highlight,
+                hued,
             ));
             quads
         };
@@ -3265,7 +3318,11 @@ impl App {
                     mask_size: (render_width, render_height),
                     rect: viewport,
                 },
-                Ring::DEFAULT,
+                // The soft ring — an edge with a glow behind it — widened when
+                // the world is minified, where one mask texel is less than one
+                // screen pixel and a hairline breaks into a dashed line. See
+                // `Ring::for_zoom`.
+                Ring::SOFT.for_zoom(camera.zoom()),
             );
         }
         // The UI over it, with no depth attachment: the world's depth buffer

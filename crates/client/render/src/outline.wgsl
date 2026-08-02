@@ -35,15 +35,25 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 @group(0) @binding(0) var mask: texture_2d<u32>;
 
 struct Ring {
-    // The mask's size in texels, then the ring's half-width in those texels.
-    // The mask is the world image's size, so a texel here is a *virtual* pixel
-    // — see `outline::Ring::width` for why the thickness is measured in those
-    // and not in the surface's own.
+    // The mask's size in texels, then the ring's half-width in those texels,
+    // then the glow's strength. The mask is the world image's size, so a texel
+    // here is a *virtual* pixel — see `outline::Ring::width` for why the
+    // thickness is measured in those and not in the surface's own.
     shape: vec4<f32>,
     color: vec4<f32>,
+    // The glow's colour in `rgb`; `a` is unused and the strength lives in
+    // `shape.w`, so a strength of zero is one comparison rather than a second
+    // uniform buffer and a second pipeline.
+    glow: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> ring: Ring;
+
+// The spread silhouette `glow.wgsl` left behind, at half the mask's resolution
+// and sampled linearly: the blur chain drew over the same `uv` rectangle, so
+// this is the same place in the world image without any scaling here.
+@group(0) @binding(2) var glow: texture_2d<f32>;
+@group(0) @binding(3) var glow_sampler: sampler;
 
 // What the mask holds where nothing was drawn.
 const EMPTY: u32 = 0u;
@@ -79,8 +89,30 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             }
         }
     }
-    if found == EMPTY {
-        discard;
+    // The soft half, and it is *added* rather than blended over: light from two
+    // sources pools, and a glow that replaced what was under it would be a fog
+    // rather than a lamp. The target's blend is premultiplied alpha, so an alpha
+    // of zero with a colour in `rgb` is exactly addition — one pass draws both
+    // halves, which is what keeps step 3 of `docs/outline.md` D5 unchanged now
+    // that step 2 has grown a blur.
+    //
+    // Nothing inside the silhouette: the glow's job is to say where the thing
+    // is, not to repaint it, and an additive wash over the art washes out
+    // exactly the picture the player is being pointed at.
+    var lit = vec3<f32>(0.0);
+    if ring.shape.w > 0.0 && here == EMPTY {
+        let spread = textureSample(glow, glow_sampler, in.uv).r;
+        lit = ring.glow.rgb * spread * ring.shape.w;
     }
-    return ring.color;
+
+    if found == EMPTY {
+        // No ring here, so the fragment is glow or it is nothing. `discard`
+        // rather than a black premultiplied zero because the two are the same
+        // to the blender and not to a reader.
+        if lit.r + lit.g + lit.b <= 0.0 {
+            discard;
+        }
+        return vec4<f32>(lit, 0.0);
+    }
+    return vec4<f32>(ring.color.rgb * ring.color.a + lit, ring.color.a);
 }
