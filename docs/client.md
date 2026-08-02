@@ -1583,6 +1583,18 @@ own understanding had written.
     `the_state_left_behind_says_which_of_the_three_the_body_is_doing` pins the
     state to the answer at every scene, from every state.
 
+    Sliding past an obstacle is also the one thing here that is a *preference*
+    rather than a rule, and it is now `WhenBlocked::{Slide, Stand}`, passed to
+    `Detour::step` per call. Both answers are correct play: sliding keeps a
+    runner running and is what a body brushing past furniture does; standing is
+    the classic client's own answer, and a player who has walked that way for
+    twenty years reads an unasked-for sidestep as the character disobeying. It
+    is a parameter and not a field on the machine, because a state and a
+    setting must stay two values — and being read where the decision is made is
+    what lets it change mid-walk with no state to reset. There is no client
+    config to read it from yet; `Steering::set_when_blocked` is the single line
+    one will set, called at `App`'s construction today with the default.
+
     Its whole input is **four tiles**:
     where you stand, where you meant to go, and the two flanks that could take
     its place. Not eight, and that is the argument rather than a

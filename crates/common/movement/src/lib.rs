@@ -55,7 +55,7 @@ mod sequence;
 mod terrain;
 mod walk;
 
-pub use detour::{Around, Detour, Step};
+pub use detour::{Around, Detour, Step, WhenBlocked};
 pub use pace::{Pace, RUN_HOLD, RUN_INTERVAL, WALK_BUFFER, WALK_HOLD, WALK_INTERVAL, WalkPace};
 pub use path::find_path;
 pub use sequence::{OutOfSequence, StepCounter, WalkSequence};

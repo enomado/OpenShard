@@ -146,7 +146,9 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use openshard_movement::{Around, Detour, RUN_HOLD, Step, Terrain, WALK_HOLD, find_path, heading_toward};
+use openshard_movement::{
+    Around, Detour, RUN_HOLD, Step, Terrain, WALK_HOLD, WhenBlocked, find_path, heading_toward,
+};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
 
@@ -269,6 +271,10 @@ pub struct Steering {
     /// route, which answers for its own obstacles by replanning — and what to
     /// do with [`Step::Stuck`], which needs the facing this module tracks.
     detour: Detour,
+    /// Whether a body that has walked into something slides past it or stops
+    /// against it — see [`WhenBlocked`], and [`Steering::set_when_blocked`] for
+    /// where this comes from.
+    when_blocked: WhenBlocked,
 }
 
 impl Steering {
@@ -328,6 +334,19 @@ impl Steering {
     /// would let a player tapping shift send a step per tap.
     pub fn set_running(&mut self, running: bool) {
         self.keys.set_running(running);
+    }
+
+    /// What a body does when it has walked into something: slide past it
+    /// ([`WhenBlocked::Slide`], the default) or stop against it
+    /// ([`WhenBlocked::Stand`], which is what the classic client does).
+    ///
+    /// A player's preference and not a rule — see [`WhenBlocked`]. There is no
+    /// client config to read it from yet; when there is, this is the one line
+    /// it sets, and nothing else about the walk has to learn about it. Takes
+    /// effect on the next step, mid-walk included: the setting is read where
+    /// the decision is made, so there is no state to reset when it changes.
+    pub fn set_when_blocked(&mut self, when_blocked: WhenBlocked) {
+        self.when_blocked = when_blocked;
     }
 
     /// Walk to `tile`, from wherever the body is standing now. Answers the step
@@ -781,7 +800,7 @@ impl Steering {
     /// and no destination, so this local look is the whole of what it can do.
     fn detour(&mut self, terrain: &dyn Terrain, from: Point, direction: Direction) -> Step {
         let around = Around::read(terrain, from, direction);
-        let step = self.detour.step(&around);
+        let step = self.detour.step(&around, self.when_blocked);
         debug_detour(from, &around, step);
         step
     }
@@ -1667,6 +1686,49 @@ mod tests {
                 .can_step(here(), step_from(here(), detoured.direction).unwrap())
                 .is_some(),
             "the direction taken must actually be open"
+        );
+    }
+
+    /// The same single-tile obstacle, for a shard whose players asked for the
+    /// classic client's answer instead: the body stops against it and stays
+    /// stopped, and — the part that matters on the wire — the step it will not
+    /// take is not sent either. Standing against something is standing, not a
+    /// refusal a hold.
+    ///
+    /// This is the seam a client config will set (`Steering::set_when_blocked`)
+    /// and the reason the preference is threaded at all rather than chosen once
+    /// in `common/movement`: both answers are correct play.
+    #[test]
+    fn told_to_stand_a_heading_stops_at_the_obstacle_instead_of_sliding() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        steering.set_when_blocked(WhenBlocked::Stand);
+        // Directly in the heading's path, with both sidesteps wide open — the
+        // scene the default answers with a sidestep.
+        let wall = Wall { blocked: (101, 100) };
+
+        assert_eq!(
+            steering.steer(Some(Direction::East), here(), start, Direction::North, &wall),
+            Some(Facing::walking(Direction::East)),
+            "the turn to face what it walked into is still legal and still sent"
+        );
+        for step in 1..6u64 {
+            assert_eq!(
+                steering.due(at(start, 400 * step), here(), Direction::East, &wall),
+                None,
+                "step {step}: stopped means stopped, and a refused step is not sent to say so"
+            );
+        }
+        // And the setting is the only thing standing in the way: the same
+        // heading, with the sidestep allowed, walks.
+        steering.set_when_blocked(WhenBlocked::Slide);
+        let slid = steering
+            .due(at(start, 400 * 6), here(), Direction::East, &wall)
+            .expect("a sidestep is open");
+        assert!(
+            matches!(slid.direction, Direction::North | Direction::South),
+            "got {:?}",
+            slid.direction
         );
     }
 

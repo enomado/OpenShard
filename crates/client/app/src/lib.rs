@@ -49,7 +49,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
@@ -114,7 +114,9 @@ use openshard_client_net::transport::Dial;
 use openshard_client_net::view::WorldView;
 use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::animation::FRAME_DELAY;
-use openshard_client_render::atlas::{AnimAtlas, AtlasError, FontAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
+use openshard_client_render::atlas::{
+    AnimAtlas, AtlasError, FontAtlas, LandAtlas, StaticAtlas, TexmapAtlas, TtfAtlas,
+};
 use openshard_client_render::bench::{self, Metrics, Scope, Script};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
@@ -127,7 +129,7 @@ use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
-use openshard_movement::Terrain;
+use openshard_movement::{Terrain, WhenBlocked};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
@@ -142,6 +144,7 @@ use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::TexMaps;
 use openshard_uofiles::tiledata::TileData;
+use openshard_uofiles::ttf_font::TtfFont;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -190,17 +193,35 @@ const SCOPE_SPAN: std::time::Duration = std::time::Duration::from_secs(4);
 /// whole in the [`WorldView`], capped there, and M4 is what displays it.
 const SPEECH_LINES: usize = 6;
 
+/// The pixel height [`TtfAtlas`] rasterizes at, before the window's own
+/// [`winit::window::Window::scale_factor`] scales it up for a dense display —
+/// see where [`App::create_window`] builds one. Chosen to sit near
+/// `fonts.mul`'s own faces (its glyphs run roughly 8 to 14 pixels tall), not
+/// measured against any one of them: see the "One face, not ten" note on
+/// [`openshard_uofiles::ttf_font`] for why there is only one size to choose at
+/// all.
+const TTF_BASE_PIXEL_HEIGHT: f32 = 16.0;
+
 /// Open a window on `dir`'s files, and log in to `shard` if one is given.
 ///
-/// The two arguments are the whole of what this run was asked for: which client
-/// install to read, and whether there is a shard to play. Everything else — the
-/// facet, the version claimed, where the camera starts — is a constant above,
-/// because none of it is a decision a caller has ever needed to make differently.
+/// The three arguments are the whole of what this run was asked for: which
+/// client install to read, whether there is a shard to play, and which face
+/// draws overhead speech. Everything else — the facet, the version claimed,
+/// where the camera starts — is a constant above, because none of it is a
+/// decision a caller has ever needed to make differently.
 ///
 /// A shard is a [`Dial`] and a [`Plan`] rather than an address and a plan: how
 /// the connection is opened is the caller's, which is what lets
 /// `crates/e2e/playground` hand over a shard in this same process. Nothing in
 /// this crate knows what a socket is any more; `client/net` does not either.
+///
+/// `ttf_font`, given, switches every line drawn through [`text::collect`] to
+/// [`text::collect_ttf`] instead, and `fonts.mul` off entirely — see that
+/// function's doc for why it is the whole line or none of it. `None` is the
+/// classic client's own bitmap faces, unchanged; `Some` names a TrueType or
+/// OpenType face on disk for a shard whose players type in a script
+/// `fonts.mul` never shipped, Cyrillic today — nothing is bundled with the
+/// engine, see [`openshard_uofiles::ttf_font`]'s doc for why.
 ///
 /// This is a `-> ExitCode` and not a `-> Result`, because every failure here is
 /// terminal for a *window*: no client files, no window system, no GPU. There is
@@ -211,7 +232,11 @@ const SPEECH_LINES: usize = 6;
 ///
 /// It must be called on the main thread: `winit` says so on macOS and iOS, and
 /// the event loop it builds is what enforces it.
-pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> ExitCode {
+pub fn run<D: Dial + Send + 'static>(
+    dir: &Path,
+    shard: Option<(D, Plan)>,
+    ttf_font: Option<PathBuf>,
+) -> ExitCode {
     // Reading the whole facet takes a moment and a few hundred megabytes. That
     // is the shape `uofiles` has today — see the backlog in docs/client.md — and
     // it is honest to do it up front rather than to stall on the first frame.
@@ -291,6 +316,20 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
             return ExitCode::FAILURE;
         }
     };
+    // Read and parsed once, only when asked for: a shard that never sets
+    // `ttf_font` has no reason to hold a second face in memory beside
+    // `fonts.mul`'s, and one that does is naming a file on this operator's
+    // machine — nothing here is bundled with the engine.
+    let ttf_font = match ttf_font {
+        Some(path) => match TtfFont::open(&path) {
+            Ok(font) => Some(font),
+            Err(error) => {
+                eprintln!("opening {}: {error}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     eprintln!(
         "{} loaded: {}x{} tiles",
         map.facet_name(),
@@ -362,6 +401,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         hues,
         hue_ramp,
         font_atlas,
+        ttf_font,
         anim,
         equip_conv,
         // The device's own limit replaces WebGL2's floor once there is a device
@@ -390,7 +430,16 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         shell: None,
         link,
         facet_checked: false,
-        steer: steer::Steering::default(),
+        steer: {
+            // The one decision about walking that is a player's taste rather
+            // than a rule: whether a body that has walked into something
+            // slides past it or stops against it. Stated here, at the top,
+            // because this is the line a client config replaces when there is
+            // one — nothing further down the walk has to learn about it.
+            let mut steer = steer::Steering::default();
+            steer.set_when_blocked(WhenBlocked::Slide);
+            steer
+        },
         aiming: false,
         ctrl_held: false,
         crowd: {
@@ -641,6 +690,15 @@ struct Screen {
     /// glyph atlas it is bound to is the whole of `fonts.mul` and does not go
     /// stale the way a camera-scoped atlas does.
     text_pass: SpriteRenderer,
+    /// The TrueType glyphs asked for so far, when `App::ttf_font` is set.
+    /// Grown a line at a time — see [`App::draw`] — the way [`Screen::atlases`]
+    /// grows as the camera walks, because a face with all of Unicode to answer
+    /// for has no "whole file" to pack up front the way `fonts.mul` does.
+    ttf_atlas: Option<TtfAtlas>,
+    /// The pass bound to [`Screen::ttf_atlas`]'s texture, rebuilt whenever that
+    /// atlas is (see `App::draw`'s handling of [`AtlasError::Full`] there).
+    /// `None` exactly when `ttf_atlas` is.
+    ttf_pass: Option<SpriteRenderer>,
 }
 
 struct App {
@@ -665,6 +723,12 @@ struct App {
     /// nothing about it depends on the camera, and unlike a graphic there is no
     /// "not currently visible" character to leave unpacked.
     font_atlas: FontAtlas,
+    /// The operator-supplied TrueType face, when `run` was asked to draw
+    /// through one instead — `None` is the ordinary, `fonts.mul`-only run. Held here
+    /// rather than only in [`Screen`] because it does not depend on a window
+    /// existing: it is what [`Screen::ttf_atlas`] is grown from, every frame
+    /// [`App::draw`] sees new characters in what is being said.
+    ttf_font: Option<TtfFont>,
     /// The animations, open but not read: `anim.mul` is 195MB and frames come
     /// out of it a body at a time. `&mut` because reading one seeks the file.
     anim: Anim,
@@ -1244,14 +1308,30 @@ impl App {
             return false;
         }
 
-        // Turning is a step here, as it is not in a real client: there is no
-        // server to say whether the step happened, so the body faces wherever
-        // it was last sent. `client/net`'s `walk` is what will decide this once
-        // the two are joined.
-        let (dx, dy) = facing.direction.step();
-        let x = (i32::from(self.player.at.x) + dx).clamp(0, self.map.width() as i32 - 1);
-        let y = (i32::from(self.player.at.y) + dy).clamp(0, self.map.height() as i32 - 1);
-        let (x, y) = (x as u16, y as u16);
+        // Turning costs no ground here either, now decided by the same rule
+        // the online handshake and the server share
+        // (`openshard_movement::intend`) rather than the simplification this
+        // used to be — every call moving the body, turn or not, because there
+        // was no server round trip to tell the two apart. That was rarely
+        // visible when a fresh direction changed once in a while; it stopped
+        // being rare once `Steering::detour` started sending several
+        // direction changes a hold's worth apart in real cadence, but one
+        // right after another within a single event-loop wake — and moving
+        // the body on every one of them was a real body covering twice the
+        // ground its pace implied.
+        let turn = matches!(
+            openshard_movement::intend(self.player.at, Facing::walking(self.player.facing), facing),
+            openshard_movement::Intent::Turned { .. }
+        );
+        let (x, y) = match turn {
+            true => (self.player.at.x, self.player.at.y),
+            false => {
+                let (dx, dy) = facing.direction.step();
+                let x = (i32::from(self.player.at.x) + dx).clamp(0, self.map.width() as i32 - 1);
+                let y = (i32::from(self.player.at.y) + dy).clamp(0, self.map.height() as i32 - 1);
+                (x as u16, y as u16)
+            }
+        };
         // On the surface there — the ground's average, or a platform static's
         // deck, whichever is nearest where the body already stands — not at
         // some height of the camera's, and not the land alone: a mobile below
@@ -2096,6 +2176,26 @@ impl App {
             self.font_atlas.pixels(),
             &self.hue_ramp,
         );
+        // Scaled by the window's own density: a `TtfAtlas` bakes one pixel
+        // size into every glyph it packs (see its doc), so the size has to be
+        // picked once, here, where a real `Window` first exists to ask —
+        // `run` cannot ask before one does, and rebuilding a size already
+        // packed at is exactly the "ten faces" cost `ttf_font`'s doc explains
+        // this engine does not pay.
+        let (ttf_atlas, ttf_pass) = match &self.ttf_font {
+            Some(_) => {
+                let atlas = TtfAtlas::empty(TTF_BASE_PIXEL_HEIGHT * window.scale_factor() as f32);
+                let pass = SpriteRenderer::new(
+                    &device,
+                    &queue,
+                    blit::WORLD_FORMAT,
+                    atlas.pixels(),
+                    &self.hue_ramp,
+                );
+                (Some(atlas), Some(pass))
+            }
+            None => (None, None),
+        };
         // The world is drawn at 1:1 into a texture of the camera's render size,
         // which is the viewport only at zoom 1 — see `client/render`'s `blit`.
         let world = blit::world_texture(
@@ -2128,6 +2228,8 @@ impl App {
             mobile_pass,
             atlases,
             text_pass,
+            ttf_atlas,
+            ttf_pass,
         })
     }
 
@@ -2586,7 +2688,37 @@ impl App {
                 depth: 0.0,
             })
             .collect();
-        let text_quads = text::collect(&labels, &self.font_atlas);
+        // `fonts.mul` or the operator-supplied TrueType face, never a mix
+        // within one frame — see `run`'s doc for why `ttf_font` is an all-or-nothing
+        // switch. Unlike `font_atlas`, `ttf_atlas` is grown a line at a time:
+        // there is no bounded "whole file" to pack up front for a face that
+        // answers to all of Unicode, so this asks it to rasterize whatever of
+        // this frame's speech it has not seen yet, the way `window.atlases`
+        // grows for graphics newly on screen.
+        let text_quads = if let Some(font) = &self.ttf_font {
+            let atlas = window
+                .ttf_atlas
+                .as_mut()
+                .expect("create_window builds ttf_atlas whenever ttf_font is set");
+            if let Err(error) = atlas.add(font, labels.iter().flat_map(|label| label.text.chars())) {
+                // `eprintln!` and a frame that draws anyway, the same corner
+                // `AtlasError::Full` already cuts for the map's own atlases —
+                // see docs/client.md. Unreachable in practice: a shard's whole
+                // spoken character set is a few hundred glyphs at most, nowhere
+                // near one 2048 texture.
+                eprintln!("packing ttf glyphs: {error}");
+            }
+            if let Some(rows) = atlas.take_dirty() {
+                window
+                    .ttf_pass
+                    .as_ref()
+                    .expect("create_window builds ttf_pass whenever ttf_atlas is")
+                    .upload_rows(&window.queue, atlas.pixels(), rows);
+            }
+            text::collect_ttf(&labels, atlas)
+        } else {
+            text::collect(&labels, &self.font_atlas)
+        };
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let target = Target {
             view: &world_view,
@@ -2610,9 +2742,14 @@ impl App {
         window
             .mobile_pass
             .render(&window.device, &window.queue, &mut encoder, target, &mobile_quads);
-        window
-            .text_pass
-            .render(&window.device, &window.queue, &mut encoder, target, &text_quads);
+        // `ttf_pass` when the run is drawing through it — bound to a
+        // different texture than `text_pass`, so a mix of the two within one
+        // frame would sample one atlas with quads packed for the other.
+        let text_renderer = match &mut window.ttf_pass {
+            Some(pass) => pass,
+            None => &mut window.text_pass,
+        };
+        text_renderer.render(&window.device, &window.queue, &mut encoder, target, &text_quads);
         // And the world image onto the surface, into the rect the panels left
         // free. Magnified this is a copy — the image is already the viewport's
         // size and the magnification happened in the vertex transform — and
