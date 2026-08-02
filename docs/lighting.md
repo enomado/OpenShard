@@ -157,6 +157,26 @@ Carried from `client.md`'s firelight backlog and still true:
 - The ambient is a key (F10), not a clock.
 - A light is placed by its tile, not by its sprite.
 
+Found while building it:
+
+- **The land itself does not occlude.** A hill between a campfire and a valley
+  stops nothing: only statics are in the grid. The map has the four corner
+  heights for every tile and the grid already carries a span, so the shape of the
+  fix is "add the land's own height as an occluder with `opacity` scaled by how
+  far the ray is under it" — the reason it is not done is that a hillside that
+  cast hard shadows would look worse than one that casts none until the falloff
+  and the span are tuned against a real scene.
+- **Nothing a mobile is standing in casts a shadow.** A body between a torch and
+  a wall lights the wall as if it were not there. The reference does not shadow
+  mobiles either, so this is a note rather than a defect.
+- **The ray is Chebyshev-sampled, one cell a step.** A ray running almost exactly
+  along a diagonal can pass between two wall tiles that touch only at their
+  corners. Real walls are rows, so it has not been seen; a supercover walk that
+  visits both cells of every crossing would close it at about twice the samples.
+- **`Occlusion` is rebuilt and reallocated every frame.** 140KB at the widest
+  zoom, and the texture upload beside it. Both want the buffer kept between
+  frames — the rectangle only changes size on a zoom step or a resize.
+
 Found while writing this plan:
 
 - **A sconce lights through its own wall.** Decision 3 exempts the light's own
