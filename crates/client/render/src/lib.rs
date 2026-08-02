@@ -43,6 +43,7 @@ pub mod depth;
 pub mod follow;
 pub mod geometry;
 pub mod ground;
+pub mod gump;
 pub mod hue;
 pub mod items;
 pub mod light;

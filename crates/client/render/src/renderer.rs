@@ -31,7 +31,7 @@ pub const CLEAR: wgpu::Color = wgpu::Color {
 const UNIFORM_BYTES: u64 = 32;
 
 /// The unit quad, as a triangle strip: (0,0) (1,0) (0,1) (1,1).
-const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+pub(crate) const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
 /// How many quads the instance buffer starts out able to hold.
 const INITIAL_QUADS: u64 = 4096;
@@ -1217,7 +1217,7 @@ fn new_ring_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     })
 }
 
-fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
+pub(crate) fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("static instances"),
         size: quads * SpriteQuad::STRIDE,
@@ -1235,7 +1235,7 @@ fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer
 /// `Rgba8Unorm` and never `…Srgb`: the atlas holds the file's own bytes and a
 /// gamma conversion here would mean the pixel that went in is not the pixel that
 /// comes out — see the crate docs.
-fn upload(
+pub(crate) fn upload(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
@@ -1290,7 +1290,7 @@ fn upload(
 /// that produced the range and the texture it is written into are the same size
 /// by construction, so a range outside it is a bug in this crate and not
 /// something a frame should die of.
-fn write_rows(queue: &wgpu::Queue, texture: &wgpu::Texture, pixels: &[u8], rows: std::ops::Range<u32>) {
+pub(crate) fn write_rows(queue: &wgpu::Queue, texture: &wgpu::Texture, pixels: &[u8], rows: std::ops::Range<u32>) {
     let width = texture.width();
     let height = texture.height();
     let (top, bottom) = (rows.start.min(height), rows.end.min(height));
