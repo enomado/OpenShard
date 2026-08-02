@@ -112,6 +112,14 @@ pub struct Lighting {
     /// and used with another's flames would put shadows where the map has no
     /// walls.
     pub occlusion: Occlusion,
+    /// Which of the pass's own values to draw instead of the lit frame — see
+    /// [`crate::debug::View`], and `docs/lighting.md`'s decision 8 for why the
+    /// diagnostics are branches of this pass rather than a second one.
+    ///
+    /// Here rather than in [`crate::blit::Frame`] because it is read where the
+    /// lights are read, out of the same uniform block, and a second channel into
+    /// the same shader is a second thing to keep in step.
+    pub view: crate::debug::View,
 }
 
 impl Lighting {
@@ -128,14 +136,16 @@ impl Lighting {
         ambient: [1.0, 1.0, 1.0],
         lights: Vec::new(),
         occlusion: Occlusion::EMPTY,
+        view: crate::debug::View::Lit,
     };
 
     /// Whether this would change a single pixel.
     ///
-    /// The blit skips the whole uniform upload when it would not. The occluders
-    /// are not asked about: a wall with no flame to stop casts nothing.
+    /// The occluders are not asked about: a wall with no flame to stop casts
+    /// nothing. A debug view is never the identity, however empty the frame's
+    /// lighting is — that is the whole of what it draws.
     pub fn is_identity(&self) -> bool {
-        self.lights.is_empty() && self.ambient == [1.0, 1.0, 1.0]
+        self.lights.is_empty() && self.ambient == [1.0, 1.0, 1.0] && self.view.is_lit()
     }
 }
 
@@ -314,6 +324,10 @@ pub fn collect(
         ambient,
         lights,
         occlusion: crate::occlusion::collect(map, items, bounds, tiledata, cutaway),
+        // The ordinary picture. A caller wanting a diagnostic sets the field on
+        // the way to the blit: which view is on is a property of the person
+        // looking, not of the world walked here.
+        view: crate::debug::View::Lit,
     }
 }
 
@@ -332,6 +346,217 @@ fn place(at: Point, graphic: Graphic, time: f32) -> Light {
         color: flame.color,
         intensity: flame.intensity * flicker(time, phase_of(at), flame.flicker),
     }
+}
+
+/// How many cells of the grid one shadow ray may look at.
+///
+/// `blit.wgsl`'s `MAX_RAY_STEPS`, and the two are one number: [`sample`] is the
+/// shader's own arithmetic in Rust and a bound that differed would make the two
+/// disagree exactly where a ray is longest. A pool reaches nine tiles at the
+/// widest, so this is never actually reached; it exists so that a loop over data
+/// cannot be made unbounded by a radius somebody widens later.
+pub const MAX_RAY_STEPS: i32 = 16;
+
+/// Below this, a ray has been stopped: `blit.wgsl`'s early exit, and under a
+/// byte's worth of light either way.
+const RAY_CUTOFF: f32 = 0.004;
+
+/// A point in the world, as the lighting sees one: a fractional tile and a `z`.
+///
+/// Fractional because that is what the place attachment carries — where in its
+/// tile a pixel is, to a hundred-and-twenty-eighth — and a pool is a gradient
+/// only because of it. See [`crate::place`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Spot {
+    /// Tile coordinates, the fraction being where in the tile the point is.
+    pub at: Vec2,
+    /// Its height, in the map's own `z` units.
+    pub z: f32,
+}
+
+/// What one flame did to one spot, and why.
+///
+/// The *why* is the point: a pool that is missing has one of three causes — the
+/// flame is too far, the ray was stopped, or the flame was never collected — and
+/// a picture cannot tell the first two apart. This does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Reach {
+    /// Which of [`Lighting::lights`] this is, by index.
+    pub light: usize,
+    /// How far the flame is, in tiles, with `z` divided into tiles — the same
+    /// three-dimensional distance the falloff uses.
+    pub distance: f32,
+    /// Whether that distance is inside the flame's radius. `false` means the
+    /// spot is outside the pool and nothing else was computed.
+    pub within: bool,
+    /// How much of the flame survived the walk: `1.0` for an open path, `0.0` for
+    /// a wall, and between for a partial occluder. Only meaningful when
+    /// [`Reach::within`].
+    pub through: f32,
+    /// The tile that stopped the ray, where one did.
+    ///
+    /// The *first* cell that took the survival to zero, which is the one worth
+    /// naming: a ray crossing two walls is stopped by the first of them and the
+    /// second is a fact about the map, not about this pixel.
+    pub stopped_by: Option<(i32, i32)>,
+    /// What this flame added to the multiplier, linear, per channel.
+    pub added: [f32; 3],
+}
+
+/// Everything one point of the world receives, and from what.
+///
+/// [`sample`] is the CPU's copy of `blit.wgsl`'s fragment loop, and the copy
+/// exists for two reasons: a test can assert on numbers instead of on pixels,
+/// and the client can answer "why is this tile lit" in words. Both are worthless
+/// if the copy drifts, so a GPU test runs the real blit over a synthetic place
+/// attachment and asserts the two agree — see `docs/lighting.md`, decision 9.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Sample {
+    /// Where this was asked about.
+    pub spot: Spot,
+    /// What the art at this spot is multiplied by: the ambient plus every
+    /// flame's contribution, unclamped. The shader clamps at the end; this does
+    /// not, because a value over one is a real answer — it says the spot is
+    /// blown out rather than merely lit.
+    pub multiplier: [f32; 3],
+    /// One entry per flame the frame carried, in the order [`Lighting::lights`]
+    /// holds them — including the ones that reached nothing, which is exactly
+    /// what a person asking "why is it dark here" needs to see.
+    pub reaches: Vec<Reach>,
+}
+
+impl Sample {
+    /// How bright this spot came out, as one number: the mean of the channels.
+    ///
+    /// For a diagram and for a test that wants "brighter than" rather than a
+    /// colour. Deliberately not luma-weighted — this is not a picture, and a
+    /// weighting would make a blue ambient and a warm flame incomparable.
+    pub fn brightness(&self) -> f32 {
+        self.multiplier.iter().sum::<f32>() / 3.0
+    }
+}
+
+impl std::fmt::Display for Sample {
+    /// The report: the spot, what it came out at, and a line per flame saying
+    /// what happened to it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "({:.2}, {:.2}, z {:.1}) -> {:.3} [{:.3} {:.3} {:.3}]",
+            self.spot.at.x,
+            self.spot.at.y,
+            self.spot.z,
+            self.brightness(),
+            self.multiplier[0],
+            self.multiplier[1],
+            self.multiplier[2],
+        )?;
+        for reach in &self.reaches {
+            write!(f, "  light {}: {:.2} tiles", reach.light, reach.distance)?;
+            match (reach.within, reach.stopped_by) {
+                (false, _) => writeln!(f, ", outside its radius")?,
+                (true, Some((x, y))) => writeln!(f, ", stopped at ({x}, {y})")?,
+                (true, None) => writeln!(
+                    f,
+                    ", through {:.2}, adds {:.3}",
+                    reach.through,
+                    reach.added.iter().sum::<f32>() / 3.0,
+                )?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What a frame's lighting does to one spot in the world, with the reasons.
+///
+/// `blit.wgsl`'s fragment loop, arithmetic for arithmetic: the same
+/// three-dimensional distance with `z` in tiles, the same `(1 - d)²` falloff, the
+/// same walk of the grid between the spot and each flame. The shader's clamp and
+/// its multiply by the art are the two things left out, because neither is about
+/// the lighting — see [`Sample::multiplier`].
+pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
+    let mut multiplier = lighting.ambient;
+    let mut reaches = Vec::with_capacity(lighting.lights.len());
+    for (index, light) in lighting.lights.iter().enumerate() {
+        let offset = [
+            light.at.x - spot.at.x,
+            light.at.y - spot.at.y,
+            (light.z - spot.z) / Z_PER_TILE,
+        ];
+        let distance = offset.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+        let d = distance / light.radius.max(0.001);
+        if d >= 1.0 {
+            reaches.push(Reach {
+                light: index,
+                distance,
+                within: false,
+                through: 0.0,
+                stopped_by: None,
+                added: [0.0; 3],
+            });
+            continue;
+        }
+        let (through, stopped_by) = walk(spot, light, &lighting.occlusion);
+        let fall = 1.0 - d;
+        let added = light
+            .color
+            .map(|channel| channel * light.intensity * fall * fall * through);
+        for (total, channel) in multiplier.iter_mut().zip(added) {
+            *total += channel;
+        }
+        reaches.push(Reach {
+            light: index,
+            distance,
+            within: true,
+            through,
+            stopped_by,
+            added,
+        });
+    }
+    Sample {
+        spot,
+        multiplier,
+        reaches,
+    }
+}
+
+/// The ray from a spot to a flame, cell by cell: how much survives, and what
+/// stopped it.
+///
+/// `blit.wgsl`'s `reaches`, including what it leaves out. Both ends of the walk
+/// are skipped — the flame's own tile must not shadow it, because a sconce
+/// stands *on* a wall, and the tile being lit must not shadow itself, which is
+/// what keeps a wall's own face the brightest thing beside a torch. The height is
+/// interpolated along the ray, so a cell stops the light only where the ray
+/// passes through the span it occupies.
+fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
+    let delta = [light.at.x - spot.at.x, light.at.y - spot.at.y, light.z - spot.z];
+    // Chebyshev, as the game measures: one step is one tile on the longer axis.
+    // Truncating rather than rounding, because that is what the shader's `i32()`
+    // does to a float.
+    let steps = (delta[0].abs().max(delta[1].abs()) as i32).min(MAX_RAY_STEPS);
+    let mut through = 1.0;
+    for step in 1..steps {
+        let t = step as f32 / steps as f32;
+        let at = [
+            spot.at.x + delta[0] * t,
+            spot.at.y + delta[1] * t,
+            spot.z + delta[2] * t,
+        ];
+        let (x, y) = (at[0].floor() as i32, at[1].floor() as i32);
+        let Some(cell) = occlusion.at(x, y) else {
+            continue;
+        };
+        if at[2] < cell.bottom as f32 || at[2] > cell.top as f32 {
+            continue;
+        }
+        through *= 1.0 - f32::from(cell.opacity) / 255.0;
+        if through <= RAY_CUTOFF {
+            return (0.0, Some((x, y)));
+        }
+    }
+    (through, None)
 }
 
 /// A flame's own place in the flicker, so that two torches on one wall do not

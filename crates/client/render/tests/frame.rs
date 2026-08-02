@@ -18,6 +18,7 @@ use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAt
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, Projection, WorldPoint, Zoom};
 use openshard_client_render::cutaway::Cutaway;
+use openshard_client_render::debug::View;
 use openshard_client_render::geometry::{Rect, Vec2};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
@@ -883,6 +884,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         // Nothing stands in the way: what a wall does is
         // `a_wall_stops_the_light_behind_it`'s claim, not this one's.
         occlusion: Occlusion::EMPTY,
+        view: View::Lit,
     };
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
@@ -1068,6 +1070,7 @@ fn a_wall_stops_the_light_behind_it() {
             ambient: openshard_client_render::light::NIGHT,
             lights: vec![flame],
             occlusion,
+            view: View::Lit,
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         blit.render(
@@ -3090,4 +3093,236 @@ fn dump_a_glowing_sprite() {
         .unwrap_or_else(|| PathBuf::from("glow.ppm"));
     std::fs::write(&path, ppm).expect("writing the frame");
     eprintln!("wrote {}", path.display());
+}
+
+/// How many pixels of the parity frame make one tile.
+///
+/// Eight, so that a 64-pixel frame is eight tiles across — the room in
+/// `scene::room` plus a ring of street around it — and so that the sub-tile
+/// fraction takes eight distinct values down each tile rather than being a
+/// constant the shader could ignore without anybody noticing.
+const PARITY_TILE: u32 = 8;
+
+/// Where the parity frame says a pixel is: a tile, and where in it.
+///
+/// The frame is laid out as a plain grid of tiles rather than as a projection.
+/// Nothing here is testing the projection — what is being compared is one
+/// formula against another, and a synthetic layout means the *expected* value
+/// comes from a tile this function names rather than from a second copy of the
+/// camera's arithmetic.
+fn parity_place(px: u32, py: u32) -> (u16, u16, u16, u16) {
+    let (cx, cy) = openshard_client_render::scene::CENTRE;
+    let tile_x = cx - 4 + (px / PARITY_TILE) as u16;
+    let tile_y = cy - 4 + (py / PARITY_TILE) as u16;
+    // Sixteenths of a tile, which is what a seven-bit fraction holds exactly:
+    // a value the shader divides by 127 and the CPU side divides by 127, so the
+    // two agree on the number and not merely on the intent.
+    let sub_x = (px % PARITY_TILE) as u16 * 16;
+    let sub_y = (py % PARITY_TILE) as u16 * 16;
+    (tile_x, tile_y, sub_x, sub_y)
+}
+
+/// One frame of the parity fixture: a white world, a place attachment this test
+/// wrote, and `scene::room`'s lighting drawn in `view`.
+///
+/// White because the blit multiplies the art by the lighting: with every channel
+/// at one, what comes out *is* the multiplier, clamped — so a mismatch is a
+/// mismatch in the lighting and not in a sprite.
+fn parity_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lighting: &Lighting,
+    width: u32,
+    height: u32,
+) -> Frame {
+    let world = openshard_client_render::blit::world_texture(device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut texels: Vec<u16> = Vec::with_capacity((width * height * 4) as usize);
+    for py in 0..height {
+        for px in 0..width {
+            let (x, y, sub_x, sub_y) = parity_place(px, py);
+            // `(x, y, z + 128, kind | sub)`: the packing `crate::place` documents
+            // and `blit.wgsl` takes apart. Land, at `z = 0`, which is the ground
+            // of the room.
+            texels.extend_from_slice(&[x, y, 128, 1 | sub_x << 2 | sub_y << 9]);
+        }
+    }
+    let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &place,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 8),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let surface = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: openshard_client_render::blit::WORLD_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    // The white world, as a clear rather than as an upload: a render pass that
+    // stores its clear is the one way to fill a texture that is a render target
+    // and not a copy destination.
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("white world"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &world_view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        multiview_mask: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    let mut blit = Blit::new(device, openshard_client_render::blit::WORLD_FORMAT);
+    blit.render(
+        device,
+        queue,
+        &mut encoder,
+        openshard_client_render::blit::Frame {
+            target: &surface_view,
+            world: &world_view,
+            place: &place_view,
+            zoom: Zoom::ONE,
+            rect: ViewportRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+        },
+        lighting,
+    );
+    queue.submit([encoder.finish()]);
+    read_back(device, queue, &surface)
+}
+
+/// The shader and `light::sample` are one formula, pixel for pixel.
+///
+/// The whole reason the CPU copy is allowed to exist. A debugger that answers
+/// "why is this tile lit" from arithmetic that has drifted from the renderer's
+/// is worse than no debugger, because it is believed — and the two cannot be
+/// compared by reading them, one being WGSL. So: a frame whose every pixel names
+/// a tile this test chose, a room with a torch and walls around it, and every
+/// pixel's colour against what `sample` says it should be. See
+/// `docs/lighting.md`, decision 9.
+///
+/// The room is the fixture on purpose: it holds pixels inside the pool, pixels
+/// the wall shadows, pixels outside the radius and the wall's own tiles, so a
+/// divergence in the falloff, in the ray walk or in the exemptions all show up
+/// here.
+#[test]
+fn the_shader_lights_a_frame_as_light_sample_does() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (64, 64);
+    let scene = openshard_client_render::scene::room();
+    let lighting = scene.lighting(0.0);
+    let frame = parity_frame(&device, &queue, &lighting, width, height);
+
+    let mut compared = 0;
+    for py in 0..height {
+        for px in 0..width {
+            let (x, y, sub_x, sub_y) = parity_place(px, py);
+            let spot = openshard_client_render::light::Spot {
+                at: Vec2::new(
+                    f32::from(x) + f32::from(sub_x) / 127.0,
+                    f32::from(y) + f32::from(sub_y) / 127.0,
+                ),
+                z: 0.0,
+            };
+            let sample = openshard_client_render::light::sample(spot, &lighting);
+            let drawn = frame.pixel(px, py);
+            for (channel, want) in sample.multiplier.iter().enumerate() {
+                // The world is white, so the drawn value is the multiplier
+                // clamped and quantised. One step of tolerance: the two sides
+                // round a float to a byte through different hardware, and
+                // nothing this test is about lives inside a 1/255th.
+                let want = (want.min(1.0) * 255.0).round() as i32;
+                let got = i32::from(drawn[channel]);
+                assert!(
+                    (want - got).abs() <= 1,
+                    "at ({px}, {py}), channel {channel}: the shader says {got}, \
+                     `sample` says {want}\n{sample}",
+                );
+            }
+            compared += 1;
+        }
+    }
+    // A sweep that compared nothing would be green for a frame that was never
+    // drawn, and this test's whole value is in having actually run the shader.
+    assert_eq!(compared, (width * height) as usize);
+}
+
+/// A debug view reaches the shader, and draws what it says it draws.
+///
+/// Two things at once, and both are contracts no compiler checks: that
+/// `View`'s numbers are the ones `blit.wgsl` switches on, and that the uniform
+/// block's third header `vec4` lands where the shader looks for it — a field
+/// written at the wrong offset would not fail validation, it would silently be
+/// the light count or a corner of the occlusion grid.
+#[test]
+fn a_debug_view_reaches_the_shader() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (64, 64);
+    let scene = openshard_client_render::scene::room();
+    let mut lighting = scene.lighting(0.0);
+    lighting.view = View::Kind;
+    let frame = parity_frame(&device, &queue, &lighting, width, height);
+
+    // Every pixel of the fixture is land, and the kind view paints land one
+    // colour whatever the lighting did — so a frame that still shows a pool of
+    // firelight means the view never arrived.
+    let land = [
+        (0.20 * 255.0) as i32,
+        (0.65 * 255.0) as i32,
+        (0.30 * 255.0) as i32,
+    ];
+    for (px, py) in [(0, 0), (31, 31), (63, 63), (8, 40)] {
+        let drawn = frame.pixel(px, py);
+        for (channel, want) in land.iter().enumerate() {
+            assert!(
+                (want - i32::from(drawn[channel])).abs() <= 1,
+                "at ({px}, {py}), channel {channel}: {} is not the land colour {want}",
+                drawn[channel],
+            );
+        }
+    }
 }

@@ -65,8 +65,23 @@ struct Lighting {
     // right by construction — the grid is grown by the widest pool's reach, so
     // nothing outside it could shadow anything this frame draws.
     grid: vec4<i32>,
+    // Which picture to draw: `crate::debug::View` in the first component, the
+    // rest padding. Zero is the lit frame and every other value is a diagnostic
+    // drawn from the values this pass lit it with — see `docs/lighting.md`,
+    // decision 8. The numbers are pinned in a test on the Rust side.
+    view: vec4<u32>,
     lights: array<Light, MAX_LIGHTS>,
 };
+
+// `crate::debug::View`, and the same numbers.
+const VIEW_LIT: u32 = 0u;
+const VIEW_PLACE: u32 = 1u;
+const VIEW_KIND: u32 = 2u;
+const VIEW_HEIGHT: u32 = 3u;
+const VIEW_OCCLUDERS: u32 = 4u;
+const VIEW_LIGHT: u32 = 5u;
+const VIEW_SHADOW: u32 = 6u;
+const VIEW_REACH: u32 = 7u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
@@ -142,6 +157,89 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
     return through;
 }
 
+// One of the pass's own values, as a colour.
+//
+// Every argument here is something the lit path already computed — none of these
+// views measures anything of its own, which is what makes them evidence about
+// *this* frame rather than about a second frame drawn like it. See
+// `crate::debug::View` for what each one is for.
+fn debug_color(
+    view: u32,
+    place: vec4<u32>,
+    at: vec3<f32>,
+    sub: vec2<f32>,
+    lit: vec3<f32>,
+    reached: u32,
+    nearest: f32,
+    nearest_through: f32,
+) -> vec3<f32> {
+    if view == VIEW_PLACE {
+        // A checkerboard of tiles with the sub-tile fraction laid over it: the
+        // squares say which tile a pixel claims, and the gradient inside each
+        // one says the fraction is being written at all. A wall reads as one
+        // flat square with its sprite standing out of it — which is exactly the
+        // property the lighting depends on.
+        let checker = f32((place.x + place.y) & 1u) * 0.35 + 0.15;
+        return vec3<f32>(sub.x, sub.y, checker);
+    }
+    if view == VIEW_KIND {
+        let kind = place.w & KIND_MASK;
+        if kind == 1u {
+            return vec3<f32>(0.20, 0.65, 0.30);  // land
+        }
+        if kind == 2u {
+            return vec3<f32>(0.25, 0.45, 1.00);  // a static or an item
+        }
+        return vec3<f32>(1.00, 0.40, 0.15);      // a mobile
+    }
+    if view == VIEW_HEIGHT {
+        // A ramp over the `z` a map actually uses, with a band every tile's
+        // worth of height: the ramp is for reading a slope, the bands are for
+        // counting storeys, and eleven units is one tile — the ratio that
+        // decides whether a cellar's flame reaches the street.
+        let ramp = clamp((at.z + 64.0) / 128.0, 0.0, 1.0);
+        let band = fract(at.z / Z_PER_TILE);
+        return vec3<f32>(ramp, band * 0.8, 1.0 - ramp);
+    }
+    if view == VIEW_OCCLUDERS {
+        let cell = occluder_at(i32(floor(at.x)), i32(floor(at.y)));
+        if cell.w == 0u {
+            return vec3<f32>(0.06, 0.06, 0.10);
+        }
+        let opacity = f32(cell.z) / 255.0;
+        let bottom = f32(cell.x) - 128.0;
+        let top = f32(cell.y) - 128.0;
+        // Red where this pixel's own height is inside the span the tile stops
+        // light at, blue where the tile occludes but not here. The second colour
+        // is the one worth having: a wall of an upper storey standing over an
+        // open street is blue, and a shadow appearing under it would be the bug.
+        if at.z >= bottom && at.z <= top {
+            return vec3<f32>(0.25 + 0.75 * opacity, 0.05, 0.05);
+        }
+        return vec3<f32>(0.05, 0.10, 0.25 + 0.55 * opacity);
+    }
+    if view == VIEW_LIGHT {
+        // The lighting with the art thrown away: the pools' own shapes, where a
+        // seam or a step has nothing to hide behind.
+        return min(lit, vec3<f32>(1.0));
+    }
+    if view == VIEW_SHADOW {
+        // Blue for "no flame reaches here at all", which is a different fact
+        // from "a wall is in the way" and the one people confuse.
+        if nearest >= 1.0 {
+            return vec3<f32>(0.0, 0.0, 0.35);
+        }
+        return vec3<f32>(nearest_through);
+    }
+    // VIEW_REACH: how many flames got through, green through red, and the same
+    // blue as above for none.
+    if reached == 0u {
+        return vec3<f32>(0.0, 0.0, 0.35);
+    }
+    let many = min(f32(reached) / 4.0, 1.0);
+    return vec3<f32>(many, 1.0 - many * 0.7, 0.15);
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Straight through: both sides are `Rgba8Unorm` and this crate never
@@ -156,10 +254,21 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(clamp(in.uv * size, vec2<f32>(0.0), size - vec2<f32>(1.0)));
     let place = textureLoad(place_of, texel, 0);
 
+    let view = lighting.view.x;
+
     // Nothing was drawn here — the cleared background, or the letters over a
     // speaker's head, which are a message and not a thing standing in the
     // street. Neither is lit and neither is dimmed. See `crate::place::Kind`.
+    //
+    // The diagnostics leave it alone too, and deliberately: a view that painted
+    // the background would make the world's own silhouette hard to find, and
+    // every one of these is read by comparing a shape against the picture it
+    // came from. The one exception is the kind view, whose whole subject is
+    // which pixels are nothing.
     if (place.w & KIND_MASK) == KIND_NOTHING {
+        if view == VIEW_KIND {
+            return vec4<f32>(0.0, 0.0, 0.0, color.a);
+        }
         return color;
     }
 
@@ -174,6 +283,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let at = vec3<f32>(f32(place.x) + sub.x, f32(place.y) + sub.y, f32(place.z) - 128.0);
 
     var lit = lighting.ambient.rgb;
+    // What the diagnostics are made of, gathered while the frame is lit rather
+    // than computed a second time: how many flames actually reached this
+    // fragment, and what the *nearest* of them lost on the way. Nearest and not
+    // an average, because a shadow view is read as "is this pixel behind
+    // something", and the flame that answers that is the one lighting it most.
+    var reached = 0u;
+    var nearest = 1.0e9;
+    var nearest_through = 0.0;
     let count = u32(lighting.ambient.w);
     for (var i = 0u; i < count; i = i + 1u) {
         let light = lighting.lights[i];
@@ -190,15 +307,28 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             continue;
         }
         let through = reaches(at, vec3<f32>(to.x, to.y, to.z));
+        // Recorded before the shadow is tested, so that a fragment inside a pool
+        // and behind a wall is *nearest, stopped* rather than indistinguishable
+        // from open ground nothing reaches. That difference is the one the whole
+        // shadow view exists to show.
+        if d < nearest {
+            nearest = d;
+            nearest_through = through;
+        }
         if through <= 0.0 {
             continue;
         }
+        reached = reached + 1u;
         // Linear distance, squared falloff: `1 - d` alone gives a cone with a
         // visible straight edge in the gradient, and an inverse-square law with
         // no cutoff has no radius at all and tints the whole frame. This is the
         // soft pool with a hard end — the shape the reference isometrics draw.
         let fall = 1.0 - d;
         lit = lit + light.color.rgb * (light.color.w * fall * fall * through);
+    }
+
+    if view != VIEW_LIT {
+        return vec4<f32>(debug_color(view, place, at, sub, lit, reached, nearest, nearest_through), color.a);
     }
 
     // Multiplicative, so a flame brightens whatever is under it — ground, wall,

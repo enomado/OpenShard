@@ -123,6 +123,7 @@ use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
 use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::cutaway::Cutaway;
+use openshard_client_render::debug::View;
 use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
@@ -185,6 +186,42 @@ const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16)
 /// either, and a mouse that slips a pixel between two clicks has not stopped
 /// double-clicking.
 const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// How near the body the cursor may sit while the steering button is held
+/// without asking for anything — in **world pixels**, measured from the body's
+/// own drawn pixel by [`heading_between`].
+///
+/// A radius and not a rectangle, because the ask is a bearing and a bearing has
+/// no preferred axis: a square dead zone would let the same distance count on
+/// the diagonal and not on the cardinal.
+///
+/// What it buys is that the sector stops being noise: two pixels of hand
+/// tremor over the character name no direction, but the arithmetic in
+/// [`heading_between`] will happily resolve them to one of eight, and without
+/// this every twitch of a mouse held still over the body re-rolls that choice
+/// and the body wanders off at random.
+///
+/// **Ten and not the 24 the geometry asks for**, which is a deliberate trade
+/// and the one thing here that is a taste. A step is 44 world pixels at its
+/// longest (the on-screen cardinals — see [`on_screen`]) and the cursor may sit
+/// up to 22.5° off the bearing of the direction that wins its sector, so a step
+/// from distance `d` ends nearer the cursor than it began only for
+/// `d > 22 / cos 22.5° ≈ 23.8` — pinned by
+/// `a_step_stops_overshooting_further_out_than_the_dead_zone`. Between this
+/// radius and that one a step can carry the body *past* the cursor and leave it
+/// asking for the way back. What makes the small number the right one anyway is
+/// that a zone half a tile wide is a hole in the picture a player can feel: the
+/// character stops answering the mouse well before the cursor looks like it is
+/// on him. The overshoot is bounded (one tile, and the next ask corrects it)
+/// and the jitter is not, so the radius is set to kill the jitter and no more.
+/// See `docs/client.md`'s backlog: the recompute that would let the overshoot
+/// actually oscillate is missing today, and closing it is where this number
+/// gets re-argued.
+///
+/// Deliberately in world pixels rather than screen ones, so it stays the same
+/// fraction of a tile at every zoom — the projection is what makes a step
+/// overshoot, and the projection is what this is measured in.
+const DEAD_ZONE: f64 = 10.0;
 
 /// How much of the event loop's recent past the frame panel keeps.
 ///
@@ -413,6 +450,7 @@ pub fn run<D: Dial + Send + 'static>(
         // Daylight until asked otherwise: the lighting pass is then exactly the
         // copy the blit has always been.
         night: false,
+        light_view: View::Lit,
         flame_clock: std::time::Duration::ZERO,
         map,
         art,
@@ -804,6 +842,14 @@ struct App {
     /// nothing below it changes — the ambient is already a colour per frame
     /// rather than a constant read by the shader.
     night: bool,
+    /// Which of the lighting pass's own values the blit draws instead of the
+    /// frame. Cycled with F11, and [`View::Lit`] is the picture.
+    ///
+    /// Beside `night` rather than inside the renderer because it is a property of
+    /// the person looking: the world is walked identically whichever view is on,
+    /// and the field is written onto the frame's `Lighting` on its way to the
+    /// blit. `docs/lighting.md`, decision 8.
+    light_view: View,
     /// How long the flames have been burning, in the same span every other clock
     /// in the frame is advanced by.
     ///
@@ -1201,6 +1247,17 @@ impl ApplicationHandler<link::Update> for App {
                     // it to follow — see `App::night`.
                     KeyCode::F10 => {
                         self.night = !self.night;
+                        true
+                    }
+                    // The lighting's own values, one after another — see
+                    // `crate::debug::View`. A key rather than a setting for the
+                    // same reason F10 is one: what is being looked for is a
+                    // difference between two pictures of the same instant, and
+                    // anything that needed a restart would put a different world
+                    // on either side of the comparison.
+                    KeyCode::F11 => {
+                        self.light_view = self.light_view.next();
+                        tracing::info!(view = self.light_view.name(), "lighting view");
                         true
                     }
                     _ => false,
@@ -3284,7 +3341,7 @@ impl App {
         // list the passes above drew from — so a torch that was not drawn casts
         // nothing, and a torch that was is lighting the pixels it is standing
         // in rather than the pixels it stood in last frame.
-        let lighting = match self.night {
+        let mut lighting = match self.night {
             true => light::collect(
                 &self.map,
                 &self.items,
@@ -3296,6 +3353,11 @@ impl App {
             ),
             false => Lighting::NONE,
         };
+        // The view is the looker's, not the world's: a diagnostic draws from the
+        // values this frame was lit with, and in daylight those are the ambient
+        // and the place attachment — which is exactly what a person checking the
+        // place channel wants to see, without having to make it night first.
+        lighting.view = self.light_view;
         window.blit.render(
             &window.device,
             &window.queue,
@@ -3398,9 +3460,15 @@ impl App {
 /// hand the diagonals sectors they have not earned. Those steps come from
 /// [`camera::project`] rather than from constants copied out of it, so there is
 /// one projection in this client and this reads it.
+///
+/// `None` inside [`DEAD_ZONE`] of the body: a cursor that close is not naming a
+/// direction, and answering one anyway is what makes a body with the button
+/// held and the mouse sitting still walk at random — the vector is a couple of
+/// pixels long, so which of the eight sectors it lands in is decided by the
+/// hand's own jitter, and every twitch of the mouse re-rolls it.
 fn heading_between(body: camera::WorldPixel, cursor: camera::WorldPixel) -> Option<Heading> {
     let (dx, dy) = (cursor.x - body.x, cursor.y - body.y);
-    if dx == 0 && dy == 0 {
+    if f64::from(dx * dx + dy * dy) <= DEAD_ZONE * DEAD_ZONE {
         return None;
     }
     let direction = Direction::ALL.into_iter().max_by(|a, b| {
@@ -3503,5 +3571,101 @@ mod tests {
     fn a_cursor_on_the_body_asks_for_nothing() {
         let body = camera::WorldPixel { x: 17, y: -3 };
         assert_eq!(heading_between(body, body), None);
+    }
+
+    /// And neither does one merely *near* it, all the way round: the dead zone
+    /// is a disc, so the same distance means the same thing on the diagonal as
+    /// on the cardinal. This is the bug it exists for — a button held with the
+    /// mouse sitting still over the character used to walk it off in whichever
+    /// of the eight directions the last pixel of hand tremor happened to name.
+    #[test]
+    fn a_cursor_inside_the_dead_zone_asks_for_nothing() {
+        let body = camera::WorldPixel { x: 17, y: -3 };
+        for degrees in 0..360 {
+            let radians = f64::from(degrees).to_radians();
+            let (unit_x, unit_y) = (radians.cos(), radians.sin());
+            // Just inside and just outside, in the same bearing: the pair is
+            // what pins the radius rather than merely the existence of a zone.
+            let at = |distance: f64| camera::WorldPixel {
+                x: body.x + (unit_x * distance).round() as i32,
+                y: body.y + (unit_y * distance).round() as i32,
+            };
+            assert_eq!(
+                heading_between(body, at(DEAD_ZONE - 2.0)),
+                None,
+                "{degrees}° inside the dead zone"
+            );
+            assert!(
+                heading_between(body, at(DEAD_ZONE + 2.0)).is_some(),
+                "{degrees}° outside the dead zone"
+            );
+        }
+    }
+
+    /// Where a step stops overshooting — and that [`DEAD_ZONE`] is inside it,
+    /// which is the trade the constant's own comment argues.
+    ///
+    /// From `22 / cos 22.5°` out, the step this answers with ends *nearer* the
+    /// cursor than the body started, so the ask cannot reverse. Nearer than
+    /// that it can, and the dead zone deliberately does not cover the gap: what
+    /// it exists for is the jitter at a couple of pixels, and a radius half a
+    /// tile wide would be a hole in the picture the player can feel. This test
+    /// is here so the number stays a decision — it is derived from the
+    /// projection, so a tile drawn 2:1 one day moves it, and the constant above
+    /// has to be re-argued rather than silently left behind.
+    ///
+    /// Swept over every bearing, because the worst case is not on a direction's
+    /// own bearing but at the corner of its sector, 22.5° off, where the step
+    /// spends most of its length going sideways.
+    #[test]
+    fn a_step_stops_overshooting_further_out_than_the_dead_zone() {
+        // The longest step the projection draws, halved and opened out by the
+        // widest the cursor can sit off the bearing that wins its sector.
+        let overshoot_free = Direction::ALL
+            .into_iter()
+            .map(|direction| {
+                let (step_x, step_y) = on_screen(direction);
+                f64::from(step_x).hypot(f64::from(step_y))
+            })
+            .fold(0.0_f64, f64::max)
+            / (2.0 * 22.5_f64.to_radians().cos());
+        assert!(
+            DEAD_ZONE < overshoot_free,
+            "the dead zone is the smaller of the two on purpose: {DEAD_ZONE} against {overshoot_free}"
+        );
+
+        let body = camera::WorldPixel { x: 0, y: 0 };
+        // Counted, because a sweep is only worth what it got to.
+        let mut checked = 0;
+        for tenths in 0..3600 {
+            let radians = (f64::from(tenths) / 10.0).to_radians();
+            // Just outside, where a step has the least room to be an
+            // improvement — plus the ¾ of a pixel that rounding a bearing onto
+            // the whole-pixel grid can move it inward, so every bearing is a
+            // case this actually gets to claim something about rather than a
+            // skip.
+            let distance = overshoot_free + 0.75;
+            let (cursor_x, cursor_y) = (radians.cos() * distance, radians.sin() * distance);
+            let cursor = camera::WorldPixel {
+                x: cursor_x.round() as i32,
+                y: cursor_y.round() as i32,
+            };
+            let heading = heading_between(body, cursor).expect("well outside the dead zone");
+            let (step_x, step_y) = on_screen(heading.direction);
+            let after = f64::from(cursor.x - step_x).hypot(f64::from(cursor.y - step_y));
+            let before = f64::from(cursor.x).hypot(f64::from(cursor.y));
+            assert!(before > overshoot_free, "the rounding margin holds at {before}");
+            assert!(
+                after < before,
+                "at {}° the step {:?} ends {after} away, having started {before} away",
+                f64::from(tenths) / 10.0,
+                heading.direction,
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 3600,
+            "every bearing is a case, and every one was checked"
+        );
     }
 }

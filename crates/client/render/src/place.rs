@@ -175,7 +175,15 @@ pub fn texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture 
             // So a frame test can read it back and assert that a wall's pixel
             // names the wall's tile, which is the only way to know the channel
             // is right rather than merely present.
-            | wgpu::TextureUsages::COPY_SRC,
+            | wgpu::TextureUsages::COPY_SRC
+            // And so a test can *write* one: the parity test hands the blit a
+            // frame whose every pixel names a tile it chose, and compares what
+            // comes out with `light::sample`. Uploading the attachment is what
+            // lets that test exist without a client install and without art —
+            // it is about two implementations of one formula, and a rendered
+            // sprite would only be a way of producing places more slowly. See
+            // `docs/lighting.md`, decision 9.
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
 }

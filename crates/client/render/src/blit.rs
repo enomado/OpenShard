@@ -25,9 +25,10 @@ use crate::light::Lighting;
 /// wrongly.
 const MAX_LIGHTS: usize = Lighting::MAX;
 
-/// The uniform block's size: two header `vec4`s — the ambient with the light
-/// count, and the occlusion grid's rectangle — then two per light.
-const LIGHTING_BYTES: u64 = (2 + 2 * MAX_LIGHTS as u64) * 16;
+/// The uniform block's size: three header `vec4`s — the ambient with the light
+/// count, the occlusion grid's rectangle, and which view to draw — then two per
+/// light.
+const LIGHTING_BYTES: u64 = (3 + 2 * MAX_LIGHTS as u64) * 16;
 
 /// Where the world image goes on the surface, in physical pixels.
 ///
@@ -371,6 +372,12 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     for value in [bounds.min_x, bounds.min_y, bounds.width(), bounds.height()] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
+
+    // `view`: which of the pass's own values to draw instead of the frame. Three
+    // words of padding after it, because a uniform block's members are aligned
+    // to sixteen bytes and the array that follows has to start on one.
+    bytes.extend_from_slice(&(lighting.view as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0; 12]);
 
     for light in &lighting.lights[..count] {
         for value in [

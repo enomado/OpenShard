@@ -124,6 +124,75 @@ which is the ratio the projection itself uses. A flame reaches as far up and
 down as it reaches sideways, which is what stops a cellar from lighting the
 street even where nothing occludes.
 
+**8. The debug views are branches of the blit, not a second pipeline.**
+Everything an observer of this pass could want to see is already bound to it:
+which tile a pixel claims and what drew it (the place attachment), what stands
+on that tile (the occlusion grid), how far every flame is and how much of it
+survived the walk (the loop itself). A separate visualiser would be a second copy
+of that unpacking, kept in step with this one by hand, and it would answer about
+*its* copy of the frame rather than about the frame on the screen. So the mode is
+one number in the lighting uniform and a `switch` at the end of `fs_main`, and
+what it shows is the very values the lit picture was made of.
+
+**9. The reasons are computed on the CPU, and the shader is checked against
+them.** "Why is this tile lit" is a list — this flame, that far, inside its
+radius, and the ray died on that cell — and a picture cannot be a list.
+`light::sample` is that list, in Rust, from the same `Lighting` the GPU is given.
+Which makes one formula exist twice, and the failure mode of that is specific and
+nasty: the debugger diverges from the renderer and then lies exactly when it is
+believed. So the shader is not the canon and the CPU is not a sketch — a GPU test
+uploads a synthetic place attachment, runs the real blit over it and asserts the
+two agree per pixel. The parity test is the reason the second implementation is
+allowed to exist at all.
+
+**10. The scenes are built, not loaded.** A room with a torch in it is a `Map`
+of flat ground, a `TileData` where two graphics have flags, and a list of items —
+every one of which this workspace can construct from nothing. That is not a
+concession to the no-client-files rule, it is better than a real house: the wall
+is at a stated tile with a stated height, so a test can say *which* cell should
+have stopped the ray, and a failure prints the room rather than a coordinate.
+`render/src/scene.rs` holds them, and they are ordinary `pub` items rather than
+`#[cfg(test)]` ones because the GPU tests, the playground and a future benchmark
+are all outside the crate.
+
+**11. An open door is not a special case — it is a static that stopped being an
+occluder.** The client is *told* a door opened: the item's graphic changes, and
+the open leaf's graphic is not `NO_SHOOT` (you can shoot through an open door,
+which is the same question decision 4 asks). So the tile leaves the grid on the
+frame the graphic changes, and light fans out through the doorway with nothing in
+this pass knowing what a door is. What that buys is worth stating: the spill is a
+*tile-wide* fan, not a thin blade, because decision 3's occluder is a whole tile
+and the opening therefore is one too.
+
+**12. The sun is a direction; a sunbeam on the floor is the same walk without an
+endpoint.** A flame is a point and the walk between a fragment and it is bounded
+by the radius. Sunlight has no position: every fragment walks the *same*
+direction — an azimuth and an elevation, in tile units — until the ray leaves the
+grid or is stopped, and what it produces is a wall's shadow lying across the
+street and a bright patch on the floor behind a window. That patch is the honest
+form of "sun through a window" in a tile world, and it is where this starts: a
+beam in the air with no lit floor under it looks like a decal.
+
+The beam itself — the visible shaft between the window and the floor — is not
+geometry at all here, because nothing in this renderer draws the air. It is a
+screen-space pass: the sunlit fragments are a mask, blurred along the sun's
+direction *on the screen* and added. That is a second pass and a separate step,
+and it only makes sense once the patch it grows out of is right.
+
+Two things sunlight needs that firelight did not, and both are why it is not
+simply a 65th light:
+
+- **A window has to pass some light.** `occlusion::opacity` is binary today and
+  `WINDOW` is opaque, which is right for line of sight and wrong for a pane at
+  noon. The byte and the shader's multiply are already there; what is missing is
+  the rule, and the rule wants a scene to be tuned against.
+- **The ray is long.** A flame's walk is bounded by nine tiles; the sun's is
+  bounded by how far a wall can throw a shadow, which at a low elevation is the
+  width of the grid. That is a real per-fragment cost on every ground pixel of a
+  daylit frame, where firelight's cost was paid only inside a pool — so the walk
+  needs a cheaper bound (stop as soon as the ray is above the tallest occluder
+  the grid holds) before it is on by default.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -147,6 +216,29 @@ street even where nothing occludes.
       the one it replaces (a fragment outside every radius leaves the loop at
       once, where the old one ran all 64 lights for every pixel of the screen),
       and that claim is worth a measurement rather than an argument.
+- [ ] **7. `light::sample`, the reasons in Rust.** The shader's loop and its ray
+      walk, on the CPU, returning per flame: the distance in tiles, whether the
+      fragment is inside the radius, what survived the walk, and *which cell*
+      stopped it. Unit-tested on its own before anything draws with it.
+- [ ] **8. `render/src/scene.rs`.** The rooms of decision 10 — a closed room, a
+      doorway, a window, a sconce on a wall, a cellar under a street, and the
+      diagonal gap the backlog names — each a `Map`, a `TileData`, an item list
+      and a camera, plus an ASCII diagram of a scene's lighting for the message a
+      failing test prints.
+- [ ] **9. The debug views.** `render/src/debug.rs`'s `View`, one field in the
+      lighting uniform, a `switch` at the end of `blit.wgsl`, and F11 in the app
+      to cycle them: the place, the kind, the height, the occluders, the light
+      alone, the shadow term alone, and how many flames reached a fragment.
+- [ ] **10. The parity test.** A synthetic place attachment uploaded to the GPU,
+      the real blit run over it, and every sampled pixel compared with
+      `light::sample`. No client files and no art — this is about two
+      implementations of one formula, and decision 9 is what it protects.
+- [ ] **11. Sunlight on the floor.** Decision 12's directional term: a sun
+      direction in the uniform, the same grid walk without an endpoint, a wall's
+      shadow on the street and a lit patch behind a window — which needs
+      `occlusion::opacity` to stop being binary for `WINDOW`.
+- [ ] **12. The shaft.** The screen-space pass of decision 12, over the mask the
+      step above produces.
 
 ## Backlog
 
