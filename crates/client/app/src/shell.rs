@@ -50,6 +50,8 @@ use openshard_client_render::follow::Rig;
 use openshard_uofiles::hues::Hues;
 use winit::window::Window;
 
+use crate::desk::{Desk, Tab};
+
 /// What the panels are asked to display.
 ///
 /// A snapshot built by the caller each frame rather than a borrow of the app:
@@ -399,6 +401,14 @@ pub struct Shell {
     typed: String,
     /// The state of the open dialogs — which page, which switches.
     gumps: crate::gump::Windows,
+    /// What the HUD remembers between runs: the tab in front, where the dev
+    /// window sits, whether it is open, and the scale.
+    ///
+    /// Lives here for the same reason `typed` and `gumps` do — it is what the UI
+    /// is holding between frames — and is read back out by [`Shell::desk`] when
+    /// the app has a file to write. The `window` field is the one part of it this
+    /// never touches: the operating system's window is the app's, not the HUD's.
+    desk: Desk,
 }
 
 impl Shell {
@@ -407,8 +417,17 @@ impl Shell {
     /// `format` must be the surface's own: egui picks its fragment entry point
     /// from whether that format is sRGB, and a guess here is the "slightly too
     /// bright" failure in the module docs.
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, window: &Window) -> Self {
+    ///
+    /// `desk` is what the last run left behind — see [`crate::desk`]. The scale
+    /// is applied here rather than in the first frame's layout because
+    /// `zoom_factor` is what egui lays *everything* out against, and a frame at
+    /// the wrong one is a frame the window's saved rect is placed against the
+    /// wrong coordinate system.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, window: &Window, desk: Desk) -> Self {
         let context = egui::Context::default();
+        // On top of the monitor's own density, which `egui_winit::State` is given
+        // below and which nothing here saves.
+        context.set_zoom_factor(desk.zoom.raw());
         let state = egui_winit::State::new(
             context.clone(),
             egui::ViewportId::ROOT,
@@ -442,6 +461,19 @@ impl Shell {
             repaint_after: std::time::Duration::MAX,
             typed: String::new(),
             gumps: crate::gump::Windows::default(),
+            desk,
+        }
+    }
+
+    /// What the HUD would have remembered if the client stopped now.
+    ///
+    /// The `window` field is [`None`] here whatever it was loaded as: only the
+    /// caller knows where the operating system's window ended up, and this is a
+    /// snapshot of the HUD's half of the file rather than of the file.
+    pub fn desk(&self) -> Desk {
+        Desk {
+            window: None,
+            ..self.desk.clone()
         }
     }
 
@@ -497,10 +529,15 @@ impl Shell {
         let mut free = egui::Rect::from_min_size(egui::Pos2::ZERO, self.context.content_rect().size());
         let typed = &mut self.typed;
         let gumps = &mut self.gumps;
+        let desk = &mut self.desk;
         let output = self.context.run_ui(input, |ui| {
-            request = layout(ui, hud, typed, gumps, hues);
+            request = layout(ui, hud, typed, gumps, hues, desk);
             free = ui.available_rect_before_wrap();
         });
+        // The scale lives in egui — Ctrl+`+` is egui's own shortcut and writes it
+        // there — so it is read back rather than tracked, every frame, where it
+        // cannot drift from what the UI was actually laid out at.
+        self.desk.zoom = crate::desk::Zoom::new(self.context.zoom_factor());
         self.state
             .handle_platform_output(window, output.platform_output.clone());
         self.repaint_after = output
@@ -587,6 +624,7 @@ fn layout(
     typed: &mut String,
     gumps: &mut crate::gump::Windows,
     hues: &Hues,
+    desk: &mut Desk,
 ) -> Request {
     let mut request = Request::default();
     // egui 0.35 hands the frame a root `Ui`: panels are shown inside it and
@@ -619,200 +657,271 @@ fn layout(
                     .last()
                     .map_or(0.0, |frame| frame.build().as_secs_f64() * 1_000.0)
             ));
+            // The dev window's own switch, on the one strip that is always
+            // there. A window with a close button and no way back is a window
+            // you close once and then relaunch the client to get back — which is
+            // exactly the state this whole file is here to stop being normal.
+            ui.separator();
+            if ui.selectable_label(desk.open, "dev").clicked() {
+                desk.open = !desk.open;
+            }
+            // The HUD's scale, shown because it is remembered: a client that
+            // reopened at yesterday's zoom and does not say so reads as a client
+            // that is rendering at the wrong size. Ctrl+`+` / Ctrl+`-` /
+            // Ctrl+`0` are egui's own — see `Options::zoom_with_keyboard` — and
+            // this is the readout, not the control.
+            ui.label(format!("{}%", (ui.ctx().zoom_factor() * 100.0).round()));
         });
     });
 
-    egui::Window::new("Camera")
-        .default_pos([16.0, 48.0])
-        .show(&context, |ui| {
-            let eye = hud.camera.eye();
-            egui::Grid::new("camera").num_columns(2).show(ui, |ui| {
-                ui.label("zoom");
-                ui.label(hud.camera.zoom().to_string());
-                ui.end_row();
-                ui.label("eye");
-                ui.label(format!("{}, {} px", eye.x, eye.y));
-                ui.end_row();
-                ui.label("tile");
-                let (x, y) = hud.camera.eye_tile();
-                ui.label(format!("{x}, {y}"));
-                ui.end_row();
-                ui.label("viewport");
-                ui.label(format!("{}x{}", hud.camera.width, hud.camera.height));
-                ui.end_row();
-                ui.label("drawn");
-                // The offscreen image, which is the viewport only at zoom 1 and
-                // is what the GPU's texture limit applies to.
-                ui.label(format!(
-                    "{}x{}",
-                    hud.camera.render_width(),
-                    hud.camera.render_height()
-                ));
-                ui.end_row();
-            });
-            ui.horizontal(|ui| {
-                // The lock is state the player can otherwise only infer from
-                // the camera not moving, which is why it is shown as well as
-                // toggled.
-                let mut locked = hud.locked;
-                if ui.checkbox(&mut locked, "follow the body").changed() {
-                    request.relock = locked;
-                    request.unlock = !locked;
-                }
-                if ui.button("return (Home)").clicked() {
-                    request.relock = true;
-                    request.unlock = false;
-                }
-            });
-        });
-
-    egui::Window::new("Rig")
-        .default_pos([16.0, 200.0])
-        .default_width(320.0)
-        .show(&context, |ui| {
-            rig_panel(ui, hud, &mut request);
-        });
-
-    egui::Window::new("Frames")
-        .default_pos([16.0, 220.0])
-        .default_width(320.0)
-        .show(&context, |ui| {
-            frames_panel(ui, hud);
-        });
-
-    egui::Window::new("World")
-        .default_pos([16.0, 240.0])
-        .show(&context, |ui| {
-            ui.label(format!(
-                "{} mobiles, {} ground items",
-                hud.mobiles.len(),
-                hud.items.len()
-            ));
-            egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                for (serial, body, at) in &hud.mobiles {
-                    ui.label(format!(
-                        "0x{serial:08X}  body {body}  {}, {}, {}",
-                        at.x, at.y, at.z
-                    ));
-                }
-                if !hud.items.is_empty() {
-                    ui.separator();
-                }
-                for (serial, graphic, at) in &hud.items {
-                    ui.label(format!(
-                        "0x{serial:08X}  item {graphic}  {}, {}, {}",
-                        at.x, at.y, at.z
-                    ));
-                }
-            });
-        });
-
-    egui::Window::new("Tile")
-        .default_pos([16.0, 520.0])
-        .show(&context, |ui| {
-            let mut show = hud.show_terrain;
-            if ui
-                .checkbox(&mut show, "terrain — walkable green, blocked red, route orange")
-                .changed()
-            {
-                request.show_terrain = Some(show);
-            }
-            match &hud.terrain {
-                Some(terrain) => {
-                    ui.label(format!(
-                        "{} open, {} blocked, route {} steps",
-                        terrain.open.len(),
-                        terrain.blocked.len(),
-                        terrain.route.len().saturating_sub(1),
-                    ));
-                }
-                // The counts are the overlay's own companion: an empty picture
-                // is a client that found nothing and a client that asked
-                // nothing, and those look identical on the ground.
-                None => {
-                    ui.label("off");
+    // One window, five tabs. Five floating windows is five things to place, and
+    // — with nothing saving them — five things to place again on every launch;
+    // what a dev HUD is for is reading, and arranging it was most of the cost of
+    // using it. The panels themselves are untouched: each tab is the body one of
+    // those windows had, so this is a change of furniture and not of content.
+    let mut open = desk.open;
+    let window = egui::Window::new("Dev").open(&mut open);
+    // Where it was left, and a first run's defaults when it has never been
+    // placed. `default_*` and not `current_*`: after the first frame egui's own
+    // memory is what moves the window, and forcing the saved rect every frame
+    // would make it undraggable.
+    let window = match desk.panel {
+        Some(panel) => window
+            .default_pos([panel.x, panel.y])
+            .default_size([panel.width, panel.height]),
+        None => window.default_pos([16.0, 48.0]).default_size([360.0, 420.0]),
+    };
+    let placed = window.show(&context, |ui| {
+        ui.horizontal(|ui| {
+            for tab in Tab::ALL {
+                if ui.selectable_label(desk.tab == tab, tab.title()).clicked() {
+                    desk.tab = tab;
                 }
             }
-            ui.separator();
-            let mut boxes = hud.show_occluders;
-            if ui
-                .checkbox(
-                    &mut boxes,
-                    "occluders — what stops light above your feet: wall red, pane cyan",
-                )
-                .changed()
-            {
-                request.show_occluders = Some(boxes);
-            }
-            match &hud.occluders {
-                // Both numbers, and the second is the one the picture does not
-                // show: an empty picture is a grid with nothing in it and a grid
-                // that was never built, and on screen those two are one thing —
-                // the same reason the terrain overlay has counts. See [`stands`]
-                // for what the second number is made of.
-                Some(occluders) => {
-                    let total = occluders.boxes().count();
-                    let drawn = occluders
-                        .boxes()
-                        .filter(|(_, _, cell)| stands(cell, hud.position.z))
-                        .count();
-                    ui.label(format!(
-                        "{drawn} boxes above your feet, {} below and not drawn",
-                        total - drawn
-                    ));
-                }
-                None => {
-                    ui.label("off");
-                }
-            }
-            ui.separator();
-            // The two axes of the highlight, side by side because they are read
-            // together: what may be lit, and how an item says it is.
-            ui.horizontal(|ui| {
-                ui.label("highlight");
-                for (target, name) in [
-                    (HighlightTarget::Auto, "item, else tile"),
-                    (HighlightTarget::Items, "items"),
-                    (HighlightTarget::Tiles, "tiles"),
-                ] {
-                    if ui.selectable_label(hud.highlight == target, name).clicked() {
-                        request.highlight = Some(target);
-                    }
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("item shows as");
-                for (style, name) in [
-                    (HighlightStyle::Hue, "hue"),
-                    (HighlightStyle::Outline, "outline"),
-                    (HighlightStyle::Both, "both"),
-                ] {
-                    if ui.selectable_label(hud.highlight_style == style, name).clicked() {
-                        request.highlight_style = Some(style);
-                    }
-                }
-            });
-            ui.separator();
-            ui.label(format!(
-                "under cursor — mobile {}, item {}",
-                match hud.lit_mobile {
-                    Some(index) => index.to_string(),
-                    None => "—".to_string(),
-                },
-                match hud.lit_item {
-                    Some(index) => index.to_string(),
-                    None => "—".to_string(),
-                },
-            ));
-            ui.label("hover — glows yellow, moves with the cursor");
-            tile_panel(ui, hud.hover.as_ref());
-            ui.separator();
-            ui.label("selected — glows cyan, click a tile to hold it here");
-            tile_panel(ui, hud.selected.as_ref());
         });
+        ui.separator();
+        // Scrolled, because the tabs are of very different heights — the rig's
+        // sliders and the tile's overlays do not fit what the camera's six rows
+        // want the window to be, and a window sized to the tallest of them is a
+        // window mostly full of nothing on the other four.
+        // One scroll offset *per tab*, which is what `id_salt` buys: without it
+        // all five share egui's one id, and scrolling the world list down leaves
+        // the camera tab scrolled to somewhere it has no rows for.
+        egui::ScrollArea::vertical()
+            .id_salt(desk.tab.title())
+            .show(ui, |ui| match desk.tab {
+                Tab::Camera => camera_panel(ui, hud, &mut request),
+                Tab::Rig => rig_panel(ui, hud, &mut request),
+                Tab::Frames => frames_panel(ui, hud),
+                Tab::World => world_panel(ui, hud),
+                Tab::Tile => tile_tab(ui, hud, &mut request),
+            });
+    });
+    desk.open = open;
+    // What egui made of it, read back after the frame it was laid out in: this
+    // is the rect that goes in the file, and it is the one the window is
+    // actually at rather than the one it was asked for.
+    if let Some(placed) = placed {
+        let rect = placed.response.rect;
+        desk.panel = Some(crate::desk::Panel {
+            x: rect.min.x,
+            y: rect.min.y,
+            width: rect.width(),
+            height: rect.height(),
+        });
+    }
 
     request.say = speech_line(root, hud, typed);
 
+    overlays(root, hud);
+
+    // Over everything, and last: a dialog the shard opened is the one thing on
+    // screen that is waiting for an answer.
+    request.gump = gumps.show(&context, &hud.gumps, hues);
+
+    request
+}
+
+/// Where the eye is, what it is looking at, and whether it is following.
+fn camera_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
+    let eye = hud.camera.eye();
+    egui::Grid::new("camera").num_columns(2).show(ui, |ui| {
+        ui.label("zoom");
+        ui.label(hud.camera.zoom().to_string());
+        ui.end_row();
+        ui.label("eye");
+        ui.label(format!("{}, {} px", eye.x, eye.y));
+        ui.end_row();
+        ui.label("tile");
+        let (x, y) = hud.camera.eye_tile();
+        ui.label(format!("{x}, {y}"));
+        ui.end_row();
+        ui.label("viewport");
+        ui.label(format!("{}x{}", hud.camera.width, hud.camera.height));
+        ui.end_row();
+        ui.label("drawn");
+        // The offscreen image, which is the viewport only at zoom 1 and
+        // is what the GPU's texture limit applies to.
+        ui.label(format!(
+            "{}x{}",
+            hud.camera.render_width(),
+            hud.camera.render_height()
+        ));
+        ui.end_row();
+    });
+    ui.horizontal(|ui| {
+        // The lock is state the player can otherwise only infer from
+        // the camera not moving, which is why it is shown as well as
+        // toggled.
+        let mut locked = hud.locked;
+        if ui.checkbox(&mut locked, "follow the body").changed() {
+            request.relock = locked;
+            request.unlock = !locked;
+        }
+        if ui.button("return (Home)").clicked() {
+            request.relock = true;
+            request.unlock = false;
+        }
+    });
+}
+
+/// What the view has decoded, with the serials the renderer drops.
+fn world_panel(ui: &mut egui::Ui, hud: &Hud) {
+    ui.label(format!(
+        "{} mobiles, {} ground items",
+        hud.mobiles.len(),
+        hud.items.len()
+    ));
+    for (serial, body, at) in &hud.mobiles {
+        ui.label(format!(
+            "0x{serial:08X}  body {body}  {}, {}, {}",
+            at.x, at.y, at.z
+        ));
+    }
+    if !hud.items.is_empty() {
+        ui.separator();
+    }
+    for (serial, graphic, at) in &hud.items {
+        ui.label(format!(
+            "0x{serial:08X}  item {graphic}  {}, {}, {}",
+            at.x, at.y, at.z
+        ));
+    }
+}
+
+/// The overlays over the ground, what the cursor is on, and what a click holds.
+///
+/// Named for the tab and not for [`tile_panel`], which is the readout of *one*
+/// tile that this calls twice — for what is hovered and for what is selected.
+fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
+    let mut show = hud.show_terrain;
+    if ui
+        .checkbox(&mut show, "terrain — walkable green, blocked red, route orange")
+        .changed()
+    {
+        request.show_terrain = Some(show);
+    }
+    match &hud.terrain {
+        Some(terrain) => {
+            ui.label(format!(
+                "{} open, {} blocked, route {} steps",
+                terrain.open.len(),
+                terrain.blocked.len(),
+                terrain.route.len().saturating_sub(1),
+            ));
+        }
+        // The counts are the overlay's own companion: an empty picture
+        // is a client that found nothing and a client that asked
+        // nothing, and those look identical on the ground.
+        None => {
+            ui.label("off");
+        }
+    }
+    ui.separator();
+    let mut boxes = hud.show_occluders;
+    if ui
+        .checkbox(
+            &mut boxes,
+            "occluders — what stops light above your feet: wall red, pane cyan",
+        )
+        .changed()
+    {
+        request.show_occluders = Some(boxes);
+    }
+    match &hud.occluders {
+        // Both numbers, and the second is the one the picture does not
+        // show: an empty picture is a grid with nothing in it and a grid
+        // that was never built, and on screen those two are one thing —
+        // the same reason the terrain overlay has counts. See [`stands`]
+        // for what the second number is made of.
+        Some(occluders) => {
+            let total = occluders.boxes().count();
+            let drawn = occluders
+                .boxes()
+                .filter(|(_, _, cell)| stands(cell, hud.position.z))
+                .count();
+            ui.label(format!(
+                "{drawn} boxes above your feet, {} below and not drawn",
+                total - drawn
+            ));
+        }
+        None => {
+            ui.label("off");
+        }
+    }
+    ui.separator();
+    // The two axes of the highlight, side by side because they are read
+    // together: what may be lit, and how an item says it is.
+    ui.horizontal(|ui| {
+        ui.label("highlight");
+        for (target, name) in [
+            (HighlightTarget::Auto, "item, else tile"),
+            (HighlightTarget::Items, "items"),
+            (HighlightTarget::Tiles, "tiles"),
+        ] {
+            if ui.selectable_label(hud.highlight == target, name).clicked() {
+                request.highlight = Some(target);
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("item shows as");
+        for (style, name) in [
+            (HighlightStyle::Hue, "hue"),
+            (HighlightStyle::Outline, "outline"),
+            (HighlightStyle::Both, "both"),
+        ] {
+            if ui.selectable_label(hud.highlight_style == style, name).clicked() {
+                request.highlight_style = Some(style);
+            }
+        }
+    });
+    ui.separator();
+    ui.label(format!(
+        "under cursor — mobile {}, item {}",
+        match hud.lit_mobile {
+            Some(index) => index.to_string(),
+            None => "—".to_string(),
+        },
+        match hud.lit_item {
+            Some(index) => index.to_string(),
+            None => "—".to_string(),
+        },
+    ));
+    ui.label("hover — glows yellow, moves with the cursor");
+    tile_panel(ui, hud.hover.as_ref());
+    ui.separator();
+    ui.label("selected — glows cyan, click a tile to hold it here");
+    tile_panel(ui, hud.selected.as_ref());
+}
+
+/// The three things drawn *on* the world rather than beside it: the terrain
+/// wash, the occluder boxes, and the tile markers.
+///
+/// Taken out of [`layout`] with the rest of the panels' bodies, and for the same
+/// reason — what is left in `layout` is then the arrangement, one screenful of
+/// it, and nothing else.
+fn overlays(root: &mut egui::Ui, hud: &Hud) {
     // Every panel has claimed its edge by now, so what is left of the root `Ui`
     // is the world's own rectangle — the very rect `Shell::run` reads back a
     // moment later and hands the camera. Read *here*, at the foot of the layout
@@ -887,12 +996,6 @@ fn layout(
             egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 120)),
         );
     }
-
-    // Over everything, and last: a dialog the shard opened is the one thing on
-    // screen that is waiting for an answer.
-    request.gump = gumps.show(&context, &hud.gumps, hues);
-
-    request
 }
 
 /// The scope: what the eye is doing, what it is doing it with, and a scenario

@@ -56,6 +56,7 @@ use std::time::Instant;
 
 mod clutter;
 mod crowd;
+mod desk;
 /// The walk, held against an oracle. Tests only — see its module docs.
 #[cfg(test)]
 mod dst;
@@ -493,6 +494,17 @@ pub fn run<D: Dial + Send + 'static>(
         view: None,
         connection: String::from("offline"),
         shell: None,
+        // What the last run left. A file that cannot be read is worth saying so
+        // about and not worth refusing to start over: the defaults are a working
+        // HUD, and the alternative is a client that will not open because of
+        // where a window used to be.
+        desk: match desk::Desk::load(std::path::Path::new(desk::PATH)) {
+            Ok(desk) => desk,
+            Err(error) => {
+                eprintln!("{error} — starting with the default HUD layout");
+                desk::Desk::default()
+            }
+        },
         link,
         facet_checked: false,
         steer: {
@@ -966,6 +978,14 @@ struct App {
     connection: String,
     /// The dev HUD, once there is a window to put it on.
     shell: Option<shell::Shell>,
+    /// What the HUD looked like when the client last closed: which tab, where
+    /// the dev window and the operating system's window sat, and at what scale.
+    ///
+    /// Read once at startup and handed to the [`shell::Shell`] when there is a
+    /// window; written back in [`App::exiting`]. Held here rather than in the
+    /// shell because half of it — the frame — is the *platform's* window, which
+    /// the HUD does not own and cannot ask about.
+    desk: desk::Desk,
     /// The shard, if this run logged in to one.
     ///
     /// `None` is the offline viewer, and it is what the keyboard asks: a step
@@ -1544,6 +1564,40 @@ impl ApplicationHandler<link::Update> for App {
             None => deadline,
         };
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+    }
+
+    /// The loop is over: write down what the HUD looked like.
+    ///
+    /// Here and not on `CloseRequested`, because that is one of several ways out
+    /// — `event_loop.exit()` is also called from a startup failure and from the
+    /// link — and this is the one place all of them pass through. A client that
+    /// is killed writes nothing, which is the honest behaviour: the file says
+    /// where things were when the client was last *closed*.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The HUD's half — tab, panel, scale — and then the platform's, which
+        // only the window itself can answer for.
+        if let Some(shell) = self.shell.as_ref() {
+            self.desk = shell.desk();
+        }
+        if let Some(screen) = self.window.as_ref() {
+            let size = screen.window.inner_size();
+            // A window whose position the platform will not report — Wayland
+            // does not, by design — keeps whatever the file already said rather
+            // than being moved to the origin. Half a frame restored is better
+            // than a window that walks to the top-left corner every launch.
+            let position = screen.window.outer_position().ok();
+            let previous = self.desk.window;
+            self.desk.window = Some(desk::Frame {
+                x: position.map_or_else(|| previous.map_or(0, |frame| frame.x), |at| at.x),
+                y: position.map_or_else(|| previous.map_or(0, |frame| frame.y), |at| at.y),
+                width: size.width.max(1),
+                height: size.height.max(1),
+                maximized: screen.window.is_maximized(),
+            });
+        }
+        if let Err(error) = self.desk.save(std::path::Path::new(desk::PATH)) {
+            eprintln!("{error}");
+        }
     }
 }
 
@@ -2781,17 +2835,44 @@ impl App {
         // a viewport floor, not a window request) so the window opens large on
         // whatever screen it is on.
         let attributes = Window::default_attributes().with_title("OpenShard");
-        let attributes = match event_loop.primary_monitor().map(|monitor| monitor.size()) {
-            Some(size) if size.width > 0 && size.height > 0 => {
-                attributes.with_inner_size(winit::dpi::PhysicalSize::new(
-                    (size.width as f32 * 0.9) as u32,
-                    (size.height as f32 * 0.9) as u32,
+        // Where the last run left it, when there was one and when it still names
+        // a screen that exists. The monitors are asked *now*, from the event
+        // loop, because a laptop undocked since the last run has a saved frame
+        // that opens the window on a monitor nobody has — offscreen, which looks
+        // exactly like a client that failed to start. See `Desk::fits`.
+        let monitors: Vec<_> = event_loop
+            .available_monitors()
+            .map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                (position.x, position.y, size.width, size.height)
+            })
+            .collect();
+        let restored = self
+            .desk
+            .window
+            .filter(|frame| desk::Desk::fits(frame, &monitors));
+        let attributes = match restored {
+            Some(frame) => attributes
+                .with_position(winit::dpi::PhysicalPosition::new(frame.x, frame.y))
+                .with_inner_size(winit::dpi::PhysicalSize::new(
+                    frame.width.max(1),
+                    frame.height.max(1),
                 ))
-            }
-            _ => attributes.with_inner_size(winit::dpi::LogicalSize::new(
-                self.control.camera().width,
-                self.control.camera().height,
-            )),
+                .with_maximized(frame.maximized),
+            // No saved frame: the first run, or one whose screen is gone.
+            None => match event_loop.primary_monitor().map(|monitor| monitor.size()) {
+                Some(size) if size.width > 0 && size.height > 0 => {
+                    attributes.with_inner_size(winit::dpi::PhysicalSize::new(
+                        (size.width as f32 * 0.9) as u32,
+                        (size.height as f32 * 0.9) as u32,
+                    ))
+                }
+                _ => attributes.with_inner_size(winit::dpi::LogicalSize::new(
+                    self.control.camera().width,
+                    self.control.camera().height,
+                )),
+            },
         };
         let window = Arc::new(
             event_loop
@@ -2957,7 +3038,7 @@ impl App {
         // The HUD, with the surface's own format: egui picks its fragment entry
         // point from whether that format is sRGB, and this one deliberately is
         // not.
-        self.shell = Some(shell::Shell::new(&device, format, &window));
+        self.shell = Some(shell::Shell::new(&device, format, &window, self.desk.clone()));
 
         Ok(Screen {
             window,

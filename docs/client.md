@@ -2880,3 +2880,52 @@ What was found on the way and left undone:
   converter now does, at generation time, which is the right place for data that
   ships. It is not the only door: `op_spawn_mobile` takes a number from a script,
   and a typo there arrives in the world exactly as this one did.
+
+## The dev HUD, and what it remembers
+
+The five floating panels — Camera, Rig, Frames, World, Tile — are **one window
+with five tabs**, and what the HUD looked like is written to `client_ui.toml`
+beside `openshard.toml` when the client closes. See
+`crates/client/app/src/desk.rs`.
+
+This is worth writing down because the *absence* looked like a bug and was not
+one: nothing was failing to save, there was nobody to save. `eframe` is the crate
+that persists `egui::Memory` and the window's geometry, and this client is bare
+`egui` on `winit` and `wgpu` — deliberately, because it owns its own event loop
+and its own surface. So the saving is ours, and it is a named struct rather than
+a serialized `egui::Memory`: the latter carries every widget id egui happened to
+allocate, in a format whose meaning is egui's version, and an upgrade restores
+nonsense or nothing.
+
+What is remembered: the tab in front, whether the window is open, where it sits,
+egui's `zoom_factor`, and the operating system's window — outer position, inner
+size, maximized. A saved frame is only restored if its top-left corner still
+lands inside some monitor: a laptop undocked since the last run has a saved frame
+that opens the window offscreen, which looks exactly like a client that failed to
+start.
+
+The scale is *egui's* zoom and not the monitor's `scale_factor`, which stays the
+platform's business — a file that pinned it would fight the compositor on the
+next screen. Ctrl+`+` / Ctrl+`-` / Ctrl+`0` are egui's own shortcuts
+(`Options::zoom_with_keyboard`); the status strip shows the number because a
+client that reopened at yesterday's zoom and does not say so reads as one that is
+rendering at the wrong size.
+
+What was found on the way and left undone:
+
+- **The gump windows are not remembered.** `gump::Windows` places a shard's
+  dialogs at egui defaults every run, and the same file could hold them — but a
+  gump is the *server's* window and keyed by a serial that does not survive a
+  logout, so what a saved position is keyed by is a real question and not a
+  field. It waits for M4, which decides whether gumps are egui at all.
+- **Nothing is written until the client exits cleanly.** A crash or a kill loses
+  the layout. A debounced save on change is the fix and costs a timer; a file
+  written every frame is not.
+- **The world's TTF text does not follow the HUD's zoom, by design** —
+  `TtfAtlas` bakes one pixel size at startup from the monitor's `scale_factor`.
+  That is the right split today (the HUD's scale is not the world's), but if the
+  world ever wants a zoom of its own it is an atlas rebuild and not a parameter.
+- **`shell.rs` is 1.8k lines** and the panels are now cleanly separable — one
+  function per tab, plus `overlays`. A `shell/` module with a file per tab is the
+  obvious next split, and the file is close enough to the ~2k line rule that it
+  should happen before the next panel is added.
