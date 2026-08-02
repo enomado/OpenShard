@@ -111,11 +111,39 @@ const Z_PER_TILE: f32 = 11.0;
 
 // How many cells of the grid one shadow ray may look at.
 //
-// A pool reaches nine tiles at the widest (`light::CAMPFIRE`), and a fragment
-// further away than its radius never gets here at all — so this is a bound that
-// is never actually reached, and it exists so that a loop over data cannot be
-// made unbounded by a radius somebody widens later.
-const MAX_RAY_STEPS: i32 = 16;
+// A pool reaches nine tiles at the widest (`light::CAMPFIRE`), and the walk
+// below visits every cell the ray crosses rather than a fixed number of samples
+// — which on a diagonal is both axes' worth, so the bound is twice the radius
+// and a little. A fragment further away than the radius never gets here at all;
+// this exists so that a loop over data cannot be made unbounded by a radius
+// somebody widens later. `light::MAX_RAY_STEPS`, and the two are one number.
+const MAX_RAY_STEPS: i32 = 24;
+
+// How far a ray must travel inside an occluding cell for that cell to stop all
+// it can, in tiles.
+//
+// The walk knows how long the ray's crossing of each cell is, and using it is
+// what makes a shadow's edge a gradient instead of a step: a ray that clips the
+// corner of a wall tile passes almost all of its light, and one that crosses the
+// tile squarely passes none. Without it a cell is all or nothing and the edge of
+// every shadow lands exactly on a tile boundary — which is the blockiness the
+// pools were accused of, arriving from the second of its three directions.
+//
+// It is not one length, though, because a shadow's edge is not equally soft
+// everywhere: a flame is a body rather than a point, so an occluder close to the
+// thing it shadows draws a sharp edge and a distant one draws a wide penumbra.
+// The width of that penumbra is the flame's own size times `t / (1 - t)`, where
+// `t` is how far along the ray the occluder is from the *lit* end — the ordinary
+// similar-triangles answer, and it costs one division rather than a second ray.
+// A wall a fragment is standing against is crisp; the doorpost four tiles away
+// is soft, which is what a torch in a room actually looks like.
+//
+// `FLAME_SPREAD` is that size, in tiles, and the bounds keep the ends of the
+// ratio finite. Invented here, like `occlusion::PANE` — no client file has a
+// number for how big a flame is.
+const FLAME_SPREAD: f32 = 1.0;
+const SOFT_CROSSING_MIN: f32 = 0.05;
+const SOFT_CROSSING_MAX: f32 = 0.7;
 
 // What stands on one tile, or all zeros for open ground and for anything
 // outside the grid.
@@ -129,38 +157,109 @@ fn occluder_at(x: i32, y: i32) -> vec4<u32> {
 
 // How much of a flame reaches a tile: 1 for nothing in the way, 0 for a wall.
 //
-// A walk of the cells between the two, Chebyshev-stepped — the same distance the
-// game itself measures in, so one step moves one tile on the longer axis and the
-// walk visits every tile the ray crosses on that axis. Positions are fractional
-// and a cell is the *floor* of one, which is what makes the endpoints exactly
-// the two tiles the ray starts and ends in. Both ends are left out:
-// the flame's own tile must not shadow it (a sconce stands *on* a wall), and the
-// tile being lit must not shadow itself, which is what keeps a wall's own face
-// the brightest thing near a torch.
+// A grid traversal of the cells between the two — every cell the segment
+// actually crosses, in order, with the length of each crossing. Not a fixed
+// number of samples along the ray: at two tiles apart that was one interior
+// point, so whether a fragment was in shadow was decided at the resolution of a
+// tile and every shadow's edge was a staircase.
+//
+// Both end cells are left out: the flame's own tile must not shadow it (a sconce
+// stands *on* a wall), and the tile being lit must not shadow itself, which is
+// what keeps a wall's own face the brightest thing near a torch.
 //
 // The height is interpolated along the ray, so a cell only stops the light where
-// the ray actually passes through the span it occupies. That is what keeps a
-// cellar's wall out of the street above it.
+// the ray actually passes through the span it occupies — and it is the *share*
+// of the crossing that is inside that span which counts, so a ray grazing the
+// top of a wall is dimmed rather than switched. That is what keeps a cellar's
+// wall out of the street above it, without a step where the two meet.
 fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
     let delta = flame - lit;
-    let steps = min(i32(max(abs(delta.x), abs(delta.y))), MAX_RAY_STEPS);
+    let ground = length(delta.xy);
+    if ground < 1.0e-6 {
+        // Straight up or down: the only cells on the line are the two exempt
+        // ones, and there is no direction to walk in.
+        return 1.0;
+    }
+    let first = vec2<i32>(i32(floor(lit.x)), i32(floor(lit.y)));
+    let last = vec2<i32>(i32(floor(flame.x)), i32(floor(flame.y)));
+    var cell = first;
+    // Which way each axis steps, how much of the whole segment one tile of it is
+    // worth, and how far along the segment the first boundary is. An axis the
+    // ray does not move along never reaches its boundary, which is what the
+    // enormous `t` says.
+    let toward = vec2<i32>(select(-1, 1, delta.x >= 0.0), select(-1, 1, delta.y >= 0.0));
+    var per_tile = vec2<f32>(1.0e30, 1.0e30);
+    var boundary = vec2<f32>(1.0e30, 1.0e30);
+    if abs(delta.x) > 1.0e-6 {
+        per_tile.x = 1.0 / abs(delta.x);
+        let ahead = select(lit.x - floor(lit.x), floor(lit.x) + 1.0 - lit.x, delta.x >= 0.0);
+        boundary.x = ahead * per_tile.x;
+    }
+    if abs(delta.y) > 1.0e-6 {
+        per_tile.y = 1.0 / abs(delta.y);
+        let ahead = select(lit.y - floor(lit.y), floor(lit.y) + 1.0 - lit.y, delta.y >= 0.0);
+        boundary.y = ahead * per_tile.y;
+    }
+
+    var entered = 0.0;
     var through = 1.0;
-    for (var i = 1; i < steps; i = i + 1) {
-        let t = f32(i) / f32(steps);
-        let at = lit + delta * t;
-        let cell = occluder_at(i32(floor(at.x)), i32(floor(at.y)));
-        if cell.w == 0u {
-            continue;
-        }
-        let bottom = f32(cell.x) - 128.0;
-        let top = f32(cell.y) - 128.0;
-        if at.z >= bottom && at.z <= top {
-            through = through * (1.0 - f32(cell.z) / 255.0);
-            if through <= 0.004 {
-                // Under a byte's worth of light: nothing further can matter,
-                // and a wall is the common case.
-                return 0.0;
+    for (var i = 0; i < MAX_RAY_STEPS; i = i + 1) {
+        let next = min(boundary.x, boundary.y);
+        let leaves = min(next, 1.0);
+        let exempt = (cell.x == first.x && cell.y == first.y)
+            || (cell.x == last.x && cell.y == last.y);
+        if !exempt {
+            let stands = occluder_at(cell.x, cell.y);
+            if stands.w != 0u {
+                let low = f32(stands.x) - 128.0;
+                let high = f32(stands.y) - 128.0;
+                // The ray's own height over this crossing, against the span the
+                // tile occupies: what counts is how much of the two overlap.
+                let entering = lit.z + delta.z * entered;
+                let leaving = lit.z + delta.z * leaves;
+                let bottom = min(entering, leaving);
+                let top = max(entering, leaving);
+                var share = 0.0;
+                if top - bottom > 1.0e-6 {
+                    share = max(0.0, min(top, high) - max(bottom, low)) / (top - bottom);
+                } else if bottom >= low && bottom <= high {
+                    // A level ray: it is inside the span or it is not, and there
+                    // is no length of it to take a share of.
+                    share = 1.0;
+                }
+                let crossed = (leaves - entered) * ground * share;
+                // How soft this cell's own edge is: the penumbra of an occluder
+                // this far along the ray. See `FLAME_SPREAD`.
+                let middle = (entered + leaves) * 0.5;
+                let soft = clamp(
+                    FLAME_SPREAD * middle / max(1.0 - middle, 1.0e-3),
+                    SOFT_CROSSING_MIN,
+                    SOFT_CROSSING_MAX,
+                );
+                let stopped = f32(stands.z) / 255.0 * clamp(crossed / soft, 0.0, 1.0);
+                through = through * (1.0 - stopped);
+                if through <= 0.004 {
+                    // Under a byte's worth of light: nothing further can matter,
+                    // and a wall is the common case.
+                    return 0.0;
+                }
             }
+        }
+        if next >= 1.0 {
+            break;
+        }
+        entered = next;
+        // Into the neighbour across whichever boundary is nearer. A tie is a
+        // corner: either order visits both cells, and the one taken second is
+        // crossed over a zero length and stops nothing — which is the diagonal
+        // gap `docs/lighting.md` names, kept deliberately rather than closed by
+        // an accident of which comparison ran first.
+        if boundary.x < boundary.y {
+            cell.x = cell.x + toward.x;
+            boundary.x = boundary.x + per_tile.x;
+        } else {
+            cell.y = cell.y + toward.y;
+            boundary.y = boundary.y + per_tile.y;
         }
     }
     return through;

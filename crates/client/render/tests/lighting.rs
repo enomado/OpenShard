@@ -79,6 +79,57 @@ fn a_shut_room_keeps_its_light_inside() {
     }
 }
 
+/// The edge of a shadow is a gradient, not a step at a tile boundary.
+///
+/// A fully opaque wall is what makes this an oracle rather than an impression:
+/// while a cell was all-or-nothing, the only two answers a ray could come back
+/// with were `1.0` and `0.0`, whatever the fraction of the tile a fragment was
+/// at — so a sweep across the edge of the spill from an open door stepped from
+/// lit to black between two neighbouring samples, and every shadow in the frame
+/// had a tile's straight side. What the walk spends now is the *length* of its
+/// crossing, so a ray clipping the doorpost's corner keeps most of its light and
+/// the sweep passes through the values in between.
+///
+/// Across the spill and not along it, at a tenth of a tile: the sweep is over
+/// what a wall did to the ray, so it reads `Reach::through` — the shadow term
+/// alone — rather than the brightness, which falls off with distance and would
+/// show a gradient even if every ray were binary.
+#[test]
+fn the_edge_of_a_shadow_passes_through_the_values_in_between() {
+    let scene = scene::room_with_open_door();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+
+    // A line across the fan of light on the ground two tiles south of the
+    // doorway, from well inside the spill to well inside the shadow of the
+    // wall beside it.
+    let y = f32::from(DOORWAY.1) + 1.5;
+    let sweep: Vec<(f32, f32)> = (-100..=100)
+        .map(|step| f32::from(DOORWAY.0) + 0.5 + step as f32 / 100.0)
+        .map(|x| {
+            let spot = Spot {
+                at: Vec2::new(x, y),
+                z: 0.0,
+            };
+            let through = light::sample(spot, &lighting)
+                .reaches
+                .iter()
+                .find(|reach| reach.within)
+                .map_or(0.0, |reach| reach.through);
+            (x, through)
+        })
+        .collect();
+    let partial = sweep
+        .iter()
+        .filter(|(_, through)| *through > 0.02 && *through < 0.98)
+        .count();
+
+    assert!(
+        partial >= 4,
+        "the spill's edge steps straight from lit to black: {partial} samples in between\n{sweep:?}{picture}",
+    );
+}
+
 /// And the report says *which* wall stopped it.
 ///
 /// The half of observability that a picture cannot carry: a tile is dark, and

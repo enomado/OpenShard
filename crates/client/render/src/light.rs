@@ -449,9 +449,33 @@ fn place(at: Point, graphic: Graphic, time: f32) -> Light {
 /// `blit.wgsl`'s `MAX_RAY_STEPS`, and the two are one number: [`sample`] is the
 /// shader's own arithmetic in Rust and a bound that differed would make the two
 /// disagree exactly where a ray is longest. A pool reaches nine tiles at the
-/// widest, so this is never actually reached; it exists so that a loop over data
-/// cannot be made unbounded by a radius somebody widens later.
-pub const MAX_RAY_STEPS: i32 = 16;
+/// widest and the walk visits every cell the ray crosses, which on a diagonal is
+/// both axes' worth — so this is never actually reached; it exists so that a
+/// loop over data cannot be made unbounded by a radius somebody widens later.
+pub const MAX_RAY_STEPS: i32 = 24;
+
+/// How far a ray must travel inside an occluding cell for that cell to stop all
+/// it can, in tiles. `blit.wgsl`'s `SOFT_CROSSING`.
+///
+/// The walk knows the length of each cell it crosses, and spending it is what
+/// makes a shadow's edge a gradient rather than a step at a tile boundary: a ray
+/// that clips a wall tile's corner keeps most of its light, one that crosses the
+/// tile squarely keeps none.
+///
+/// It is not one length. A flame is a body, not a point, so an occluder close to
+/// what it shadows draws a sharp edge and a distant one draws a wide penumbra
+/// whose width is the flame's own size times `t / (1 - t)` — `t` being how far
+/// along the ray the occluder is from the lit end. That is where these three
+/// numbers go: [`FLAME_SPREAD`] is the size in tiles, and the bounds keep the
+/// ends of the ratio finite. Invented here, the way [`crate::occlusion::PANE`]
+/// is — no client file says how big a flame is.
+const FLAME_SPREAD: f32 = 1.0;
+
+/// The narrowest a shadow's edge gets: an occluder the fragment is against.
+const SOFT_CROSSING_MIN: f32 = 0.05;
+
+/// And the widest, for an occluder almost at the flame.
+const SOFT_CROSSING_MAX: f32 = 0.7;
 
 /// Below this, a ray has been stopped: `blit.wgsl`'s early exit, and under a
 /// byte's worth of light either way.
@@ -714,33 +738,107 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i
 /// `blit.wgsl`'s `reaches`, including what it leaves out. Both ends of the walk
 /// are skipped — the flame's own tile must not shadow it, because a sconce
 /// stands *on* a wall, and the tile being lit must not shadow itself, which is
-/// what keeps a wall's own face the brightest thing beside a torch. The height is
-/// interpolated along the ray, so a cell stops the light only where the ray
-/// passes through the span it occupies.
+/// what keeps a wall's own face the brightest thing beside a torch.
+///
+/// Every cell the segment crosses, in order, with the length of each crossing:
+/// not a fixed number of samples, which at two tiles apart was one interior
+/// point and put every shadow's edge on a tile boundary. What a cell stops is
+/// its opacity scaled by how far the ray ran inside it — [`SOFT_CROSSING`] — and
+/// by how much of that run was inside the span the tile occupies, so a ray
+/// grazing the top of a wall or clipping its corner is dimmed rather than cut.
 fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
     let delta = [light.at.x - spot.at.x, light.at.y - spot.at.y, light.z - spot.z];
-    // Chebyshev, as the game measures: one step is one tile on the longer axis.
-    // Truncating rather than rounding, because that is what the shader's `i32()`
-    // does to a float.
-    let steps = (delta[0].abs().max(delta[1].abs()) as i32).min(MAX_RAY_STEPS);
-    let mut through = 1.0;
-    for step in 1..steps {
-        let t = step as f32 / steps as f32;
-        let at = [
-            spot.at.x + delta[0] * t,
-            spot.at.y + delta[1] * t,
-            spot.z + delta[2] * t,
-        ];
-        let (x, y) = (at[0].floor() as i32, at[1].floor() as i32);
-        let Some(cell) = occlusion.at(x, y) else {
-            continue;
-        };
-        if at[2] < cell.bottom as f32 || at[2] > cell.top as f32 {
+    let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+    if ground < 1e-6 {
+        // Straight up or down: the only cells on the line are the two exempt
+        // ones, and there is no direction to walk in.
+        return (1.0, None);
+    }
+    let first = (spot.at.x.floor() as i32, spot.at.y.floor() as i32);
+    let last = (light.at.x.floor() as i32, light.at.y.floor() as i32);
+    let mut cell = first;
+    // Which way each axis steps, how much of the whole segment one tile of it is
+    // worth, and how far along the segment the first boundary is. An axis the
+    // ray does not move along never reaches its boundary, which is what the
+    // enormous `t` says.
+    let toward = (
+        match delta[0] >= 0.0 {
+            true => 1,
+            false => -1,
+        },
+        match delta[1] >= 0.0 {
+            true => 1,
+            false => -1,
+        },
+    );
+    let mut per_tile = [1e30_f32; 2];
+    let mut boundary = [1e30_f32; 2];
+    for axis in 0..2 {
+        if delta[axis].abs() <= 1e-6 {
             continue;
         }
-        through *= 1.0 - f32::from(cell.opacity) / 255.0;
-        if through <= RAY_CUTOFF {
-            return (0.0, Some((x, y)));
+        per_tile[axis] = 1.0 / delta[axis].abs();
+        let from = [spot.at.x, spot.at.y][axis];
+        let ahead = match delta[axis] >= 0.0 {
+            true => from.floor() + 1.0 - from,
+            false => from - from.floor(),
+        };
+        boundary[axis] = ahead * per_tile[axis];
+    }
+
+    let mut entered = 0.0;
+    let mut through = 1.0;
+    for _ in 0..MAX_RAY_STEPS {
+        let next = boundary[0].min(boundary[1]);
+        let leaves = next.min(1.0);
+        if cell != first && cell != last {
+            if let Some(stands) = occlusion.at(cell.0, cell.1) {
+                // The ray's own height over this crossing, against the span the
+                // tile occupies: what counts is how much of the two overlap.
+                let from = spot.z + delta[2] * entered;
+                let to = spot.z + delta[2] * leaves;
+                let (bottom, top) = (from.min(to), from.max(to));
+                let (low, high) = (stands.bottom as f32, stands.top as f32);
+                let share = match top - bottom > 1e-6 {
+                    true => (top.min(high) - bottom.max(low)).max(0.0) / (top - bottom),
+                    // A level ray: it is inside the span or it is not, and there
+                    // is no length of it to take a share of.
+                    false => match bottom >= low && bottom <= high {
+                        true => 1.0,
+                        false => 0.0,
+                    },
+                };
+                let crossed = (leaves - entered) * ground * share;
+                // How soft this cell's own edge is: the penumbra of an occluder
+                // this far along the ray. See [`FLAME_SPREAD`].
+                let middle = (entered + leaves) * 0.5;
+                let soft = (FLAME_SPREAD * middle / (1.0 - middle).max(1e-3))
+                    .clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
+                let stopped = f32::from(stands.opacity) / 255.0 * (crossed / soft).clamp(0.0, 1.0);
+                through *= 1.0 - stopped;
+                if through <= RAY_CUTOFF {
+                    return (0.0, Some(cell));
+                }
+            }
+        }
+        if next >= 1.0 {
+            break;
+        }
+        entered = next;
+        // Into the neighbour across whichever boundary is nearer. A tie is a
+        // corner: either order visits both cells, and the one taken second is
+        // crossed over a zero length and stops nothing — which is the diagonal
+        // gap this crate's backlog names, kept deliberately rather than closed
+        // by an accident of which comparison ran first.
+        match boundary[0] < boundary[1] {
+            true => {
+                cell.0 += toward.0;
+                boundary[0] += per_tile[0];
+            }
+            false => {
+                cell.1 += toward.1;
+                boundary[1] += per_tile[1];
+            }
         }
     }
     (through, None)
