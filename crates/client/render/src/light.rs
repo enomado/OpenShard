@@ -593,6 +593,35 @@ mod tests {
         );
     }
 
+    /// The grid a frame uploads stays small enough to upload every frame.
+    ///
+    /// It is the one *unconditional* cost this pass added: the lights are
+    /// walked from the map either way, but the occluders become a texture that
+    /// goes to the GPU on every frame whether anything burns or not. Four bytes
+    /// a tile over the widest zoom's rectangle, and the number is asserted
+    /// rather than assumed because it is the whole of the answer to "does this
+    /// cost anything" — a rectangle that grew with the map instead of with the
+    /// viewport would be megabytes and nobody would notice until a shard with a
+    /// big facet ran it. Measured: 187x187 tiles at the widest zoom on a
+    /// 1920x1080 viewport, which is 140KB a frame.
+    #[test]
+    fn the_grid_a_frame_uploads_is_a_few_tiles_across_and_not_a_map() {
+        let mut camera = Camera::new(Point::new(500, 500, 0), 1920, 1080);
+        let mut zoom = camera.zoom();
+        while !zoom.is_widest() {
+            zoom = zoom.scale_down();
+        }
+        camera.zoom_about(960, 540, zoom);
+        let bounds = lit_tiles(&camera);
+        let bytes = bounds.width() * bounds.height() * 4;
+        assert!(
+            bytes < 512 * 1024,
+            "the occlusion grid is {}x{} tiles, {bytes} bytes a frame",
+            bounds.width(),
+            bounds.height(),
+        );
+    }
+
     /// A flame the cutaway has taken away takes its light with it: the roof over
     /// the player hides the brazier on it, and a glow with no fire under it is
     /// worse than no glow.
