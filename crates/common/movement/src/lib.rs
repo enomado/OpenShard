@@ -51,6 +51,7 @@
 mod detour;
 mod pace;
 mod path;
+pub mod scene;
 mod sequence;
 mod terrain;
 mod walk;
@@ -61,6 +62,6 @@ pub use path::find_path;
 pub use sequence::{OutOfSequence, StepCounter, WalkSequence};
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
 pub use walk::{
-    Heading, Intent, Lean, OpenWorld, Terrain, Tile, Walk, Walker, direction_toward, heading_toward,
-    intend, line_tiles, step_allowed, step_from,
+    Heading, Intent, Lean, OpenWorld, Terrain, Tile, Walk, Walker, direction_toward, heading_toward, intend,
+    line_tiles, step_allowed, step_from,
 };

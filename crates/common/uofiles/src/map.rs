@@ -265,7 +265,7 @@ impl Map {
     ///
     /// No statics: [`Map::statics_at`] is empty everywhere and
     /// [`Map::static_count`] is zero, exactly as for a [`Map::load`] that was
-    /// given no `statics` paths.
+    /// given no `statics` paths — until [`Map::place_static`] puts one there.
     ///
     /// And no facet identity. A size nobody ships is an ordinary thing to ask
     /// for here, so [`Map::facet_name`] may honestly answer "unknown facet".
@@ -470,6 +470,45 @@ impl Map {
     /// The ground at a point, or `None` off the map.
     pub fn land(&self, x: u16, y: u16) -> Option<LandCell> {
         self.cells.get(self.cell_index(x, y)?).copied()
+    }
+
+    /// Change the ground at one tile, for a map built by [`Map::from_blocks`].
+    ///
+    /// The other half of building a scene — see [`Map::place_static`] for what
+    /// that is, why both of these are `pub`, and why nothing in the engine may
+    /// call either. Off the map it does nothing, for the same reason.
+    pub fn set_land(&mut self, x: u16, y: u16, cell: LandCell) {
+        if let Some(index) = self.cell_index(x, y) {
+            self.cells[index] = cell;
+        }
+    }
+
+    /// Put a static on the map, at the coordinates the item itself carries.
+    ///
+    /// For building a *scene*: a handful of tiles with known geometry — ground
+    /// at a stated height, a stair, a band of wall — that a movement test can
+    /// walk over and know the right answer for in advance. The map this
+    /// repository can otherwise test against is a real client install, which is
+    /// not on every machine and is not something a test can shape; a scene is
+    /// both, and it is what `openshard_movement::scene` is built on.
+    ///
+    /// It is `pub` and not `#[cfg(test)]` for the reason
+    /// [`crate::tiledata::TileData::set_static_tile`] is: the tests that want it
+    /// are in other crates, and this repository ships no client files to build a
+    /// fixture from.
+    ///
+    /// Nothing in the engine calls it, and nothing should — what stands on the
+    /// ground is the client's own file talking, and a static written in at
+    /// runtime is one end of the wire disagreeing with the other about a tile
+    /// they both drew.
+    ///
+    /// A static outside the map is dropped: there is no block to keep it in, and
+    /// [`Map::statics_at`] could never return it.
+    pub fn place_static(&mut self, item: StaticItem) {
+        let Some(block) = self.block_index(item.x, item.y) else {
+            return;
+        };
+        self.statics[block].push(item);
     }
 
     /// Every static standing on a point.
