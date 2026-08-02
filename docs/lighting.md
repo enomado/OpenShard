@@ -7,6 +7,20 @@ way and left undone. It supersedes the lighting half of
 what is still true there is linked from the backlog at the bottom rather than
 copied.
 
+## Where the next session starts
+
+Steps 1–5 and 7–13 are done; **14, 15, 16, 17 and 6 are not**, and they are in
+that order for a reason. Step 14 draws the occluder boxes, and it is first
+because it is the instrument the other two are judged with — the report that
+opened this stretch was "a door cast a shadow where there is nothing", and a
+tile-wide box is almost certainly the answer. Steps 15 and 16 are one
+measurement used twice: a wall's face read out of its own art, then the window's
+hole in that face. Step 6's measurement is still owed and gates the sun.
+
+Nothing outside this file is half-finished — `main` builds, the three commands
+are silent, and the pictures in this session were taken from the playground
+running headless.
+
 ## Where it stands
 
 Done, and the decisions below are what was built rather than what was proposed.
@@ -279,8 +293,105 @@ rooms leak — which is the same conservative direction decision 5's union takes
       borrows `NO_SHOOT`'s answer — `occlusion::PANE` passes four fifths — and
       the sun is F8 in the app, off by default until step 6's measurement says
       what a ray on every ground pixel costs.
-- [ ] **12. The shaft.** The screen-space pass of decision 12, over the mask the
-      step above produces.
+- [x] **12. A floor is not a wall.** Decision 13's `place::Stance`: a flat
+      static's fraction is the inverse of `camera::project` over the pixel's
+      offset from its tile's centre, an upright one's is the tile's middle, and
+      the bit comes from `TileFlags::FLOOR`. A room's floor stops being flat
+      44-pixel diamonds with a step at each seam.
+- [x] **13. The ray walks its cells.** Decision 14: a grid traversal with the
+      length of each crossing and the share of it inside the tile's span, and a
+      penumbra whose width is `FLAME_SPREAD * t / (1 - t)`. `light::walk` learns
+      the same walk; the parity test is what says they agree.
+- [ ] **14. The occluder boxes, drawn.** The instrument the next two steps are
+      judged with, and the answer to "why is there a shadow where nothing
+      stands": the grid is boxes already — `(z bottom, z top, opacity)` a tile —
+      and nothing draws them. `Occlusion` gains an iterator over its cells; the
+      frame carries the grid into `shell::Frame` beside the terrain overlay,
+      under its own checkbox; `shell::world_painter` — which already draws the
+      tile highlight through `Camera::tile_diamond` — projects the eight corners
+      of each box with `Camera::to_screen` and strokes the twelve edges, coloured
+      by opacity so a pane and a wall are told apart. No GPU pass and no new
+      texture: this is arithmetic the camera already does.
+
+      What it is expected to show first: **a door's shadow is a tile wide**,
+      because decision 3's occluder is the whole tile and not the leaf — which is
+      the report that started this step.
+- [ ] **15. A wall's facing, measured from its art.** Decision 3 is right that
+      `tiledata.mul` does not say which edge a wall stands on. The *art* does: a
+      wall's face is one tile edge, which in this projection is half a cell wide
+      with a 45° top, and the four edges are told apart by two features of the
+      silhouette — which half of the columns is occupied, and where the topmost
+      opaque pixel is:
+
+      | face | runs along | occupies | apex column |
+      |---|---|---|---|
+      | N | `+x` | right half | centre |
+      | E | `+y` | right half | right |
+      | S | `+x` | left half | left |
+      | W | `+y` | left half | centre |
+
+      Measured on `0x0100` "marble wall": the mass is columns 18..43 — 22 pixels,
+      exactly one edge — and the top runs down-left, which is the east face.
+      `0x0104` has two slopes (a corner) and `0x0101` is a post; both must come
+      back **undecided**, and a detector that cannot refuse is the failure mode
+      here.
+
+      Then a pixel maps onto that face instead of onto the tile's middle. With
+      `v` along the edge and `(dx, dy)` the offset from the tile's centre at the
+      base height:
+
+      | face | place | height |
+      |---|---|---|
+      | N | `(v, 0)`, `v = dx/22` | `z0 + (22(v - 1) - dy)/4` |
+      | E | `(1, v)`, `v = 1 - dx/22` | `z0 + (22v - dy)/4` |
+      | S | `(v, 1)`, `v = 1 + dx/22` | `z0 + (22v - dy)/4` |
+      | W | `(0, v)`, `v = -dx/22` | `z0 + (22(v - 1) - dy)/4` |
+
+      Today's `z = z0 - dy/4` is the `s = 0` case of these, so the formula
+      generalises rather than replaces. **The point is the seam**: the next tile
+      along the run starts its `v` at 0 where this one ended at 1, and the two
+      name one world line — a row of wall tiles becomes one continuous surface,
+      which is what "stop thinking in sprites" means here.
+
+      Where it goes: `render/src/facing.rs` holds `face_of(&Image) -> Option<Face>`
+      (pure, tested on silhouettes drawn by hand), `StaticAtlas` calls it once
+      while packing and keeps the answer on `Sprite`, `place::Stance` grows from
+      two values to six in the three bits it already has room for, and
+      `statics.wgsl` gains the `switch` above. `light.rs` and `blit.wgsl` are not
+      touched: the attachment is their input.
+
+      Held to: synthetic silhouettes; an `#[ignore]`d sweep over every `WALL`
+      graphic in a real install that **prints how many were decided**, because a
+      detector with no coverage count is a green light for having checked
+      nothing; a frame test that the fraction is continuous across the seam
+      between two neighbouring wall tiles; and a night frame in the playground.
+      A graphic it cannot read keeps today's behaviour exactly, so nothing gets
+      worse anywhere.
+
+      **Not for the occlusion grid.** There a wrong guess is a room leaking onto
+      the street, which is what decision 3 refuses; here it is shading that looks
+      odd. When the sweep says what fraction of a real city is decided, that is
+      the conversation — and it is the same key that unlocks the sconce lighting
+      through its own wall and the sun lighting both faces of one.
+- [ ] **16. The window's aperture, and the beam on the ground.** A pane passes
+      four fifths of the light *across the whole tile* today, which is a dimmer
+      tile and not a beam. The hole is in the art — a window graphic's silhouette
+      has a transparent gap in an opaque wall — so the same measurement as step
+      15 yields the aperture: a span of `v` along the face and a span of `z`.
+
+      Two things change. The occlusion cell has to carry it, and it is full at
+      four bytes (`Rgba8Uint`), so this wants a second texture or a wider format.
+      And the walk, which already knows where the ray enters and leaves a cell
+      and at what height, tests whether that crossing passes through the
+      aperture's rectangle on the face — a few lines where the span test is.
+
+      What comes out is a fan on the street: narrow at the wall, widening with
+      distance, with the soft edge decision 14's penumbra already gives it.
+- [ ] **17. The shaft.** The screen-space pass of decision 12, over the mask step
+      11 produces — and, once step 16 exists, over the beam from a window too.
+      Nothing in this renderer draws air, so a visible shaft is a blur of the lit
+      mask along the light's direction *on the screen* and nothing else. It only
+      makes sense after the patch it grows out of is right.
 
 ## Backlog
 
@@ -368,6 +479,10 @@ are what came of the first three, and these are what is left:
   tile-edged shadows a torchlit one no longer does. The traversal is written and
   wants lifting into a shape both walks can use — the only difference is that the
   sun's has no endpoint.
+- **A wall is still lit as one point per tile**, and that is now a step with a
+  design rather than a note: see step 15. What it looks like meanwhile is a row
+  of wall tiles each at its own brightness, with the vertical gradient down each
+  one that the height already gives.
 - **The penumbra is a width, not an area light.** Decision 14's `t / (1 - t)` is
   the right *shape* off one ray, but it softens by how far the ray ran inside the
   cell rather than by how much of the flame the cell hides. Where an opening is a
