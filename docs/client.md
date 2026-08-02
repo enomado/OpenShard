@@ -2636,12 +2636,17 @@ the way and not done:
   under the wearer and followed them around. `worn_graphic` is the one place
   that answers "what does this layer draw with", for the atlas and for the quad
   alike, and it answers `None` here.
-- **The shard dresses a ghost in its living clothes.** What arrived over the
-  wire for a dead character was the full equipment list — that is where the
-  zero-`AnimID` layer came from in the first place. In the reference a dead
-  player wears one thing, a death shroud, and its items are on the corpse. That
-  is `server/world`'s question, not this end's, and until it is answered a
-  ghost's paperdoll is a lie.
+- **The shard's ghost is dressed correctly, and the layer this end cannot tell
+  apart is the hair.** Checked rather than assumed, against the save: a relogged
+  ghost wears exactly three things — a death shroud (`0x204E`), its backpack
+  (which is where the zero `AnimID` came from; a backpack stays on the dead in
+  UO too) and its hair. The reference draws the first two and skips the last,
+  `IsDead && (layer == Layer.Hair || layer == Layer.Beard)`, so a ghost is
+  bald under its hood. This end cannot make that decision at all:
+  [`EquipmentLayer`](../crates/client/render/src/mobiles.rs) carries a graphic
+  and a hue and *not* the layer it was worn on, so "hair" is not a question the
+  renderer can ask. Carrying `Layer` through `crowd::worn` is the fix, and it is
+  the same field a real paperdoll ordering will need.
 - **The silent drop cost a third hunt, so it should stop being silent.** Twice
   above this is named as a hazard and once below as an accident; this time it
   was the whole defect, and from outside it is indistinguishable from the
