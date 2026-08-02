@@ -2430,6 +2430,16 @@ the way and not done:
   the same way, which walks, rather than a client refusing steps the shard
   allows. Whether a mobile should block at all is a gameplay decision (ServUO's
   `checkMobiles`) and belongs in the movement rules, not in either index.
+- **A placed item that is `Surface` but not `Impassable` blocks nothing here,
+  and ServUO weighs it.** Both ends filter placements through
+  `Terrain::item_blocks`, which is `Impassable` alone; the reference's movement
+  gathers items on `Impassable | Surface` (`Scripts/Services/Pathing/Movement.cs`)
+  because a placed floor or table is a surface a body stands on *and* a body in
+  the way of one standing lower. Nothing has needed it yet — decoration is
+  overwhelmingly walls and furniture that carry `Impassable` — but a shard that
+  places a raised platform as an item will find it walkable from underneath.
+  When it is fixed it has to be fixed on both ends in one commit, or the two
+  disagree and the walk rubber-bands.
 - **Multis are not items and are not here.** A house is not a `0x1A`, so the
   moment multis land this end will walk into their walls exactly the way it
   walked into barrels. Whatever indexes them for drawing should feed `Clutter`

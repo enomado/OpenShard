@@ -143,6 +143,26 @@ wall hit on a slow link costs it a needless resync. Counting what is still owed
 
 ## The client's data files
 
+**A tiledata flag means what the engine reads it for, and a barrel is not
+necessarily a barrel.** `water barrel` (`0x154D`) looks exactly like a barrel on
+Britain's docks and is walked straight through. Its tiledata carries one flag,
+`0x4000` — `ArticleA`, meaning the item's name takes "a" — and neither
+`Impassable` nor `Surface`; its height is zero. The barrel a tile away
+(`barrel`, `0x0E77`) is `Impassable`, height 5, and stops everybody. ServUO
+decides with the same predicate (`ImpassableSurface = Impassable | Surface`,
+`Scripts/Services/Pathing/Movement.cs`), so the reference walks through it too:
+this is the client's data, not a defect in ours, and making it solid is a
+gameplay decision rather than a fix. Pinned in
+`client/app/src/clutter.rs`. What it cost was a day of looking for the bug in
+three layers that were all behaving.
+
+**Read a tiledata answer straight out of the file before believing a layer is
+wrong.** The file is 3,188,736 bytes, which is the High Seas layout exactly —
+41 bytes a static entry, 8-byte flags — and that arithmetic is what says the
+reader is aligned at all. Two entries read by hand from those offsets agreed
+with `TileData` to the bit, which is what turned "our reader is broken" into
+"the client says so" in one step.
+
 **The map is in the `.uop`, not the `.mul`.** Modern clients ship both and the
 `.mul` may be a stub full of zeroes. `Map::load_facet` prefers the UOP. See
 `world::uop`.

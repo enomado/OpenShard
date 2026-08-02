@@ -347,6 +347,46 @@ mod tests {
         );
     }
 
+    /// The one that reads as a bug and is not.
+    ///
+    /// `water barrel` looks exactly like a barrel on screen and is walked
+    /// straight through — on Britain's docks, where two of them stand a tile
+    /// apart and only one stops anybody. Its tiledata carries a single flag,
+    /// `0x4000`, which is `ArticleA`: it says the item's name takes "a", and
+    /// nothing else. No `Impassable`, no `Surface`, height zero. Read straight
+    /// out of the file with the reader out of the loop, and ServUO decides with
+    /// the same predicate (`ImpassableSurface = Impassable | Surface`,
+    /// `Scripts/Services/Pathing/Movement.cs`), so the reference walks through
+    /// it too.
+    ///
+    /// Pinned so the next person to notice it finds this test instead of
+    /// re-deriving it, and so that a shard which *wants* it solid knows it is
+    /// changing gameplay rather than fixing a defect.
+    #[test]
+    fn a_water_barrel_is_walked_through_because_the_client_says_so() {
+        let Some(tiles) = client_tiledata() else {
+            return;
+        };
+        let water_barrel = Graphic(0x154D);
+        let data = tiles.static_tile(water_barrel.0);
+        assert_eq!(
+            data.name.as_str(),
+            "water barrel",
+            "0x154D is not the tile this is about"
+        );
+        assert_eq!(
+            data.flags.bits(),
+            0x4000,
+            "a water barrel's flags are no longer article-only"
+        );
+        assert!(!data.flags.is_blocking());
+        let clutter = Clutter::of(&[item(100, 100, 0, water_barrel)], &tiles);
+        assert!(
+            !clutter.blocked_at(100, 100, 0),
+            "a water barrel was made solid here and the shard would still allow the step"
+        );
+    }
+
     #[test]
     fn a_placed_barrel_blocks_its_tile_at_ground_level() {
         let Some(tiles) = client_tiledata() else {
