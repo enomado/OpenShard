@@ -39,6 +39,11 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // `lighting.grid`: (z_bottom + 128, z_top + 128, opacity, present). See
 // `crate::occlusion`.
 @group(0) @binding(4) var occluders: texture_2d<u32>;
+// What each of those tiles *is*, over the same rectangle: (sky, aperture, body,
+// unused). Only the sky channel is written today. See `crate::occlusion`, and
+// `docs/lighting_world.md` for why this is a second plane rather than four more
+// channels of the cell above.
+@group(0) @binding(5) var field: texture_2d<u32>;
 
 // One flame. Two `vec4`s rather than six fields, because a uniform array's
 // stride is rounded up to 16 bytes either way and this is what the CPU writes:
@@ -56,10 +61,16 @@ struct Light {
 const MAX_LIGHTS: u32 = 64u;
 
 struct Lighting {
-    // What the whole frame is multiplied by away from every flame, then how
-    // many of `lights` are real. `(1,1,1,0)` is no lighting at all, and the
+    // What a tile with an open column above it is multiplied by away from every
+    // flame, then how many of `lights` are real. Scaled per fragment by the sky
+    // channel of `field`, which is what makes the inside of a house darker than
+    // the street with nothing in either — `crate::light::Ambient`.
+    sky: vec4<f32>,
+    // And what every tile gets, roof or no roof: the floor under the darkness,
+    // so that an unlit room is deep rather than pure black. `(1,1,1,·)` sky with
+    // a `(0,0,0,·)` ground over an empty grid is no lighting at all, and the
     // identity below is exact for it.
-    ambient: vec4<f32>,
+    ground: vec4<f32>,
     // The occlusion grid's rectangle: its lowest tile `x` and `y`, then its
     // width and height in tiles. A tile outside it occludes nothing, which is
     // right by construction — the grid is grown by the widest pool's reach, so
@@ -91,6 +102,7 @@ const VIEW_LIGHT: u32 = 5u;
 const VIEW_SHADOW: u32 = 6u;
 const VIEW_REACH: u32 = 7u;
 const VIEW_SUN: u32 = 8u;
+const VIEW_SKY: u32 = 9u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
@@ -153,6 +165,20 @@ fn occluder_at(x: i32, y: i32) -> vec4<u32> {
         return vec4<u32>(0u);
     }
     return textureLoad(occluders, cell, 0);
+}
+
+// How much of the sky one tile can see, `0..=1`.
+//
+// Open sky outside the rectangle, which is `Occlusion::sky_at`'s own answer and
+// the honest one in the direction that matters: the grid is grown by the widest
+// pool's reach, so a tile outside it is one the frame does not draw, and
+// answering "dark" there would put a band of night around every frame.
+fn sky_at(x: i32, y: i32) -> f32 {
+    let cell = vec2<i32>(x - lighting.grid.x, y - lighting.grid.y);
+    if cell.x < 0 || cell.y < 0 || cell.x >= lighting.grid.z || cell.y >= lighting.grid.w {
+        return 1.0;
+    }
+    return f32(textureLoad(field, cell, 0).x) / 255.0;
 }
 
 // How much of a flame reaches a tile: 1 for nothing in the way, 0 for a wall.
@@ -327,7 +353,17 @@ fn debug_color(
     nearest: f32,
     nearest_through: f32,
     sun_through: f32,
+    share: f32,
 ) -> vec3<f32> {
+    if view == VIEW_SKY {
+        // The sky field on the ground it is a field of: white under open air,
+        // black under a roof, and a gradient across a doorway. Drawn over the
+        // picture rather than as a wireframe of the boxes, because the failure
+        // this field actually has is a tile that is *wrongly open* — an eave that
+        // did not cover the floor under it — and a box is drawn for what stands,
+        // not for what does not. `docs/lighting_world.md`'s backlog says so.
+        return vec3<f32>(share, share, 0.15 + share * 0.85);
+    }
     if view == VIEW_SUN {
         // How much of the sun arrived: white in the open, black in a wall's
         // shadow, and the sun's own colour where a pane dimmed it rather than
@@ -447,7 +483,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     );
     let at = vec3<f32>(f32(place.x) + sub.x, f32(place.y) + sub.y, f32(place.z) - 128.0);
 
-    var lit = lighting.ambient.rgb;
+    // The ambient this *tile* has: the sky's share of it scaled by how much of
+    // the sky the column over the tile can see, plus the floor everything gets.
+    // `docs/lighting_world.md`, decision 1, and it is the whole of why a room is
+    // darker than the road outside it before anything burns.
+    let share = sky_at(i32(floor(at.x)), i32(floor(at.y)));
+    var lit = lighting.ground.rgb + lighting.sky.rgb * share;
     // What the diagnostics are made of, gathered while the frame is lit rather
     // than computed a second time: how many flames actually reached this
     // fragment, and what the *nearest* of them lost on the way. Nearest and not
@@ -456,7 +497,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var reached = 0u;
     var nearest = 1.0e9;
     var nearest_through = 0.0;
-    let count = u32(lighting.ambient.w);
+    let count = u32(lighting.sky.w);
     for (var i = 0u; i < count; i = i + 1u) {
         let light = lighting.lights[i];
         let to = light.place.xyz;
@@ -502,7 +543,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
     if view != VIEW_LIT {
         return vec4<f32>(
-            debug_color(view, place, at, sub, lit, reached, nearest, nearest_through, sun_through),
+            debug_color(
+                view, place, at, sub, lit, reached, nearest, nearest_through, sun_through, share,
+            ),
             color.a,
         );
     }

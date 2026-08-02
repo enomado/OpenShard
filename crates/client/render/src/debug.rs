@@ -72,11 +72,22 @@ pub enum View {
     /// window is a shape, and a shape is the one thing a number cannot be
     /// checked as — this is where it is looked at.
     Sun = 8,
+    /// How much of the sky each tile can see: white under open air, black under
+    /// a roof, and a gradient across a doorway.
+    ///
+    /// The instrument the ambient split is judged with, and it is drawn on the
+    /// ground rather than as a wireframe of the occluder boxes on purpose. The
+    /// failure this field has is a tile that is *wrongly open* — an eave whose
+    /// statics stand on the tile next to the one they cover, so the floor under
+    /// it reads as sky. A box is drawn for what stands; a hole in a roof is
+    /// exactly where there is no box, and would be invisible in the very view
+    /// meant to find it. See `docs/lighting_world.md`'s backlog.
+    Sky = 9,
 }
 
 impl View {
     /// Every view, in the order [`View::next`] walks them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Lit,
         Self::Place,
         Self::Kind,
@@ -86,6 +97,7 @@ impl View {
         Self::Shadow,
         Self::Reach,
         Self::Sun,
+        Self::Sky,
     ];
 
     /// The next one round, which is what the key that cycles them does.
@@ -111,6 +123,7 @@ impl View {
             Self::Shadow => "shadow",
             Self::Reach => "reach",
             Self::Sun => "sun",
+            Self::Sky => "sky",
         }
     }
 }
@@ -217,6 +230,7 @@ mod tests {
         assert_eq!(View::Shadow as u32, 6);
         assert_eq!(View::Reach as u32, 7);
         assert_eq!(View::Sun as u32, 8);
+        assert_eq!(View::Sky as u32, 9);
     }
 
     /// Cycling visits every view and comes back. The key that does it is the

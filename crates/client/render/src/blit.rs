@@ -25,10 +25,10 @@ use crate::light::Lighting;
 /// wrongly.
 const MAX_LIGHTS: usize = Lighting::MAX;
 
-/// The uniform block's size: five header `vec4`s — the ambient with the light
-/// count, the occlusion grid's rectangle, which view to draw, and the sun's
-/// direction and colour — then two per light.
-const LIGHTING_BYTES: u64 = (5 + 2 * MAX_LIGHTS as u64) * 16;
+/// The uniform block's size: six header `vec4`s — the sky ambient with the light
+/// count, the ground ambient, the occlusion grid's rectangle, which view to
+/// draw, and the sun's direction and colour — then two per light.
+const LIGHTING_BYTES: u64 = (6 + 2 * MAX_LIGHTS as u64) * 16;
 
 /// Where the world image goes on the surface, in physical pixels.
 ///
@@ -86,6 +86,14 @@ pub struct Blit {
     /// is a zoom step or a resize and not an ordinary frame; rewritten every
     /// frame, because the camera moves and the grid is relative to it.
     occluders: wgpu::Texture,
+    /// What each of those tiles *is*, over the same rectangle and in the same
+    /// order — the sky field today, an aperture and a body's opacity when the
+    /// steps that write them land. See [`crate::occlusion::Occlusion::field_bytes`].
+    ///
+    /// A second texture and not four more channels of the first: the occluder
+    /// cell is what a ray walks through cell after cell in a loop, and this is
+    /// read once per fragment. `docs/lighting_world.md` decides it once, there.
+    field: wgpu::Texture,
 }
 
 impl Blit {
@@ -152,6 +160,21 @@ impl Blit {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // And the field plane over the same rectangle — what a tile *is*
+                // rather than what a ray passes through. Unfilterable for the
+                // same reason: a sky byte averaged with its neighbour's would be
+                // a second blur over the one `Occlusion::blur_sky` already did,
+                // at the resolution of the screen instead of of the map.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
@@ -231,7 +254,8 @@ impl Blit {
             // One texel, which is a grid of one open tile: a daylit frame binds
             // it and never reads it, and the first lit frame replaces it. A
             // texture of no size is not a thing wgpu will make.
-            occluders: occluder_texture(device, 1, 1),
+            occluders: grid_texture(device, "occluders", 1, 1),
+            field: grid_texture(device, "field", 1, 1),
         }
     }
 
@@ -261,7 +285,7 @@ impl Blit {
             rect,
         } = frame;
         queue.write_buffer(&self.lighting, 0, &lighting_bytes(lighting));
-        self.upload_occluders(device, queue, lighting);
+        self.upload_grid(device, queue, lighting);
         // A bind group per call rather than per `Blit`: the world texture is
         // recreated on every resize and every zoom step, and a cached group
         // would be a handle to a texture that is no longer being drawn into.
@@ -296,6 +320,12 @@ impl Blit {
                         &self
                             .occluders
                             .create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.field.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
             ],
@@ -358,11 +388,21 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(LIGHTING_BYTES as usize);
     let count = lighting.lights.len().min(MAX_LIGHTS);
 
-    // `ambient`, with the light count in the fourth channel.
-    for channel in lighting.ambient {
+    // `sky`, with the light count in the fourth channel: what a tile with an
+    // open column above it gets, before the field says how much of that column
+    // is open. See `crate::light::Ambient`.
+    for channel in lighting.ambient.sky {
         bytes.extend_from_slice(&channel.to_le_bytes());
     }
     bytes.extend_from_slice(&(count as f32).to_le_bytes());
+
+    // `ground`: the floor every tile gets, roof or no roof. A fourth channel of
+    // nothing, because a `vec3` in a uniform block is padded to four either way
+    // and a stated zero is a zero somebody wrote.
+    for channel in lighting.ambient.ground {
+        bytes.extend_from_slice(&channel.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0.0_f32.to_le_bytes());
 
     // `grid`: where the occlusion texture's corner is on the map, and how big it
     // is. Signed integers, which is what the shader declares that field as —
@@ -425,16 +465,19 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     bytes
 }
 
-/// The occlusion grid as a texture: one texel a tile. See [`crate::occlusion`]
-/// for what the four channels hold.
+/// One plane of the frame's grid as a texture: one texel a tile. See
+/// [`crate::occlusion`] for what the four channels of each hold.
 ///
 /// `Rgba8Uint` and not four floats, because every one of them is a byte in the
 /// grid already, and because an integer texture cannot be filtered — a wall
 /// averaged with the open ground beside it would be a half-wall standing on
 /// neither tile.
-fn occluder_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+///
+/// Both planes go through here: they are the same rectangle, the same format and
+/// the same order, and the only thing that differs is what the bytes mean.
+fn grid_texture(device: &wgpu::Device, label: &str, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("occluders"),
+        label: Some(label),
         size: wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
@@ -450,45 +493,57 @@ fn occluder_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Tex
 }
 
 impl Blit {
-    /// Put this frame's occluders on the GPU, growing the texture if the grid's
-    /// rectangle has changed size.
+    /// Put this frame's grid on the GPU — both planes — growing the textures if
+    /// its rectangle has changed size.
     ///
     /// The *size* changes on a zoom step or a resize and on nothing else: the
     /// grid is the visible tiles grown by a fixed margin, so a camera walking
     /// keeps its dimensions and only its contents move. Recreating a texture per
     /// frame would be a hundred kilobytes of allocation on every one of them.
-    fn upload_occluders(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting) {
+    ///
+    /// The two planes are uploaded together and never apart: they are one
+    /// rectangle indexed by one `lighting.grid`, and a frame that wrote the
+    /// occluders of this camera over the field of the last one would light every
+    /// tile from a place the picture is not of.
+    fn upload_grid(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting) {
         let bounds = lighting.occlusion.bounds();
         let (width, height) = (bounds.width().max(1) as u32, bounds.height().max(1) as u32);
         if self.occluders.width() != width || self.occluders.height() != height {
-            self.occluders = occluder_texture(device, width, height);
+            self.occluders = grid_texture(device, "occluders", width, height);
+            self.field = grid_texture(device, "field", width, height);
         }
-        let bytes = lighting.occlusion.bytes();
-        if bytes.is_empty() {
-            // A daylit frame, or one with no grid at all: the texture keeps
-            // whatever it held and the shader never reads it, because there are
-            // no lights to walk a ray for.
+        let occluders = lighting.occlusion.bytes();
+        if occluders.is_empty() {
+            // A daylit frame, or one with no grid at all: the textures keep
+            // whatever they held and the shader never reads them — there are no
+            // lights to walk a ray for, and a grid of no tiles is open sky
+            // everywhere by `Occlusion::sky_at`'s own rule, which is what the
+            // shader answers for a texel outside the rectangle.
             return;
         }
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.occluders,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
+        let write = |texture: &wgpu::Texture, bytes: &[u8]| {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        };
+        write(&self.occluders, &occluders);
+        write(&self.field, &lighting.occlusion.field_bytes());
     }
 }
 

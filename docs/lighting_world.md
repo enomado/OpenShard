@@ -9,14 +9,18 @@ it is built. This is the other half, and its subject is not shadows — it is
 
 ## Where the next session starts
 
-**Step 1 is built and nothing reads it yet.** The sky field is computed, blurred
-and tested — on the built scenes and on Britain, where a room averages 28 of 255
-against a street's 234 — and it goes to the GPU as `Occlusion::field_bytes`. What
-does not exist is a consumer: `Lighting::ambient` is still one colour for the
-whole frame. **Step 2 is next**, and it is short — the field is already the shape
-the shader wants.
+**Steps 1 and 2 are built: a roofed room is darker than the street outside it,
+in the shader and in `light::sample` alike.** `View::Sky` is what it is looked at
+with.
 
-Step 3 follows it because it is what the field is *for*. Steps 9 and 10 are
+**Step 3 is next, and it is the one that makes any of this visible in the
+client.** The reason is in the backlog below: the ordinary daylit frame is
+`Lighting::NONE`, which carries no grid at all, so today the split only reaches
+the eye at night or with the sun key held. The day curve is what makes *every*
+frame a lit frame, and until it lands step 2 is a thing the tests can see and a
+player mostly cannot.
+
+Steps 9 and 10 are
 blocked on [`lighting.md`](lighting.md)'s steps 15 and 16 and should not be
 started before them; step 8 wants its step 14 first, for the reason decision 9
 gives — as does the drawn half of step 1, which is the one part of it still open.
@@ -305,11 +309,31 @@ and each step states what it cost.
       omission: a field this cheap to compute is a field it is cheap to be wrong
       about everywhere at once, and the backlog below says why the wireframe is
       the wrong instrument for it anyway.
-- [ ] **2. The two ambients.** `Lighting::ambient` splits into a sky colour and a
-      ground colour; `blit.wgsl` reads the sky field and mixes. `light::sample`
-      gains the same term in the same commit — the parity test of the other
-      plan's decision 9 is what keeps the two honest, and it fails loudly if only
-      one side learns this.
+- [x] **2. The two ambients.** `Lighting::ambient` is an `Ambient` — a sky colour
+      and a ground colour — and `Ambient::at` is the one place the two are mixed
+      by a tile's sky byte. `blit.wgsl` reads the field plane as a second grid
+      texture (binding 5, uploaded beside the occluders and never apart from
+      them) and does the same arithmetic per fragment; `light::sample` reads
+      `sky_at` at the fragment's own tile. The parity test of the other plan's
+      decision 9 keeps the two honest, and it gained a **third scene** for it:
+      `roofed_room`, because every other parity fixture is lit by an ambient that
+      happens to be uniform over almost all of it, so a shader reading the wrong
+      plane would still have agreed nearly everywhere. That scene's own sky
+      spread is asserted before the pixels are compared.
+
+      `NIGHT` and `SKYLIGHT` are split so that their two terms **sum to what each
+      was as one colour**: a street is exactly as bright as it was and the whole
+      of the visible change is indoors. The new number is `GROUND_AMBIENT`.
+
+      The instrument, which is step 1's "left undone" arriving by the route its
+      own backlog asked for: `View::Sky` draws the field **on the ground** rather
+      than as shading on the wireframe boxes — a hole in a roof is exactly where
+      there is no box, and would be invisible in the view meant to find it.
+
+      **The cost**, per decision 15: one more `Rgba8Uint` texture of the grid's
+      own rectangle uploaded per frame (140KB at the widest zoom, doubling what
+      the pass uploads), and one `textureLoad` plus a multiply-add per fragment.
+      No walk, no loop.
 - [ ] **3. The day curve.** A `Daylight` in `light.rs`: the server's `0x4F` level
       in, an eased scalar, and out of it the ambient pair *and* the sun's
       direction. F10 becomes an override of the scalar rather than a swap of two
@@ -405,6 +429,28 @@ Written while drafting this, and not to be lost:
   a thing that can be forgotten. Whoever lands step 16's aperture or step 8's
   soft body should find them already waiting; if neither has landed by the time
   something else wants the space, that is when to reconsider, not before.
+- **The daylit frame is `Lighting::NONE`, and decision 1 cannot reach it.** The
+  client picks between three skies: night, a daylight with a sun, and plain
+  daylight — and the third is `Lighting::NONE`, which carries an empty grid on
+  purpose, so that the blit is a copy and the frame tests can compare it texel
+  for texel. An empty grid is open sky everywhere, so a house's inside is lit as
+  brightly as the road in exactly the mode a player is in most of the time. This
+  is not a bug in step 2, it is what step 3 is for: once the day curve makes
+  every frame carry an ambient, the third case stops existing. Whoever lands it
+  should check what happens to the copy tests — they want a lighting that is the
+  identity, and `Lighting::NONE` will still be it, but the *app* will no longer
+  be a caller of it.
+- **`Lighting::is_identity` now asks about the grid, and only one test calls
+  it.** It has always been the answer to "may the blit skip everything", and
+  nothing skips anything on it — the blit multiplies unconditionally. Either it
+  should be wired to an early-out or it should go; a predicate that only its own
+  test reads is a claim nobody is holding to.
+- **A wall tile has no sky and the interim answer is still its own cell.** The
+  entry below predicted this and step 2 is where it is now visible: at noon the
+  outer face of a house takes the ambient of a cell that never sees the sun, and
+  a house therefore has a dark ring around it under `View::Sky`. It reads as *a
+  wall in shadow* rather than as wrong, which is why it was left — but it is the
+  first thing to look at in the first screenshot, and decision 13 is the fix.
 - **Nothing in this plan knows about weather.** An overcast sky is exactly the
   sky term of decision 1 multiplied by a number, and rain is the same with a
   colour — which is to say this arrives almost for free once the sky field is a

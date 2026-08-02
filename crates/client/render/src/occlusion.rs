@@ -214,6 +214,17 @@ impl Occlusion {
         self.bounds
     }
 
+    /// Whether this grid covers no tiles at all — [`Occlusion::EMPTY`], and the
+    /// grid a frame with no lighting binds.
+    ///
+    /// Not "nothing stands in it": a grid over real tiles with no occluder on
+    /// any of them still answers [`Occlusion::sky_at`] for every one of them, and
+    /// the caller that asks this — [`Lighting::is_identity`](crate::light::Lighting::is_identity)
+    /// — is asking whether there is a field to read at all.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
     /// Add one occluder, merging with whatever already stands on that tile.
     ///
     /// The merge is the **union** of the two spans, and it is deliberately the

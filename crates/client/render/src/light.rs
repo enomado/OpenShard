@@ -160,16 +160,73 @@ pub const MAX_SUN_STEPS: i32 = 32;
 /// cellar's brazier from lighting the street even where nothing occludes.
 pub const Z_PER_TILE: f32 = (crate::camera::TILE_WIDTH / crate::camera::Z_STEP) as f32;
 
+/// The light a place has before anything burns in it: the sky's share, and the
+/// floor under it.
+///
+/// `docs/lighting_world.md`, decision 1. One colour for the whole frame lit the
+/// inside of a house exactly as brightly as the street outside it, because
+/// nothing in the ambient knew what a roof was — a dungeon was dark only because
+/// the server had said the whole world was. Split in two:
+///
+/// ```text
+/// ambient(tile) = sky * sky(tile) + ground
+/// ```
+///
+/// `sky(tile)` is [`crate::occlusion::Occlusion::sky_at`]'s byte, and `ground`
+/// is the small, cold floor a windowless cellar still gets — so that a room with
+/// no torch in it is deep rather than pure black. An unlit black rectangle is not
+/// atmosphere, it is a bug report.
+///
+/// Both terms are colours and not levels: a sky is blue where a cellar's floor
+/// light is bluer still, and a term that was one number could only ever say how
+/// *much* light a place has and never what kind.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Ambient {
+    /// What a tile with an open column above it gets, in full.
+    pub sky: [f32; 3],
+    /// What every tile gets, roof or no roof.
+    pub ground: [f32; 3],
+}
+
+impl Ambient {
+    /// Full daylight under an open column and nothing under a lid: the ambient
+    /// at which the blit is a copy of the world image.
+    ///
+    /// Only the *open* half is the identity, which is the whole of decision 1
+    /// arriving in the one constant that used to mean "no lighting at all" —
+    /// see [`Lighting::is_identity`], which is why it now asks about the grid.
+    pub const DAY: Self = Self {
+        sky: [1.0, 1.0, 1.0],
+        ground: [0.0, 0.0, 0.0],
+    };
+
+    /// What a tile is multiplied by, given how much of the sky it can see.
+    ///
+    /// `blit.wgsl` does this same arithmetic per fragment out of the field
+    /// plane, and the two are held together by the parity test of
+    /// `docs/lighting.md`'s decision 9.
+    pub fn at(self, sky: u8) -> [f32; 3] {
+        let share = f32::from(sky) / f32::from(crate::occlusion::SKY_OPEN);
+        let mut lit = self.ground;
+        for (channel, sky) in lit.iter_mut().zip(self.sky) {
+            *channel += sky * share;
+        }
+        lit
+    }
+}
+
 /// Everything the blit needs to light a frame.
 ///
-/// [`Lighting::NONE`] is the identity — full ambient, no lights — and the blit
-/// multiplies by exactly `1.0` for it, so a frame test comparing the surface
-/// with the world image texel for texel still holds.
+/// [`Lighting::NONE`] is the identity — full ambient, no lights, nothing
+/// standing anywhere — and the blit multiplies by exactly `1.0` for it, so a
+/// frame test comparing the surface with the world image texel for texel still
+/// holds.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Lighting {
     /// What everything is multiplied by away from any flame — the daylight, or
-    /// the lack of it. `[1.0; 3]` is "no lighting at all".
-    pub ambient: [f32; 3],
+    /// the lack of it, per tile. [`Ambient::DAY`] over an empty grid is "no
+    /// lighting at all".
+    pub ambient: Ambient,
     /// The flames themselves, nearest first and never more than
     /// [`Lighting::MAX`] of them.
     pub lights: Vec<Light>,
@@ -205,7 +262,7 @@ impl Lighting {
 
     /// The frame nothing lights: the world image, unchanged.
     pub const NONE: Self = Self {
-        ambient: [1.0, 1.0, 1.0],
+        ambient: Ambient::DAY,
         lights: Vec::new(),
         occlusion: Occlusion::EMPTY,
         sun: None,
@@ -214,23 +271,49 @@ impl Lighting {
 
     /// Whether this would change a single pixel.
     ///
-    /// The occluders are not asked about: a wall with no flame to stop casts
-    /// nothing. A debug view is never the identity, however empty the frame's
-    /// lighting is — that is the whole of what it draws.
+    /// The occluders *are* asked about now, and that is decision 1 of
+    /// `docs/lighting_world.md` arriving here: a wall with no flame to stop
+    /// still casts nothing, but a roof takes the sky's share of the ambient away
+    /// from the tile under it whether anything burns or not. A grid with
+    /// something in it is therefore a frame that may be darker than its world
+    /// image, and only an empty one is a copy.
+    ///
+    /// A debug view is never the identity, however empty the frame's lighting is
+    /// — that is the whole of what it draws.
     pub fn is_identity(&self) -> bool {
-        self.lights.is_empty() && self.ambient == [1.0, 1.0, 1.0] && self.view.is_lit()
+        self.lights.is_empty()
+            && self.ambient == Ambient::DAY
+            && self.occlusion.is_empty()
+            && self.view.is_lit()
     }
 }
+
+/// The floor under the darkness: what a tile with no sky at all still gets.
+///
+/// Decision 1's `GROUND_AMBIENT`, and it is small and cold on purpose. Small,
+/// because the whole of what the split buys is that a room is darker than the
+/// road outside it, and a generous floor gives that back. Cold, because it
+/// stands in for light that has bounced off a stone floor and a plastered wall
+/// rather than for a source — and because a warm floor would take the one hue a
+/// flame has to itself.
+///
+/// Invented here, in the way `docs/lighting_world.md`'s decision 11 says every
+/// number in this plan is: held by a scene, not argued into existence.
+pub const GROUND_AMBIENT: [f32; 3] = [0.12, 0.13, 0.18];
 
 /// Night, as the reference isometrics draw it: dark, and *cooler* than the art.
 ///
 /// The blue cast is what makes a fire read as warm — with a grey ambient the
 /// pool and the dark are the same hue at two brightnesses, which the eye reads
 /// as a spotlight rather than as firelight.
-pub const NIGHT: [f32; 3] = [0.30, 0.33, 0.45];
-
-/// Full daylight: the ambient at which lighting is a no-op.
-pub const DAY: [f32; 3] = [1.0, 1.0, 1.0];
+///
+/// The two terms sum to the `[0.30, 0.33, 0.45]` this was one colour of before
+/// the split, so a street at night is exactly as dark as it was and what changed
+/// is only what happens indoors.
+pub const NIGHT: Ambient = Ambient {
+    sky: [0.20, 0.22, 0.31],
+    ground: [0.10, 0.11, 0.14],
+};
 
 /// What a daylit world is lit by *away from the sun*: the sky.
 ///
@@ -238,7 +321,14 @@ pub const DAY: [f32; 3] = [1.0, 1.0, 1.0];
 /// rest — an ambient that already lit everything would leave every shadow the
 /// sun casts invisible. And well short of black, because a shadow at noon is not
 /// a hole: the reference isometrics draw one lit by the sky, and so does this.
-pub const SKYLIGHT: [f32; 3] = [0.55, 0.55, 0.62];
+///
+/// Split like [`NIGHT`] and for the same reason: the two terms sum to the
+/// `[0.55, 0.55, 0.62]` a daylit frame had everywhere, so the street is
+/// unchanged and the room under the roof is what moved.
+pub const SKYLIGHT: Ambient = Ambient {
+    sky: [0.43, 0.42, 0.44],
+    ground: GROUND_AMBIENT,
+};
 
 /// The sun this client stands under until there is a time of day on the wire.
 ///
@@ -368,7 +458,7 @@ pub fn collect(
     camera: &Camera,
     tiledata: &TileData,
     cutaway: &Cutaway,
-    ambient: [f32; 3],
+    ambient: Ambient,
     time: f32,
 ) -> Lighting {
     let bounds = lit_tiles(camera);
@@ -610,7 +700,14 @@ impl std::fmt::Display for Sample {
 /// its multiply by the art are the two things left out, because neither is about
 /// the lighting — see [`Sample::multiplier`].
 pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
-    let mut multiplier = lighting.ambient;
+    // The ambient this *tile* has, and not the frame's: how much of the sky the
+    // column over it can see decides how much of the sky term it gets. The tile
+    // and not the fractional spot, because the field is a byte a tile — the blur
+    // of `docs/lighting_world.md`'s decision 2 is what softens its edges, and a
+    // second interpolation here would be a different picture from the shader's.
+    let mut multiplier = lighting.ambient.at(lighting
+        .occlusion
+        .sky_at(spot.at.x.floor() as i32, spot.at.y.floor() as i32));
     let mut reaches = Vec::with_capacity(lighting.lights.len());
     for (index, light) in lighting.lights.iter().enumerate() {
         let offset = [

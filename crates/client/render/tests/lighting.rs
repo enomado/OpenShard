@@ -20,9 +20,19 @@ use openshard_client_render::scene::{self, CENTRE, DOORWAY, Scene};
 /// was asked in.
 const STILL: f32 = 0.0;
 
-/// The ambient alone, as one number — what an unlit tile comes out at.
-fn ambient() -> f32 {
-    light::NIGHT.iter().sum::<f32>() / light::NIGHT.len() as f32
+/// The ambient alone at one tile, as one number — what that tile comes out at
+/// with no flame reaching it.
+///
+/// Per tile and no longer per frame, which is `docs/lighting_world.md`'s
+/// decision 1 arriving in the tests: a tile under a roof, a wall tile whose own
+/// column is shaded, and the tile beside it that the blur touched all get
+/// different shares of the sky. A single constant would now be the right answer
+/// only in the open, and every "this tile is the ambient exactly" assertion
+/// below would be measuring the field instead of the leak it is about.
+fn ambient(lighting: &Lighting, tile: (u16, u16)) -> f32 {
+    let sky = lighting.occlusion.sky_at(i32::from(tile.0), i32::from(tile.1));
+    let lit = lighting.ambient.at(sky);
+    lit.iter().sum::<f32>() / lit.len() as f32
 }
 
 /// How bright the middle of a tile is, at a height.
@@ -59,8 +69,12 @@ fn a_shut_room_keeps_its_light_inside() {
     let lighting = scene.lighting(STILL);
     let picture = picture(&scene, &lighting);
 
-    let inside = at(&lighting, (CENTRE.0 + 1, CENTRE.1), 0.0);
-    assert!(inside > ambient() + 0.2, "the room is not lit: {inside}{picture}");
+    let lit_tile = (CENTRE.0 + 1, CENTRE.1);
+    let inside = at(&lighting, lit_tile, 0.0);
+    assert!(
+        inside > ambient(&lighting, lit_tile) + 0.2,
+        "the room is not lit: {inside}{picture}"
+    );
 
     // Every tile outside the ring, on all four sides, is the ambient exactly —
     // not merely dimmer. "Stops" is a different claim from "falls off", and a
@@ -73,9 +87,9 @@ fn a_shut_room_keeps_its_light_inside() {
     ] {
         let outside = at(&lighting, tile, 0.0);
         assert!(
-            (outside - ambient()).abs() < 1e-6,
+            (outside - ambient(&lighting, tile)).abs() < 1e-6,
             "light leaks out at {tile:?}: {outside} against the ambient's {}{picture}",
-            ambient(),
+            ambient(&lighting, tile),
         );
     }
 }
@@ -188,7 +202,7 @@ fn opening_a_door_spills_light_onto_the_ground_outside() {
     );
     let (closed, opened) = (at(&shut_light, outside, 0.0), at(&open_light, outside, 0.0));
     assert!(
-        (closed - ambient()).abs() < 1e-6 && opened > closed,
+        (closed - ambient(&shut_light, outside)).abs() < 1e-6 && opened > closed,
         "the ground outside the doorway: {opened} open against {closed} shut{}",
         picture(&open, &open_light),
     );
@@ -200,7 +214,7 @@ fn opening_a_door_spills_light_onto_the_ground_outside() {
     let beside = (DOORWAY.0 + 2, DOORWAY.1 + 1);
     let spill = at(&open_light, beside, 0.0);
     assert!(
-        (spill - ambient()).abs() < 1e-6,
+        (spill - ambient(&open_light, beside)).abs() < 1e-6,
         "the open door lit the ground behind the wall beside it: {spill}{}",
         picture(&open, &open_light),
     );
@@ -227,12 +241,16 @@ fn a_pane_of_glass_dims_light_where_a_wall_stops_it() {
         opened.lighting(STILL),
     );
 
-    let wall = at(&walled_light, outside, 0.0);
-    let glass = at(&glazed_light, outside, 0.0);
-    let doorway = at(&open_light, outside, 0.0);
+    // What the *flame* added, and not what the tile came out at: the three scenes
+    // differ by one graphic, and a graphic that shades its column differently
+    // gives the same tile a different share of the sky in each of them. Comparing
+    // the totals would be comparing the ambient as much as the light through the
+    // opening, which is the question this test is not asking.
+    let added = |lighting: &Lighting| at(lighting, outside, 0.0) - ambient(lighting, outside);
+    let (wall, glass, doorway) = (added(&walled_light), added(&glazed_light), added(&open_light));
     assert!(
-        (wall - ambient()).abs() < 1e-6,
-        "the wall no longer stops light: {wall}{}",
+        wall.abs() < 1e-6,
+        "the wall no longer stops light: {wall} arrives through it{}",
         picture(&walled, &walled_light),
     );
     assert!(
@@ -245,7 +263,7 @@ fn a_pane_of_glass_dims_light_where_a_wall_stops_it() {
     // And by about the fraction `occlusion::PANE` states, rather than by
     // whatever a threshold would tolerate: the light through the pane is what
     // the open doorway passes, less a fifth.
-    let want = ambient() + (doorway - ambient()) * 0.8;
+    let want = doorway * 0.8;
     assert!(
         (glass - want).abs() < 1e-3,
         "the pane passes {glass}, not the {want} its opacity says{}",
@@ -273,7 +291,7 @@ fn the_face_of_a_wall_is_lit_from_inside_the_room() {
     ] {
         let lit = at(&lighting, wall, z);
         assert!(
-            lit > ambient() + 0.1,
+            lit > ambient(&lighting, wall) + 0.1,
             "the wall is dark at z {z}: {lit}{}",
             picture(&scene, &lighting),
         );
@@ -293,15 +311,16 @@ fn the_face_of_a_wall_is_lit_from_inside_the_room() {
 fn a_sconce_lights_through_its_own_wall() {
     let scene = scene::sconce_on_wall();
     let lighting = scene.lighting(STILL);
-    let north = at(&lighting, (CENTRE.0, CENTRE.1 - 1), 0.0);
-    let south = at(&lighting, (CENTRE.0, CENTRE.1 + 1), 0.0);
+    let (in_front, behind) = ((CENTRE.0, CENTRE.1 - 1), (CENTRE.0, CENTRE.1 + 1));
+    let north = at(&lighting, in_front, 0.0);
+    let south = at(&lighting, behind, 0.0);
     assert!(
         (north - south).abs() < 1e-6,
         "a facing has appeared — update this test and decision 3: {north} against {south}{}",
         picture(&scene, &lighting),
     );
     assert!(
-        north > ambient() + 0.2,
+        north > ambient(&lighting, in_front) + 0.2,
         "the sconce lights nothing at all: {north}"
     );
 }
@@ -318,14 +337,17 @@ fn a_cellar_does_not_light_the_street_above_it() {
     let lighting = scene.lighting(STILL);
     let street = at(&lighting, CENTRE, 0.0);
     assert!(
-        (street - ambient()).abs() < 1e-6,
+        (street - ambient(&lighting, CENTRE)).abs() < 1e-6,
         "the cellar lights the street: {street}{}",
         picture(&scene, &lighting),
     );
     // And the flame is real: it lights its own floor. Without this the test
     // above would pass for a scene where the torch was never collected.
     let cellar = at(&lighting, CENTRE, f32::from(scene::CELLAR_DEPTH));
-    assert!(cellar > ambient() + 0.2, "the cellar itself is dark: {cellar}");
+    assert!(
+        cellar > ambient(&lighting, CENTRE) + 0.2,
+        "the cellar itself is dark: {cellar}"
+    );
 }
 
 /// A ray slips between two walls that touch only at their corners. **Also
@@ -342,7 +364,7 @@ fn a_ray_slips_between_two_walls_that_touch_at_a_corner() {
     let lighting = scene.lighting(STILL);
     let behind = at(&lighting, CENTRE, 0.0);
     assert!(
-        behind > ambient() + 0.1,
+        behind > ambient(&lighting, CENTRE) + 0.1,
         "the diagonal gap has been closed — update this test: {behind}{}",
         picture(&scene, &lighting),
     );
@@ -468,6 +490,49 @@ fn a_roof_takes_the_sky_from_the_room_under_it() {
     let room = sky(&house, CENTRE);
     assert_eq!(street, occlusion::SKY_OPEN, "the street is not open sky");
     assert_eq!(room, 0, "the middle of a roofed room still sees the sky");
+}
+
+/// And the room is *darker* for it, before anything burns in it.
+///
+/// The other half of decision 1, and the half a field alone does not give: the
+/// sky byte is only a number until an ambient is split in two and scaled by it.
+/// What this asserts is the whole visible change of step 2 — a room under a roof
+/// is deep, the street outside is not, and neither is black.
+///
+/// Held as an ordering and a floor rather than as levels: how dark the room is
+/// is `light::GROUND_AMBIENT`, which is a number tuned against a picture, and a
+/// test that pinned it would fail every time somebody looked at the picture.
+#[test]
+fn a_roof_makes_the_room_under_it_darker_than_the_street() {
+    let house = scene::roofed_room();
+    let lighting = house.lighting(STILL);
+
+    let room = ambient(&lighting, CENTRE);
+    let street = ambient(&lighting, STREET);
+    assert!(
+        street > room + 0.1,
+        "the room is lit as brightly as the road outside it: {room} against {street}",
+    );
+    // And not a hole: an unlit black rectangle is not atmosphere, it is a bug
+    // report — which is the whole of what the ground term is for.
+    // The scene is at noon, so it is lit by `light::SKYLIGHT` — and a tile with
+    // no sky at all gets that ambient's ground term and nothing else.
+    let floor: f32 = light::GROUND_AMBIENT.iter().sum::<f32>() / 3.0;
+    assert!(
+        (room - floor).abs() < 1e-6,
+        "the roofed room is not the ground ambient exactly: {room} against {floor}",
+    );
+
+    // And the same through the whole formula rather than through its first term:
+    // what a person actually sees is the ambient plus whatever reaches the tile,
+    // and nothing here would show up in a frame if the sun happened to make the
+    // difference up.
+    let (room, street) = (at(&lighting, CENTRE, 0.0), at(&lighting, STREET, 0.0));
+    assert!(
+        street > room + 0.1,
+        "lit, the room is as bright as the road: {room} against {street}{}",
+        picture(&house, &lighting),
+    );
 }
 
 /// The threshold of an open door is brighter than the room and darker than the

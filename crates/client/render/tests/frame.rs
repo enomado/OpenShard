@@ -948,15 +948,13 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     );
     // And nothing outside the radius is touched by the light at all — the
     // ambient alone accounts for it, which is what makes the pool a shape.
+    // The grid is empty, so every tile sees the whole sky and the ambient here is
+    // the night's two terms summed — see `light::Ambient`.
+    let night = openshard_client_render::light::NIGHT.at(openshard_client_render::occlusion::SKY_OPEN);
     let outside = lit.pixel(fx, fy);
     for (channel, (got, (drawn, ambient))) in outside
         .iter()
-        .zip(
-            drawn
-                .pixel(fx, fy)
-                .iter()
-                .zip(openshard_client_render::light::NIGHT),
-        )
+        .zip(drawn.pixel(fx, fy).iter().zip(night))
         .take(3)
         .enumerate()
     {
@@ -1134,7 +1132,11 @@ fn a_wall_stops_the_light_behind_it() {
     // Not merely dimmer: as dark as the ambient alone, which is what "stops"
     // means and what a falloff that happened to be steep would not reproduce.
     let unlit = luma(read_back(&device, &queue, &world).pixel(centre_of(102).0 as u32, 128));
-    let ambient: f32 = openshard_client_render::light::NIGHT.iter().sum::<f32>() / 3.0;
+    // Nothing was ever shaded into this grid — the wall went in through
+    // `Occlusion::add`, which is about rays and not about the sky — so every tile
+    // still sees the whole of it and the ambient is the night's two terms summed.
+    let night = openshard_client_render::light::NIGHT.at(openshard_client_render::occlusion::SKY_OPEN);
+    let ambient: f32 = night.iter().sum::<f32>() / 3.0;
     let expected = (unlit as f32 * ambient) as u32;
     assert!(
         behind <= expected + 3,
@@ -3387,6 +3389,58 @@ fn the_shader_and_light_sample_agree_about_the_sun() {
     };
     let scene = openshard_client_render::scene::sunlit_room_with_window();
     assert_parity(&device, &queue, &scene.lighting(0.0));
+}
+
+/// And the same for a frame whose ambient is not one colour.
+///
+/// The scene `docs/lighting_world.md`'s step 2 is judged on: a roof over the
+/// floor, so the sky field runs from nothing under the middle of the room to the
+/// whole of it out on the street, with the blur's gradient across the ring
+/// between. Every other parity scene is lit by an ambient that happens to be
+/// uniform over almost all of it, so a shader that read the wrong plane — or the
+/// right plane at the wrong offset — would still agree with `sample` nearly
+/// everywhere. This is the fixture where it cannot.
+///
+/// The spread is asserted before the frame is compared, for the reason the other
+/// sweeps here state their own coverage: a fixture whose field turned out to be
+/// flat would make this test green *and* mean nothing, and the way that happens
+/// is a scene changing under it rather than a shader breaking.
+#[test]
+fn the_shader_and_light_sample_agree_about_the_sky_a_tile_can_see() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::roofed_room();
+    let lighting = scene.lighting(0.0);
+
+    let mut seen = std::collections::BTreeSet::new();
+    for py in 0..64 {
+        for px in 0..64 {
+            let (x, y, _, _) = parity_place(px, py);
+            seen.insert(lighting.occlusion.sky_at(i32::from(x), i32::from(y)));
+        }
+    }
+    assert_eq!(
+        seen.first(),
+        Some(&0),
+        "no pixel of the fixture is under the roof"
+    );
+    assert!(
+        *seen.last().expect("the sweep read something") > 200,
+        "no pixel of the fixture is out from under the eave: {seen:?}",
+    );
+    // And the values in between, which are the blur's: a field that only ever
+    // read 0 or 255 would be a step, and a shader reading a stale plane could
+    // still land on one of two values by luck. The fixture is eight tiles across
+    // and the room is seven, so the brightest of them is an eave's neighbour
+    // rather than the open street — which is why this is a spread and not the
+    // two ends.
+    assert!(
+        seen.len() >= 4,
+        "the fixture's sky field has no gradient: {seen:?}"
+    );
+
+    assert_parity(&device, &queue, &lighting);
 }
 
 /// Every pixel of a parity frame, the shader's against `light::sample`'s.
