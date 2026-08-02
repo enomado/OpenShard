@@ -126,6 +126,11 @@ use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::follow::{Gaze, Rig};
+// `gump_art` and not `gump`: this crate has a module of that name — the egui
+// half of the same window — and the two are deliberately not merged. One
+// draws the art, the other answers the buttons.
+use openshard_client_render::gump as gump_art;
+use openshard_client_render::gump::{GumpAtlas, GumpPixel, GumpRenderer};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::light::{self, Lighting};
@@ -149,6 +154,7 @@ use openshard_uofiles::animdata::AnimData;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::AsciiFonts;
+use openshard_uofiles::gumpart::Gumps;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::TexMaps;
@@ -372,6 +378,17 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    // The interface's own pictures. Absent is not fatal and not even unusual:
+    // a client directory without `gumpartLegacyMUL.uop` is a map viewer, and
+    // the windows a shard opens are worth losing before the world is. What is
+    // lost is said once, here, rather than per window.
+    let gumps = match Gumps::open(dir) {
+        Ok(gumps) => Some(gumps),
+        Err(error) => {
+            eprintln!("opening gumpartLegacyMUL.uop: {error} — dialogs will draw no art");
+            None
+        }
+    };
     // Read and parsed once, only when asked for: a shard that never sets
     // `ttf_font` has no reason to hold a second face in memory beside
     // `fonts.mul`'s, and one that does is naming a file on this operator's
@@ -465,6 +482,8 @@ pub fn run<D: Dial + Send + 'static>(
         hues,
         hue_ramp,
         font_atlas,
+        gumps,
+        gump_atlas: GumpAtlas::empty(),
         ttf_font,
         anim,
         equip_conv,
@@ -808,6 +827,10 @@ struct Screen {
     /// The pass that turns that mask into a ring on the surface — see
     /// `openshard_client_render::outline`.
     outline: Outline,
+    /// The interface's pass, bound to [`App::gump_atlas`]'s texture and to the
+    /// *surface's* format: it draws over the finished frame, not into the world
+    /// image. `None` exactly when `App::gumps` is.
+    gump_pass: Option<GumpRenderer>,
 }
 
 struct App {
@@ -832,6 +855,18 @@ struct App {
     /// nothing about it depends on the camera, and unlike a graphic there is no
     /// "not currently visible" character to leave unpacked.
     font_atlas: FontAtlas,
+    /// The client's gump art, or `None` when it could not be opened — see
+    /// `run`, which says so once and carries on.
+    gumps: Option<Gumps>,
+    /// The gump pictures packed so far.
+    ///
+    /// Grown a window at a time rather than built up front, unlike
+    /// [`App::font_atlas`]: `gumpartLegacyMUL.uop` is 5,556 entries and a
+    /// session opens a handful of them, so "the whole file" is the one thing
+    /// this must not be. It lives on `App` and not on [`Screen`] for the reason
+    /// [`Screen::atlases`] documents from the other side — the CPU half of an
+    /// atlas builds quads and outlives any one surface.
+    gump_atlas: GumpAtlas,
     /// The operator-supplied TrueType face, when `run` was asked to draw
     /// through one instead — `None` is the ordinary, `fonts.mul`-only run. Held here
     /// rather than only in [`Screen`] because it does not depend on a window
@@ -3073,6 +3108,13 @@ impl App {
         // blit's output, so that a highlight is not dimmed by the night the way
         // the picture under it is.
         let outline = Outline::new(&device, format);
+        // And the interface's, bound to the surface's format for the same
+        // reason: a gump is drawn on the finished picture, and the night that
+        // dimmed the world has already been applied to it.
+        let gump_pass = self
+            .gumps
+            .as_ref()
+            .map(|_| GumpRenderer::new(&device, &queue, format, self.gump_atlas.pixels(), &self.hue_ramp));
         // The HUD, with the surface's own format: egui picks its fragment entry
         // point from whether that format is sRGB, and this one deliberately is
         // not.
@@ -3097,6 +3139,7 @@ impl App {
             ttf_pass,
             outline_mask,
             outline,
+            gump_pass,
         })
     }
 
@@ -3828,6 +3871,91 @@ impl App {
                 // screen pixel and a hairline breaks into a dashed line. See
                 // `Ring::for_zoom`.
                 Ring::SOFT.for_zoom(camera.zoom()),
+            );
+        }
+        // The shard's dialogs, in the client's own art, over the finished
+        // picture and under egui's.
+        //
+        // Under egui and not over it, deliberately: the widgets that *answer* a
+        // gump are still egui's, laid out at the same coordinates in the same
+        // units — one gump pixel is one egui point, and the scale below is the
+        // window's own scale factor, which is what makes those two spaces the
+        // same one. So the art draws the window and egui's transparent widgets
+        // sit exactly on it. See `client/app/src/gump.rs`.
+        //
+        // The atlas grows here rather than when the packet arrived: a page
+        // button flips pages inside the client, so what a window needs is every
+        // page's art and not the showing one's — `gump::art_of` is that list,
+        // and it is asked for on the frame the window is drawn on because that
+        // is the frame that knows the window is open at all.
+        if let (Some(files), Some(pass)) = (self.gumps.as_ref(), window.gump_pass.as_mut()) {
+            let open = self
+                .view
+                .as_ref()
+                .map(|view| view.gumps.as_slice())
+                .unwrap_or_default();
+            let mut pictures = Vec::new();
+            for gump in open {
+                if let Err(error) = self.gump_atlas.add(files, gump_art::art_of(&gump.elements)) {
+                    // Said once per window and then drawn without whatever is
+                    // missing: a dialog with a hole in it is still a dialog the
+                    // player can read, and a client that refused to draw one
+                    // would take the shard's staff commands down with it.
+                    eprintln!("packing gump art for {:?}: {error}", gump.gump_id);
+                }
+                // Where egui put it, not where the server asked for it: the
+                // player may have dragged the window since, and the art has to
+                // arrive at the same rectangle the buttons did. A window egui
+                // has not laid out yet — the frame its packet arrived on — has
+                // nowhere to put its art and waits one frame.
+                let Some(place) = self
+                    .shell
+                    .as_ref()
+                    .and_then(|shell| shell.gumps().placement(gump.gump_id.0))
+                else {
+                    continue;
+                };
+                pictures.extend(
+                    gump_art::window(
+                        &gump.elements,
+                        GumpPixel::new(place.at.0, place.at.1),
+                        place.page,
+                        &place.on,
+                        // Nothing is drawn held: the button the mouse is on is
+                        // egui's widget, and it draws its own press.
+                        None,
+                        &self.gump_atlas,
+                    )
+                    .pictures,
+                );
+            }
+            if let Some(rows) = self.gump_atlas.take_dirty() {
+                pass.upload_rows(&window.queue, self.gump_atlas.pixels(), rows);
+            }
+            let quads = gump_art::collect(&pictures, &self.gump_atlas);
+            pass.render(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                gump_art::Frame {
+                    target: &view,
+                    width: window.config.width,
+                    height: window.config.height,
+                    // A whole number, and the same one egui is laying its
+                    // widgets out at: gump art is five-bit pixel art sampled
+                    // with Nearest, and a fractional scale doubles some of its
+                    // rows and not others.
+                    // egui's own, and not the window's scale factor rounded:
+                    // the art is placed at coordinates egui laid out in
+                    // points, so any other number here slides a window's
+                    // pictures off its buttons.
+                    scale: self
+                        .shell
+                        .as_ref()
+                        .map(|shell| shell.gumps().scale())
+                        .unwrap_or(1.0),
+                },
+                &quads,
             );
         }
         // The UI over it, with no depth attachment: the world's depth buffer

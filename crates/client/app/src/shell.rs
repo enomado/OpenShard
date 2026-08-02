@@ -564,6 +564,13 @@ impl Shell {
     /// Draw what [`Shell::run`] produced, over whatever is already on the
     /// surface.
     #[allow(clippy::too_many_arguments)]
+    /// The dialog state the *art* layer needs — see
+    /// [`crate::gump::Windows::state`]. Here rather than on `App` because a
+    /// page a button flipped to is the UI's own answer and this is the UI.
+    pub fn gumps(&self) -> &crate::gump::Windows {
+        &self.gumps
+    }
+
     pub fn paint(
         &mut self,
         device: &wgpu::Device,

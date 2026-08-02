@@ -143,6 +143,32 @@ fn size(width: i32, height: i32) -> egui::Vec2 {
 #[derive(Default)]
 pub struct Windows {
     by_dialog: HashMap<u32, Sheet>,
+    /// Real pixels per egui point, as of the last frame drawn.
+    ///
+    /// Recorded rather than asked for again, because the art pass has to be
+    /// handed *the same number egui laid out with* — a gump pixel is an egui
+    /// point here, so any disagreement between the two is a window whose art
+    /// slides off its buttons. Zero before the first frame, which is what
+    /// [`Windows::placement`] returning `None` protects.
+    pixels_per_point: f32,
+}
+
+/// Where a window's art goes, and the state it is drawn in.
+///
+/// What [`Windows`] hands the art pass every frame — see
+/// [`Windows::placement`]. All three fields are things no packet carries: the
+/// position is egui's (the player may have dragged the window), the page is a
+/// click this client answered itself, and the switches are what the player has
+/// set since the layout arrived.
+pub struct Placement {
+    /// The window's content origin in egui points, which is also its origin in
+    /// gump pixels — the two spaces are one here, and [`Windows::scale`] is
+    /// what keeps them that way.
+    pub at: (i32, i32),
+    /// The page showing.
+    pub page: u32,
+    /// Which switches are on.
+    pub on: std::collections::BTreeSet<RawSwitchId>,
 }
 
 /// One window's answers-in-progress.
@@ -157,9 +183,53 @@ struct Sheet {
     switches: HashMap<u32, bool>,
     /// What has been typed into each field, by its id.
     entries: HashMap<u16, String>,
+    /// Where this window's *content* ended up on the screen last frame, in egui
+    /// points, or `None` before it has been drawn once.
+    ///
+    /// The seam between the two halves of a gump. The art is drawn by
+    /// `client/render`'s pass and the widgets by egui, and what makes them land
+    /// on each other is that the art is placed here — at the rectangle egui
+    /// allocated — rather than at the coordinate the server asked for. Which
+    /// means a dragged window drags its art with it, and neither half has to
+    /// know how egui decorates a frame.
+    origin: Option<(f32, f32)>,
 }
 
 impl Windows {
+    /// Where a window's art goes and what state it is in, or `None` for a
+    /// window egui has not laid out yet — which is every window on the frame
+    /// its packet arrived, and exactly the frame there is nowhere to put it.
+    ///
+    /// The two pieces of state this module holds that no packet carries — see
+    /// the module docs — handed out so that
+    /// [`openshard_client_render::gump::window`] can lay the same window out
+    /// through the client's own files. Both ends read one copy: a second page
+    /// counter beside this one would drift the moment a page button was pressed
+    /// and only one of them heard about it.
+    ///
+    /// A window this has never seen is on page 0 with nothing set, which is
+    /// exactly what a layout that has just arrived means.
+    pub fn placement(&self, gump_id: u32) -> Option<Placement> {
+        let sheet = self.by_dialog.get(&gump_id)?;
+        let (x, y) = sheet.origin?;
+        Some(Placement {
+            at: (x.round() as i32, y.round() as i32),
+            page: sheet.page,
+            on: sheet
+                .switches
+                .iter()
+                .filter(|(_, set)| **set)
+                .map(|(id, _)| RawSwitchId(*id))
+                .collect(),
+        })
+    }
+
+    /// Real pixels per point, for whoever draws this window's art at the same
+    /// scale egui laid its widgets out at. See [`Windows::pixels_per_point`].
+    pub fn scale(&self) -> f32 {
+        self.pixels_per_point
+    }
+
     /// Draw every open dialog, and hand back the one answer this frame produced.
     ///
     /// At most one: a reply closes its window, and a player cannot press two
@@ -167,6 +237,7 @@ impl Windows {
     /// [`WorldView::gump_closed`](openshard_client_net::view::WorldView::gump_closed)
     /// — see the module docs for why that is this end's job.
     pub fn show(&mut self, context: &egui::Context, open: &[OpenGump], hues: &Hues) -> Option<GumpReply> {
+        self.pixels_per_point = context.pixels_per_point();
         // The state of a window the server has taken away is not worth keeping:
         // a dialog that comes back comes back as the server drew it.
         self.by_dialog
@@ -194,7 +265,20 @@ impl Windows {
         let mut still_open = true;
         let mut answer = None;
 
+        // A transparent frame, and this is not cosmetic: the art pass draws
+        // before egui does, so an opaque window background would be painted
+        // *over* the pictures it is supposed to be behind and the window would
+        // look exactly as it did before any of this existed. The shadow goes
+        // for the same reason — it is drawn under the frame and over the art.
+        // What is kept is the title bar and the close box, because until this
+        // client owns the mouse over a gump they are the only way to move or
+        // dismiss one.
+        let mut frame = egui::Frame::window(&context.style_of(context.theme()));
+        frame.fill = egui::Color32::TRANSPARENT;
+        frame.shadow = egui::epaint::Shadow::NONE;
+
         let mut window = egui::Window::new(title(gump))
+            .frame(frame)
             // The title is the layout's first label, which two dialogs may
             // share; the dialog id is what actually distinguishes them.
             .id(egui::Id::new(("gump", gump.gump_id.0)))
@@ -272,6 +356,10 @@ fn draw(ui: &mut egui::Ui, gump: &OpenGump, sheet: &mut Sheet, hues: &Hues) -> O
     let content = content_size(gump);
     let (rect, _) = ui.allocate_exact_size(content, egui::Sense::hover());
     let origin = rect.min;
+    // Where the art goes this frame — see `Sheet::origin`. Written every frame
+    // rather than once, because egui's own window is draggable and the art has
+    // to follow it.
+    sheet.origin = Some((origin.x, origin.y));
     let at = |x: i32, y: i32, size: egui::Vec2| {
         egui::Rect::from_min_size(origin + egui::vec2(point(x), point(y)), size)
     };
@@ -307,7 +395,14 @@ fn draw(ui: &mut egui::Ui, gump: &OpenGump, sheet: &mut Sheet, hues: &Hues) -> O
                 id,
                 ..
             } => {
-                if ui.put(at(*x, *y, BUTTON_SIZE), egui::Button::new("▶")).clicked() {
+                // Transparent and unlabelled: the button's picture is drawn
+                // by the art pass underneath, and what is left for egui is the
+                // click. A filled widget here would hide the art it is
+                // standing on.
+                let face = egui::Button::new("")
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::NONE);
+                if ui.put(at(*x, *y, BUTTON_SIZE), face).clicked() {
                     match kind {
                         // Client-side, and the reason this module holds state:
                         // no packet is sent and the server never learns the
@@ -413,19 +508,11 @@ fn draw(ui: &mut egui::Ui, gump: &OpenGump, sheet: &mut Sheet, hues: &Hues) -> O
                     egui::TextEdit::singleline(field),
                 );
             }
-            // The three that are pictures and nothing else. Named rather than
-            // drawn — see the module docs — so a layout that is *mostly* art
-            // still says what it was asking for.
-            Element::Image { x, y, gump: art, .. } => {
-                placeholder(ui, at(*x, *y, BUTTON_SIZE), &format!("#{art}"))
-            }
-            Element::ImageTiled {
-                x,
-                y,
-                width,
-                height,
-                gump: art,
-            } => placeholder(ui, at(*x, *y, size(*width, *height)), &format!("#{art}")),
+            // Gump art, drawn by the pass underneath this window and not
+            // here — see `Sheet::origin`. Nothing is allocated for them: they
+            // are already accounted for in `content_size`, which is what
+            // reserves the room the art needs.
+            Element::Image { .. } | Element::ImageTiled { .. } => {}
             Element::Item { x, y, graphic, .. } => {
                 placeholder(ui, at(*x, *y, BUTTON_SIZE), &format!("[{graphic}]"));
             }

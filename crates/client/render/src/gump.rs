@@ -444,6 +444,44 @@ pub fn resize(atlas: &GumpAtlas, graphic: Graphic, at: GumpPixel, width: i32, he
 /// graphic the server named. `ResizePic.GetTexture`'s remap, flattened.
 const RESIZE_PIECES: [u16; 9] = [0, 1, 2, 3, 5, 6, 7, 8, 4];
 
+/// Every gump graphic a layout can draw, whichever page is showing.
+///
+/// What the atlas is grown with before [`window`] runs, and it has to be every
+/// page rather than the one being shown: a page flip is a click, and an atlas
+/// grown on the frame after it would draw the new page empty for one frame.
+///
+/// A `{ resizepic }` contributes **nine** graphics, not one — see [`resize`] —
+/// and `window` cannot place one until all nine have been packed, because where
+/// its edges go is decided by how big its corners turned out to be. That
+/// dependency is the reason this exists at all rather than the atlas growing
+/// from whatever `window` happened to name.
+pub fn art_of(elements: &[Element]) -> BTreeSet<Graphic> {
+    let mut wanted = BTreeSet::new();
+    let mut want = |gump: u32| {
+        wanted.insert(Graphic(gump as u16));
+    };
+    for element in elements {
+        match element {
+            Element::Background { gump, .. } => {
+                for piece in RESIZE_PIECES {
+                    want(u32::from((*gump as u16).wrapping_add(piece)));
+                }
+            }
+            Element::Image { gump, .. } | Element::ImageTiled { gump, .. } => want(*gump),
+            Element::Button { normal, pressed, .. } => {
+                want(*normal);
+                want(*pressed);
+            }
+            Element::Check(switch) | Element::Radio(switch) => {
+                want(switch.off);
+                want(switch.on);
+            }
+            _ => {}
+        }
+    }
+    wanted
+}
+
 /// One line of a window's text, resolved to where it goes.
 ///
 /// The line itself is *not* here: a layout names a row of the text table that
