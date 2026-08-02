@@ -1625,23 +1625,65 @@ own understanding had written.
     `the_state_left_behind_says_which_of_the_three_the_body_is_doing` pins the
     state to the answer at every scene, from every state.
 
-    Sliding past an obstacle is also the one thing here that is a *preference*
-    rather than a rule, and it is now `WhenBlocked::{Slide, Stand}`, passed to
-    `Detour::step` per call. Both answers are correct play: sliding keeps a
-    runner running and is what a body brushing past furniture does; standing is
-    the classic client's own answer, and a player who has walked that way for
-    twenty years reads an unasked-for sidestep as the character disobeying. It
-    is a parameter and not a field on the machine, because a state and a
-    setting must stay two values — and being read where the decision is made is
-    what lets it change mid-walk with no state to reset. **`Stand` is the
-    default**: a body that only ever goes where it was pointed surprises
-    nobody, and sliding is what a player opts into. There is no client config
-    to read it from yet; `Steering::set_when_blocked` is the single line one
-    will set, written out at `App`'s construction today.
+    How far a body may be *turned* off the ask is the one thing here that is a
+    preference rather than a rule, and the sizes are not a spectrum: the flanks
+    are fixed, so there are exactly two. `Leeway::Eighth` — the default — is a
+    45° turn, which is what a blocked diagonal splits onto: **a body rounding a
+    corner, always allowed**, because refusing it is a character stopping dead
+    at the edge of a house it was walking past. That was the first cut of this
+    and it stopped far too hard. `Leeway::Quarter` adds the 90° turn, the only
+    thing a blocked *cardinal* has, which puts the body travelling at right
+    angles to what was asked — defensible, a surprise, and so the thing a
+    player opts into. Walking straight into a wall therefore stops the body by
+    default, which is what the classic client does.
+
+    It is a parameter to `Detour::step` and not a field on the machine, because
+    a state and a setting must stay two values — and being read where the
+    decision is made is what lets it change mid-walk with no state to reset.
+    There is no client config to read it from yet; `Steering::set_leeway` is
+    the single line one will set, written out at `App`'s construction today.
     `a_heading_stops_at_an_obstacle_by_default_and_slides_only_when_asked` is
     what pins the default — deliberately the one test that sets nothing, since
     a default flipping by accident is every walk in the game changing character
-    with nothing to catch it.
+    with nothing to catch it — and `the_leeways_differ_only_at_a_wall_dead_ahead`
+    holds the two settings to differing in exactly one place, which is easy to
+    widen by accident and hard to notice.
+
+    ### The cursor says more than one of eight things
+
+    With both ways round a corner open and nothing in the terrain to prefer
+    either, the tie used to fall to the flank last taken and then to a fixed
+    rotation. But the player has *already said* which way round they mean to
+    go: the cursor sits a little to one side of the corner, and rounding to one
+    of eight sectors threw that away before anything could read it.
+    `movement::Lean` is that sub-sector detail put back — `Clockwise`,
+    `Centred`, `Counter`, from the sign of a cross product, integer arithmetic
+    so that "squarely on the bearing" is exact rather than a tolerance in
+    degrees. `Heading` is a direction and its lean together, and it is what
+    `Steering::steer` takes now. The tie-breaks run lean, then the remembered
+    flank, then clockwise: the freshest and most specific thing wins, and the
+    loop-breaking memory still covers the case where nothing was said (a held
+    arrow key, a cursor squarely on the diagonal).
+
+    **And the lean is measured on the screen, from where the body is drawn.**
+    Not on the tile grid: a player pushes the mouse away from their character
+    in the direction they want it to go, and that direction is a bearing on a
+    flat picture. That the two agree for the projection drawn today is a
+    coincidence of its numbers — `camera::project` is a rotation and a uniform
+    scale, and rounding to a sector survives that — not a property of the idea;
+    a 2:1 diamond, which is what most isometric art is, and the grid reading
+    starts naming a direction the cursor is nowhere near. The origin is the
+    body's own projected pixel rather than the middle of the viewport, which is
+    what makes it survive **a camera that is not locked to the body**: with a
+    free eye the character is off-centre, and "away from the middle of the
+    screen" is then a different question from "away from the character". Both
+    are defensible idioms and a shard may one day want the other; this is the
+    one that keeps meaning what it means while the eye wanders.
+    `App::heading_between` is the arithmetic, split out of the method so it can
+    be checked against the drawn picture rather than against a running window,
+    and `the_screen_bearings_are_the_grid_turned_an_eighth` pins the thing that
+    catches a grid reading by mistake: straight down the screen is
+    *south-east*, and the grid would have called it south.
 
     Its whole input is **four tiles**:
     where you stand, where you meant to go, and the two flanks that could take

@@ -414,9 +414,11 @@ pub fn direction_toward(from: Point, to: Point) -> Option<Direction> {
 /// of the body is due east, not south-east, and a fair sector split is what
 /// says so.
 pub fn heading_toward(from: Point, to: Point) -> Option<Direction> {
-    let dx = f64::from(i32::from(to.x) - i32::from(from.x));
-    let dy = f64::from(i32::from(to.y) - i32::from(from.y));
-    if dx == 0.0 && dy == 0.0 {
+    let (dx, dy) = (
+        i32::from(to.x) - i32::from(from.x),
+        i32::from(to.y) - i32::from(from.y),
+    );
+    if dx == 0 && dy == 0 {
         return None;
     }
     // atan2(dy, dx): 0° at due east, 90° at due south — tile `y` grows south,
@@ -424,7 +426,7 @@ pub fn heading_toward(from: Point, to: Point) -> Option<Direction> {
     // Rounding to the nearest 45° is the sector split: each direction owns the
     // 45° centred on its own bearing, not the read of just `dx`'s and `dy`'s
     // signs that flattens everything off-axis to a diagonal.
-    let octant = (dy.atan2(dx).to_degrees() / 45.0).round() as i64;
+    let octant = (f64::from(dy).atan2(f64::from(dx)).to_degrees() / 45.0).round() as i64;
     Some(match octant.rem_euclid(8) {
         0 => Direction::East,
         1 => Direction::SouthEast,
@@ -435,6 +437,86 @@ pub fn heading_toward(from: Point, to: Point) -> Option<Direction> {
         6 => Direction::North,
         _ => Direction::NorthEast,
     })
+}
+
+/// A heading, with the part of it the eight sectors throw away.
+///
+/// A sector is 45° wide and a body can only be sent along its centre, so
+/// rounding to one is lossy by construction — and what it loses is the very
+/// thing a player is saying when they hold the cursor a little to one side of
+/// a corner. See [`Lean`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heading {
+    /// The sector: which of the eight ways this heading is nearest to.
+    pub direction: Direction,
+    /// Where inside that sector it actually points.
+    pub lean: Lean,
+}
+
+impl Heading {
+    /// A heading with nothing to say beyond its sector — what a held arrow key
+    /// is, and what a direction reconstructed from anything but a real bearing
+    /// has to be.
+    #[must_use]
+    pub const fn centred(direction: Direction) -> Self {
+        Self {
+            direction,
+            lean: Lean::Centred,
+        }
+    }
+}
+
+/// Which side of its own sector a heading falls on: the sub-sector detail that
+/// rounding to one of eight directions discards.
+///
+/// It is what a player leaning the cursor past a corner is saying, and there is
+/// no other way to say it — the body can only be sent along a sector's centre,
+/// so the *ask* is quantised even though the pointing was not. Where it matters
+/// is a tie: two ways past an obstacle, both legal, and no reason in the
+/// terrain to prefer either. The cursor has the reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lean {
+    /// Dead on the sector's own bearing — and exactly so, by integer
+    /// arithmetic rather than by a tolerance (see [`Lean::of`]). A held arrow
+    /// key is this, and so is a cursor squarely on the diagonal.
+    #[default]
+    Centred,
+    /// Past the centre, the way the compass turns: north-east of north,
+    /// south-east of east. The clockwise flank is the one being pointed at.
+    Clockwise,
+    /// Past the centre the other way.
+    Counter,
+}
+
+impl Lean {
+    /// Which side of the bearing `(ux, uy)` the vector `(dx, dy)` falls on.
+    ///
+    /// The sign of their 2D cross product — positive is clockwise where `y`
+    /// grows downward, which is true of both spaces this is used in: the tile
+    /// grid, whose `y` grows south, and the screen it is drawn on. It is the
+    /// same answer in both, because the projection between them turns the
+    /// plane without flipping it — so a caller measuring on the screen and a
+    /// caller measuring on the grid mean the same thing by `Clockwise`, and
+    /// [`crate::Detour`] can take either without being told which.
+    ///
+    /// The bearing is a vector and not a [`Direction`] because the screen
+    /// bearing of a direction is not its grid step, and asking a pointing
+    /// device is the whole point.
+    ///
+    /// Integer arithmetic on purpose: a tolerance would have to name a number
+    /// of degrees, and the case that has to be exact is a cursor pointing
+    /// *squarely* along a bearing — which is a cross product of zero, and
+    /// nothing about trigonometry. Through `atan2` that same case comes out as
+    /// 45.000000000000007 against 45, and a player pointing straight at a
+    /// corner would lean one way for no reason anyone could see.
+    #[must_use]
+    pub const fn of(ux: i32, uy: i32, dx: i32, dy: i32) -> Self {
+        match ux * dy - uy * dx {
+            0 => Self::Centred,
+            cross if cross > 0 => Self::Clockwise,
+            _ => Self::Counter,
+        }
+    }
 }
 
 /// Where one step from `position` lands, or `None` at the world's edge.

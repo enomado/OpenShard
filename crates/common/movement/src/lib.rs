@@ -55,12 +55,12 @@ mod sequence;
 mod terrain;
 mod walk;
 
-pub use detour::{Around, Detour, Step, WhenBlocked};
+pub use detour::{Around, Detour, Leeway, Step};
 pub use pace::{Pace, RUN_HOLD, RUN_INTERVAL, WALK_BUFFER, WALK_HOLD, WALK_INTERVAL, WalkPace};
 pub use path::find_path;
 pub use sequence::{OutOfSequence, StepCounter, WalkSequence};
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
 pub use walk::{
-    Intent, OpenWorld, Terrain, Tile, Walk, Walker, direction_toward, heading_toward, intend, line_tiles,
-    step_allowed, step_from,
+    Heading, Intent, Lean, OpenWorld, Terrain, Tile, Walk, Walker, direction_toward, heading_toward,
+    intend, line_tiles, step_allowed, step_from,
 };

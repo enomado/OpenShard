@@ -36,6 +36,26 @@
 //! That is the whole input, which is why [`Around::new`] can state a scene
 //! outright and every case of this can be enumerated rather than sampled.
 //!
+//! # How far a body may be turned, and by what
+//!
+//! Two things decide the answer besides the ground: [`Leeway`], how far off the
+//! ask a body may be turned at all, and [`Lean`], which side of the ask the
+//! pointing was actually on.
+//!
+//! The turn sizes are not a spectrum — there are exactly two, because the
+//! flanks are fixed. An eighth (45°) is what a blocked diagonal splits onto,
+//! and it is a body rounding a corner: it is always allowed, because refusing
+//! it is a character stopping dead at the edge of a house it was walking past.
+//! A quarter (90°) is the only thing a blocked cardinal has, and it puts the
+//! body travelling at right angles to what was asked — defensible, and a
+//! surprise, so it is what [`Leeway::Quarter`] opts into.
+//!
+//! The lean is what settles a tie the terrain cannot. Both flanks open, no
+//! reason in the ground to prefer either — but the player pointing a little to
+//! one side of the corner has already said which way round they mean to go,
+//! and the eight sectors threw that away before this ever saw it. See
+//! [`Detour::step`] for the order the three tie-breaks come in.
+//!
 //! # Three states: walking, sliding, standing
 //!
 //! [`Detour`] is the machine, and its states are what a body is doing about
@@ -62,7 +82,7 @@
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
-use crate::walk::{Terrain, step_allowed};
+use crate::walk::{Heading, Lean, Terrain, step_allowed};
 
 /// What is open around a body, as far as one step in one intended direction can
 /// tell: the intended tile and the two flanks that could take its place.
@@ -71,8 +91,10 @@ use crate::walk::{Terrain, step_allowed};
 /// neighbourhood is here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Around {
-    /// The direction being asked for.
-    intent: Direction,
+    /// What is being asked for: the sector, and where inside it the ask
+    /// actually pointed. The lean is only ever read to break a tie between two
+    /// flanks that are both open — see [`Detour::step`].
+    intent: Heading,
     /// Whether the tile [`Around::intent`] points at can be stepped onto.
     ahead: bool,
     /// The two directions the body could slide onto instead, clockwise of the
@@ -91,12 +113,12 @@ impl Around {
     /// open, sending it, and being rolled back for as long as the player held
     /// the key.
     #[must_use]
-    pub fn read(terrain: &dyn Terrain, from: Point, intent: Direction) -> Self {
+    pub fn read(terrain: &dyn Terrain, from: Point, intent: Heading) -> Self {
         let open = |direction| step_allowed(terrain, from, direction).is_some();
         Self {
             intent,
-            ahead: open(intent),
-            flanks: flanks(intent).map(|flank| (flank, open(flank))),
+            ahead: open(intent.direction),
+            flanks: flanks(intent.direction).map(|flank| (flank, open(flank))),
         }
     }
 
@@ -109,8 +131,8 @@ impl Around {
     /// gives them; which directions those are is the intent's business, not the
     /// caller's.
     #[must_use]
-    pub const fn new(intent: Direction, ahead: bool, clockwise: bool, counter: bool) -> Self {
-        let [cw, ccw] = flanks(intent);
+    pub const fn new(intent: Heading, ahead: bool, clockwise: bool, counter: bool) -> Self {
+        let [cw, ccw] = flanks(intent.direction);
         Self {
             intent,
             ahead,
@@ -138,40 +160,44 @@ pub enum Step {
     Stuck,
 }
 
-/// What a body should do when the way it asked for is shut: get past it, or
-/// stop.
+/// How far a body may turn off the way it was pointed, to keep moving past
+/// something in the way.
 ///
-/// A preference and not a rule — both answers are correct play, and which one
-/// a shard wants is not something this crate can know. Sliding is what a body
-/// brushing past furniture does and what keeps a runner running; standing is
-/// the classic client's own answer, and a player who has walked that way for
-/// twenty years reads an unasked-for sidestep as the character disobeying.
-/// Standing is the default: a body that only ever goes where it was pointed
-/// surprises nobody, and the other one is a thing a player opts into.
+/// A preference and not a rule — both answers are correct play, and which one a
+/// shard wants is not something this crate can know. What is *not* a preference
+/// is that some turn is allowed: a body that stops dead at every obstacle is a
+/// body that cannot get round a barrel, and a heading is an ask to keep moving.
+///
+/// The two sizes are the only two there are, because the flanks a blocked
+/// direction can be answered with are fixed (see the module docs): an eighth of
+/// the compass for a blocked diagonal, a quarter for a blocked cardinal.
 ///
 /// It is passed to [`Detour::step`] per call rather than kept anywhere, so
 /// whoever owns the setting owns it — today a default, and a shard's config
 /// when there is one to read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WhenBlocked {
-    /// Take the nearest legal way past: one step along the flank. The body
-    /// keeps moving, which is what a heading is for.
-    Slide,
-    /// Take nothing. A body that walks into a wall stops against it, and the
-    /// player is the one who decides where to go next.
+pub enum Leeway {
+    /// An eighth of the compass, and no more: 45°.
     ///
-    /// The default, because it is what the client this engine has to feel like
-    /// does, and because it is the answer that never surprises: a body only
-    /// ever goes where it was pointed. A sidestep nobody asked for is a
-    /// character disobeying — right up until the player wanted it, which is
-    /// what the other one is for.
+    /// A diagonal blocked by a corner still resolves onto the cardinal it
+    /// splits into — that is the small correction a body makes rounding a
+    /// corner, and refusing it is a character stopping dead at the edge of a
+    /// house it was walking past. A wall dead ahead has no eighth-turn past it
+    /// at all (there is no legal diagonal past a blocked cardinal, see the
+    /// module docs), so walking straight into a wall stops the body, which is
+    /// what the classic client does.
     ///
-    /// The answer is [`Step::Stuck`], exactly as if there were no way past at
-    /// all — because from the player's side there is not one they asked for.
-    /// What a caller does with that is unchanged: turn into it, and send no
-    /// step.
+    /// The default: the smallest turn that still lets a body walk round
+    /// things, and no larger one that could take it somewhere its player never
+    /// pointed.
     #[default]
-    Stand,
+    Eighth,
+    /// A quarter, 90°: also slide along the face of a wall walked into head-on.
+    ///
+    /// Keeps a runner running along a building rather than stopping at it. It
+    /// is the bigger surprise of the two, though — the body ends up travelling
+    /// at right angles to the ask — so it is the one a player opts into.
+    Quarter,
 }
 
 /// How a body is getting along with what is in front of it: walking freely,
@@ -209,37 +235,60 @@ pub enum Detour {
 }
 
 impl Detour {
-    /// Where to actually step, given what is around, what was wanted, and what
-    /// this shard's players have said they want done about a shut way.
+    /// Where to actually step, given what is around, what was wanted, and how
+    /// far this shard's players have said a body may be turned to keep it
+    /// moving.
     ///
     /// The transitions, in full. An open intent goes to [`Detour::Clear`] —
     /// whatever was being slid along is behind the body now, and biasing the
     /// next obstacle by it would be memory of the wrong thing. A blocked intent
-    /// with an open flank goes to [`Detour::Sliding`] on that flank, preferring
-    /// the one already committed to when it is still a candidate — unless
-    /// `when_blocked` is [`WhenBlocked::Stand`], which is a body that does not
-    /// slide at all. Nothing open at all goes to [`Detour::Standing`]: there is
-    /// no slide to remember, and no pretending there was nothing in the way
-    /// either.
+    /// with an open flank goes to [`Detour::Sliding`] on that flank, when the
+    /// turn onto it is one `leeway` allows. Nothing open, or nothing allowed,
+    /// goes to [`Detour::Standing`]: there is no slide to remember, and no
+    /// pretending there was nothing in the way either.
     ///
-    /// `when_blocked` is a parameter and not a field on purpose: it is a
-    /// setting, the state is a state, and putting a preference inside a machine
-    /// makes "what is this body doing" and "what has its player asked for" one
-    /// value that cannot be reasoned about separately.
-    pub fn step(&mut self, around: &Around, when_blocked: WhenBlocked) -> Step {
+    /// # Which flank, when both are open
+    ///
+    /// Three tie-breaks, in this order, and the order is the point:
+    ///
+    /// 1. **Where the ask actually pointed** — [`Lean`]. A player holding the
+    ///    cursor a little to one side of a corner has *said* which way round it
+    ///    they mean to go, and the eight sectors threw that away before this
+    ///    ever saw it. It is the freshest and most specific thing there is, so
+    ///    it wins.
+    /// 2. **The flank already being slid along** — [`Detour::Sliding`]. Nothing
+    ///    was said, so keep doing what was working; see the module docs for the
+    ///    two-tile loop this exists to break.
+    /// 3. **Clockwise**, arbitrarily, because something has to be.
+    ///
+    /// A lean beating the memory is not a hole in the loop-breaking: the loop
+    /// needs both flanks open at both tiles, and a lean that says the same
+    /// thing at both — which is a player pointing steadily one way round an
+    /// obstacle, and going that way is obeying them, not looping.
+    ///
+    /// `leeway` is a parameter and not a field on purpose: it is a setting, the
+    /// state is a state, and putting a preference inside a machine makes "what
+    /// is this body doing" and "what has its player asked for" one value that
+    /// cannot be reasoned about separately.
+    pub fn step(&mut self, around: &Around, leeway: Leeway) -> Step {
         if around.ahead {
             *self = Self::Clear;
-            return Step::Ahead(around.intent);
+            return Step::Ahead(around.intent.direction);
         }
-        if when_blocked == WhenBlocked::Stand {
+        // A quarter turn is what a blocked *cardinal*'s flanks are, and a body
+        // held to an eighth may not take one. A blocked diagonal's flanks are
+        // eighths and are always allowed — that is a body rounding a corner,
+        // not a body being sent somewhere else.
+        if leeway == Leeway::Eighth && !around.intent.direction.is_diagonal() {
             *self = Self::Standing;
             return Step::Stuck;
         }
-        let ordered = match *self {
-            Self::Sliding(preferred) if preferred == around.flanks[1].0 => {
-                [around.flanks[1], around.flanks[0]]
-            }
-            _ => around.flanks,
+        let [cw, ccw] = around.flanks;
+        let ordered = match (around.intent.lean, *self) {
+            (Lean::Clockwise, _) => [cw, ccw],
+            (Lean::Counter, _) => [ccw, cw],
+            (Lean::Centred, Self::Sliding(preferred)) if preferred == ccw.0 => [ccw, cw],
+            (Lean::Centred, _) => [cw, ccw],
         };
         for (direction, open) in ordered {
             if open {
@@ -306,14 +355,14 @@ mod tests {
             let [cw, ccw] = flanks(intent);
             for scene in 0..8u8 {
                 let (ahead, clockwise, counter) = (scene & 1 != 0, scene & 2 != 0, scene & 4 != 0);
-                let around = Around::new(intent, ahead, clockwise, counter);
+                let around = Around::new(Heading::centred(intent), ahead, clockwise, counter);
                 for mut detour in every_state(intent) {
                     let open = |direction| match direction {
                         d if d == intent => ahead,
                         d if d == cw => clockwise,
                         _ => counter,
                     };
-                    match detour.step(&around, WhenBlocked::Slide) {
+                    match detour.step(&around, Leeway::Quarter) {
                         Step::Ahead(direction) => {
                             assert_eq!(direction, intent, "{intent:?}/{scene}: not the intent");
                             assert!(ahead, "{intent:?}/{scene}: walked into a shut tile");
@@ -347,8 +396,8 @@ mod tests {
         for &intent in &Direction::ALL {
             for scene in 0..8u8 {
                 let (ahead, clockwise, counter) = (scene & 1 != 0, scene & 2 != 0, scene & 4 != 0);
-                let around = Around::new(intent, ahead, clockwise, counter);
-                for when in [WhenBlocked::Slide, WhenBlocked::Stand] {
+                let around = Around::new(Heading::centred(intent), ahead, clockwise, counter);
+                for when in [Leeway::Quarter, Leeway::Eighth] {
                     for mut detour in every_state(intent) {
                         let was = detour;
                         let step = detour.step(&around, when);
@@ -367,35 +416,168 @@ mod tests {
         }
     }
 
-    /// The other preference, whole: a body told to stand never slides, at any
-    /// scene, from any state. Which is one claim and *two* halves worth
-    /// enumerating — that a shut way is always answered with `Stuck`, however
-    /// wide open both flanks are, and that the setting changes nothing else:
-    /// an open way is still walked, and a body standing against a wall still
-    /// sets off the moment it is gone.
+    /// The default leeway, whole: an eighth of the compass and not one degree
+    /// more, at every scene, from every state.
     ///
-    /// The pinch-point memory is the part this quietly turns off, and that is
-    /// correct rather than a gap — there is no slide to keep stable when there
-    /// is no slide.
+    /// Which is two claims, and the split between them is the whole of what
+    /// this setting means. A **diagonal** is a body rounding a corner: the
+    /// flank is 45° off, so it is taken whenever it is open — refusing it
+    /// would be a character stopping dead at the edge of a house it was
+    /// walking past, which is what "stops too aggressively" was. A
+    /// **cardinal** is a wall dead ahead: its only flanks are 90° off, the
+    /// body would end up travelling at right angles to the ask, and nobody
+    /// asked for that — so it stops.
     #[test]
-    fn told_to_stand_a_body_never_slides_and_still_walks_when_the_way_is_open() {
+    fn an_eighth_of_leeway_rounds_a_corner_and_stops_at_a_wall() {
+        for &intent in &Direction::ALL {
+            let [cw, ccw] = flanks(intent);
+            for scene in 0..8u8 {
+                let (ahead, clockwise, counter) = (scene & 1 != 0, scene & 2 != 0, scene & 4 != 0);
+                let around = Around::new(Heading::centred(intent), ahead, clockwise, counter);
+                for mut detour in every_state(intent) {
+                    let was = detour;
+                    let step = detour.step(&around, Leeway::Eighth);
+                    // Which of two open flanks is taken is the tie-break's
+                    // business and has its own tests; what this one claims is
+                    // whether a flank may be taken at all.
+                    let taken = match step {
+                        Step::Aside(cw_or_ccw) => Some(cw_or_ccw),
+                        _ => None,
+                    };
+                    let expected = match (ahead, intent.is_diagonal()) {
+                        (true, _) => (Some(Step::Ahead(intent)), None),
+                        // The corner: an eighth turn onto whichever cardinal
+                        // the diagonal splits into is open.
+                        (false, true) if clockwise => (None, Some(cw)),
+                        (false, true) if counter => (None, Some(ccw)),
+                        // The wall: a quarter turn is the only thing on offer,
+                        // and it is more than was asked for.
+                        (false, _) => (Some(Step::Stuck), None),
+                    };
+                    match expected {
+                        (Some(exact), _) => assert_eq!(
+                            step, exact,
+                            "{intent:?}/{scene} from {was:?}: an eighth of leeway is a corner, not a wall"
+                        ),
+                        (None, flank) => assert!(
+                            taken == flank || taken == Some(if flank == Some(cw) { ccw } else { cw }),
+                            "{intent:?}/{scene} from {was:?}: {step:?} is not a flank of the corner"
+                        ),
+                    }
+                    // And whichever it was, it was open.
+                    if let Some(direction) = taken {
+                        let open = if direction == cw { clockwise } else { counter };
+                        assert!(open, "{intent:?}/{scene}: {direction:?} is shut");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The two leeways differ in exactly one place — a blocked cardinal — and
+    /// agree everywhere else. Stated as its own claim because it is easy to
+    /// widen a setting by accident and hard to notice: every scene, both
+    /// answers, and the only permitted disagreement is the wall.
+    #[test]
+    fn the_leeways_differ_only_at_a_wall_dead_ahead() {
         for &intent in &Direction::ALL {
             for scene in 0..8u8 {
                 let (ahead, clockwise, counter) = (scene & 1 != 0, scene & 2 != 0, scene & 4 != 0);
-                let around = Around::new(intent, ahead, clockwise, counter);
-                for mut detour in every_state(intent) {
-                    let was = detour;
-                    let step = detour.step(&around, WhenBlocked::Stand);
-                    let expected = match ahead {
-                        true => Step::Ahead(intent),
-                        false => Step::Stuck,
-                    };
+                let around = Around::new(Heading::centred(intent), ahead, clockwise, counter);
+                for state in every_state(intent) {
+                    let (mut eighth, mut quarter) = (state, state);
+                    let a = eighth.step(&around, Leeway::Eighth);
+                    let b = quarter.step(&around, Leeway::Quarter);
+                    let wall = !ahead && !intent.is_diagonal();
                     assert_eq!(
-                        step, expected,
-                        "{intent:?}/{scene} from {was:?}: flanks are not an answer to a body told to stand"
+                        a == b,
+                        !(wall && (clockwise || counter)),
+                        "{intent:?}/{scene} from {state:?}: {a:?} against {b:?}"
                     );
                 }
             }
+        }
+    }
+
+    /// The sub-sector detail the eight directions throw away, put back: a
+    /// player holding the cursor a little to one side of a corner has said
+    /// which way round it they mean to go, and with both ways open that is the
+    /// only thing that knows.
+    ///
+    /// The scene is deliberately symmetric — a diagonal blocked, both cardinals
+    /// it splits into wide open — so nothing in the terrain can decide it and
+    /// the answer is the lean or nothing.
+    #[test]
+    fn a_lean_past_a_corner_picks_the_side_it_leans_to() {
+        let intent = Direction::SouthEast;
+        let [cw, ccw] = flanks(intent);
+        let corner = |lean| {
+            Around::new(
+                Heading {
+                    direction: intent,
+                    lean,
+                },
+                false,
+                true,
+                true,
+            )
+        };
+
+        assert_eq!(
+            Detour::default().step(&corner(Lean::Clockwise), Leeway::Eighth),
+            Step::Aside(cw),
+            "pointing past the corner clockwise is asking to go round it that way"
+        );
+        assert_eq!(
+            Detour::default().step(&corner(Lean::Counter), Leeway::Eighth),
+            Step::Aside(ccw)
+        );
+
+        // And it outranks the memory: a body that slid one way and is then
+        // pointed the other goes the way it is being pointed. The memory is
+        // for when nothing was said (a held arrow key, a cursor squarely on
+        // the diagonal), not for overruling what was.
+        let mut detour = Detour::Sliding(ccw);
+        assert_eq!(
+            detour.step(&corner(Lean::Clockwise), Leeway::Eighth),
+            Step::Aside(cw)
+        );
+        // Nothing said: the memory is what is left, and it holds.
+        let mut detour = Detour::Sliding(ccw);
+        assert_eq!(
+            detour.step(&corner(Lean::Centred), Leeway::Eighth),
+            Step::Aside(ccw)
+        );
+    }
+
+    /// The lean itself, against the flanks it decides between: leaning toward
+    /// a flank must name *that* flank, on every direction, both ways round.
+    ///
+    /// The two are derived separately — [`Lean::of`] from a cross product,
+    /// [`flanks`] from the direction's bits — and a sign convention that
+    /// disagreed between them would send a body round the far side of every
+    /// obstacle, which is a bug no scene-shaped test would call wrong: both
+    /// answers are legal steps.
+    #[test]
+    fn leaning_toward_a_flank_names_that_flank() {
+        for &intent in &Direction::ALL {
+            let [cw, ccw] = flanks(intent);
+            for (flank, expected) in [(cw, Lean::Clockwise), (ccw, Lean::Counter)] {
+                // A vector a long way along the intent and a little way along
+                // the flank: unambiguously in the intent's sector, and leaning.
+                let (ix, iy) = intent.step();
+                let (fx, fy) = flank.step();
+                let (dx, dy) = (ix * 8 + fx, iy * 8 + fy);
+                assert_eq!(
+                    Lean::of(ix, iy, dx, dy),
+                    expected,
+                    "{intent:?}: a bearing pulled toward {flank:?} must lean that way"
+                );
+            }
+            // And squarely along the intent leans neither way — exactly, which
+            // is what `Lean::of`'s integer arithmetic is for.
+            let (ix, iy) = intent.step();
+            assert_eq!(Lean::of(ix, iy, ix * 9, iy * 9), Lean::Centred);
         }
     }
 
@@ -405,13 +587,13 @@ mod tests {
     /// no state to reset.
     #[test]
     fn the_preference_takes_effect_on_the_next_step() {
-        let wall = Around::new(Direction::East, false, true, true);
+        let wall = Around::new(Heading::centred(Direction::East), false, true, true);
         let mut detour = Detour::default();
 
-        assert!(matches!(detour.step(&wall, WhenBlocked::Slide), Step::Aside(_)));
-        assert_eq!(detour.step(&wall, WhenBlocked::Stand), Step::Stuck);
+        assert!(matches!(detour.step(&wall, Leeway::Quarter), Step::Aside(_)));
+        assert_eq!(detour.step(&wall, Leeway::Eighth), Step::Stuck);
         assert_eq!(detour, Detour::Standing);
-        assert!(matches!(detour.step(&wall, WhenBlocked::Slide), Step::Aside(_)));
+        assert!(matches!(detour.step(&wall, Leeway::Quarter), Step::Aside(_)));
     }
 
     /// A cardinal intent is never answered with a diagonal, whatever the scene.
@@ -452,7 +634,10 @@ mod tests {
         // First tile: only the counter-clockwise flank is open, so that is
         // forced whatever the tie-break would have preferred.
         assert_eq!(
-            detour.step(&Around::new(intent, false, false, true), WhenBlocked::Slide),
+            detour.step(
+                &Around::new(Heading::centred(intent), false, false, true),
+                Leeway::Quarter
+            ),
             Step::Aside(ccw)
         );
         assert_eq!(detour, Detour::Sliding(ccw));
@@ -460,14 +645,20 @@ mod tests {
         // clockwise one, which is the way back.
         for tile in 0..4 {
             assert_eq!(
-                detour.step(&Around::new(intent, false, true, true), WhenBlocked::Slide),
+                detour.step(
+                    &Around::new(Heading::centred(intent), false, true, true),
+                    Leeway::Quarter
+                ),
                 Step::Aside(ccw),
                 "tile {tile}: the flank that worked is preferred over the way back"
             );
         }
         // The way ahead opens: the slide is over and nothing is owed to it.
         assert_eq!(
-            detour.step(&Around::new(intent, true, true, true), WhenBlocked::Slide),
+            detour.step(
+                &Around::new(Heading::centred(intent), true, true, true),
+                Leeway::Quarter
+            ),
             Step::Ahead(intent)
         );
         assert_eq!(
@@ -483,25 +674,21 @@ mod tests {
     /// scene offers something, however long the player leans on the key.
     #[test]
     fn nothing_open_is_stuck_and_stands_there() {
-        let corner = Around::new(Direction::East, false, false, false);
+        let corner = Around::new(Heading::centred(Direction::East), false, false, false);
         let mut detour = Detour::Sliding(Direction::North);
 
-        assert_eq!(detour.step(&corner, WhenBlocked::Slide), Step::Stuck);
+        assert_eq!(detour.step(&corner, Leeway::Quarter), Step::Stuck);
         assert_eq!(detour, Detour::Standing);
         for beat in 0..10 {
-            assert_eq!(
-                detour.step(&corner, WhenBlocked::Slide),
-                Step::Stuck,
-                "beat {beat}"
-            );
+            assert_eq!(detour.step(&corner, Leeway::Quarter), Step::Stuck, "beat {beat}");
             assert_eq!(detour, Detour::Standing, "beat {beat}: still nowhere to go");
         }
         // A door opens somewhere in front of it, with nothing else asked for:
         // the walk resumes and the standing is over.
         assert_eq!(
             detour.step(
-                &Around::new(Direction::East, true, false, false),
-                WhenBlocked::Slide
+                &Around::new(Heading::centred(Direction::East), true, false, false),
+                Leeway::Quarter
             ),
             Step::Ahead(Direction::East)
         );
@@ -539,15 +726,15 @@ mod tests {
 
         let from = Point::new(100, 100, 0);
         assert_eq!(
-            Around::read(&Corner, from, Direction::East),
-            Around::new(Direction::East, false, true, false)
+            Around::read(&Corner, from, Heading::centred(Direction::East)),
+            Around::new(Heading::centred(Direction::East), false, true, false)
         );
         // And a diagonal whose tile is open ground but whose corner is cut:
         // read must refuse it, which `Terrain::can_step` alone would not.
         assert!(Corner.can_step(from, Point::new(101, 101, 0)).is_some());
         assert_eq!(
-            Around::read(&Corner, from, Direction::SouthEast),
-            Around::new(Direction::SouthEast, false, true, false)
+            Around::read(&Corner, from, Heading::centred(Direction::SouthEast)),
+            Around::new(Heading::centred(Direction::SouthEast), false, true, false)
         );
     }
 }

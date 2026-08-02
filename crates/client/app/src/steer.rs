@@ -147,7 +147,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_movement::{
-    Around, Detour, RUN_HOLD, Step, Terrain, WALK_HOLD, WhenBlocked, find_path, heading_toward,
+    Around, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, WALK_HOLD, find_path, heading_toward,
 };
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
@@ -184,7 +184,11 @@ pub struct Steering {
     /// [`Steering::steer`]. `None` when the mouse is not steering, which is
     /// not the same as [`Steering::goal`] being absent: this is a direction,
     /// not a destination, and has no "arrived" of its own.
-    mouse: Option<Direction>,
+    ///
+    /// A [`Heading`] and not a bare direction, because a cursor says more than
+    /// one of eight sectors: which side of the sector it is on is what decides
+    /// a tie between two ways round an obstacle. See [`Detour::step`].
+    mouse: Option<Heading>,
     /// The tile a Ctrl-held right button last asked for — a destination, not
     /// a heading; see [`Steering::go_to`].
     ///
@@ -271,10 +275,10 @@ pub struct Steering {
     /// route, which answers for its own obstacles by replanning — and what to
     /// do with [`Step::Stuck`], which needs the facing this module tracks.
     detour: Detour,
-    /// Whether a body that has walked into something slides past it or stops
-    /// against it — see [`WhenBlocked`], and [`Steering::set_when_blocked`] for
-    /// where this comes from.
-    when_blocked: WhenBlocked,
+    /// How far a body may be turned off the way it was pointed to keep it
+    /// moving — see [`Leeway`], and [`Steering::set_leeway`] for where this
+    /// comes from.
+    leeway: Leeway,
 }
 
 impl Steering {
@@ -336,17 +340,18 @@ impl Steering {
         self.keys.set_running(running);
     }
 
-    /// What a body does when it has walked into something: slide past it
-    /// ([`WhenBlocked::Slide`], the default) or stop against it
-    /// ([`WhenBlocked::Stand`], which is what the classic client does).
+    /// How far a body may be turned off the way it was pointed, to keep it
+    /// moving past something in the way: an eighth of the compass
+    /// ([`Leeway::Eighth`], the default — round a corner, stop at a wall) or a
+    /// quarter ([`Leeway::Quarter`] — also slide along the wall's face).
     ///
-    /// A player's preference and not a rule — see [`WhenBlocked`]. There is no
+    /// A player's preference and not a rule — see [`Leeway`]. There is no
     /// client config to read it from yet; when there is, this is the one line
     /// it sets, and nothing else about the walk has to learn about it. Takes
     /// effect on the next step, mid-walk included: the setting is read where
     /// the decision is made, so there is no state to reset when it changes.
-    pub fn set_when_blocked(&mut self, when_blocked: WhenBlocked) {
-        self.when_blocked = when_blocked;
+    pub fn set_leeway(&mut self, leeway: Leeway) {
+        self.leeway = leeway;
     }
 
     /// Walk to `tile`, from wherever the body is standing now. Answers the step
@@ -386,12 +391,26 @@ impl Steering {
         self.take(from, now, facing, terrain)
     }
 
-    /// The mouse is asking to walk in `direction` — or, at `None`, has nothing
+    /// The mouse is asking to walk along `heading` — or, at `None`, has nothing
     /// to ask (the cursor left the map, or the button came up: see
     /// [`Steering::mouse_up`]). The default right-hold idiom: not an order to
     /// reach a tile, a compass heading recomputed from the cursor on every
     /// move and driven exactly like a held arrow key — see the module docs for
     /// why. Answers the step to send now, if any, the same as [`press`](Self::press).
+    ///
+    /// A [`Heading`] rather than a direction, and measured on the screen from
+    /// where the body is drawn: see `App::heading_to_cursor`, which is the one
+    /// place that knows what the projection is. What the extra half of it buys
+    /// is the tie at a corner — with two ways round and no reason in the
+    /// terrain to prefer either, the cursor's own side of the sector is the
+    /// reason, and rounding to one of eight would have thrown it away before
+    /// anything here could read it.
+    ///
+    /// The restated-ask gate below is against the whole heading, lean and all,
+    /// so a cursor drifting *within* one sector past a corner is a fresh ask
+    /// and is answered. It costs nothing when nothing is in the way: the
+    /// resolved direction is the same, and the rate floor is what stops a step
+    /// leaving early either way.
     ///
     /// A held key still outranks this: called while an arrow is down, this
     /// still updates `direction` for whenever the keyboard lets go, but the
@@ -406,22 +425,22 @@ impl Steering {
     /// working a corner with the mouse almost never hits.
     pub fn steer(
         &mut self,
-        direction: Option<Direction>,
+        heading: Option<Heading>,
         from: Point,
         now: Instant,
         facing: Direction,
         terrain: &dyn Terrain,
     ) -> Option<Facing> {
-        if self.mouse == direction {
+        if self.mouse == heading {
             // The same heading restated — most mouse-move events while the
             // cursor sits still relative to the body, and not a fresh ask any
             // more than the operating system repeating a held key is.
             return None;
         }
-        self.mouse = direction;
+        self.mouse = heading;
         self.goal = None;
         self.route.clear();
-        if direction.is_none() {
+        if heading.is_none() {
             if self.keys.asking().is_none() {
                 self.stand();
             }
@@ -577,7 +596,7 @@ impl Steering {
 
         let asking = self.asking();
         match asking {
-            Some(step) => {
+            Some((step, lean)) => {
                 self.was = Some(from);
                 // A route already answers for what is in its way — replanned
                 // above, on its own patience. Only a held direction (keys or
@@ -585,7 +604,14 @@ impl Steering {
                 // the terrain, so only that case gets the flanking check.
                 let step = match self.goal {
                     Some(_) => step,
-                    None => match self.detour(terrain, from, step.direction) {
+                    None => match self.detour(
+                        terrain,
+                        from,
+                        Heading {
+                            direction: step.direction,
+                            lean,
+                        },
+                    ) {
                         Step::Ahead(direction) | Step::Aside(direction) => Facing { direction, ..step },
                         // Nowhere legal to go: the direction is blocked and so
                         // is every flank of it — a body wedged into the inside
@@ -721,22 +747,25 @@ impl Steering {
     /// one way or another by [`Steering::take`] before this runs — arrived, or
     /// a fallback heading queued as the route's one entry — so a defensive
     /// `None` here reads as "nothing to ask for", the same as arriving.
-    fn asking(&mut self) -> Option<Facing> {
+    /// The lean rides along, because only one of the three asks has one: an
+    /// arrow key and a planned route point at a sector and nothing finer, and
+    /// saying so with [`Heading::centred`] is the honest way to say it. Making
+    /// one up — reconstructing a bearing from the direction they named — would
+    /// hand the tie-break a preference nobody expressed.
+    fn asking(&mut self) -> Option<(Facing, Lean)> {
         if let Some(facing) = self.keys.asking() {
-            return Some(facing);
+            return Some((facing, Lean::Centred));
         }
-        if let Some(direction) = self.mouse {
-            return Some(match self.keys.running() {
-                true => Facing::running(direction),
-                false => Facing::walking(direction),
-            });
+        let pace = |direction| match self.keys.running() {
+            true => Facing::running(direction),
+            false => Facing::walking(direction),
+        };
+        if let Some(heading) = self.mouse {
+            return Some((pace(heading.direction), heading.lean));
         }
         self.goal?;
         match self.route.pop_front() {
-            Some(direction) => Some(match self.keys.running() {
-                true => Facing::running(direction),
-                false => Facing::walking(direction),
-            }),
+            Some(direction) => Some((pace(direction), Lean::Centred)),
             None => {
                 self.goal = None;
                 None
@@ -798,9 +827,9 @@ impl Steering {
     /// Only a *held* direction comes here. A planned route answers for what is
     /// in its way by replanning, on its own patience; a heading has no route
     /// and no destination, so this local look is the whole of what it can do.
-    fn detour(&mut self, terrain: &dyn Terrain, from: Point, direction: Direction) -> Step {
-        let around = Around::read(terrain, from, direction);
-        let step = self.detour.step(&around, self.when_blocked);
+    fn detour(&mut self, terrain: &dyn Terrain, from: Point, intent: Heading) -> Step {
+        let around = Around::read(terrain, from, intent);
+        let step = self.detour.step(&around, self.leeway);
         debug_detour(from, &around, step);
         step
     }
@@ -1410,7 +1439,13 @@ mod tests {
         for (tick, &direction) in headings.iter().cycle().take(30).enumerate() {
             let now = at(start, 5 * tick as u64);
             if steering
-                .steer(Some(direction), here(), now, Direction::South, &OpenWorld)
+                .steer(
+                    Some(Heading::centred(direction)),
+                    here(),
+                    now,
+                    Direction::South,
+                    &OpenWorld,
+                )
                 .is_some()
             {
                 sent += 1;
@@ -1527,12 +1562,18 @@ mod tests {
         let mut steering = Steering::default();
 
         assert_eq!(
-            steering.steer(Some(Direction::East), here(), start, Direction::East, &OpenWorld),
+            steering.steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::East,
+                &OpenWorld
+            ),
             Some(Facing::walking(Direction::East))
         );
         assert_eq!(
             steering.steer(
-                Some(Direction::East),
+                Some(Heading::centred(Direction::East)),
                 here(),
                 at(start, 10),
                 Direction::East,
@@ -1577,7 +1618,13 @@ mod tests {
         // accepts, moves nothing, and is the feedback a player pressing into a
         // wall expects.
         assert_eq!(
-            steering.steer(Some(Direction::East), here(), start, Direction::North, &Boxed),
+            steering.steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::North,
+                &Boxed
+            ),
             Some(Facing::walking(Direction::East)),
             "the turn into the corner is legal and is what the body is drawn doing"
         );
@@ -1601,7 +1648,13 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .steer(Some(Direction::East), here(), start, Direction::North, &Boxed)
+            .steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::North,
+                &Boxed,
+            )
             .expect("the turn");
         for step in 1..4u64 {
             assert_eq!(
@@ -1636,14 +1689,20 @@ mod tests {
     fn a_held_heading_detours_around_a_single_tile_obstacle() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        // The sliding preference, stated: the default is to stop against
-        // what you walked into, and this is the rule for the other one.
-        steering.set_when_blocked(WhenBlocked::Slide);
+        // The wider leeway, stated: the default turns no more than an
+        // eighth, and this scene is about the quarter turn.
+        steering.set_leeway(Leeway::Quarter);
         // Directly in the heading's path; both cardinal sidesteps are open.
         let wall = Wall { blocked: (101, 100) };
 
         let detoured = steering
-            .steer(Some(Direction::East), here(), start, Direction::East, &wall)
+            .steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::East,
+                &wall,
+            )
             .expect("a sidestep is open");
         assert!(
             matches!(detoured.direction, Direction::North | Direction::South),
@@ -1666,16 +1725,16 @@ mod tests {
     fn a_held_diagonal_heading_detours_onto_an_open_cardinal() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        // The sliding preference, stated: the default is to stop against
-        // what you walked into, and this is the rule for the other one.
-        steering.set_when_blocked(WhenBlocked::Slide);
+        // The wider leeway, stated: the default turns no more than an
+        // eighth, and this scene is about the quarter turn.
+        steering.set_leeway(Leeway::Quarter);
         // North-east is blocked; north and east, the cardinals it splits
         // into, are both open — the detour must take one of them.
         let corner = Wall { blocked: (101, 99) };
 
         let detoured = steering
             .steer(
-                Some(Direction::NorthEast),
+                Some(Heading::centred(Direction::NorthEast)),
                 here(),
                 start,
                 Direction::NorthEast,
@@ -1701,13 +1760,13 @@ mod tests {
     /// Standing against something is standing, not a refusal a hold.
     ///
     /// **This is what pins the default.** Deliberately without a
-    /// `set_when_blocked` call of its own: a body only ever goes where it was
+    /// `set_leeway` call of its own: a body only ever goes where it was
     /// pointed unless a player asks for otherwise, and a default that flipped
     /// by accident would be every walk in the game changing character with
     /// nothing to catch it. The sliding tests above state their preference
     /// outright for the same reason.
     ///
-    /// `Steering::set_when_blocked` is the seam a client config will set, and
+    /// `Steering::set_leeway` is the seam a client config will set, and
     /// the reason the preference is threaded at all rather than settled once
     /// in `common/movement`: both answers are correct play.
     #[test]
@@ -1715,11 +1774,17 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
         // Directly in the heading's path, with both sidesteps wide open — the
-        // scene `WhenBlocked::Slide` answers with a sidestep.
+        // scene `Leeway::Quarter` answers with a sidestep.
         let wall = Wall { blocked: (101, 100) };
 
         assert_eq!(
-            steering.steer(Some(Direction::East), here(), start, Direction::North, &wall),
+            steering.steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::North,
+                &wall
+            ),
             Some(Facing::walking(Direction::East)),
             "the turn to face what it walked into is still legal and still sent"
         );
@@ -1732,7 +1797,7 @@ mod tests {
         }
         // And the setting is the only thing standing in the way: the same
         // heading, with the sidestep allowed, walks.
-        steering.set_when_blocked(WhenBlocked::Slide);
+        steering.set_leeway(Leeway::Quarter);
         let slid = steering
             .due(at(start, 400 * 6), here(), Direction::East, &wall)
             .expect("a sidestep is open");
@@ -1763,9 +1828,9 @@ mod tests {
     fn a_diagonal_that_cuts_a_wall_corner_sidesteps_instead_of_asking_for_it() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        // The sliding preference, stated: the default is to stop against
-        // what you walked into, and this is the rule for the other one.
-        steering.set_when_blocked(WhenBlocked::Slide);
+        // The wider leeway, stated: the default turns no more than an
+        // eighth, and this scene is about the quarter turn.
+        steering.set_leeway(Leeway::Quarter);
         // The south-east tile is open ground. Due east is the wall's last
         // tile, so a step south-east clips the corner where it ends —
         // refused on the wire, and `Wall` alone cannot tell.
@@ -1779,7 +1844,7 @@ mod tests {
 
         let detoured = steering
             .steer(
-                Some(Direction::SouthEast),
+                Some(Heading::centred(Direction::SouthEast)),
                 here(),
                 start,
                 Direction::SouthEast,
@@ -1803,9 +1868,9 @@ mod tests {
     fn a_repeated_detour_prefers_the_flank_it_already_took() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        // The sliding preference, stated: the default is to stop against
-        // what you walked into, and this is the rule for the other one.
-        steering.set_when_blocked(WhenBlocked::Slide);
+        // The wider leeway, stated: the default turns no more than an
+        // eighth, and this scene is about the quarter turn.
+        steering.set_leeway(Leeway::Quarter);
         // East is walled the whole way; south of the start tile is also
         // blocked, so the very first detour is forced onto north — the
         // non-default flank. From there, both south (back to the start) and
@@ -1823,7 +1888,13 @@ mod tests {
         }
 
         let first = steering
-            .steer(Some(Direction::East), here(), start, Direction::East, &Doorway)
+            .steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::East,
+                &Doorway,
+            )
             .expect("north is open");
         assert_eq!(
             first.direction,
@@ -1878,11 +1949,17 @@ mod tests {
             let terrain = AheadBlocked { ahead };
 
             let mut steering = Steering::default();
-            // The sliding preference, stated: the default is to stop against
-            // what you walked into, and this is the rule for the other one.
-            steering.set_when_blocked(WhenBlocked::Slide);
+            // The wider leeway, stated: the default turns no more than an
+            // eighth, and this scene is about the quarter turn.
+            steering.set_leeway(Leeway::Quarter);
             let answer = steering
-                .steer(Some(direction), here(), start, direction, &terrain)
+                .steer(
+                    Some(Heading::centred(direction)),
+                    here(),
+                    start,
+                    direction,
+                    &terrain,
+                )
                 .unwrap_or_else(|| panic!("{direction:?}: a heading never gives up, even on the first ask"));
 
             let to = step_from(here(), answer.direction)
@@ -1910,7 +1987,7 @@ mod tests {
         // mid-step — see the queue rule in the module docs.
         assert_eq!(
             steering.steer(
-                Some(Direction::East),
+                Some(Heading::centred(Direction::East)),
                 here(),
                 at(start, 10),
                 Direction::North,
@@ -1934,7 +2011,13 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .steer(Some(Direction::East), here(), start, Direction::East, &OpenWorld)
+            .steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::East,
+                &OpenWorld,
+            )
             .unwrap();
         assert_eq!(
             steering.press(

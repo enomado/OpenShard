@@ -129,7 +129,7 @@ use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
-use openshard_movement::{Terrain, WhenBlocked};
+use openshard_movement::{Heading, Lean, Leeway, Terrain};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
@@ -442,7 +442,7 @@ pub fn run<D: Dial + Send + 'static>(
             // that only ever goes where it was pointed is the one that
             // surprises nobody. Sliding is what a player opts into.
             let mut steer = steer::Steering::default();
-            steer.set_when_blocked(WhenBlocked::Stand);
+            steer.set_leeway(Leeway::Eighth);
             steer
         },
         aiming: false,
@@ -1421,13 +1421,9 @@ impl App {
                 &terrain,
             )
         } else {
-            let direction = openshard_movement::heading_toward(
-                self.player.at,
-                Point::new(tile.x, tile.y, self.player.at.z),
-            );
             let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
             self.steer.steer(
-                direction,
+                self.heading_to_cursor(*self.control.camera()),
                 self.player.at,
                 Instant::now(),
                 self.player.facing,
@@ -1444,6 +1440,46 @@ impl App {
             }
             None => true,
         }
+    }
+
+    /// Which way the cursor is asking the body to walk — measured **on the
+    /// screen**, from where the body is drawn, not in the world's grid.
+    ///
+    /// The two are not the same question, and the screen one is the only one
+    /// the player is actually asking. A player pushes the mouse away from the
+    /// character in the direction they want it to go; what "that direction"
+    /// means is a bearing on a flat picture. The grid is where the answer has
+    /// to land — one of eight tile steps — but it is not where the ask lives,
+    /// and measuring in the grid quietly swaps the isometric projection for
+    /// nothing. That the two happen to agree for the projection drawn today
+    /// (`camera::project` is a rotation and a uniform scale, and rounding to a
+    /// sector survives that) is a coincidence of the numbers in it, not a
+    /// property of the idea — change the tile to a 2:1 diamond, which is what
+    /// most isometric art is, and the grid answer starts naming a direction
+    /// the cursor is nowhere near.
+    ///
+    /// The origin is the body's own projected pixel and not the middle of the
+    /// viewport, which is what makes this survive a camera that is not locked
+    /// to the body: with a free eye the character is off-centre, sometimes far
+    /// off-centre, and "away from the middle of the screen" would be a
+    /// different direction from "away from the character". Both are defensible
+    /// idioms and a shard may one day want the other; this is the one that
+    /// keeps meaning what it means while the eye wanders.
+    ///
+    /// The sector is picked by the largest dot product against the eight
+    /// directions' *projected* steps — normalised, since a diagonal projects to
+    /// a longer screen vector than a cardinal and the unnormalised comparison
+    /// would hand it sectors it has not earned. Those steps come from
+    /// `camera::project` itself rather than from constants copied out of it, so
+    /// there is one projection in this client and this reads it.
+    ///
+    /// `None` when the cursor is exactly on the body: no bearing exists, and
+    /// picking one would be inventing an ask.
+    fn heading_to_cursor(&self, camera: Camera) -> Option<Heading> {
+        let (cursor_x, cursor_y) = self.control.cursor();
+        // The body's *drawn* pixel, height and all: what a player aims relative
+        // to is the sprite they can see, not the tile beneath it.
+        heading_between(camera::project(self.player.at), camera.pick(cursor_x, cursor_y))
     }
 
     /// Say a line out loud, if there is a shard to hear it.
@@ -2818,5 +2854,126 @@ impl App {
             repacked,
         );
         self.last_frame = started;
+    }
+}
+
+/// The heading from one point on the screen to another, as one of the eight
+/// ways a body can walk plus which side of that way it actually points.
+///
+/// Split out of [`App::heading_to_cursor`] because it is the whole of the
+/// arithmetic and none of the state — a thing that can be checked against a
+/// drawn picture rather than against a running window.
+///
+/// The sector is the largest dot product against the eight directions'
+/// *projected* steps, normalised: a diagonal projects to a longer screen vector
+/// than a cardinal (44 pixels against 31), and comparing unnormalised would
+/// hand the diagonals sectors they have not earned. Those steps come from
+/// [`camera::project`] rather than from constants copied out of it, so there is
+/// one projection in this client and this reads it.
+fn heading_between(body: camera::WorldPixel, cursor: camera::WorldPixel) -> Option<Heading> {
+    let (dx, dy) = (cursor.x - body.x, cursor.y - body.y);
+    if dx == 0 && dy == 0 {
+        return None;
+    }
+    let direction = Direction::ALL.into_iter().max_by(|a, b| {
+        let cosine = |direction| {
+            let (sx, sy) = on_screen(direction);
+            let dot = f64::from(dx) * f64::from(sx) + f64::from(dy) * f64::from(sy);
+            dot / f64::from(sx * sx + sy * sy).sqrt()
+        };
+        cosine(*a).total_cmp(&cosine(*b))
+    })?;
+    let (sx, sy) = on_screen(direction);
+    Some(Heading {
+        direction,
+        // A cross product needs no normalising, so the lean stays exact: a
+        // cursor squarely on a direction's screen bearing leans neither way and
+        // says so without a tolerance. The projection turns the plane without
+        // flipping it, so "clockwise" means on the screen what it means on the
+        // grid — see `Lean::of`.
+        lean: Lean::of(sx, sy, dx, dy),
+    })
+}
+
+/// One step's worth of the projection, taken from the projection.
+///
+/// The origin tile is arbitrary and cancels in the subtraction; it is away from
+/// the map's edges only so that neither end of it has to clamp.
+fn on_screen(direction: Direction) -> (i32, i32) {
+    let origin = Point::new(1000, 1000, 0);
+    let (sx, sy) = direction.step();
+    let stepped = Point::new(
+        (i32::from(origin.x) + sx) as u16,
+        (i32::from(origin.y) + sy) as u16,
+        0,
+    );
+    let (a, b) = (camera::project(origin), camera::project(stepped));
+    (b.x - a.x, b.y - a.y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The screen bearings of the eight directions, as the isometric actually
+    /// draws them — and they are not the grid's. On screen the diamond is
+    /// turned an eighth: north-east points due right, south-east due down.
+    /// Anything reading a cursor has to answer in *these* terms, which is the
+    /// whole reason the heading is measured here rather than on the grid.
+    #[test]
+    fn the_screen_bearings_are_the_grid_turned_an_eighth() {
+        assert_eq!(on_screen(Direction::NorthEast), (44, 0), "due right");
+        assert_eq!(on_screen(Direction::SouthEast), (0, 44), "due down");
+        assert_eq!(on_screen(Direction::SouthWest), (-44, 0), "due left");
+        assert_eq!(on_screen(Direction::NorthWest), (0, -44), "due up");
+        assert_eq!(on_screen(Direction::East), (22, 22), "down and right");
+        assert_eq!(on_screen(Direction::North), (22, -22));
+        assert_eq!(on_screen(Direction::South), (-22, 22));
+        assert_eq!(on_screen(Direction::West), (-22, -22));
+    }
+
+    /// A cursor held away from the body in each of those eight screen bearings
+    /// asks for that direction — including the one that catches a heading
+    /// measured on the grid by mistake: straight down the screen is
+    /// *south-east*, and a grid reading would call it south.
+    #[test]
+    fn a_cursor_on_a_screen_bearing_asks_for_that_direction() {
+        let body = camera::WorldPixel { x: 0, y: 0 };
+        for direction in Direction::ALL {
+            let (sx, sy) = on_screen(direction);
+            let cursor = camera::WorldPixel { x: sx * 7, y: sy * 7 };
+            let heading = heading_between(body, cursor).expect("the cursor is not on the body");
+            assert_eq!(heading.direction, direction, "screen bearing {sx},{sy}");
+            assert_eq!(
+                heading.lean,
+                Lean::Centred,
+                "squarely on the bearing leans neither way"
+            );
+        }
+    }
+
+    /// And off the bearing, the lean says which side — which is the thing the
+    /// eight sectors throw away and the only thing that can settle a corner
+    /// with two open ways round it. Straight down the screen is south-east;
+    /// nudged to the right of that, the ask is still south-east but is leaning
+    /// toward east, which is where east is drawn.
+    #[test]
+    fn a_cursor_off_the_bearing_leans_toward_the_side_it_is_on() {
+        let body = camera::WorldPixel { x: 0, y: 0 };
+        let down_and_right = heading_between(body, camera::WorldPixel { x: 6, y: 300 }).unwrap();
+        assert_eq!(down_and_right.direction, Direction::SouthEast);
+        assert_eq!(down_and_right.lean, Lean::Counter);
+
+        let down_and_left = heading_between(body, camera::WorldPixel { x: -6, y: 300 }).unwrap();
+        assert_eq!(down_and_left.direction, Direction::SouthEast);
+        assert_eq!(down_and_left.lean, Lean::Clockwise);
+    }
+
+    /// The cursor on the body names no direction at all, rather than the
+    /// nearest one: an ask nobody made.
+    #[test]
+    fn a_cursor_on_the_body_asks_for_nothing() {
+        let body = camera::WorldPixel { x: 17, y: -3 };
+        assert_eq!(heading_between(body, body), None);
     }
 }
