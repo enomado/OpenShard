@@ -22,7 +22,18 @@ use openshard_client_render::geometry::{Rect, Vec2};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::light::{Light, Lighting};
+
+/// The reach the lighting tests give their flame, in tiles.
+///
+/// Chosen here rather than read from `light::TORCH`: these tests are about the
+/// shader's falloff and its shadow walk, not about which flame a graphic gets.
+/// Three and not a torch's six: at 44 pixels a tile, a 256-pixel frame holds
+/// five tiles of one row, and a pool that reached six of them would have no
+/// "outside" to compare against inside the picture.
+const TORCH_TILES: f32 = 3.0;
+use openshard_client_render::camera::TileBounds;
 use openshard_client_render::mobiles::{self, Mobile};
+use openshard_client_render::occlusion::Occlusion;
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place::Place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -39,7 +50,7 @@ use openshard_uofiles::hues::Hues;
 use openshard_uofiles::image::Image;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::TexMaps;
-use openshard_uofiles::tiledata::TileData;
+use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
 /// The client's files, or `None` when the environment does not point at any.
 fn client_dir() -> Option<PathBuf> {
@@ -707,7 +718,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
         view_formats: &[],
     });
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
-    let blit = Blit::new(&device, format);
+    let mut blit = Blit::new(&device, format);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
         &device,
@@ -718,6 +729,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
+            place: &place_view,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -789,18 +801,27 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     let atlas = LandAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
     let region = atlas.region(GRAPHIC).expect("packed");
+    // The field, as a lattice of tiles: each quad carries a tile of its own in
+    // the place channel, because the lighting is computed in tiles and a frame
+    // whose every pixel named one tile would be lit as a single flat thing.
+    // `spots` remembers where each of them landed, which is how this test asks
+    // "how bright is tile (i, j)" of a picture.
     let mut quads = Vec::new();
-    for y in (0..height as i32 + 44).step_by(22) {
-        for x in (-44..width as i32 + 44).step_by(44) {
+    let mut spots = Vec::new();
+    for (row, y) in (0..height as i32 + 44).step_by(22).enumerate() {
+        for (column, x) in (-44..width as i32 + 44).step_by(44).enumerate() {
+            let at = ((x + (y / 22 % 2) * 22) as f32, y as f32);
+            let tile = (100 + column as u16, 100 + row as u16);
             quads.push(GroundQuad {
-                x: (x + (y / 22 % 2) * 22) as f32,
-                y: y as f32,
+                x: at.0,
+                y: at.1,
                 corners: [0.0; 4],
                 region,
                 texmap: None,
                 depth: 0.5,
-                place: Place::land(1, 1),
+                place: Place::land(tile.0, tile.1),
             });
+            spots.push((tile, at));
         }
     }
     let mut ground_pass = GroundRenderer::new(&device, &queue, format, &atlas, &texmaps);
@@ -829,18 +850,39 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         view_formats: &[],
     });
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
-    let blit = Blit::new(&device, format);
+    let mut blit = Blit::new(&device, format);
 
-    // One flame in the middle, reaching a quarter of the frame.
+    // Three tiles of one row, all of them well inside the picture: the one the
+    // flame stands on, one half way out of its reach, and one outside it
+    // altogether. Near the left edge, because the row has to be long enough to
+    // hold all three at 44 pixels a tile.
+    let inside = |at: &(f32, f32)| (10.0..230.0).contains(&at.0) && (30.0..200.0).contains(&at.1);
+    let (burning, burning_at) = *spots
+        .iter()
+        .find(|(_, at)| inside(at) && at.0 < 40.0 && at.1 > 100.0)
+        .expect("the lattice covers the left of the frame");
+    let find = |dx: u16| {
+        *spots
+            .iter()
+            .find(|((x, y), at)| *x == burning.0 + dx && *y == burning.1 && inside(at))
+            .unwrap_or_else(|| panic!("no tile {dx} east of the flame is on screen"))
+    };
+    let (_, half_way_at) = find(1);
+    let (_, outside_at) = find(TORCH_TILES as u16 + 1);
+
+    // One flame, on its own tile, reaching six tiles of ground.
     let lighting = Lighting {
-        image: Vec2::new(width as f32, height as f32),
         ambient: openshard_client_render::light::NIGHT,
         lights: vec![Light {
-            at: Vec2::new(128.0, 128.0),
-            radius: 64.0,
+            at: Vec2::new(f32::from(burning.0), f32::from(burning.1)),
+            z: 0.0,
+            radius: TORCH_TILES,
             color: [1.0, 0.7, 0.35],
             intensity: 1.0,
         }],
+        // Nothing stands in the way: what a wall does is
+        // `a_wall_stops_the_light_behind_it`'s claim, not this one's.
+        occlusion: Occlusion::EMPTY,
     };
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
@@ -850,6 +892,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
+            place: &place_view,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -869,15 +912,17 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     assert!(drawn.drawn() > 60_000, "the world image is mostly empty");
 
     let luma = |pixel: [u8; 4]| u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]);
-    let centre = luma(lit.pixel(128, 128));
-    // Half way out, not at the rim: the falloff is quadratic, so the last
-    // fifth of the radius contributes less than a byte of the eight bits this
-    // is read back at and would compare equal to the dark outside it.
-    let edge_of_pool = luma(lit.pixel(128 + 32, 128));
-    // Well outside the radius, and outside it in both axes so that a light
-    // placed at the wrong one of them still fails here.
-    let far = luma(lit.pixel(16, 240));
-    let unlit = luma(drawn.pixel(16, 240));
+    // A tile's own middle: `GroundQuad::x`/`y` is the diamond's centre in
+    // viewport pixels, which is the one pixel of a tile that is certainly the
+    // tile's own and not its neighbour's.
+    let sample = |at: (f32, f32)| (at.0 as u32, at.1 as u32);
+    let (cx, cy) = sample(burning_at);
+    let centre = luma(lit.pixel(cx, cy));
+    let (hx, hy) = sample(half_way_at);
+    let edge_of_pool = luma(lit.pixel(hx, hy));
+    let (fx, fy) = sample(outside_at);
+    let far = luma(lit.pixel(fx, fy));
+    let unlit = luma(drawn.pixel(fx, fy));
 
     assert!(
         far < unlit,
@@ -893,19 +938,19 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     );
     // The pool is warm, not white: a light whose colour was dropped would pass
     // every brightness assertion above.
-    let middle = lit.pixel(128, 128);
+    let middle = lit.pixel(cx, cy);
     assert!(
         middle[0] > middle[2],
         "the light's colour was ignored: {middle:?}",
     );
     // And nothing outside the radius is touched by the light at all — the
     // ambient alone accounts for it, which is what makes the pool a shape.
-    let outside = lit.pixel(16, 240);
+    let outside = lit.pixel(fx, fy);
     for (channel, (got, (drawn, ambient))) in outside
         .iter()
         .zip(
             drawn
-                .pixel(16, 240)
+                .pixel(fx, fy)
                 .iter()
                 .zip(openshard_client_render::light::NIGHT),
         )
@@ -918,6 +963,178 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
             "outside the pool, channel {channel} is {got} against the ambient's {expected}",
         );
     }
+}
+
+/// A wall stops the light behind it, and does not stop the light on it.
+///
+/// The claim `docs/lighting.md` exists for, and both halves are the claim: a
+/// torch inside a house must not light the street, *and* the wall's own face
+/// must stay the brightest thing near the flame. The second is what no
+/// screen-space shadow can do — a wall's picture stands above the tile it
+/// occludes from, so a mask drawn over the ground behind it covers the wall as
+/// well — and it is why the lighting reads a tile per pixel at all.
+#[test]
+fn a_wall_stops_the_light_behind_it() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (256, 256);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let world = openshard_client_render::blit::world_texture(&device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(&device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(&device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Four tiles of one row, drawn as four flat squares side by side: the flame
+    // stands on the first, the wall is on the second, and the two after it are
+    // what the wall's shadow falls on. Drawn as ground rather than as a wall
+    // sprite deliberately — what occludes is the *grid*, and a picture of a wall
+    // would only make the frame prettier.
+    const GRAPHIC: Graphic = Graphic(1);
+    let side = usize::from(LAND_TILE_SIZE);
+    let grey = Color16(15 << 10 | 15 << 5 | 15);
+    let art = Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![grey; side * side]);
+    let atlas = LandAtlas::pack([(GRAPHIC, art)]).expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let region = atlas.region(GRAPHIC).expect("packed");
+
+    const ROW: u16 = 100;
+    const FIRST: u16 = 100;
+    let centre_of = |tile: u16| (40.0 + f32::from(tile - FIRST) * 44.0, 128.0);
+    let quads: Vec<GroundQuad> = (0..4u16)
+        .map(|step| {
+            let at = centre_of(FIRST + step);
+            GroundQuad {
+                x: at.0,
+                y: at.1,
+                corners: [0.0; 4],
+                region,
+                texmap: None,
+                depth: 0.5,
+                place: Place::land(FIRST + step, ROW),
+            }
+        })
+        .collect();
+
+    let mut ground_pass = GroundRenderer::new(&device, &queue, format, &atlas, &texmaps);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    ground_pass.render(
+        &device,
+        &queue,
+        &mut encoder,
+        Target::whole(&world_view, &depth_view, &place_view, width, height),
+        &quads,
+    );
+    queue.submit([encoder.finish()]);
+
+    let surface = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut blit = Blit::new(&device, format);
+
+    let flame = Light {
+        at: Vec2::new(f32::from(FIRST), f32::from(ROW)),
+        z: 0.0,
+        // Four tiles, so that the far side of the wall is inside the pool and
+        // dark only because the wall is there — a radius that fell short would
+        // pass this test for the wrong reason.
+        radius: 4.0,
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+    };
+    let bounds = TileBounds {
+        min_x: 90,
+        max_x: 110,
+        min_y: 90,
+        max_y: 110,
+    };
+
+    let read = |blit: &mut Blit, occlusion: Occlusion| -> Frame {
+        let lighting = Lighting {
+            ambient: openshard_client_render::light::NIGHT,
+            lights: vec![flame],
+            occlusion,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        blit.render(
+            &device,
+            &queue,
+            &mut encoder,
+            openshard_client_render::blit::Frame {
+                target: &surface_view,
+                world: &world_view,
+                place: &place_view,
+                zoom: Zoom::ONE,
+                rect: ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+            },
+            &lighting,
+        );
+        queue.submit([encoder.finish()]);
+        read_back(&device, &queue, &surface)
+    };
+
+    let luma = |pixel: [u8; 4]| u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]);
+    let at = |frame: &Frame, tile: u16| {
+        let (x, y) = centre_of(tile);
+        luma(frame.pixel(x as u32, y as u32))
+    };
+
+    // With nothing in the way, every tile of the row is lit.
+    let open = read(&mut blit, Occlusion::new(bounds));
+    let (open_wall, open_behind, open_far) = (at(&open, 101), at(&open, 102), at(&open, 103));
+
+    // And with a wall on the second tile, the two behind it are not — while the
+    // wall's own tile is exactly as bright as it was.
+    let mut occlusion = Occlusion::new(bounds);
+    occlusion.add(
+        101,
+        ROW,
+        0,
+        &StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        },
+    );
+    let walled = read(&mut blit, occlusion);
+    let (wall, behind, far) = (at(&walled, 101), at(&walled, 102), at(&walled, 103));
+
+    assert_eq!(
+        wall, open_wall,
+        "the wall's own face was darkened by the wall itself",
+    );
+    assert!(
+        behind < open_behind && far < open_far,
+        "the wall did not stop the light: {behind} of {open_behind}, {far} of {open_far}",
+    );
+    // Not merely dimmer: as dark as the ambient alone, which is what "stops"
+    // means and what a falloff that happened to be steep would not reproduce.
+    let unlit = luma(read_back(&device, &queue, &world).pixel(centre_of(102).0 as u32, 128));
+    let ambient: f32 = openshard_client_render::light::NIGHT.iter().sum::<f32>() / 3.0;
+    let expected = (unlit as f32 * ambient) as u32;
+    assert!(
+        behind <= expected + 3,
+        "the shadow is a dimming rather than a shadow: {behind} against the ambient's {expected}",
+    );
 }
 
 /// The world passes draw into the world texture on a surface that is not
@@ -997,7 +1214,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         view_formats: &[],
     });
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
-    let blit = Blit::new(&device, surface_format);
+    let mut blit = Blit::new(&device, surface_format);
     blit.render(
         &device,
         &queue,
@@ -1007,6 +1224,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
+            place: &place_view,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -2451,6 +2669,7 @@ fn render_outlined(
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
+            place: &place_view,
             zoom: Zoom::ONE,
             rect,
         },

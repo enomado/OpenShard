@@ -994,6 +994,21 @@ pieces and nothing about doors in any of them:
   350ms (`Mouse.MOUSE_DELAY_DOUBLE_CLICK`), plus `App::item_serials` — the
   serial the renderer drops, put back by index.
 
+The same pick runs every frame for the **highlight**: whatever the cursor is
+over is drawn in `items::HIGHLIGHT_HUE` — ClassicUO's
+`Constants.HIGHLIGHT_CURRENT_OBJECT_HUE`, replacing the item's own hue as the
+reference does with `partial = false`, because a `hues.mul` ramp replaces a
+pixel's colour rather than tinting it. Asked per frame and not remembered from
+the last mouse event: the picture moves under a still cursor — the body walks,
+the camera follows, a door swings — so what is pointed at is a question about
+this frame's picture. `App::world_owns_pointer` gates the highlight, the tile
+hover and the click alike, so a pointer over a panel lights nothing and uses
+nothing.
+
+A second way of saying the same thing — an **outline** round the sprite, pixel
+first and glowing later — is planned in [`outline.md`](outline.md). It is
+additive: the hue highlight stays, and the two compose.
+
 Nothing is done locally on the way out: the door swings when the `0x1A` that
 redraws it arrives. A client that also opened it itself would show a door the
 shard refused — a lock, or reach — standing open.
@@ -2525,13 +2540,14 @@ the way and not done:
   mobile does, and double-clicking one is the *paperdoll* arm of `0x06`
   (`DoubleClick::interpret`), waiting on a paperdoll to show. The picking rule
   itself is the same one: the topmost opaque texel, over one more list.
-- **Picking is per click and rebuilds the cutaway to do it.** `use_under_cursor`
-  calls `Cutaway::at` again rather than reading the one the frame was drawn
-  with, because the frame keeps none. Cheap at click rates and wrong in shape:
-  the frame's cutaway, camera and item placement are one state and a click asks
-  three of them separately. If a hover-highlight of the item under the cursor
-  lands — it should, the classic client has one — this becomes per frame and
-  wants the frame's own answer kept.
+- **The click rebuilds the cutaway; the highlight does not.** Inside `draw` the
+  pick uses the frame's own `Cutaway`, camera and cursor. `use_under_cursor`,
+  reached from the event loop, has none of those to hand and calls `Cutaway::at`
+  again against a camera it reads back from `self.control`. Cheap at click rates
+  and wrong in shape — the frame's state is one thing and the click asks three
+  parts of it separately — and it is one camera-move away from the click using a
+  picture the player never saw. The fix is the frame keeping what it picked
+  against, which is also what a "what am I pointing at" line in the HUD wants.
 - **Nothing on this end knows a door from a barrel, still.** The double-click
   goes out for whatever was clicked and the shard decides; that is right. What
   it costs is feedback — no cursor change over something usable, and a click on
@@ -2593,3 +2609,60 @@ the way and not done:
   group a body reaches has also been the snapshot group at some packet, so the
   hole does not open; the ordering is an accident and not an invariant, and the
   silent drop is what makes it undiagnosable when it does.
+
+## Backlog, found while giving the client firelight
+
+The pass itself: `client/render/src/light.rs` collects the flames a frame can
+see, `blit.wgsl` applies them on the way to the surface, and F10 toggles night.
+The shape is one point light per burning graphic, multiplied over the finished
+world image — the argument for that arrangement is `light.rs`'s own header. What
+was found and not done:
+
+- **`light.mul` and `lightidx.mul` are not read at all.** They are what the
+  client draws light *from*: a per-source sprite, keyed by an id in the tiledata
+  entry, rather than a radius and a colour somebody chose. `light::flame` is the
+  stand-in — one warm default and a wider one for a campfire, matched on the
+  graphic — and it is the only invention in the pass. Reading the two files
+  replaces that function and nothing above it.
+- **Fixed: a pool used to pop out at the frame's edge.** `light::collect` walked
+  `Camera::visible_tiles` — the tiles whose *sprites* can land in the image —
+  and a pool reaches nine tiles past the thing making it, so a lamp's light
+  vanished the instant the lamp left the screen. Measured on Britain at the
+  widest zoom: 88 light sources stood in the band being skipped. `lit_tiles`
+  now grows the rectangle by the widest flame's reach, and
+  `every_flame_that_can_reach_the_frame_is_walked` states the implication rather
+  than the margin, so a wider flame added later cannot reintroduce it.
+- **Done: walls stop light, and the whole pass moved into world coordinates to
+  let them.** [`lighting.md`](lighting.md) is the plan and the argument; the
+  short of it is that the screen-space shadow sketched here cannot work. A
+  wall's sprite stands 44 pixels above the tile it occludes from, so any mask
+  drawn over the ground behind it also covers the wall's own lit face — the two
+  are the same pixels of the same sprite. The three world passes now write which
+  tile each pixel came from (`client/render/src/place.rs`), the flames are tiles
+  with a reach in tiles, and the blit walks a grid of occluders
+  (`client/render/src/occlusion.rs`) between a fragment and each flame. What
+  occludes is `WINDOW | NO_SHOOT` — ServUO's own line-of-sight rule — and never
+  `BLOCK`, or every crate on the street would cast a shadow.
+- **Done with the same attachment: a flame no longer lights through a floor.**
+  The channel this asked for is `place.rs`'s, the decision is
+  [`lighting.md`](lighting.md)'s, and the distance is now three-dimensional with
+  eleven `z` units to the tile — so a cellar's brazier is as far from the street
+  above it as it would be eleven tiles away.
+- **Nothing a mobile carries burns.** A player holding a torch is the commonest
+  light in the game and this pass cannot see one: `light::collect` walks the map's
+  statics and the ground items, and equipment is neither. It needs the layer the
+  torch is worn on and the graphic under it, both of which `mobiles` already has.
+- **The ambient is a key, not a clock.** There is no time of day on the wire, so
+  night is `App::night` and F10. When the shard grows one, it writes to that
+  field and the rest is already a colour per frame.
+- **The falloff eats the outer half of the radius.** `(1 - d)²` is a quarter of
+  its peak at half the radius and under a byte's worth by 0.9, so a pool set to
+  six tiles reads as about three. That is the look the reference isometrics have
+  and it is why the numbers in `light.rs` are as large as they are — worth
+  remembering before anyone "fixes" a radius that looks too big in the source.
+- **A light is placed by its tile, not by its sprite.** `FLAME_LIFT` is a flat
+  half-tile of `z` above the tile it stands on, because the sprite's height is
+  in the atlas and the atlas is not a parameter here. A wall sconce's flame is
+  higher than that and a candle's is lower; both are a fraction of a pool six
+  tiles across, which is why it is a constant and not a lookup — but it is a
+  constant standing in for a measurement.

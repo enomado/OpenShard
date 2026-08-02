@@ -1,6 +1,16 @@
 //! Firelight: the pools of warm light a torch, a brazier or a campfire lays on
 //! the ground around it.
 //!
+//! # In the world's own units, not the screen's
+//!
+//! A light is a tile, a height and a reach in tiles; a fragment is lit according
+//! to the tile *its own picture* came from, which the world passes wrote into
+//! [`crate::place`]. The screen never enters it. It cannot: the screen folds
+//! height into `y`, so a brazier in a cellar lands a few pixels from a lantern
+//! on the street above, and a wall's picture stands 44 pixels above the tile it
+//! occludes from — which puts the lit face of a wall inside its own shadow the
+//! moment shadows exist at all. `docs/lighting.md` is the argument at length.
+//!
 //! # Why it is a pass over the finished image and not a term in three shaders
 //!
 //! Everything here ends up as a handful of point lights in the *drawn image's*
@@ -45,20 +55,26 @@ use crate::camera::Camera;
 use crate::cutaway::{self, Cutaway};
 use crate::geometry::Vec2;
 use crate::items::GroundItem;
+use crate::occlusion::Occlusion;
 
-/// One point light, in the pixels of the image the world was drawn into.
+/// One point light, where it stands in the world.
 ///
-/// *Not* [`ViewPixel`](crate::camera::ViewPixel): the blit runs after the
-/// projection, so this is the view pixel with
-/// [`Projection`](crate::camera::Projection) already applied — which is what
-/// keeps one radius meaning the same span of ground at every zoom.
+/// Tile coordinates and a `z`, not pixels: what a fragment is lit by depends on
+/// the tile *it* came from — see [`crate::place`] — and a pool measured on the
+/// screen would be a circle drawn over a projection that folds height into `y`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Light {
-    /// Where the flame is.
+    /// The tile it burns on, `x` and `y`.
+    ///
+    /// Floats because the shader compares them against a fragment's tile and
+    /// there is nothing to be gained by converting twice; every value here came
+    /// from a `u16` and is exact.
     pub at: Vec2,
-    /// How far its pool reaches, in the same pixels. Nothing beyond this is
-    /// touched at all, which is what keeps the shader's loop cheap and the pool
-    /// a shape rather than a global tint.
+    /// Its height, in the map's own `z` units.
+    pub z: f32,
+    /// How far its pool reaches, **in tiles**. Nothing beyond this is touched at
+    /// all, which is what keeps the shader's loop cheap and the pool a shape
+    /// rather than a global tint.
     pub radius: f32,
     /// Its colour, linear, each channel in `0..=1`.
     pub color: [f32; 3],
@@ -67,6 +83,15 @@ pub struct Light {
     pub intensity: f32,
 }
 
+/// How many `z` units make one tile's width.
+///
+/// `TILE_WIDTH / Z_STEP`: a tile is 44 virtual pixels across and one unit of
+/// height lifts a sprite four, so eleven units of `z` are one tile of ground.
+/// It is what lets a distance have all three axes in one unit, and with it a
+/// flame reaches as far up and down as it does sideways — which is what stops a
+/// cellar's brazier from lighting the street even where nothing occludes.
+pub const Z_PER_TILE: f32 = (crate::camera::TILE_WIDTH / crate::camera::Z_STEP) as f32;
+
 /// Everything the blit needs to light a frame.
 ///
 /// [`Lighting::NONE`] is the identity — full ambient, no lights — and the blit
@@ -74,15 +99,19 @@ pub struct Light {
 /// with the world image texel for texel still holds.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Lighting {
-    /// The size of the image being lit, in its own pixels. The blit turns a
-    /// texture coordinate into one of these with it.
-    pub image: Vec2,
     /// What everything is multiplied by away from any flame — the daylight, or
     /// the lack of it. `[1.0; 3]` is "no lighting at all".
     pub ambient: [f32; 3],
     /// The flames themselves, nearest first and never more than
     /// [`Lighting::MAX`] of them.
     pub lights: Vec<Light>,
+    /// What stands between them and the ground — see [`crate::occlusion`].
+    ///
+    /// Travels with the lights rather than beside them because it is the same
+    /// frame's answer built from the same walk: a grid collected for one camera
+    /// and used with another's flames would put shadows where the map has no
+    /// walls.
+    pub occlusion: Occlusion,
 }
 
 impl Lighting {
@@ -91,20 +120,20 @@ impl Lighting {
     /// A fixed-size uniform array rather than a storage buffer, because the
     /// ceiling this crate draws under is WebGL2 and a storage buffer is not in
     /// it — see the crate docs. Sixty-four is a tavern's worth of candles;
-    /// past that [`collect`] keeps the ones nearest the middle of the screen,
-    /// which is where the player is.
+    /// past that [`collect`] keeps the ones nearest the player.
     pub const MAX: usize = 64;
 
     /// The frame nothing lights: the world image, unchanged.
     pub const NONE: Self = Self {
-        image: Vec2::new(0.0, 0.0),
         ambient: [1.0, 1.0, 1.0],
         lights: Vec::new(),
+        occlusion: Occlusion::EMPTY,
     };
 
     /// Whether this would change a single pixel.
     ///
-    /// The blit skips the whole uniform upload when it would not.
+    /// The blit skips the whole uniform upload when it would not. The occluders
+    /// are not asked about: a wall with no flame to stop casts nothing.
     pub fn is_identity(&self) -> bool {
         self.lights.is_empty() && self.ambient == [1.0, 1.0, 1.0]
     }
@@ -123,8 +152,8 @@ pub const DAY: [f32; 3] = [1.0, 1.0, 1.0];
 /// How one kind of flame burns, before the flicker.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Flame {
-    /// The pool's reach in *virtual* pixels — the art's own grid, so it is a
-    /// number of tiles rather than of screen pixels. 44 is one tile across.
+    /// The pool's reach, in tiles. The world's own unit: what it lights is a
+    /// span of ground, and no zoom changes how much ground that is.
     pub radius: f32,
     /// Its colour, linear.
     pub color: [f32; 3],
@@ -140,7 +169,7 @@ pub struct Flame {
 const TORCH: Flame = Flame {
     // Six tiles. The reference isometrics light a good deal more than the tile
     // the fire is on — a pool a tile wide reads as a bug, not as a torch.
-    radius: 6.0 * 44.0,
+    radius: 6.0,
     color: [1.0, 0.72, 0.36],
     intensity: 0.95,
     flicker: 0.10,
@@ -148,7 +177,7 @@ const TORCH: Flame = Flame {
 
 /// A campfire: wider, brighter, steadier.
 const CAMPFIRE: Flame = Flame {
-    radius: 9.0 * 44.0,
+    radius: 9.0,
     color: [1.0, 0.66, 0.30],
     intensity: 1.25,
     flicker: 0.07,
@@ -175,14 +204,15 @@ pub fn flame(graphic: Graphic) -> Flame {
     }
 }
 
-/// How much of a flame's own height the light sits above the tile it stands on.
+/// How far above its tile a flame burns, in `z` units.
 ///
-/// A torch's flame is at the top of the sprite and the pool is centred under
-/// it, not on the ground the sprite stands on. Half a tile up, which is where
-/// the flame of a waist-high brazier is and close enough for a wall sconce —
-/// the sprite's real height is not available here, and asking the atlas for it
-/// would tie the lights to whether this frame's art happened to be packed.
-const FLAME_LIFT: f32 = 22.0;
+/// A torch's flame is at the top of the sprite and the pool is centred under it,
+/// not on the ground the sprite stands on. Half a tile up — [`Z_PER_TILE`] over
+/// two — which is where the flame of a waist-high brazier is and close enough
+/// for a wall sconce; the sprite's real height is not available here, and asking
+/// the atlas for it would tie the lights to whether this frame's art happened to
+/// be packed.
+const FLAME_LIFT: f32 = Z_PER_TILE / 2.0;
 
 /// How many tiles beyond the drawn image a flame can still light it from.
 ///
@@ -196,11 +226,11 @@ const FLAME_LIFT: f32 = 22.0;
 /// in the band this constant adds, all of them reaching into the frame and none
 /// of them drawn.
 ///
-/// The number is the widest pool in tiles, and it is derived rather than chosen:
-/// one step in `x` or `y` moves half a tile on each screen axis, so a pool of
-/// `r` pixels reaches `r / 22` tiles at most, whichever way the tiles run. Plus
-/// one for the rounding.
-const LIGHT_MARGIN_TILES: i32 = (CAMPFIRE.radius as i32) / (crate::camera::TILE_WIDTH / 2) + 1;
+/// Now that a reach is stated in tiles, the number *is* the widest pool, plus
+/// one for the rounding. It is also the margin the occlusion grid is built over:
+/// a wall outside it could not shadow anything the frame draws, because no flame
+/// inside it reaches that far.
+const LIGHT_MARGIN_TILES: i32 = CAMPFIRE.radius as i32 + 1;
 
 /// The cells a frame's flames can come from: what is drawn, grown by the reach
 /// of the widest pool. See [`LIGHT_MARGIN_TILES`].
@@ -214,13 +244,17 @@ fn lit_tiles(camera: &Camera) -> crate::camera::TileBounds {
     }
 }
 
-/// Every flame on screen, placed and flickering, ready for the blit.
+/// Every flame a frame can see, flickering, with what stands in their way.
 ///
 /// The statics come from the map and the items from what the server has
 /// dropped, which is the same pair [`crate::statics`] and [`crate::items`] draw
 /// — and they are tested against the same `cutaway`, so a brazier on the storey
 /// above the player stops lighting the floor at the instant it stops being
 /// drawn. A light that outlived its sprite is a glow with nothing making it.
+///
+/// The occluders come from the same walk of the same cells, for the same reason
+/// in the other direction: a wall the frame did not draw must not darken the
+/// street — see [`crate::occlusion`].
 ///
 /// `time` is how long the client has been running, in seconds; only the flicker
 /// reads it. It is an argument because this crate does not own a clock, and the
@@ -235,16 +269,15 @@ pub fn collect(
     ambient: [f32; 3],
     time: f32,
 ) -> Lighting {
-    let (image_width, image_height) = camera.image_size();
+    let bounds = lit_tiles(camera);
     let mut lights = Vec::new();
 
-    crate::statics::for_each_static_in(map, lit_tiles(camera), |item| {
+    crate::statics::for_each_static_in(map, bounds, |item| {
         let tile = tiledata.static_tile(item.tile);
         if !tile.flags.is_light_source() || !cutaway::shows(cutaway, item.z, tile) {
             return;
         }
         lights.push(place(
-            camera,
             Point::new(item.x, item.y, item.z),
             Graphic(item.tile),
             time,
@@ -256,30 +289,20 @@ pub fn collect(
         if !tile.flags.is_light_source() || !cutaway::shows(cutaway, item.at.z, tile) {
             continue;
         }
-        lights.push(place(camera, item.at, item.graphic, time));
+        lights.push(place(item.at, item.graphic, time));
     }
 
-    // Off-screen flames are dropped *after* placing rather than by tile, because
-    // the pool reaches further than the sprite: a fire a tile past the edge still
-    // lights the corner of the frame, and culling it would put a hard line down
-    // the side of the image as the camera walks.
-    let (width, height) = (image_width as f32, image_height as f32);
-    lights.retain(|light| {
-        light.at.x + light.radius > 0.0
-            && light.at.x - light.radius < width
-            && light.at.y + light.radius > 0.0
-            && light.at.y - light.radius < height
-    });
-
     if lights.len() > Lighting::MAX {
-        // Nearest the middle of the image first — the player is there. A total
-        // order and not a partial one: two lights at the same distance keep the
-        // order the map gave them, so one frame is not a different sixty-four
-        // from the next for a camera that has not moved.
-        let middle = Vec2::new(width / 2.0, height / 2.0);
+        // Nearest the player first — which is the eye's tile, and at every zoom
+        // the middle of what is drawn. A total order and not a partial one: two
+        // lights at the same distance keep the order the map gave them, so one
+        // frame is not a different sixty-four from the next for a camera that
+        // has not moved.
+        let (eye_x, eye_y) = camera.eye_tile();
+        let eye = Vec2::new(eye_x as f32, eye_y as f32);
         lights.sort_by(|a, b| {
             let key = |light: &Light| {
-                let (dx, dy) = (light.at.x - middle.x, light.at.y - middle.y);
+                let (dx, dy) = (light.at.x - eye.x, light.at.y - eye.y);
                 dx * dx + dy * dy
             };
             key(a).total_cmp(&key(b))
@@ -288,29 +311,20 @@ pub fn collect(
     }
 
     Lighting {
-        image: Vec2::new(width, height),
         ambient,
         lights,
+        occlusion: crate::occlusion::collect(map, items, bounds, tiledata, cutaway),
     }
 }
 
-/// One flame, from its tile to where it burns in the drawn image.
-fn place(camera: &Camera, at: Point, graphic: Graphic, time: f32) -> Light {
+/// One flame, from its tile to where it burns: the tile itself, lifted to the
+/// height of the flame rather than the ground under it.
+fn place(at: Point, graphic: Graphic, time: f32) -> Light {
     let flame = flame(graphic);
-    let projection = camera.projection();
-    let (width, height) = camera.image_size();
-    let view = camera.to_screen(at);
-    // The same line every world pass ends on — `Projection`'s own doc comment —
-    // so a flame lands on the pixel the sprite that makes it landed on, at every
-    // zoom. Written out rather than shared because the shaders have it as two
-    // lines of WGSL and there is nothing in Rust to call.
-    let image = Vec2::new(
-        (view.x as f32 - projection.origin.x) * projection.scale + width as f32 / 2.0,
-        (view.y as f32 - FLAME_LIFT - projection.origin.y) * projection.scale + height as f32 / 2.0,
-    );
     Light {
-        at: image,
-        radius: flame.radius * projection.scale,
+        at: Vec2::new(f32::from(at.x), f32::from(at.y)),
+        z: f32::from(at.z) + FLAME_LIFT,
+        radius: flame.radius,
         color: flame.color,
         intensity: flame.intensity * flicker(time, phase_of(at), flame.flicker),
     }
@@ -410,13 +424,9 @@ mod tests {
         );
         assert_eq!(lighting.lights.len(), 1);
         let light = lighting.lights[0];
-        let middle = camera.to_screen(items[0].at);
-        assert_eq!(light.at.x, middle.x as f32);
-        assert_eq!(light.at.y, middle.y as f32 - FLAME_LIFT);
-        assert_eq!(
-            light.radius, TORCH.radius,
-            "unmagnified, a virtual pixel is a pixel"
-        );
+        assert_eq!((light.at.x, light.at.y), (100.0, 100.0), "its own tile");
+        assert_eq!(light.z, FLAME_LIFT, "burning above the ground it stands on");
+        assert_eq!(light.radius, TORCH.radius, "six tiles, whatever the zoom");
     }
 
     /// And an item that is not flagged makes none. The flag is the whole test:
@@ -442,10 +452,15 @@ mod tests {
         assert!(lighting.lights.is_empty());
     }
 
-    /// Magnifying scales the pool with the world. Without this a torch lights
-    /// six tiles at 1:1 and one and a half at 4x — the same fire, a different
-    /// amount of ground, which is the bug that hides in "pixels" meaning two
-    /// things.
+    /// A pool covers the same ground at every zoom, and now says so by not
+    /// changing at all.
+    ///
+    /// The bug this was written against — a torch lighting six tiles at 1:1 and
+    /// one and a half at 4x — is unexpressible once a reach is in tiles rather
+    /// than in pixels of an image whose scale is the zoom. It stays because
+    /// "unexpressible" is a claim about the code and this is the thing that
+    /// checks it: `collect` walks a camera, and a camera is what used to be
+    /// folded into the number.
     #[test]
     fn a_pool_covers_the_same_ground_at_every_zoom() {
         let graphic = Graphic(0x0A12);
@@ -460,8 +475,8 @@ mod tests {
         loop {
             camera.zoom_about(400, 300, zoom);
             let lighting = collect(&bare(), &items, &camera, &tiledata, &Cutaway::OPEN, NIGHT, 0.0);
-            let scale = camera.projection().scale;
-            assert_eq!(lighting.lights[0].radius, TORCH.radius * scale, "at {zoom}");
+            assert_eq!(lighting.lights[0].radius, TORCH.radius, "at {zoom}");
+            assert_eq!(lighting.lights[0].at, Vec2::new(100.0, 100.0), "at {zoom}");
             let next = zoom.scale_up();
             if next == zoom {
                 break;
@@ -510,19 +525,18 @@ mod tests {
         loop {
             camera.zoom_about(400, 300, zoom);
             let bounds = lit_tiles(&camera);
-            let (width, height) = camera.image_size();
-            let (width, height) = (width as f32, height as f32);
-            let (eye_x, eye_y) = camera.eye_tile();
+            let drawn = camera.visible_tiles();
 
             let mut reaching = 0;
-            for x in eye_x - 140..=eye_x + 140 {
-                for y in eye_y - 140..=eye_y + 140 {
-                    let light = place(&camera, Point::new(x as u16, y as u16, 0), widest, 0.0);
-                    let touches = light.at.x + light.radius > 0.0
-                        && light.at.x - light.radius < width
-                        && light.at.y + light.radius > 0.0
-                        && light.at.y - light.radius < height;
-                    if !touches {
+            for x in drawn.min_x - 40..=drawn.max_x + 40 {
+                for y in drawn.min_y - 40..=drawn.max_y + 40 {
+                    // Could a campfire on this tile light any tile the frame
+                    // draws? In tiles now, which is the unit the reach is in —
+                    // the nearest drawn tile is the one to ask about.
+                    let near_x = x.clamp(drawn.min_x, drawn.max_x);
+                    let near_y = y.clamp(drawn.min_y, drawn.max_y);
+                    let (dx, dy) = ((x - near_x) as f32, (y - near_y) as f32);
+                    if (dx * dx + dy * dy).sqrt() >= CAMPFIRE.radius {
                         continue;
                     }
                     reaching += 1;
@@ -534,13 +548,6 @@ mod tests {
             }
             // A sweep that found nothing would assert nothing at all, and would
             // stay green for a `lit_tiles` that returned an empty rectangle.
-            // Magnified, the sweep's own 281x281 window is the limit rather than
-            // the reach — a pool is four times as wide in image pixels at 4x, so
-            // most of what could light the frame is outside the tiles swept.
-            // Five hundred is a floor that holds at every rung and is still
-            // hundreds of assertions; a sweep that found nothing would assert
-            // nothing at all and would stay green for a `lit_tiles` that
-            // returned an empty rectangle.
             assert!(
                 reaching > 500,
                 "at {zoom}, only {reaching} tiles could light the frame"
@@ -552,6 +559,38 @@ mod tests {
             }
             zoom = next;
         }
+    }
+
+    /// The occluders come back over the same cells the flames were looked for
+    /// on, and a wall on one of them is in the grid.
+    ///
+    /// One rectangle and not two: a grid collected over a smaller region than
+    /// the flames were would let a torch light through a wall that is on screen,
+    /// and the two walks are written as one call for exactly that reason.
+    #[test]
+    fn the_occluders_cover_the_cells_the_flames_came_from() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0006);
+        let mut tiledata = TileData::empty();
+        tiledata.set_static_tile(
+            graphic.0,
+            StaticTile {
+                flags: TileFlags::new(TileFlags::NO_SHOOT),
+                height: 20,
+                ..StaticTile::default()
+            },
+        );
+        let items = [GroundItem {
+            at: Point::new(101, 100, 0),
+            graphic,
+            hue: Hue::NONE,
+        }];
+        let lighting = collect(&bare(), &items, &camera, &tiledata, &Cutaway::OPEN, NIGHT, 0.0);
+        assert_eq!(lighting.occlusion.bounds(), lit_tiles(&camera));
+        assert!(
+            lighting.occlusion.at(101, 100).is_some(),
+            "the wall the frame walked past is not in the grid",
+        );
     }
 
     /// A flame the cutaway has taken away takes its light with it: the roof over

@@ -104,6 +104,21 @@ pub struct Occlusion {
 }
 
 impl Occlusion {
+    /// A grid covering no tiles at all, which occludes nothing anywhere.
+    ///
+    /// A `const` and therefore an empty `Vec`, which allocates nothing: it is
+    /// what [`Lighting::NONE`](crate::light::Lighting::NONE) is built from, and
+    /// a daylit frame must not pay for a grid it will not read.
+    pub const EMPTY: Self = Self {
+        bounds: TileBounds {
+            min_x: 0,
+            max_x: -1,
+            min_y: 0,
+            max_y: -1,
+        },
+        cells: Vec::new(),
+    };
+
     /// An empty grid over `bounds`: nothing stops anything.
     pub fn new(bounds: TileBounds) -> Self {
         let cells = vec![None; (bounds.width() * bounds.height()) as usize];

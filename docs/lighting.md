@@ -9,18 +9,23 @@ copied.
 
 ## Where it stands
 
-`client/render/src/light.rs` collects the flames a frame can see, `blit.wgsl`
-multiplies them over the finished world image, and F10 toggles night. Every
-light is a **circle in the pixels of the drawn image**: `light::place` projects
-the flame's tile to a screen point, and the blit compares each fragment's screen
-position with it.
+Done, and the decisions below are what was built rather than what was proposed.
+`client/render/src/light.rs` collects the flames a frame can see *and* the
+occluders in their way; the three world passes write which tile each pixel came
+from; `blit.wgsl` lights the frame in world coordinates and walks the grid
+between a fragment and each flame. F10 still toggles night. A torch inside a
+house no longer lights the street, and the wall's own face is the brightest
+thing next to it.
 
-That arrangement cannot be given walls. Two facts about it are the whole reason
-this plan exists:
+What it replaced, because the argument is the point:
+
+Every light used to be a **circle in the pixels of the drawn image** — the
+flame's tile projected to a screen point, compared against the fragment's screen
+position. That arrangement cannot be given walls, for two reasons:
 
 - **The screen folds height into `y`.** A brazier in a cellar and a lantern on
   the street above it are a few pixels apart in the image, so the pool of one
-  covers the other. This is `client.md`'s "a flame lights through a floor".
+  covers the other. This was `client.md`'s "a flame lights through a floor".
 - **A wall's sprite stands above the tile it occludes from.** A wall is 44
   pixels of picture rising from a diamond that is at the floor. Whatever
   screen-space mask darkens the ground behind the wall also covers the wall's
@@ -30,7 +35,7 @@ this plan exists:
   pixels of the same sprite; only a per-pixel answer to "which tile is this?"
   separates them.
 
-So the pass moves from the screen into the world, and the shadow comes with it.
+So the pass moved from the screen into the world, and the shadow came with it.
 
 ## Decisions
 
@@ -121,20 +126,27 @@ street even where nothing occludes.
 
 ## Steps
 
-- [ ] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
+- [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
       from the map, the tiledata and the cutaway over the bounds `light.rs`
       already computes. Pure CPU, no GPU types, tested without client files: the
       builder takes occluders one at a time and the map walk is the caller.
-- [ ] **2. The `(x, y, z)` attachment.** `ground.wgsl` and `statics.wgsl` gain a
+- [x] **2. The `(x, y, z)` attachment.** `ground.wgsl` and `statics.wgsl` gain a
       second output; the quad structs gain the tile they are for; the renderer
       gains the texture and a second colour target. The frame tests read it back
       and assert that a wall's pixel names the wall's tile.
-- [ ] **3. `light.rs` in world coordinates.** A `Light` becomes a tile, a `z`, a
+- [x] **3. `light.rs` in world coordinates.** A `Light` becomes a tile, a `z`, a
       radius in tiles. `place` and `FLAME_LIFT` go; the lift becomes `z` units.
-- [ ] **4. `blit.wgsl`.** Reads the attachment and the occlusion texture,
+- [x] **4. `blit.wgsl`.** Reads the attachment and the occlusion texture,
       computes the world distance and the ray's product of opacities.
-- [ ] **5. Wiring and a picture.** `app/src/lib.rs` passes the occlusion grid;
-      a screenshot of a torch inside a house that no longer lights the street.
+- [x] **5. Wiring.** `app/src/lib.rs` carries the place attachment through the
+      three passes and into the blit; `light::collect` builds the grid itself, so
+      no call site grew an argument.
+- [ ] **6. A picture, and a number.** A screenshot of a torch inside a house
+      that no longer lights the street, and a frame time from the playground at
+      the widest zoom on Britain — the arrangement is *cheaper* per pixel than
+      the one it replaces (a fragment outside every radius leaves the loop at
+      once, where the old one ran all 64 lights for every pixel of the screen),
+      and that claim is worth a measurement rather than an argument.
 
 ## Backlog
 

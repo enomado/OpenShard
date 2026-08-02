@@ -3243,6 +3243,7 @@ impl App {
             blit::Frame {
                 target: &view,
                 world: &world_view,
+                place: &place_view,
                 zoom: camera.zoom(),
                 rect: viewport,
             },
