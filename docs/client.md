@@ -2400,3 +2400,37 @@ the way and not done:
   already held, and is snapped outright on a correction — same trust level
   as `player.at`, minus the one case (a step this end already knows is
   doomed) that was never worth predicting through for a roof.
+
+## Backlog, found while giving the client the shard's obstacles
+
+- ~~**The client's terrain saw walls and nothing else.**~~ `MapTerrain` reads the
+  map and `tiledata.mul`, so a wall stopped a step here and a *barrel* did not:
+  a placed item is an entity the shard described in a `0x1A`, and nothing on
+  this end laid it over the map. `Steering::detour` therefore offered no way
+  round one, the `0x02` went out, the shard refused it with a `0x21`, and a held
+  direction shuddered against the crate — the corner-rule bug one layer down.
+  Fixed with `crates/client/app/src/clutter.rs`: `Clutter`, a third projection
+  of the `WorldView` beside `App::items` and `App::others`, and `Cluttered`, the
+  client's twin of `openshard-state`'s `LiveTerrain`. Same predicate
+  (`Terrain::item_blocks`) and same z-span (base z, tiledata height) as
+  `decor::place_decoration` uses server-side, so the two ends agree by
+  construction. Every step decision on this end goes through it — the held
+  direction, the mouse heading, `find_path`, and the `cutaway_at` guard.
+- **The z-span overlap test now exists twice**, in `Obstructions::blocker_at_z`
+  and in `Clutter::blocked_at`, with `MOBILE_HEIGHT` written out on both ends.
+  It is the same arithmetic on the same units and it decides whether two ends of
+  a wire agree; it belongs in `common/movement` as one function the server's
+  index and the client's both call.
+- **A client cannot tell a shut door from a barrel.** The wire carries a graphic,
+  not a kind, so `Cluttered::sight_clear` delegates to the map alone where the
+  server treats a shut door as opaque. Harmless while nothing here computes
+  line of sight for gameplay; it stops being harmless the moment something does.
+- **Neither end blocks a step on a mobile.** Nothing registers a body in
+  `Obstructions`, so `Clutter` deliberately holds none either — two ends wrong
+  the same way, which walks, rather than a client refusing steps the shard
+  allows. Whether a mobile should block at all is a gameplay decision (ServUO's
+  `checkMobiles`) and belongs in the movement rules, not in either index.
+- **Multis are not items and are not here.** A house is not a `0x1A`, so the
+  moment multis land this end will walk into their walls exactly the way it
+  walked into barrels. Whatever indexes them for drawing should feed `Clutter`
+  in the same pass.

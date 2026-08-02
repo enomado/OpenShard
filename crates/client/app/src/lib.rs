@@ -54,6 +54,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
+mod clutter;
 mod crowd;
 /// The walk, held against an oracle. Tests only — see its module docs.
 #[cfg(test)]
@@ -425,6 +426,7 @@ pub fn run<D: Dial + Send + 'static>(
         cutaway_at: start,
         others: Vec::new(),
         items: Vec::new(),
+        clutter: clutter::Clutter::default(),
         view: None,
         connection: String::from("offline"),
         shell: None,
@@ -798,6 +800,13 @@ struct App {
     /// is a static's picture. Two lists rather than one because the map's
     /// furniture never moves and these come and go with every packet.
     items: Vec<GroundItem>,
+    /// Which of those items a step cannot go through, indexed by tile.
+    ///
+    /// A third projection of the view beside [`App::items`] and [`App::others`],
+    /// rebuilt with them: the map's own files hold no barrel, so without this
+    /// every terrain check here looks straight through one and the shard refuses
+    /// the step this end thought was open. See `clutter.rs`.
+    clutter: clutter::Clutter,
     /// The last thing the server said, whole.
     ///
     /// Kept only for the HUD's world window, which lists what has been decoded
@@ -1035,8 +1044,7 @@ impl ApplicationHandler<link::Update> for App {
                 if let Some(direction) = keys::Held::direction_of(code) {
                     let step = match event.state {
                         ElementState::Pressed => {
-                            let terrain =
-                                openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+                            let terrain = self.clutter.over(&self.map, &self.tiledata);
                             self.steer.press(
                                 direction,
                                 self.player.at,
@@ -1242,7 +1250,7 @@ impl ApplicationHandler<link::Update> for App {
         // anything past it is a rate, which is what the clock is for.
         let mut moved = false;
         for _ in 0..2 {
-            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+            let terrain = self.clutter.over(&self.map, &self.tiledata);
             let Some(facing) = self.steer.due(now, self.player.at, self.player.facing, &terrain) else {
                 break;
             };
@@ -1412,7 +1420,7 @@ impl App {
             return false;
         };
         let facing = if self.ctrl_held {
-            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+            let terrain = self.clutter.over(&self.map, &self.tiledata);
             self.steer.go_to(
                 (tile.x, tile.y),
                 self.player.at,
@@ -1421,7 +1429,7 @@ impl App {
                 &terrain,
             )
         } else {
-            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+            let terrain = self.clutter.over(&self.map, &self.tiledata);
             self.steer.steer(
                 self.heading_to_cursor(*self.control.camera()),
                 self.player.at,
@@ -1800,6 +1808,29 @@ impl App {
             ),
         };
         self.player.equipment = crowd::worn(&view.player.equipment, &self.tiledata);
+        // Sorted by serial for the same reason, and for one more: two items on
+        // one tile at one height are drawn in the order they arrive here, so an
+        // order that changed every frame would flicker.
+        //
+        // Before the cutaway guard below, and not with the other projections
+        // further down, because that guard asks what this client can already see
+        // in its way — and a barrel it was told about in the very packet being
+        // folded in is part of that.
+        let mut items: Vec<_> = view.items.iter().collect();
+        items.sort_unstable_by_key(|(serial, _)| serial.raw());
+        self.items = items
+            .into_iter()
+            .map(|(_, item)| GroundItem {
+                at: item.position,
+                graphic: item.graphic,
+                hue: item.hue,
+            })
+            .collect();
+        // The same list read for a second question — not what to draw, but what
+        // a step cannot go through. Rebuilt here rather than per decision: one
+        // click plans a route over hundreds of tiles, and each of them would
+        // otherwise rescan everything on screen. See `clutter.rs`.
+        self.clutter = clutter::Clutter::of(&self.items, &self.tiledata);
         // `cutaway_at` follows the same prediction `player.at` does, with one
         // guard: it only ever advances to a tile the client's own static map
         // agrees is reachable from the one it already held. A correction is
@@ -1810,7 +1841,7 @@ impl App {
         self.cutaway_at = match body.corrected {
             true => body.predicted.position,
             false => {
-                let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+                let terrain = self.clutter.over(&self.map, &self.tiledata);
                 match terrain.can_step(self.cutaway_at, body.predicted.position) {
                     Some(_) => body.predicted.position,
                     None => self.cutaway_at,
@@ -1839,19 +1870,6 @@ impl App {
         self.crowd.retain(|who| {
             who.is_some_and(|serial| serial == view.player.serial || view.mobiles.contains_key(&serial))
         });
-        // Sorted by serial for the same reason, and for one more: two items on
-        // one tile at one height are drawn in the order they arrive here, so an
-        // order that changed every frame would flicker.
-        let mut items: Vec<_> = view.items.iter().collect();
-        items.sort_unstable_by_key(|(serial, _)| serial.raw());
-        self.items = items
-            .into_iter()
-            .map(|(_, item)| GroundItem {
-                at: item.position,
-                graphic: item.graphic,
-                hue: item.hue,
-            })
-            .collect();
         self.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
         // The newest line in the journal, heard once and hung over its
         // speaker's head for a while — compared against the old view, still
