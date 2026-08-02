@@ -1753,6 +1753,135 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     );
 }
 
+/// Two wall tiles in a row are one surface, not two sprites.
+///
+/// The seam is the whole reason a wall's face is measured out of its art. Before
+/// it, every pixel of a wall tile claimed the tile's middle: a row of walls came
+/// out as flat 44-pixel bands with a step at each boundary, which is what a torch
+/// against a wall actually looked like. With it, the fraction runs from 0 to 1
+/// along the edge and the next tile picks up where this one stopped, so the world
+/// coordinate a pixel names is *continuous across the join*.
+///
+/// Stated as a difference across the boundary and not as an absolute, because
+/// that is the property that fails: a face read but mapped backwards, or a run
+/// that saturates halfway, both put a wall in the right tiles and still break the
+/// join. The pair of assertions below is what separates them — one that the step
+/// across the seam is small, one that a whole tile is actually traversed, and a
+/// mapping that returns a constant fails the second while passing the first.
+#[test]
+fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    const HEIGHT: u16 = 60;
+    // The south face runs along `+x`, so its neighbour is the tile at `x + 1` —
+    // which in this projection is 22 pixels right and 22 down.
+    const FACE: openshard_client_render::facing::Face = openshard_client_render::facing::Face::South;
+    const ORIGIN: f32 = 20.0;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([(GRAPHIC, openshard_client_render::facing::silhouette(FACE, HEIGHT))])
+        .expect("fits");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+    // The atlas is what measures the face, and if it did not this test would go
+    // on to assert about two `Upright` sprites and pass for the wrong reason —
+    // their fractions are equal, so the step across the seam would be zero.
+    assert_eq!(sprite.face, Some(FACE), "the atlas did not read the fixture");
+
+    let tile = |x: u16| Point::new(x, 400, 0);
+    let quad = |at: Point, dx: f32, dy: f32| SpriteQuad {
+        rect: Rect {
+            x: ORIGIN + dx,
+            y: ORIGIN + dy,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
+        region: sprite.region,
+        depth: 0.4,
+        hue: 0,
+        place: Place {
+            stance: openshard_client_render::place::Stance::FaceSouth,
+            ..Place::of_static(at)
+        },
+    };
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[quad(tile(300), 0.0, 0.0), quad(tile(301), 22.0, 22.0)],
+        256,
+    );
+
+    // Where in the world a pixel says it is: the tile plus the fraction, in
+    // tiles. This is exactly what `blit.wgsl` computes to measure a distance,
+    // which is why the assertions below are about it rather than about the bits.
+    let world_x = |x: u32, y: u32| {
+        let place = places.at(x, y);
+        assert_eq!(place[3] & 3, 2, "nothing was drawn at ({x}, {y})");
+        f32::from(place[0]) + f32::from((place[3] >> 2) & 127) / 127.0
+    };
+
+    // A row that crosses the join. The first sprite's face occupies its left
+    // half — columns 0..=21 of a 44-wide picture — and the second sprite starts
+    // 22 pixels right of it, so the two are edge to edge with no gap and no
+    // overlap. A row a third of the way up the wall is drawn in every one of
+    // those columns.
+    let row = ORIGIN as u32 + u32::from(HEIGHT);
+    let left = ORIGIN as u32;
+    let last_of_the_first = world_x(left + 21, row);
+    let first_of_the_second = world_x(left + 22, row + 1);
+    assert!(
+        (first_of_the_second - last_of_the_first).abs() < 0.15,
+        "the seam steps: {last_of_the_first} then {first_of_the_second}",
+    );
+    // And a whole tile is crossed getting there, which is what says the fraction
+    // is a mapping and not a constant somewhere near the middle.
+    let first_of_the_first = world_x(left, row - 21);
+    assert!(
+        (last_of_the_first - first_of_the_first) > 0.85,
+        "one tile of wall spans {} of a tile",
+        last_of_the_first - first_of_the_first,
+    );
+    // The fixed coordinate is the edge, one step of the fraction short of it —
+    // and both halves of that are load-bearing.
+    //
+    // *The edge*, because a south face lies on `y + 1`: a fraction that drifted
+    // off it would put the lit surface inside the tile rather than on its
+    // boundary, which the two assertions above cannot see because both only ever
+    // look at `x`.
+    //
+    // *One step short*, because `blit.wgsl` finds a fragment's cell with
+    // `floor(tile + fraction)` and exempts that cell from shadowing it. A clean
+    // `127` names the tile **beyond** the wall, so the wall's own tile stops
+    // being exempt and the wall is shadowed by itself — measured on Britain, a
+    // run of lit wall at 249 dropping to the ambient 65. `statics.wgsl`'s
+    // `INSIDE` is the step, and this is the number it produces.
+    // Stated as the two facts rather than as the byte, so that a change to how
+    // many bits the fraction has does not silently retire either of them.
+    for (x, y) in [(left, row - 21), (left + 21, row), (left + 22, row + 1)] {
+        let place = places.at(x, y);
+        let (sub_x, sub_y) = ((place[3] >> 2) & 127, (place[3] >> 9) & 127);
+        assert!(
+            sub_y > 120,
+            "the south face left its own edge at ({x}, {y}): {sub_y}"
+        );
+        // The cell `blit.wgsl` will call this fragment's own, computed its way.
+        for (tile, sub, axis) in [(place[0], sub_x, 'x'), (place[1], sub_y, 'y')] {
+            let cell = (f32::from(tile) + f32::from(sub) / 127.0).floor() as u16;
+            assert_eq!(
+                cell, tile,
+                "at ({x}, {y}) the walk puts this pixel in the {axis} neighbour, so the wall it is \
+                 the face of is no longer exempt from shadowing it",
+            );
+        }
+    }
+}
+
 /// Draw ground and one sprite and read back the *place* attachment rather than
 /// the picture. `size * 8` must be a multiple of 256, as every readback here.
 #[allow(clippy::too_many_arguments)]

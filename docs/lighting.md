@@ -9,9 +9,19 @@ copied.
 
 ## Where the next session starts
 
-Steps 1–14 and 18 are done; **15, 16 and 17 are not**, and they are in that order
-for a reason. Steps 15 and 16 are one measurement used twice: a wall's face read
-out of its own art, then the window's hole in that face.
+Steps 1–15 and 18 are done; **16 and 17 are not**. Step 15 has just landed and
+it is half of the measurement step 16 needs: a wall's face is now read out of its
+own art, and the window's hole is the same silhouette measured again — a span of
+`v` along the face and a span of `z` — so whoever picks 16 up starts from
+`render/src/facing.rs` rather than from nothing.
+
+What step 15 changed, and what it is worth knowing about it: a wall's pixels no
+longer all claim the middle of their tile, so a row of walls is one lit surface
+instead of a row of flat 44-pixel bands with a cliff at each seam. It reads
+**76% of the walls standing in Britain** and leaves the rest exactly as they
+were. It also produced decision 16, which is the kind of thing that only turns up
+when the picture is looked at: a fraction of exactly one names the wrong tile and
+made every faced wall shadow itself.
 
 Step 6's measurement has been taken and it moved two things: the sun is no longer
 gated on what it costs (it is 9% of the pass), and decision 6's claim that this
@@ -29,8 +39,8 @@ under "found while putting a light in the player's hand", and the first line of
 it is the one worth reading: the beam is the local player's alone.
 
 Nothing outside this file is half-finished — `main` builds, the three commands
-are silent, and the pictures in this session were taken from the playground
-running headless.
+are silent, and the pictures are `tests/cost.rs`'s frame dump, headless, with
+`OPENSHARD_FRAME_VIEW=5` for the ones the art had to be thrown away from.
 
 ## Where it stands
 
@@ -234,16 +244,26 @@ nothing and wrong for two different reasons. A *floor* static is a picture of th
 tile's diamond, so its pixels are spread across the tile and its height is the
 tile's; a room's floor written as one place came out as flat 44-pixel diamonds
 with a step at every seam, which is most of what a pool of light was accused of
-looking like. A *wall* is a billboard: what runs down its picture is height, and
-the only horizontal thing it knows is how far across the tile's column a pixel
-is, which is `1/44` of a tile along the screen's own `x - y` axis.
+looking like. A *wall* is a billboard: what runs down its picture is height.
 
-Which of the two it is comes from the client: `TileFlags::FLOOR` — `UFLAG1_FLOOR`
-in Sphere, `Background` in ClassicUO — is set on floors, rugs and roads and on
-nothing that stands up. Not `PLATFORM`: a table is `BLOCK | PLATFORM` and is a
-picture of a table, not of the ground. `place::Stance` is the pair, and it rides
-above the kind in the instance's place word — never in the attachment, whose
-fourth channel is two bits of kind and fourteen of fraction with nothing spare.
+**Across a wall, this decision first said `1/44` of a tile along the screen's
+`x - y` axis, and that was wrong.** It survived one commit. That axis is the
+horizontal, and no wall runs along it: a wall runs along one *world* axis, which
+in this projection is a screen diagonal. Spreading a wall's pixels sideways puts
+them along the one direction the wall does not go, and it looks like it. What
+replaced it was the tile's middle everywhere — an honest statement of what was
+not known — until step 15 measured the axis out of the art. The `1/44` is not
+half-right; it is the wrong direction, and it is written down here because the
+plausible-looking version is the one somebody re-derives.
+
+Which stance a static has comes from the client first: `TileFlags::FLOOR` —
+`UFLAG1_FLOOR` in Sphere, `Background` in ClassicUO — is set on floors, rugs and
+roads and on nothing that stands up. Not `PLATFORM`: a table is `BLOCK |
+PLATFORM` and is a picture of a table, not of the ground. Then the art, for which
+edge a wall stands on. `place::Stance` is the six of them — flat, four faces, and
+"standing but unknown" — and it rides in three bits above the kind in the
+instance's place word, never in the attachment, whose fourth channel is two bits
+of kind and fourteen of fraction with nothing spare.
 
 **14. The shadow ray walks the cells it crosses, and spends the length of each
 crossing.** Not a fixed number of samples along the segment: at two tiles apart
@@ -293,6 +313,24 @@ have for nothing: it is on the wire for every mobile, and the client already
 holds it to pick which way a sprite is drawn. That is the whole of why this
 arrives before the wall facings of step 15 — the light knows which way it is
 pointed even though a wall does not.
+
+**16. A fraction of exactly one names the next tile, and the walk believes it.**
+A wall's face lies *on* the tile boundary, so the honest fraction for a south
+face is `y = 1` — and `blit.wgsl` finds a fragment's cell with
+`floor(tile + fraction)`, which for that number is the tile beyond the wall. The
+walk exempts the fragment's own cell from shadowing it, precisely so a wall's
+face is the brightest thing beside a torch; hand it the neighbour and the wall's
+own tile stops being exempt, so **every faced wall is shadowed by the wall it is
+the face of** and comes out at ambient. Measured on Britain the first time this
+was drawn: a run of lit wall at 249 dropping to the 65 of an unlit night.
+
+So what the attachment carries is the fraction held one step of its own
+seven-bit grid inside the tile — a hundred-and-twenty-seventh, 0.35 pixels of
+world. `statics.wgsl`'s `INSIDE`. The geometry is still the boundary and
+`facing::Face::place_at` still says so; it is the *encoding* that has to name the
+tile the wall belongs to, and the two are different questions. The same clamp
+covers a floor's outermost pixel, which had the same latent bug from step 12 and
+never showed it, because a floor's tile is not an occluder.
 
 ## Steps
 
@@ -421,62 +459,95 @@ pointed even though a wall does not.
       What it is expected to show first: **a door's shadow is a tile wide**,
       because decision 3's occluder is the whole tile and not the leaf — which is
       the report that started this step.
-- [ ] **15. A wall's facing, measured from its art.** Decision 3 is right that
-      `tiledata.mul` does not say which edge a wall stands on. The *art* does: a
-      wall's face is one tile edge, which in this projection is half a cell wide
-      with a 45° top, and the four edges are told apart by two features of the
-      silhouette — which half of the columns is occupied, and where the topmost
-      opaque pixel is:
+- [x] **15. A wall's facing, measured from its art.** Decision 3 is right that
+      `tiledata.mul` does not say which edge a wall stands on. The *art* does,
+      and what says it is the **base edge** — the lowest drawn pixel of each
+      column, which is where the wall meets the ground and the one part of a
+      wall's silhouette with no ornament on it. Two independent bits come out of
+      it and together they are the four faces:
 
-      | face | runs along | occupies | apex column |
+      | face | runs along | occupies | base descends |
       |---|---|---|---|
-      | N | `+x` | right half | centre |
-      | E | `+y` | right half | right |
-      | S | `+x` | left half | left |
-      | W | `+y` | left half | centre |
+      | N | `+x` | right half | to the right |
+      | E | `+y` | right half | to the left |
+      | S | `+x` | left half | to the right |
+      | W | `+y` | left half | to the left |
 
-      Measured on `0x0100` "marble wall": the mass is columns 18..43 — 22 pixels,
-      exactly one edge — and the top runs down-left, which is the east face.
-      `0x0104` has two slopes (a corner) and `0x0101` is a post; both must come
-      back **undecided**, and a detector that cannot refuse is the failure mode
-      here.
+      Verified against the client before a line was written: `0x0100` "marble
+      wall" has its mass in columns 18..=43 with the base descending left — the
+      east face — and its base lands on the predicted `dy = 22 - across` **to the
+      pixel** over the whole 22-column span. `0x0007` is the south face of the
+      same shape and lands the same way. That is the not-circular check the whole
+      step rests on.
 
       Then a pixel maps onto that face instead of onto the tile's middle. With
-      `v` along the edge and `(dx, dy)` the offset from the tile's centre at the
-      base height:
+      `v` along the edge and `(dx, dy)` the offset from the tile's centre:
 
-      | face | place | height |
+      | face | place | `v` |
       |---|---|---|
-      | N | `(v, 0)`, `v = dx/22` | `z0 + (22(v - 1) - dy)/4` |
-      | E | `(1, v)`, `v = 1 - dx/22` | `z0 + (22v - dy)/4` |
-      | S | `(v, 1)`, `v = 1 + dx/22` | `z0 + (22v - dy)/4` |
-      | W | `(0, v)`, `v = -dx/22` | `z0 + (22(v - 1) - dy)/4` |
+      | N | `(v, 0)` | `dx/22` |
+      | E | `(1, v)` | `1 - dx/22` |
+      | S | `(v, 1)` | `1 + dx/22` |
+      | W | `(0, v)` | `-dx/22` |
 
-      Today's `z = z0 - dy/4` is the `s = 0` case of these, so the formula
-      generalises rather than replaces. **The point is the seam**: the next tile
-      along the run starts its `v` at 0 where this one ended at 1, and the two
-      name one world line — a row of wall tiles becomes one continuous surface,
-      which is what "stop thinking in sprites" means here.
+      And the height is **one line for all six stances**, which is more than the
+      plan hoped for: the point of the tile a pixel's picture rises from is
+      `(place.x + place.y - 1) * 22` pixels below the tile's centre row, so
+      `z = z0 + ((sub.x + sub.y - 1) * 22 - dy) / 4` covers the four faces, the
+      faceless upright case (where the term is zero and this is exactly the old
+      `z0 - dy/4`) and — read with an *unclamped* fraction — the flat case too.
+      The formula generalises rather than replaces, and `BOTTOM_LIFT` is gone.
 
-      Where it goes: `render/src/facing.rs` holds `face_of(&Image) -> Option<Face>`
-      (pure, tested on silhouettes drawn by hand), `StaticAtlas` calls it once
-      while packing and keeps the answer on `Sprite`, `place::Stance` grows from
-      two values to six in the three bits it already has room for, and
-      `statics.wgsl` gains the `switch` above. `light.rs` and `blit.wgsl` are not
-      touched: the attachment is their input.
+      **The point is the seam**, and it is what the frame test asserts: the next
+      tile along the run starts its `v` at 0 where this one ended at 1, so a row
+      of wall tiles is one continuous surface. Held to by two mutations — the
+      run reversed, and the run replaced by a constant — each of which fails it.
 
-      Held to: synthetic silhouettes; an `#[ignore]`d sweep over every `WALL`
-      graphic in a real install that **prints how many were decided**, because a
+      Where it went: `render/src/facing.rs` holds `face_of(&Image) -> Option<Face>`
+      and `silhouette`, the fixture both the unit tests and the GPU test are
+      drawn against (`pub` for the reason `scene.rs`'s rooms are); `StaticAtlas`
+      calls it once while packing and keeps the answer on `Sprite`;
+      `place::Stance` grew from two values to six; `statics.wgsl` gained the
+      switch. `light.rs` and `blit.wgsl` were not touched — the attachment is
+      their input, exactly as planned.
+
+      **What it reads, measured rather than hoped.** 37% of the install's 3,212
+      `WALL` graphics, and **76% of the 4,596 wall statics standing in Britain**
+      — the second is the number that decides how a frame looks, and the two are
+      reported apart because the table is mostly things nobody built with. The
+      unread remainder is corners, posts, roof slabs flagged `WALL`, and
+      multi-tile buildings shipped as one graphic; every one of them keeps
+      today's behaviour exactly. `tests/facing.rs` prints both, pins seven named
+      graphics to their verdicts, and asserts a floor under each share — a
       detector with no coverage count is a green light for having checked
-      nothing; a frame test that the fraction is continuous across the seam
-      between two neighbouring wall tiles; and a night frame in the playground.
-      A graphic it cannot read keeps today's behaviour exactly, so nothing gets
-      worse anywhere.
+      nothing.
 
-      **Not for the occlusion grid.** There a wrong guess is a room leaking onto
-      the street, which is what decision 3 refuses; here it is shading that looks
-      odd. When the sweep says what fraction of a real city is decided, that is
-      the conversation — and it is the same key that unlocks the sconce lighting
+      Three things the detector had to be taught by being caught getting them
+      wrong, all three by the sweep rather than by reasoning:
+
+      - **It only looked at the half it had proposed.** A 106-pixel statue read
+        as a north face because its mass, far off to the left of any tile edge,
+        was never tested. Every one of the 15 "north" graphics was that bug.
+      - **`SPILL` at six pixels refused most of a city.** A wall is a solid and
+        the picture shows its thickness; where it is low enough to look down on,
+        its whole top surface is drawn — 8.5 pixels on `0x0063`, the garden wall
+        Britain is fenced with. Twelve reads 76% of the map where six read 40%,
+        and a corner still covers the whole other half, 21.5 pixels of it.
+      - **A slab is not a wall.** A roof piece has the right 45° base and no
+        height above it, so the detector asks that the thing stand up.
+
+      **And the art only ever draws two of the four.** Every wall the install
+      ships stands on its tile's `y1` or `x1` edge — the two an isometric camera
+      can see the face of; a `y0` or `x0` face is a surface turned away from the
+      viewer and there is no picture of one. North and west are five graphics and
+      one, out of 1,197. The enum keeps all four because the *geometry* has four
+      edges and a detector that could not name one could not be caught naming it
+      wrongly.
+
+      **Not for the occlusion grid**, and that has not changed: there a wrong
+      guess is a room leaking onto the street, which is what decision 3 refuses;
+      here it is shading that looks odd. 76% is the number that conversation now
+      starts from — and it is the same key that unlocks the sconce lighting
       through its own wall and the sun lighting both faces of one.
 - [ ] **16. The window's aperture, and the beam on the ground.** A pane passes
       four fifths of the light *across the whole tile* today, which is a dimmer
@@ -638,10 +709,10 @@ are what came of the first three, and these are what is left:
   tile-edged shadows a torchlit one no longer does. The traversal is written and
   wants lifting into a shape both walks can use — the only difference is that the
   sun's has no endpoint.
-- **A wall is still lit as one point per tile**, and that is now a step with a
-  design rather than a note: see step 15. What it looks like meanwhile is a row
-  of wall tiles each at its own brightness, with the vertical gradient down each
-  one that the height already gives.
+- ~~**A wall is still lit as one point per tile.**~~ Done, in step 15, for the
+  three quarters of a city whose art names an edge. What is left of it is the
+  other quarter — corners, posts and slabs — which still light as a row of tiles
+  each at its own brightness, with only the vertical gradient the height gives.
 - **The penumbra is a width, not an area light.** Decision 14's `t / (1 - t)` is
   the right *shape* off one ray, but it softens by how far the ray ran inside the
   cell rather than by how much of the flame the cell hides. Where an opening is a
@@ -725,6 +796,44 @@ raise:
   grid and fewer flames, so these numbers are the outdoor worst case rather than
   the average. Nothing here says what a cutaway costs, and the cutaway is rebuilt
   every frame too.
+
+Found while measuring a wall's facing out of its art:
+
+- **The detector's own coverage is a moving target and only the sweep knows it.**
+  37% of the graphic table, 76% of what Britain is built from. Both are printed
+  and both have a floor asserted under them, but the floors are *measurements*
+  and not targets — the thing they catch is a gate tightened until the feature
+  stops applying, which is what the six-pixel `SPILL` did before it was measured.
+- **The remaining quarter of Britain's walls has a shape.** The most-built unread
+  graphics are `0x00DE`/`0x00DD` (roof slabs carrying `WALL`), `0x0081`/`0x0082`
+  (pillars filling a whole tile) and `0x00C8`/`0x00C9`. None of those is a wall
+  standing on one edge, so the honest next move is not a looser gate but a second
+  *kind* of answer — a corner is two faces and could carry both, which is the
+  same shape the occlusion grid would need to stop exempting a whole tile.
+- **A corner could be answered rather than refused.** `0x0104` is an east face
+  and a south face in one picture, and the detector has already measured both
+  halves by the time it gives up. Two faces in the stance would need four more
+  values and a rule for which half of the sprite a pixel is on — which the
+  fragment shader has in `across` already.
+- **The sweep reads the whole art file to answer a question about 3,212
+  graphics.** It takes a couple of seconds, which is fine for an `#[ignore]`d
+  test and would not be if it ever moved into CI.
+- **`face_of` is a second walk of pixels the atlas has just copied.** One pass
+  per graphic, on the frame it is first packed, and the packing pass is already
+  touching every one of them. Measurable only on a scroll that introduces four
+  hundred graphics at once, which is the frame `StaticAtlas::add` already owns as
+  the expensive one.
+- **A wall's *top* surface is shaded as if it were the face.** The pixels past
+  the tile's centre column — the thickness `SPILL` allows — clamp to the near end
+  of the edge, so the top of a low garden wall is lit as though it were the
+  vertical face at that point. Better than one flat tile and not right; the top
+  is a horizontal surface and would want the flat mapping, which the silhouette
+  can separate (it is the part above the base line's own 45°) but nothing does.
+- **The frame dump can now be pointed at a debug view.** `OPENSHARD_FRAME_VIEW`
+  in `tests/cost.rs`, and it is what made this step's measurement possible: a
+  brightness profile across a *drawn* wall measures the timbers and the windows,
+  not the lighting. `View::Light` throws the art away. Anything about the shape
+  of a pool should be judged there.
 
 Found while writing this plan:
 

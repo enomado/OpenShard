@@ -700,6 +700,27 @@ pub struct Sprite {
     pub width: u16,
     /// Its height in pixels.
     pub height: u16,
+    /// Which edge of its tile this picture stands on, if the art says.
+    ///
+    /// Only [`StaticAtlas`] ever measures it. A body's animation frame and a
+    /// letter of a font share this type and are `None` by construction: a mobile
+    /// stands in the middle of its tile and turns, and a glyph is not a thing
+    /// standing in the street.
+    ///
+    /// Measured once, here, while the sprite is packed — the answer is a
+    /// property of the picture and a city repeats its pictures thousands of
+    /// times, so a per-quad measurement would be the same walk over the same
+    /// pixels a few thousand times a frame. See [`crate::facing`], and
+    /// [`crate::place::Stance::of`] for what is done with it: `None` is a
+    /// corner, a post, a tree, or a wall the detector would not guess at, and
+    /// every one of those keeps the behaviour it had before faces existed.
+    ///
+    /// It rides on [`Sprite`] rather than in a table beside the atlas for the
+    /// reason the size does: whoever places the quad has this in hand already,
+    /// and a second lookup keyed by graphic is a second chance to answer about a
+    /// picture that is not the one being drawn — an animated static shows a
+    /// different graphic every few frames.
+    pub face: Option<crate::facing::Face>,
 }
 
 /// Static art, packed into one texture.
@@ -881,6 +902,9 @@ impl StaticAtlas {
                         region: region_at(origin_x, origin_y, width, height),
                         width,
                         height,
+                        // One more walk over the pixels just copied, on the one
+                        // frame this graphic is first seen. See `Sprite::face`.
+                        face: crate::facing::face_of(&image),
                     },
                     origin: (origin_x, origin_y),
                 },
@@ -1198,6 +1222,9 @@ impl AnimAtlas {
                         region: region_at(origin_x, origin_y, width, height),
                         width,
                         height,
+                        // A body is not a wall: it stands in the middle of its
+                        // tile and turns, and no edge of the cell is its own.
+                        face: None,
                     },
                     center_x: frame.center_x,
                     center_y: frame.center_y,
@@ -1390,6 +1417,7 @@ impl FontAtlas {
                     region: region_at(origin_x, origin_y, width, height),
                     width,
                     height,
+                    face: None,
                 },
             );
         }
@@ -1581,6 +1609,7 @@ impl TtfAtlas {
                             },
                             width: 0,
                             height: 0,
+                            face: None,
                         },
                         baseline_from_top: glyph.baseline_from_top,
                         advance: glyph.advance,
@@ -1610,6 +1639,8 @@ impl TtfAtlas {
                         region: region_at(origin_x, origin_y, width, height),
                         width,
                         height,
+                        // A letter is not a thing standing in the street at all.
+                        face: None,
                     },
                     baseline_from_top: glyph.baseline_from_top,
                     advance: glyph.advance,

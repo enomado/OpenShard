@@ -163,11 +163,13 @@ pub fn collect(
                     height: f32::from(sprite.height),
                 },
                 region: sprite.region,
-                // A floor's pixels are spread across its tile and a wall's run up
-                // it, and only the tiledata knows which this is — see
-                // `crate::place::Stance`.
+                // A floor's pixels are spread across its tile, a wall's run
+                // along the one edge it stands on, and anything else claims the
+                // tile's middle. The tiledata answers the first; the *art*
+                // answers the second, measured once when the atlas packed this
+                // sprite. See `crate::place::Stance` and `crate::facing`.
                 place: crate::place::Place {
-                    stance: crate::place::Stance::of(tile),
+                    stance: crate::place::Stance::of(tile, sprite.face),
                     ..crate::place::Place::of_static(Point::new(item.x, item.y, item.z))
                 },
                 depth: order.to_depth(base),
@@ -357,6 +359,7 @@ mod tests {
                 du: 0.0,
                 dv: 0.0,
             },
+            face: None,
         };
         let on = |x: f32, y: f32| on_screen(&camera, Vec2::new(x, y), &sprite);
 

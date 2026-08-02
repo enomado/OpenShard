@@ -75,46 +75,77 @@ pub enum Kind {
 
 /// Which way a sprite's picture faces, and therefore what its pixels mean.
 ///
-/// A sprite is a rectangle of art standing on a tile, and the two things that
-/// rectangle can be a picture *of* are read in opposite directions:
+/// A sprite is a rectangle of art standing on a tile, and what that rectangle is
+/// a picture *of* decides how a pixel of it maps back into the world:
 ///
-/// - [`Stance::Upright`] — a wall, a tree, a body. It stands on the tile and
-///   what varies down its picture is height: four pixels is one unit of `z`.
-///   Across it, nothing varies: the fraction is the tile's middle everywhere,
-///   because what a wall's picture runs along is the world axis its wall is
-///   built on — a screen *diagonal* in this projection — and nothing in
-///   `tiledata.mul` says which of the two axes that is. Reading the horizontal
-///   offset as `x - y` spreads the pixels along the one direction no wall ever
-///   runs, and it looks like it.
 /// - [`Stance::Flat`] — a floor, a rug, a road: `TileFlags::FLOOR`, the bit
 ///   ClassicUO calls `Background`. Its picture *is* the tile's diamond, so both
 ///   fractions come out of where in that diamond the pixel is, and the height is
 ///   the tile's own everywhere.
+/// - The four **faces** — a wall, told apart by which edge of its tile it stands
+///   on. Its picture is a billboard rising from one 22-pixel edge of the
+///   diamond, so a pixel's horizontal position is how far *along that edge* it
+///   is and what runs down the picture is height. Which edge is measured from the
+///   art: [`crate::facing::face_of`], because nothing in `tiledata.mul` records
+///   it. This is what makes a row of wall tiles one continuous surface instead of
+///   a row of separately lit sprites — see [`crate::facing::Face::place_at`].
+/// - [`Stance::Upright`] — everything else that stands up: a tree, a body, a
+///   corner piece, a wall whose art the detector could not read. It stands on
+///   the tile and what varies down its picture is height, but across it nothing
+///   varies: the fraction is the tile's middle everywhere. That is a statement
+///   about what is *not* known rather than a shortcut — reading the horizontal
+///   offset as `x - y`, as this did for one commit, spreads the pixels along the
+///   one direction no wall ever runs, and it looks like it.
 ///
 /// This never reaches the attachment — it decides what the world pass writes
 /// into it, and is carried here because a [`Place`] is what an instance already
-/// hands the shader about where it is.
+/// hands the shader about where it is. It rides in **three bits** of the
+/// instance's second word, which is what the six values need and what
+/// [`Place::packed`] reserves.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Stance {
-    /// Standing on its tile: a wall, a body, a tree.
+    /// Standing on its tile with nothing known about which way it runs: a tree,
+    /// a body, a corner, a wall the art did not name an edge for.
     Upright = 0,
     /// Lying in it: a floor, a rug, a road.
     Flat = 1,
+    /// A wall on the tile's `y0` edge, running along `+x`.
+    FaceNorth = 2,
+    /// A wall on the tile's `x1` edge, running along `+y`.
+    FaceEast = 3,
+    /// A wall on the tile's `y1` edge, running along `+x`.
+    FaceSouth = 4,
+    /// A wall on the tile's `x0` edge, running along `+y`.
+    FaceWest = 5,
 }
 
 impl Stance {
-    /// Which way a static's picture faces, from the client's own bit.
+    /// Which way a static's picture faces: the client's own bit first, then what
+    /// the art said.
     ///
-    /// `TileFlags::FLOOR` — `UFLAG1_FLOOR` in Sphere, `Background` in ClassicUO
-    /// — is set on floors, rugs, roads and cave floors and on nothing that
-    /// stands up: a table is `BLOCK | PLATFORM` and carries it not at all, which
-    /// is the pair worth checking, because "you can stand on it" is a different
-    /// question and `PLATFORM` is how it is asked.
-    pub fn of(tile: &openshard_uofiles::tiledata::StaticTile) -> Self {
-        match tile.flags.is_background() {
-            true => Self::Flat,
-            false => Self::Upright,
+    /// The order is the policy and it is here rather than at the two call sites,
+    /// so that a floor cannot be given a face by a detector that never should
+    /// have been shown it. `TileFlags::FLOOR` — `UFLAG1_FLOOR` in Sphere,
+    /// `Background` in ClassicUO — is set on floors, rugs, roads and cave floors
+    /// and on nothing that stands up: a table is `BLOCK | PLATFORM` and carries
+    /// it not at all, which is the pair worth checking, because "you can stand on
+    /// it" is a different question and `PLATFORM` is how it is asked.
+    ///
+    /// `face` is [`crate::atlas::Sprite::face`], measured once when the picture
+    /// was packed. `None` — a corner, a post, a graphic the client ships no
+    /// readable wall for — falls back to [`Stance::Upright`], which is exactly
+    /// what every static did before faces existed. Nothing gets worse anywhere.
+    pub fn of(tile: &openshard_uofiles::tiledata::StaticTile, face: Option<crate::facing::Face>) -> Self {
+        if tile.flags.is_background() {
+            return Self::Flat;
+        }
+        match face {
+            Some(crate::facing::Face::North) => Self::FaceNorth,
+            Some(crate::facing::Face::East) => Self::FaceEast,
+            Some(crate::facing::Face::South) => Self::FaceSouth,
+            Some(crate::facing::Face::West) => Self::FaceWest,
+            None => Self::Upright,
         }
     }
 }
@@ -213,10 +244,12 @@ impl Place {
     /// apart with the same shifts, which are written out there rather than
     /// shared — there is nothing in Rust for a WGSL function to call.
     ///
-    /// The stance rides above the kind and is *masked off* again where the world
-    /// pass writes the attachment's fourth channel: that channel is two bits of
-    /// kind and fourteen of fraction with nothing spare, and the stance's job is
-    /// finished by the time the fraction has been computed.
+    /// The stance rides above the kind in **three bits**, and is *masked off*
+    /// again where the world pass writes the attachment's fourth channel: that
+    /// channel is two bits of kind and fourteen of fraction with nothing spare,
+    /// and the stance's job is finished by the time the fraction has been
+    /// computed. Three bits because there are six stances — one flat, one
+    /// unknown, and the four wall faces — and the word has room above them.
     pub fn packed(self) -> [u32; 2] {
         [
             u32::from(self.x) | u32::from(self.y) << 16,

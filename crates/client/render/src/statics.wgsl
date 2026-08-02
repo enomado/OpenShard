@@ -58,9 +58,10 @@ struct VertexOut {
     @location(3) pixel_y: f32,
     @location(4) @interpolate(flat) bottom_y: f32,
     // Where this fragment is across the screen, and where the sprite's middle
-    // is: their difference is how far along the world's `x - y` axis the pixel
-    // is from the tile's own column, because that axis is the horizontal one in
-    // this projection. See `crate::place::Stance`.
+    // is. Their difference is how far the pixel is from the column its tile
+    // stands in, and what that *means* is the stance's business: for a floor it
+    // is half of the inverse projection, and for a wall it is how far along the
+    // one edge of the diamond the wall stands on. See `crate::place::Stance`.
     @location(5) pixel_x: f32,
     @location(6) @interpolate(flat) middle_x: f32,
 };
@@ -71,11 +72,6 @@ struct VertexOut {
 // rectangles somebody else placed in it.
 const Z_STEP: f32 = 4.0;
 
-// How far below a tile's centre the diamond's bottom vertex is, in `z` units:
-// half a tile of 44 pixels over `Z_STEP`. A sprite's bottom edge stands there,
-// so a pixel on it is that much *below* the height the static is based at.
-const BOTTOM_LIFT: f32 = 5.5;
-
 // The fourth channel of the place attachment: the kind in the low two bits, then
 // seven bits of tile-local `x` and seven of tile-local `y`. See `crate::place`
 // and `blit.wgsl`, which take the same word apart. The channel is full, so the
@@ -84,18 +80,49 @@ const BOTTOM_LIFT: f32 = 5.5;
 const KIND_MASK: u32 = 3u;
 const SUB_TILE: f32 = 127.0;
 
+// The largest fraction that still names *this* tile.
+//
+// `blit.wgsl` finds a fragment's cell with `floor(tile + fraction)`, so a
+// fraction of exactly one lands in the *neighbour* — and the shadow walk exempts
+// the fragment's own cell from occluding it, because a wall's own face must be
+// the brightest thing beside a torch. A wall's face lies **on** the tile
+// boundary, so writing a clean 1 there hands the walk the wrong cell: the wall's
+// own tile stops being exempt and every faced wall is shadowed by the very wall
+// it is the face of. It comes out at ambient, which is what a measurement of the
+// first version of this said — a run of walls at 249 dropping to 65.
+//
+// One step of the seven-bit fraction is a hundred-and-twenty-seventh of a tile,
+// 0.35 pixels of world. The seam does not notice and the cell is right.
+const INSIDE: f32 = (SUB_TILE - 1.0) / SUB_TILE;
+
 // A tile's width in virtual pixels, which in this projection is also the number
 // of pixels a whole tile of `x - y` covers: one step of world `x` moves the
 // picture 22 pixels right and 22 down, one step of `y` moves it 22 left and 22
 // down, so the two axes each cover half of a 44-pixel cell in both directions.
 const TILE_WIDTH: f32 = 44.0;
 
+// Half of it, which is how far the diamond reaches either side of the column its
+// sprite is centred on — and therefore how wide *one edge* of the diamond is on
+// the screen. A wall stands on one edge, so this is the whole horizontal extent
+// of a wall's face. Numerically the same 22 as `HALF_TILE_HEIGHT` and a different
+// question: one is how far across, the other how far down.
+const HALF_TILE_WIDTH: f32 = TILE_WIDTH * 0.5;
+
 // Half a tile's height: how far above the sprite's bottom edge the tile's own
 // centre is, since that edge stands on the diamond's bottom vertex.
 const HALF_TILE_HEIGHT: f32 = 22.0;
 
-// `crate::place::Stance::Flat`, in the bit `Place::packed` writes it to.
-const STANCE_FLAT: u32 = 1u << 16u;
+// `crate::place::Stance`, in the three bits `Place::packed` writes it to. The
+// numbers are pinned on the Rust side; nothing but a person reading both files
+// can check that these agree with them.
+const STANCE_SHIFT: u32 = 16u;
+const STANCE_MASK: u32 = 7u;
+const STANCE_UPRIGHT: u32 = 0u;
+const STANCE_FLAT: u32 = 1u;
+const STANCE_FACE_NORTH: u32 = 2u;
+const STANCE_FACE_EAST: u32 = 3u;
+const STANCE_FACE_SOUTH: u32 = 4u;
+const STANCE_FACE_WEST: u32 = 5u;
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.
@@ -196,7 +223,16 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // `crate::place::Place::packed` put them together. A discarded fragment
     // never reaches this line, so what the attachment holds is what is visible.
     let base = f32(in.place.y & 0xFFu) - 128.0;
-    let flat = (in.place.y & STANCE_FLAT) != 0u;
+    let stance = (in.place.y >> STANCE_SHIFT) & STANCE_MASK;
+
+    // Where this pixel is on the screen relative to its tile: `across` from the
+    // column the sprite is centred on, `down` from the tile's own centre row.
+    // Both are what the projection is inverted through below.
+    let across = in.pixel_x - in.middle_x;
+    let down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
+    // How far along a *face's* edge this pixel is, before the face says which
+    // direction that edge runs in. One division, shared by the four cases.
+    let run = across / HALF_TILE_WIDTH;
 
     // Where this pixel is in its tile.
     //
@@ -205,32 +241,63 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // projection — `screen = ((x - y) * 22, (x + y) * 22)`, whose forward
     // direction is `camera::project`.
     //
-    // An upright picture is the middle of its tile, and that is a statement about
-    // what is *not* known rather than a shortcut: what a wall's picture runs
-    // along is the world axis its wall is built on, which in this projection is a
-    // screen diagonal and not the horizontal — and nothing in `tiledata.mul` says
-    // which of the two axes it is. Reading the horizontal offset as `x - y`, as
-    // this did for one commit, spreads a wall's pixels along the one direction no
-    // wall ever runs; see `docs/lighting.md`'s backlog for what it would take to
-    // know.
+    // A **wall** is a billboard rising from one edge of that diamond, so one of
+    // its two fractions is fixed at the edge and the other runs along it. Which
+    // edge is measured from the art and arrives here as the stance — see
+    // `crate::facing`. The point of it is the seam: the next tile along the run
+    // starts its fraction at 0 where this one ended at 1, so a row of wall tiles
+    // is one continuous surface rather than a row of separately lit sprites.
+    //
+    // An **upright** picture with no face is the middle of its tile, and that is
+    // a statement about what is *not* known rather than a shortcut: a tree, a
+    // corner piece, a wall the detector would not guess at. Reading the
+    // horizontal offset as `x - y` for those, as this did for one commit, spreads
+    // their pixels along the one direction no wall ever runs.
+    //
+    // Clamped rather than wrapped in every case: the attachment holds one tile
+    // per pixel, and it is the one the thing stands on. For a face that matters
+    // for a real reason — a wall sprite draws a sliver of its own thickness past
+    // the edge it stands on, and those pixels belong to the near end of the edge.
     var sub = vec2<f32>(0.5);
-    if flat {
-        let across = in.pixel_x - in.middle_x;
-        let down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
-        let local = vec2<f32>(across + down, down - across) / TILE_WIDTH + vec2<f32>(0.5);
-        // Clamped rather than wrapped: the attachment holds one tile per pixel,
-        // and it is the one the thing stands on.
-        sub = clamp(local, vec2<f32>(0.0), vec2<f32>(1.0));
+    switch stance {
+        case STANCE_FLAT: {
+            let local = vec2<f32>(across + down, down - across) / TILE_WIDTH + vec2<f32>(0.5);
+            sub = clamp(local, vec2<f32>(0.0), vec2<f32>(INSIDE));
+        }
+        case STANCE_FACE_NORTH: {
+            sub = vec2<f32>(clamp(run, 0.0, INSIDE), 0.0);
+        }
+        case STANCE_FACE_EAST: {
+            sub = vec2<f32>(INSIDE, clamp(1.0 - run, 0.0, INSIDE));
+        }
+        case STANCE_FACE_SOUTH: {
+            sub = vec2<f32>(clamp(1.0 + run, 0.0, INSIDE), INSIDE);
+        }
+        case STANCE_FACE_WEST: {
+            sub = vec2<f32>(0.0, clamp(-run, 0.0, INSIDE));
+        }
+        default: {}
     }
 
-    // The height this pixel stands at. For a wall that is the sprite's own
-    // picture — the bottom edge is `BOTTOM_LIFT` below the base and every four
-    // pixels up is one unit of `z` — and for a floor it is the tile's height
-    // everywhere, because what runs down a floor's picture is the tile, which
-    // `down` has already spent.
+    // The height this pixel stands at.
+    //
+    // For anything standing up it is how far the pixel is above the point of the
+    // tile its picture rises from, at four pixels a unit of `z`. That point is
+    // `(sub.x + sub.y - 1) * 22` pixels below the tile's centre row — which is
+    // the forward projection of the fraction just computed, so the four faces and
+    // the faceless upright case are one line rather than five. With `sub` at the
+    // tile's middle the term is zero and this is exactly what it was before faces
+    // existed; with a face it is what makes a wall's base sit at the static's own
+    // `z` all the way along the edge instead of only at the tile's centre.
+    //
+    // A floor is the tile's height everywhere, because what runs down a floor's
+    // picture is the tile, which `down` has already spent. Its own branch rather
+    // than the line above, which would read a *clamped* fraction back out through
+    // the projection and give the corners of a 44-pixel floor sprite — which lie
+    // outside the diamond — a height nobody drew them at.
     var z = base;
-    if !flat {
-        z = base - BOTTOM_LIFT + (in.bottom_y - in.pixel_y) / Z_STEP;
+    if stance != STANCE_FLAT {
+        z = base + ((sub.x + sub.y - 1.0) * HALF_TILE_HEIGHT - down) / Z_STEP;
     }
 
     out.place = vec4<u32>(

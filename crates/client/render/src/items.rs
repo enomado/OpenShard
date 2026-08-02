@@ -258,7 +258,7 @@ fn place(
         at: stand_on(camera, item.at, &sprite),
         sprite,
         showing,
-        stance: crate::place::Stance::of(tile),
+        stance: crate::place::Stance::of(tile, sprite.face),
     })
 }
 

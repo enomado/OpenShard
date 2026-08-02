@@ -40,6 +40,7 @@ pub mod control;
 pub mod cutaway;
 pub mod debug;
 pub mod depth;
+pub mod facing;
 pub mod follow;
 pub mod geometry;
 pub mod ground;

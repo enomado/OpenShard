@@ -448,13 +448,34 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     );
 
     // A picture for a person, beside the numbers, because step 6 asks for both.
+    //
+    // `OPENSHARD_FRAME_VIEW` picks which of `debug::View`'s pictures to write,
+    // by number, defaulting to the lit frame. The one worth knowing about is
+    // `5`, `View::Light`: the lighting with the art thrown away, which is the
+    // only way to see a seam or a step in a pool — over real art a wall's own
+    // timbers and windows swamp the lighting's own gradient, and a brightness
+    // profile taken across a drawn wall measures the picture rather than the
+    // pass. It is what a change to how a wall's pixels are placed has to be
+    // judged on.
     if let Some(path) = std::env::var_os("OPENSHARD_FRAME_DUMP") {
+        let wanted = std::env::var("OPENSHARD_FRAME_VIEW")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .and_then(|v| openshard_client_render::debug::View::ALL.get(v).copied());
+        let frame = match wanted {
+            Some(view) => {
+                let mut shown = night.clone();
+                shown.view = view;
+                picture(&shown)
+            }
+            None => lit.clone(),
+        };
         let mut ppm = format!("P6\n{} {}\n255\n", VIEWPORT.0, VIEWPORT.1).into_bytes();
-        for pixel in lit.chunks_exact(4) {
+        for pixel in frame.chunks_exact(4) {
             ppm.extend_from_slice(&pixel[..3]);
         }
         std::fs::write(&path, ppm).expect("writing the frame");
-        eprintln!("wrote {}", PathBuf::from(&path).display());
+        eprintln!("wrote {} ({:?})", PathBuf::from(&path).display(), wanted);
     }
 
     eprintln!(
