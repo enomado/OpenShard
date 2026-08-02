@@ -13,7 +13,7 @@
 //! room whose wall tiles are a closed ring by construction — no corner of a
 //! house leaks light into the street because two segments failed to meet.
 //!
-//! # What stops light is what stops an arrow
+//! # What touches light is what stops an arrow — but not by as much
 //!
 //! `WINDOW | NO_SHOOT`, and not `BLOCK`. The two are different questions and the
 //! reference keeps them apart: ServUO's `Map.LineOfSight` (`Server/Map.cs:3040`)
@@ -22,6 +22,11 @@
 //! it. A barrel and a fence are `BLOCK` and you can see over both; a wall is
 //! `NO_SHOOT` and you cannot see through it. Reading `BLOCK` instead would put a
 //! shadow behind every crate on the street.
+//!
+//! Where this parts company with the reference is *how much* each stops. Line of
+//! sight is a yes or a no, so a window is a wall in it; light is a fraction, and
+//! a window is glass. So the grid carries an opacity byte — [`OPAQUE`] for a
+//! wall, [`PANE`] for a window — and the shader multiplies by it either way.
 //!
 //! # Nothing occludes that was not drawn
 //!
@@ -42,20 +47,43 @@ pub const OPAQUE: u8 = 255;
 /// A tile light crosses untouched.
 pub const CLEAR: u8 = 0;
 
-/// Whether a static stops light at all. See this module's header for the
-/// reference this rule is read from, and why it is not `BLOCK`.
+/// Whether a static touches light at all — a wall or a pane, and not a barrel.
+///
+/// The reference's line of sight test, and it is still the right *membership*
+/// question: what is in the grid is what stops an arrow. How much of the light
+/// each member stops is [`opacity`]'s answer and no longer the same one. See
+/// this module's header for why it is not `BLOCK`.
 pub fn stops_light(tile: &StaticTile) -> bool {
     tile.flags.has(TileFlags::WINDOW | TileFlags::NO_SHOOT)
 }
 
+/// How much of a ray crossing a pane of glass is stopped.
+///
+/// A fifth, which is a guess about glass and not a number from any file — the
+/// client has none. What it is *not* is a guess about line of sight: an arrow is
+/// stopped by a window and light is not, and `WINDOW` being in the same test as
+/// `NO_SHOOT` in the reference is a fact about arrows. A window that stopped
+/// light entirely is what makes a lit room read as a bunker, and it is the one
+/// thing standing between a candle and the street it should be visible from.
+pub const PANE: u8 = 51;
+
 /// How much of a ray crossing this static is stopped, `0..=255`.
 ///
-/// Binary today. The byte is here rather than a flag because a hedge and a pane
-/// of glass want to dim rather than stop, and that is a change to this function
-/// alone — the grid, the upload and the shader already multiply.
+/// Three answers and not two: a wall stops everything, a pane dims, and
+/// everything else — a barrel, a fence, a crate — passes light untouched even
+/// where it stops an arrow. The byte was always here for this; what changed is
+/// that `WINDOW` no longer borrows `NO_SHOOT`'s answer.
+///
+/// `NO_SHOOT` wins where a tile carries both. A shard's custom static that is
+/// flagged as a solid window is more likely to be a shuttered one than a
+/// transparent wall, and the union is the conservative direction — darkening is
+/// visible, leaking a room into the street is a bug.
 pub fn opacity(tile: &StaticTile) -> u8 {
-    match stops_light(tile) {
-        true => OPAQUE,
+    if tile.flags.has(TileFlags::NO_SHOOT) {
+        return OPAQUE;
+    }
+    match tile.flags.has(TileFlags::WINDOW) {
+        true => PANE,
         false => CLEAR,
     }
 }
@@ -172,6 +200,19 @@ impl Occlusion {
         self.cells[self.index(x, y)?]
     }
 
+    /// The highest `z` anything in this grid stops light at, or `None` for a
+    /// grid with nothing standing in it.
+    ///
+    /// What sunlight is bounded by. A flame's ray ends at the flame; the sun's
+    /// has no end, so it needs something to stop walking at — and the honest
+    /// answer is "as soon as the ray is above everything that could stop it".
+    /// One number for the frame rather than a per-cell test, because the walk is
+    /// leaving the grid upwards and what it has to beat is the tallest thing
+    /// anywhere ahead of it.
+    pub fn tallest(&self) -> Option<i32> {
+        self.cells.iter().flatten().map(|cell| cell.top).max()
+    }
+
     /// Where a tile lives in [`Occlusion::cells`].
     fn index(&self, x: i32, y: i32) -> Option<usize> {
         let bounds = self.bounds;
@@ -270,17 +311,26 @@ mod tests {
         }
     }
 
-    /// The rule, said in the two directions that matter. A wall stops light; a
-    /// barrel, which is `BLOCK` and nothing else, does not. Reading
-    /// impassability instead of the shooting flags is the mistake this is
-    /// written against — it would put a shadow behind every crate on the street.
+    /// The rule, said in every direction that matters. A wall stops light; a
+    /// pane dims it; a barrel, which is `BLOCK` and nothing else, does not touch
+    /// it. Reading impassability instead of the shooting flags is the mistake
+    /// this was written against — it would put a shadow behind every crate on
+    /// the street — and treating a window as a wall is the one beside it, which
+    /// makes a lit room invisible from the road.
     #[test]
-    fn a_wall_stops_light_and_a_barrel_does_not() {
+    fn a_wall_stops_light_a_pane_dims_it_and_a_barrel_does_not() {
         assert_eq!(opacity(&tile(TileFlags::NO_SHOOT, 20)), OPAQUE);
-        assert_eq!(opacity(&tile(TileFlags::WINDOW, 20)), OPAQUE);
+        assert_eq!(opacity(&tile(TileFlags::WINDOW, 20)), PANE);
         assert_eq!(opacity(&tile(TileFlags::BLOCK, 10)), CLEAR);
         // A real wall carries both, and the rule must not need the pair.
         assert_eq!(opacity(&tile(TileFlags::NO_SHOOT | TileFlags::BLOCK, 20)), OPAQUE);
+        // And a static flagged as both a window and solid is the solid one: the
+        // union darkens, which is the direction that cannot leak a room.
+        assert_eq!(
+            opacity(&tile(TileFlags::NO_SHOOT | TileFlags::WINDOW, 20)),
+            OPAQUE
+        );
+        const { assert!(PANE > CLEAR && PANE < OPAQUE, "a pane is neither open nor a wall") };
     }
 
     /// A wall occupies the heights it occupies, and the grid says which.

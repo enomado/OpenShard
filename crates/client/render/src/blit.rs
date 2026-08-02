@@ -25,10 +25,10 @@ use crate::light::Lighting;
 /// wrongly.
 const MAX_LIGHTS: usize = Lighting::MAX;
 
-/// The uniform block's size: three header `vec4`s — the ambient with the light
-/// count, the occlusion grid's rectangle, and which view to draw — then two per
-/// light.
-const LIGHTING_BYTES: u64 = (3 + 2 * MAX_LIGHTS as u64) * 16;
+/// The uniform block's size: five header `vec4`s — the ambient with the light
+/// count, the occlusion grid's rectangle, which view to draw, and the sun's
+/// direction and colour — then two per light.
+const LIGHTING_BYTES: u64 = (5 + 2 * MAX_LIGHTS as u64) * 16;
 
 /// Where the world image goes on the surface, in physical pixels.
 ///
@@ -378,6 +378,31 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     // to sixteen bytes and the array that follows has to start on one.
     bytes.extend_from_slice(&(lighting.view as u32).to_le_bytes());
     bytes.extend_from_slice(&[0; 12]);
+
+    // The sun: its direction, then the height above which nothing in this
+    // frame's grid can stop it — the bound that lets a ray leave the walk
+    // instead of counting out its thirty-two steps over an empty street.
+    //
+    // A frame with no sun writes a direction of zero and an intensity of zero,
+    // and the shader tests the intensity: one branch, and a night frame does not
+    // pay for a sky it does not have.
+    let sun = lighting.sun.unwrap_or(crate::light::Sun {
+        toward: [0.0; 3],
+        color: [0.0; 3],
+        intensity: 0.0,
+    });
+    for value in sun.toward {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    // `f32` and not an integer: the shader compares it against a ray's height,
+    // which is fractional, and a grid with nothing in it says "everything is
+    // above the tallest thing" by being below every ray.
+    let ceiling = lighting.occlusion.tallest().unwrap_or(i32::MIN / 2) as f32;
+    bytes.extend_from_slice(&ceiling.to_le_bytes());
+    for channel in sun.color {
+        bytes.extend_from_slice(&channel.to_le_bytes());
+    }
+    bytes.extend_from_slice(&sun.intensity.to_le_bytes());
 
     for light in &lighting.lights[..count] {
         for value in [

@@ -32,7 +32,7 @@ use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 use crate::camera::Camera;
 use crate::cutaway::Cutaway;
 use crate::items::GroundItem;
-use crate::light::{self, Lighting};
+use crate::light::{self, Lighting, Sun};
 
 /// A wall: what stops an arrow, and therefore what stops light. Twenty `z` units
 /// tall, which is a storey.
@@ -59,6 +59,18 @@ pub const DOOR_OPEN: Graphic = Graphic(0x0009);
 /// A torch. Flagged `LIGHT_SOURCE`, which is the only reason anything burns —
 /// see [`crate::light`].
 pub const TORCH: Graphic = Graphic(0x0A12);
+
+/// A roof tile. What makes a room a room as far as the *sun* is concerned: four
+/// walls and no roof is a courtyard, and the sun floods it — which is correct,
+/// and is why the sunlit scenes have one and the firelit ones do not.
+pub const ROOF: Graphic = Graphic(0x000A);
+
+/// How high a room's roof sits: on top of its walls.
+pub const ROOF_Z: i8 = WALL_HEIGHT as i8;
+
+/// And how thick it is. Anything above nothing: what matters is that a ray
+/// climbing out of the room passes through the span, not how deep it is.
+pub const ROOF_THICKNESS: u8 = 5;
 
 /// How tall the walls of these rooms are, in `z` units.
 pub const WALL_HEIGHT: u8 = 20;
@@ -92,6 +104,10 @@ pub struct Scene {
     /// Open: these scenes have one storey, and a cutaway that hid half of it
     /// would be a second variable in every assertion.
     pub cutaway: Cutaway,
+    /// The sky, where the scene has one. `None` is night — which is what every
+    /// scene about firelight wants, because a sun would put a second term in
+    /// every brightness they assert on.
+    pub sun: Option<Sun>,
 }
 
 impl Scene {
@@ -101,21 +117,34 @@ impl Scene {
     /// brightness swings by a tenth and an assertion about a leak should not
     /// depend on which tenth of a second it was asked in.
     pub fn lighting(&self, time: f32) -> Lighting {
-        light::collect(
+        let mut lighting = light::collect(
             &self.map,
             &self.items,
             &self.camera,
             &self.tiledata,
             &self.cutaway,
-            light::NIGHT,
+            match self.sun {
+                // A sunlit scene is not lit by the night ambient: the sun is what
+                // brightens it, and an ambient that already did would hide every
+                // shadow the sun casts.
+                Some(_) => light::SKYLIGHT,
+                None => light::NIGHT,
+            },
             time,
-        )
+        );
+        lighting.sun = self.sun;
+        lighting
     }
 
-    /// The scene with `graphic` standing at `at` as well.
-    fn with(mut self, at: (u16, u16), graphic: Graphic) -> Self {
+    /// The scene with `graphic` standing at `at`, on the ground.
+    fn with(self, at: (u16, u16), graphic: Graphic) -> Self {
+        self.with_at(at, 0, graphic)
+    }
+
+    /// And with it standing at a height — a roof, or a storey above one.
+    fn with_at(mut self, at: (u16, u16), z: i8, graphic: Graphic) -> Self {
         self.items.push(GroundItem {
-            at: Point::new(at.0, at.1, 0),
+            at: Point::new(at.0, at.1, z),
             graphic,
             hue: Hue::NONE,
         });
@@ -154,6 +183,7 @@ fn tiledata() -> TileData {
     // see `docs/lighting.md`, decision 4.
     set(DOOR_OPEN, TileFlags::BLOCK, WALL_HEIGHT);
     set(TORCH, TileFlags::LIGHT_SOURCE, 0);
+    set(ROOF, TileFlags::NO_SHOOT, ROOF_THICKNESS);
     tiledata
 }
 
@@ -169,6 +199,7 @@ pub fn empty(name: &'static str) -> Scene {
         items: Vec::new(),
         camera: Camera::new(Point::new(CENTRE.0, CENTRE.1, 0), 800, 600),
         cutaway: Cutaway::OPEN,
+        sun: None,
     }
 }
 
@@ -301,6 +332,59 @@ pub fn diagonal_gap() -> Scene {
         .with((cx + 2, cy + 2), TORCH)
 }
 
+/// The sun these scenes stand under: the client's own, so that a scene is a
+/// picture of what a player would see rather than of a sky invented for a test.
+///
+/// [`light::midday`] is towards `+x` at 45°, which is what the assertions about
+/// shadow length are stated in terms of — and a test says so, so that changing
+/// the client's sun fails loudly here instead of quietly weakening a scene.
+pub fn noon() -> Sun {
+    light::midday()
+}
+
+/// One wall tile in the open, under a sun: the shadow, with nothing else in the
+/// frame to explain it.
+///
+/// No torch at all. What lights this scene is the sky and the sun, and the only
+/// dark thing in it is the ground the wall keeps the sun off — so a shadow that
+/// is in the wrong place, or missing, or on both sides, has nothing else to be
+/// blamed on.
+pub fn wall_in_the_sun() -> Scene {
+    let mut scene = empty("a wall in the open, under a sun");
+    scene.sun = Some(noon());
+    scene.with(CENTRE, WALL)
+}
+
+/// Where a sunlit room's window is: the middle of the wall the sun is on.
+///
+/// The east wall, because [`noon`] shines towards `+x` and a window in any other
+/// wall is a window the sun does not enter through — which is a true fact about
+/// windows and a useless scene.
+pub const WINDOW_TILE: (u16, u16) = (CENTRE.0 + ROOM_HALF, CENTRE.1);
+
+/// A roofed room with a window in its sunward wall: the patch of light on the
+/// floor.
+///
+/// The picture the whole of decision 12 is for, and it needs the roof: a room
+/// with four walls and open sky is a courtyard, and at 45° the sun clears a
+/// two-tile wall in two tiles and floods the floor. With a roof on, the only way
+/// in is the pane — so what appears inside is a band along the sunward wall and
+/// shadow everywhere else.
+pub fn sunlit_room_with_window() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("a roofed, sunlit room with a window");
+    scene.sun = Some(noon());
+    for tile in room_wall_tiles() {
+        scene = scene.with(tile, if tile == WINDOW_TILE { PANE } else { WALL });
+    }
+    for x in cx - ROOM_HALF + 1..=cx + ROOM_HALF - 1 {
+        for y in cy - ROOM_HALF + 1..=cy + ROOM_HALF - 1 {
+            scene = scene.with_at((x, y), ROOF_Z, ROOF);
+        }
+    }
+    scene
+}
+
 /// Every scene above, for a test that wants to sweep them.
 pub fn all() -> Vec<Scene> {
     vec![
@@ -311,5 +395,7 @@ pub fn all() -> Vec<Scene> {
         sconce_on_wall(),
         cellar_under_street(),
         diagonal_gap(),
+        wall_in_the_sun(),
+        sunlit_room_with_window(),
     ]
 }

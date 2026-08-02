@@ -85,9 +85,13 @@ both, a wall is `NO_SHOOT` and you cannot see through it, and a shard's custom
 wall gets it right for free. Reading `BLOCK` instead would put a shadow behind
 every crate.
 
-The grid carries an *opacity* byte rather than a flag, so that a hedge or a pane
-can dim rather than stop later; today the rule above fills it with 0 or 255 and
-the shader multiplies either way.
+The grid carries an *opacity* byte rather than a flag, and it now carries three
+answers rather than two: `NO_SHOOT` stops everything, `WINDOW` stops a fifth
+(`occlusion::PANE`), and everything else stops nothing. That is where this parts
+company with the reference on purpose — line of sight is a yes or a no, so a
+window is a wall in it, and light is a fraction. A window that stopped light
+makes a lit room read as a bunker and hides the one thing a candle is for after
+dark. The fifth is a guess; there is no number for it in any client file.
 
 **A static the cutaway has taken away occludes nothing.** The same
 `cutaway::shows` test the lights already run: a shadow cast by a wall that was
@@ -216,27 +220,29 @@ simply a 65th light:
       the one it replaces (a fragment outside every radius leaves the loop at
       once, where the old one ran all 64 lights for every pixel of the screen),
       and that claim is worth a measurement rather than an argument.
-- [ ] **7. `light::sample`, the reasons in Rust.** The shader's loop and its ray
+- [x] **7. `light::sample`, the reasons in Rust.** The shader's loop and its ray
       walk, on the CPU, returning per flame: the distance in tiles, whether the
       fragment is inside the radius, what survived the walk, and *which cell*
       stopped it. Unit-tested on its own before anything draws with it.
-- [ ] **8. `render/src/scene.rs`.** The rooms of decision 10 — a closed room, a
+- [x] **8. `render/src/scene.rs`.** The rooms of decision 10 — a closed room, a
       doorway, a window, a sconce on a wall, a cellar under a street, and the
       diagonal gap the backlog names — each a `Map`, a `TileData`, an item list
       and a camera, plus an ASCII diagram of a scene's lighting for the message a
       failing test prints.
-- [ ] **9. The debug views.** `render/src/debug.rs`'s `View`, one field in the
+- [x] **9. The debug views.** `render/src/debug.rs`'s `View`, one field in the
       lighting uniform, a `switch` at the end of `blit.wgsl`, and F11 in the app
       to cycle them: the place, the kind, the height, the occluders, the light
       alone, the shadow term alone, and how many flames reached a fragment.
-- [ ] **10. The parity test.** A synthetic place attachment uploaded to the GPU,
+- [x] **10. The parity test.** A synthetic place attachment uploaded to the GPU,
       the real blit run over it, and every sampled pixel compared with
       `light::sample`. No client files and no art — this is about two
       implementations of one formula, and decision 9 is what it protects.
-- [ ] **11. Sunlight on the floor.** Decision 12's directional term: a sun
+- [x] **11. Sunlight on the floor.** Decision 12's directional term: a sun
       direction in the uniform, the same grid walk without an endpoint, a wall's
-      shadow on the street and a lit patch behind a window — which needs
-      `occlusion::opacity` to stop being binary for `WINDOW`.
+      shadow on the street and a lit patch behind a window. `WINDOW` no longer
+      borrows `NO_SHOOT`'s answer — `occlusion::PANE` passes four fifths — and
+      the sun is F8 in the app, off by default until step 6's measurement says
+      what a ray on every ground pixel costs.
 - [ ] **12. The shaft.** The screen-space pass of decision 12, over the mask the
       step above produces.
 
@@ -268,6 +274,30 @@ Found while building it:
 - **`Occlusion` is rebuilt and reallocated every frame.** 140KB at the widest
   zoom, and the texture upload beside it. Both want the buffer kept between
   frames — the rectangle only changes size on a zoom step or a resize.
+
+Found while building the observability and the sun:
+
+- **A room with no roof is a courtyard, and the sun is right to flood it.** The
+  first sunlit scene had four walls and open sky, and at 45° the sun clears a
+  two-tile wall in two tiles — so the floor was fully lit and the window proved
+  nothing. `scene::sunlit_room_with_window` has a roof for exactly this reason,
+  and it is worth remembering when a real house looks wrong: ask what the
+  cutaway did to its roof before asking what the sun did.
+- **The sun has no facing either.** A wall's two faces are one tile, so both are
+  lit when either is — the same hole decision 3 leaves for a sconce, arriving
+  from the other direction. It is more visible with a sun than with a torch,
+  because every wall in the frame has a shaded side that is not shaded.
+- **`occlusion::PANE` is a guess.** A fifth stopped, from nothing: the client has
+  no number for how much light glass passes. It is the one value in the pass
+  invented rather than read, along with `light::flame` and `light::midday`.
+- **The diagram does not draw the sun.** `debug::diagram` marks flames and
+  occluders and samples brightness, so a sunlit scene reads as a field of `+`
+  with darker tiles in the shadows — legible, but there is no `☀` and no arrow
+  saying which way the light comes from.
+- **The sun's ray is walked for every ground pixel.** Firelight's cost is paid
+  only inside a pool; this one is paid everywhere the sky is visible. The ceiling
+  test (`Occlusion::tallest`) makes it two or three steps over open ground, but
+  the number is still unmeasured — which is why the app's F8 is off by default.
 
 Found while writing this plan:
 

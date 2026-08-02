@@ -884,6 +884,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         // Nothing stands in the way: what a wall does is
         // `a_wall_stops_the_light_behind_it`'s claim, not this one's.
         occlusion: Occlusion::EMPTY,
+        sun: None,
         view: View::Lit,
     };
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -1070,6 +1071,7 @@ fn a_wall_stops_the_light_behind_it() {
             ambient: openshard_client_render::light::NIGHT,
             lights: vec![flame],
             occlusion,
+            sun: None,
             view: View::Lit,
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -3250,10 +3252,42 @@ fn the_shader_lights_a_frame_as_light_sample_does() {
     let Some((device, queue)) = gpu() else {
         return;
     };
-    let (width, height) = (64, 64);
     let scene = openshard_client_render::scene::room();
-    let lighting = scene.lighting(0.0);
-    let frame = parity_frame(&device, &queue, &lighting, width, height);
+    assert_parity(&device, &queue, &scene.lighting(0.0));
+}
+
+/// And the same for a frame with a sun in it.
+///
+/// A separate scene rather than a second flame, because the sun's walk is a
+/// different loop with a different bound: no endpoint, one tile a step, and an
+/// exit as soon as the ray is above everything in the grid. A parity test that
+/// only ever ran firelight would leave that loop with no oracle at all — and it
+/// is the one that runs on every ground pixel of a daylit frame.
+#[test]
+fn the_shader_and_light_sample_agree_about_the_sun() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::sunlit_room_with_window();
+    assert_parity(&device, &queue, &scene.lighting(0.0));
+}
+
+/// Every pixel of a parity frame, the shader's against `light::sample`'s.
+///
+/// The whole reason the CPU copy is allowed to exist. A debugger that answers
+/// "why is this tile lit" from arithmetic that has drifted from the renderer's
+/// is worse than no debugger, because it is believed — and the two cannot be
+/// compared by reading them, one being WGSL. So: a frame whose every pixel names
+/// a tile this test chose, and every pixel's colour against what `sample` says
+/// it should be. See `docs/lighting.md`, decision 9.
+///
+/// The scenes are rooms on purpose: they hold pixels inside a pool, pixels a
+/// wall shadows, pixels outside every radius and the walls' own tiles, so a
+/// divergence in the falloff, in either ray walk or in the exemptions all show
+/// up here.
+fn assert_parity(device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting) {
+    let (width, height) = (64, 64);
+    let frame = parity_frame(device, queue, lighting, width, height);
 
     let mut compared = 0;
     for py in 0..height {
@@ -3266,7 +3300,7 @@ fn the_shader_lights_a_frame_as_light_sample_does() {
                 ),
                 z: 0.0,
             };
-            let sample = openshard_client_render::light::sample(spot, &lighting);
+            let sample = openshard_client_render::light::sample(spot, lighting);
             let drawn = frame.pixel(px, py);
             for (channel, want) in sample.multiplier.iter().enumerate() {
                 // The world is white, so the drawn value is the multiplier

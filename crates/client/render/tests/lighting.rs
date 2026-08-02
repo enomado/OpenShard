@@ -154,24 +154,50 @@ fn opening_a_door_spills_light_onto_the_ground_outside() {
     );
 }
 
-/// A pane of glass stops light exactly as a wall does — today.
+/// A pane of glass dims light; a wall stops it.
 ///
-/// `WINDOW` is what the reference's line of sight tests alongside `NO_SHOOT`
-/// (`Map.LineOfSight`, `Server/Map.cs:3040`), and `occlusion::opacity` is binary,
-/// so a window is opaque. That is right for an arrow and wrong for a candle, and
-/// step 11 of `docs/lighting.md` is where it changes. Pinned rather than left
-/// implicit: the day a pane starts to dim rather than stop, this test says so
-/// instead of some frame looking subtly different.
+/// `WINDOW` sits beside `NO_SHOOT` in the reference's line of sight
+/// (`Map.LineOfSight`, `Server/Map.cs:3040`) — and that is a fact about arrows.
+/// A window that stopped light makes a lit room read as a bunker and hides the
+/// one thing a candle is for at night, so the pane keeps four fifths of what
+/// crosses it. The three cases are asserted together because what matters is
+/// that they are *ordered*: through the wall, through the glass, and through the
+/// doorway are three different numbers and always in that order.
 #[test]
-fn a_pane_of_glass_stops_light_as_a_wall_does_today() {
-    let scene = scene::room_with_window();
-    let lighting = scene.lighting(STILL);
+fn a_pane_of_glass_dims_light_where_a_wall_stops_it() {
     let outside = (DOORWAY.0, DOORWAY.1 + 1);
-    let through = at(&lighting, outside, 0.0);
+    let walled = scene::room();
+    let glazed = scene::room_with_window();
+    let opened = scene::room_with_open_door();
+    let (walled_light, glazed_light, open_light) = (
+        walled.lighting(STILL),
+        glazed.lighting(STILL),
+        opened.lighting(STILL),
+    );
+
+    let wall = at(&walled_light, outside, 0.0);
+    let glass = at(&glazed_light, outside, 0.0);
+    let doorway = at(&open_light, outside, 0.0);
     assert!(
-        (through - ambient()).abs() < 1e-6,
-        "a window now passes light — good, and this test is the thing to update: {through}{}",
-        picture(&scene, &lighting),
+        (wall - ambient()).abs() < 1e-6,
+        "the wall no longer stops light: {wall}{}",
+        picture(&walled, &walled_light),
+    );
+    assert!(
+        wall < glass && glass < doorway,
+        "the glass is not between the wall and the open door: \
+         {wall} walled, {glass} glazed, {doorway} open{}",
+        picture(&glazed, &glazed_light),
+    );
+
+    // And by about the fraction `occlusion::PANE` states, rather than by
+    // whatever a threshold would tolerate: the light through the pane is what
+    // the open doorway passes, less a fifth.
+    let want = ambient() + (doorway - ambient()) * 0.8;
+    assert!(
+        (glass - want).abs() < 1e-3,
+        "the pane passes {glass}, not the {want} its opacity says{}",
+        picture(&glazed, &glazed_light),
     );
 }
 
@@ -270,20 +296,116 @@ fn a_ray_slips_between_two_walls_that_touch_at_a_corner() {
     );
 }
 
-/// Every scene draws a diagram that shows something.
+/// A wall throws a shadow across the ground away from the sun, and the ground
+/// on the sun's side stays lit.
+///
+/// The first half of decision 12. Both sides are asserted because only one of
+/// them fails on its own: a walk that stepped the wrong way would darken the
+/// wrong tile and a test that only looked at the dark one would be green for it.
+#[test]
+fn a_wall_throws_its_shadow_away_from_the_sun() {
+    let scene = scene::wall_in_the_sun();
+    let lighting = scene.lighting(STILL);
+    let sun = scene.sun.expect("the scene has a sun");
+
+    // The sun is towards +x, so the shadow lies at lower `x`.
+    let shaded = (CENTRE.0 - 1, CENTRE.1);
+    let sunlit = (CENTRE.0 + 1, CENTRE.1);
+    let dark = light::sample(spot(shaded, 0.0), &lighting);
+    let bright = light::sample(spot(sunlit, 0.0), &lighting);
+
+    assert_eq!(
+        dark.sun.expect("a sunlit frame").stopped_by,
+        Some((i32::from(CENTRE.0), i32::from(CENTRE.1))),
+        "the tile away from the sun is not shadowed by the wall:\n{dark}{}",
+        picture(&scene, &lighting),
+    );
+    assert_eq!(
+        bright.sun.expect("a sunlit frame").through,
+        1.0,
+        "the tile towards the sun is shadowed:\n{bright}{}",
+        picture(&scene, &lighting),
+    );
+    assert!(
+        bright.brightness() > dark.brightness(),
+        "the shadow is not darker than the ground beside it{}",
+        picture(&scene, &lighting),
+    );
+
+    // And the shadow is as long as the wall is tall, at 45°: twenty units of
+    // height is under two tiles, so the second tile out is clear and the third
+    // certainly is. The number is the *geometry*, which is what a slope buys —
+    // a shadow that ignored the wall's height would run to the edge of the grid.
+    assert_eq!(sun.rise_per_tile(), 1.0, "the scene's sun is no longer at 45°");
+    let past = light::sample(spot((CENTRE.0 - 3, CENTRE.1), 0.0), &lighting);
+    assert_eq!(
+        past.sun.expect("a sunlit frame").through,
+        1.0,
+        "the shadow runs further than the wall is tall:\n{past}{}",
+        picture(&scene, &lighting),
+    );
+}
+
+/// The sun comes through a window and not through the wall beside it.
+///
+/// The picture decision 12 exists for: a room whose floor is in shadow, with a
+/// brighter band behind the pane. Asserted as an ordering rather than as a
+/// level, because how bright the band is depends on `occlusion::PANE` and on the
+/// sun's intensity, and neither of those is what this is about.
+#[test]
+fn the_sun_reaches_the_floor_through_a_window() {
+    let scene = scene::sunlit_room_with_window();
+    let lighting = scene.lighting(STILL);
+
+    // The floor tile just inside the pane, and one three tiles further in. The
+    // sun travels towards +x, so a ray leaving the first goes out through the
+    // window and a ray leaving the second meets the roof.
+    let behind_pane = (scene::WINDOW_TILE.0 - 1, scene::WINDOW_TILE.1);
+    let behind_wall = (scene::WINDOW_TILE.0 - 3, scene::WINDOW_TILE.1);
+    let lit = light::sample(spot(behind_pane, 0.0), &lighting);
+    let dark = light::sample(spot(behind_wall, 0.0), &lighting);
+    let sun_of = |sample: &light::Sample| sample.sun.expect("a sunlit frame");
+
+    assert!(
+        sun_of(&lit).through > sun_of(&dark).through,
+        "the pane passes no more sun than the wall does:\n{lit}\n{dark}{}",
+        picture(&scene, &lighting),
+    );
+    assert!(
+        sun_of(&lit).through > 0.0 && sun_of(&dark).through == 0.0,
+        "the window is not a window, or the wall is not a wall:\n{lit}\n{dark}{}",
+        picture(&scene, &lighting),
+    );
+}
+
+/// A frame with no sun pays nothing and says so.
+///
+/// `None` and `0.0` are different answers — "there is no sky" against "the sky
+/// is dark here" — and the report has to keep them apart, because the first is
+/// where a person looking for a missing sunbeam should stop looking.
+#[test]
+fn a_frame_without_a_sun_reports_none_rather_than_nothing() {
+    let scene = scene::room();
+    let lighting = scene.lighting(STILL);
+    assert!(light::sample(spot(CENTRE, 0.0), &lighting).sun.is_none());
+}
+
+/// Every scene draws a diagram with something in it.
 ///
 /// A weak assertion on purpose: what it guards is the failure mode of a
 /// diagnostic, which is being silently empty. A diagram of nothing but spaces
 /// would still make every message above *look* informative, and that is worse
 /// than no diagram at all.
 #[test]
-fn every_scene_prints_a_diagram_with_a_light_in_it() {
+fn every_scene_prints_a_diagram_that_is_not_blank() {
     for scene in scene::all() {
         let lighting = scene.lighting(STILL);
         let drawn = debug::diagram(&lighting, debug::around(CENTRE, 6), 0.0);
+        // A flame, an occluder, or lit ground: every scene has at least one of
+        // the three, and a sunlit one has no flame at all.
         assert!(
-            drawn.contains('*'),
-            "no flame in the diagram of {}:\n{drawn}",
+            drawn.contains('*') || drawn.contains('#'),
+            "nothing stands in the diagram of {}:\n{drawn}",
             scene.name,
         );
         assert!(

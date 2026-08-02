@@ -70,6 +70,14 @@ struct Lighting {
     // drawn from the values this pass lit it with — see `docs/lighting.md`,
     // decision 8. The numbers are pinned in a test on the Rust side.
     view: vec4<u32>,
+    // Which way the sun is — `x` and `y` in tiles, `z` in tiles as well — and in
+    // the fourth component the height above which nothing in this frame's grid
+    // can stop it. A ray that has climbed past that is in the sky and stops
+    // walking, which is what makes a daylit frame affordable.
+    sun: vec4<f32>,
+    // Its colour, then how much it adds. An intensity of zero is "no sun", and
+    // it is the only thing tested: a night frame never enters the walk.
+    sun_color: vec4<f32>,
     lights: array<Light, MAX_LIGHTS>,
 };
 
@@ -82,6 +90,7 @@ const VIEW_OCCLUDERS: u32 = 4u;
 const VIEW_LIGHT: u32 = 5u;
 const VIEW_SHADOW: u32 = 6u;
 const VIEW_REACH: u32 = 7u;
+const VIEW_SUN: u32 = 8u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
@@ -157,6 +166,52 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
     return through;
 }
 
+// How many tiles of grid one sunbeam's ray may walk. `light::MAX_SUN_STEPS`.
+const MAX_SUN_STEPS: i32 = 32;
+
+// How much of the sun reaches a fragment: 1 in the open, 0 in a wall's shadow.
+//
+// The same grid as a flame's walk and the same test against a cell's span, with
+// three differences, all of them from the sun having no position: the ray has no
+// endpoint, so it is bounded by `MAX_SUN_STEPS`; one step is one tile along the
+// ground, so the height climbs by the sun's own slope; and the walk stops as
+// soon as the ray is above everything in the grid, because from there on it is
+// looking at sky. The fragment's own tile is skipped, so a wall is lit on the
+// side the sun is on rather than shadowed by itself.
+fn sunlight(at: vec3<f32>) -> f32 {
+    let horizontal = length(lighting.sun.xy);
+    if horizontal < 1.0e-6 {
+        // Straight overhead: nothing but the fragment's own tile is in the way,
+        // and that one is exempt.
+        return 1.0;
+    }
+    let step = vec3<f32>(
+        lighting.sun.x / horizontal,
+        lighting.sun.y / horizontal,
+        lighting.sun.z / horizontal * Z_PER_TILE,
+    );
+    var through = 1.0;
+    for (var tile = 1; tile <= MAX_SUN_STEPS; tile = tile + 1) {
+        let along = at + step * f32(tile);
+        if along.z > lighting.sun.w {
+            break;
+        }
+        let cell = occluder_at(i32(floor(along.x)), i32(floor(along.y)));
+        if cell.w == 0u {
+            continue;
+        }
+        let bottom = f32(cell.x) - 128.0;
+        let top = f32(cell.y) - 128.0;
+        if along.z >= bottom && along.z <= top {
+            through = through * (1.0 - f32(cell.z) / 255.0);
+            if through <= 0.004 {
+                return 0.0;
+            }
+        }
+    }
+    return through;
+}
+
 // One of the pass's own values, as a colour.
 //
 // Every argument here is something the lit path already computed — none of these
@@ -172,7 +227,18 @@ fn debug_color(
     reached: u32,
     nearest: f32,
     nearest_through: f32,
+    sun_through: f32,
 ) -> vec3<f32> {
+    if view == VIEW_SUN {
+        // How much of the sun arrived: white in the open, black in a wall's
+        // shadow, and the sun's own colour where a pane dimmed it rather than
+        // stopping it — which is the picture a person looking for a lit patch on
+        // a floor is actually after.
+        if lighting.sun_color.w <= 0.0 {
+            return vec3<f32>(0.0, 0.0, 0.35);
+        }
+        return vec3<f32>(sun_through);
+    }
     if view == VIEW_PLACE {
         // A checkerboard of tiles with the sub-tile fraction laid over it: the
         // squares say which tile a pixel claims, and the gradient inside each
@@ -327,8 +393,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         lit = lit + light.color.rgb * (light.color.w * fall * fall * through);
     }
 
+    // And the sun, which is one direction rather than a place: no distance and no
+    // falloff, only whether anything stands between this pixel and the sky.
+    var sun_through = 0.0;
+    if lighting.sun_color.w > 0.0 {
+        sun_through = sunlight(at);
+        lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
+    }
+
     if view != VIEW_LIT {
-        return vec4<f32>(debug_color(view, place, at, sub, lit, reached, nearest, nearest_through), color.a);
+        return vec4<f32>(
+            debug_color(view, place, at, sub, lit, reached, nearest, nearest_through, sun_through),
+            color.a,
+        );
     }
 
     // Multiplicative, so a flame brightens whatever is under it — ground, wall,

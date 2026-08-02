@@ -83,6 +83,74 @@ pub struct Light {
     pub intensity: f32,
 }
 
+/// The sun: one direction for the whole world, and what it does where nothing
+/// stands in the way.
+///
+/// Not a sixty-fifth flame. A flame is a point and the walk to it is bounded by
+/// its radius; the sun has no position, so every fragment walks the *same*
+/// direction until the ray leaves the grid or is stopped — which is what gives a
+/// wall a shadow lying across the street, and a window a bright patch on the
+/// floor behind it. `docs/lighting.md`, decision 12.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Sun {
+    /// Which way the sun is, from anywhere: `x` and `y` in tiles and `z` in
+    /// tiles as well — the same unit the distance to a flame is in, so that an
+    /// elevation of 45° really is one tile up per tile along. Normalised by
+    /// [`Sun::towards`], which is the only thing that builds one.
+    pub toward: [f32; 3],
+    /// Its colour, linear.
+    pub color: [f32; 3],
+    /// How much it adds where it reaches. Zero is "no sun", and the blit skips
+    /// the walk entirely for it — which is what keeps a frame that has no sun
+    /// exactly as cheap as it was before there was one.
+    pub intensity: f32,
+}
+
+impl Sun {
+    /// A sun `rise` tiles up for every tile along `(dx, dy)`.
+    ///
+    /// The elevation is stated as a slope rather than as an angle because that is
+    /// what the walk uses and because a slope is the thing with a picture: `1.0`
+    /// is 45°, and a wall twenty units tall — two tiles' worth of `z` — throws
+    /// its shadow two tiles.
+    ///
+    /// A `(dx, dy)` of nothing at all is taken as straight down the `y` axis
+    /// rather than left to produce a direction of zero length: a sun with no
+    /// azimuth is overhead, and overhead in this projection is a degenerate case
+    /// that would silently make every fragment sunlit.
+    pub fn towards(dx: f32, dy: f32, rise: f32, color: [f32; 3], intensity: f32) -> Self {
+        let (dx, dy) = match dx.abs() + dy.abs() < 1e-4 {
+            true => (0.0, -1.0),
+            false => (dx, dy),
+        };
+        let length = (dx * dx + dy * dy + rise * rise).sqrt();
+        Self {
+            toward: [dx / length, dy / length, rise / length],
+            color,
+            intensity,
+        }
+    }
+
+    /// How steeply it climbs per tile along the ground: the slope
+    /// [`Sun::towards`] was given back, whatever the direction was normalised to.
+    pub fn rise_per_tile(self) -> f32 {
+        let horizontal = (self.toward[0] * self.toward[0] + self.toward[1] * self.toward[1]).sqrt();
+        match horizontal < 1e-6 {
+            true => f32::INFINITY,
+            false => self.toward[2] / horizontal,
+        }
+    }
+}
+
+/// How many tiles of grid one sunbeam's ray may walk.
+///
+/// The bound the ray needs and a flame's does not — see [`Sun`]. Thirty-two
+/// tiles is a shadow long enough for a low sun over a city block, and it is
+/// almost never reached: the walk stops as soon as the ray is above everything
+/// in the grid, which for a street of one-storey buildings is two or three
+/// steps. `blit.wgsl`'s `MAX_SUN_STEPS`, and the two are one number.
+pub const MAX_SUN_STEPS: i32 = 32;
+
 /// How many `z` units make one tile's width.
 ///
 /// `TILE_WIDTH / Z_STEP`: a tile is 44 virtual pixels across and one unit of
@@ -112,6 +180,10 @@ pub struct Lighting {
     /// and used with another's flames would put shadows where the map has no
     /// walls.
     pub occlusion: Occlusion,
+    /// The sun, where there is one — see [`Sun`]. `None` is night, or a frame
+    /// that has not been given a sky yet, and costs nothing at all: the shader
+    /// never walks a ray for it.
+    pub sun: Option<Sun>,
     /// Which of the pass's own values to draw instead of the lit frame — see
     /// [`crate::debug::View`], and `docs/lighting.md`'s decision 8 for why the
     /// diagnostics are branches of this pass rather than a second one.
@@ -136,6 +208,7 @@ impl Lighting {
         ambient: [1.0, 1.0, 1.0],
         lights: Vec::new(),
         occlusion: Occlusion::EMPTY,
+        sun: None,
         view: crate::debug::View::Lit,
     };
 
@@ -158,6 +231,25 @@ pub const NIGHT: [f32; 3] = [0.30, 0.33, 0.45];
 
 /// Full daylight: the ambient at which lighting is a no-op.
 pub const DAY: [f32; 3] = [1.0, 1.0, 1.0];
+
+/// What a daylit world is lit by *away from the sun*: the sky.
+///
+/// Well short of white, because with a sun in the frame the sun supplies the
+/// rest — an ambient that already lit everything would leave every shadow the
+/// sun casts invisible. And well short of black, because a shadow at noon is not
+/// a hole: the reference isometrics draw one lit by the sky, and so does this.
+pub const SKYLIGHT: [f32; 3] = [0.55, 0.55, 0.62];
+
+/// The sun this client stands under until there is a time of day on the wire.
+///
+/// Towards `+x` and one tile up for every tile along — 45°, so a wall twenty
+/// units tall throws a shadow two tiles long. Both numbers are placeholders in
+/// exactly the way [`flame`] is: what a shard's sky is doing is the shard's to
+/// say, and when it does, this is the function that goes and no call site
+/// changes.
+pub fn midday() -> Sun {
+    Sun::towards(1.0, 0.0, 1.0, [1.0, 0.97, 0.88], 0.55)
+}
 
 /// How one kind of flame burns, before the flicker.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -324,6 +416,10 @@ pub fn collect(
         ambient,
         lights,
         occlusion: crate::occlusion::collect(map, items, bounds, tiledata, cutaway),
+        // No sky here. What the sun is doing is not a property of the tiles this
+        // walked — it is one direction for the whole world, and the caller that
+        // knows the time of day sets it on the way to the blit.
+        sun: None,
         // The ordinary picture. A caller wanting a diagnostic sets the field on
         // the way to the blit: which view is on is a property of the person
         // looking, not of the world walked here.
@@ -423,6 +519,9 @@ pub struct Sample {
     /// holds them — including the ones that reached nothing, which is exactly
     /// what a person asking "why is it dark here" needs to see.
     pub reaches: Vec<Reach>,
+    /// How much of the sun reached this spot, and what stopped it — `None` where
+    /// the frame had no sun at all, which is a different answer from `0.0`.
+    pub sun: Option<Reach>,
 }
 
 impl Sample {
@@ -461,6 +560,17 @@ impl std::fmt::Display for Sample {
                     ", through {:.2}, adds {:.3}",
                     reach.through,
                     reach.added.iter().sum::<f32>() / 3.0,
+                )?,
+            }
+        }
+        if let Some(sun) = self.sun {
+            match sun.stopped_by {
+                Some((x, y)) => writeln!(f, "  sun: in shadow of ({x}, {y})")?,
+                None => writeln!(
+                    f,
+                    "  sun: through {:.2}, adds {:.3}",
+                    sun.through,
+                    sun.added.iter().sum::<f32>() / 3.0,
                 )?,
             }
         }
@@ -514,11 +624,88 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
             added,
         });
     }
+    // And the sun, which is one direction rather than a place and therefore not
+    // in the loop above: no distance, no falloff, and a walk with no endpoint.
+    let sun = lighting.sun.map(|sun| {
+        let (through, stopped_by) = walk_sun(spot, sun, &lighting.occlusion);
+        let added = sun.color.map(|channel| channel * sun.intensity * through);
+        for (total, channel) in multiplier.iter_mut().zip(added) {
+            *total += channel;
+        }
+        Reach {
+            // The sun is not one of `lights`, and the index says so by being
+            // past the end of it rather than by being a zero somebody might read
+            // as "the first flame".
+            light: lighting.lights.len(),
+            distance: f32::INFINITY,
+            within: true,
+            through,
+            stopped_by,
+            added,
+        }
+    });
+
     Sample {
         spot,
         multiplier,
         reaches,
+        sun,
     }
+}
+
+/// The sun's ray from a spot: how much of it arrives, and what stopped it.
+///
+/// `blit.wgsl`'s `sunlight`, and the same three differences from a flame's walk:
+/// there is no endpoint, so the ray is bounded by [`MAX_SUN_STEPS`]; the step is
+/// one tile along the ground, so the height climbs by the sun's slope each time;
+/// and the walk stops as soon as the ray is above everything the grid holds,
+/// which is what makes a daylit frame affordable at all.
+///
+/// The spot's own tile is skipped, as it is for a flame, and for the same reason
+/// in reverse: a wall's own pixels are on a tile that stops light, and a wall
+/// that shadowed itself would be black on the side the sun is on.
+fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
+    let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
+    if horizontal < 1e-6 {
+        // Straight overhead: there is no direction to walk along the ground, and
+        // the only thing that could shadow the spot is on its own tile — which is
+        // exempt. Nothing stops it.
+        return (1.0, None);
+    }
+    let step = [
+        sun.toward[0] / horizontal,
+        sun.toward[1] / horizontal,
+        sun.toward[2] / horizontal * Z_PER_TILE,
+    ];
+    let ceiling = occlusion.tallest();
+    let mut through = 1.0;
+    for tile in 1..=MAX_SUN_STEPS {
+        let along = tile as f32;
+        let at = [
+            spot.at.x + step[0] * along,
+            spot.at.y + step[1] * along,
+            spot.z + step[2] * along,
+        ];
+        match ceiling {
+            // Above everything that could stop it: the rest of the ray is sky.
+            Some(top) if at[2] > top as f32 => break,
+            // Nothing in the grid stops anything, so neither does the walk.
+            None => break,
+            _ => {}
+        }
+        let (x, y) = (at[0].floor() as i32, at[1].floor() as i32);
+        let Some(cell) = occlusion.at(x, y) else {
+            continue;
+        };
+        if at[2] < cell.bottom as f32 || at[2] > cell.top as f32 {
+            continue;
+        }
+        through *= 1.0 - f32::from(cell.opacity) / 255.0;
+        if through <= RAY_CUTOFF {
+            return (0.0, Some((x, y)));
+        }
+    }
+    (through, None)
 }
 
 /// The ray from a spot to a flame, cell by cell: how much survives, and what

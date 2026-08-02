@@ -450,6 +450,7 @@ pub fn run<D: Dial + Send + 'static>(
         // Daylight until asked otherwise: the lighting pass is then exactly the
         // copy the blit has always been.
         night: false,
+        sunlit: false,
         light_view: View::Lit,
         flame_clock: std::time::Duration::ZERO,
         map,
@@ -842,6 +843,16 @@ struct App {
     /// nothing below it changes — the ambient is already a colour per frame
     /// rather than a constant read by the shader.
     night: bool,
+    /// Whether the day has a sun in it: a direction, a wall's shadow lying
+    /// across the street, and a lit patch on the floor behind a window. Toggled
+    /// with F8, and ignored at night.
+    ///
+    /// Off by default, and that is not shyness: the sun's ray is walked for
+    /// *every* ground pixel of a daylit frame, where firelight is walked only
+    /// inside a pool. Until there is a measurement on Britain at the widest zoom
+    /// — step 6 of `docs/lighting.md`, which is still open — the sky is a key
+    /// somebody turns on rather than a cost every frame pays.
+    sunlit: bool,
     /// Which of the lighting pass's own values the blit draws instead of the
     /// frame. Cycled with F11, and [`View::Lit`] is the picture.
     ///
@@ -1255,6 +1266,13 @@ impl ApplicationHandler<link::Update> for App {
                     // difference between two pictures of the same instant, and
                     // anything that needed a restart would put a different world
                     // on either side of the comparison.
+                    // The sun on and off, for the same reason F10 exists: the
+                    // only honest test of a shadow is the two pictures of the
+                    // same instant, one with it and one without.
+                    KeyCode::F8 => {
+                        self.sunlit = !self.sunlit;
+                        true
+                    }
                     KeyCode::F11 => {
                         self.light_view = self.light_view.next();
                         tracing::info!(view = self.light_view.name(), "lighting view");
@@ -3341,18 +3359,33 @@ impl App {
         // list the passes above drew from — so a torch that was not drawn casts
         // nothing, and a torch that was is lighting the pixels it is standing
         // in rather than the pixels it stood in last frame.
-        let mut lighting = match self.night {
-            true => light::collect(
+        // Three skies and not two: night, a daylight with a sun in it, and the
+        // plain daylight that is the identity — the frame the blit has always
+        // copied through untouched. The middle one is a key today; see
+        // `App::sunlit`.
+        let sky = match (self.night, self.sunlit) {
+            (true, _) => Some(light::NIGHT),
+            (false, true) => Some(light::SKYLIGHT),
+            (false, false) => None,
+        };
+        let mut lighting = match sky {
+            Some(ambient) => light::collect(
                 &self.map,
                 &self.items,
                 &camera,
                 &self.tiledata,
                 &cutaway,
-                light::NIGHT,
+                ambient,
                 self.flame_clock.as_secs_f32(),
             ),
-            false => Lighting::NONE,
+            None => Lighting::NONE,
         };
+        // The sun is a property of the sky and not of the tiles, so it is set
+        // here rather than inside the walk — and never at night, where a second
+        // source lighting every roof would undo the whole point of the dark.
+        if self.sunlit && !self.night {
+            lighting.sun = Some(light::midday());
+        }
         // The view is the looker's, not the world's: a diagnostic draws from the
         // values this frame was lit with, and in daylight those are the ambient
         // and the place attachment — which is exactly what a person checking the

@@ -65,11 +65,18 @@ pub enum View {
     /// The first question to ask when a tile is unexpectedly dark: nought means
     /// the search is about collection and radius, not about walls.
     Reach = 7,
+    /// How much of the *sun* reached each pixel: white in the open, black in a
+    /// wall's shadow, grey behind a pane.
+    ///
+    /// The view step 11 was built against. A lit patch on a floor behind a
+    /// window is a shape, and a shape is the one thing a number cannot be
+    /// checked as — this is where it is looked at.
+    Sun = 8,
 }
 
 impl View {
     /// Every view, in the order [`View::next`] walks them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Lit,
         Self::Place,
         Self::Kind,
@@ -78,6 +85,7 @@ impl View {
         Self::Light,
         Self::Shadow,
         Self::Reach,
+        Self::Sun,
     ];
 
     /// The next one round, which is what the key that cycles them does.
@@ -102,6 +110,7 @@ impl View {
             Self::Light => "light",
             Self::Shadow => "shadow",
             Self::Reach => "reach",
+            Self::Sun => "sun",
         }
     }
 }
@@ -207,6 +216,7 @@ mod tests {
         assert_eq!(View::Light as u32, 5);
         assert_eq!(View::Shadow as u32, 6);
         assert_eq!(View::Reach as u32, 7);
+        assert_eq!(View::Sun as u32, 8);
     }
 
     /// Cycling visits every view and comes back. The key that does it is the
