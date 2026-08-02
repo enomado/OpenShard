@@ -186,9 +186,18 @@ impl Terrain for LiveTerrain<'_> {
         // (`movement::path::corner_open`); enforcing it here in the shared
         // validator means a *server-driven* creature taking a naive, wandering
         // or kiting step cannot squeeze between two walls the way only a planned
-        // route was ever stopped from doing. A client never sends a corner-cutting
-        // diagonal, so a player's own walk is unaffected. The flank calls are
-        // orthogonal, so they do not re-enter this branch.
+        // route was ever stopped from doing. The flank calls are orthogonal, so
+        // they do not re-enter this branch.
+        //
+        // Restated here rather than delegated to `movement::step_allowed`, which
+        // is the same rule for everyone deciding a step *before* asking a
+        // terrain: that one calls `can_step`, so this is the call it would
+        // re-enter. Every other caller — `find_path`, and the client's own
+        // held-direction detour — asks `step_allowed` instead. A client that
+        // asks a bare `Terrain` is the one that gets this wrong, and ours did:
+        // `MapTerrain` has no corner rule, so the client thought a corner-cutting
+        // diagonal was walkable, sent it, and was refused here every hold — a
+        // body stuck on a building corner. See docs/client.md.
         let dx = i32::from(to.x) - i32::from(from.x);
         let dy = i32::from(to.y) - i32::from(from.y);
         if dx != 0 && dy != 0 {

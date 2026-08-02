@@ -449,6 +449,53 @@ pub fn step_from(position: Point, direction: Direction) -> Option<Point> {
     Some(Point { x, y, z: position.z })
 }
 
+/// Where one *legal* step from `from` lands, or `None` when that step is not a
+/// step this world allows at all.
+///
+/// [`Terrain::can_step`] answers for the destination tile alone — is there
+/// ground, does the body fit, is the climb within [`MAX_STEP_UP`]. That is the
+/// whole answer for a cardinal and only half of it for a diagonal, which also
+/// may not clip the corner where two blockers meet: both cardinal tiles
+/// flanking it must themselves be steppable, the same rule the client enforces
+/// and the rule `openshard_state::obstruct`'s `LiveTerrain` applies to every
+/// step that reaches the wire.
+///
+/// It lives here, above every caller, because the three that need it are not
+/// one layer: [`find_path`](crate::find_path) planning a route, the shard
+/// validating a creature's step, and the client's own held-direction detour
+/// deciding whether the way ahead is open. A [`Terrain`] implementation is free
+/// to *also* refuse a corner — `LiveTerrain` does, because it is the last word
+/// before a `0x21` — but nothing may rely on one that does not, and
+/// [`MapTerrain`](crate::MapTerrain), the static map both ends share, is
+/// exactly such a one. A client asking `can_step` directly therefore believes a
+/// corner-cutting diagonal is walkable, sends it, and is rubber-banded — which
+/// is a body stuck against a building corner for as long as the player holds
+/// that direction.
+#[must_use]
+pub fn step_allowed(terrain: &dyn Terrain, from: Point, direction: Direction) -> Option<Point> {
+    let to = step_from(from, direction)?;
+    if direction.is_diagonal() && !corner_open(terrain, from, direction) {
+        return None;
+    }
+    terrain.can_step(from, to)
+}
+
+/// Whether both cardinal tiles flanking a diagonal are steppable, so the
+/// diagonal does not cut through a wall's corner. The flanks of a diagonal are
+/// the two wire directions either side of it (NE lies between N and E).
+fn corner_open(terrain: &dyn Terrain, from: Point, diagonal: Direction) -> bool {
+    let d = diagonal.to_bits();
+    let flanks = [
+        Direction::from_bits((d + 7) % 8),
+        Direction::from_bits((d + 1) % 8),
+    ];
+    flanks.iter().all(|&card| {
+        step_from(from, card)
+            .and_then(|tile| terrain.can_step(from, tile))
+            .is_some()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use openshard_protocol::world::{RawFastwalkKey, RawStepSequence};

@@ -1511,11 +1511,11 @@ own understanding had written.
     It has no notion of arrival or of being stuck, and it never touches
     `find_path` or the map — but a blocked direction is no longer walked into
     forever either: [`detour`](../crates/client/app/src/steer.rs) tries the
-    nearest way still legal past it (an O(1) `Terrain::can_step` look, not a
+    nearest way still legal past it (an O(1) `step_allowed` look, not a
     search), so a runner slides past an obstacle instead of standing against
     it. What "legal" means is not symmetric: a wall dead ahead of a held
     *cardinal* has no diagonal past it at all — the server's own corner rule
-    (`LiveTerrain::can_step`, and `find_path`'s `corner_open`) requires both
+    (`LiveTerrain::can_step`, and `movement::step_allowed`) requires both
     cardinal tiles flanking a diagonal step to be open, and the blocked
     direction is unconditionally one of those two flanks for either diagonal
     beside it, so neither ever passes; `detour` offers the cardinal along the
@@ -1526,7 +1526,27 @@ own understanding had written.
     diagonal past a wall, which an earlier version of this did — is not a
     cosmetic bug: the body is drawn slipping through the wall's corner for a
     round trip and rubber-banded back, worse than the stand-and-bump this
-    replaced, on every retry for as long as the direction is held. This
+    replaced, on every retry for as long as the direction is held.
+
+    And the corner-stuck report that outlived all of the above was the *other*
+    half of that rule going missing: **`Terrain::can_step` answers for the
+    destination tile alone, and the corner rule is not part of it.** The
+    terrain the client plans against is `MapTerrain`, the static map, which
+    has no such check — so a diagonal clipping the corner where a wall ends
+    reads as perfectly open here, `detour` saw nothing to detour from, and the
+    client asked for the same diagonal every hold while `LiveTerrain` — which
+    *does* apply the rule, because it is the last word before a `0x21` —
+    refused every one of them. A body pressed against a building corner
+    therefore never tried the one thing that gets past it: a single step to
+    the side. The fix is that the rule stops being something each caller
+    remembers: `movement::step_allowed(terrain, from, direction)` is the whole
+    question — tile steppable *and* no corner cut — and `find_path` and
+    `steer`'s `open` both ask it. `LiveTerrain::can_step` still restates it
+    inline, because it is inside the `can_step` `step_allowed` calls; that one
+    is the intended duplicate, and the comment there says so. Pinned by
+    `a_diagonal_that_cuts_a_wall_corner_sidesteps_instead_of_asking_for_it`,
+    whose scene is the one the earlier detour tests could not see: the
+    diagonal tile itself is open ground, and only the corner refuses it. This
     applies from the very first ask, not just the steps `Steering::due`
     answers afterward: `Steering::steer`/`press` now take a `terrain` too
     (constructed on demand at their call sites in `App`, the same

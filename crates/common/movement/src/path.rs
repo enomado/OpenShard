@@ -25,7 +25,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
-use crate::walk::{Terrain, Tile, step_from};
+use crate::walk::{Terrain, Tile, step_allowed};
 
 /// One entry on the open list: `(f, h, manhattan, tile)`, ordered so
 /// [`BinaryHeap`] with [`Reverse`] pops the cheapest-and-straightest first. See
@@ -91,15 +91,11 @@ pub fn find_path(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -
         let current = point_at[&tile];
         let here_cost = cost[&tile];
         for dir in Direction::ALL {
-            let Some(guess) = step_from(current, dir) else {
-                continue;
-            };
-            // A diagonal may not clip a wall corner: both tiles beside it must be
-            // steppable too, the same rule the client enforces.
-            if is_diagonal(dir) && !corner_open(terrain, current, dir) {
-                continue;
-            }
-            let Some(landing) = terrain.can_step(current, guess) else {
+            // `step_allowed`, not `can_step`: a diagonal may not clip a wall
+            // corner, and that half of the rule is not the terrain's to answer
+            // — see its doc for why it is shared with the shard and the client
+            // rather than restated here.
+            let Some(landing) = step_allowed(terrain, current, dir) else {
                 continue;
             };
             let next = Tile::new(landing.x, landing.y);
@@ -154,28 +150,6 @@ fn manhattan(from: Point, to: Point) -> u32 {
     let dx = i32::from(from.x).abs_diff(i32::from(to.x));
     let dy = i32::from(from.y).abs_diff(i32::from(to.y));
     dx + dy
-}
-
-/// Whether a direction moves on both axes — a diagonal.
-fn is_diagonal(dir: Direction) -> bool {
-    let (dx, dy) = dir.step();
-    dx != 0 && dy != 0
-}
-
-/// Whether both cardinal tiles flanking a diagonal are steppable, so the diagonal
-/// does not cut through a wall's corner. The flanks of a diagonal are the two
-/// wire directions either side of it (NE lies between N and E).
-fn corner_open(terrain: &dyn Terrain, from: Point, diagonal: Direction) -> bool {
-    let d = diagonal.to_bits();
-    let flanks = [
-        Direction::from_bits((d + 7) % 8),
-        Direction::from_bits((d + 1) % 8),
-    ];
-    flanks.iter().all(|&card| {
-        step_from(from, card)
-            .and_then(|tile| terrain.can_step(from, tile))
-            .is_some()
-    })
 }
 
 #[cfg(test)]

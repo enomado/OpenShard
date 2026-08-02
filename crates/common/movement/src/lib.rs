@@ -52,5 +52,5 @@ pub use sequence::{OutOfSequence, StepCounter, WalkSequence};
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
 pub use walk::{
     Intent, OpenWorld, Terrain, Tile, Walk, Walker, direction_toward, heading_toward, intend, line_tiles,
-    step_from,
+    step_allowed, step_from,
 };
