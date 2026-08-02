@@ -923,6 +923,22 @@ Found while planning this, and not to be lost in it.
   is tested only against the bench's scripted body. A terrain with heights in it
   would close that, and it is the same gap that will hide the first real bug in
   the lift cut.
+
+  **It has now hidden three**, all found by walking Britain's castle by hand and
+  none reachable by anything in `dst.rs`: the client predicting a step's height
+  with a different rule than the shard lands it with (a staircase walked
+  *through*), a surface that was not in anybody's way (a staircase entered from
+  the side), and a body measured from the height it lands at rather than the one
+  it walks in at (a wall with a hole in it, and an eighteen-unit fall). All three
+  are pinned in `crates/common/movement/src/terrain.rs` against real client
+  files, which is a test that *skips* wherever `OPENSHARD_CLIENT` is unset — CI
+  included. The shape of the missing piece is specific: a `Field` built from a
+  handful of hand-written columns (land z, a stair, a wall band) is enough, it
+  needs no client files, and the assertion is the one `dst.rs` is already built
+  around — that the predicted body and the shard's body are the same body, in
+  `z` as well as in `x` and `y`. The `|_, _, _| None` closure `Sim::send` passes
+  to `Walk::step` is the seam: while it is `None`, the harness cannot see a
+  height disagreement even if it walks over one.
 - **The lift cut is a detector where an event is available.** `mobiles::gaze`
   can see whether the body is mid-glide, and `App::entered` knows a correction
   arrived (`Moved::Snapped`) — either of which says "this height did not come
