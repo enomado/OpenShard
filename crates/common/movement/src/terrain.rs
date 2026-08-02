@@ -281,7 +281,10 @@ where
                 {
                     continue;
                 }
-                if !self.is_obstructed(x, y, our_z) {
+                // `test_top`, not `our_z + PLAYER_HEIGHT`: the body has to *get*
+                // to this surface, and it walks in at the height it left. See
+                // `is_obstructed`.
+                if !self.is_obstructed(x, y, our_z, test_top) {
                     new_z = our_z;
                     move_ok = true;
                 }
@@ -294,7 +297,7 @@ where
         if self.land_is_ground(x, y)
             && step_top >= land_z
             && (!move_ok || land_center > new_z)
-            && !self.is_obstructed(x, y, land_center)
+            && !self.is_obstructed(x, y, land_center, check_top.max(land_center + PLAYER_HEIGHT))
         {
             new_z = land_center;
             move_ok = true;
@@ -345,11 +348,26 @@ where
         self.land_heights(x, y).1
     }
 
-    /// Whether anything on this tile would be in a mobile's way at `z`.
+    /// Whether anything on this tile would be in a mobile's way standing at `z`
+    /// with its head at `top`.
     ///
     /// A static blocks if its body overlaps the space the mobile occupies —
-    /// `z` to `z + PLAYER_HEIGHT`. A wall whose top is below your feet is a step,
-    /// not an obstacle, and one whose base is above your head is a ceiling.
+    /// `z` to `top`. A wall whose top is below your feet is a step, not an
+    /// obstacle, and one whose base is above your head is a ceiling.
+    ///
+    /// `top` is a parameter rather than `z + PLAYER_HEIGHT` because a body has to
+    /// *get* to `z`, and it walks in at the height it left: ServUO passes
+    /// `IsOk` a `testTop` of `max(startZ, ourZ) + PersonHeight`, and dropping the
+    /// `startZ` half is a hole a body falls through. Britain's castle again — the
+    /// terrace at z=40 with a stairwell beside it whose bottom step stands at
+    /// z=22, under a wall spanning 40 to 49. Measured from the landing alone the
+    /// body is 22 to 38 and the wall starts above its head, so the step read as
+    /// open and walking north off the terrace dropped eighteen units into the
+    /// stairwell — through a wall that is at eye level on the way in. Measured
+    /// from where the body *came from* the wall is squarely in it. The tile one
+    /// west is the same stairwell one step higher, and it blocked either way,
+    /// which is what "there is a wall to the left of it and a hole to the right"
+    /// was.
     ///
     /// **A surface counts too**, not only a wall: ServUO's `Movement.IsOk` tests
     /// `Impassable | Surface` together, and a stair, a stone plinth or an upper
@@ -367,7 +385,7 @@ where
     /// stack of stone blocks, because the blocks were surfaces and so waved
     /// through. With them in the way there is no standable height on that tile at
     /// all, and the step is refused — which is what the client does.
-    fn is_obstructed(&self, x: u16, y: u16, z: i32) -> bool {
+    fn is_obstructed(&self, x: u16, y: u16, z: i32, top: i32) -> bool {
         self.map().statics_at(x, y).any(|item| {
             let tile = self.tiles().static_tile(item.tile);
             let platform = tile.flags.is_platform();
@@ -394,13 +412,14 @@ where
             // one you are standing on tops out exactly at your feet and does not
             // block you. A wall's is its art: walls often carry zero height in
             // tiledata and a zero-tall wall that blocks nothing is not a wall.
-            let top = if platform {
+            let item_top = if platform {
                 platform_surface(bottom, i32::from(tile.height), tile.flags.is_climbable()).1
             } else {
                 bottom + i32::from(tile.height).max(1)
             };
-            // Overlap between [bottom, top) and [z, z + PLAYER_HEIGHT).
-            bottom < z + PLAYER_HEIGHT && z < top
+            // Overlap between the static's [bottom, item_top) and the body's
+            // [z, top).
+            bottom < top && z < item_top
         })
     }
 
@@ -756,7 +775,7 @@ mod tests {
                 }
                 stands.sort_unstable();
                 let (&low, &high) = (stands.first().unwrap(), stands.last().unwrap());
-                if low == high || t.is_obstructed(x, y, high) {
+                if low == high || t.is_obstructed(x, y, high, high + PLAYER_HEIGHT) {
                     continue;
                 }
                 // Reach from a vantage that clears the highest surface, so both are
@@ -950,6 +969,73 @@ mod tests {
         );
     }
 
+    /// A body may not walk into a wall that stands at its own height, however
+    /// deep the pit on the other side of it is.
+    ///
+    /// Britain's castle terrace at z=40, and the stairwell that runs along its
+    /// north edge behind a wall spanning 40 to 49. Two neighbouring tiles of that
+    /// wall, and the only difference between them is how far down the stairwell
+    /// has got: at (1411, 1713) the step below stands at 27 and at (1412, 1713) at
+    /// 22. Measuring a body from the landing alone, the first is blocked — 27 plus
+    /// sixteen is inside the wall — and the second is not, so one tile of the wall
+    /// was solid and the next one along was a hole a body fell eighteen units
+    /// through. The wall is at eye level walking in either way, which is what
+    /// `is_obstructed`'s `top` is for.
+    ///
+    /// The stairwell itself stays reachable the way it is meant to be: along the
+    /// stairs, from the tile above it.
+    #[test]
+    fn a_wall_at_your_own_height_is_a_wall_however_deep_the_pit_behind_it() {
+        let Some(t) = real_terrain() else {
+            return;
+        };
+
+        // The terrace, and that it is a terrace: paved, flat, walkable.
+        for x in 1411..=1412u16 {
+            assert_eq!(
+                t.surface_at(x, 1714, 40),
+                Some(40),
+                "({x},1714) is no longer the paved terrace this test walks on",
+            );
+        }
+        // The wall row north of it, and the stairwell behind: two steps of the
+        // same stair, one lower than the other.
+        let stand_of = |x: u16| {
+            t.map()
+                .statics_at(x, 1713)
+                .filter_map(|item| {
+                    let tile = t.tiles().static_tile(item.tile);
+                    tile.flags.is_platform().then(|| {
+                        platform_surface(
+                            i32::from(item.z),
+                            i32::from(tile.height),
+                            tile.flags.is_climbable(),
+                        )
+                        .1
+                    })
+                })
+                .max()
+        };
+        assert_eq!(stand_of(1411), Some(27), "the stairwell moved");
+        assert_eq!(stand_of(1412), Some(22), "the stairwell moved");
+
+        for x in 1411..=1412u16 {
+            assert_eq!(
+                t.can_step(Point::new(x, 1714, 40), Point::new(x, 1713, 40)),
+                None,
+                "({x},1714) walked north through the castle wall",
+            );
+        }
+
+        // And the way in is still in: down the stairs, from the tile above.
+        assert_eq!(
+            t.can_step(Point::new(1412, 1712, 22), Point::new(1412, 1713, 22))
+                .map(|p| p.z),
+            Some(22),
+            "the stairwell is no longer reachable from the stair above it",
+        );
+    }
+
     #[test]
     fn most_of_britain_is_walkable() {
         // Not a fixed coordinate. Facets differ: (1475, 1774) is the classic
@@ -1065,7 +1151,7 @@ mod tests {
                 // from your own height, not about walls. A tile where a body would
                 // stand clear is the case it means to protect.
                 let stand = terrain.average_land_z(x, y);
-                if terrain.is_obstructed(x, y, stand) {
+                if terrain.is_obstructed(x, y, stand, stand + PLAYER_HEIGHT) {
                     continue;
                 }
                 assert!(
@@ -1253,7 +1339,7 @@ mod tests {
                 let Some(ground) = terrain.map().land(x, y) else {
                     continue;
                 };
-                if terrain.is_obstructed(x, y, i32::from(ground.z)) {
+                if terrain.is_obstructed(x, y, i32::from(ground.z), i32::from(ground.z) + PLAYER_HEIGHT) {
                     blocked += 1;
                 }
             }
@@ -1298,7 +1384,7 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    terrain.is_obstructed(x, y, z),
+                    terrain.is_obstructed(x, y, z, z + PLAYER_HEIGHT),
                     "({x},{y}) is a wall with a window and must not be walked through",
                 );
                 tested += 1;
