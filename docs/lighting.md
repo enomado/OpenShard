@@ -200,13 +200,40 @@ have stopped the ray, and a failure prints the room rather than a coordinate.
 are all outside the crate.
 
 **11. An open door is not a special case — it is a static that stopped being an
-occluder.** The client is *told* a door opened: the item's graphic changes, and
-the open leaf's graphic is not `NO_SHOOT` (you can shoot through an open door,
-which is the same question decision 4 asks). So the tile leaves the grid on the
-frame the graphic changes, and light fans out through the doorway with nothing in
-this pass knowing what a door is. What that buys is worth stating: the spill is a
-*tile-wide* fan, not a thin blade, because decision 3's occluder is a whole tile
-and the opening therefore is one too.
+occluder.** ~~The client is *told* a door opened: the item's graphic changes, and
+the open leaf's graphic is not `NO_SHOOT`.~~ **The second half of that is false,
+and it was checked against the client only after somebody looked at a lit
+doorway.** `tiledata.mul` does not distinguish an open door from a shut one at
+all. Measured over ServUO's own thirteen door families
+(`Scripts/Items/Functional/Doors.cs`, where every `BaseDoor` is
+`base(closed + 2 * facing, closed + 1 + 2 * facing, …)`, so within a family the
+even offsets are shut and the odd ones are open), the flags of the two are
+**identical in every one of the 104 pairs**: the wooden and metal doors are
+`NO_SHOOT` open and shut alike, the gates are clear open and shut alike, the
+barred doors are `WINDOW` both ways. 55 of 104 open leaves stop everything.
+
+So today an open door lays a **whole tile of wall across its own doorway** — a
+band of shadow with nothing visible casting it, which is exactly what it looks
+like on screen, and the more visible for the leaf beside it being brightly lit.
+
+The intent of this decision stands and the mechanism does not: an open door must
+occlude nothing, because decision 3's occluder is a whole tile and a tile-wide
+wall in an opening is far more wrong than no occluder at all. What is missing is
+the *fact*, and it is not in the client:
+
+- not in `tiledata.mul`, per the measurement above;
+- not in how the graphics are laid out — the `DOOR` flag comes in runs of 1, 2,
+  4, 6, 7, 8, 11, 12, 13, 16, 20, 24, 29, 32, 80 and 98, so there is no parity to
+  read an odd offset off;
+- not in the art — "an open leaf's picture is wider than a tile" holds for 46 of
+  the 104 pairs and no better, because a door swung to four of the eight facings
+  is still 44 across.
+
+Which leaves the door table itself, and it lives on the server: the shard is what
+changes the graphic. Porting ServUO's thirteen families with the citation above
+is the repository's own idiom and covers every door the client ships; a shard's
+custom door would keep today's behaviour, which is the safe direction. Not done —
+see the backlog.
 
 **12. The sun is a direction; a sunbeam on the floor is the same walk without an
 endpoint.** A flame is a point and the walk between a fragment and it is bounded
@@ -861,6 +888,23 @@ Found while measuring a wall's facing out of its art:
   brightness profile across a *drawn* wall measures the timbers and the windows,
   not the lighting. `View::Light` throws the art away. Anything about the shape
   of a pool should be judged there.
+
+Found while asking what an open door does:
+
+- **An open door is a tile-wide wall across its own doorway.** The whole of
+  decision 11, above: the fact "this door is open" is in no client file, so
+  nothing tells the grid to let go of the tile. It is the most visible defect in
+  the pass right now, because the leaf beside the band is brightly lit and the
+  band has nothing casting it.
+- **The shading half of a door already works.** 558 graphics carry `DOOR`; the
+  ones `facing::face_of` reads sit on a tile edge as squarely as a plain wall —
+  median distance zero, none over two pixels — so an open leaf is shaded along
+  the axis it swung to. Only the occlusion half is wrong.
+- **`occlusion::opacity` asks the graphic and the graphic is the wrong witness
+  for anything that changes state.** A door is the case that exists; a shutter, a
+  portcullis and a drawbridge are the same shape of problem. Whatever answers it
+  wants to be a question about the *item*, not about its picture — which is a
+  seam the client half of this workspace does not have yet.
 
 Found while writing this plan:
 
