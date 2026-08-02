@@ -9,10 +9,18 @@ copied.
 
 ## Where the next session starts
 
-Steps 1–5, 7–14 and 18 are done; **15, 16, 17 and 6 are not**, and they are in
-that order for a reason. Steps 15 and 16 are one measurement used twice: a wall's
-face read out of its own art, then the window's hole in that face. Step 6's
-measurement is still owed and gates the sun.
+Steps 1–14 and 18 are done; **15, 16 and 17 are not**, and they are in that order
+for a reason. Steps 15 and 16 are one measurement used twice: a wall's face read
+out of its own art, then the window's hole in that face.
+
+Step 6's measurement has been taken and it moved two things: the sun is no longer
+gated on what it costs (it is 9% of the pass), and decision 6's claim that this
+arrangement is cheaper per pixel than the screen-space circles it replaced **did
+not survive** — the loop is entered for every light on every fragment, and that
+is where nearly all of the pass's GPU time goes. The numbers are under step 6 and
+what they raise is in the backlog under "found while measuring it". The headline
+is that the GPU half was never the expensive one: a frame's lighting costs 0.22ms
+on the GPU and 2.8ms on the CPU.
 
 Step 18 is out of that order on purpose — a light in the player's hand needed
 nothing measured out of the art, because a *mobile's* facing is on the wire while
@@ -134,10 +142,15 @@ one texture is uploaded once for the frame instead of sixty-four, the shadow
 edge is exact rather than the resolution of a mask, and the cost is paid only by
 fragments that are inside a pool at all.
 
-This is also *cheaper* than what is there now. Today every fragment of the
-screen runs the loop over all 64 lights; here a fragment outside every radius
-leaves the loop immediately, and at night most of the screen is outside every
-radius.
+This was also claimed to be *cheaper* than what it replaced — every fragment of
+the screen ran the old loop over all 64 lights, and here a fragment outside every
+radius was said to leave the loop immediately. **Step 6 measured it and the claim
+is wrong.** A fragment outside a light's radius `continue`s to the *next* light;
+there is no way out of the loop, so every fragment still runs 64 iterations
+whatever is on screen, and those misses are 63% of what the whole pass costs. The
+saving is real but it is a smaller one: what a miss skips is the ray walk, not
+the iteration. See step 6 for the numbers and the backlog for the shape of the
+fix.
 
 **7. Distance is three-dimensional, with `z` in tiles.**
 `Z_PER_TILE = TILE_WIDTH / Z_STEP = 11`: eleven `z` units is one tile's width,
@@ -298,12 +311,55 @@ pointed even though a wall does not.
 - [x] **5. Wiring.** `app/src/lib.rs` carries the place attachment through the
       three passes and into the blit; `light::collect` builds the grid itself, so
       no call site grew an argument.
-- [ ] **6. A picture, and a number.** A screenshot of a torch inside a house
-      that no longer lights the street, and a frame time from the playground at
-      the widest zoom on Britain — the arrangement is *cheaper* per pixel than
-      the one it replaces (a fragment outside every radius leaves the loop at
-      once, where the old one ran all 64 lights for every pixel of the screen),
-      and that claim is worth a measurement rather than an argument.
+- [x] **6. A picture, and a number.** `render/tests/cost.rs`, ignored and gated
+      on `OPENSHARD_CLIENT` and an adapter: Britain at the widest zoom, 1920×1080
+      on screen over a 3840×2160 world image, drawn once and then lit five ways.
+      64 flames, 10,212 standing cells in a 187×187 grid, and 256,101 of the
+      2,073,600 fragments — an eighth of the screen — changed by a flame.
+
+      ```
+        case   ms/frame    ns/pixel     over dark
+        copy      0.173       0.084      -23.9%    Lighting::NONE, the pass as a blit
+        dark      0.228       0.110         0      the grid and the ambient, no flames
+         far      0.363       0.175      +59.6%    the same 64 flames, 1000 tiles away
+       night      0.388       0.187      +70.3%    the frame as played
+         sun      0.249       0.120       +9.3%    no flames, a midday sun
+      ```
+
+      Read from the *differences*, which is why the cases hold the frame still
+      and change one thing. Lighting a night frame costs **0.215ms** of GPU over
+      a plain copy — 1.3% of a 60Hz budget. Of that, 0.135ms is `far`: sixty-four
+      flames that reach nothing, on every fragment. The pools and their ray walks
+      — the part with all the arithmetic in it — are the remaining 0.025ms,
+      because only an eighth of the screen is inside any pool. **The misses cost
+      five times what the light does**, and that is decision 6's claim inverted:
+      see the backlog.
+
+      The sun is 0.021ms, which `Occlusion::tallest`'s ceiling test is what buys
+      — two or three steps over open ground rather than 32. It is no longer
+      gated on cost; what still keeps F8 off by default is that its ray steps a
+      whole tile, which the backlog has carried since step 11.
+
+      And the CPU, on the same frame: **`light::collect` is 2.83ms**, of which
+      `occlusion::collect` is 1.56ms and laying both planes out as bytes for the
+      queue is 0.04ms. That is thirteen times the whole GPU pass, and it is paid
+      on every frame the camera moves.
+
+      The picture is the same test's, written where `OPENSHARD_FRAME_DUMP` says:
+      Britain at night with its windows lit and its streets dark — the pools stay
+      inside the houses, which is the claim the whole pass was built for, on real
+      art rather than on a built room.
+
+      ```sh
+      OPENSHARD_CLIENT=… OPENSHARD_FRAME_DUMP=/tmp/britain_night.ppm \
+          cargo test --release -p openshard-client-render --test cost -- --ignored --nocapture
+      ```
+
+      Two things the numbers do not cover, stated so nobody reads them as more
+      than they are: the frame is `Cutaway::OPEN` with no ground items on it, and
+      each case's batch pays a grid upload per pass where a real frame pays one —
+      identical in every case, so it cancels in a difference and inflates every
+      absolute equally.
 - [x] **7. `light::sample`, the reasons in Rust.** The shader's loop and its ray
       walk, on the CPU, returning per flame: the distance in tiles, whether the
       fragment is inside the radius, what survived the walk, and *which cell*
@@ -325,8 +381,9 @@ pointed even though a wall does not.
       direction in the uniform, the same grid walk without an endpoint, a wall's
       shadow on the street and a lit patch behind a window. `WINDOW` no longer
       borrows `NO_SHOOT`'s answer — `occlusion::PANE` passes four fifths — and
-      the sun is F8 in the app, off by default until step 6's measurement says
-      what a ray on every ground pixel costs.
+      the sun is F8 in the app, off by default. Step 6 has since measured it —
+      0.021ms a frame, 9% of the pass — so what keeps it off is no longer the
+      cost but the tile-stepped ray the backlog names.
 - [x] **12. A floor is not a wall.** Decision 13's `place::Stance`: a flat
       static's fraction is the inverse of `camera::project` over the pixel's
       offset from its tile's centre, an upright one's is the tile's middle, and
@@ -508,8 +565,10 @@ Found while building the observability and the sun:
   saying which way the light comes from.
 - **The sun's ray is walked for every ground pixel.** Firelight's cost is paid
   only inside a pool; this one is paid everywhere the sky is visible. The ceiling
-  test (`Occlusion::tallest`) makes it two or three steps over open ground, but
-  the number is still unmeasured — which is why the app's F8 is off by default.
+  test (`Occlusion::tallest`) makes it two or three steps over open ground —
+  ~~and the number is still unmeasured~~, and step 6 has now measured it at
+  0.021ms a frame, which is a tenth of what firelight costs on the same frame.
+  The cost was never the reason to leave F8 off; the tile-stepped ray below is.
 
 Found while drawing the boxes:
 
@@ -629,6 +688,43 @@ Found while putting a light in the player's hand:
   "behind a wall" are the same blank cell in the picture. The shadow view
   (`View::Shadow`) has the same hole from the other end: it draws what the walk
   lost and knows nothing about where the light was pointed.
+
+Found while measuring it — step 6's numbers are above, and these are what they
+raise:
+
+- **The loop has no way out, and the misses are the pass.** Decision 6 said a
+  fragment outside every radius leaves the loop at once. It does not: `blit.wgsl`
+  `continue`s to the next light, so every fragment of the screen runs 64
+  iterations at night whatever is on it, and those iterations are 0.135ms of the
+  0.215ms lighting costs. What a miss skips is `reaches` — the ray walk — which
+  is why the *lit* eighth of the screen adds only 0.025ms on top. The shape of a
+  fix is a bound the whole loop can be skipped against: the lights are already
+  sorted by distance from the eye, so a per-frame screen rectangle for the union
+  of the pools, or a coarse per-tile light list, would let most fragments do one
+  test instead of sixty-four. Worth doing when a frame is short of time and not
+  before — the whole pass is 1.3% of a 60Hz budget.
+- **The expensive half is the CPU, by thirteen times.** 2.83ms in `light::collect`
+  against 0.215ms in the shader, on the same frame. Everything argued about this
+  pass so far has been about what a fragment does, and a fragment is not where the
+  time is. Three separate things want fixing and they have three different fixes —
+  which is why `cost.rs` reports them apart rather than as one number.
+- **The map's statics over the lit bounds are walked twice a frame.**
+  `light::collect` walks them for flames (`for_each_static_in`, 1.27ms of the
+  2.83) and then hands the same bounds, the same map and the same cutaway to
+  `occlusion::collect`, which walks them again for the grid (1.56ms). Every
+  static is read twice, its tiledata entry looked up twice, and its `z` tested
+  twice. One walk with two visitors is the same answer for about half the price,
+  and the two are already in one function — this is not a design change, it is a
+  loop that was written twice.
+- **A widest-zoom frame's grid is 187×187 cells and 10,212 of them stand.** The
+  backlog above says `Occlusion` is rebuilt and reallocated every frame at 140KB;
+  the number under it is 1.56ms, which is what makes that item worth doing rather
+  than merely worth writing down.
+- **The pass is measured on `Cutaway::OPEN` and no ground items.** A player
+  standing inside a house is drawn with storeys removed, which is a *smaller*
+  grid and fewer flames, so these numbers are the outdoor worst case rather than
+  the average. Nothing here says what a cutaway costs, and the cutaway is rebuilt
+  every frame too.
 
 Found while writing this plan:
 

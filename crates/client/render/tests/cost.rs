@@ -1,0 +1,505 @@
+//! What the lighting pass costs, on a real frame at the widest zoom.
+//!
+//! `docs/lighting.md`'s step 6. The plan claims the world-coordinate pass is
+//! *cheaper* per pixel than the screen-space circles it replaced, and the
+//! argument for it is a branch: a fragment outside every radius leaves the loop
+//! at once, where the old arrangement ran all sixty-four lights for every pixel
+//! of the screen. That is a claim about a shader and it is worth a number.
+//!
+//! # What is measured, and against what
+//!
+//! The arrangement it replaced is gone from the tree, so there is nothing to run
+//! it against — a second copy of a deleted shader would be a benchmark against
+//! something nobody ships. What *can* be measured is the mechanism the claim
+//! rests on, and it is measured by holding the frame still and changing one
+//! thing:
+//!
+//! - `copy` — [`Lighting::NONE`]. The pass as a plain blit, and the floor
+//!   every other number stands on.
+//! - `dark` — the frame's real occlusion grid, its ambient, and **no flames**.
+//!   The night this client draws indoors with nothing burning. Everything the
+//!   lit cases pay except the light loop.
+//! - `far` — the same, with the frame's sixty-four flames moved a thousand tiles
+//!   away. Every fragment is outside every radius, so this is exactly the branch
+//!   the claim is about: `far - dark` is what a screen full of misses costs.
+//! - `night` — the flames where the map put them. The frame as played.
+//! - `sun` — no flames, a midday sun: the directional walk, which runs on every
+//!   ground pixel rather than only inside a pool. Off by default in the app
+//!   until this said what it costs.
+//!
+//! Each case builds its own [`Blit`], so each pays its own uniform write and its
+//! own grid upload — the same bytes in every case, so a difference between two
+//! of them is the shader and not the transfer.
+//!
+//! # Why a batch and not a frame
+//!
+//! One pass over two million fragments is under the noise of a submission, so
+//! each case is [`REPEATS`] passes in one encoder, submitted once and waited on.
+//! What comes out is divided back down to one frame. The batches are run more
+//! than once and the **fastest** is kept: a slow batch is a machine doing
+//! something else, and the minimum is the only estimator here that a busy
+//! desktop cannot inflate.
+//!
+//! # The companion that says the data is real
+//!
+//! A lighting benchmark on a frame with no lights in it is fast, green and
+//! meaningless — this repository has produced that shape of result before. So
+//! the numbers are printed only after the frame is shown to be one: the flames
+//! collected are counted, the standing cells of the grid are counted, and the
+//! `night` frame is read back and compared with `dark` pixel by pixel. A frame
+//! whose lights changed nothing is a failure here, not a fast result.
+//!
+//! Two things gate it, both honest skips: `OPENSHARD_CLIENT`, because no client
+//! files live in this repository, and an adapter, because not every machine has
+//! one. Ignored besides, because it is a measurement and not an assertion about
+//! a number nobody has agreed on:
+//!
+//! ```sh
+//! OPENSHARD_CLIENT=… cargo test --release -p openshard-client-render \
+//!     --test cost -- --ignored --nocapture
+//! ```
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use openshard_client_render::animate::StaticAnimations;
+use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
+use openshard_client_render::blit::{Blit, ViewportRect};
+use openshard_client_render::camera::{Camera, Zoom};
+use openshard_client_render::cutaway::Cutaway;
+use openshard_client_render::geometry::Vec2;
+use openshard_client_render::light::{self, Lighting};
+use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::{ground, statics};
+use openshard_protocol::world::Point;
+use openshard_uofiles::art::Art;
+use openshard_uofiles::hues::Hues;
+use openshard_uofiles::map::Map;
+use openshard_uofiles::texmaps::TexMaps;
+use openshard_uofiles::tiledata::TileData;
+
+use openshard_client_render::hue::HueRamp;
+
+/// The window this is measured for, in physical pixels: a 1080p display with
+/// nothing docked over the world.
+///
+/// The fragment count *is* this rectangle — the blit draws one quad over the
+/// viewport — so it is the number every per-pixel figure below is divided by,
+/// and it is stated rather than read from a surface because a benchmark that
+/// depended on the machine's monitor could not be compared with itself.
+const VIEWPORT: (u32, u32) = (1920, 1080);
+
+/// The middle of Britain, which is where every other picture in this workspace
+/// is taken from.
+const BRITAIN: Point = Point::new(1495, 1629, 0);
+
+/// How many passes go into one batch. Enough that the batch is milliseconds
+/// rather than the noise of a submission.
+const REPEATS: u32 = 32;
+
+/// How many batches each case is run for. The fastest is the reading — see the
+/// module docs.
+const BATCHES: u32 = 5;
+
+/// How far away `far`'s flames are put, in tiles. Well outside the grid, so no
+/// fragment is inside any radius and no ray is ever walked.
+const FAR_AWAY: f32 = 1000.0;
+
+/// The client's files, or `None` where the environment does not point at any.
+fn client_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("OPENSHARD_CLIENT")?))
+}
+
+/// A GPU to draw with, or `None` where there is none.
+///
+/// The same four lines as `frame.rs`'s: a test binary is its own crate and
+/// cannot import another's helpers, and a shared module for one adapter request
+/// would be a file to keep in step for no saving.
+fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+}
+
+/// The widest view the ladder offers — where the world image is largest, the
+/// grid holds the most tiles and the most flames are in reach.
+fn widest() -> Zoom {
+    let mut zoom = Zoom::ONE;
+    while !zoom.is_widest() {
+        zoom = zoom.scale_down();
+    }
+    zoom
+}
+
+/// One case's reading.
+struct Reading {
+    what: &'static str,
+    /// The fastest batch, divided back down to one pass.
+    per_frame: Duration,
+}
+
+impl Reading {
+    /// Nanoseconds a fragment, which is the number the claim is about.
+    fn per_pixel(&self) -> f64 {
+        self.per_frame.as_secs_f64() * 1e9 / f64::from(VIEWPORT.0 * VIEWPORT.1)
+    }
+}
+
+/// Run one case: a fresh [`Blit`], a warm-up batch, then [`BATCHES`] measured
+/// ones, keeping the fastest.
+///
+/// The warm-up is not politeness: the first pass through a pipeline pays for the
+/// driver compiling it and for both grid textures being created at the frame's
+/// size, and counted in it would make whichever case ran first the slow one.
+#[allow(clippy::too_many_arguments)]
+fn measure(
+    what: &'static str,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    world: &wgpu::TextureView,
+    place: &wgpu::TextureView,
+    surface: &wgpu::TextureView,
+    lighting: &Lighting,
+) -> Reading {
+    let mut blit = Blit::new(device, openshard_client_render::blit::WORLD_FORMAT);
+    let frame = openshard_client_render::blit::Frame {
+        target: surface,
+        world,
+        place,
+        zoom: widest(),
+        rect: ViewportRect {
+            x: 0,
+            y: 0,
+            width: VIEWPORT.0,
+            height: VIEWPORT.1,
+        },
+    };
+
+    let mut batch = |passes: u32| {
+        let start = Instant::now();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        for _ in 0..passes {
+            blit.render(device, queue, &mut encoder, frame, lighting);
+        }
+        queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("waiting on our own submission");
+        start.elapsed()
+    };
+
+    batch(REPEATS);
+    let mut fastest = Duration::MAX;
+    for _ in 0..BATCHES {
+        fastest = fastest.min(batch(REPEATS));
+    }
+    Reading {
+        what,
+        per_frame: fastest / REPEATS,
+    }
+}
+
+/// Read a texture back as RGBA8 rows, for the companion that says the lights did
+/// something.
+fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+    let (width, height) = (texture.width(), texture.height());
+    assert_eq!(width * 4 % 256, 0, "a row copy has to be 256-byte aligned");
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size: u64::from(width) * u64::from(height) * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping a buffer this test just wrote");
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting on our own submission");
+    let pixels = slice
+        .get_mapped_range()
+        .expect("the map completed above")
+        .to_vec();
+    readback.unmap();
+    pixels
+}
+
+/// Draw the world image and its place attachment once, and light it every way.
+///
+/// The world passes run once and their output is reused by every case: what is
+/// being timed is the blit, and re-drawing Britain between the readings would
+/// put the ground pass into all five of them equally and the noise of an atlas
+/// into whichever one grew it.
+#[test]
+#[ignore = "a measurement, not an assertion; needs a client and an adapter"]
+fn what_the_lighting_pass_costs_at_the_widest_zoom() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        eprintln!("no client files or no adapter: nothing measured");
+        return;
+    };
+
+    let map = Map::load_facet(&dir, 0).expect("Felucca");
+    let art = Art::open(&dir).expect("artLegacyMUL.uop");
+    let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+
+    let mut camera = Camera::new(BRITAIN, VIEWPORT.0, VIEWPORT.1);
+    camera.zoom_about(0, 0, widest());
+    let (width, height) = camera.image_size();
+    assert!(camera.minifies(), "the widest rung of the ladder minifies");
+
+    // The world, drawn once, exactly as the app draws it.
+    let wanted = ground::visible_graphics(&map, &camera);
+    let land = LandAtlas::build(&art, wanted.iter().copied()).expect("a screen of land fits");
+    let texmaps = {
+        let texmaps = TexMaps::open(&dir).expect("texidx.mul and texmaps.mul");
+        TexmapAtlas::build(&texmaps, &tiledata, wanted).expect("a screen of textures fits")
+    };
+    let animations = StaticAnimations::default();
+    let quads = ground::collect(&map, &camera, &land, &texmaps, &Cutaway::OPEN);
+    let static_atlas = StaticAtlas::build(&art, statics::visible_graphics(&map, &camera, &animations))
+        .expect("a screen of statics fits");
+    let static_quads = statics::collect(
+        &map,
+        &camera,
+        &tiledata,
+        &animations,
+        &static_atlas,
+        &Cutaway::OPEN,
+    );
+
+    let format = openshard_client_render::blit::WORLD_FORMAT;
+    let world = openshard_client_render::blit::world_texture(&device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(&device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(&device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let hue_ramp = HueRamp::build(&Hues::load(dir.join("hues.mul")).expect("hues.mul"));
+
+    let mut ground_pass = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
+    let mut statics_pass = SpriteRenderer::new(&device, &queue, format, static_atlas.pixels(), &hue_ramp);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target = Target {
+        place: &place_view,
+        view: &world_view,
+        depth: &depth_view,
+        width,
+        height,
+        projection: camera.projection(),
+    };
+    ground_pass.render(&device, &queue, &mut encoder, target, &quads);
+    statics_pass.render(&device, &queue, &mut encoder, target, &static_quads);
+    queue.submit([encoder.finish()]);
+
+    // The surface the blit draws onto: the viewport, not the world image.
+    let surface = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface"),
+        size: wgpu::Extent3d {
+            width: VIEWPORT.0,
+            height: VIEWPORT.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // The lighting, collected the way the app collects it — and timed, because
+    // the walk of the map and the grid it builds are a per-frame cost of this
+    // arrangement that the shader's cheapness does not pay for.
+    let collect =
+        |time: f32| light::collect(&map, &[], &camera, &tiledata, &Cutaway::OPEN, light::NIGHT, time);
+    // Three readings and not one, because they have three different fixes: the
+    // walk of the map is what a spatial index would answer, the grid is what
+    // keeping the buffer between frames would answer, and the bytes are two
+    // allocations of the same rectangle on the way to the queue. A single
+    // "2.8ms" names none of them.
+    let (mut cpu, mut cpu_grid, mut cpu_bytes) = (Duration::MAX, Duration::MAX, Duration::MAX);
+    for batch in 0..BATCHES {
+        let start = Instant::now();
+        let built = collect(batch as f32);
+        cpu = cpu.min(start.elapsed());
+
+        let start = Instant::now();
+        let grid = openshard_client_render::occlusion::collect(
+            &map,
+            &[],
+            light::lit_tiles(&camera),
+            &tiledata,
+            &Cutaway::OPEN,
+        );
+        cpu_grid = cpu_grid.min(start.elapsed());
+
+        // What the upload sends. Timed apart and `black_box`ed, because a length
+        // nobody reads is an allocation a release build may delete.
+        let start = Instant::now();
+        std::hint::black_box(built.occlusion.bytes().len() + grid.field_bytes().len());
+        cpu_bytes = cpu_bytes.min(start.elapsed());
+    }
+    let night = collect(0.0);
+    let cells = night.occlusion.boxes().count();
+    let grid = night.occlusion.bounds();
+
+    // The companion. A frame with no flames in it would make every reading below
+    // a measurement of the ambient.
+    assert!(
+        !night.lights.is_empty(),
+        "no light source in a whole widest-zoom frame of Britain: the cases below would all be `dark`"
+    );
+    assert!(cells > 0, "nothing stands in the grid, so no ray can be stopped");
+
+    let mut dark = night.clone();
+    dark.lights.clear();
+    let mut far = night.clone();
+    for light in &mut far.lights {
+        far_away(&mut light.at);
+    }
+    let mut sun = dark.clone();
+    sun.sun = Some(light::midday());
+
+    let cases = [
+        ("copy", Lighting::NONE),
+        ("dark", dark.clone()),
+        ("far", far),
+        ("night", night.clone()),
+        ("sun", sun),
+    ];
+    let readings: Vec<Reading> = cases
+        .iter()
+        .map(|(what, lighting)| {
+            measure(
+                what,
+                &device,
+                &queue,
+                &world_view,
+                &place_view,
+                &surface_view,
+                lighting,
+            )
+        })
+        .collect();
+
+    // And the other half of "the data is real": the flames have to change the
+    // picture. Drawn after the timings so that nothing here is inside them.
+    let picture = |lighting: &Lighting| {
+        let mut blit = Blit::new(&device, format);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        blit.render(
+            &device,
+            &queue,
+            &mut encoder,
+            openshard_client_render::blit::Frame {
+                target: &surface_view,
+                world: &world_view,
+                place: &place_view,
+                zoom: widest(),
+                rect: ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width: VIEWPORT.0,
+                    height: VIEWPORT.1,
+                },
+            },
+            lighting,
+        );
+        queue.submit([encoder.finish()]);
+        read_back(&device, &queue, &surface)
+    };
+    let lit = picture(&night);
+    let unlit = picture(&dark);
+    let changed = lit
+        .chunks_exact(4)
+        .zip(unlit.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    let total = (VIEWPORT.0 * VIEWPORT.1) as usize;
+    assert!(
+        changed > total / 1000,
+        "the flames changed {changed} of {total} pixels: the `night` reading is a measurement of `dark`"
+    );
+
+    // A picture for a person, beside the numbers, because step 6 asks for both.
+    if let Some(path) = std::env::var_os("OPENSHARD_FRAME_DUMP") {
+        let mut ppm = format!("P6\n{} {}\n255\n", VIEWPORT.0, VIEWPORT.1).into_bytes();
+        for pixel in lit.chunks_exact(4) {
+            ppm.extend_from_slice(&pixel[..3]);
+        }
+        std::fs::write(&path, ppm).expect("writing the frame");
+        eprintln!("wrote {}", PathBuf::from(&path).display());
+    }
+
+    eprintln!(
+        "\nBritain at {}, {}x{} on screen, world image {width}x{height}",
+        widest(),
+        VIEWPORT.0,
+        VIEWPORT.1
+    );
+    eprintln!(
+        "{} flames, {cells} standing cells in a {}x{} grid, {} of them lit this frame",
+        night.lights.len(),
+        grid.width(),
+        grid.height(),
+        changed,
+    );
+    eprintln!(
+        "CPU a frame: light::collect {:.2}ms — of which the grid {:.2}ms, and {:.2}ms more \
+         to lay both planes out as bytes for the queue\n",
+        cpu.as_secs_f64() * 1e3,
+        cpu_grid.as_secs_f64() * 1e3,
+        cpu_bytes.as_secs_f64() * 1e3,
+    );
+
+    let floor = readings
+        .iter()
+        .find(|reading| reading.what == "dark")
+        .expect("the dark case was measured");
+    eprintln!(
+        "{:>6}  {:>9}  {:>10}  {:>12}",
+        "case", "ms/frame", "ns/pixel", "over dark"
+    );
+    for reading in &readings {
+        let over = reading.per_frame.as_secs_f64() - floor.per_frame.as_secs_f64();
+        eprintln!(
+            "{:>6}  {:>9.3}  {:>10.3}  {:>+11.3}%",
+            reading.what,
+            reading.per_frame.as_secs_f64() * 1e3,
+            reading.per_pixel(),
+            100.0 * over / floor.per_frame.as_secs_f64(),
+        );
+    }
+}
+
+/// Move a flame out of every fragment's reach, keeping everything else about it.
+fn far_away(at: &mut Vec2) {
+    at.x += FAR_AWAY;
+    at.y += FAR_AWAY;
+}
