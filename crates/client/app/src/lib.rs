@@ -2283,6 +2283,36 @@ impl App {
             },
             false => [stand_z; 4],
         };
+        // The same clamp, and the same reason: a corrupt block may name a height
+        // no `i8` holds, and a level drawn at the edge of the world beats a
+        // panic in a HUD.
+        let drawn_z = |z: i32| z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
+        // Whether a body fits is asked of the *cluttered* terrain — the client's
+        // map with the shard's items laid over it — because that is what every
+        // step decision on this end asks. A private "can I stand here" written
+        // for the marker would be a second policy, and the first bug it hid
+        // would be one of its own. The surfaces themselves come from the map:
+        // where a floor *is* is a fact about the facet, and only whether a body
+        // fits on it depends on what has been put there since.
+        let cluttered = self.clutter.over(&self.map, &self.tiledata);
+        let mut levels: Vec<(i8, bool)> = terrain
+            .surfaces(x, y)
+            .into_iter()
+            .map(|z| {
+                let fits = openshard_movement::Terrain::can_fit(
+                    &cluttered,
+                    openshard_movement::Tile::new(x, y),
+                    z,
+                    openshard_movement::PLAYER_HEIGHT,
+                );
+                (drawn_z(z), fits)
+            })
+            .collect();
+        // Sorted so the diagram reads bottom to top, and deduplicated because a
+        // tile can carry two statics whose decks land on the same height — two
+        // diamonds drawn on one line are one line drawn twice.
+        levels.sort_unstable();
+        levels.dedup();
         shell::PickedTile {
             x,
             y,
@@ -2290,6 +2320,8 @@ impl App {
             land_z: land.map_or(0, |cell| cell.z),
             stand_z,
             corners,
+            levels,
+            ceiling: terrain.ceiling(x, y).map(drawn_z),
             statics,
         }
     }

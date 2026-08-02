@@ -223,6 +223,24 @@ pub struct PickedTile {
     /// `[stand_z; 4]` when the surface is not the land — a pier's planks are
     /// flat however the water beneath them is shaped.
     pub corners: [i8; 4],
+    /// Every height a body could stand at on this tile, and whether one
+    /// actually fits there — sorted, and asked of the same terrain every step
+    /// decision on this end asks, clutter included.
+    ///
+    /// A tile is a *column*, not a height: a stair carries the floor under it
+    /// and the tread above, a house carries its ground floor and the storey
+    /// over that, and "why will it not let me stand here" is a question about
+    /// which of those a body fits on. `stand_z` names the one the cursor
+    /// resolved to; this is the whole list it was chosen from, with the verdict
+    /// beside each.
+    pub levels: Vec<(i8, bool)>,
+    /// How high the things on this tile reach — a roof over a room, the cap of
+    /// a wall — or `None` where nothing stands on it.
+    ///
+    /// What the marker's column is drawn up to, so a tile indoors is a box from
+    /// the datum to the ceiling rather than a box that stops at the floor and
+    /// says nothing about the room it is in.
+    pub ceiling: Option<i8>,
     /// Everything standing on top of the ground here: graphic id, height, hue.
     pub statics: Vec<(u16, i8, u16)>,
 }
@@ -834,7 +852,7 @@ fn layout(
                 tile,
                 viewport.min,
                 egui::Color32::TRANSPARENT,
-                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 70)),
+                egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 170)),
             );
         }
     }
@@ -1340,6 +1358,22 @@ fn tile_panel(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
         // every marker on this tile is drawn at the second one.
         ui.label(format!("tile {}, {}   stand z {}", tile.x, tile.y, tile.stand_z));
     });
+    // The column in words, in the same green and red the box is drawn in: the
+    // picture says *where* the levels are and this says which, so a level hidden
+    // behind a wall on screen is still countable here.
+    ui.horizontal_wrapped(|ui| {
+        ui.label("levels");
+        for &(z, standable) in &tile.levels {
+            let colour = match standable {
+                true => STANDABLE,
+                false => BLOCKED,
+            };
+            ui.colored_label(colour, format!("{z}"));
+        }
+        if let Some(ceiling) = tile.ceiling {
+            ui.label(format!("· ceiling {ceiling}"));
+        }
+    });
     ui.horizontal(|ui| match tile.land {
         Some(graphic) => {
             ui.label(format!("land {graphic} (0x{graphic:04X})  z {}", tile.land_z));
@@ -1428,25 +1462,51 @@ fn tile_centre(
     viewport_origin + egui::vec2(centre.x * scale, centre.y * scale)
 }
 
-/// The glow over one tile, drawn as the box the tile actually occupies: the
-/// diamond at the height a body would stand at, and the column from `z = 0` up
-/// to it.
+/// A walkable level, drawn green.
+const STANDABLE: egui::Color32 = egui::Color32::from_rgb(60, 255, 90);
+/// A level a body does not fit on, drawn red — the same pair the terrain
+/// overlay washes tiles with, so one vocabulary answers "can I stand there"
+/// wherever the question is asked.
+const BLOCKED: egui::Color32 = egui::Color32::from_rgb(255, 40, 40);
+
+/// The same colour at a chosen alpha — a wash and an outline of one hue.
+fn washed(colour: egui::Color32, alpha: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), alpha)
+}
+
+/// The glow over one tile, drawn as the space the tile actually occupies: the
+/// surface a body would stand on, the column from the world's datum up to
+/// whatever roofs the tile over, and every height in between a body could stand
+/// at — green where one fits, red where it does not.
 ///
 /// A diamond alone is ambiguous in an isometric picture — the same screen
 /// position is every height on that column, so a marker on a pier's deck and a
 /// marker in the water beside it are drawn a few pixels apart and read as the
 /// same place. The column removes the ambiguity by drawing the height itself:
-/// the base sits at the world's own datum, `z = 0`, and how far the top floats
-/// above it *is* the tile's height, legible without reading the panel.
+/// the base sits at `z = 0` and how far the surface floats above it *is* the
+/// tile's height, legible without reading the panel.
 ///
 /// `z = 0` and not the land's height, because the base has to be the same datum
 /// under every tile — a base that moved with the ground would make the column a
 /// difference between two unknowns rather than a height.
 ///
+/// **Up to the ceiling and not to the surface.** A tile is a column of space and
+/// a floor is a thing *inside* it: stopping the box at the planks says nothing
+/// about the room over them, and indoors the useful fact is exactly that — how
+/// much headroom there is, where the storey above starts, whether the thing
+/// under the cursor is a floor or a lid. The lid is [`PickedTile::ceiling`], the
+/// top of the tallest static on the tile, and where nothing stands the box tops
+/// out at the surface as before.
+///
+/// **The levels are the answer to "why can I not stand here".** A stair tile
+/// carries the floor below and the tread above; a doorway carries the threshold
+/// and the lintel over it. Each is a diamond at its own height, coloured by
+/// whether a body fits — which is asked of the cluttered terrain the walk asks,
+/// so a red level is a level the step will refuse.
+///
 /// The two south-facing sides are filled and the two behind them are not: they
 /// are the faces the eye can see, and filling all four would make the box a
-/// solid blob with no depth to it. Sides go down before the top, so the diamond —
-/// the thing being pointed at — stays on top of its own column.
+/// solid blob with no depth to it.
 fn draw_tile_highlight(
     painter: &egui::Painter,
     camera: &Camera,
@@ -1470,14 +1530,22 @@ fn draw_tile_highlight(
             viewport_origin,
         )
     };
-    // The lid is the surface's own shape — sloped on a hillside, flat on a deck
-    // — while the base is the datum plane and therefore always level.
-    let top = at(tile.stand_z, tile.corners);
-    // A tile whose surface lies in the datum plane has no column, and the loop
+    // The surface's own shape — sloped on a hillside, flat on a deck — while the
+    // base is the datum plane and therefore always level, and so is a roof.
+    let surface = at(tile.stand_z, tile.corners);
+    // The lid, when something stands *over* the surface rather than under it: a
+    // ceiling at or below the tile's own floor is the floor's own static seen
+    // from the other side, and a box drawn to it would be inside out.
+    let lid = tile.ceiling.filter(|&z| z > tile.stand_z);
+    let top = match lid {
+        Some(z) => at(z, [z; 4]),
+        None => surface.clone(),
+    };
+    let base = at(0, [0; 4]);
+    // A tile whose whole column lies in the datum plane has no box, and the loop
     // below would draw four zero-length segments over the diamond's own edges.
-    if tile.stand_z != 0 || tile.corners != [0; 4] {
-        let base = at(0, [0; 4]);
-        // The sides are quieter than the diamond: the column is context for the
+    if lid.is_some() || tile.stand_z != 0 || tile.corners != [0; 4] {
+        // The sides are quieter than the surface: the column is context for the
         // marker, not a second marker. A fill at full strength doubled up over
         // the ground wash and read as the brighter of the two shapes.
         let side = egui::Color32::from_rgba_unmultiplied(
@@ -1501,8 +1569,37 @@ fn draw_tile_highlight(
         for (top, base) in top.iter().zip(base) {
             painter.line_segment([*top, base], edge);
         }
+        // The lid gets its own outline. Without it a roofed tile is a box with
+        // nothing across the top of it, which reads as an unfinished column
+        // rather than as a ceiling.
+        if lid.is_some() {
+            painter.add(egui::Shape::closed_line(top.clone(), edge));
+        }
     }
-    painter.add(egui::Shape::convex_polygon(top, fill, stroke));
+    // Every standable height, under the marker so the marker stays the answer to
+    // "where would a click go" and these stay the answer to "what else is here".
+    // The surface's own level is drawn too and lands under the marker exactly —
+    // its colour showing at the edges is the useful case, because a *red* rim on
+    // the tile the cursor resolved to is the client saying the step it is
+    // offering will be refused.
+    for &(z, standable) in &tile.levels {
+        let colour = match standable {
+            true => STANDABLE,
+            false => BLOCKED,
+        };
+        // The surface's shape for the surface's own height, flat for the rest: a
+        // level is only sloped when it is the land, and the land is what
+        // `corners` describes.
+        let corners = match z == tile.stand_z {
+            true => tile.corners,
+            false => [z; 4],
+        };
+        painter.add(egui::Shape::closed_line(
+            at(z, corners),
+            egui::Stroke::new(stroke.width * 0.8, colour),
+        ));
+    }
+    painter.add(egui::Shape::convex_polygon(surface, fill, stroke));
 }
 
 /// The walkability wash and the route over it.
@@ -1522,8 +1619,8 @@ fn draw_terrain(
     // matters because the ground under it looks like a way through — so a wash
     // heavy enough to hide what it is covering answers the wrong question. These
     // are the weakest values the two are still tellable apart at.
-    let open = egui::Color32::from_rgba_unmultiplied(60, 255, 90, 14);
-    let blocked = egui::Color32::from_rgba_unmultiplied(255, 40, 40, 30);
+    let open = washed(STANDABLE, 14);
+    let blocked = washed(BLOCKED, 30);
     for (tiles, fill) in [(&terrain.open, open), (&terrain.blocked, blocked)] {
         for &point in tiles {
             let corners = tile_corners(painter, camera, point, viewport_origin);

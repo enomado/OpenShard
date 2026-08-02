@@ -125,6 +125,25 @@ where
     /// itself, so a step onto ground this end knows nothing about keeps the
     /// height it came from rather than guessing zero.
     pub fn predict_z(&self, x: u16, y: u16, near_z: i32) -> i32 {
+        self.surfaces(x, y)
+            .into_iter()
+            .min_by_key(|&z| (z - near_z).abs())
+            .unwrap_or(near_z)
+    }
+
+    /// Every height a body could stand at on `(x, y)`: the ground, when the land
+    /// there is ground at all, and the stand height of each platform static —
+    /// a pier's planks, a stair's tread, the floor of the storey above.
+    ///
+    /// The candidate list [`predict_z`](Self::predict_z) and `spawn_z` both
+    /// choose from, and one list rather than two copies of it: a surface that
+    /// exists for the prediction and not for the placement is a body drawn
+    /// where it will not be put.
+    ///
+    /// **Candidates, not permissions.** Nothing here has been asked whether a
+    /// body *fits* — that is [`can_fit`](crate::Terrain::can_fit), and the
+    /// callers that care apply it. Unordered, and the tile's own order at that.
+    pub fn surfaces(&self, x: u16, y: u16) -> Vec<i32> {
         let mut candidates: Vec<i32> = Vec::new();
         if self.land_is_ground(x, y) {
             let (_, land_center, _) = self.land_heights(x, y);
@@ -142,9 +161,38 @@ where
             }
         }
         candidates
-            .into_iter()
-            .min_by_key(|&z| (z - near_z).abs())
-            .unwrap_or(near_z)
+    }
+
+    /// How high the tile's contents reach — the top of the tallest static on it,
+    /// and `None` where nothing stands.
+    ///
+    /// A roof over a room, the cap of a wall, the crown of a tree: this does not
+    /// distinguish them, because what it is for is the vertical extent a tile
+    /// occupies rather than the meaning of the thing occupying it.
+    ///
+    /// The same top [`is_obstructed`](Self::is_obstructed) measures a static by,
+    /// and deliberately so: a diagram drawn from a second arithmetic would show
+    /// a ceiling the step rule does not believe in.
+    pub fn ceiling(&self, x: u16, y: u16) -> Option<i32> {
+        self.map()
+            .statics_at(x, y)
+            .map(|item| self.static_top(item.tile, i32::from(item.z)))
+            .max()
+    }
+
+    /// How high one static reaches from its base.
+    ///
+    /// A platform's is where a body stands on it — halved for a climbable
+    /// bridge, the same `platform_surface` the step check picks candidates with,
+    /// so the surface underfoot tops out exactly at the feet on it. Anything
+    /// else is its art, and at least one unit: walls often carry zero height in
+    /// tiledata, and a zero-tall wall that blocks nothing is not a wall.
+    fn static_top(&self, tile: u16, base: i32) -> i32 {
+        let tile = self.tiles().static_tile(tile);
+        match tile.flags.is_platform() {
+            true => platform_surface(base, i32::from(tile.height), tile.flags.is_climbable()).1,
+            false => base + i32::from(tile.height).max(1),
+        }
     }
 
     /// The height a mobile stepping from `from` onto `(x, y)` lands at — the
@@ -418,16 +466,10 @@ where
             // showed for townsfolk walking home at night, which is the only end
             // of this rule nobody was watching.
             let bottom = i32::from(item.z);
-            // A surface's top is where a body stands on it — the same
-            // `platform_surface` the step check picks its candidates with, so the
-            // one you are standing on tops out exactly at your feet and does not
-            // block you. A wall's is its art: walls often carry zero height in
-            // tiledata and a zero-tall wall that blocks nothing is not a wall.
-            let item_top = if platform {
-                platform_surface(bottom, i32::from(tile.height), tile.flags.is_climbable()).1
-            } else {
-                bottom + i32::from(tile.height).max(1)
-            };
+            // See `static_top`: a surface's top is where a body stands on it, so
+            // the one you are standing on does not block you, and a wall's is its
+            // art.
+            let item_top = self.static_top(item.tile, bottom);
             // Overlap between the static's [bottom, item_top) and the body's
             // [z, top).
             bottom < top && z < item_top
@@ -568,27 +610,12 @@ where
         // Every surface a mobile could stand on here: the ground, and the top of
         // each platform static. Unlike a step, this placement is not bound by reach —
         // a shop floor several tiles above the ground is still where the NPC goes.
-        let mut candidates: Vec<i32> = Vec::new();
-        let (_, land_center, _) = self.land_heights(tile.x, tile.y);
-        if self.land_is_ground(tile.x, tile.y) {
-            candidates.push(land_center);
-        }
-        for item in self.map().statics_at(tile.x, tile.y) {
-            let static_tile = self.tiles().static_tile(item.tile);
-            if static_tile.flags.is_platform() {
-                let (_, our_z) = platform_surface(
-                    i32::from(item.z),
-                    i32::from(static_tile.height),
-                    static_tile.flags.is_climbable(),
-                );
-                candidates.push(our_z);
-            }
-        }
+        //
         // Keep only the surfaces a body actually fits on — a floor below and
         // headroom above — so the ground *under* a covering floor drops out (the
         // body would poke through it) and the floor itself is chosen. Among those,
         // the one nearest the requested height.
-        candidates
+        self.surfaces(tile.x, tile.y)
             .into_iter()
             .filter(|&z| MapTerrain::can_fit(self, tile.x, tile.y, z, PLAYER_HEIGHT))
             .min_by_key(|&z| (z - near_z).abs())
@@ -806,6 +833,66 @@ mod tests {
             }
         }
         assert!(checked > 10, "only {checked} stacked-surface tiles tested");
+    }
+
+    /// The candidate list is the one the predictions are made from, and a tile's
+    /// ceiling is the statics on it.
+    ///
+    /// `surfaces` was factored out of `predict_z` and `spawn_z`, which each held
+    /// their own copy of it; this is what says the list did not drift while being
+    /// shared. Every height `predict_z` can answer with must be a member of it —
+    /// a prediction outside the list is a body drawn at a height nothing offers.
+    #[test]
+    fn a_predicted_height_is_one_of_the_tile_s_own_surfaces() {
+        let Some(t) = real_terrain() else {
+            return;
+        };
+        let mut checked = 0;
+        let mut roofed = 0;
+        for y in 1580..1610u16 {
+            for x in 1490..1552u16 {
+                let surfaces = t.surfaces(x, y);
+                let ceiling = t.ceiling(x, y);
+                // A ceiling is the statics and nothing else: an empty tile has
+                // none, and a tile with anything on it has one.
+                assert_eq!(
+                    ceiling.is_some(),
+                    t.map().statics_at(x, y).next().is_some(),
+                    "({x},{y}) disagrees about whether anything stands on it",
+                );
+                if let Some(ceiling) = ceiling {
+                    let lowest = t.map().statics_at(x, y).map(|item| i32::from(item.z)).min();
+                    assert!(
+                        ceiling >= lowest.unwrap(),
+                        "({x},{y}) tops out at {ceiling}, below its own lowest static",
+                    );
+                    // Something standing higher than anything standable is what
+                    // the marker draws its lid from — a roof, a wall's cap.
+                    if surfaces.iter().max().is_some_and(|&top| ceiling > top) {
+                        roofed += 1;
+                    }
+                }
+                if surfaces.is_empty() {
+                    continue;
+                }
+                // From well below, from the ground, and from well above: the
+                // nearest candidate differs at each, and every one of them has
+                // to come out of the list.
+                for near in [-60, 0, 20, 80] {
+                    let predicted = t.predict_z(x, y, near);
+                    assert!(
+                        surfaces.contains(&predicted),
+                        "({x},{y}) from {near} predicted {predicted}, which is not among {surfaces:?}",
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "only {checked} tiles with a surface tested");
+        assert!(
+            roofed > 0,
+            "no tile in the sweep had anything above its top surface"
+        );
     }
 
     /// A client predicting a step must land where the shard lands it, and on a
