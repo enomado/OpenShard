@@ -322,7 +322,11 @@ pub fn collect(
 fn place(at: Point, graphic: Graphic, time: f32) -> Light {
     let flame = flame(graphic);
     Light {
-        at: Vec2::new(f32::from(at.x), f32::from(at.y)),
+        // The middle of the tile, not its corner: a fragment's own position is
+        // fractional now — the world passes write where in its tile a pixel is —
+        // and a flame at `(x, y)` exactly would sit on the tile's north corner
+        // and light the tile north of it as brightly as its own.
+        at: Vec2::new(f32::from(at.x) + 0.5, f32::from(at.y) + 0.5),
         z: f32::from(at.z) + FLAME_LIFT,
         radius: flame.radius,
         color: flame.color,
@@ -424,7 +428,11 @@ mod tests {
         );
         assert_eq!(lighting.lights.len(), 1);
         let light = lighting.lights[0];
-        assert_eq!((light.at.x, light.at.y), (100.0, 100.0), "its own tile");
+        assert_eq!(
+            (light.at.x, light.at.y),
+            (100.5, 100.5),
+            "the middle of its own tile"
+        );
         assert_eq!(light.z, FLAME_LIFT, "burning above the ground it stands on");
         assert_eq!(light.radius, TORCH.radius, "six tiles, whatever the zoom");
     }
@@ -476,7 +484,7 @@ mod tests {
             camera.zoom_about(400, 300, zoom);
             let lighting = collect(&bare(), &items, &camera, &tiledata, &Cutaway::OPEN, NIGHT, 0.0);
             assert_eq!(lighting.lights[0].radius, TORCH.radius, "at {zoom}");
-            assert_eq!(lighting.lights[0].at, Vec2::new(100.0, 100.0), "at {zoom}");
+            assert_eq!(lighting.lights[0].at, Vec2::new(100.5, 100.5), "at {zoom}");
             let next = zoom.scale_up();
             if next == zoom {
                 break;

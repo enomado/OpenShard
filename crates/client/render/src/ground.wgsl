@@ -68,6 +68,11 @@ struct VertexOut {
     @location(3) has_texmap: f32,
     // The tile these pixels are, flat across the instance — see `crate::place`.
     @location(4) @interpolate(flat) place: vec2<u32>,
+    // Where in that tile, as the diamond's own two axes in `0..1`. Interpolated,
+    // and it is what makes a pool of light a gradient rather than a set of flat
+    // tiles with steps between them: a tile is 44 pixels across and a fragment
+    // lit by its tile's *centre* is lit in blocks the size of the ground.
+    @location(6) local: vec2<f32>,
     // And the height, which is *not* flat: a hillside's pixels each carry the
     // one their corner interpolation gave them, which is the height the light
     // has to reach. Taking the tile's base instead would light a hilltop as if
@@ -78,6 +83,12 @@ struct VertexOut {
 // What a pixel of the ground is, in `crate::place::Kind`'s numbering. The Rust
 // side pins these values in a test; nothing else can compare the two.
 const KIND_LAND: u32 = 1u;
+
+// How the fourth channel is packed: the kind in the low two bits, then seven
+// bits of tile-local `x` and seven of tile-local `y`. `crate::place` documents
+// it and `blit.wgsl` takes it apart; the three have to agree and only a person
+// reading them can check that.
+const SUB_TILE: f32 = 127.0;
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.
@@ -162,6 +173,16 @@ fn vs_main(
     out.has_texmap = f32(texmap.z > 0.0);
     out.place = place;
     out.place_z = height;
+    // The diamond's own axes, inverted from the screen offset this vertex is at:
+    // `slope_offset` above is `((a - b) * 22, (a + b - 1) * 22)` for a tile-local
+    // `(a, b)`, and this is that solved for the pair. Written from the offset
+    // rather than passed as `corner` because a *flat* tile's quad is the
+    // sprite's bounding square and not the diamond — its corners are half a tile
+    // outside the tile, and only the offset says by how much.
+    out.local = vec2<f32>(
+        (offset.x + offset.y) / f32(viewport.tile.x) + 0.5,
+        (offset.y - offset.x) / f32(viewport.tile.x) + 0.5,
+    );
     return out;
 }
 
@@ -169,7 +190,9 @@ fn vs_main(
 // interpolated corner height, and "this is ground".
 fn place_of(in: VertexOut) -> vec4<u32> {
     let z = u32(clamp(round(in.place_z), -128.0, 127.0) + 128.0);
-    return vec4<u32>(in.place.x & 0xFFFFu, in.place.x >> 16u, z, KIND_LAND);
+    let local = clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0));
+    let sub = u32(round(local.x * SUB_TILE)) << 2u | u32(round(local.y * SUB_TILE)) << 9u;
+    return vec4<u32>(in.place.x & 0xFFFFu, in.place.x >> 16u, z, KIND_LAND | sub);
 }
 
 @fragment

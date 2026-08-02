@@ -17,10 +17,25 @@
 //!
 //! # The format
 //!
-//! `Rgba16Uint`, as `(x, y, z + 128, kind)`. Integers because these are tile
-//! indices and a `z`, and a `u16` holds a coordinate on the largest facet a
-//! client ships (7,168 across) exactly. `Rgba16Uint` is colour-renderable in
-//! WebGL2, which is the ceiling this crate draws under — see the crate docs.
+//! `Rgba16Uint`, as `(x, y, z + 128, kind and the fraction)`. Integers because
+//! these are tile indices and a `z`, and a `u16` holds a coordinate on the
+//! largest facet a client ships (7,168 across) exactly. `Rgba16Uint` is
+//! colour-renderable in WebGL2, which is the ceiling this crate draws under —
+//! see the crate docs.
+//!
+//! The fourth channel carries **the kind in its low two bits, then seven bits of
+//! tile-local `x` and seven of tile-local `y`** — where in its tile the pixel
+//! is, to a hundred-and-twenty-eighth of one. That fraction is not decoration:
+//! without it every pixel of a tile is the same distance from every flame, and a
+//! pool of light comes out as flat 44-pixel tiles with a step at each edge
+//! rather than as a gradient. It is written by the shaders and read by
+//! `blit.wgsl`; the packing appears in three files and only a person reading all
+//! three can check that they agree.
+//!
+//! A sprite has no side of its tile to be on — it is a billboard standing on one
+//! — so both fractions are the middle for it, and what varies down its picture
+//! is the `z`: four pixels up a wall is one unit of height, which is what gives
+//! a wall's face a gradient instead of one brightness.
 //!
 //! A fragment a sprite discarded writes nothing here either, so what this holds
 //! is what is *visible*, which is the question lighting asks.
@@ -202,6 +217,11 @@ mod tests {
         assert_eq!(Kind::Nothing as u32, 0, "the clear value's kind");
         assert_eq!(Place::NOWHERE.packed()[0], 0);
         assert_eq!(Place::NOWHERE.packed()[1] >> 8, 0, "and nothing else is read");
+        // The shaders write the kind into the low bits of that channel and the
+        // sub-tile fraction above it, so "nothing here" has to be a value the
+        // fraction cannot reach into: it is the *kind* that is zero, and the
+        // kinds occupy two bits.
+        assert!((Kind::Mobile as u32) < 4, "a kind no longer fits its two bits");
     }
 
     /// The kinds, one number each. `blit.wgsl` holds the same four and cannot be

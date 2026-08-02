@@ -1584,18 +1584,41 @@ fn every_pixel_names_the_tile_it_came_from() {
 
     let places = render_places(&device, &queue, &land, &texmaps, &ground, &statics, &wall, 128);
 
-    // A pixel of the wall: its own tile, its own height, and the static's kind.
+    // A pixel of the wall: its own tile, and the static's kind in the low bits of
+    // the fourth channel.
+    let wall_pixel = places.at(64, 64);
     assert_eq!(
-        places.at(64, 64),
-        [301, 400, (15 + 128) as u16, 2],
-        "a wall's pixel named something else",
+        [wall_pixel[0], wall_pixel[1]],
+        [301, 400],
+        "a wall's pixel named another tile",
+    );
+    assert_eq!(wall_pixel[3] & 3, 2, "and another kind");
+    // Its height is the pixel's own, not the sprite's base: four pixels up the
+    // picture is one unit of `z`, which is what gives a wall a gradient down its
+    // face instead of one flat brightness.
+    let higher = places.at(64, 62);
+    assert_eq!(
+        i32::from(higher[2]) - i32::from(wall_pixel[2]),
+        1,
+        "two pixels up the wall is not half a unit of height: {higher:?} against {wall_pixel:?}",
     );
     // A pixel of the ground beside it: the tile under the wall, at the height
     // the corners gave it, and the land kind.
+    let ground_pixel = places.at(64, 84);
     assert_eq!(
-        places.at(64, 84),
-        [300, 400, 128, 1],
+        [ground_pixel[0], ground_pixel[1], ground_pixel[2]],
+        [300, 400, 128],
         "the ground beside the wall named something else",
+    );
+    assert_eq!(ground_pixel[3] & 3, 1, "and another kind");
+    // And the ground's fraction of its tile moves with the pixel, which is what
+    // the lighting reads to make a pool a gradient rather than a set of flat
+    // tiles. Two pixels apart on the screen are two different places in a tile.
+    let beside = places.at(70, 84);
+    assert_ne!(
+        beside[3] >> 2,
+        ground_pixel[3] >> 2,
+        "a pixel six across is at the same place in its tile",
     );
     // And a corner nothing was drawn on stays the clear value, whose kind is
     // `Nothing` — a background the lighting must leave alone.

@@ -70,6 +70,13 @@ struct Lighting {
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
+// The fourth channel of the place attachment: the kind in the low two bits,
+// then seven bits of tile-local `x` and seven of tile-local `y`. The world
+// passes pack it; `crate::place` documents it.
+const KIND_MASK: u32 = 3u;
+const SUB_TILE_MASK: u32 = 127u;
+const SUB_TILE: f32 = 127.0;
+
 // `crate::place::Kind::Nothing`: no world pixel here. The Rust side pins the
 // number in a test; this is the only other place it appears.
 const KIND_NOTHING: u32 = 0u;
@@ -100,7 +107,9 @@ fn occluder_at(x: i32, y: i32) -> vec4<u32> {
 //
 // A walk of the cells between the two, Chebyshev-stepped — the same distance the
 // game itself measures in, so one step moves one tile on the longer axis and the
-// walk visits every tile the ray crosses on that axis. Both ends are left out:
+// walk visits every tile the ray crosses on that axis. Positions are fractional
+// and a cell is the *floor* of one, which is what makes the endpoints exactly
+// the two tiles the ray starts and ends in. Both ends are left out:
 // the flame's own tile must not shadow it (a sconce stands *on* a wall), and the
 // tile being lit must not shadow itself, which is what keeps a wall's own face
 // the brightest thing near a torch.
@@ -115,7 +124,7 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
     for (var i = 1; i < steps; i = i + 1) {
         let t = f32(i) / f32(steps);
         let at = lit + delta * t;
-        let cell = occluder_at(i32(round(at.x)), i32(round(at.y)));
+        let cell = occluder_at(i32(floor(at.x)), i32(floor(at.y)));
         if cell.w == 0u {
             continue;
         }
@@ -150,11 +159,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Nothing was drawn here — the cleared background, or the letters over a
     // speaker's head, which are a message and not a thing standing in the
     // street. Neither is lit and neither is dimmed. See `crate::place::Kind`.
-    if place.w == KIND_NOTHING {
+    if (place.w & KIND_MASK) == KIND_NOTHING {
         return color;
     }
 
-    let at = vec3<f32>(f32(place.x), f32(place.y), f32(place.z) - 128.0);
+    // Where in the world this pixel is, tile *and* the fraction of it the world
+    // pass wrote. The fraction is what makes a pool a gradient: without it every
+    // pixel of a tile is the same distance from the flame, and a tile is 44
+    // pixels of ground that would all be one brightness with a step at its edge.
+    let sub = vec2<f32>(
+        f32((place.w >> 2u) & SUB_TILE_MASK) / SUB_TILE,
+        f32((place.w >> 9u) & SUB_TILE_MASK) / SUB_TILE,
+    );
+    let at = vec3<f32>(f32(place.x) + sub.x, f32(place.y) + sub.y, f32(place.z) - 128.0);
 
     var lit = lighting.ambient.rgb;
     let count = u32(lighting.ambient.w);

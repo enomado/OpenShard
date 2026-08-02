@@ -49,7 +49,33 @@ struct VertexOut {
     // and this is what says so: the lighting pass reads the tile rather than
     // guessing it back from the pixel's position on the screen.
     @location(2) @interpolate(flat) place: vec2<u32>,
+    // Where this fragment is up the screen, and where the sprite's bottom edge
+    // is, both in viewport pixels. Their difference is the *height* the pixel
+    // stands at: a sprite is a picture of something vertical, four pixels of it
+    // are one unit of `z`, and its bottom edge sits on the diamond's bottom
+    // vertex. Without this a wall is lit as one flat thing from its base tile,
+    // which reads as a lantern shining on a signboard.
+    @location(3) pixel_y: f32,
+    @location(4) @interpolate(flat) bottom_y: f32,
 };
+
+// Virtual pixels one unit of height lifts a sprite up the screen —
+// `camera::Z_STEP`, and the same number `ground.wgsl` is handed in its uniform
+// block. A constant here because this pass is not given the world's grid, only
+// rectangles somebody else placed in it.
+const Z_STEP: f32 = 4.0;
+
+// How far below a tile's centre the diamond's bottom vertex is, in `z` units:
+// half a tile of 44 pixels over `Z_STEP`. A sprite's bottom edge stands there,
+// so a pixel on it is that much *below* the height the static is based at.
+const BOTTOM_LIFT: f32 = 5.5;
+
+// The fourth channel of the place attachment: the kind in the low two bits, then
+// seven bits of tile-local `x` and seven of tile-local `y`. A sprite is a
+// billboard standing on one tile and has no side of it to be on, so both are
+// the tile's middle — the height above is where its detail is. See
+// `crate::place` and `blit.wgsl`, which take the same word apart.
+const SUB_TILE_MIDDLE: u32 = 64u << 2u | 64u << 9u;
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.
@@ -98,6 +124,8 @@ fn vs_main(
     out.uv = region.xy + corner * region.zw;
     out.hue = hue;
     out.place = place;
+    out.pixel_y = pixel.y;
+    out.bottom_y = origin.y + size.y;
     return out;
 }
 
@@ -141,11 +169,16 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // The tile, the height and the kind, taken apart the way
     // `crate::place::Place::packed` put them together. A discarded fragment
     // never reaches this line, so what the attachment holds is what is visible.
+    // The height this pixel of the sprite stands at, rather than the height the
+    // sprite is based at: the bottom edge is `BOTTOM_LIFT` below the base and
+    // every four pixels up is one unit of `z`.
+    let base = f32(in.place.y & 0xFFu) - 128.0;
+    let z = base - BOTTOM_LIFT + (in.bottom_y - in.pixel_y) / Z_STEP;
     out.place = vec4<u32>(
         in.place.x & 0xFFFFu,
         in.place.x >> 16u,
-        in.place.y & 0xFFu,
-        in.place.y >> 8u,
+        u32(clamp(round(z), -128.0, 127.0) + 128.0),
+        (in.place.y >> 8u) | SUB_TILE_MIDDLE,
     );
     return out;
 }
