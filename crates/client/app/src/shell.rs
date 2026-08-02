@@ -205,6 +205,18 @@ pub struct PickedTile {
     /// the cursor is resolved against the same height, a pier tile could not be
     /// pointed at at all.
     pub stand_z: i8,
+    /// The four corner heights of the surface [`PickedTile::stand_z`] names, in
+    /// [`Camera::tile_facet`]'s order — top, right, bottom, left.
+    ///
+    /// A land tile is a sloped diamond and `stand_z` is one number over the
+    /// middle of it, so a marker drawn flat at that height cuts through the
+    /// hillside at two corners and floats over it at the other two. These are
+    /// what the ground pass lifts its own vertices by, so the marker lies on the
+    /// art rather than near it.
+    ///
+    /// `[stand_z; 4]` when the surface is not the land — a pier's planks are
+    /// flat however the water beneath them is shaped.
+    pub corners: [i8; 4],
     /// Everything standing on top of the ground here: graphic id, height, hue.
     pub statics: Vec<(u16, i8, u16)>,
 }
@@ -1359,9 +1371,21 @@ fn tile_corners(
     point: openshard_protocol::world::Point,
     viewport_origin: egui::Pos2,
 ) -> Vec<egui::Pos2> {
+    facet_corners(painter, camera, point, [point.z; 4], viewport_origin)
+}
+
+/// The same, for a surface that is not level: the corners stand at their own
+/// heights. See [`Camera::tile_facet`] for the order they come in.
+fn facet_corners(
+    painter: &egui::Painter,
+    camera: &Camera,
+    point: openshard_protocol::world::Point,
+    corners: [i8; 4],
+    viewport_origin: egui::Pos2,
+) -> Vec<egui::Pos2> {
     let scale = 1.0 / painter.ctx().pixels_per_point();
     camera
-        .tile_diamond(point)
+        .tile_facet(point, corners)
         .map(|corner| viewport_origin + egui::vec2(corner.x * scale, corner.y * scale))
         .to_vec()
 }
@@ -1408,8 +1432,8 @@ fn draw_tile_highlight(
 ) {
     // The surface, not the land: on a pier the two are thirteen z-units apart
     // and the land's height puts the diamond in the water beside the boards.
-    let at = |z: i8| {
-        tile_corners(
+    let at = |z: i8, corners: [i8; 4]| {
+        facet_corners(
             painter,
             camera,
             openshard_protocol::world::Point {
@@ -1417,14 +1441,17 @@ fn draw_tile_highlight(
                 y: tile.y,
                 z,
             },
+            corners,
             viewport_origin,
         )
     };
-    let top = at(tile.stand_z);
-    // A tile at the datum has no column, and the loop below would draw four
-    // zero-length segments over the diamond's own edges.
-    if tile.stand_z != 0 {
-        let base = at(0);
+    // The lid is the surface's own shape — sloped on a hillside, flat on a deck
+    // — while the base is the datum plane and therefore always level.
+    let top = at(tile.stand_z, tile.corners);
+    // A tile whose surface lies in the datum plane has no column, and the loop
+    // below would draw four zero-length segments over the diamond's own edges.
+    if tile.stand_z != 0 || tile.corners != [0; 4] {
+        let base = at(0, [0; 4]);
         // The sides are quieter than the diamond: the column is context for the
         // marker, not a second marker. A fill at full strength doubled up over
         // the ground wash and read as the brighter of the two shapes.

@@ -2232,14 +2232,38 @@ impl App {
         // body's own height so a floor overhead does not win over the street.
         let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
         let stand = terrain.predict_z(x, y, i32::from(self.player.at.z));
+        // Clamped rather than unwrapped: a `z` outside `i8` is a corrupt
+        // block, and a diamond at the wrong height beats a panic in a HUD.
+        let stand_z = stand.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
+        // The shape of the surface being marked, and the decision belongs here
+        // rather than in the painter: only the map knows whether the height a
+        // body stands at is the land's own — in which case the surface is a
+        // sloped quad and the marker has to be too — or the flat top of a
+        // platform standing on it.
+        //
+        // `average_land_z` is the same number `predict_z` pushed as the land's
+        // candidate, so this is a comparison of one arithmetic against itself
+        // rather than a re-derivation. A platform whose deck happens to sit at
+        // exactly the land's average height is drawn sloped; it is level ground
+        // wherever that coincidence is not one, and a corner off by a unit or
+        // two is a better wrong answer than a marker that ignores the hill.
+        let corners = match self.map.average_land_z(x, y) == Some(stand_z) {
+            // `land_corners` reads top, right, *left*, bottom, and the facet
+            // wants top, right, bottom, left — swapping the pair is what keeps
+            // the quad from being a bow tie.
+            true => match self.map.land_corners(x, y) {
+                Some([top, right, left, bottom]) => [top, right, bottom, left],
+                None => [stand_z; 4],
+            },
+            false => [stand_z; 4],
+        };
         shell::PickedTile {
             x,
             y,
             land: land.map(|cell| cell.tile),
             land_z: land.map_or(0, |cell| cell.z),
-            // Clamped rather than unwrapped: a `z` outside `i8` is a corrupt
-            // block, and a diamond at the wrong height beats a panic in a HUD.
-            stand_z: stand.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8,
+            stand_z,
+            corners,
             statics,
         }
     }

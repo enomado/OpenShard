@@ -744,27 +744,44 @@ impl Camera {
     /// blit in [`Camera::to_viewport`] scales it, so the offsets below are
     /// taken before that conversion and not after.
     pub fn tile_diamond(&self, point: Point) -> [Vec2; 4] {
+        self.tile_facet(point, [point.z; 4])
+    }
+
+    /// The same four corners with each one at its *own* height — the sloped
+    /// quad the ground pass actually draws.
+    ///
+    /// `corners` are absolute heights in the diamond's own order: top, right,
+    /// bottom, left, which is `(x, y)`, `(x+1, y)`, `(x+1, y+1)`, `(x, y+1)`.
+    /// Note that this is **not** [`Map::land_corners`] order — that one reads
+    /// top, right, *left*, bottom — so a caller passing land heights straight
+    /// through gets a bow tie. The reorder is the caller's because only the
+    /// caller knows whether the surface it is describing is land at all: a
+    /// pier's planks are flat whatever the water under them does.
+    ///
+    /// A flat facet is [`Camera::tile_diamond`], which is this with one height
+    /// four times — one arithmetic, so a marker on level ground and a marker on
+    /// a hillside cannot land on different pixels for any reason but the slope.
+    ///
+    /// The lift is a *difference* from `point.z` because [`Camera::to_screen`]
+    /// has already applied that one to the centre.
+    pub fn tile_facet(&self, point: Point, corners: [i8; 4]) -> [Vec2; 4] {
         let centre = self.to_screen(point);
         let half = TILE_WIDTH / 2;
+        // Up the screen as the corner rises, by the same `Z_STEP` `project`
+        // uses — the corner has to land where the ground vertex under it does.
+        let lift = |z: i8| (i32::from(z) - i32::from(point.z)) * Z_STEP;
         [
-            ViewPixel {
-                x: centre.x,
-                y: centre.y - half,
-            },
-            ViewPixel {
-                x: centre.x + half,
-                y: centre.y,
-            },
-            ViewPixel {
-                x: centre.x,
-                y: centre.y + half,
-            },
-            ViewPixel {
-                x: centre.x - half,
-                y: centre.y,
-            },
+            (0, -half, corners[0]),
+            (half, 0, corners[1]),
+            (0, half, corners[2]),
+            (-half, 0, corners[3]),
         ]
-        .map(|corner| self.to_viewport(corner))
+        .map(|(dx, dy, z)| {
+            self.to_viewport(ViewPixel {
+                x: centre.x + dx,
+                y: centre.y + dy - lift(z),
+            })
+        })
     }
 
     /// What world pixel the cursor is over, given where it is in the viewport.
@@ -1048,6 +1065,33 @@ mod tests {
         // rather than clamped into the map.
         let above = WorldPixel { x: 0, y: -44 };
         assert_eq!(unproject(above, 0), (-1, -1));
+    }
+
+    /// A facet's corners stand where the ground pass lifts its vertices to, and
+    /// a level one is the diamond exactly.
+    ///
+    /// The second half is what makes the first safe to rely on: the marker on a
+    /// hillside and the marker on a floor come off one arithmetic, so the only
+    /// thing that can move a corner is the slope.
+    #[test]
+    fn a_facet_lifts_each_corner_by_its_own_height() {
+        let camera = Camera::new(Point::new(1000, 1000, 0), 800, 600);
+        let point = Point::new(1000, 1000, 0);
+        assert_eq!(camera.tile_facet(point, [0; 4]), camera.tile_diamond(point));
+        // One corner up by four units is four `Z_STEP`s up the screen, and the
+        // other three do not move.
+        let raised = camera.tile_facet(point, [4, 0, 0, 0]);
+        let level = camera.tile_diamond(point);
+        assert_eq!(raised[0].y, level[0].y - (4 * Z_STEP) as f32);
+        assert_eq!(raised[0].x, level[0].x);
+        assert_eq!(raised[1..], level[1..]);
+        // The lift is a difference from the point's own height, so a facet whose
+        // corners all sit at `z` is the diamond at `z` wherever that is read
+        // from — a tile does not shift because the height it was named by did.
+        assert_eq!(
+            camera.tile_facet(Point::new(1000, 1000, 7), [11; 4]),
+            camera.tile_diamond(Point::new(1000, 1000, 11)),
+        );
     }
 
     #[test]
