@@ -2365,12 +2365,13 @@ Each is a seam the work made visible. None blocks the next milestone.
   — `ColorTable[8]`, cited beside the constant, and pinned by a test on a ramp
   with a different colour in every column, so a wrong column reads as a wrong
   colour rather than a plausible one. `Hue(0)` stays "no colour", not row zero.
-- **The gump reader draws no art.** `gumppic`, `tilepic` and `gumppictiled` are
-  still placeholders naming their graphic. For a menu of labelled buttons
-  nothing is lost; for a paperdoll or a shop everything is. The hue of *those*
-  elements is dropped with them — art is tinted per pixel through the ramp the
-  way statics are (`client/render/src/hue.rs`), not with the single solid
-  colour text takes, so it lands with the art and not before. M4.
+- ~~**The gump reader draws no art.**~~ Fixed for `gumppic`, `gumppictiled`,
+  `resizepic`, buttons and switches: `client/render/src/gump.rs` is a pass of
+  its own — no projection, no depth, no place attachment, because an interface
+  is none of the three — and it tints per pixel through the same ramp the
+  statics do, so a hued `{ gumppic }` is hued. `tilepic` is *not* done: that is
+  static art, in `StaticAtlas` and not the gump atlas, and a window drawing it
+  needs a second pass bound to a second texture. Below.
 - ~~**A gump is drawn in points, not in the client's pixels.**~~ Withdrawn: this
   was written as a bug and is a decision, now argued in `client/app/src/gump.rs`
   and localized there. A layout's coordinates *are* the reference client's
@@ -2396,6 +2397,46 @@ Each is a seam the work made visible. None blocks the next milestone.
   everything is said as `TalkMode::Regular`: emote, whisper and yell are the
   same packet with another mode byte, and there is nothing in the UI to pick one.
 
+
+### Found while drawing the art
+
+- **`tilepic` and `tilepichue` still draw a placeholder.** They name *static*
+  art, which lives in the world's `StaticAtlas`, so a gump window that shows an
+  item needs a second gump pass bound to that texture — the same `GumpRenderer`
+  with different pixels, not a new kind of pass. This is the piece a container
+  and a shop both stop at, and the paperdoll's equipment layers are a third
+  caller of it.
+- **Gump text is still egui's font, not the client's.** `Caption` comes out of
+  `gump::window` with the index into the gump's text table and nowhere to go:
+  drawing it wants a third `GumpRenderer` bound to `App::font_atlas`, at which
+  point `{ text }`, `{ croppedtext }` and the hue lookup all move out of
+  `client/app/src/gump.rs`. Until then the two halves disagree about what a
+  window's letters look like.
+- **`{ checkertrans }` is not drawn at all.** It is a translucent darkening and
+  the pass discards rather than blends, deliberately (`gump.wgsl`). Drawing it
+  wants either a blend state on a second pipeline or the client's own
+  checkerboard, which is what the reference actually uses — a 50% dither, not an
+  alpha.
+- **The window is still egui's, and that is the next decision, not a bug.** The
+  frame is transparent, the buttons are invisible click targets over their own
+  art, and the art is placed at the rectangle egui allocated. What egui still
+  owns is dragging, the close box, z-order between two open gumps, and the
+  click. Owning those here means a hit test against `GumpAtlas::opaque_at`
+  (already written, unused), a window list with an order, and `{ nomove }` /
+  `{ noclose }` honoured by us — and that is also the step where a paperdoll and
+  a container can stop being egui windows with pictures in them.
+- **A button's click target is `BUTTON_SIZE`, not its art.** egui is put at a
+  fixed rectangle because this half does not know how big the picture is; the
+  atlas does. Wrong in both directions on a big button, and it will be right for
+  free once the hit test is ours.
+- **Nothing bounds the gump atlas.** It grows as windows open and never shrinks,
+  and `AtlasError::Full` is reported per window and then drawn without whatever
+  is missing. A session that opens hundreds of distinct dialogs is not a case
+  anyone has yet, but the eviction question is the same one `StaticAtlas` has
+  and neither has an answer.
+- **`content_size` is estimated, so art can overflow its window.** The egui half
+  sizes a window from constants per element; the art's real extent is in the
+  atlas. They agree closely enough for `.admin` and will not for a paperdoll.
 ## Backlog, found while chasing a slow debug build
 
 - ~~**A frame walks the visible rectangle four times.**~~ Twice now, and the two
