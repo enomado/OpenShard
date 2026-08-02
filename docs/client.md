@@ -2628,6 +2628,20 @@ the way and not done:
   frames each), played now and then off a timer. `Crowd` has no notion of them:
   it holds standing, walking and running, so a character that is not moving is a
   frozen picture and reads as "the animation is broken" whether or not it is.
+- **A layer with no `AnimID` used to draw a monster, and now draws nothing.**
+  Zero is the absence of an id — a backpack or a ring shows on a paperdoll and
+  never on a walking body, which is why `MobileView.Draw` guards every layer
+  with `if (item.ItemData.AnimID != 0)`. Unguarded the zero is not inert: body 0
+  is the first monster in `anim.mul`, so the layer packed and drew *its* frame
+  under the wearer and followed them around. `worn_graphic` is the one place
+  that answers "what does this layer draw with", for the atlas and for the quad
+  alike, and it answers `None` here.
+- **The shard dresses a ghost in its living clothes.** What arrived over the
+  wire for a dead character was the full equipment list — that is where the
+  zero-`AnimID` layer came from in the first place. In the reference a dead
+  player wears one thing, a death shroud, and its items are on the corpse. That
+  is `server/world`'s question, not this end's, and until it is answered a
+  ghost's paperdoll is a lie.
 - **The silent drop cost a third hunt, so it should stop being silent.** Twice
   above this is named as a hazard and once below as an accident; this time it
   was the whole defect, and from outside it is indistinguishable from the

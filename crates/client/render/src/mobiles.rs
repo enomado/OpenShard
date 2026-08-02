@@ -190,15 +190,50 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(u16
             direction,
         ));
         for layer in &mobile.equipment {
-            let graphic = equip_conv
-                .resolve(mobile.body, layer.graphic)
-                .map_or(layer.graphic, |entry| entry.graphic.0);
-            wanted.push((graphic, mobile.group, direction));
+            if let Some((graphic, _)) = worn_graphic(mobile, *layer, equip_conv) {
+                wanted.push((graphic, mobile.group, direction));
+            }
         }
     }
     wanted.sort_unstable();
     wanted.dedup();
     wanted
+}
+
+/// What one worn layer draws with, and what hue — or `None` for a layer that
+/// draws nothing on a body at all.
+///
+/// The `None` is the whole reason this is a function rather than two lines at
+/// each call site. An `AnimID` of zero means "this item has no picture in
+/// animation space" — a backpack, a ring, anything that only ever shows on a
+/// paperdoll — and `MobileView.Draw` guards every layer with
+/// `if (item.ItemData.AnimID != 0)` for it. Without that guard the zero is not
+/// inert: body 0 is a real creature in `anim.mul`, the first monster in the
+/// index, so the layer packs and draws *its* frame under the wearer. It reads
+/// as somebody else's legs walking about beside the character, which is
+/// exactly what it was found as.
+///
+/// Shared by [`needed_animations`] and [`collect`] because they must agree on
+/// every part of this — which layers exist and which graphic each one is under.
+/// A layer packed and not drawn is waste; a layer drawn and not packed is a
+/// hole.
+fn worn_graphic(mobile: &Mobile, layer: EquipmentLayer, equip_conv: &EquipConv) -> Option<(u16, Hue)> {
+    if layer.graphic == 0 {
+        return None;
+    }
+    // Keyed on the body the *shard* named and not on the one the animation is
+    // read under: `EquipConversions` is indexed by `Mobile.Graphic` in the
+    // reference too, and it is a table about what a *kind of creature* wears,
+    // not about which file the frames come from.
+    let entry = equip_conv.resolve(mobile.body, layer.graphic);
+    let graphic = entry.map_or(layer.graphic, |entry| entry.graphic.0);
+    // The table's own colour, but only where the item does not carry one: a
+    // dyed item keeps its dye.
+    let hue = match (layer.hue == Hue::NONE, entry) {
+        (true, Some(entry)) => entry.color,
+        _ => layer.hue,
+    };
+    Some((graphic, hue))
 }
 
 /// Where a mobile's sprite lands, before hue and hold decide anything about
@@ -323,14 +358,11 @@ pub fn collect(
         ));
 
         for layer in &mobile.equipment {
-            let entry = equip_conv.resolve(mobile.body, layer.graphic);
-            let graphic = entry.map_or(layer.graphic, |entry| entry.graphic.0);
-            let Some(worn) = place(mobile, graphic, camera, atlas) else {
+            let Some((graphic, hue)) = worn_graphic(mobile, *layer, equip_conv) else {
                 continue;
             };
-            let hue = match (layer.hue == Hue::NONE, entry) {
-                (true, Some(entry)) => entry.color,
-                _ => layer.hue,
+            let Some(worn) = place(mobile, graphic, camera, atlas) else {
+                continue;
             };
             quads.push((
                 order,
@@ -836,6 +868,76 @@ mod tests {
         assert_eq!(
             quads[0].depth, quads[1].depth,
             "a layer shares its body's depth so the stable sort keeps it on top"
+        );
+    }
+
+    /// An item whose `AnimID` is zero wears nothing on the body, and is not
+    /// packed either.
+    ///
+    /// Zero is not an id here, it is the absence of one: a backpack and a ring
+    /// show on a paperdoll and never on a walking body, and `MobileView.Draw`
+    /// skips such a layer outright. Drawn instead, the zero is far from inert —
+    /// body 0 is the first *monster* in `anim.mul`, so the layer draws a piece
+    /// of a creature under its wearer and walks around with them. Both halves
+    /// are asserted, because the atlas request is where the frame would come
+    /// from at all.
+    #[test]
+    fn a_layer_with_no_anim_id_is_neither_packed_nor_drawn() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        // A body at 400 and *something* at 0, so a layer that asked for body 0
+        // would have a frame to draw and the test would see it.
+        let atlas = AnimAtlas::pack([
+            (
+                FrameKey {
+                    body: 400,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 12,
+                    center_y: -3,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            ),
+            (
+                FrameKey {
+                    body: 0,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 4,
+                    center_y: -1,
+                    image: Image::new(10, 10, vec![Color16(0x7C00); 10 * 10]),
+                },
+            ),
+        ])
+        .expect("both frames fit");
+        let mobile = Mobile {
+            at: Point::new(100, 100, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+            from: None,
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: vec![EquipmentLayer {
+                graphic: 0,
+                hue: Hue::NONE,
+            }],
+        };
+        assert_eq!(
+            needed_animations(std::slice::from_ref(&mobile), &no_equip()),
+            vec![(400, 4, 0)],
+            "the body alone; body 0 is not an animation anybody asked for",
+        );
+        assert_eq!(
+            collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip()).len(),
+            1,
+            "the body alone, with no monster's frame worn over it",
         );
     }
 
