@@ -862,6 +862,35 @@ mod tests {
         assert_eq!(terrain.map().facet_name(), "Felucca/Trammel (post-ML)");
     }
 
+    /// A pier is the case where the ground and the surface are nowhere near each
+    /// other, and everything that confused the two got it wrong there: the land
+    /// under Britain's docks is water thirteen units below the planks somebody
+    /// walks on. Anything that reads the land's height for "where is this tile
+    /// on screen" puts the answer a tile and a half away from the boards — which
+    /// is what made a pier tile impossible to point at with the mouse.
+    #[test]
+    fn a_pier_stands_on_its_planks_and_not_on_the_water_beneath() {
+        let Some(terrain) = real_terrain() else {
+            return;
+        };
+        // Britain's docks. The land block here is water at -15; the `wooden
+        // plank` static sits at -3 and is a platform one unit tall, so a body
+        // stands at -2.
+        let (x, y) = (1488, 1749);
+        let land = terrain.map().land(x, y).expect("the block loads");
+        assert_eq!(land.z, -15, "the pier's land is no longer the water it was");
+        assert_eq!(
+            terrain.predict_z(x, y, -2),
+            -2,
+            "the deck a body stands on is not the height the pier predicts"
+        );
+        assert_eq!(
+            terrain.surface_at(x, y, -2),
+            Some(-2),
+            "a body on the deck cannot stand where it is standing"
+        );
+    }
+
     #[test]
     fn a_walking_human_cannot_stand_on_the_ocean() {
         let Some(terrain) = real_terrain() else {
