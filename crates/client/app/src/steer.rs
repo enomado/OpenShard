@@ -88,15 +88,22 @@
 //! direction, and a direction is either being asked for or it is not. It never
 //! gives up on it and it never plans a route to it — that is still the
 //! destination's alone, and a heading never touches `find_path` or a map. What
-//! it *does* do, the one exception, is [`detour`]: when the tile the held
-//! direction leads to is blocked, it tries the nearest direction still legal
-//! past it — a cardinal step along a wall's face when the wall is dead ahead
-//! (there is no diagonal past that; see `detour`'s own doc for why), or the
-//! cardinal a blocked diagonal splits into when it is a corner instead — an
-//! O(1) look at the terrain a body already has to check before sending a step,
-//! not a search, and always a candidate the server's own corner rule accepts.
-//! That is a runner sliding past an obstacle the way a body brushing past
-//! furniture would, not a plan.
+//! it *does* do, the one exception, is ask [`Detour`]: when the tile the held
+//! direction leads to is blocked, that answers with the nearest direction still
+//! legal past it — a cardinal step along a wall's face when the wall is dead
+//! ahead, or the cardinal a blocked diagonal splits into when it is a corner
+//! instead. An O(1) look at four tiles a body already has to check before
+//! sending a step, not a search, and always a candidate the server's own corner
+//! rule accepts. That is a runner sliding past an obstacle the way a body
+//! brushing past furniture would, not a plan.
+//!
+//! The rule is `common/movement`'s and not this module's, and its own docs are
+//! where the argument lives — which four tiles, why never a diagonal past a
+//! wall, and why the flank last taken is remembered. What stays here is the
+//! part that is about *input*: that only a held direction is answered this way
+//! (a route replans instead), that the very first ask gets it and not only the
+//! held retries, and what [`Step::Stuck`] means to a client that has a facing
+//! and a clock — the paragraph below.
 //!
 //! When there is no legal way past at all — the inside corner of a building,
 //! pushed at the corner — the heading is still not given up on, but nothing is
@@ -139,7 +146,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use openshard_movement::{RUN_HOLD, Terrain, WALK_HOLD, find_path, heading_toward, step_allowed};
+use openshard_movement::{Around, Detour, RUN_HOLD, Step, Terrain, WALK_HOLD, find_path, heading_toward};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
 
@@ -252,24 +259,16 @@ pub struct Steering {
     /// or turn-then-step pair actually leaves — is paced exactly like an
     /// ordinary step instead.
     turned: bool,
-    /// The flank [`detour`] last took to get past a blocked direction, kept
-    /// so the next call prefers it again instead of re-deriving an answer
-    /// from a fixed rotation order every time.
+    /// Getting past whatever is directly in the way of a held direction.
     ///
-    /// `detour` is otherwise a pure function of `(terrain, from, direction)`
-    /// with a *fixed* tie-break — the clockwise flank before the
-    /// counterclockwise one — and at a doorway or a building corner where the
-    /// two flanks alternate which one is open from one tile to the next, that
-    /// fixed order is a stable two-cycle: tile A only lets the clockwise
-    /// flank through, landing on tile B; tile B only lets the counterclockwise
-    /// flank through, landing back on A; repeat forever. A live corner did
-    /// exactly this for a second and a half before breaking out by chance.
-    /// Remembering which flank actually worked and trying it again first
-    /// breaks the cycle the moment either tile stops requiring the other
-    /// flank specifically — which is the common case; the two only disagree
-    /// at all at a real pinch point. `None` once the direction stops being
-    /// blocked, so an unrelated obstacle met later is not biased by this one.
-    last_detour: Option<Direction>,
+    /// The rule itself is `common/movement`'s [`Detour`], not this module's:
+    /// it is a pure function of a four-tile scene and an intent, with one bit
+    /// of memory (which flank is being slid along), and it belongs beside the
+    /// terrain rather than beside the input handling. What *is* this module's
+    /// is when to ask it — only for a held direction, never for a planned
+    /// route, which answers for its own obstacles by replanning — and what to
+    /// do with [`Step::Stuck`], which needs the facing this module tracks.
+    detour: Detour,
 }
 
 impl Steering {
@@ -568,7 +567,7 @@ impl Steering {
                 let step = match self.goal {
                     Some(_) => step,
                     None => match self.detour(terrain, from, step.direction) {
-                        Some(direction) => Facing { direction, ..step },
+                        Step::Ahead(direction) | Step::Aside(direction) => Facing { direction, ..step },
                         // Nowhere legal to go: the direction is blocked and so
                         // is every flank of it — a body wedged into the inside
                         // corner of a building, pushed at the corner itself.
@@ -586,7 +585,7 @@ impl Steering {
                         // which is the feedback a player pressing into a wall
                         // expects to see. Only once the body already faces it is
                         // there nothing left to ask for.
-                        None => match step.direction == self.asked.unwrap_or(facing) {
+                        Step::Stuck => match step.direction == self.asked.unwrap_or(facing) {
                             // Charged as if a step had left, and it is the
                             // clock that makes this a refusal rather than a
                             // spin: nothing here clears the asking, so the wait
@@ -762,7 +761,7 @@ impl Steering {
         self.stalled = 0;
         self.walking = false;
         self.turned = false;
-        self.last_detour = None;
+        self.detour.forget();
     }
 
     /// How long a step takes at the pace being asked for.
@@ -773,68 +772,18 @@ impl Steering {
         }
     }
 
-    /// `direction`, or the nearest legal way to keep moving past it, whichever
-    /// the terrain answers for.
+    /// Where to actually step, given a held `direction` the terrain may or may
+    /// not allow — `common/movement`'s [`Detour`] over the four tiles that
+    /// decide it, and [`Around::read`] is what reads them.
     ///
-    /// A held direction has no route to replan, so a blocked tile is answered
-    /// locally rather than by searching — but the candidate has to be one the
-    /// server's own corner rule (`LiveTerrain::can_step`, `common/movement`'s
-    /// `find_path::corner_open`) will actually accept, or the body is drawn
-    /// sliding through a wall's corner for a round trip and rubber-banded back,
-    /// worse than the stand-and-bump this replaced. That rule requires *both*
-    /// cardinal tiles flanking a diagonal step to be open — and when `direction`
-    /// itself is a blocked cardinal, it is unconditionally one of those two
-    /// flanks for either diagonal beside it, so neither can ever pass: there is
-    /// no diagonal past a wall dead ahead, full stop, the same as a real body
-    /// cannot cut a corner it is standing flush against. What *is* legal, and
-    /// is what a body hugging a wall actually does, is a plain cardinal step
-    /// along its face — one flank turn either side of `direction`, no corner to
-    /// cut — so that is what is tried.
-    ///
-    /// The other way round — `direction` itself a diagonal, blocked by a corner
-    /// rather than a wall — has no such restriction: the two cardinals either
-    /// side of it are what a diagonal splits into, and a cardinal step never
-    /// cuts a corner. Those are tried instead.
-    ///
-    /// Whichever pair applies, [`Steering::last_detour`] — the flank taken
-    /// last time — is tried before the fixed rotation order if it is still
-    /// one of the two candidates, so a doorway that would otherwise flip-flop
-    /// between two tiles forever (see that field's own doc) sticks to
-    /// whichever side is still working instead.
-    ///
-    /// `None` is the answer when neither the direction nor either flank of it
-    /// is open — a body in the inside corner of a building, pushed at the
-    /// corner. There is no step to take, and that is a different thing from
-    /// "take this one and let the shard sort it out": see where this is called
-    /// for why a step known to be refused is worse than no step at all.
-    fn detour(&mut self, terrain: &dyn Terrain, from: Point, direction: Direction) -> Option<Direction> {
-        if open(terrain, from, direction) {
-            self.last_detour = None;
-            return Some(direction);
-        }
-        let bits = direction.to_bits();
-        let turn = match direction.is_diagonal() {
-            true => 1,  // The two cardinals a blocked diagonal splits into.
-            false => 2, // The cardinal either side of a blocked wall-on face.
-        };
-        let flanks = [
-            Direction::from_bits(bits + turn),
-            Direction::from_bits(bits + 8 - turn),
-        ];
-        let ordered = match self.last_detour {
-            Some(preferred) if preferred == flanks[1] => [flanks[1], flanks[0]],
-            _ => flanks,
-        };
-        for flank in ordered {
-            if open(terrain, from, flank) {
-                self.last_detour = Some(flank);
-                debug_detour(from, direction, flanks, Some(flank));
-                return Some(flank);
-            }
-        }
-        self.last_detour = None;
-        debug_detour(from, direction, flanks, None);
-        None
+    /// Only a *held* direction comes here. A planned route answers for what is
+    /// in its way by replanning, on its own patience; a heading has no route
+    /// and no destination, so this local look is the whole of what it can do.
+    fn detour(&mut self, terrain: &dyn Terrain, from: Point, direction: Direction) -> Step {
+        let around = Around::read(terrain, from, direction);
+        let step = self.detour.step(&around);
+        debug_detour(from, &around, step);
+        step
     }
 }
 
@@ -849,30 +798,20 @@ fn plan(terrain: &dyn Terrain, from: Point, tile: (u16, u16)) -> Option<VecDeque
     Some(find_path(terrain, from, goal, PLAN_BUDGET)?.into())
 }
 
-/// Temporary: `OPENSHARD_DETOUR_DEBUG=1` prints every blocked ask this runs
-/// past — which two flanks it tried and which (if either) it took — to
-/// stderr. For chasing the corner-stuck reports live, against a real map
-/// this end has no fixture for; pull once those are resolved.
-fn debug_detour(from: Point, direction: Direction, flanks: [Direction; 2], took: Option<Direction>) {
+/// Temporary: `OPENSHARD_DETOUR_DEBUG=1` prints every ask that met something
+/// in the way — the four-tile scene as it was read, and what came back — to
+/// stderr. For chasing corner reports live, against a real map this end has no
+/// fixture for; pull once those stay resolved.
+fn debug_detour(from: Point, around: &Around, step: Step) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ON.get_or_init(|| std::env::var_os("OPENSHARD_DETOUR_DEBUG").is_some()) {
+        if let Step::Ahead(_) = step {
+            return;
+        }
         static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         let elapsed = T0.get_or_init(Instant::now).elapsed().as_millis();
-        eprintln!("detour: t={elapsed}ms from={from:?} blocked={direction:?} tried={flanks:?} took={took:?}");
+        eprintln!("detour: t={elapsed}ms from={from:?} around={around:?} step={step:?}");
     }
-}
-
-/// Whether a single step from `from` in `direction` is one this world allows.
-///
-/// [`step_allowed`] and not `Terrain::can_step`: the terrain the client plans
-/// against is `MapTerrain`, the static map, and that answers for the
-/// destination tile alone — it will happily let a diagonal cut the corner where
-/// two walls meet, which the shard then refuses. Asking it directly is what put
-/// a body on a building corner asking for the same rejected diagonal every
-/// hold: [`Steering::detour`] saw the way ahead as open, so it never looked for
-/// the sidestep that actually gets past.
-fn open(terrain: &dyn Terrain, from: Point, direction: Direction) -> bool {
-    step_allowed(terrain, from, direction).is_some()
 }
 
 #[cfg(test)]

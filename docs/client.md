@@ -1510,8 +1510,9 @@ own understanding had written.
     cursor, recomputed every move and driven exactly like a held arrow key.
     It has no notion of arrival or of being stuck, and it never touches
     `find_path` or the map — but a blocked direction is no longer walked into
-    forever either: [`detour`](../crates/client/app/src/steer.rs) tries the
-    nearest way still legal past it (an O(1) `step_allowed` look, not a
+    forever either:
+    [`movement::Detour`](../crates/common/movement/src/detour.rs) answers with
+    the nearest way still legal past it (an O(1) look at four tiles, not a
     search), so a runner slides past an obstacle instead of standing against
     it. What "legal" means is not symmetric: a wall dead ahead of a held
     *cardinal* has no diagonal past it at all — the server's own corner rule
@@ -1566,7 +1567,28 @@ own understanding had written.
     immediately, forever. Armed, the attempt repeats at the walking pace and
     the walk resumes on its own the moment the door opens
     (`a_heading_into_a_corner_turns_once_and_then_sends_nothing`,
-    `a_heading_held_in_a_corner_walks_the_instant_the_way_opens`). This
+    `a_heading_held_in_a_corner_walks_the_instant_the_way_opens`).
+
+    Both halves then stopped being a special case buried in the input handling
+    and became a rule with a name: `common/movement`'s
+    [`detour`](../crates/common/movement/src/detour.rs) — a scene (`Around`),
+    an intent, a two-state machine (`Detour::Clear` / `Sliding`), and an answer
+    (`Step::Ahead` / `Aside` / `Stuck`). Its whole input is **four tiles**:
+    where you stand, where you meant to go, and the two flanks that could take
+    its place. Not eight, and that is the argument rather than a
+    simplification — which two flanks are candidates is fixed by the intent
+    (ninety degrees off a blocked cardinal, forty-five off a blocked diagonal),
+    and no other neighbour can change the answer. That is what makes the rule
+    *enumerable*: `Around::new` states a scene outright, so
+    `no_scene_at_any_intent_is_ever_answered_with_a_shut_direction` runs all
+    8 directions x 8 open/shut combinations x 3 machine states and checks the
+    claim that matters on the wire, instead of drawing a wall and hoping the
+    interesting case was the one drawn. `a_scene_read_from_the_world_is_a_scene_stated_outright`
+    is what keeps `Around::read` and `Around::new` one rule, or the enumeration
+    would be proving something about a fiction. `steer.rs` keeps only what is
+    genuinely about input: that a *held* direction is answered this way and a
+    planned route is not, that the first ask gets it too, and what `Stuck`
+    means to something that has a facing and a clock. This
     applies from the very first ask, not just the steps `Steering::due`
     answers afterward: `Steering::steer`/`press` now take a `terrain` too
     (constructed on demand at their call sites in `App`, the same
