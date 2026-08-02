@@ -1630,6 +1630,121 @@ fn every_pixel_names_the_tile_it_came_from() {
     assert_eq!(places.at(2, 2)[3], 0, "an untouched pixel claimed a tile");
 }
 
+/// A floor's pixels are spread across its tile; a wall's run up it.
+///
+/// The two stances of `place::Stance`, and the reason there are two: a floor
+/// static is a picture *of* the tile's diamond, so its fraction has to move in
+/// both directions and its height must not move at all, while a wall is a
+/// billboard whose picture is height and whose only horizontal information is
+/// how far across the column a pixel is. Written because a floor lit as one flat
+/// value per tile — which is what a constant fraction gives — is the blockiness
+/// this stance exists to remove, and no other test here would see it.
+#[test]
+fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    const SIDE: u16 = 44;
+    const ORIGIN: f32 = 40.0;
+    let red = Color16(0b0_11111_00000_00000);
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([(
+        GRAPHIC,
+        Image::new(SIDE, SIDE, vec![red; usize::from(SIDE) * usize::from(SIDE)]),
+    )])
+    .expect("fits");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+    let quad = |place| SpriteQuad {
+        rect: Rect {
+            x: ORIGIN,
+            y: ORIGIN,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
+        region: sprite.region,
+        depth: 0.4,
+        hue: 0,
+        place,
+    };
+    // The fraction of a tile a place holds, as the shaders pack it: seven bits
+    // each, above the two the kind takes.
+    let sub = |place: [u16; 4]| ((place[3] >> 2) & 127, (place[3] >> 9) & 127);
+
+    let at = Point::new(301, 400, 15);
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[quad(Place::of_floor(at))],
+        128,
+    );
+    // The middle of the sprite is the middle of the tile, and the four
+    // directions off it are the four world directions — a step right is further
+    // along `x` and less along `y`, a step down is further along both.
+    let middle = places.at(62, 62);
+    let (mid_x, mid_y) = sub(middle);
+    let (right_x, right_y) = sub(places.at(72, 62));
+    let (below_x, below_y) = sub(places.at(62, 72));
+    assert!(
+        right_x > mid_x && right_y < mid_y,
+        "right of the middle: {right_x} {right_y}"
+    );
+    assert!(
+        below_x > mid_x && below_y > mid_y,
+        "below the middle: {below_x} {below_y}"
+    );
+    // And a floor is at one height everywhere: what runs down its picture is the
+    // tile, which the fraction has already spent.
+    assert_eq!(
+        [middle[2], places.at(62, 72)[2]],
+        [(i32::from(at.z) + 128) as u16; 2],
+        "a floor's pixels stand at different heights",
+    );
+
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[quad(Place::of_static(at))],
+        128,
+    );
+    // A wall carries no depth: its two fractions are mirror images, because a
+    // pixel to the right of the column is as much further along `x` as it is
+    // less far along `y` — and nothing about them changes down the picture.
+    let (mid_x, mid_y) = sub(places.at(62, 62));
+    let (right_x, right_y) = sub(places.at(72, 62));
+    let (below_x, below_y) = sub(places.at(62, 72));
+    assert_eq!(
+        (below_x, below_y),
+        (mid_x, mid_y),
+        "a wall's fraction moved downwards"
+    );
+    assert!(
+        right_x > mid_x,
+        "a wall's fraction stands still across its picture"
+    );
+    assert_eq!(
+        i32::from(right_x) - i32::from(mid_x),
+        i32::from(mid_y) - i32::from(right_y),
+        "the two halves of a billboard's one axis disagree",
+    );
+    // And its height is the picture's, which is the half of this the older test
+    // covers — asserted here too so that the two stances are one comparison.
+    assert!(
+        places.at(62, 62)[2] > places.at(62, 72)[2],
+        "a wall is not taller further up its picture",
+    );
+}
+
 /// Draw ground and one sprite and read back the *place* attachment rather than
 /// the picture. `size * 8` must be a multiple of 256, as every readback here.
 #[allow(clippy::too_many_arguments)]

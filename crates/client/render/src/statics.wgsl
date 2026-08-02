@@ -57,6 +57,12 @@ struct VertexOut {
     // which reads as a lantern shining on a signboard.
     @location(3) pixel_y: f32,
     @location(4) @interpolate(flat) bottom_y: f32,
+    // Where this fragment is across the screen, and where the sprite's middle
+    // is: their difference is how far along the world's `x - y` axis the pixel
+    // is from the tile's own column, because that axis is the horizontal one in
+    // this projection. See `crate::place::Stance`.
+    @location(5) pixel_x: f32,
+    @location(6) @interpolate(flat) middle_x: f32,
 };
 
 // Virtual pixels one unit of height lifts a sprite up the screen —
@@ -71,11 +77,25 @@ const Z_STEP: f32 = 4.0;
 const BOTTOM_LIFT: f32 = 5.5;
 
 // The fourth channel of the place attachment: the kind in the low two bits, then
-// seven bits of tile-local `x` and seven of tile-local `y`. A sprite is a
-// billboard standing on one tile and has no side of it to be on, so both are
-// the tile's middle — the height above is where its detail is. See
-// `crate::place` and `blit.wgsl`, which take the same word apart.
-const SUB_TILE_MIDDLE: u32 = 64u << 2u | 64u << 9u;
+// seven bits of tile-local `x` and seven of tile-local `y`. See `crate::place`
+// and `blit.wgsl`, which take the same word apart. The channel is full, so the
+// kind is masked out of the instance's word before the fraction is laid over it
+// — the stance rides in that word too and has done its work by then.
+const KIND_MASK: u32 = 3u;
+const SUB_TILE: f32 = 127.0;
+
+// A tile's width in virtual pixels, which in this projection is also the number
+// of pixels a whole tile of `x - y` covers: one step of world `x` moves the
+// picture 22 pixels right and 22 down, one step of `y` moves it 22 left and 22
+// down, so the two axes each cover half of a 44-pixel cell in both directions.
+const TILE_WIDTH: f32 = 44.0;
+
+// Half a tile's height: how far above the sprite's bottom edge the tile's own
+// centre is, since that edge stands on the diamond's bottom vertex.
+const HALF_TILE_HEIGHT: f32 = 22.0;
+
+// `crate::place::Stance::Flat`, in the bit `Place::packed` writes it to.
+const STANCE_FLAT: u32 = 1u << 16u;
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.
@@ -126,6 +146,11 @@ fn vs_main(
     out.place = place;
     out.pixel_y = pixel.y;
     out.bottom_y = origin.y + size.y;
+    out.pixel_x = pixel.x;
+    // The sprite is centred on the tile's column — `statics::stand_on`, which is
+    // `View.DrawStatic`'s `x -= (width >> 1) - 22`. Half a pixel out on an
+    // odd-width sprite, exactly as it is there.
+    out.middle_x = origin.x + size.x * 0.5;
     return out;
 }
 
@@ -166,19 +191,53 @@ fn fs_main(in: VertexOut) -> FragmentOut {
 
     var out: FragmentOut;
     out.color = vec4<f32>(rgb, 1.0);
+
     // The tile, the height and the kind, taken apart the way
     // `crate::place::Place::packed` put them together. A discarded fragment
     // never reaches this line, so what the attachment holds is what is visible.
-    // The height this pixel of the sprite stands at, rather than the height the
-    // sprite is based at: the bottom edge is `BOTTOM_LIFT` below the base and
-    // every four pixels up is one unit of `z`.
     let base = f32(in.place.y & 0xFFu) - 128.0;
-    let z = base - BOTTOM_LIFT + (in.bottom_y - in.pixel_y) / Z_STEP;
+    let flat = (in.place.y & STANCE_FLAT) != 0u;
+
+    // Where this pixel is relative to the tile's own centre, in virtual pixels:
+    // across, always, and down the screen only for a picture that lies in the
+    // tile. For an upright sprite what runs down the picture is height, not
+    // ground, and it is read as height below.
+    let across = in.pixel_x - in.middle_x;
+    var down = 0.0;
+    if flat {
+        down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
+    }
+
+    // And the same two numbers as world axes. The projection is
+    // `screen = ((x - y) * 22, (x + y) * 22)`, so inverting it over the pair is
+    // two sums — see `camera::project`, which is the forward direction of
+    // exactly this. An upright sprite has no `down` to invert, so both fractions
+    // come out of `across` alone and are mirror images: a pixel to the right of
+    // the column is further along `x` and equally less along `y`.
+    let local = vec2<f32>(across + down, down - across) / TILE_WIDTH + vec2<f32>(0.5);
+    // Clamped rather than wrapped, and only a sprite wider than its tile ever
+    // reaches it: a tree is 100 pixels across and the world has no room to say
+    // its edges are on the neighbouring tile — the attachment holds one tile per
+    // pixel, and it is the one the thing stands on.
+    let sub = clamp(local, vec2<f32>(0.0), vec2<f32>(1.0));
+
+    // The height this pixel stands at. For a wall that is the sprite's own
+    // picture — the bottom edge is `BOTTOM_LIFT` below the base and every four
+    // pixels up is one unit of `z` — and for a floor it is the tile's height
+    // everywhere, because what runs down a floor's picture is the tile, which
+    // `down` has already spent.
+    var z = base;
+    if !flat {
+        z = base - BOTTOM_LIFT + (in.bottom_y - in.pixel_y) / Z_STEP;
+    }
+
     out.place = vec4<u32>(
         in.place.x & 0xFFFFu,
         in.place.x >> 16u,
         u32(clamp(round(z), -128.0, 127.0) + 128.0),
-        (in.place.y >> 8u) | SUB_TILE_MIDDLE,
+        ((in.place.y >> 8u) & KIND_MASK)
+            | (u32(round(sub.x * SUB_TILE)) << 2u)
+            | (u32(round(sub.y * SUB_TILE)) << 9u),
     );
     return out;
 }

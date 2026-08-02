@@ -32,10 +32,12 @@
 //! `blit.wgsl`; the packing appears in three files and only a person reading all
 //! three can check that they agree.
 //!
-//! A sprite has no side of its tile to be on — it is a billboard standing on one
-//! — so both fractions are the middle for it, and what varies down its picture
-//! is the `z`: four pixels up a wall is one unit of height, which is what gives
-//! a wall's face a gradient instead of one brightness.
+//! A sprite's fraction depends on which way its picture faces, which is
+//! [`Stance`]: a floor lies in its tile and every pixel of it is somewhere
+//! different in the world, while a wall stands on one and its picture is height.
+//! Getting this wrong is not subtle — a floor whose pixels all claim the middle
+//! of their tile is lit as one flat value with a step at every seam, which is
+//! what a room's floor looked like before this existed.
 //!
 //! A fragment a sprite discarded writes nothing here either, so what this holds
 //! is what is *visible*, which is the question lighting asks.
@@ -71,6 +73,48 @@ pub enum Kind {
     Mobile = 3,
 }
 
+/// Which way a sprite's picture faces, and therefore what its pixels mean.
+///
+/// A sprite is a rectangle of art standing on a tile, and the two things that
+/// rectangle can be a picture *of* are read in opposite directions:
+///
+/// - [`Stance::Upright`] — a wall, a tree, a body. It stands on the tile and
+///   what varies down its picture is height: four pixels is one unit of `z`.
+///   Across it, a pixel is `1/44` of a tile along the screen's own `x - y` axis,
+///   which is the only horizontal information a billboard carries.
+/// - [`Stance::Flat`] — a floor, a rug, a road: `TileFlags::FLOOR`, the bit
+///   ClassicUO calls `Background`. Its picture *is* the tile's diamond, so both
+///   fractions come out of where in that diamond the pixel is, and the height is
+///   the tile's own everywhere.
+///
+/// This never reaches the attachment — it decides what the world pass writes
+/// into it, and is carried here because a [`Place`] is what an instance already
+/// hands the shader about where it is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Stance {
+    /// Standing on its tile: a wall, a body, a tree.
+    Upright = 0,
+    /// Lying in it: a floor, a rug, a road.
+    Flat = 1,
+}
+
+impl Stance {
+    /// Which way a static's picture faces, from the client's own bit.
+    ///
+    /// `TileFlags::FLOOR` — `UFLAG1_FLOOR` in Sphere, `Background` in ClassicUO
+    /// — is set on floors, rugs, roads and cave floors and on nothing that
+    /// stands up: a table is `BLOCK | PLATFORM` and carries it not at all, which
+    /// is the pair worth checking, because "you can stand on it" is a different
+    /// question and `PLATFORM` is how it is asked.
+    pub fn of(tile: &openshard_uofiles::tiledata::StaticTile) -> Self {
+        match tile.flags.is_background() {
+            true => Self::Flat,
+            false => Self::Upright,
+        }
+    }
+}
+
 /// Where in the world a pixel's picture came from.
 ///
 /// Not a [`Point`](openshard_protocol::world::Point): the `kind` is half of what
@@ -91,6 +135,10 @@ pub struct Place {
     pub z: i8,
     /// What drew it.
     pub kind: Kind,
+    /// Which way its picture faces. The ground pass ignores this — a land tile
+    /// is a diamond by construction and its shader has always read the position
+    /// inside it.
+    pub stance: Stance,
 }
 
 impl Place {
@@ -101,6 +149,7 @@ impl Place {
         y: 0,
         z: 0,
         kind: Kind::Nothing,
+        stance: Stance::Upright,
     };
 
     /// A pixel of the land on a tile. See [`Place::z`] for why the height is not
@@ -111,16 +160,33 @@ impl Place {
             y,
             z: 0,
             kind: Kind::Land,
+            stance: Stance::Flat,
         }
     }
 
-    /// A pixel of a static or a ground item standing at `at`.
+    /// A pixel of a static or a ground item standing on `at` — a wall, a barrel,
+    /// a tree. See [`Place::of_floor`] for the ones that lie in their tile
+    /// instead.
     pub fn of_static(at: openshard_protocol::world::Point) -> Self {
         Self {
             x: at.x,
             y: at.y,
             z: at.z,
             kind: Kind::Static,
+            stance: Stance::Upright,
+        }
+    }
+
+    /// A pixel of a static lying flat in its tile: a floor, a rug, a road.
+    ///
+    /// The same kind as [`Place::of_static`] — what it is standing on is not
+    /// what a later pass asks about — and a different [`Stance`], which is the
+    /// whole of the difference: this one's picture is the tile's diamond and its
+    /// pixels are spread across the tile rather than up it.
+    pub fn of_floor(at: openshard_protocol::world::Point) -> Self {
+        Self {
+            stance: Stance::Flat,
+            ..Self::of_static(at)
         }
     }
 
@@ -131,6 +197,7 @@ impl Place {
             y: at.y,
             z: at.z,
             kind: Kind::Mobile,
+            stance: Stance::Upright,
         }
     }
 
@@ -138,13 +205,18 @@ impl Place {
     ///
     /// Packed rather than four fields because a vertex attribute is fetched in
     /// four-byte words either way, and two `u32`s is the smallest this fits in:
-    /// `(x | y << 16, (z + 128) | kind << 8)`. The shader takes it apart with
-    /// the same two shifts, which are written out there rather than shared —
-    /// there is nothing in Rust for a WGSL function to call.
+    /// `(x | y << 16, (z + 128) | kind << 8 | stance << 16)`. The shader takes it
+    /// apart with the same shifts, which are written out there rather than
+    /// shared — there is nothing in Rust for a WGSL function to call.
+    ///
+    /// The stance rides above the kind and is *masked off* again where the world
+    /// pass writes the attachment's fourth channel: that channel is two bits of
+    /// kind and fourteen of fraction with nothing spare, and the stance's job is
+    /// finished by the time the fraction has been computed.
     pub fn packed(self) -> [u32; 2] {
         [
             u32::from(self.x) | u32::from(self.y) << 16,
-            (i32::from(self.z) + 128) as u32 | (self.kind as u32) << 8,
+            (i32::from(self.z) + 128) as u32 | (self.kind as u32) << 8 | (self.stance as u32) << 16,
         ]
     }
 }
@@ -210,6 +282,15 @@ mod tests {
         let packed = Place::of_static(Point::new(0x1234, 0x5678, -3)).packed();
         assert_eq!(packed[0], 0x5678_1234, "y in the high half, x in the low");
         assert_eq!(packed[1], (125) | (2 << 8), "z offset by 128, then the kind");
+        // And the stance above both, which is the bit `statics.wgsl` branches on
+        // to decide whether a pixel's picture is spread across its tile or up it.
+        let floor = Place::of_floor(Point::new(0x1234, 0x5678, -3)).packed();
+        assert_eq!(
+            floor[1],
+            125 | (2 << 8) | (1 << 16),
+            "the flat bit is the seventeenth"
+        );
+        assert_eq!(floor[0], packed[0], "and nothing else moved");
     }
 
     /// A cleared texel and a [`Place::NOWHERE`] quad say the same thing, and it

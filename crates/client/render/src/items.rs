@@ -199,7 +199,10 @@ fn quad_of(item: &GroundItem, placed: &Placed, base: i32, hue: u32) -> SpriteQua
         region: placed.sprite.region,
         depth: placed.order.to_depth(base),
         hue,
-        place: crate::place::Place::of_static(item.at),
+        place: crate::place::Place {
+            stance: placed.stance,
+            ..crate::place::Place::of_static(item.at)
+        },
     }
 }
 
@@ -221,6 +224,9 @@ struct Placed {
     /// That frame's graphic, which is what the atlas is keyed by — not the
     /// item's own, which for an animated static is only the cycle's start.
     showing: Graphic,
+    /// Which way its picture faces — a rug on the ground is as flat as a floor
+    /// built into the map. See [`crate::place::Stance`].
+    stance: crate::place::Stance,
 }
 
 /// Place one item, or `None` when there is nothing on screen for it: hidden by
@@ -252,6 +258,7 @@ fn place(
         at: stand_on(camera, item.at, &sprite),
         sprite,
         showing,
+        stance: crate::place::Stance::of(tile),
     })
 }
 

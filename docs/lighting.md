@@ -299,6 +299,51 @@ Found while building the observability and the sun:
   test (`Occlusion::tallest`) makes it two or three steps over open ground, but
   the number is still unmeasured — which is why the app's F8 is off by default.
 
+Found while asking why a house's windows burn:
+
+- **Eighty window graphics are flagged `LIGHT_SOURCE`, and every one of them is
+  given a torch.** Scanned over the client's `tiledata.mul`: 615 statics carry
+  the flag, and 80 of the 163 named "window" are among them — `0x0103`,
+  `0x2BBF`, the shutters at `0x2501`, the windowed walls at `0x2B7D`. `light::flame`
+  answers `TORCH` for every graphic it has no name for, so a street of houses is a
+  street of six-tile warm pools with nothing burning in them. Two things the
+  reference does that this does not, and either one alone fixes it: the light's
+  *shape* comes from `light.mul` indexed by the static's `layer` byte
+  (ClassicUO `GameScene.AddLight`, `Game/Scenes/GameScene.cs:508` — `light.ID =
+  data.Layer`, and `StaticTile::layer` is already parsed here), and a light is
+  dropped entirely when something opaque stands over the tile at `(x+1, y+1)`
+  above `z + 5` (`GameScene.cs:415`). The third answer, and the one worth
+  arguing for: **a window is not an emitter at all.** It is a pane, it is already
+  in the occlusion grid, and it should glow because a candle behind it does —
+  which is what decision 4's fraction was for.
+- **A windowed wall passes four fifths of the light.** The same scan: those
+  graphics are `WALL | BLOCK | WINDOW`, and `occlusion::opacity` reads `WINDOW`
+  before anything else, so a whole wall tile whose art has a window in it stops
+  `PANE` rather than `OPAQUE`. The older ones do not carry `NO_SHOOT` either, so
+  nothing rescues them. The pane is the hole in the wall, not the wall.
+
+Found while asking why the light steps from tile to tile:
+
+- **A sprite's sub-tile fraction is the middle of its tile, always.**
+  `statics.wgsl`'s `SUB_TILE_MIDDLE` — a billboard has no side of its tile to be
+  on, so what varies down a wall's picture is `z` alone. Across a *row* of wall
+  tiles, then, the light is one value per tile with a step at every seam, which
+  is the blockiness a person sees first. The horizontal offset is recoverable: a
+  pixel `dx` from the sprite's centre is `dx / 44` of a tile along the screen's
+  own `(x - y)` axis, which is a fraction this shader can write for the same cost
+  as the constant.
+- **The ray is sampled at fixed fractions, not at the cells it crosses.**
+  `reaches` takes `max(|dx|, |dy|)` steps and samples at `i / steps`, so a flame
+  two tiles away is tested at one interior point and the shadow's edge is decided
+  at that resolution. A DDA that stepped to each cell boundary would be exact
+  *and* cheaper, and it is the same walk the diagonal-leak note above wants.
+- **Every shadow is hard, because every flame is a point.** No penumbra: a wall's
+  edge cuts the pool at one pixel. A flame is an area, and the two ways to say so
+  both live inside `reaches` — a few jittered rays to points on a sphere of the
+  flame's own size, or the raymarch penumbra estimate (the closest the ray passed
+  to an occluder, over how far along it was). Decision 9 is the price either way:
+  whatever `reaches` learns, `light::sample` learns too.
+
 Found while writing this plan:
 
 - **A sconce lights through its own wall.** Decision 3 exempts the light's own
