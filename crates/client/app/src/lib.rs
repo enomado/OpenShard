@@ -2762,11 +2762,53 @@ impl App {
     /// Everyone to draw, each beside the serial their clock is keyed by.
     ///
     /// Our own body first, and `None` for it while no shard has named us.
+    ///
+    /// The group is refreshed from the crowd here and not in
+    /// [`App::advance_to_clocks`] alone, because this list is what *packs* the
+    /// atlas as well as what draws from it — see [`App::wanted_in`]. `self.player`
+    /// and `self.others` hold the group as of the last packet, and
+    /// [`Crowd::advance`] changes it without one: a body that walked into view
+    /// and then stopped is drawn standing while the packet-time list still says
+    /// walking. Pack one group and draw another and [`mobiles::place`] finds no
+    /// frame, so the body simply vanishes — and stays vanished for as long as it
+    /// stands still, there being no further packet to correct the list with.
     fn drawn_mobiles(&self) -> Vec<(Who, Mobile)> {
-        let mut mobiles = Vec::with_capacity(self.others.len() + 1);
-        mobiles.push((self.me(), self.player.clone()));
-        mobiles.extend_from_slice(&self.others);
+        Self::everyone_drawn(&self.crowd, self.me(), &self.player, &self.others)
+    }
+
+    /// [`App::drawn_mobiles`] over the four fields it reads, so a test can build
+    /// the list the atlases are grown from without a window, a device or a
+    /// shard.
+    fn everyone_drawn(
+        crowd: &Crowd,
+        me: Who,
+        player: &Mobile,
+        others: &[(Who, Mobile)],
+    ) -> Vec<(Who, Mobile)> {
+        let mut mobiles = Vec::with_capacity(others.len() + 1);
+        mobiles.push((me, player.clone()));
+        mobiles.extend_from_slice(others);
+        Self::advance_groups(crowd, &mut mobiles);
         mobiles
+    }
+
+    /// Refresh each body's animation group from the crowd's clock.
+    ///
+    /// Split out of [`App::advance_to_clocks`] because the group is the one part
+    /// of a mobile that has to be right *before* the atlases are grown, and the
+    /// growth happens with no atlas to ask for a frame count. Both paths go
+    /// through here so there is one statement of "which group is playing".
+    fn advance_groups(crowd: &Crowd, drawn: &mut [(Who, Mobile)]) {
+        for (who, mobile) in drawn.iter_mut() {
+            // `Crowd::advance` drops a walking body to standing on its own
+            // timer, with nothing that looks like a packet to refresh
+            // `mobile.group` from — a group read once and left stale plays the
+            // walking sprite for ever, timed by a clock that has moved on to
+            // the standing group's.
+            if let Some(group) = crowd.group_for(*who) {
+                mobile.group = group;
+            }
+        }
     }
 
     /// Fill in the three time-varying halves of every mobile from the crowd's
@@ -2785,16 +2827,12 @@ impl App {
     /// the living body it borrows its pictures from — or a ghost counts zero
     /// frames, lands on frame 0 for ever and slides along standing still.
     fn advance_to_clocks(crowd: &Crowd, atlas: &AnimAtlas, drawn: &mut [(Who, Mobile)]) {
+        // The group is read back first and not only the frame and the glide —
+        // the frame count below is asked *under* it. Idempotent when the caller
+        // is [`App::drawn_mobiles`], which is every caller today; here so this
+        // function is right on its own terms rather than on its callers'.
+        Self::advance_groups(crowd, drawn);
         for (who, mobile) in drawn.iter_mut() {
-            // The group is read back first and not only the frame and the
-            // glide: `Crowd::advance` drops a walking body to standing on its
-            // own timer, with nothing that looks like a packet to refresh
-            // `mobile.group` from — a group read once and left stale plays the
-            // walking sprite for ever, timed by a clock that has moved on to
-            // the standing group's.
-            if let Some(group) = crowd.group_for(*who) {
-                mobile.group = group;
-            }
             let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
             let frame_count = atlas.frame_count(
                 openshard_uofiles::anim::animation_body(mobile.body),
@@ -3944,6 +3982,46 @@ mod tests {
                 "squarely on the bearing leans neither way"
             );
         }
+    }
+
+    /// The atlas is grown for the group that will be *drawn*, not for the one
+    /// the last packet named.
+    ///
+    /// The two used to be different lists. `App::wanted_in` asked
+    /// `needed_animations` about `self.player`/`self.others`, built at the last
+    /// `see`, while `mobiles::collect` drew the group `Crowd::group_for` gives —
+    /// and `Crowd::advance` moves a body from walking to standing with no packet
+    /// in between. So a body that stopped was drawn from a standing frame the
+    /// atlas had never been asked to pack, `mobiles::place` found nothing, and
+    /// the sprite disappeared — and stayed gone, because a body standing still
+    /// sends nothing that would rebuild the list.
+    #[test]
+    fn the_group_packed_is_the_group_the_crowd_is_playing() {
+        const PLAYER: u16 = 400;
+        let mut crowd = Crowd::default();
+        let facing = Facing::walking(Direction::East);
+        crowd.see(None, Point::new(10, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        // The snapshot the app would store in `self.player`: walking, because a
+        // step had just landed when the packet was folded.
+        let stepped = crowd.see(None, Point::new(11, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        let walking = stepped.group;
+
+        // Long enough that the walk gives up on its own timer. No packet.
+        crowd.advance(openshard_movement::WALK_HOLD * 2);
+        let standing = crowd.group_for(None).expect("the crowd is tracking this body");
+        assert_ne!(walking, standing, "the scene is only a scene if the group moved");
+
+        // Through the list `App::wanted_in` grows the atlases from, and not
+        // through `advance_groups` directly: what is being protected is that the
+        // packing path goes through the refresh at all.
+        let drawn = App::everyone_drawn(&crowd, None, &stepped, &[]);
+        let mobiles: Vec<Mobile> = drawn.into_iter().map(|(_, mobile)| mobile).collect();
+        let wanted = mobiles::needed_animations(&mobiles, &EquipConv::default());
+        let (direction, _) = openshard_uofiles::anim::facing(mobiles[0].facing);
+        assert!(
+            wanted.contains(&(PLAYER, standing, direction)),
+            "the standing group has to be packed to be drawn: {wanted:?}"
+        );
     }
 
     /// And off the bearing, the lean says which side — which is the thing the
