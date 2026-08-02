@@ -96,8 +96,19 @@
 //! O(1) look at the terrain a body already has to check before sending a step,
 //! not a search, and always a candidate the server's own corner rule accepts.
 //! That is a runner sliding past an obstacle the way a body brushing past
-//! furniture would, not a plan; a direction with no legal way past at all is
-//! still the player's own business, the same as it is for an arrow key.
+//! furniture would, not a plan.
+//!
+//! When there is no legal way past at all — the inside corner of a building,
+//! pushed at the corner — the heading is still not given up on, but nothing is
+//! *sent*. A step this end has already proven the shard refuses is not a
+//! harmless one: the answer is a `0x21`, which snaps the body back and resets
+//! the walk sequence, a hold at a time, for as long as the player leans on the
+//! key. The turn into it is still sent, because a mobile asked for a direction
+//! it is not facing turns and moves nowhere and the shard takes that; it is
+//! only once the body already faces the corner that there is nothing left to
+//! ask for. The clock is armed either way, so the attempt repeats at the
+//! walking pace rather than spinning on a deadline already passed, and the
+//! walk resumes on its own the moment the door opens.
 //!
 //! A destination (Ctrl+drag) is answered differently, because it names a
 //! specific tile rather than a heading: [`Steering::go_to`] plans a route with
@@ -556,9 +567,41 @@ impl Steering {
                 // the terrain, so only that case gets the flanking check.
                 let step = match self.goal {
                     Some(_) => step,
-                    None => Facing {
-                        direction: self.detour(terrain, from, step.direction),
-                        ..step
+                    None => match self.detour(terrain, from, step.direction) {
+                        Some(direction) => Facing { direction, ..step },
+                        // Nowhere legal to go: the direction is blocked and so
+                        // is every flank of it — a body wedged into the inside
+                        // corner of a building, pushed at the corner itself.
+                        //
+                        // A step there is one this end has already proven the
+                        // shard will refuse, and sending it anyway is not a
+                        // no-op: the shard answers `0x21`, which puts the body
+                        // back where it was and, on the way, resets the walk
+                        // sequence this end is counting — a rollback a hold, for
+                        // as long as the player leans on the key. So it is not
+                        // sent. What is *not* suppressed is the turn: the body
+                        // may not be facing the corner yet, and a mobile asked
+                        // for a direction it is not facing turns and moves
+                        // nowhere, which the shard accepts (`Walk::Turned`) and
+                        // which is the feedback a player pressing into a wall
+                        // expects to see. Only once the body already faces it is
+                        // there nothing left to ask for.
+                        None => match step.direction == self.asked.unwrap_or(facing) {
+                            // Charged as if a step had left, and it is the
+                            // clock that makes this a refusal rather than a
+                            // spin: nothing here clears the asking, so the wait
+                            // loop would wake on a deadline already passed and
+                            // re-ask immediately, over and over, until the
+                            // player let go. Armed, the retry comes at the pace
+                            // a walk would have had — which is also what picks
+                            // the walk straight back up the moment whatever was
+                            // in the way (a door, another body) is gone.
+                            true => {
+                                self.charge(Some(step), now, facing);
+                                return None;
+                            }
+                            false => step,
+                        },
                     },
                 };
                 self.charge(Some(step), now, facing);
@@ -758,10 +801,16 @@ impl Steering {
     /// one of the two candidates, so a doorway that would otherwise flip-flop
     /// between two tiles forever (see that field's own doc) sticks to
     /// whichever side is still working instead.
-    fn detour(&mut self, terrain: &dyn Terrain, from: Point, direction: Direction) -> Direction {
+    ///
+    /// `None` is the answer when neither the direction nor either flank of it
+    /// is open — a body in the inside corner of a building, pushed at the
+    /// corner. There is no step to take, and that is a different thing from
+    /// "take this one and let the shard sort it out": see where this is called
+    /// for why a step known to be refused is worse than no step at all.
+    fn detour(&mut self, terrain: &dyn Terrain, from: Point, direction: Direction) -> Option<Direction> {
         if open(terrain, from, direction) {
             self.last_detour = None;
-            return direction;
+            return Some(direction);
         }
         let bits = direction.to_bits();
         let turn = match direction.is_diagonal() {
@@ -780,12 +829,12 @@ impl Steering {
             if open(terrain, from, flank) {
                 self.last_detour = Some(flank);
                 debug_detour(from, direction, flanks, Some(flank));
-                return flank;
+                return Some(flank);
             }
         }
         self.last_detour = None;
         debug_detour(from, direction, flanks, None);
-        direction
+        None
     }
 }
 
@@ -1537,42 +1586,82 @@ mod tests {
         assert_eq!(steering.deadline(), Some(at(start, 400)));
     }
 
-    /// A heading has no destination to arrive at or give up on: unlike
-    /// `go_to`, it keeps asking for a way to move for as long as it is held —
-    /// the cardinal either side of it if one is open, or the same blocked
-    /// direction again if neither is, exactly like an arrow key pressed
-    /// against a wall with no way around it — the player's own doing, not
-    /// `STUCK_STEPS`'s to referee.
-    #[test]
-    fn a_heading_never_gives_up() {
-        let start = Instant::now();
-        let mut steering = Steering::default();
-        // A blocked cardinal has no legal diagonal past it at all (see
-        // `detour`'s doc) — a real trap needs the direction itself and both
-        // of its flanking cardinals blocked, not the diagonals.
-        struct Boxed;
-        impl openshard_movement::Terrain for Boxed {
-            fn can_step(&self, from: Point, to: Point) -> Option<Point> {
-                match (to.x, to.y) {
-                    (101, 100) | (100, 99) | (100, 101) => None,
-                    _ => OpenWorld.can_step(from, to),
-                }
+    /// A blocked cardinal has no legal diagonal past it at all (see `detour`'s
+    /// doc), so a real trap needs the direction itself and both of its
+    /// flanking cardinals blocked, not the diagonals — the inside corner of a
+    /// building, with the body pushed at the corner.
+    struct Boxed;
+    impl openshard_movement::Terrain for Boxed {
+        fn can_step(&self, from: Point, to: Point) -> Option<Point> {
+            match (to.x, to.y) {
+                (101, 100) | (100, 99) | (100, 101) => None,
+                _ => OpenWorld.can_step(from, to),
             }
         }
+    }
 
-        let first = steering.steer(Some(Direction::East), here(), start, Direction::East, &Boxed);
+    /// Wedged in a corner and leaning on the key: the body turns to face it
+    /// once, and after that nothing goes to the shard at all.
+    ///
+    /// It used to keep asking for the blocked direction every hold — "a
+    /// heading never gives up", which is true about the *asking* and was
+    /// wrong about the packet. Every one of those was a step this end had
+    /// already proven the shard refuses, and the answer is a `0x21`: the body
+    /// snapped back and the walk sequence reset, a hold at a time, for as
+    /// long as the player leaned on the key. What a player sees is the
+    /// character shuddering against the corner rather than standing in it.
+    #[test]
+    fn a_heading_into_a_corner_turns_once_and_then_sends_nothing() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+
+        // Facing north, so the first ask is a genuine turn — which the shard
+        // accepts, moves nothing, and is the feedback a player pressing into a
+        // wall expects.
         assert_eq!(
-            first,
+            steering.steer(Some(Direction::East), here(), start, Direction::North, &Boxed),
             Some(Facing::walking(Direction::East)),
-            "nowhere else to go, even on the very first ask"
+            "the turn into the corner is legal and is what the body is drawn doing"
         );
         for step in 1..20u64 {
             assert_eq!(
                 steering.due(at(start, 400 * step), here(), Direction::East, &Boxed),
-                Some(Facing::walking(Direction::East)),
-                "step {step}: a heading does not run out of patience, and there is nowhere else to go"
+                None,
+                "step {step}: facing it already, there is no step left that the shard would take"
             );
         }
+    }
+
+    /// And the asking itself is not given up on, which is what still separates
+    /// a heading from a destination: nothing is *sent* while the corner is
+    /// there, but the clock stays armed at the walking pace — one attempt a
+    /// hold, not a spin on a deadline already passed — and the walk picks
+    /// straight back up the moment the way opens, with no fresh input.
+    #[test]
+    fn a_heading_held_in_a_corner_walks_the_instant_the_way_opens() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+
+        steering
+            .steer(Some(Direction::East), here(), start, Direction::North, &Boxed)
+            .expect("the turn");
+        for step in 1..4u64 {
+            assert_eq!(
+                steering.due(at(start, 400 * step), here(), Direction::East, &Boxed),
+                None
+            );
+            assert_eq!(
+                steering.deadline(),
+                Some(at(start, 400 * (step + 1))),
+                "step {step}: paced like a walk, so the retry is not a spin"
+            );
+        }
+        // The door opens, the crate is moved, the body in the way walks off.
+        assert_eq!(
+            steering.due(at(start, 400 * 4), here(), Direction::East, &OpenWorld),
+            Some(Facing::walking(Direction::East)),
+            "nothing was asked for again; the heading was held the whole time"
+        );
     }
 
     /// The whole point: a body running straight at a single-tile obstacle

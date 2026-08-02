@@ -1546,7 +1546,27 @@ own understanding had written.
     is the intended duplicate, and the comment there says so. Pinned by
     `a_diagonal_that_cuts_a_wall_corner_sidesteps_instead_of_asking_for_it`,
     whose scene is the one the earlier detour tests could not see: the
-    diagonal tile itself is open ground, and only the corner refuses it. This
+    diagonal tile itself is open ground, and only the corner refuses it.
+
+    The corner has a second half, and it is what "a heading never gives up"
+    got wrong: **not giving up on the asking is not the same as sending a
+    packet.** Wedged in the inside corner of a building and leaning on the key
+    — the direction blocked, both flanks blocked, nothing for `detour` to
+    answer with — the client used to ask for the blocked direction anyway,
+    every hold. Every one of those is a step this end has already proven the
+    shard refuses, and the answer is a `0x21`: the body snapped back and the
+    walk sequence reset, a hold at a time, which reads as a character
+    shuddering against the corner instead of standing in it. `detour` returns
+    `Option` now and `take` sends nothing when it is `None` — except the
+    *turn*, which the shard accepts (a mobile asked for a direction it is not
+    facing turns and moves nowhere) and which is the feedback a player
+    pressing into a wall expects. The clock is armed either way, and that is
+    load-bearing: nothing here clears the asking, so an unarmed clock would
+    have the wait loop wake on a deadline already passed and re-ask
+    immediately, forever. Armed, the attempt repeats at the walking pace and
+    the walk resumes on its own the moment the door opens
+    (`a_heading_into_a_corner_turns_once_and_then_sends_nothing`,
+    `a_heading_held_in_a_corner_walks_the_instant_the_way_opens`). This
     applies from the very first ask, not just the steps `Steering::due`
     answers afterward: `Steering::steer`/`press` now take a `terrain` too
     (constructed on demand at their call sites in `App`, the same
@@ -1573,7 +1593,7 @@ own understanding had written.
 
   `keys` still outranks both, and `go_to`/`steer` clear each other, so exactly
   one of "arrows", "heading" or "destination" drives a step at a time — see
-  `Steering::asking`. `a_heading_never_gives_up`,
+  `Steering::asking`. `a_heading_held_in_a_corner_walks_the_instant_the_way_opens`,
   `releasing_the_mouse_stops_the_heading_but_not_the_keyboard`,
   `the_keyboard_takes_over_from_a_heading` and
   `a_destination_with_no_route_falls_back_to_a_heading_then_gives_up`
