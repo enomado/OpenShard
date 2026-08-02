@@ -350,14 +350,28 @@ where
     /// A static blocks if its body overlaps the space the mobile occupies —
     /// `z` to `z + PLAYER_HEIGHT`. A wall whose top is below your feet is a step,
     /// not an obstacle, and one whose base is above your head is a ceiling.
+    ///
+    /// **A surface counts too**, not only a wall: ServUO's `Movement.IsOk` tests
+    /// `Impassable | Surface` together, and a stair, a stone plinth or an upper
+    /// floor is exactly as solid to a body standing beside it as a wall is. The
+    /// reason it is not self-blocking is the *top*: a surface you are standing on
+    /// has its top at your feet, and `checkTop > ourZ` is false there — which is
+    /// why the height compared here is the stand height (halved for a climbable
+    /// bridge, ServUO's `CalcHeight`), not the art's full extent.
+    ///
+    /// Exempting surfaces outright — what this used to do — is two bugs at once,
+    /// and both were visible in the client. A staircase could be walked *into*
+    /// from the side, because the floor under it was an unobstructed candidate.
+    /// And a body could *fall*: at (1409, 1713) a step east off the castle stair
+    /// landed on the land at z=20, seventeen units down and directly underneath a
+    /// stack of stone blocks, because the blocks were surfaces and so waved
+    /// through. With them in the way there is no standable height on that tile at
+    /// all, and the step is refused — which is what the client does.
     fn is_obstructed(&self, x: u16, y: u16, z: i32) -> bool {
         self.map().statics_at(x, y).any(|item| {
             let tile = self.tiles().static_tile(item.tile);
-            if !tile.flags.is_blocking() {
-                return false;
-            }
-            // Something you can stand on is not in your way once you are on it.
-            if tile.flags.is_platform() {
+            let platform = tile.flags.is_platform();
+            if !tile.flags.is_blocking() && !platform {
                 return false;
             }
             // Note what is *not* here: `UFLAG2_WINDOW`. Sphere's own comment on
@@ -375,7 +389,16 @@ where
             // showed for townsfolk walking home at night, which is the only end
             // of this rule nobody was watching.
             let bottom = i32::from(item.z);
-            let top = bottom + i32::from(tile.height).max(1);
+            // A surface's top is where a body stands on it — the same
+            // `platform_surface` the step check picks its candidates with, so the
+            // one you are standing on tops out exactly at your feet and does not
+            // block you. A wall's is its art: walls often carry zero height in
+            // tiledata and a zero-tall wall that blocks nothing is not a wall.
+            let top = if platform {
+                platform_surface(bottom, i32::from(tile.height), tile.flags.is_climbable()).1
+            } else {
+                bottom + i32::from(tile.height).max(1)
+            };
             // Overlap between [bottom, top) and [z, z + PLAYER_HEIGHT).
             bottom < z + PLAYER_HEIGHT && z < top
         })
@@ -811,6 +834,119 @@ mod tests {
             disagreed > 5,
             "only {disagreed} of {checked} steps are ones the nearest-height guess got \
              wrong — the sweep is not reaching real staircases"
+        );
+    }
+
+    /// A body cannot stand in the ground under a surface — a stair, a plinth,
+    /// an upper floor — whose body is in the way.
+    ///
+    /// The premise is read straight from tiledata rather than from
+    /// [`MapTerrain::is_obstructed`], so the test does not agree with the code by
+    /// construction: a static that is a surface or a wall, whose span overlaps
+    /// the sixteen units a body standing on the land would occupy, is something
+    /// you are inside of. Exempting surfaces (what this code did) let a player
+    /// walk *into* a staircase from the side and stand in the floor beneath it.
+    #[test]
+    fn the_ground_under_a_surface_is_not_somewhere_to_stand() {
+        let Some(t) = real_terrain() else {
+            return;
+        };
+
+        let mut checked = 0;
+        for y in 1500..1900u16 {
+            for x in 1350..1650u16 {
+                if !t.land_is_ground(x, y) {
+                    continue;
+                }
+                let (_, land_center, _) = t.land_heights(x, y);
+                // Is anything's body in the way of a body standing on the land?
+                let buried = t.map().statics_at(x, y).any(|item| {
+                    let tile = t.tiles().static_tile(item.tile);
+                    if !tile.flags.is_platform() && !tile.flags.is_blocking() {
+                        return false;
+                    }
+                    let base = i32::from(item.z);
+                    let (_, stand) =
+                        platform_surface(base, i32::from(tile.height), tile.flags.is_climbable());
+                    stand > land_center && base < land_center + PLAYER_HEIGHT
+                });
+                if !buried {
+                    continue;
+                }
+                assert_ne!(
+                    t.surface_at(x, y, land_center),
+                    Some(land_center),
+                    "({x},{y}) stands a body at z={land_center} with something in it",
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "only {checked} buried ground tiles found");
+    }
+
+    /// The step that made a body fall, on the geometry it fell on.
+    ///
+    /// Britain's castle wall at (1410, 1713): land at z=20, a stack of stone
+    /// blocks standing on it, a stone stair over those and a wall over that. Every
+    /// height on the tile is inside something — the land is under the blocks, and
+    /// the blocks' own tops are under the wall — so there is nowhere on it to
+    /// stand and every step onto it must be refused, from any neighbour a body can
+    /// reach it from.
+    ///
+    /// While surfaces were exempt from [`MapTerrain::is_obstructed`] the land at
+    /// z=20 looked clear, and a body on the castle stair beside it — seventeen
+    /// units up — stepped east and *fell* into the masonry.
+    #[test]
+    fn a_step_into_a_stack_of_stone_is_refused_rather_than_fallen_into() {
+        let Some(t) = real_terrain() else {
+            return;
+        };
+        let (x, y) = (1410u16, 1713u16);
+
+        // The premise, from the map rather than from the code under test: the
+        // land, something standing on it, and something standing over that.
+        let land = t.map().land(x, y).expect("the block loads");
+        assert_eq!(land.z, 20, "the castle wall's footing is not where it was");
+        let mut surfaces = 0;
+        let mut walls = 0;
+        for item in t.map().statics_at(x, y) {
+            let tile = t.tiles().static_tile(item.tile);
+            match tile.flags.is_platform() {
+                true => surfaces += 1,
+                false if tile.flags.is_blocking() => walls += 1,
+                false => {}
+            }
+        }
+        assert!(
+            surfaces >= 2 && walls >= 1,
+            "({x},{y}) holds {surfaces} surfaces and {walls} walls; \
+             this is no longer the stacked wall corner the test means",
+        );
+
+        assert_eq!(
+            t.surface_at(x, y, i32::from(land.z)),
+            None,
+            "there is nowhere to stand inside a castle wall",
+        );
+        let mut approaches = 0;
+        for (nx, ny) in [(x - 1, y), (x, y - 1), (x + 1, y), (x, y + 1)] {
+            // From wherever a body can actually stand on the neighbour — the
+            // corner is walled in on several sides, and a neighbour that is
+            // itself unstandable is no approach at all.
+            let Some(stand) = (0..=45).rev().find_map(|z| t.surface_at(nx, ny, z)) else {
+                continue;
+            };
+            let from = Point::new(nx, ny, stand as i8);
+            assert_eq!(
+                t.can_step(from, Point::new(x, y, from.z)),
+                None,
+                "a step from ({nx},{ny},{stand}) landed inside the castle wall",
+            );
+            approaches += 1;
+        }
+        assert!(
+            approaches >= 2,
+            "only {approaches} neighbours a body can stand on; the test proved nothing",
         );
     }
 
