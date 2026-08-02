@@ -1013,6 +1013,70 @@ Nothing is done locally on the way out: the door swings when the `0x1A` that
 redraws it arrives. A client that also opened it itself would show a door the
 shard refused — a lock, or reach — standing open.
 
+### Picking a mobile — planned, not built
+
+Today **nothing that breathes can be clicked**: `App::use_under_cursor` asks
+`items::pick`, which walks ground items and nothing else, so the crowd is
+scenery the cursor passes through. That was not a decision; a mobile simply has
+no pick yet. The gap has a way of reading as a rendering bug — a creature drawn
+from the wrong body looks like a broken sprite *and* refuses to answer the
+mouse, and only one of those two is the defect (see the backlog entry below).
+
+The shape of the answer is the item pick, one crate over, and the point of
+writing it down before building it is that four of its five decisions are
+already taken by `items::pick` and must not be re-taken differently.
+
+1. **Pick against the picture, not the tile, and a hit is an opaque texel.** The
+   same two rules and the same reasons as `items::pick`: a dragon's sprite is
+   most of a screen of empty space, and a tile test names whatever the feet
+   stand on. `AnimAtlas` needs the `opaque_at` that `StaticAtlas` has —
+   `PackedFrame` already holds an origin and the atlas already keeps `pixels`
+   on the CPU, so it is the same six lines keyed by `FrameKey` instead of
+   `Graphic`.
+2. **Go through `mobiles::place`.** It is already the one placement `collect`
+   and `head_anchor` share, and a pick that computed its own rectangle would
+   be a third answer that drifts. It also already carries the mirroring: a
+   flipped frame is anchored from `width - center_x`, so the *texel* the cursor
+   lands on has to be mirrored back before `opaque_at` is asked — the one piece
+   of arithmetic here that the item pick does not have and cannot lend.
+3. **A worn layer is a hit on its wearer.** Equipment draws with the wearer's
+   `depth::Order` and no serial of its own; a click on a hat is a click on the
+   head under it. So the pick tests the body frame *and* every layer
+   `worn_graphic` resolves, and answers with the mobile either way.
+4. **The topmost drawn wins, later-wins on a tie** — the largest `depth::Order`
+   with `>=`, exactly `items::pick`'s tie-break, because it is exactly the same
+   question about the same depth test. `Cutaway::shows_mobile` gates it with
+   the same call `collect` makes: a body hidden under a roof this client is not
+   drawing was not pointed at.
+5. **The serial comes back by index**, `App::mobile_serials` beside
+   `App::item_serials`, for the reason that one exists: the renderer is handed
+   `Mobile`s with no identity in them, and putting the serial *into* the render
+   struct would push a protocol type into the crate that draws.
+
+Then three behaviours, in the order they are worth having:
+
+- **Hover** — the outline, and the name. Both are local: the outline is the
+  `outline.md` ring the items already get, and the name is what the view
+  already knows, hung off `mobiles::head_anchor` rather than a fixed offset,
+  because a rat and a dragon hold their heads at wildly different heights.
+- **Double click → `0x06`.** `interact::use_object` already writes it and the
+  shard already answers a mobile's use with a paperdoll (`0x88`). **The client
+  cannot draw a paperdoll yet**, so this lands as a log line until the gump
+  layer grows one — worth saying out loud, because "nothing happened" is what a
+  broken click looks like too.
+- **Single click → `0x09`.** The shard has this end already —
+  `Command::SingleClick` is dispatched and answered — so the whole cost on this
+  side is the packet and the click. The answer is the name over the head, in
+  the notoriety hue, which is the same overhead-message path the speech line
+  already draws.
+
+Done when: the cursor over any body in the crowd rings it and names it; a
+double click on one sends a `0x06` naming its serial and a single click a
+`0x09`; a click on a hat picks the wearer; a click on a creature standing
+behind a wall picks nothing; and the pick and the draw cannot disagree, because
+a test asserts that what `pick` answers for a cursor inside a frame is the
+mobile `collect` drew there.
+
 ## Decisions to take before they are taken by accident
 
 - **The client is multi-shard and multi-session**, `[shard → {characters}]` —
@@ -2711,3 +2775,108 @@ was found and not done:
   higher than that and a candle's is lower; both are a fraction of a pool six
   tiles across, which is why it is a constant and not a lookup — but it is a
   constant standing in for a measurement.
+
+## Backlog, found while giving the mouse's heading a dead zone
+
+The fix itself is `DEAD_ZONE` in `client/app/src/lib.rs`: a cursor within 10
+world pixels of the body's drawn pixel names no heading, so a right button held
+with the mouse sitting over the character stands still instead of walking off in
+whichever of the eight sectors the last pixel of hand tremor landed in.
+
+Ten is a *play* number and not the geometry's. The geometry asks for
+`22 / cos 22.5° ≈ 23.8` — below that a step can carry the body past the cursor
+and leave it asking for the way back — and
+`a_step_stops_overshooting_further_out_than_the_dead_zone` derives that bound
+from the projection and asserts the constant is inside it, so the trade stays
+visible rather than becoming a number nobody remembers choosing. The trade: a
+zone half a tile wide is a hole a player can feel, the character stopping well
+before the cursor looks like it is off him; the overshoot is bounded at one tile
+and the next ask corrects it, the jitter is unbounded. So the radius kills the
+jitter and no more. What was found on the way and left undone:
+
+- **The heading is only recomputed when the *mouse* moves, never when the body
+  does.** `App::walk_toward_cursor` runs from `CursorMoved` and from the press;
+  after that `Steering::due` repeats the stored `Heading` every step's length
+  with nothing re-reading where the body now is. With the camera locked to the
+  body it happens not to matter — the cursor's world pixel travels with the eye,
+  so the bearing is genuinely unchanged — but with the eye unlocked (`Home`) the
+  body walks toward a cursor standing still in the world, arrives, walks past it,
+  and keeps going: the dead zone it is now inside is never asked about. The
+  heading is a function of two positions and one of them is moving, so it wants
+  re-deriving in `App::about_to_wait` next to the `due` loop, not only in the
+  input event.
+- **The dead zone is in world pixels, so it is a fixed fraction of a tile and a
+  varying number of screen pixels.** That is the defensible choice for the
+  overshoot argument (the projection is what makes a step 44 pixels long), but
+  the argument the radius is actually *set* by is the jitter one, and that is
+  about the hand and the screen: at a far zoom 10 world pixels is a patch of
+  screen a tremor crosses easily. If that shows up in play the two halves want
+  separating — a world-pixel floor for the overshoot and a screen-pixel floor
+  for the noise, whichever is larger.
+- **The overshoot has never been seen, because the recompute above is missing.**
+  The two findings are one: with the heading only re-derived on a mouse event, a
+  step that carries the body past the cursor is not answered by a step back, and
+  the small radius costs nothing today. Closing the recompute is what makes the
+  10-against-24 gap live, and is where the constant gets re-argued rather than
+  assumed to have survived.
+- **The reference has no dead zone here at all.** ClassicUO's
+  `MoveCharacterByMouseInput` (`Game/Scenes/GameSceneInputHandler.cs`) measures
+  from the viewport's centre and walks on any non-zero offset; `mouseRange >= 190`
+  is the only radius in it, and it chooses *run* rather than whether to move.
+  What saves it is that its origin is the centre of the screen and the body is
+  drawn there, so "the cursor is on the character" is where the offset is
+  genuinely zero — our origin is the body's own projected pixel, which is the
+  right origin for a free camera and is a pixel or two away from where the
+  sprite's feet look like they are. The reference is worth re-reading if the
+  radius ever needs defending, not copying.
+
+## Backlog, found while chasing a creature drawn as a pair of feet
+
+A player who had died reported an NPC following him that was drawn as **walking
+feet and nothing else**, and that would not answer the mouse. It behaved like a
+creature — it hunted, it pathed, it was not repeating the player's steps — so it
+read as one broken sprite. It was three separate things, and only one of them
+was a defect in this repository:
+
+- The body was `480`. That is not a creature at all: it is the `AnimID` of
+  `0x170F "shoes"` in `tiledata.mul`, an *equipment* animation, and `anim.mul`
+  holds a real block for it. The client drew exactly what it was told to.
+- The id came from the Community Pack's ServUO converter, whose `resolveBody`
+  read the first `new int[]` in a class as a body table. In every
+  `BaseCollectionMobile` the first array is `int[] hues`, so `Enrico the thief`
+  was converted to body `0x1E0`. Fixed there, with the rule gated on `BaseMount`
+  and a test pinning each class shape.
+- **It could not be clicked because no mobile can be** — see the M5 section
+  above. That is the finding worth keeping: an entity that is drawn wrong and an
+  entity that cannot be picked are indistinguishable from the player's chair,
+  and the second one was invisible for as long as it was because it never had a
+  symptom of its own.
+
+What was found on the way and left undone:
+
+- **This client reads `anim.mul` and nothing else.** Everything drawn since LBR
+  lives in `anim2.mul` through `anim5.mul`, and which file holds a body is a
+  lookup in `Bodyconv.def` (`752 29 -1 -1 -1` — body 752 is index 29 of
+  `anim2`); `Body.def` is a second redirect, an id drawn as another body under a
+  hue. `uofiles::anim` knows neither, and `anim::animation_body` hardcodes three
+  remaps where the client has a table. So **every body that lives in a later
+  file draws nothing at all** — on the Felucca spawn set that is bodies 752 and
+  764–794 among others, tens of spawn points, and each one is a creature that
+  hits a player from an empty tile. This is the single largest hole in what the
+  client can draw, and it is a file reader, not a renderer change.
+- **A modern install ships `AnimationFrame*.uop` too**, keyed by a hash rather
+  than by the index arithmetic, and ClassicUO prefers it to the `.mul`. Reading
+  the def redirects closes most of the gap on a legacy install; the uop is what
+  closes it on the install people actually have.
+- **A mobile whose body frame is missing still draws its equipment.**
+  `mobiles::collect` drops the body quad when the atlas has no frame — the right
+  call on its own — and then walks the layers, which are packed under their own
+  graphics and draw fine. The result is a floating hat, or a pair of boots,
+  walking about with no wearer: the same picture as the bug above, from a
+  different cause, and there is no test that says which of the two a person is
+  looking at. A body that draws nothing should take its layers with it, and say
+  so once in the log.
+- **Nothing on the shard ever asks whether a body id is a body.** The pack's
+  converter now does, at generation time, which is the right place for data that
+  ships. It is not the only door: `op_spawn_mobile` takes a number from a script,
+  and a typo there arrives in the world exactly as this one did.
