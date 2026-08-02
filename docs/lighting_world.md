@@ -22,8 +22,10 @@ player mostly cannot.
 
 Steps 9 and 10 are
 blocked on [`lighting.md`](lighting.md)'s steps 15 and 16 and should not be
-started before them; step 8 wants its step 14 first, for the reason decision 9
-gives — as does the drawn half of step 1, which is the one part of it still open.
+started before them. **Step 8 is no longer blocked**: its step 14 is built — the
+occlusion grid is drawn as boxes, under its own checkbox in the Tile panel — so a
+soft body is now a thing that can be looked at while it walks, which decision 9
+says is the only way it can be judged at all.
 
 Step 7, the tonal response, is the one to take when the appetite is for a
 screenshot rather than for a subsystem: it touches one shader, it is judged by
@@ -71,8 +73,9 @@ drawn), 15 (a wall's facing measured from its art), 16 (the window's aperture)
 and 6 (the measurement) are open, and three of the four are load-bearing here.
 The seam, stated once so neither plan has to guess at the other:
 
-- **Step 14 is this plan's instrument too.** The boxes are the grid drawn as
-  wireframe in `shell::world_painter`, and everything below adds to that same
+- **Step 14 is this plan's instrument too, and it is built.** The boxes are the
+  grid drawn as wireframe in `shell::draw_occluders`, and everything below adds
+  to that same
   grid: a sky byte per cell (decision 1), a body that moves through it
   (decision 9). Neither gets its own visualiser — that is
   [`lighting.md`](lighting.md)'s decision 8, and it holds here: a second copy of
@@ -304,8 +307,11 @@ and each step states what it cost.
       reads the plane until step 2.
 
       **Left undone**: the drawn half. The sky byte was to shade the boxes
-      [`lighting.md`](lighting.md)'s step 14 strokes, and step 14 does not exist
-      yet — so the field is asserted and not looked at. It is not a small
+      [`lighting.md`](lighting.md)'s step 14 strokes; step 2 drew the field on
+      the ground instead, as this plan's own backlog asked, and step 14's boxes
+      — now built — are strokes coloured by *opacity* and say nothing about the
+      sky. The two views are read side by side rather than one inside the other,
+      and the backlog below says why that is the right way round. It is not a small
       omission: a field this cheap to compute is a field it is cheap to be wrong
       about everywhere at once, and the backlog below says why the wireframe is
       the wrong instrument for it anyway.
@@ -350,8 +356,9 @@ and each step states what it cost.
       toned shadow lift, dither. This is the step most likely to be argued about
       and the one most obviously judged by a screenshot — a before/after pair of
       the same scene belongs in the commit.
-- [ ] **8. Bodies as occluders.** Decision 9, behind its own scene — and behind
-      [`lighting.md`](lighting.md)'s step 14, which is what it is judged with.
+- [ ] **8. Bodies as occluders.** Decision 9, behind its own scene, and judged
+      with [`lighting.md`](lighting.md)'s step 14 — which is now built, so this
+      one is open rather than blocked.
 - [ ] **9. A wall's face takes its own side's ambient.** Decision 13, after
       [`lighting.md`](lighting.md)'s step 15 has a facing to offer. Held to a
       frame test of a house at noon: the outer face of a wall is day, the inner

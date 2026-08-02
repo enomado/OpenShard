@@ -314,6 +314,23 @@ impl Occlusion {
         }
     }
 
+    /// Every tile something stands on, as `(x, y, cell)` — the grid as the boxes
+    /// it is, for whatever wants to draw it.
+    ///
+    /// Open tiles are skipped: a grid is mostly nothing, and a caller drawing a
+    /// box per cell would spend most of its work on cells with no box. The order
+    /// is the rectangle's own, row by row, which is [`Occlusion::bytes`]'s and
+    /// therefore stable frame to frame for a camera that has not moved.
+    pub fn boxes(&self) -> impl Iterator<Item = (i32, i32, Cell)> + '_ {
+        let bounds = self.bounds;
+        let width = bounds.width();
+        self.cells.iter().enumerate().filter_map(move |(index, cell)| {
+            let cell = (*cell)?;
+            let index = index as i32;
+            Some((bounds.min_x + index % width, bounds.min_y + index / width, cell))
+        })
+    }
+
     /// Soften the sky field by a tile: one 3x3 pass, in place.
     ///
     /// The last thing done to the field and never done twice — [`collect`] calls
@@ -580,6 +597,48 @@ mod tests {
             &[248, 255, OPAQUE, 255],
             "(0,1) reaches past the top of the world and stops there",
         );
+    }
+
+    /// The boxes are the cells, at the tiles they stand on — the claim the
+    /// wireframe is drawn on the strength of. Getting the row-major arithmetic
+    /// backwards here draws every wall at its tile's mirror image, which looks
+    /// like a camera bug rather than like an index one.
+    #[test]
+    fn the_boxes_name_the_tiles_they_stand_on() {
+        let mut occlusion = Occlusion::new(TileBounds {
+            min_x: 100,
+            max_x: 102,
+            min_y: 200,
+            max_y: 201,
+        });
+        occlusion.add(102, 200, 0, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(100, 201, 5, &tile(TileFlags::WINDOW, 10));
+        let boxes: Vec<_> = occlusion.boxes().collect();
+        assert_eq!(
+            boxes,
+            vec![
+                (
+                    102,
+                    200,
+                    Cell {
+                        bottom: 0,
+                        top: 20,
+                        opacity: OPAQUE
+                    }
+                ),
+                (
+                    100,
+                    201,
+                    Cell {
+                        bottom: 5,
+                        top: 15,
+                        opacity: PANE
+                    }
+                ),
+            ],
+            "row by row, x fastest, and open tiles are not in it",
+        );
+        assert_eq!(Occlusion::EMPTY.boxes().count(), 0, "and an empty grid has none");
     }
 
     /// The column, in every direction it has to be right in: a roof takes the

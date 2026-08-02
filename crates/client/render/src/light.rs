@@ -426,7 +426,13 @@ const LIGHT_MARGIN_TILES: i32 = CAMPFIRE.radius as i32 + 1;
 
 /// The cells a frame's flames can come from: what is drawn, grown by the reach
 /// of the widest pool. See [`LIGHT_MARGIN_TILES`].
-fn lit_tiles(camera: &Camera) -> crate::camera::TileBounds {
+///
+/// Public because it is the rectangle *the grid is*, and a second caller that
+/// wants the same grid must not guess at it: the app's occluder overlay
+/// (`docs/lighting.md`, step 14) rebuilds the grid to draw it, and a wireframe
+/// over a rectangle the shader did not walk is an instrument that lies about
+/// exactly the edge it exists to show.
+pub fn lit_tiles(camera: &Camera) -> crate::camera::TileBounds {
     let bounds = camera.visible_tiles();
     crate::camera::TileBounds {
         min_x: bounds.min_x - LIGHT_MARGIN_TILES,

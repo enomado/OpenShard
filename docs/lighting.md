@@ -302,16 +302,30 @@ rooms leak — which is the same conservative direction decision 5's union takes
       length of each crossing and the share of it inside the tile's span, and a
       penumbra whose width is `FLAME_SPREAD * t / (1 - t)`. `light::walk` learns
       the same walk; the parity test is what says they agree.
-- [ ] **14. The occluder boxes, drawn.** The instrument the next two steps are
+- [x] **14. The occluder boxes, drawn.** The instrument the next two steps are
       judged with, and the answer to "why is there a shadow where nothing
-      stands": the grid is boxes already — `(z bottom, z top, opacity)` a tile —
-      and nothing draws them. `Occlusion` gains an iterator over its cells; the
-      frame carries the grid into `shell::Frame` beside the terrain overlay,
-      under its own checkbox; `shell::world_painter` — which already draws the
-      tile highlight through `Camera::tile_diamond` — projects the eight corners
-      of each box with `Camera::to_screen` and strokes the twelve edges, coloured
-      by opacity so a pane and a wall are told apart. No GPU pass and no new
-      texture: this is arithmetic the camera already does.
+      stands". `Occlusion::boxes` is the iterator over the cells that hold
+      something — open tiles are most of a grid and are skipped, so a caller
+      spends nothing on them; `Hud::occluders` carries the grid beside the
+      terrain overlay under its own checkbox; `shell::draw_occluders` takes each
+      cell's two diamonds through `Camera::tile_diamond` at the span's clamped
+      ends and strokes the twelve edges, coloured from glass to bone by the
+      cell's opacity so a `PANE` and a wall are told apart. No GPU pass and no
+      new texture: this is arithmetic the camera already does.
+
+      Three decisions inside it, each the same one the shader made and therefore
+      not a second policy: the grid is rebuilt over `light::lit_tiles` (now
+      public for exactly this) rather than over the drawn tiles, so the wireframe
+      covers what the walk covers; the `z` span is clamped into an `i8` the way
+      `Occlusion::bytes` clamps it, so a box is drawn where the shader believes
+      it is rather than where the map says; and it is built from the frame's own
+      `Cutaway`, which is now handed to `App::hud`.
+
+      **The cost**: one more walk of the map's statics over the lit bounds per
+      frame *while the box is ticked*, and twelve strokes per standing cell. Off
+      by default, like the terrain overlay, and the boxes whose eight corners all
+      fall outside the clip rect are dropped before a shape is built — at the
+      widest zoom most of the grid is offscreen.
 
       What it is expected to show first: **a door's shadow is a tile wide**,
       because decision 3's occluder is the whole tile and not the leaf — which is
@@ -445,6 +459,29 @@ Found while building the observability and the sun:
   only inside a pool; this one is paid everywhere the sky is visible. The ceiling
   test (`Occlusion::tallest`) makes it two or three steps over open ground, but
   the number is still unmeasured — which is why the app's F8 is off by default.
+
+Found while drawing the boxes:
+
+- **The overlay walks the map a second time in the same frame.** The HUD is built
+  before the world passes and the frame's `Lighting` after them, so the wireframe
+  cannot read the grid the shader is about to be given — it builds its own from
+  the same bounds, the same cutaway and the same map, which is the same answer
+  and twice the walk. Sharing them means either building the lighting before the
+  HUD or keeping the last frame's grid, and the second is what draws a wireframe
+  a frame behind the picture it is a claim about. Worth doing when the frame
+  keeps its `Lighting` for another reason; not worth it for this alone.
+- **Nothing tests the projection of a box.** `Occlusion::boxes` is pinned — the
+  row-major arithmetic is the half that fails silently and it has a test — but
+  the eight corners and the twelve edges are held by looking at them. A frame
+  test would need an egui context and a painter offscreen, which nothing in this
+  workspace does yet; the shape of it, if it is ever wanted, is that a box's lid
+  is exactly `(top - bottom) * Z_STEP` viewport pixels above its floor.
+- **The wireframe shows what stands and not what is missing.** The same point
+  `lighting_world.md`'s backlog makes about the sky field, arriving here: a roof
+  that is one tile over from where it should be draws a box, correctly, one tile
+  over — and the tile it *should* have covered draws nothing, which looks exactly
+  like open ground. `View::Sky` on the ground is the instrument for that half,
+  and the two want reading together rather than one replacing the other.
 
 Found while asking why a house's windows burn:
 

@@ -129,6 +129,7 @@ use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::light::{self, Lighting};
 use openshard_client_render::mobiles::{self, Mobile};
+use openshard_client_render::occlusion;
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -526,6 +527,7 @@ pub fn run<D: Dial + Send + 'static>(
         // resting cursor hears `CursorEntered` on the first move.
         pointer_inside: false,
         show_terrain: false,
+        show_occluders: false,
         // The item under the cursor, ringed and lit, and the ground otherwise:
         // see `shell::HighlightTarget` and `shell::HighlightStyle`.
         highlight: shell::HighlightTarget::default(),
@@ -1043,6 +1045,13 @@ struct App {
     /// which is a bill worth a debugging picture and not worth a frame nobody is
     /// looking at.
     show_terrain: bool,
+    /// Whether the HUD is drawing the lighting's occlusion grid as boxes — see
+    /// [`shell::draw_occluders`](crate::shell) and `docs/lighting.md`, step 14.
+    ///
+    /// Off by default and paid for only while it is on, like the terrain
+    /// overlay: the grid is a second walk of the map's statics over the same
+    /// bounds the frame's lighting walks a moment later.
+    show_occluders: bool,
     /// What the cursor is allowed to light up, and how an item says it is the
     /// one lit. Both are the HUD's to set — see [`shell::HighlightTarget`].
     highlight: shell::HighlightTarget,
@@ -1557,17 +1566,18 @@ impl App {
                 (x as u16, y as u16)
             }
         };
-        // On the surface there — the ground's average, or a platform static's
-        // deck, whichever is nearest where the body already stands — not at
-        // some height of the camera's, and not the land alone: a mobile below
-        // the terrain is correctly hidden by it, which is what the depth
-        // buffer is for and what looks exactly like a mobile that failed to
-        // draw, and the same held for a pier or a bridge before `predict_z`
-        // weighed their deck. See `link.rs`'s online `Command::Step`, which
-        // wants the identical answer once a server is involved.
+        // On the surface there — the ground's average, or the highest platform
+        // static's deck a step reaches — not at some height of the camera's,
+        // and not the land alone: a mobile below the terrain is correctly
+        // hidden by it, which is what the depth buffer is for and what looks
+        // exactly like a mobile that failed to draw, and the same held for a
+        // pier or a bridge before their deck was weighed. `predict_step` rather
+        // than `predict_z` because reaching from the surface underfoot is what
+        // climbs a staircase; the nearest-height guess walks through it. See
+        // `link.rs`'s online `Command::Step`, which wants the identical answer
+        // once a server is involved.
         let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
-        let ground =
-            i8::try_from(terrain.predict_z(x, y, i32::from(self.player.at.z))).unwrap_or(self.player.at.z);
+        let ground = i8::try_from(terrain.predict_step(self.player.at, x, y)).unwrap_or(self.player.at.z);
         // The crowd's clock first, before the step is folded in, and for the
         // same reason `App::user_event` does it for a step off the wire: a step
         // is timestamped with `Crowd`'s own `now`, and this is called from
@@ -2373,6 +2383,9 @@ impl App {
         if let Some(show) = request.show_terrain {
             self.show_terrain = show;
         }
+        if let Some(show) = request.show_occluders {
+            self.show_occluders = show;
+        }
         if let Some(target) = request.highlight {
             self.highlight = target;
         }
@@ -2421,7 +2434,12 @@ impl App {
     /// whether an item took the highlight. Asking twice would be two answers to
     /// "what is the cursor on", and the frame where they disagree is the frame a
     /// barrel is ringed *and* the ground under it is diamonded.
-    fn hud(&self, camera: Camera, lit_item: Option<usize>) -> shell::Hud {
+    ///
+    /// `cutaway` is handed in for the third reader of that same rule: the
+    /// occluder overlay draws the grid the frame's lighting is about to build,
+    /// and a grid built from a second cutaway would draw boxes for the storey
+    /// this frame took away.
+    fn hud(&self, camera: Camera, lit_item: Option<usize>, cutaway: &Cutaway) -> shell::Hud {
         let hover = match self.world_owns_pointer() {
             true => self.pick_tile(camera),
             false => None,
@@ -2491,6 +2509,27 @@ impl App {
             terrain: self
                 .show_terrain
                 .then(|| self.terrain_overlay(camera, hover.as_ref())),
+            show_occluders: self.show_occluders,
+            // The grid the lighting will build a few lines later in the same
+            // frame, built here a second time rather than kept from the last
+            // one: the HUD is drawn before the world passes, and a wireframe a
+            // frame behind the picture it is a claim about slides off every wall
+            // as the camera pans — which is the one artefact an instrument for
+            // finding misplaced occluders must not have.
+            //
+            // `light::lit_tiles`, not `camera.visible_tiles`: the grid is grown
+            // by the widest pool's reach, and a box drawn over a rectangle the
+            // shader did not walk would be a picture of this overlay's own
+            // bounds rather than of the lighting's.
+            occluders: self.show_occluders.then(|| {
+                occlusion::collect(
+                    &self.map,
+                    &self.items,
+                    light::lit_tiles(&camera),
+                    &self.tiledata,
+                    cutaway,
+                )
+            }),
             hover,
             selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
@@ -2954,7 +2993,7 @@ impl App {
         // in it is a function of them. The one sampling of time that the frame is
         // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud(camera, lit_item);
+        let hud = self.hud(camera, lit_item, &cutaway);
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {

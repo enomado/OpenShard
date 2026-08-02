@@ -140,6 +140,15 @@ pub struct Hud {
     /// What that overlay draws, gathered only while it is on: see
     /// [`TerrainOverlay`].
     pub terrain: Option<TerrainOverlay>,
+    /// Whether the occluder boxes are switched on, for the checkbox that says so.
+    pub show_occluders: bool,
+    /// The lighting's own occlusion grid, gathered only while they are — the
+    /// boxes a shadow ray walks through, drawn as the boxes they are.
+    ///
+    /// The grid itself and not a list of shapes: what is being looked at is
+    /// whether the *grid* is what the picture says it is, so anything this
+    /// overlay derived for itself would be a second answer to that question.
+    pub occluders: Option<openshard_client_render::occlusion::Occlusion>,
     /// The tile the body is walking to, while it still is.
     ///
     /// The one piece of feedback a move order needs: a click that named a tile
@@ -240,6 +249,12 @@ pub struct Request {
     /// walkability lookup per visible tile and a fresh plan per frame, and that
     /// is a bill the client should only pay while somebody is looking at it.
     pub show_terrain: Option<bool>,
+    /// Switch the occluder wireframe on or off, on the frame the box was ticked.
+    ///
+    /// Sent on the change and not every frame, like the terrain overlay, and for
+    /// the same reason: while it is on the client walks the map a second time
+    /// each frame to rebuild the grid the lighting builds for itself.
+    pub show_occluders: Option<bool>,
     /// Start or stop a scripted walk.
     pub script: Option<ScriptRequest>,
     /// What the cursor may light from now on, on the frame the picker moved.
@@ -669,6 +684,26 @@ fn layout(
                 }
             }
             ui.separator();
+            let mut boxes = hud.show_occluders;
+            if ui
+                .checkbox(&mut boxes, "occluders — what stops light: wall white, pane blue")
+                .changed()
+            {
+                request.show_occluders = Some(boxes);
+            }
+            match &hud.occluders {
+                // The count is this overlay's companion for the same reason the
+                // terrain one has counts: an empty picture is a grid with
+                // nothing standing in it and a grid that was never built, and on
+                // screen those two are one thing.
+                Some(occluders) => {
+                    ui.label(format!("{} boxes standing", occluders.boxes().count()));
+                }
+                None => {
+                    ui.label("off");
+                }
+            }
+            ui.separator();
             // The two axes of the highlight, side by side because they are read
             // together: what may be lit, and how an item says it is.
             ui.horizontal(|ui| {
@@ -719,6 +754,12 @@ fn layout(
     // three markers below are read against it.
     if let Some(terrain) = &hud.terrain {
         draw_terrain(&world, &hud.camera, terrain, viewport.min);
+    }
+    // Then what stands up out of it. Over the wash and under the markers: the
+    // boxes are read against the ground the wash colours, and a highlight the
+    // player is pointing with must not be hidden by a diagnostic.
+    if let Some(occluders) = &hud.occluders {
+        draw_occluders(&world, &hud.camera, occluders, viewport.min);
     }
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
@@ -1361,6 +1402,81 @@ fn draw_terrain(
     }
     for centre in centres {
         painter.circle_filled(centre, 2.5, egui::Color32::from_rgb(255, 200, 80));
+    }
+}
+
+/// The occlusion grid, drawn as the boxes it is.
+///
+/// `docs/lighting.md`, step 14, and it is an instrument rather than a picture:
+/// what a shadow ray walks through is a box per tile — a span of `z` and an
+/// opacity — and until this nothing drew them, so "why is there a shadow where
+/// nothing stands" could only be answered by reading the map by hand. The first
+/// thing it is expected to show is that **a door's shadow is a tile wide**,
+/// because the occluder is the whole tile and not the leaf.
+///
+/// Twelve strokes a box and no fill: the boxes stand in front of each other by
+/// the dozen, and a filled one hides both the art it is a claim about and the
+/// boxes behind it. What is being checked is where the edges are.
+///
+/// The colour is the opacity, because that is the other half of a cell and the
+/// half a wireframe would otherwise drop: a pane and a wall stop the same ray by
+/// different amounts, and a picture that drew them alike would make
+/// [`PANE`](openshard_client_render::occlusion::PANE) invisible in the very view
+/// meant to check it.
+fn draw_occluders(
+    painter: &egui::Painter,
+    camera: &Camera,
+    occluders: &openshard_client_render::occlusion::Occlusion,
+    viewport_origin: egui::Pos2,
+) {
+    use openshard_client_render::occlusion::{OPAQUE, PANE};
+
+    let clip = painter.clip_rect();
+    for (x, y, cell) in occluders.boxes() {
+        // The grid is grown past the map's own corner by the widest pool's
+        // reach — see `light::lit_tiles` — so a tile of it can be off the map
+        // entirely. Skipped rather than clamped, for `Occlusion::add`'s reason:
+        // folding it onto the edge draws a wall where the map has none.
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            continue;
+        };
+        // The same clamp `Occlusion::bytes` makes on the way to the shader: a
+        // static's top is `z + height` and does not have to fit an `i8`, and a
+        // wall reaching past the top of the world may as well stop there. The
+        // box is then drawn where the shader thinks it is, which is the point.
+        let height = |z: i32| z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
+        let at = |z: i8| {
+            tile_corners(
+                painter,
+                camera,
+                openshard_protocol::world::Point { x, y, z },
+                viewport_origin,
+            )
+        };
+        let floor = at(height(cell.bottom));
+        let lid = at(height(cell.top));
+        // Off screen before anything is allocated. The clip rect would keep it
+        // from being painted anyway, but a town at the widest zoom is thousands
+        // of boxes and most of them are outside the viewport — this is the
+        // difference between building twelve shapes for each of them and none.
+        let bounds = floor.iter().chain(&lid).fold(egui::Rect::NOTHING, |rect, point| {
+            rect.union(egui::Rect::from_pos(*point))
+        });
+        if !clip.intersects(bounds) {
+            continue;
+        }
+        // A wall is bone, a pane is glass, and anything a shard invented between
+        // them lands between them.
+        let stroke = egui::Stroke::new(1.0, {
+            let t = f32::from(cell.opacity.saturating_sub(PANE)) / f32::from(OPAQUE - PANE);
+            let lerp = |pane: f32, wall: f32| (pane + (wall - pane) * t.clamp(0.0, 1.0)) as u8;
+            egui::Color32::from_rgba_unmultiplied(lerp(90.0, 230.0), lerp(190.0, 230.0), 255, 110)
+        });
+        painter.add(egui::Shape::closed_line(floor.clone(), stroke));
+        painter.add(egui::Shape::closed_line(lid.clone(), stroke));
+        for (bottom, top) in floor.into_iter().zip(lid) {
+            painter.line_segment([bottom, top], stroke);
+        }
     }
 }
 
