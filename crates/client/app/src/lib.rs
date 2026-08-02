@@ -461,6 +461,10 @@ pub fn run<D: Dial + Send + 'static>(
         window: None,
         pending: shell::Request::default(),
         selected_tile: None,
+        // Nobody has pointed at anything yet, and a window that opens under a
+        // resting cursor hears `CursorEntered` on the first move.
+        pointer_inside: false,
+        show_terrain: false,
         covered: None,
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),
@@ -889,6 +893,22 @@ struct App {
     /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
     /// slide off the tile the moment the mouse does.
     selected_tile: Option<(u16, u16)>,
+    /// Whether the cursor is inside the window at all.
+    ///
+    /// The other half of "does the world own the mouse", and the half no egui
+    /// state can answer: a cursor that has left the window stops sending
+    /// positions, so the last one it sent stays true for ever and the highlight
+    /// it picked sits on the ground with nobody pointing at it. `CursorLeft` is
+    /// the only event that says so.
+    pointer_inside: bool,
+    /// Whether the HUD is drawing what `common/movement` thinks of the ground —
+    /// see [`App::terrain_overlay`].
+    ///
+    /// Off by default and paid for only while it is on: the overlay asks a
+    /// walkability question of every tile in view and plans a route every frame,
+    /// which is a bill worth a debugging picture and not worth a frame nobody is
+    /// looking at.
+    show_terrain: bool,
     /// The tile rectangle whose land and statics have been offered to the
     /// atlases, or `None` when nothing has.
     ///
@@ -1146,7 +1166,21 @@ impl ApplicationHandler<link::Update> for App {
                     }
                 }
             }
+            // A cursor that has left says so once and then goes quiet, so the
+            // flag is what stands in for the positions that stop arriving. It
+            // reaches here even when egui consumed the move that preceded it:
+            // `on_window_event` does not claim these.
+            WindowEvent::CursorEntered { .. } => {
+                self.pointer_inside = true;
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.pointer_inside = false;
+                if let Some(window) = self.window.as_ref() {
+                    window.window.request_redraw();
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_inside = true;
                 // Relative to the *viewport* and not the window: the camera's
                 // own centre is the viewport's, so a cursor measured from the
                 // window would zoom about a point half a panel away.
@@ -1960,6 +1994,96 @@ impl App {
         Some(self.tile_info(x, y))
     }
 
+    /// What `common/movement` makes of the ground on screen, and the way through
+    /// it — the HUD's terrain overlay, gathered only while it is switched on.
+    ///
+    /// **Not a second opinion about walkability.** Every answer here comes from
+    /// the same [`Terrain`] every step decision on this end asks — the client's
+    /// map with the shard's items laid over it — so a tile the picture calls
+    /// blocked is a tile the walk will refuse. A private "is this passable"
+    /// written for the overlay would be a second policy, and the first bug it hid
+    /// would be one of its own.
+    ///
+    /// Passability is asked per *tile* and not per step: `spawn_z` finds the
+    /// surface a body would stand on regardless of how far that is from the
+    /// player's own height — so a building's upper floor reads open from the
+    /// street rather than blocked — and `can_fit` is what says nothing solid is
+    /// standing in the body's space there, the clutter included.
+    ///
+    /// The route is the plan being walked, if there is one. When there is not,
+    /// it is the plan that *would* be walked to the tile under the cursor, which
+    /// is the question actually being asked while dragging the mouse over a
+    /// building looking for the way in. One [`find_path`] per frame, and only
+    /// while the overlay is on.
+    fn terrain_overlay(&self, camera: Camera, hover: Option<&shell::PickedTile>) -> shell::TerrainOverlay {
+        use openshard_movement::{PLAYER_HEIGHT, Tile, find_path, step_allowed};
+
+        let terrain = self.clutter.over(&self.map, &self.tiledata);
+        let near = i32::from(self.player.at.z);
+        let mut open = Vec::new();
+        let mut blocked = Vec::new();
+        // The same clamp the ground pass uses, so the wash covers exactly the
+        // tiles that were drawn and no strip of it hangs off the map.
+        if let Some((xs, ys)) = camera
+            .visible_tiles()
+            .clamp_to(self.map.width(), self.map.height())
+        {
+            for y in ys {
+                for x in xs.clone() {
+                    let tile = Tile::new(x, y);
+                    let stand = terrain
+                        .spawn_z(tile, near)
+                        .filter(|&z| terrain.can_fit(tile, z, PLAYER_HEIGHT));
+                    match stand {
+                        // `saturating` rather than `unwrap`: a `z` outside `i8`
+                        // is a corrupt block and not an invariant of ours, and a
+                        // diamond drawn at the wrong height is a better answer
+                        // than a panic in a debugging overlay.
+                        Some(z) => open.push(Point {
+                            x,
+                            y,
+                            z: z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8,
+                        }),
+                        None => blocked.push(Point {
+                            x,
+                            y,
+                            z: terrain.ground_z(tile).unwrap_or(0),
+                        }),
+                    }
+                }
+            }
+        }
+
+        // Directions, from wherever they come from, walked out into the tiles
+        // they land on — `step_allowed` because it is what corrects a step's `z`
+        // to the surface it lands on, which is the height the marker is drawn at.
+        let mut steps: Vec<Direction> = self.steer.route().collect();
+        if steps.is_empty() {
+            if let Some(tile) = hover {
+                let to = Point {
+                    x: tile.x,
+                    y: tile.y,
+                    z: tile.land_z,
+                };
+                steps = find_path(&terrain, self.player.at, to, steer::PLAN_BUDGET).unwrap_or_default();
+            }
+        }
+        let mut at = self.player.at;
+        let mut route = vec![at];
+        for direction in steps {
+            let Some(next) = step_allowed(&terrain, at, direction) else {
+                // The plan and the ground disagree, which is a thing worth
+                // seeing rather than papering over: the line stops where they
+                // parted company.
+                break;
+            };
+            at = next;
+            route.push(at);
+        }
+
+        shell::TerrainOverlay { open, blocked, route }
+    }
+
     /// Do what the HUD asked for on the frame before this one.
     ///
     /// Every writer the shell has, in one place and at one moment: the top of a
@@ -1988,6 +2112,9 @@ impl App {
         if let Some(ease) = request.ease {
             self.crowd.set_ease(ease);
         }
+        if let Some(show) = request.show_terrain {
+            self.show_terrain = show;
+        }
         // The window the metrics are taken over, and not a clear: the frames
         // already held were flown by the same rig.
         if let Some(span) = request.scope_span {
@@ -2013,6 +2140,16 @@ impl App {
     /// below it are two readers of one picture, and the only way they cannot
     /// disagree is for there to be one value. See [`App::draw`].
     fn hud(&self, camera: Camera) -> shell::Hud {
+        // Who owns the mouse, asked once and answered for the whole frame. The
+        // world may only read the cursor when the UI is not holding it: a
+        // pointer over a panel picks no tile, so nothing is highlighted under
+        // the panel and nothing is highlighted where the pointer *was* when it
+        // went over one. See [`shell::Shell::holds_pointer`].
+        let ui_holds = self.shell.as_ref().is_some_and(shell::Shell::holds_pointer);
+        let hover = match self.pointer_inside && !ui_holds {
+            true => self.pick_tile(camera),
+            false => None,
+        };
         let (mobiles, items) = match self.view.as_ref() {
             Some(view) => {
                 let mut mobiles: Vec<_> = view
@@ -2064,7 +2201,11 @@ impl App {
             offline: self.link.is_none(),
             mobiles,
             items,
-            hover: self.pick_tile(camera),
+            show_terrain: self.show_terrain,
+            terrain: self
+                .show_terrain
+                .then(|| self.terrain_overlay(camera, hover.as_ref())),
+            hover,
             selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
             gumps: self

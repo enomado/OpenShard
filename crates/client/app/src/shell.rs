@@ -29,6 +29,13 @@
 //! 3. **Input.** A consumed event must reach neither the camera nor the walk
 //!    keys, or a drag inside a panel pans the world underneath it.
 //!    [`Shell::on_window_event`] answers that question and its caller obeys.
+//!    A *consumed* event is not the whole of it, though: an event the UI took is
+//!    an event the world never hears, so the world's idea of where the cursor is
+//!    stops updating and keeps whatever it last saw — which is why the cursor
+//!    going over a panel used to freeze the tile highlight at the panel's edge
+//!    rather than put it out. [`Shell::holds_pointer`] is the positive question,
+//!    asked once and answered for the whole frame, and the world reads *that*
+//!    rather than inferring it from an absence of events.
 //! 4. **Points against pixels.** egui lays out in logical points and the world
 //!    is drawn in physical pixels, so the rect egui leaves free is multiplied by
 //!    `pixels_per_point` before it becomes the camera's viewport. Getting this
@@ -114,6 +121,11 @@ pub struct Hud {
     /// is what makes its numbers holdable still long enough to copy — the
     /// live hover moves out from under the cursor the moment it does.
     pub selected: Option<PickedTile>,
+    /// Whether the terrain overlay is switched on, for the checkbox that says so.
+    pub show_terrain: bool,
+    /// What that overlay draws, gathered only while it is on: see
+    /// [`TerrainOverlay`].
+    pub terrain: Option<TerrainOverlay>,
     /// The tile the body is walking to, while it still is.
     ///
     /// The one piece of feedback a move order needs: a click that named a tile
@@ -150,6 +162,27 @@ pub struct PickedTile {
     pub statics: Vec<(u16, i8, u16)>,
 }
 
+/// The walkability of what is on screen, and the way through it.
+///
+/// A debugging picture of the *movement* crate's own answers, drawn over the
+/// ground they are about: pathing bugs are the kind that can be reasoned about
+/// for an hour and seen in a second — a doorway the plan will not take is a red
+/// diamond in a gap that looks open, and a route that goes the long way round
+/// says so on the map rather than in a log line.
+///
+/// Every point carries the `z` its diamond is drawn at, so a tile lies on the
+/// surface a body would actually stand on rather than on the bare ground under a
+/// building's floor.
+pub struct TerrainOverlay {
+    /// The tiles in view a body can stand on.
+    pub open: Vec<openshard_protocol::world::Point>,
+    /// The tiles in view it cannot — no surface, or something solid in the way.
+    pub blocked: Vec<openshard_protocol::world::Point>,
+    /// The route being walked, or the one that would be walked to the tile under
+    /// the cursor: the body's own tile first, then one point per step.
+    pub route: Vec<openshard_protocol::world::Point>,
+}
+
 /// What the panels asked for this frame.
 ///
 /// No longer `Copy`: two of these carry what the player typed. A request is
@@ -175,6 +208,12 @@ pub struct Request {
     pub rig: Option<Rig>,
     /// A new body ease, if the slider moved.
     pub ease: Option<crate::crowd::Ease>,
+    /// Switch the terrain overlay on or off, on the frame the box was ticked.
+    ///
+    /// Sent on the change and not every frame, like the rig: the overlay costs a
+    /// walkability lookup per visible tile and a fresh plan per frame, and that
+    /// is a bill the client should only pay while somebody is looking at it.
+    pub show_terrain: Option<bool>,
     /// Start or stop a scripted walk.
     pub script: Option<ScriptRequest>,
     /// How long a window the scope should keep from now on.
@@ -262,6 +301,18 @@ impl Shell {
     /// A `true` here means the camera and the walk keys must not see the event.
     pub fn on_window_event(&mut self, window: &Window, event: &winit::event::WindowEvent) -> bool {
         self.state.on_window_event(window, event).consumed
+    }
+
+    /// Whether the pointer belongs to the UI rather than to the world.
+    ///
+    /// Over a panel or a window, or holding a widget that has been dragged out
+    /// from under itself — in either case the world must not read the cursor: no
+    /// tile is picked, nothing is highlighted, and a click is the UI's. The
+    /// answer is egui's own from the frame just laid out, which is the same
+    /// answer `on_window_event` consumes pointer events by, so the two can never
+    /// disagree about who owns the mouse.
+    pub fn holds_pointer(&self) -> bool {
+        self.context.is_pointer_over_egui() || self.context.egui_is_using_pointer()
     }
 
     /// How long the UI is content to wait before it wants drawing again.
@@ -422,42 +473,6 @@ fn layout(
         });
     });
 
-    // What the status panel above left free — the same rect `Shell::run` reads
-    // back afterwards, since only a panel narrows it and no window does. Read
-    // here rather than passed in, so this stays the one place that decides it.
-    let viewport_origin = root.available_rect_before_wrap().min;
-    if let Some(tile) = &hud.hover {
-        draw_tile_highlight(
-            root,
-            &hud.camera,
-            tile,
-            viewport_origin,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40),
-            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 180)),
-        );
-    }
-    if let Some(tile) = &hud.selected {
-        draw_tile_highlight(
-            root,
-            &hud.camera,
-            tile,
-            viewport_origin,
-            egui::Color32::from_rgba_unmultiplied(0, 220, 255, 60),
-            egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 220, 255)),
-        );
-    }
-    // Where the body is walking to, and gone the moment it arrives or gives up.
-    if let Some(tile) = &hud.goal {
-        draw_tile_highlight(
-            root,
-            &hud.camera,
-            tile,
-            viewport_origin,
-            egui::Color32::from_rgba_unmultiplied(0, 255, 120, 50),
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 120)),
-        );
-    }
-
     egui::Window::new("Camera")
         .default_pos([16.0, 48.0])
         .show(&context, |ui| {
@@ -546,6 +561,30 @@ fn layout(
     egui::Window::new("Tile")
         .default_pos([16.0, 520.0])
         .show(&context, |ui| {
+            let mut show = hud.show_terrain;
+            if ui
+                .checkbox(&mut show, "terrain — walkable green, blocked red, route orange")
+                .changed()
+            {
+                request.show_terrain = Some(show);
+            }
+            match &hud.terrain {
+                Some(terrain) => {
+                    ui.label(format!(
+                        "{} open, {} blocked, route {} steps",
+                        terrain.open.len(),
+                        terrain.blocked.len(),
+                        terrain.route.len().saturating_sub(1),
+                    ));
+                }
+                // The counts are the overlay's own companion: an empty picture
+                // is a client that found nothing and a client that asked
+                // nothing, and those look identical on the ground.
+                None => {
+                    ui.label("off");
+                }
+            }
+            ui.separator();
             ui.label("hover — glows yellow, moves with the cursor");
             tile_panel(ui, hud.hover.as_ref());
             ui.separator();
@@ -554,6 +593,54 @@ fn layout(
         });
 
     request.say = speech_line(root, hud, typed);
+
+    // Every panel has claimed its edge by now, so what is left of the root `Ui`
+    // is the world's own rectangle — the very rect `Shell::run` reads back a
+    // moment later and hands the camera. Read *here*, at the foot of the layout
+    // and not in the middle of it: taken before the speech strip took its edge,
+    // this was a rectangle the world is not drawn in, and the markers clipped to
+    // it were painted over the strip. Windows do not narrow it and must not: they
+    // float over the world, and a marker under one is correctly hidden by it
+    // rather than clipped away.
+    let viewport = root.available_rect_before_wrap();
+    let world = world_painter(root, viewport);
+    // The terrain map goes down first: it is a wash over the ground, and the
+    // three markers below are read against it.
+    if let Some(terrain) = &hud.terrain {
+        draw_terrain(&world, &hud.camera, terrain, viewport.min);
+    }
+    if let Some(tile) = &hud.hover {
+        draw_tile_highlight(
+            &world,
+            &hud.camera,
+            tile,
+            viewport.min,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40),
+            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 180)),
+        );
+    }
+    if let Some(tile) = &hud.selected {
+        draw_tile_highlight(
+            &world,
+            &hud.camera,
+            tile,
+            viewport.min,
+            egui::Color32::from_rgba_unmultiplied(0, 220, 255, 60),
+            egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 220, 255)),
+        );
+    }
+    // Where the body is walking to, and gone the moment it arrives or gives up.
+    if let Some(tile) = &hud.goal {
+        draw_tile_highlight(
+            &world,
+            &hud.camera,
+            tile,
+            viewport.min,
+            egui::Color32::from_rgba_unmultiplied(0, 255, 120, 50),
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 120)),
+        );
+    }
+
     // Over everything, and last: a dialog the shard opened is the one thing on
     // screen that is waiting for an answer.
     request.gump = gumps.show(&context, &hud.gumps, hues);
@@ -1042,13 +1129,64 @@ fn tile_panel(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
     }
 }
 
-/// The glow over a tile's diamond: [`Camera::tile_diamond`] gives the corners
-/// in *viewport* pixels, physical and post-blit, so they are scaled by
-/// `1 / pixels_per_point` and offset by where the viewport starts in the root
-/// `Ui`'s own space before a painter can use them — the same points-against-
-/// pixels conversion `Shell::run` does for the rect the other direction.
+/// The painter every world marker is drawn with: behind the UI, and inside the
+/// world.
+///
+/// Two properties, and each of them is a bug that was there before:
+///
+/// * **Order.** [`egui::Order::Background`] puts these under the windows, which
+///   is where a thing lying on the ground belongs — in
+///   [`Foreground`](egui::Order::Foreground) a tile highlight was drawn *over*
+///   the panel the cursor was hovering, so the world leaked onto the UI.
+/// * **Clip.** Layers inside one order are painted in the order they are
+///   created, and the panels' own background layer exists before this one — so
+///   the order alone does not keep a marker off a docked panel. The clip rect
+///   does, and it is the same rectangle the world itself is drawn into, so
+///   nothing can be painted where the world is not.
+fn world_painter(ui: &egui::Ui, viewport: egui::Rect) -> egui::Painter {
+    ui.ctx()
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("world-overlay"),
+        ))
+        .with_clip_rect(viewport)
+}
+
+/// Where a tile's diamond falls in the root `Ui`'s own space.
+///
+/// [`Camera::tile_diamond`] gives the corners in *viewport* pixels, physical and
+/// post-blit, so they are scaled by `1 / pixels_per_point` and offset by where
+/// the viewport starts — the same points-against-pixels conversion `Shell::run`
+/// does for the rect, the other way round.
+fn tile_corners(
+    painter: &egui::Painter,
+    camera: &Camera,
+    point: openshard_protocol::world::Point,
+    viewport_origin: egui::Pos2,
+) -> Vec<egui::Pos2> {
+    let scale = 1.0 / painter.ctx().pixels_per_point();
+    camera
+        .tile_diamond(point)
+        .map(|corner| viewport_origin + egui::vec2(corner.x * scale, corner.y * scale))
+        .to_vec()
+}
+
+/// Where a tile's centre falls there — the route's own polyline runs through
+/// these.
+fn tile_centre(
+    painter: &egui::Painter,
+    camera: &Camera,
+    point: openshard_protocol::world::Point,
+    viewport_origin: egui::Pos2,
+) -> egui::Pos2 {
+    let scale = 1.0 / painter.ctx().pixels_per_point();
+    let centre = camera.to_viewport(camera.to_screen(point));
+    viewport_origin + egui::vec2(centre.x * scale, centre.y * scale)
+}
+
+/// The glow over one tile's diamond.
 fn draw_tile_highlight(
-    ui: &egui::Ui,
+    painter: &egui::Painter,
     camera: &Camera,
     tile: &PickedTile,
     viewport_origin: egui::Pos2,
@@ -1060,16 +1198,51 @@ fn draw_tile_highlight(
         y: tile.y,
         z: tile.land_z,
     };
-    let scale = 1.0 / ui.ctx().pixels_per_point();
-    let corners = camera
-        .tile_diamond(point)
-        .map(|corner| viewport_origin + egui::vec2(corner.x * scale, corner.y * scale))
-        .to_vec();
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("tile-highlight"),
-    ));
+    let corners = tile_corners(painter, camera, point, viewport_origin);
     painter.add(egui::Shape::convex_polygon(corners, fill, stroke));
+}
+
+/// The walkability wash and the route over it.
+///
+/// Fills without strokes for the tiles: one outlined diamond per visible tile is
+/// a thousand strokes a frame and a picture nobody can read through, while a
+/// translucent wash leaves the art underneath legible — which is the point, since
+/// what is being looked for is a red tile somewhere the art says there is a way
+/// through.
+fn draw_terrain(
+    painter: &egui::Painter,
+    camera: &Camera,
+    terrain: &TerrainOverlay,
+    viewport_origin: egui::Pos2,
+) {
+    // Faint on purpose. The overlay is read *against* the art — a red diamond
+    // matters because the ground under it looks like a way through — so a wash
+    // heavy enough to hide what it is covering answers the wrong question. These
+    // are the weakest values the two are still tellable apart at.
+    let open = egui::Color32::from_rgba_unmultiplied(60, 255, 90, 14);
+    let blocked = egui::Color32::from_rgba_unmultiplied(255, 40, 40, 30);
+    for (tiles, fill) in [(&terrain.open, open), (&terrain.blocked, blocked)] {
+        for &point in tiles {
+            let corners = tile_corners(painter, camera, point, viewport_origin);
+            painter.add(egui::Shape::convex_polygon(corners, fill, egui::Stroke::NONE));
+        }
+    }
+    // The route last, over its own ground: a line through the tile centres, and
+    // a dot on each step so a diagonal can be told from a pair of orthogonals.
+    let centres: Vec<egui::Pos2> = terrain
+        .route
+        .iter()
+        .map(|&point| tile_centre(painter, camera, point, viewport_origin))
+        .collect();
+    if centres.len() > 1 {
+        painter.add(egui::Shape::line(
+            centres.clone(),
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 160, 0)),
+        ));
+    }
+    for centre in centres {
+        painter.circle_filled(centre, 2.5, egui::Color32::from_rgb(255, 200, 80));
+    }
 }
 
 #[cfg(test)]

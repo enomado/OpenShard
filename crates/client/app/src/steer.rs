@@ -162,7 +162,7 @@ use crate::keys::Held;
 /// across an unbroken wall, out over open water — pays the full budget on every
 /// one of those, `STUCK_STEPS` times over and again on every re-click. A budget
 /// sized for "ample" and not "generous" is what keeps that bounded.
-const PLAN_BUDGET: usize = 600;
+pub const PLAN_BUDGET: usize = 600;
 
 /// How many steps in a row may leave the body exactly where it was before a walk
 /// to a destination gives up.
@@ -496,6 +496,16 @@ impl Steering {
     /// The tile being walked to, for the marker the HUD draws on it.
     pub const fn goal(&self) -> Option<(u16, u16)> {
         self.goal
+    }
+
+    /// The steps left of the plan, in the order they will be walked.
+    ///
+    /// For the HUD's terrain overlay and nothing else: a route is walked from
+    /// the front by [`Steering::take`], so what is here is the *remaining* plan
+    /// and is empty both before the first plan and when no route could be found
+    /// — which the overlay draws the same way, as no line.
+    pub fn route(&self) -> impl ExactSizeIterator<Item = Direction> + '_ {
+        self.route.iter().copied()
     }
 
     /// The step due by now, if one is.

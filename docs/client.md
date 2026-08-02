@@ -2434,3 +2434,46 @@ the way and not done:
   moment multis land this end will walk into their walls exactly the way it
   walked into barrels. Whatever indexes them for drawing should feed `Clutter`
   in the same pass.
+
+## Backlog, found while separating the world's markers from the UI
+
+- ~~**The tile markers were drawn over egui.**~~ The hover, the selection and
+  the walk goal were painted into an `Order::Foreground` layer with no clip, so
+  a diamond under the cursor was drawn *on top of* the panel the cursor was
+  hovering — the world leaking onto the UI. Fixed with one
+  `shell::world_painter`: `Order::Background`, which puts them under the
+  windows where a thing lying on the ground belongs, and clipped to the world's
+  own viewport rect, which is what keeps them off the docked panels (layers
+  inside one order are painted in creation order, and the panels' background
+  layer already exists, so the order alone does not do it).
+- ~~**The overlay's rect was read in the middle of the layout.**~~ It was taken
+  after the status panel and *before* the speech strip claimed its edge, so it
+  named a rectangle the world is not drawn in and the markers were clipped to
+  the strip's rows as well. Read at the foot of `shell::layout` now, which is
+  the same rect `Shell::run` hands the camera a moment later.
+- ~~**The hover was inferred from an absence of events.**~~ A cursor over a
+  panel has its `CursorMoved` consumed by egui, so the world's idea of where it
+  is simply stopped updating and the highlight froze at the panel's edge instead
+  of going out — behaviour that looked deliberate and was not. The positive
+  question is asked once a frame now (`Shell::holds_pointer`, plus
+  `App::pointer_inside` for the cursor leaving the window entirely, which no
+  egui state can answer) and `App::hud` picks no tile unless the world owns the
+  pointer.
+- **The markers are still egui shapes, not world geometry.** They are drawn
+  after the world pass and therefore over everything in it: a highlight on a
+  tile a mobile is standing on is drawn over the mobile, where the ground it is
+  lying on is behind them. Correct is a quad in the world pass with the ground's
+  own depth. It has not mattered yet because a one-tile diamond under a body is
+  mostly hidden anyway, and the terrain overlay below makes it matter more.
+- **The terrain overlay is thousands of egui polygons a frame.** `App::terrain_overlay`
+  asks `spawn_z`/`can_fit` of every tile in view and `shell::draw_terrain` emits
+  a filled diamond for each — 7,600 of them at 1600x1000, about 2ms of frame
+  build. Fine for a debug toggle that is off by default, and the wrong shape the
+  moment anything wants it on permanently: it is one instanced quad draw with a
+  per-tile colour, in the same pass as the markers above.
+- **`Cluttered` does not clutter `stand_z` or `spawn_z`.** Both delegate
+  straight to the map; only `can_step` and `can_fit` consult the index. That is
+  why `terrain_overlay` has to ask the two of them together to get an answer the
+  walk agrees with, and a caller that asks `stand_z` alone gets a surface with a
+  barrel standing on it. Either the two should consult the index or the trait
+  should say plainly that they answer for the map only.
