@@ -96,6 +96,23 @@ impl Face {
         }
     }
 
+    /// Where this face's own edge is on the screen: how far *below* the tile's
+    /// centre row the ground line is, for a pixel `across` pixels from the tile's
+    /// column.
+    ///
+    /// The forward projection of one edge of the diamond, and the thing a wall's
+    /// base line has to land on. Unlike [`Face::run_at`] it does not saturate —
+    /// it is a line, and asking where it is outside the face's own half is a
+    /// question with an answer.
+    pub fn edge_at(self, across: f32) -> f32 {
+        match self {
+            Self::North => across - HALF_TILE_WIDTH,
+            Self::East => HALF_TILE_WIDTH - across,
+            Self::South => across + HALF_TILE_WIDTH,
+            Self::West => -across - HALF_TILE_WIDTH,
+        }
+    }
+
     /// How far along this face a pixel `across` pixels from the tile's own
     /// column is, as a `0..=1` run. The inverse of the projection, for one edge.
     ///
@@ -164,6 +181,18 @@ const STRAIGHT: i32 = 2;
 /// tolerance for the ends being blunt rather than for a slope being different.
 const SQUARE: i32 = 3;
 
+/// How far a base pixel may sit from the tile edge the face names, in pixels.
+///
+/// Three: the antialiasing, the half-pixel of an odd-width sprite, and a pixel
+/// of headroom over the widest real one. Measured — over the wall graphics this
+/// reads, the median distance is exactly zero and the largest is two — and the
+/// headroom is there because a tolerance sitting exactly on the widest thing it
+/// has seen is a tolerance that has not been tested.
+///
+/// This is a *position* and not a slope, which is what makes it the one gate
+/// here with nothing to argue about: see where it is used.
+const OFF_EDGE: f32 = 3.0;
+
 /// How tall the wall must stand over its base, in pixels, before this is willing
 /// to call it a wall.
 ///
@@ -195,7 +224,7 @@ pub fn face_of(image: &Image) -> Option<Face> {
     // and a graphic that somehow satisfied both would be a corner and is refused
     // by the check inside each.
     for half in [Half::Right, Half::Left] {
-        if let Some(face) = half.read(&base, width) {
+        if let Some(face) = half.read(&base, width, image.height()) {
             return Some(face);
         }
     }
@@ -222,7 +251,7 @@ impl Half {
 
     /// The face on this half of the column, or `None` if the art is not a wall
     /// standing on it.
-    fn read(self, base: &BaseEdge, width: u16) -> Option<Face> {
+    fn read(self, base: &BaseEdge, width: u16, height: u16) -> Option<Face> {
         let middle = f32::from(width) / 2.0;
         // The columns of this half, and everything the other half may not hold.
         let mut mine: Vec<(i32, u16)> = Vec::new();
@@ -287,12 +316,38 @@ impl Half {
             return None;
         }
 
-        Some(match (self, descending_right) {
+        let face = match (self, descending_right) {
             (Self::Right, true) => Face::North,
             (Self::Right, false) => Face::East,
             (Self::Left, true) => Face::South,
             (Self::Left, false) => Face::West,
-        })
+        };
+
+        // And the base line is *where the edge is*, not merely parallel to it.
+        //
+        // Everything above measures the line's direction and its straightness,
+        // and neither pins down where it sits. Nothing has to: a wall's base is
+        // where it meets the ground, `statics::stand_on` puts the sprite's bottom
+        // row on the diamond's bottom vertex, so the edge's own screen position
+        // is fully determined by the face. There is no freedom left, and the
+        // client agrees — over the 943 wall graphics this reads, the median
+        // distance from the base line to the predicted edge is exactly zero.
+        //
+        // What it catches is the thing the slope cannot: a picture with the right
+        // *direction* somewhere else in the tile. `0x0171` is a flat diamond
+        // drawn eighty pixels above its own tile — a roof or an awning — whose
+        // lower-right side is a clean 45° run in the right half with nothing in
+        // the left, and which passed every other gate here. Shading a horizontal
+        // surface as a vertical face is worse than leaving it alone.
+        let bottom_row = f32::from(height) - HALF_TILE_WIDTH;
+        for (column, bottom) in &mine {
+            let across = *column as f32 + 0.5 - middle;
+            let drawn = f32::from(*bottom) + 0.5 - bottom_row;
+            if (drawn - face.edge_at(across)).abs() > OFF_EDGE {
+                return None;
+            }
+        }
+        Some(face)
     }
 }
 
@@ -505,6 +560,50 @@ mod tests {
                 if !pixels[from].is_transparent() && pixels[to].is_transparent() {
                     pixels[to] = pixels[from];
                 }
+            }
+        }
+        Image::new(width, height, pixels)
+    }
+
+    /// A picture in the right *shape* somewhere else in the tile is not a wall.
+    ///
+    /// The gate the slope cannot supply: a 45° line has the same direction
+    /// wherever it sits, and a wall's base has nowhere to sit but the tile edge.
+    /// `0x0171` is the client's own case — a flat diamond drawn eighty pixels
+    /// above its own tile, an awning or a roof, whose lower-right side is a
+    /// clean run in the right half with the left half empty. It passed every
+    /// other gate here and was shaded as a vertical face.
+    ///
+    /// Lifting is the honest mutation for it: the same silhouette, the same
+    /// slope, the same straightness, the same standing height, moved. Only the
+    /// position test can tell the two apart.
+    #[test]
+    fn a_wall_shaped_picture_off_its_tile_s_edge_is_undecided() {
+        let wall = silhouette(Face::East, 60);
+        assert_eq!(face_of(&wall), Some(Face::East), "the fixture is not a wall");
+        assert_eq!(
+            face_of(&lifted(&wall, 2)),
+            Some(Face::East),
+            "two pixels is rounding"
+        );
+        for by in [6, 20, 40] {
+            assert_eq!(
+                face_of(&lifted(&wall, by)),
+                None,
+                "lifted {by} pixels off its edge"
+            );
+        }
+    }
+
+    /// The same picture with everything drawn in it moved `by` rows up the image,
+    /// which is what an awning drawn above its own tile looks like.
+    fn lifted(image: &Image, by: u16) -> Image {
+        let (width, height) = (image.width(), image.height());
+        let mut pixels = vec![Color16::TRANSPARENT; usize::from(width) * usize::from(height)];
+        for y in by..height {
+            for x in 0..width {
+                pixels[usize::from(y - by) * usize::from(width) + usize::from(x)] =
+                    image.pixel(x, y).unwrap();
             }
         }
         Image::new(width, height, pixels)

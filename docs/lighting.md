@@ -511,7 +511,7 @@ never showed it, because a floor's tile is not an occluder.
       switch. `light.rs` and `blit.wgsl` were not touched — the attachment is
       their input, exactly as planned.
 
-      **What it reads, measured rather than hoped.** 37% of the install's 3,212
+      **What it reads, measured rather than hoped.** 36% of the install's 3,212
       `WALL` graphics, and **76% of the 4,596 wall statics standing in Britain**
       — the second is the number that decides how a frame looks, and the two are
       reported apart because the table is mostly things nobody built with. The
@@ -522,8 +522,8 @@ never showed it, because a floor's tile is not an occluder.
       detector with no coverage count is a green light for having checked
       nothing.
 
-      Three things the detector had to be taught by being caught getting them
-      wrong, all three by the sweep rather than by reasoning:
+      Four things the detector had to be taught by being caught getting them
+      wrong, all four by measurement rather than by reasoning:
 
       - **It only looked at the half it had proposed.** A 106-pixel statue read
         as a north face because its mass, far off to the left of any tile edge,
@@ -535,6 +535,27 @@ never showed it, because a floor's tile is not an occluder.
         and a corner still covers the whole other half, 21.5 pixels of it.
       - **A slab is not a wall.** A roof piece has the right 45° base and no
         height above it, so the detector asks that the thing stand up.
+      - **A 45° line has the same slope wherever it sits.** Everything above
+        measures the base line's *direction*; nothing pinned down its
+        *position*, and nothing had to — `statics::stand_on` puts a sprite's
+        bottom row on the diamond's bottom vertex, so the edge's screen position
+        is fully determined by the face, with no freedom at all. `0x0171` is what
+        that bought: a flat diamond drawn eighty pixels above its own tile, an
+        awning, whose lower-right side is a clean run in the empty right half. It
+        passed every other gate and was shaded as a vertical face. The gate is
+        that a base pixel lands within three pixels of the edge it claims — and
+        the client agrees to the pixel, median zero over 908 graphics. It removed
+        45 graphics from the table and **not one instance from Britain**, which
+        is what a false-positive gate should do.
+
+      **Doors are not a special case, and it shows.** 558 graphics carry `DOOR`
+      and are offered like anything else. The ones read sit on a tile edge as
+      squarely as a plain wall — median distance zero, none over two pixels — so
+      an open leaf, where the art puts it on an edge, is shaded along the axis it
+      actually swung to. The wide open leaves, 56 to 106 pixels across, stick
+      past their own tile and die on `OVERHANG`. Decision 11 said an open door is
+      a static that stopped being an occluder and nothing here knows what a door
+      is; this arrives at the same place from the shading side.
 
       **And the art only ever draws two of the four.** Every wall the install
       ships stands on its tile's `y1` or `x1` edge — the two an isometric camera
@@ -815,6 +836,12 @@ Found while measuring a wall's facing out of its art:
   halves by the time it gives up. Two faces in the stance would need four more
   values and a rule for which half of the sprite a pixel is on — which the
   fragment shader has in `across` already.
+- **Nothing measures how far a decided face is from the edge except a gate.**
+  The check that caught `0x0171` is a pass/fail inside `face_of`; the *median*
+  and the outlier list that made it obvious were a throwaway script. A graphic
+  drifting from zero to two pixels across a client version is invisible until it
+  crosses three and vanishes. The sweep prints two shares and could print this
+  distribution for a few lines more.
 - **The sweep reads the whole art file to answer a question about 3,212
   graphics.** It takes a couple of seconds, which is fine for an `#[ignore]`d
   test and would not be if it ever moved into CI.

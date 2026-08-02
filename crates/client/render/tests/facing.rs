@@ -35,7 +35,7 @@ use openshard_uofiles::tiledata::{TileData, TileFlags};
 
 /// How much of the install's wall *art* this has to be able to read.
 ///
-/// Measured, not chosen: the sweep produced 37.3% the day it was written. The
+/// Measured, not chosen: the sweep produced 36.3% the day it was written. The
 /// floor is under it by a margin, because the number this catches is a gate
 /// tightened until the feature stops applying — not a version of the art with a
 /// few graphics more.
@@ -119,6 +119,14 @@ fn every_wall_graphic_the_client_ships_is_offered_to_the_detector() {
         share * 100.0,
         MUST_DECIDE_ART * 100.0,
     );
+
+    // Doors are walls with a hinge, and the detector is offered them like
+    // anything else: 558 of the install's graphics carry `DOOR`, and the ones it
+    // reads sit on a tile edge as squarely as a plain wall does — median
+    // distance zero, none further than two pixels. What it refuses are the wide
+    // open leaves, 56 to 106 pixels across, which stick past their own tile and
+    // die on `OVERHANG`. Nothing here treats a door as a special case, which is
+    // decision 11's whole point arriving from a second direction.
 
     // **The art only ever draws two of the four.** Every wall graphic in the
     // install stands on its tile's `y1` or `x1` edge — the two an isometric
