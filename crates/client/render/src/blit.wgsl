@@ -45,14 +45,20 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // channels of the cell above.
 @group(0) @binding(5) var field: texture_2d<u32>;
 
-// One flame. Two `vec4`s rather than six fields, because a uniform array's
+// One flame. Three `vec4`s rather than nine fields, because a uniform array's
 // stride is rounded up to 16 bytes either way and this is what the CPU writes:
 //
 //   place = (tile x, tile y, z, radius in tiles)
 //   color = (r, g, b, intensity)
+//   beam  = (axis x, axis y, axis z, cosine of the half-angle)
+//
+// A fire standing in the world lights every direction and writes a `beam` of
+// `(0, 0, 0, -1)`: no cosine is below -1, so the test below is one comparison
+// and the dot product is never reached. `crate::light::Beam`.
 struct Light {
     place: vec4<f32>,
     color: vec4<f32>,
+    beam: vec4<f32>,
 };
 
 // Sized to `Lighting::MAX`, and the two have to agree — this is a uniform
@@ -291,6 +297,39 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
     return through;
 }
 
+// How far in from the rim of a beam its edge finishes softening, as a share of
+// the way from the rim to the axis. `light::BEAM_EDGE`, and the two are one
+// number — a cone with a hard rim reads as a stencil laid over the scene rather
+// than as light.
+const BEAM_EDGE: f32 = 0.25;
+
+// How much of a beamed flame escapes it in every other direction: a hand is not
+// a shutter, and a cone with nothing outside it leaves the character carrying the
+// light as the only black thing in the frame. `light::BEAM_SPILL`, and the two
+// are one number.
+const BEAM_SPILL: f32 = 0.25;
+
+// How much of a flame's beam falls on a spot `offset` away from it — `x` and `y`
+// in tiles and `z` in tiles as well, pointing *from* the flame *to* the spot.
+//
+// `light::Beam::lights`, arithmetic for arithmetic, and the parity test of
+// `docs/lighting.md`'s decision 9 is what holds the two together. The smoothstep
+// is written out rather than called for the same reason: two texts that mean to
+// be one polynomial should be one polynomial.
+fn cone(beam: vec4<f32>, offset: vec3<f32>) -> f32 {
+    let distance = length(offset);
+    if distance < 1.0e-6 {
+        // A spot at the flame itself is inside every beam: there is no direction
+        // from a point to itself, and a lantern's own tile is not the place to
+        // start refusing light.
+        return 1.0;
+    }
+    let along = dot(offset / distance, beam.xyz);
+    let inner = beam.w + (1.0 - beam.w) * BEAM_EDGE;
+    let t = clamp((along - beam.w) / max(inner - beam.w, 1.0e-6), 0.0, 1.0);
+    return BEAM_SPILL + (1.0 - BEAM_SPILL) * t * t * (3.0 - 2.0 * t);
+}
+
 // How many tiles of grid one sunbeam's ray may walk. `light::MAX_SUN_STEPS`.
 const MAX_SUN_STEPS: i32 = 32;
 
@@ -512,6 +551,17 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             // grid walk below is affordable at all.
             continue;
         }
+        // Which way it is pointing, where it points one way at all. A dot
+        // product and a branch: a fire standing in the world writes a rim below
+        // every cosine there is and never reaches the arithmetic.
+        //
+        // `offset` runs from the fragment to the flame and with `z` already
+        // divided into tiles, which is the space the axis is stated in; a beam's
+        // axis runs the other way, so the sign flips here.
+        var lit_by = 1.0;
+        if light.beam.w > -1.0 {
+            lit_by = cone(light.beam, -offset);
+        }
         let through = reaches(at, vec3<f32>(to.x, to.y, to.z));
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
@@ -530,7 +580,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // no cutoff has no radius at all and tints the whole frame. This is the
         // soft pool with a hard end — the shape the reference isometrics draw.
         let fall = 1.0 - d;
-        lit = lit + light.color.rgb * (light.color.w * fall * fall * through);
+        lit = lit + light.color.rgb * (light.color.w * fall * fall * through * lit_by);
     }
 
     // And the sun, which is one direction rather than a place: no distance and no

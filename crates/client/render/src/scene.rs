@@ -24,6 +24,7 @@
 //! the blit. A scene that also carried sprites would need a client install, and
 //! then none of these tests would run anywhere.
 
+use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::{LandCell, Map};
@@ -108,6 +109,15 @@ pub struct Scene {
     /// scene about firelight wants, because a sun would put a second term in
     /// every brightness they assert on.
     pub sun: Option<Sun>,
+    /// Where the character stands and which way they face, when they are the one
+    /// holding the light.
+    ///
+    /// Not a [`light::Light`] in the item list, and not one stored ready-made:
+    /// no walk of a map could find this flame — nothing on the wire says a hand
+    /// is carrying anything — and the flicker has to be the same instant every
+    /// other flame in the frame is at, which is [`Scene::lighting`]'s argument
+    /// and not this field's. See [`light::carried`] and [`Lighting::hold`].
+    pub carried: Option<(Point, Direction)>,
 }
 
 impl Scene {
@@ -133,6 +143,9 @@ impl Scene {
             time,
         );
         lighting.sun = self.sun;
+        if let Some((at, facing)) = self.carried {
+            lighting.hold(light::carried(at, facing, time));
+        }
         lighting
     }
 
@@ -217,6 +230,7 @@ pub fn empty(name: &'static str) -> Scene {
         camera: Camera::new(Point::new(CENTRE.0, CENTRE.1, 0), 800, 600),
         cutaway: Cutaway::OPEN,
         sun: None,
+        carried: None,
     }
 }
 
@@ -349,6 +363,26 @@ pub fn diagonal_gap() -> Scene {
         .with((cx + 2, cy + 2), TORCH)
 }
 
+/// A character in the middle of a shut room, holding a light and facing east.
+///
+/// Nothing burns in this room. The only flame in it is the one in the hand, so
+/// every bright pixel of the scene is the beam's and there is no pool to confuse
+/// it with — which is what makes the four assertions worth making: the floor
+/// ahead is lit, the floor behind is exactly the ambient, the east wall's face is
+/// lit, and the west wall's is not.
+///
+/// East on purpose. It is [`Direction::East`]'s `(1, 0)`, the one step whose
+/// beam runs along a map axis, so a tile is either in front of the character or
+/// behind them and no assertion has to reason about a diagonal.
+pub fn lantern_in_a_room() -> Scene {
+    let mut scene = empty("a character holding a light in a shut room");
+    for tile in room_wall_tiles() {
+        scene = scene.with(tile, WALL);
+    }
+    scene.carried = Some((Point::new(CENTRE.0, CENTRE.1, 0), Direction::East));
+    scene
+}
+
 /// The sun these scenes stand under: the client's own, so that a scene is a
 /// picture of what a player would see rather than of a sky invented for a test.
 ///
@@ -452,6 +486,7 @@ pub fn all() -> Vec<Scene> {
         room_with_open_door(),
         room_with_window(),
         sconce_on_wall(),
+        lantern_in_a_room(),
         cellar_under_street(),
         diagonal_gap(),
         wall_in_the_sun(),

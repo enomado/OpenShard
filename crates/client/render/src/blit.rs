@@ -27,8 +27,9 @@ const MAX_LIGHTS: usize = Lighting::MAX;
 
 /// The uniform block's size: six header `vec4`s — the sky ambient with the light
 /// count, the ground ambient, the occlusion grid's rectangle, which view to
-/// draw, and the sun's direction and colour — then two per light.
-const LIGHTING_BYTES: u64 = (6 + 2 * MAX_LIGHTS as u64) * 16;
+/// draw, and the sun's direction and colour — then three per light: where it
+/// burns, what colour, and which way it points.
+const LIGHTING_BYTES: u64 = (6 + 3 * MAX_LIGHTS as u64) * 16;
 
 /// Where the world image goes on the surface, in physical pixels.
 ///
@@ -445,6 +446,14 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     bytes.extend_from_slice(&sun.intensity.to_le_bytes());
 
     for light in &lighting.lights[..count] {
+        // A fire in the open lights every direction, and says so with an axis of
+        // nothing and a rim below every cosine there is: the shader's one test is
+        // `cos_half > -1`, so an omnidirectional flame costs a comparison and
+        // never a dot product. See `crate::light::Beam`.
+        let beam = light.beam.unwrap_or(crate::light::Beam {
+            toward: [0.0; 3],
+            cos_half: -1.0,
+        });
         for value in [
             light.at.x,
             light.at.y,
@@ -454,6 +463,10 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
             light.color[1],
             light.color[2],
             light.intensity,
+            beam.toward[0],
+            beam.toward[1],
+            beam.toward[2],
+            beam.cos_half,
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }

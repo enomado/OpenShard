@@ -46,6 +46,7 @@
 //! is not allowed to read a clock, so the time arrives as an argument and there
 //! is exactly one place it is used.
 
+use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
@@ -81,6 +82,115 @@ pub struct Light {
     /// How brightly it burns at its centre, flicker already folded in. Above
     /// `1.0` is ordinary: a fire blows out the ground it stands on.
     pub intensity: f32,
+    /// Which way it throws its light, where it throws it one way at all — see
+    /// [`Beam`]. `None` is a fire in the open, which lights every direction
+    /// equally, and it is what everything on the map is.
+    pub beam: Option<Beam>,
+}
+
+/// A flame that lights one direction and not the others: a hooded lantern, or a
+/// torch held out in front of a face.
+///
+/// A cone and not a second radius. Everything else about the light is unchanged
+/// — the same falloff, the same three-dimensional distance, the same walk of the
+/// grid for what stands in the way — and this multiplies the result by how far
+/// inside the cone the lit spot is. That ordering is the whole of why a beam is
+/// cheap: a fragment outside the radius never asks about the angle, and one
+/// outside the cone never walks the ray.
+///
+/// Both ends of the cone are cosines rather than angles because the test is a
+/// dot product: the direction from the flame to the spot against the axis, both
+/// unit vectors in the same units the distance is in — `x` and `y` in tiles and
+/// `z` in tiles as well, which is [`Z_PER_TILE`]'s doing and is what keeps a
+/// beam pointing along the ground from lighting the storey above.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Beam {
+    /// Where it points, unit length. Built by [`Beam::towards`], which is the
+    /// only thing that makes one — a direction of some other length would make
+    /// the dot product below mean nothing.
+    pub toward: [f32; 3],
+    /// The cosine of its half-angle: the rim of the cone. A spot whose direction
+    /// is below this gets nothing at all.
+    pub cos_half: f32,
+}
+
+/// How far in from the rim of a beam its edge finishes softening, as a share of
+/// the way from the rim to the axis.
+///
+/// A cone with a hard rim reads as a stencil laid over the scene rather than as
+/// light — the eye finds the straight edge immediately, the same way it finds
+/// the tile boundary a shadow used to end on. A quarter of the way in is enough
+/// to lose it and narrow enough that a sixty-degree beam still looks sixty
+/// degrees wide. Invented here, like [`FLAME_SPREAD`] and
+/// [`crate::occlusion::PANE`]: no client file has a number for the shape of a
+/// lantern's shutter. `blit.wgsl`'s `BEAM_EDGE`, and the two are one number.
+const BEAM_EDGE: f32 = 0.25;
+
+/// How much of a beamed flame escapes it in every other direction.
+///
+/// A hand is not a shutter. What makes a carried torch a beam at all is that the
+/// arm holds it out in front and the body is behind it, and neither of those
+/// stops the flame from being a flame: the ground at the character's feet is lit,
+/// and so is the character. A cone with nothing outside it puts the one thing the
+/// player is looking at — their own body — in the only black hole in the frame,
+/// which is the opposite of what a light in the hand is for.
+///
+/// A quarter, so that the beam is still obviously a beam: what is in front is
+/// four times what is beside, which reads as a direction at a glance. Invented
+/// here like [`BEAM_EDGE`], and `blit.wgsl`'s `BEAM_SPILL` is the same number.
+pub const BEAM_SPILL: f32 = 0.25;
+
+impl Beam {
+    /// A beam of `degrees` across — the *full* angle, the way a lamp is
+    /// described — pointing along `(dx, dy)` with `rise` tiles of climb for
+    /// every tile along the ground.
+    ///
+    /// The full angle and not the half is what a person says out loud, and the
+    /// halving belongs at the one place the number is turned into a cosine
+    /// rather than at every call site.
+    ///
+    /// A direction of no length at all is taken as north, for the reason
+    /// [`Sun::towards`] takes it as south: a zero axis would make every dot
+    /// product zero and the cone would silently become a hemisphere.
+    pub fn towards(dx: f32, dy: f32, rise: f32, degrees: f32) -> Self {
+        let (dx, dy) = match dx.abs() + dy.abs() < 1e-4 {
+            true => (0.0, -1.0),
+            false => (dx, dy),
+        };
+        let length = (dx * dx + dy * dy + rise * rise).sqrt();
+        Self {
+            toward: [dx / length, dy / length, rise / length],
+            cos_half: (degrees.to_radians() / 2.0).cos(),
+        }
+    }
+
+    /// How much of this beam falls on a spot `offset` away from the flame —
+    /// `x` and `y` in tiles, `z` in tiles as well, pointing *from* the flame
+    /// *to* the spot.
+    ///
+    /// `blit.wgsl`'s `cone`, arithmetic for arithmetic, and the parity test of
+    /// `docs/lighting.md`'s decision 9 is what says so. The smoothstep is
+    /// written out rather than called, because WGSL's built-in and a Rust crate's
+    /// are two texts that can disagree and this is one polynomial either way.
+    ///
+    /// Never zero: [`BEAM_SPILL`] is the floor, and a spot at the flame itself
+    /// gets the whole of it — there is no direction from a point to itself, and
+    /// the tile a lantern is standing on is not the place to start refusing
+    /// light.
+    pub fn lights(self, offset: [f32; 3]) -> f32 {
+        let length = offset.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+        if length < 1e-6 {
+            return 1.0;
+        }
+        let along = offset
+            .iter()
+            .zip(self.toward)
+            .map(|(axis, toward)| axis / length * toward)
+            .sum::<f32>();
+        let inner = self.cos_half + (1.0 - self.cos_half) * BEAM_EDGE;
+        let t = ((along - self.cos_half) / (inner - self.cos_half).max(1e-6)).clamp(0.0, 1.0);
+        BEAM_SPILL + (1.0 - BEAM_SPILL) * t * t * (3.0 - 2.0 * t)
+    }
 }
 
 /// The sun: one direction for the whole world, and what it does where nothing
@@ -278,6 +388,19 @@ impl Lighting {
     /// something in it is therefore a frame that may be darker than its world
     /// image, and only an empty one is a copy.
     ///
+    /// Put a flame into the frame that no walk of the map could have found: the
+    /// one the player is carrying.
+    ///
+    /// First in the list and never the one dropped. [`collect`] keeps the
+    /// [`MAX`](Self::MAX) flames nearest the eye, and the flame *in the eye's own
+    /// hand* is the one whose absence would be noticed instantly — a torch that
+    /// went out because the player walked into a lit tavern is a worse frame than
+    /// one candle at the far end of it going missing.
+    pub fn hold(&mut self, light: Light) {
+        self.lights.insert(0, light);
+        self.lights.truncate(Self::MAX);
+    }
+
     /// A debug view is never the identity, however empty the frame's lighting is
     /// — that is the whole of what it draws.
     pub fn is_identity(&self) -> bool {
@@ -477,7 +600,7 @@ pub fn collect(
         }
         lights.push(place(
             Point::new(item.x, item.y, item.z),
-            Graphic(item.tile),
+            flame(Graphic(item.tile)),
             time,
         ));
     });
@@ -487,7 +610,7 @@ pub fn collect(
         if !tile.flags.is_light_source() || !cutaway::shows(cutaway, item.at.z, tile) {
             continue;
         }
-        lights.push(place(item.at, item.graphic, time));
+        lights.push(place(item.at, flame(item.graphic), time));
     }
 
     if lights.len() > Lighting::MAX {
@@ -525,8 +648,12 @@ pub fn collect(
 
 /// One flame, from its tile to where it burns: the tile itself, lifted to the
 /// height of the flame rather than the ground under it.
-fn place(at: Point, graphic: Graphic, time: f32) -> Light {
-    let flame = flame(graphic);
+///
+/// The [`Flame`] and not the [`Graphic`] it came from, because [`carried`] has
+/// no graphic at all — nothing on the wire says a hand is holding a torch — and
+/// a stand-in graphic passed in only to be looked up again would be a second
+/// place the mapping lives.
+fn place(at: Point, flame: Flame, time: f32) -> Light {
     Light {
         // The middle of the tile, not its corner: a fragment's own position is
         // fractional now — the world passes write where in its tile a pixel is —
@@ -537,6 +664,9 @@ fn place(at: Point, graphic: Graphic, time: f32) -> Light {
         radius: flame.radius,
         color: flame.color,
         intensity: flame.intensity * flicker(time, phase_of(at), flame.flicker),
+        // Every fire standing in the world burns in every direction. A beam is
+        // something a hand does to a flame — see [`carried`].
+        beam: None,
     }
 }
 
@@ -609,6 +739,16 @@ pub struct Reach {
     /// a wall, and between for a partial occluder. Only meaningful when
     /// [`Reach::within`].
     pub through: f32,
+    /// How much of the flame's [`Beam`] falls here: `1.0` for a fire that lights
+    /// every direction and for a spot the beam points straight at,
+    /// [`BEAM_SPILL`] for one behind it.
+    ///
+    /// A separate number from [`Reach::through`] and not folded into it, because
+    /// the two answer the questions a person asks in the order they ask them:
+    /// "is the light pointing at me" comes before "is something in the way", and
+    /// a report that gave one number could not tell a spot behind the player
+    /// from a spot behind a wall.
+    pub cone: f32,
     /// The tile that stopped the ray, where one did.
     ///
     /// The *first* cell that took the survival to zero, which is the one worth
@@ -672,13 +812,18 @@ impl std::fmt::Display for Sample {
         )?;
         for reach in &self.reaches {
             write!(f, "  light {}: {:.2} tiles", reach.light, reach.distance)?;
+            // In the order the questions are asked: is it near enough, is
+            // anything in between, and how much of its beam this spot is in —
+            // see [`Reach::cone`], which is the number that says whether a dark
+            // tile is behind a wall or behind the character.
             match (reach.within, reach.stopped_by) {
                 (false, _) => writeln!(f, ", outside its radius")?,
                 (true, Some((x, y))) => writeln!(f, ", stopped at ({x}, {y})")?,
                 (true, None) => writeln!(
                     f,
-                    ", through {:.2}, adds {:.3}",
+                    ", through {:.2}, beam {:.2}, adds {:.3}",
                     reach.through,
+                    reach.cone,
                     reach.added.iter().sum::<f32>() / 3.0,
                 )?,
             }
@@ -729,16 +874,25 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
                 distance,
                 within: false,
                 through: 0.0,
+                cone: 0.0,
                 stopped_by: None,
                 added: [0.0; 3],
             });
             continue;
         }
+        // Which way the light is pointing, before anything is asked about what
+        // stands in the way: a beam that misses this spot has nothing to be
+        // stopped by. The offset is from the spot to the flame, and a beam's
+        // axis points the other way, so the sign flips here.
+        let cone = match light.beam {
+            Some(beam) => beam.lights(offset.map(|axis| -axis)),
+            None => 1.0,
+        };
         let (through, stopped_by) = walk(spot, light, &lighting.occlusion);
         let fall = 1.0 - d;
         let added = light
             .color
-            .map(|channel| channel * light.intensity * fall * fall * through);
+            .map(|channel| channel * light.intensity * fall * fall * through * cone);
         for (total, channel) in multiplier.iter_mut().zip(added) {
             *total += channel;
         }
@@ -747,6 +901,7 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
             distance,
             within: true,
             through,
+            cone,
             stopped_by,
             added,
         });
@@ -767,6 +922,9 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
             distance: f32::INFINITY,
             within: true,
             through,
+            // The sun is a direction and not a beam: it lights everything it can
+            // see, and there is nothing for a cone to exclude.
+            cone: 1.0,
             stopped_by,
             added,
         }
@@ -945,6 +1103,40 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
         }
     }
     (through, None)
+}
+
+/// How wide the flame in a hand throws its light: the full angle, in degrees.
+///
+/// Sixty is a lamp rather than a searchlight — wide enough that walking is not
+/// done down a tube, narrow enough that the direction the character is facing is
+/// legible from the picture alone, which is the whole of what a carried light is
+/// worth. It is a stand-in in exactly the way [`flame`] is: nothing on the wire
+/// says a mobile is holding anything, so this is the client's own guess until
+/// the equipment layers are read for a torch.
+pub const HELD_BEAM_DEGREES: f32 = 60.0;
+
+/// The flame the player carries: where it burns, which way it points, and how
+/// it flickers.
+///
+/// Not a static and not a ground item, so no walk of the map could produce it —
+/// [`Lighting::hold`] is how it gets into a frame. It is a [`TORCH`] in
+/// everything but the [`Beam`], which is what makes the difference between a
+/// character who glows and a character who is *carrying* something: an
+/// omnidirectional pool centred on a body lights the wall behind it exactly as
+/// brightly as the one it is walking towards, and the eye reads that as the
+/// character being the source rather than the hand being it.
+///
+/// The axis is level with the ground and not tilted down at it. A torch aimed at
+/// the floor two tiles ahead lights that floor beautifully and leaves the top of
+/// every wall in front of it outside the cone — with a level axis the pool on the
+/// ground is only a little shorter and a wall three tiles off is lit to nearly
+/// its full height, which is the picture that says a beam has hit something.
+pub fn carried(at: Point, facing: Direction, time: f32) -> Light {
+    let (dx, dy) = facing.step();
+    Light {
+        beam: Some(Beam::towards(dx as f32, dy as f32, 0.0, HELD_BEAM_DEGREES)),
+        ..place(at, TORCH, time)
+    }
 }
 
 /// A flame's own place in the flicker, so that two torches on one wall do not

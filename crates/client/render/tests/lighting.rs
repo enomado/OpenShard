@@ -325,6 +325,113 @@ fn a_sconce_lights_through_its_own_wall() {
     );
 }
 
+/// A light carried in a hand lights what the character is facing far more
+/// brightly than what is behind them.
+///
+/// The whole claim of a beam, and the reason it is not simply a torch on the
+/// player's tile: an omnidirectional pool centred on a body lights the wall
+/// behind it exactly as brightly as the one it is walking towards, which reads as
+/// the character glowing rather than as the character carrying something.
+///
+/// Stated as a ratio and not as "behind is the ambient exactly", because a hand
+/// is not a shutter: `light::BEAM_SPILL` of the flame goes every way, so the
+/// character and the ground at their feet are lit. What the cone has to buy is
+/// the *difference*, and that is what is measured.
+#[test]
+fn a_carried_light_lights_the_way_it_is_pointed() {
+    let scene = scene::lantern_in_a_room();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+
+    // East is the facing, so `+x` is ahead. Two tiles out on either side: the
+    // same distance from the flame, so the falloff is the same for both and the
+    // only difference between them is the direction.
+    let (ahead, behind) = ((CENTRE.0 + 2, CENTRE.1), (CENTRE.0 - 2, CENTRE.1));
+    let lit = at(&lighting, ahead, 0.0) - ambient(&lighting, ahead);
+    let dark = at(&lighting, behind, 0.0) - ambient(&lighting, behind);
+    assert!(
+        lit > 0.2,
+        "the beam lights nothing ahead of it: {lit} over the ambient{picture}",
+    );
+    assert!(
+        dark > 0.0,
+        "nothing spills out of the beam, so the character is in a black hole: \
+         {dark}{picture}",
+    );
+    assert!(
+        lit > dark * 3.0,
+        "the beam is not pointed anywhere: {lit} ahead against {dark} behind{picture}",
+    );
+
+    // And the same for the two walls the room has on those sides, up their whole
+    // height: a beam that lit the floor and left every wall in the frame at the
+    // ambient would look like a decal on the ground. The east face is what says
+    // the light has hit something.
+    let (front_wall, back_wall) = (
+        (CENTRE.0 + scene::ROOM_HALF, CENTRE.1),
+        (CENTRE.0 - scene::ROOM_HALF, CENTRE.1),
+    );
+    for z in [0.0, f32::from(scene::WALL_HEIGHT) / 2.0] {
+        let face = at(&lighting, front_wall, z) - ambient(&lighting, front_wall);
+        let back = at(&lighting, back_wall, z) - ambient(&lighting, back_wall);
+        assert!(
+            face > 0.1,
+            "the wall the beam points at is dark at z {z}: {face}{picture}",
+        );
+        assert!(
+            face > back * 3.0,
+            "both walls are lit the same at z {z}: {face} against {back}{picture}",
+        );
+    }
+}
+
+/// The beam's own edge is a gradient, and it is sixty degrees wide.
+///
+/// Two claims one sweep answers. A cone with a hard rim reads as a stencil laid
+/// over the scene — the same complaint the tile-edged shadows drew — so the
+/// values between the two ends have to exist; and the *width* is the number
+/// somebody will change by accident, so it is measured rather than trusted: at
+/// four tiles out, a sixty-degree beam's rim is `4 * tan(30°)` ≈ 2.3 tiles off
+/// the axis, and a spot three tiles across is outside it by any softening.
+#[test]
+fn the_edge_of_a_beam_is_a_gradient_of_the_stated_width() {
+    let scene = scene::lantern_in_a_room();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+    let carried = lighting.lights[0];
+    let beam = carried.beam.expect("the scene's character carries a beam");
+
+    // Straight along the axis and then off it, in tenths of a tile, four tiles
+    // out — the distance is fixed so that only the angle changes.
+    let mut values = Vec::new();
+    for step in 0..=50 {
+        let across = step as f32 / 10.0;
+        values.push(beam.lights([4.0, across, 0.0]));
+    }
+    let spill = light::BEAM_SPILL;
+    let partial = values.iter().filter(|v| **v > spill + 0.01 && **v < 0.99).count();
+    assert!(
+        partial >= 3,
+        "the beam's rim is a step and not a gradient: {values:?}{picture}",
+    );
+    assert!(
+        values[0] > 0.99,
+        "the beam's own axis is not fully lit: {}{picture}",
+        values[0],
+    );
+    // `4 * tan(30°)` is 2.31 tiles: inside two, outside three, whatever the
+    // softening does in between.
+    assert!(
+        values[20] > spill,
+        "the beam is narrower than the sixty degrees it says: {}{picture}",
+        values[20],
+    );
+    assert_eq!(
+        values[30], spill,
+        "the beam is wider than the sixty degrees it says{picture}",
+    );
+}
+
 /// A torch in a cellar does not light the street above it, with nothing in
 /// between.
 ///

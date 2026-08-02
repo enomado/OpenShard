@@ -453,6 +453,8 @@ pub fn run<D: Dial + Send + 'static>(
         // copy the blit has always been.
         night: false,
         sunlit: false,
+        // And a torch in hand for when it is not daylight: see `App::lantern`.
+        lantern: true,
         light_view: View::Lit,
         flame_clock: std::time::Duration::ZERO,
         map,
@@ -856,6 +858,22 @@ struct App {
     /// — step 6 of `docs/lighting.md`, which is still open — the sky is a key
     /// somebody turns on rather than a cost every frame pays.
     sunlit: bool,
+    /// Whether the player is carrying a light: a torch in the hand, throwing a
+    /// beam the way the character is facing. Toggled with F7, and it does nothing
+    /// in plain daylight, where the whole lighting pass is a copy.
+    ///
+    /// On by default, unlike the sun, and the cost is the reason the two differ:
+    /// this is one more flame in a loop that already runs sixty-four of them, and
+    /// a beam leaves that loop on a dot product for every fragment it does not
+    /// point at. It is here at all because it is what makes a dark room
+    /// *navigable* — the ambient floor is deliberately small, and without
+    /// something in the hand a windowless cellar is a black rectangle with a
+    /// character somewhere in it.
+    ///
+    /// A client-side guess, in the way `light::flame` is: nothing on the wire
+    /// says a mobile is holding a torch. When the equipment layers are read for
+    /// one, this is the field that answers from them and nothing below changes.
+    lantern: bool,
     /// Which of the lighting pass's own values the blit draws instead of the
     /// frame. Cycled with F11, and [`View::Lit`] is the picture.
     ///
@@ -1281,6 +1299,14 @@ impl ApplicationHandler<link::Update> for App {
                     // same instant, one with it and one without.
                     KeyCode::F8 => {
                         self.sunlit = !self.sunlit;
+                        true
+                    }
+                    // The torch in the player's own hand, on and off — the same
+                    // two-pictures-of-one-instant reason F10 and F8 are keys,
+                    // and here it is also the only way to see what the map's own
+                    // fires are doing without a beam swinging across them.
+                    KeyCode::F7 => {
+                        self.lantern = !self.lantern;
                         true
                     }
                     KeyCode::F11 => {
@@ -3595,6 +3621,19 @@ impl App {
         // source lighting every roof would undo the whole point of the dark.
         if self.sunlit && !self.night {
             lighting.sun = Some(light::midday());
+        }
+        // And the flame in the player's own hand, which no walk of the map could
+        // have found — see `light::carried`. Only where the frame has a sky at
+        // all: with no ambient the pass is the copy the blit has always been, and
+        // a beam over an already-white multiplier would cost a loop to change
+        // nothing. It goes in after the sort, and `hold` is what says it is never
+        // the flame dropped when a tavern's candles fill the array.
+        if self.lantern && sky.is_some() {
+            lighting.hold(light::carried(
+                self.player.at,
+                self.player.facing,
+                self.flame_clock.as_secs_f32(),
+            ));
         }
         // The view is the looker's, not the world's: a diagnostic draws from the
         // values this frame was lit with, and in daylight those are the ambient

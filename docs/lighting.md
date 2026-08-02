@@ -9,13 +9,16 @@ copied.
 
 ## Where the next session starts
 
-Steps 1–5 and 7–13 are done; **14, 15, 16, 17 and 6 are not**, and they are in
-that order for a reason. Step 14 draws the occluder boxes, and it is first
-because it is the instrument the other two are judged with — the report that
-opened this stretch was "a door cast a shadow where there is nothing", and a
-tile-wide box is almost certainly the answer. Steps 15 and 16 are one
-measurement used twice: a wall's face read out of its own art, then the window's
-hole in that face. Step 6's measurement is still owed and gates the sun.
+Steps 1–5, 7–14 and 18 are done; **15, 16, 17 and 6 are not**, and they are in
+that order for a reason. Steps 15 and 16 are one measurement used twice: a wall's
+face read out of its own art, then the window's hole in that face. Step 6's
+measurement is still owed and gates the sun.
+
+Step 18 is out of that order on purpose — a light in the player's hand needed
+nothing measured out of the art, because a *mobile's* facing is on the wire while
+a *wall's* is not. What it leaves for whoever picks this up is in the backlog
+under "found while putting a light in the player's hand", and the first line of
+it is the one worth reading: the beam is the local player's alone.
 
 Nothing outside this file is half-finished — `main` builds, the three commands
 are silent, and the pictures in this session were taken from the playground
@@ -247,6 +250,37 @@ similar-triangles answer, for one division rather than a second ray. It is cappe
 below a tile, because a wall crossed squarely must stop *all* of the light or
 rooms leak — which is the same conservative direction decision 5's union takes.
 
+**15. A flame in a hand is a cone, and the hand is not a shutter.** Everything
+on the map lights every direction, and a light carried by a character must not:
+an omnidirectional pool centred on a body lights the wall behind it exactly as
+brightly as the one it is walking towards, and the eye reads that as the
+character *glowing* rather than as the character *carrying* something. So a
+`Light` may have a `Beam` — an axis and the cosine of a half-angle — and the pool
+is multiplied by how far inside that cone the lit spot is.
+
+A cone and not a second radius, and the ordering is what makes it cheap: a
+fragment outside the radius never asks about the angle, and the whole of a beam
+is one dot product against a direction the CPU normalised once. `(0, 0, 0, -1)`
+is "lights every way" — no cosine is below `-1`, so a fire standing in the world
+pays a comparison and never the arithmetic.
+
+Two numbers keep it from reading as a stencil rather than as light. The rim
+softens over `BEAM_EDGE` of the way in from it, because a hard edge is found by
+the eye instantly — the same complaint the tile-edged shadows drew. And
+`BEAM_SPILL` of the flame escapes it in every other direction, because a hand is
+not a shutter: the arm holds the torch out in front and the body is behind it, and
+neither of those stops a flame from being a flame. Without the spill the one
+thing the player is looking at — their own body, whose pixels are on the flame's
+own tile and directly above and below it — is the only black shape in the frame.
+A quarter, so that what is in front is four times what is beside and the
+direction is legible at a glance.
+
+Where a beam is aimed is the *facing*, which is the one direction this pass can
+have for nothing: it is on the wire for every mobile, and the client already
+holds it to pick which way a sprite is drawn. That is the whole of why this
+arrives before the wall facings of step 15 — the light knows which way it is
+pointed even though a wall does not.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -406,6 +440,23 @@ rooms leak — which is the same conservative direction decision 5's union takes
       Nothing in this renderer draws air, so a visible shaft is a blur of the lit
       mask along the light's direction *on the screen* and nothing else. It only
       makes sense after the patch it grows out of is right.
+- [x] **18. The light in the player's own hand.** Decision 15: `light::Beam`,
+      one more `vec4` per light in the uniform, `cone` in `blit.wgsl` and
+      `Beam::lights` beside it in Rust, and `Lighting::hold` for a flame no walk
+      of the map could have found — nothing on the wire says a hand is carrying
+      anything, so `light::carried` builds it from the player's tile and facing
+      and the app puts it into the frame after the sort. Never the flame dropped
+      when a tavern's candles fill the array. F7 in the app, on by default, and
+      it does nothing in plain daylight where the whole pass is a copy.
+
+      `scene::lantern_in_a_room` is the fixture and it is a room with **no torch
+      in it**: the only flame is the carried one, so every bright pixel is the
+      beam's. Held to by three tests — the floor and the wall ahead against the
+      floor and the wall behind, the rim's gradient and its width measured at
+      four tiles out (`4 * tan(30°)` ≈ 2.3 tiles), and the GPU parity test over
+      the same scene, which is the only parity fixture whose cone is not
+      identically one.
+
 
 ## Backlog
 
@@ -547,6 +598,37 @@ are what came of the first three, and these are what is left:
   stands on. It is the honest answer available — a billboard's pixels are not
   anywhere in particular — but it means a very wide sprite's lighting flattens
   towards its edges.
+
+Found while putting a light in the player's hand:
+
+- **Only the player carries one.** `light::carried` is built in the app from
+  `self.player`, so a second character walking past with a torch makes no light
+  at all — and the crowd's mobiles have a facing and a tile, which is everything
+  the constructor needs. What is missing is the *reason to believe it*: nothing
+  says a given body is holding anything, and giving every mobile on screen a beam
+  would light a market square from sixty invented torches.
+- **Nothing on the wire says a hand is holding a torch.** The equipment layers
+  are parsed here already (`0x2E` and the paperdoll's items), and a torch in
+  `Layer::OneHanded` is exactly the fact this pass is guessing at. Until it is
+  read, `App::lantern` is a key that defaults to on — which is a client that
+  lights the dark rather than a client that is right.
+- **`HELD_BEAM_DEGREES`, `BEAM_EDGE` and `BEAM_SPILL` are invented**, joining
+  `occlusion::PANE`, `FLAME_SPREAD` and `light::flame`. That is now six numbers in
+  this pass that no client file has, and the honest way to hold them is one scene
+  each rather than an argument each — which is what `scene::lantern_in_a_room`
+  does for the last three.
+- **The beam does not move with the sprite's own arm.** A carried flame is at the
+  middle of the player's tile, half a tile up, whatever the body's animation is
+  doing — so at the instant a step lands, the pool jumps a whole tile while the
+  drawn body slides. It is the same "a light is placed by its tile, not by its
+  sprite" the backlog above already carries, arriving where it is most visible,
+  because this is the one light that moves every frame.
+- **A dark tile now has three causes and the diagram shows one.**
+  `light::Reach` grew a `cone`, and `Sample`'s report prints it — but
+  `debug::diagram` still draws brightness alone, so "behind the character" and
+  "behind a wall" are the same blank cell in the picture. The shadow view
+  (`View::Shadow`) has the same hole from the other end: it draws what the walk
+  lost and knows nothing about where the light was pointed.
 
 Found while writing this plan:
 

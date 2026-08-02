@@ -880,6 +880,9 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
             radius: TORCH_TILES,
             color: [1.0, 0.7, 0.35],
             intensity: 1.0,
+            // A fire on the ground, lighting every direction: what a beam does
+            // is `a_carried_beam_lights_the_way_it_is_pointed`'s claim.
+            beam: None,
         }],
         // Nothing stands in the way: what a wall does is
         // `a_wall_stops_the_light_behind_it`'s claim, not this one's.
@@ -1056,6 +1059,7 @@ fn a_wall_stops_the_light_behind_it() {
         radius: 4.0,
         color: [1.0, 1.0, 1.0],
         intensity: 1.0,
+        beam: None,
     };
     let bounds = TileBounds {
         min_x: 90,
@@ -3393,6 +3397,55 @@ fn the_shader_and_light_sample_agree_about_the_sun() {
     };
     let scene = openshard_client_render::scene::sunlit_room_with_window();
     assert_parity(&device, &queue, &scene.lighting(0.0));
+}
+
+/// And the same for a frame with a beam in it.
+///
+/// The cone is the one term the other parity scenes cannot exercise: every flame
+/// on a map lights all ways, so a shader that ignored `beam` entirely — or read
+/// it at the wrong stride, which is what adding a third `vec4` per light risks —
+/// would agree with `sample` on every one of them. Here it cannot: the fixture's
+/// only light is carried, so a fragment behind the character is dark for a reason
+/// that exists nowhere else in this file.
+#[test]
+fn the_shader_and_light_sample_agree_about_a_carried_beam() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::lantern_in_a_room();
+    let lighting = scene.lighting(0.0);
+
+    // The fixture actually holds both sides of the cone's edge, asserted before
+    // the frame is compared: a parity sweep over pixels that were all in the
+    // beam's spill would be green for a shader that never computed a cone at all.
+    let mut inside = 0;
+    let mut outside = 0;
+    for py in 0..64 {
+        for px in 0..64 {
+            let (x, y, sub_x, sub_y) = parity_place(px, py);
+            let spot = openshard_client_render::light::Spot {
+                at: Vec2::new(
+                    f32::from(x) + f32::from(sub_x) / 127.0,
+                    f32::from(y) + f32::from(sub_y) / 127.0,
+                ),
+                z: 0.0,
+            };
+            let reach = openshard_client_render::light::sample(spot, &lighting).reaches[0];
+            if !reach.within {
+                continue;
+            }
+            match reach.cone > openshard_client_render::light::BEAM_SPILL {
+                true => inside += 1,
+                false => outside += 1,
+            }
+        }
+    }
+    assert!(
+        inside > 200 && outside > 200,
+        "{inside} pixels in the beam, {outside} out of it"
+    );
+
+    assert_parity(&device, &queue, &lighting);
 }
 
 /// And the same for a frame whose ambient is not one colour.
