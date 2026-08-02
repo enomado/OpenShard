@@ -80,8 +80,12 @@ pub enum Kind {
 ///
 /// - [`Stance::Upright`] — a wall, a tree, a body. It stands on the tile and
 ///   what varies down its picture is height: four pixels is one unit of `z`.
-///   Across it, a pixel is `1/44` of a tile along the screen's own `x - y` axis,
-///   which is the only horizontal information a billboard carries.
+///   Across it, nothing varies: the fraction is the tile's middle everywhere,
+///   because what a wall's picture runs along is the world axis its wall is
+///   built on — a screen *diagonal* in this projection — and nothing in
+///   `tiledata.mul` says which of the two axes that is. Reading the horizontal
+///   offset as `x - y` spreads the pixels along the one direction no wall ever
+///   runs, and it looks like it.
 /// - [`Stance::Flat`] — a floor, a rug, a road: `TileFlags::FLOOR`, the bit
 ///   ClassicUO calls `Background`. Its picture *is* the tile's diamond, so both
 ///   fractions come out of where in that diamond the pixel is, and the height is

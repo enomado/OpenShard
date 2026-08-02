@@ -26,6 +26,7 @@ use openshard_client_net::view::WorldView;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
+use openshard_protocol::serial::Serial;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::world::ResyncRequest;
 use openshard_uofiles::map::Map;
@@ -99,6 +100,10 @@ pub enum Command {
     Say(String),
     /// Answer an open dialog: press one of its buttons, or dismiss it.
     AnswerGump(GumpReply),
+    /// Use an object: the double-click that opens a door, opens a container or
+    /// eats the food. What using it *means* is the shard's answer — see
+    /// [`openshard_client_net::interact`].
+    Use(Serial),
 }
 
 /// A dialog answered: which window, which button, and what was set on it.
@@ -147,6 +152,11 @@ impl Link {
     /// Answer an open dialog.
     pub fn answer_gump(&self, reply: GumpReply) {
         let _ = self.commands.send(Command::AnswerGump(reply));
+    }
+
+    /// Use an object — the double-click.
+    pub fn use_object(&self, serial: Serial) {
+        let _ = self.commands.send(Command::Use(serial));
     }
 }
 
@@ -329,6 +339,7 @@ async fn play<D: Dial>(
                         }
                     }
                     Command::Say(text) => openshard_client_net::talk::say(&text),
+                    Command::Use(serial) => openshard_client_net::interact::use_object(serial),
                     Command::AnswerGump(reply) => openshard_client_net::talk::answer_gump(
                         reply.key,
                         reply.gump_id,

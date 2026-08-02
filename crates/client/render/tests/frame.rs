@@ -1717,25 +1717,27 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         &[quad(Place::of_static(at))],
         128,
     );
-    // A wall carries no depth: its two fractions are mirror images, because a
-    // pixel to the right of the column is as much further along `x` as it is
-    // less far along `y` — and nothing about them changes down the picture.
+    // A wall claims the middle of its tile at every pixel, and deliberately: what
+    // its picture runs along is the world axis the wall is built on, which in
+    // this projection is a screen diagonal, and nothing in the tiledata says
+    // which of the two axes it is. Spreading its pixels along the horizontal —
+    // `x - y`, the one direction no wall runs — is the shape this asserts is not
+    // being written.
     let (mid_x, mid_y) = sub(places.at(62, 62));
-    let (right_x, right_y) = sub(places.at(72, 62));
-    let (below_x, below_y) = sub(places.at(62, 72));
     assert_eq!(
-        (below_x, below_y),
         (mid_x, mid_y),
-        "a wall's fraction moved downwards"
-    );
-    assert!(
-        right_x > mid_x,
-        "a wall's fraction stands still across its picture"
+        (64, 64),
+        "a wall's fraction is not its tile's middle"
     );
     assert_eq!(
-        i32::from(right_x) - i32::from(mid_x),
-        i32::from(mid_y) - i32::from(right_y),
-        "the two halves of a billboard's one axis disagree",
+        sub(places.at(72, 62)),
+        (mid_x, mid_y),
+        "it moved across the picture"
+    );
+    assert_eq!(
+        sub(places.at(62, 72)),
+        (mid_x, mid_y),
+        "it moved down the picture"
     );
     // And its height is the picture's, which is the half of this the older test
     // covers — asserted here too so that the two stances are one comparison.

@@ -54,6 +54,20 @@ struct Cli {
     /// The character to play. Without one, the first on the account.
     #[arg(long, env = "OPENSHARD_CHARACTER")]
     character: Option<String>,
+
+    /// Draw overhead speech through this TrueType or OpenType face instead of
+    /// `fonts.mul`.
+    ///
+    /// `fonts.mul` only defines Latin text and a handful of symbols — no
+    /// Cyrillic, no anything past `0xFF` — so a shard whose players type in
+    /// one of those scripts needs this set, to a `.ttf`/`.otf` on this
+    /// machine. Nothing is bundled with the engine — see
+    /// `openshard_uofiles::ttf_font`'s doc for why. Unset draws the classic
+    /// client's own bitmap faces, unchanged; there is no mixing the two within
+    /// one line — see `openshard_client_render::text::collect_ttf`'s doc for
+    /// why.
+    #[arg(long, env = "OPENSHARD_TTF_FONT", value_name = "FILE")]
+    ttf_font: Option<PathBuf>,
 }
 
 /// The login this run was asked to make, if it was asked for one.
@@ -83,5 +97,5 @@ fn main() -> ExitCode {
         eprintln!("logging in to {}", cli.server);
         (Tcp::at(cli.server), plan)
     });
-    openshard_client_app::run(&cli.client, shard)
+    openshard_client_app::run(&cli.client, shard, cli.ttf_font)
 }

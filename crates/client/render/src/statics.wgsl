@@ -198,28 +198,30 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     let base = f32(in.place.y & 0xFFu) - 128.0;
     let flat = (in.place.y & STANCE_FLAT) != 0u;
 
-    // Where this pixel is relative to the tile's own centre, in virtual pixels:
-    // across, always, and down the screen only for a picture that lies in the
-    // tile. For an upright sprite what runs down the picture is height, not
-    // ground, and it is read as height below.
-    let across = in.pixel_x - in.middle_x;
-    var down = 0.0;
+    // Where this pixel is in its tile.
+    //
+    // A picture that *lies* in the tile is the tile's diamond, so both fractions
+    // come out of the pixel's offset from the tile's centre by inverting the
+    // projection — `screen = ((x - y) * 22, (x + y) * 22)`, whose forward
+    // direction is `camera::project`.
+    //
+    // An upright picture is the middle of its tile, and that is a statement about
+    // what is *not* known rather than a shortcut: what a wall's picture runs
+    // along is the world axis its wall is built on, which in this projection is a
+    // screen diagonal and not the horizontal — and nothing in `tiledata.mul` says
+    // which of the two axes it is. Reading the horizontal offset as `x - y`, as
+    // this did for one commit, spreads a wall's pixels along the one direction no
+    // wall ever runs; see `docs/lighting.md`'s backlog for what it would take to
+    // know.
+    var sub = vec2<f32>(0.5);
     if flat {
-        down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
+        let across = in.pixel_x - in.middle_x;
+        let down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
+        let local = vec2<f32>(across + down, down - across) / TILE_WIDTH + vec2<f32>(0.5);
+        // Clamped rather than wrapped: the attachment holds one tile per pixel,
+        // and it is the one the thing stands on.
+        sub = clamp(local, vec2<f32>(0.0), vec2<f32>(1.0));
     }
-
-    // And the same two numbers as world axes. The projection is
-    // `screen = ((x - y) * 22, (x + y) * 22)`, so inverting it over the pair is
-    // two sums — see `camera::project`, which is the forward direction of
-    // exactly this. An upright sprite has no `down` to invert, so both fractions
-    // come out of `across` alone and are mirror images: a pixel to the right of
-    // the column is further along `x` and equally less along `y`.
-    let local = vec2<f32>(across + down, down - across) / TILE_WIDTH + vec2<f32>(0.5);
-    // Clamped rather than wrapped, and only a sprite wider than its tile ever
-    // reaches it: a tree is 100 pixels across and the world has no room to say
-    // its edges are on the neighbouring tile — the attachment holds one tile per
-    // pixel, and it is the one the thing stands on.
-    let sub = clamp(local, vec2<f32>(0.0), vec2<f32>(1.0));
 
     // The height this pixel stands at. For a wall that is the sprite's own
     // picture — the bottom edge is `BOTTOM_LIFT` below the base and every four
