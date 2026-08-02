@@ -282,6 +282,16 @@ pub struct StaticTile {
     /// knows to take both hands. It was read past for most of this reader's life
     /// because nothing asked; Arms Lore does.
     pub layer: u8,
+    /// What a worn copy of it draws as, in the body-animation index space —
+    /// a different space from this tile's own art graphic, and read from
+    /// `anim.mul`/`AnimAtlas` rather than `art.mul`.
+    ///
+    /// This is the *default* a worn item draws with — `EquipConv` only
+    /// overrides it for the pairs where a body needs a different picture
+    /// (a race or gender variant); an ordinary shirt has no such entry and
+    /// draws from this field directly. Read past for most of this reader's
+    /// life, the same way `layer` was, because nothing asked for it either.
+    pub anim_id: u16,
     /// Its name.
     pub name: String,
 }
@@ -346,6 +356,12 @@ impl fmt::Debug for TileData {
             .field("land", &self.land.len())
             .field("statics", &self.statics.len())
             .finish()
+    }
+}
+
+impl AsRef<TileData> for TileData {
+    fn as_ref(&self) -> &TileData {
+        self
     }
 }
 
@@ -484,6 +500,7 @@ impl TileData {
             flags,
             weight: raw[fixed],
             layer: raw[fixed + 1],
+            anim_id: u16::from_le_bytes([raw[fixed + 6], raw[fixed + 7]]),
             height: raw[fixed + 12],
             name: read_name(&raw[fixed + 13..]),
         })
@@ -628,6 +645,7 @@ mod tests {
         bytes[entry..entry + 8].copy_from_slice(&(TileFlags::WALL | TileFlags::BLOCK).to_le_bytes());
         bytes[entry + 8] = 255; // weight
         bytes[entry + 9] = 2; // quality, which for equipment is the layer
+        bytes[entry + 14..entry + 16].copy_from_slice(&0xABCDu16.to_le_bytes()); // anim_id
         bytes[entry + 20] = 20; // height
         bytes[entry + 21..entry + 32].copy_from_slice(b"wooden wall");
         bytes
@@ -661,6 +679,10 @@ mod tests {
         // fields that are already read, and an off-by-one would report a plausible
         // layer for every item in the game.
         assert_eq!(wall.layer, 2, "quality/layer at 9, right after the weight");
+        // Between the unknown u32 and the hue, on Sphere's own layout — a
+        // worn item's *default* drawn graphic, and a different index space
+        // from this tile's own art.
+        assert_eq!(wall.anim_id, 0xABCD, "anim id at 14, after the unknown u32");
         assert!(wall.flags.is_blocking());
     }
 

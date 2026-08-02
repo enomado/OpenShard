@@ -16,12 +16,15 @@
 //!            WORD[width * height]   pixels, row-major        x 224
 //! ```
 //!
-//! Ten faces, each holding 224 characters starting at code point 0 — so
-//! character `c`'s glyph is at table index `c` directly, with nothing to
-//! subtract. Only `0x20` upward is ever drawn; the control-code glyphs below it
-//! are typically zero-sized and are read the same as any other entry rather than
-//! skipped, because skipping them would have to know how many bytes they take
-//! without reading them.
+//! Ten faces, each holding 224 characters starting at code point
+//! [`GLYPH_BASE`] (`0x20`, space) — there is no record for a control code
+//! below it at all, so character `c`'s glyph is at table index `c -
+//! GLYPH_BASE`, and the file itself is the only thing that says so: nothing
+//! in it names the base, and a reader that assumed table index `c` was
+//! character `c` directly (this one did, until a real file proved it wrong —
+//! see "Checked against a shipped file" below) parses every record without
+//! error and reads every character's glyph from thirty-two records later
+//! than the one that is actually it, silently.
 //!
 //! A character's own three-byte header, not a fixed cell, is what says how big
 //! its pixels are — so unlike [`crate::hues`], a font cannot be measured by
@@ -35,15 +38,14 @@
 //! [`crate::art::Art::static_art`] uses. A face is text laid over whatever is
 //! behind it, so the alternative would draw every glyph as a solid rectangle.
 //!
-//! # Not yet checked against a shipped file
+//! # Checked against a shipped file
 //!
-//! Every other reader in this crate has a counterpart in `tests/client_files.rs`
-//! that runs this parser against a real `fonts.mul` under `OPENSHARD_CLIENT`.
-//! This one does not yet — no client install was available to write it against
-//! — so the byte layout above is the widely-documented community format and not
-//! yet a fact this crate has confirmed on shipped bytes. Adding that test is the
-//! next thing to do with a client tree in hand, before this reader is trusted
-//! the way its neighbours are.
+//! `tests/client_files.rs::a_real_fonts_mul_parses_to_ten_plausible_faces` runs
+//! this parser against a real `fonts.mul` under `OPENSHARD_CLIENT` and pins
+//! every face's `'A'` and the overall glyph-size shape — a desync in the
+//! walk (see the module doc above) would not fail outright, it would read
+//! plausible-looking garbage from the wrong offset, which is what that test
+//! is built to catch.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -55,8 +57,12 @@ use crate::image::Image;
 
 /// How many faces `fonts.mul` holds.
 pub const FONT_COUNT: usize = 10;
-/// How many characters each face defines, starting at code point 0.
+/// How many characters each face defines, starting at [`GLYPH_BASE`].
 pub const CHARS_PER_FONT: usize = 224;
+/// The code point table index 0 is. Not a guess: index `'A' as u8 -
+/// GLYPH_BASE` (33) is a capital A's pixels in a real shipped file, and index
+/// 0 draws nothing — space, not the null character.
+pub const GLYPH_BASE: u8 = 0x20;
 /// The byte before each face's characters. Unused.
 const FONT_HEADER: usize = 1;
 /// A character's own header: width, height, and a byte nothing reads.
@@ -197,14 +203,16 @@ impl AsciiFonts {
     /// The glyph for `char` in `font`, or `None` if the font index or the
     /// character falls outside the table.
     ///
-    /// A glyph the file defines as zero pixels wide or tall — every control
-    /// code below `0x20`, ordinarily — comes back `Some` with an empty [`Image`]
-    /// rather than `None`: the character exists in the table, it simply draws
-    /// nothing. `None` means "not in this file at all", which is the case for
-    /// every code point at or past [`CHARS_PER_FONT`].
+    /// A glyph the file defines as zero pixels wide or tall — space,
+    /// ordinarily — comes back `Some` with an empty [`Image`] rather than
+    /// `None`: the character exists in the table, it simply draws nothing.
+    /// `None` means "not in this file at all", which is the case below
+    /// [`GLYPH_BASE`] (there is no entry for a control code) and at or past
+    /// `GLYPH_BASE + `[`CHARS_PER_FONT`].
     pub fn glyph(&self, font: Font, char: u8) -> Option<&Image> {
+        let index = char.checked_sub(GLYPH_BASE)?;
         let face = self.faces.get(font.0 as usize)?;
-        face.get(char as usize)
+        face.get(index as usize)
     }
 }
 
@@ -236,15 +244,15 @@ mod tests {
         let fonts = AsciiFonts::parse(&synthetic(FONT_COUNT, 2, 1)).unwrap();
         assert_eq!(fonts.len(), FONT_COUNT);
 
-        let glyph = fonts.glyph(Font(0), 0x41).unwrap();
+        let glyph = fonts.glyph(Font(0), GLYPH_BASE + 0x41).unwrap();
         assert_eq!((glyph.width(), glyph.height()), (2, 1));
         assert_eq!(glyph.pixel(0, 0), Some(Color16(0x41)));
 
         // A different face and a different character both move the origin, so
         // neither the face index nor the character index can be stuck at zero
         // and still pass.
-        let glyph = fonts.glyph(Font(3), 0x20).unwrap();
-        assert_eq!(glyph.pixel(0, 0), Some(Color16(3032)));
+        let glyph = fonts.glyph(Font(3), GLYPH_BASE).unwrap();
+        assert_eq!(glyph.pixel(0, 0), Some(Color16(3000)));
     }
 
     #[test]
@@ -266,12 +274,12 @@ mod tests {
         bytes.splice(char_one + CHAR_HEADER..char_one + CHAR_HEADER, pixels);
         let fonts = AsciiFonts::parse(&bytes).unwrap();
 
-        let empty = fonts.glyph(Font(0), 0).unwrap();
+        let empty = fonts.glyph(Font(0), GLYPH_BASE).unwrap();
         assert_eq!((empty.width(), empty.height()), (0, 0));
-        let sized = fonts.glyph(Font(0), 1).unwrap();
+        let sized = fonts.glyph(Font(0), GLYPH_BASE + 1).unwrap();
         assert_eq!((sized.width(), sized.height()), (3, 2));
         assert_eq!(sized.pixel(2, 1), Some(Color16(0x1234)));
-        let after = fonts.glyph(Font(0), 2).unwrap();
+        let after = fonts.glyph(Font(0), GLYPH_BASE + 2).unwrap();
         assert_eq!(
             (after.width(), after.height()),
             (0, 0),
@@ -282,19 +290,37 @@ mod tests {
     #[test]
     fn a_character_past_the_table_is_none_and_so_is_a_font_past_the_end() {
         let fonts = AsciiFonts::parse(&synthetic(FONT_COUNT, 1, 1)).unwrap();
-        assert!(fonts.glyph(Font(0), 0).is_some());
+        assert!(fonts.glyph(Font(0), GLYPH_BASE).is_some());
         assert!(
-            fonts.glyph(Font(0), (CHARS_PER_FONT - 1) as u8).is_some(),
+            fonts
+                .glyph(Font(0), GLYPH_BASE + (CHARS_PER_FONT - 1) as u8)
+                .is_some(),
             "the last real entry in the table"
         );
         assert!(
-            fonts.glyph(Font(FONT_COUNT as u16), 0).is_none(),
+            fonts.glyph(Font(FONT_COUNT as u16), GLYPH_BASE).is_none(),
             "one past the last real face"
         );
         assert!(
-            fonts.glyph(Font(u16::MAX), 0).is_none(),
+            fonts.glyph(Font(u16::MAX), GLYPH_BASE).is_none(),
             "far past the end, not a panic"
         );
+    }
+
+    #[test]
+    fn a_character_below_glyph_base_is_none_not_a_control_code_glyph() {
+        // The bug this test was written for: a shipped `fonts.mul` has no
+        // record at all for a control code, so asking for one must not wrap
+        // around into whatever the file actually stored at that raw table
+        // offset — it has to come back `None`, the same answer a character
+        // past the end of the table gets.
+        let fonts = AsciiFonts::parse(&synthetic(FONT_COUNT, 1, 1)).unwrap();
+        for char in 0..GLYPH_BASE {
+            assert!(
+                fonts.glyph(Font(0), char).is_none(),
+                "code point {char:#04X} is below GLYPH_BASE and has no glyph"
+            );
+        }
     }
 
     #[test]
@@ -304,7 +330,7 @@ mod tests {
         // shipped file could contain, not a fixture-only case.
         let bytes = synthetic(FONT_COUNT, 1, 1);
         let fonts = AsciiFonts::parse(&bytes).unwrap();
-        let glyph = fonts.glyph(Font(0), 0).unwrap();
+        let glyph = fonts.glyph(Font(0), GLYPH_BASE).unwrap();
         assert_eq!(glyph.pixel(0, 0), Some(Color16::TRANSPARENT));
         assert!(Color16::TRANSPARENT.is_transparent());
     }

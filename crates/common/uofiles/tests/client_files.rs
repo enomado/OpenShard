@@ -15,9 +15,12 @@
 //!
 //! The install these numbers were taken from is client 7.0.116.0.
 
+use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::anim::{Anim, BodyKind, DIRECTIONS};
 use openshard_uofiles::art::Art;
+use openshard_uofiles::equipconv::EquipConv;
+use openshard_uofiles::font::{AsciiFonts, CHARS_PER_FONT, FONT_COUNT};
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::{TEXTURE_COUNT, TexMaps, TextureId};
@@ -767,4 +770,83 @@ fn the_animation_index_is_sparse_but_the_bodies_that_exist_are_dense() {
         (50..900).contains(&present),
         "{present} of the first 1,000 bodies stand; the index is being read at the wrong stride",
     );
+}
+
+/// `Equipconv.def` is text, not one of this crate's binary formats, so there
+/// is no arithmetic to pin the way there is for `tiledata`'s layout — this
+/// only checks that a real file parses to something, the same floor
+/// `fonts.mul` gets until a client install is on hand to read expected
+/// `(body, graphic)` pairs off.
+#[test]
+fn a_real_equipconv_parses_to_a_nonempty_table() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let path = dir.join("Equipconv.def");
+    if !path.exists() {
+        return;
+    }
+    let table = EquipConv::load(&path).expect("a client ships a readable Equipconv.def");
+    assert!(!table.is_empty(), "Equipconv.def parsed to no entries at all");
+}
+
+/// `fonts.mul` against a real file, the counterpart `font.rs`'s module doc
+/// says has been missing: every face's glyph headers are read at the offset
+/// the previous glyph's own width and height say they end at, with no
+/// resync point, so a wrong assumption about the record layout desyncs
+/// every glyph after the first divergence rather than failing outright — a
+/// synthetic fixture, built by the same layout it is checked against, cannot
+/// show that.
+#[test]
+fn a_real_fonts_mul_parses_to_ten_plausible_faces() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let path = dir.join("fonts.mul");
+    if !path.exists() {
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("a client ships a readable fonts.mul");
+    let fonts = AsciiFonts::parse(&bytes).expect("a shipped fonts.mul parses");
+    assert_eq!(fonts.len(), FONT_COUNT);
+
+    // A desynced read does not fail — it produces glyphs, just the wrong
+    // ones — so the check is on the shape of what came out: every glyph a
+    // real client draws is a handful of pixels on a 44-pixel tile, never a
+    // fraction of the whole file's worth of "pixels" read from the middle of
+    // the next face.
+    let mut widest = 0usize;
+    let mut sampled = 0usize;
+    for font in 0..FONT_COUNT as u16 {
+        for char in 0..CHARS_PER_FONT as u8 {
+            let glyph = fonts
+                .glyph(Font(font), char)
+                .unwrap_or_else(|| panic!("font {font} character {char} missing from the table"));
+            assert!(
+                usize::from(glyph.width()) < 64 && usize::from(glyph.height()) < 64,
+                "font {font} character {char:#04X} came out {}x{}, which is not a glyph",
+                glyph.width(),
+                glyph.height(),
+            );
+            widest = widest.max(glyph.width() as usize);
+            sampled += 1;
+        }
+    }
+    assert_eq!(sampled, FONT_COUNT * CHARS_PER_FONT);
+    // A desync that happened to keep every width under 64 by luck would still
+    // have to explain a table with nothing wide in it at all.
+    assert!(widest > 5, "the widest glyph read was only {widest} pixels");
+
+    // `'A'` (0x41) and space (0x20) are drawn in every face; a stride that had
+    // slipped would make at least one of the ten faces' `'A'` come out
+    // zero-sized or absurdly large, the way a control code's glyph looks.
+    for font in 0..FONT_COUNT as u16 {
+        let letter = fonts.glyph(Font(font), 0x41).unwrap();
+        assert!(
+            letter.width() > 0 && letter.height() > 0,
+            "font {font}'s 'A' is {}x{}, not drawn at all",
+            letter.width(),
+            letter.height()
+        );
+    }
 }

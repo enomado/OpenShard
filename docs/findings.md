@@ -218,6 +218,37 @@ natural one and it is wrong. The population comes from the Community Pack's
 converted once out of ServUO's `Data/Decoration/**.cfg` and `Data/signs.cfg` —
 and it lands through the `.admin` "Decorate Felucca" button.
 
+**A worn item's default picture is its own tiledata `AnimID`, and `Equipconv.def`
+is an override table, not a lookup a worn item requires an entry in.** The
+`AnimID` field of a static's tiledata entry (offset 14 of 21 in the High Seas
+layout, `StaticTile::anim_id`) names the body-animation-space graphic an item
+draws with — read through the same `anim.mul` machinery a mobile's body
+itself uses — and *that* is what an ordinary shirt or pair of boots draws
+from: it has no entry in `Equipconv.def` at all. The table only maps
+`(body, AnimID)` to a *different* `AnimID`, for the pairs where this body
+needs a different picture (chiefly a race or gender variant of the same
+garment); confirmed by reading `AnimationsLoader.ProcessEquipConvDef` and
+`MobileView.AddItem` in ClassicUO, a BSD-2 reference client kept outside this
+repository — `graphic = item.ItemData.AnimID`, replaced only if
+`EquipConversions[body][AnimID]` exists. Treating a missing entry as "draw
+nothing" instead of "the `AnimID` already draws right" was the first
+implementation of equipment rendering here, and it dropped every piece of
+plain clothing on every NPC silently: no test caught it, because every test
+built its own atlas and equipment table together and never had an item
+*without* a conversion entry in the mix — the gap only showed on a live
+client with a real `Equipconv.def`, which does not have entries for the
+common case. Also not read: `mobtypes.txt`, which tells a human body from a
+gargoyle one and shifts the resolved graphic accordingly — without it, a
+gargoyle's equipment resolves through the same table a human's does.
+
+`AnimID` had already been named in this reader's own layout comment for
+`parse_static` since the day it was written — `crates/common/uofiles/src/tiledata.rs`
+documents the byte offset in a doc comment on the function — and was simply
+never wired into the `StaticTile` struct or read. It sat between two fields
+that already were read (`layer` before it, `height` after): a field can be
+*in the comment* and still not be in the code, and nothing short of a
+consumer asking for it says so.
+
 **No client files are in this repository and none ever will be.** They are
 copyrighted and they are not ours to redistribute. `world.client_files` points
 at whatever install the operator already has; the tests that need one read

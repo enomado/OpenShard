@@ -31,6 +31,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::anim::{Anim, AnimFrame};
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
 use openshard_uofiles::color::Color16;
+use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::image::Image;
 use openshard_uofiles::map::Map;
@@ -1376,10 +1377,12 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
                 from: None,
                 hue: openshard_protocol::wire::Hue::NONE,
                 drawn: openshard_client_render::follow::Gaze::on(centre),
+                equipment: Vec::new(),
             }],
             &camera,
             &atlas,
             &Cutaway::OPEN,
+            &EquipConv::default(),
         );
         assert_eq!(quads.len(), 1, "the frame is packed, so it draws");
         let frame = render_both(
@@ -1845,11 +1848,14 @@ fn dump_a_frame_of_britain() {
                 hue: openshard_protocol::wire::Hue::NONE,
                 // Standing where the server put them: nothing here is walking.
                 drawn: openshard_client_render::follow::Gaze::on(ground),
+                equipment: Vec::new(),
             }
         })
         .collect();
-    let mobile_atlas = AnimAtlas::build(&mut anim, mobiles::needed_animations(&people)).expect("a body fits");
-    let mobile_quads = mobiles::collect(&people, &camera, &mobile_atlas, &Cutaway::OPEN);
+    let equip_conv = EquipConv::default();
+    let mobile_atlas =
+        AnimAtlas::build(&mut anim, mobiles::needed_animations(&people, &equip_conv)).expect("a body fits");
+    let mobile_quads = mobiles::collect(&people, &camera, &mobile_atlas, &Cutaway::OPEN, &equip_conv);
 
     let frame = render_both(
         &device,

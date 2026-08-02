@@ -39,14 +39,35 @@ use std::time::Duration;
 
 use openshard_client_render::animation::AnimationClock;
 use openshard_client_render::follow::Gaze;
-use openshard_client_render::mobiles::Mobile;
+use openshard_client_render::mobiles::{EquipmentLayer, Mobile};
 use openshard_movement::{RUN_HOLD, WALK_HOLD};
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::BodyKind;
+use openshard_uofiles::tiledata::TileData;
+
+/// The wire's list, as [`Mobile::equipment`] wants it.
+///
+/// A worn item's default picture is its own tiledata `AnimID`, not its wire
+/// graphic — a different index space, read from `art.mul`'s neighbour rather
+/// than `anim.mul`'s — so that resolution happens here, once, rather than at
+/// every place `Mobile::equipment` is read. Whether *this* body draws
+/// something else again is [`EquipConv`](openshard_uofiles::equipconv::EquipConv)'s
+/// question, asked downstream in `client/render`, which is why this module
+/// still holds no such table: it needs `tiledata`, not `anim.mul`.
+pub fn worn(equipment: &[Equipment], tiledata: &TileData) -> Vec<EquipmentLayer> {
+    equipment
+        .iter()
+        .map(|item| EquipmentLayer {
+            graphic: tiledata.static_tile(item.graphic.0).anim_id,
+            hue: item.hue,
+        })
+        .collect()
+}
 
 /// How long a spoken line stays drawn above its speaker's head, once heard.
 ///
@@ -498,6 +519,9 @@ impl Crowd {
             from: stepped_off,
             hue,
             drawn: tracked.drawn,
+            // `Crowd` ages a position and a clock; equipment has neither —
+            // it is the caller's to set, straight from the view.
+            equipment: Vec::new(),
         }
     }
 
@@ -566,6 +590,7 @@ impl Crowd {
             from: None,
             hue,
             drawn: tracked.drawn,
+            equipment: Vec::new(),
         }
     }
 

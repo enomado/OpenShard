@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use openshard_entities::{EntityId, Registry};
 use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
-use openshard_movement::Terrain;
+use openshard_movement::{Terrain, Tile};
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
 use openshard_protocol::items::WorldItem;
@@ -800,7 +800,7 @@ impl WorldState {
             .facets
             .get(&facet)
             .and_then(|state| state.terrain.as_ref())
-            .and_then(|terrain| terrain.ground_z(x, y))
+            .and_then(|terrain| terrain.ground_z(Tile::new(x, y)))
             .unwrap_or(Z_WITHOUT_A_MAP);
         Point::new(x, y, z)
     }

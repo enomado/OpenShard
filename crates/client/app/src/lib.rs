@@ -127,6 +127,7 @@ use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
+use openshard_movement::Terrain;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
@@ -135,6 +136,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::anim::Anim;
 use openshard_uofiles::animdata::AnimData;
 use openshard_uofiles::art::Art;
+use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::AsciiFonts;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
@@ -314,6 +316,16 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         }
     };
 
+    // What a worn item draws as. Read alongside `anim`, which is what its
+    // entries resolve into.
+    let equip_conv = match EquipConv::load(dir.join("Equipconv.def")) {
+        Ok(equip_conv) => equip_conv,
+        Err(error) => {
+            eprintln!("opening Equipconv.def: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     // Where the character stands at boot: the camera's tile, at the height the
     // ground there actually is.
     let start = Point::new(
@@ -328,9 +340,17 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
     // Shared with the shard thread, which predicts the height of every step
     // from it: plain data, read by both and written by neither.
     let map = Arc::new(map);
+    let tiledata = Arc::new(tiledata);
     let link = shard.map(|(dial, plan)| {
         eprintln!("logging in as {}", plan.account.0);
-        link::connect(dial, plan, VERSION, Arc::clone(&map), event_loop.create_proxy())
+        link::connect(
+            dial,
+            plan,
+            VERSION,
+            Arc::clone(&map),
+            Arc::clone(&tiledata),
+            event_loop.create_proxy(),
+        )
     });
 
     let mut app = App {
@@ -343,6 +363,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         hue_ramp,
         font_atlas,
         anim,
+        equip_conv,
         // The device's own limit replaces WebGL2's floor once there is a device
         // to ask; the floor is the smallest thing this has to run on.
         control: Control::new(Camera::new(START, 1024, 768), 2048, STARTUP_RIG),
@@ -359,7 +380,9 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(start),
+            equipment: Vec::new(),
         },
+        cutaway_at: start,
         others: Vec::new(),
         items: Vec::new(),
         view: None,
@@ -369,6 +392,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         facet_checked: false,
         steer: steer::Steering::default(),
         aiming: false,
+        ctrl_held: false,
         crowd: {
             // The body's ease, which is not the camera's — see `STARTUP_EASE`.
             let mut crowd = Crowd::default();
@@ -384,6 +408,7 @@ pub fn run<D: Dial + Send + 'static>(dir: &Path, shard: Option<(D, Plan)>) -> Ex
         covered: None,
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),
+        repacks: 0,
         focused: true,
         occluded: false,
         scripts: bench::scripts(),
@@ -565,6 +590,7 @@ fn wanted_in(
     items: &[GroundItem],
     drawn: &[Mobile],
     animations: &StaticAnimations,
+    equip_conv: &EquipConv,
 ) -> Wanted {
     let mut wanted = Wanted::default();
     for band in bands {
@@ -575,7 +601,9 @@ fn wanted_in(
         statics::graphics_in(map, band, animations, &mut wanted.statics);
     }
     wanted.statics.extend(items::needed_graphics(items, animations));
-    wanted.animations.extend(mobiles::needed_animations(drawn));
+    wanted
+        .animations
+        .extend(mobiles::needed_animations(drawn, equip_conv));
     wanted
 }
 
@@ -620,7 +648,11 @@ struct App {
     map: Arc<Map>,
     art: Art,
     texmaps: TexMaps,
-    tiledata: TileData,
+    /// Shared with the shard thread, the same way [`App::map`] is — see
+    /// [`link::connect`]: the walk prediction weighs a pier's or a bridge's
+    /// deck now, not only the land, and that needs `tiledata.mul` on both ends
+    /// of the channel.
+    tiledata: Arc<TileData>,
     /// Every hue the client ships, read as `hues.mul` stores it — a 32-step
     /// `Color16` ramp per hue. `hue_ramp` beside it is the same table packed
     /// for the GPU; this is what `gump.rs` reads to colour a `{ text }`
@@ -636,6 +668,10 @@ struct App {
     /// The animations, open but not read: `anim.mul` is 195MB and frames come
     /// out of it a body at a time. `&mut` because reading one seeks the file.
     anim: Anim,
+    /// What a worn item's own graphic resolves to for drawing — see
+    /// [`EquipConv`]. Read once at startup like [`App::hues`]: unlike `anim`,
+    /// the whole table is small enough to hold rather than seek into.
+    equip_conv: EquipConv,
     /// The statics that move on their own — fires, torches, water wheels — and
     /// how far into their cycles they are.
     ///
@@ -662,6 +698,23 @@ struct App {
     /// animation reader, the frame atlas and the placement against a real
     /// install.
     player: Mobile,
+    /// The tile roof-cutaway is computed from — see `draw`'s use of it with
+    /// [`openshard_client_render::cutaway::Cutaway`].
+    ///
+    /// Deliberately not always `player.at`: that is this end's own optimistic
+    /// *prediction*, published the instant a step is sent and corrected only
+    /// a round trip later (see `link::Body`), and `Steering::detour`
+    /// (`steer.rs`) means a held direction pinned against an obstacle asks
+    /// for the very tile it is going to be refused on, every hold, for as
+    /// long as it is held. Feeding that straight to `Cutaway::at` flips which
+    /// roof is drawn hidden for exactly the frame between sending the doomed
+    /// step and the `0x21` undoing it — a real defect this field exists to
+    /// close, not the deliberate lag-compensation `player.at` is for the
+    /// body's own drawn position. This only ever advances to a tile the
+    /// client's own static map agrees is reachable from the last one it
+    /// held, so a refusal is never drawn from; a correction snaps it the same
+    /// way it snaps `player.at`.
+    cutaway_at: Point,
     /// Everyone else on screen, as `0x77` and `0x78` last described them, each
     /// beside the serial the crowd's clocks are keyed by.
     ///
@@ -704,9 +757,15 @@ struct App {
     /// speedhack, and a mouse held over the ground reports a move a pixel. One
     /// clock paces all of them. See `steer.rs`.
     steer: steer::Steering,
-    /// Whether the right button is down, which is what makes dragging steer: the
-    /// destination is restated at every tile the cursor crosses while it is.
+    /// Whether the right button is down, which is what makes dragging steer: a
+    /// heading (or, with Ctrl, a destination) is restated on every cursor move
+    /// while it is.
     aiming: bool,
+    /// Whether Ctrl is held, which is what turns the right-hold from a heading
+    /// — the default "run toward the cursor" idiom, no map involved — into a
+    /// move order that plans a route with `find_path`. See `steer.rs`'s
+    /// module docs.
+    ctrl_held: bool,
     /// What everyone on screen was doing a moment ago: which animation each is
     /// playing, and how far into it.
     ///
@@ -774,6 +833,12 @@ struct App {
     /// number about the loop and not about the camera. See [`frames::Frames`]
     /// for why it is not the scope.
     frames: frames::Frames,
+    /// How many full atlas repacks this session has paid for — the eviction
+    /// `AtlasError::Full` triggers, named in `docs/camera.md`: "costly and
+    /// rare" was a claim nothing counted, and each one's cost otherwise reads
+    /// as an ordinary heavy frame. See [`Frame::repacked`](frames::Frame) for
+    /// which frame paid it.
+    repacks: u64,
     /// Whether the window has the keyboard.
     ///
     /// Half of [`App::watched`], and true at construction: a window is mapped
@@ -901,7 +966,15 @@ impl ApplicationHandler<link::Update> for App {
                 if let Some(direction) = keys::Held::direction_of(code) {
                     let step = match event.state {
                         ElementState::Pressed => {
-                            self.steer.press(direction, Instant::now(), self.player.facing)
+                            let terrain =
+                                openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+                            self.steer.press(
+                                direction,
+                                self.player.at,
+                                Instant::now(),
+                                self.player.facing,
+                                &terrain,
+                            )
                         }
                         ElementState::Released => {
                             self.steer.release(direction);
@@ -934,6 +1007,16 @@ impl ApplicationHandler<link::Update> for App {
                     // along, only a projection that folds `z` into `y`.
                     KeyCode::PageUp => self.control.pan(0, PAGE_PIXELS),
                     KeyCode::PageDown => self.control.pan(0, -PAGE_PIXELS),
+                    // A diagnostic, not a feature: a fixed mixed-case ASCII
+                    // line, sent without ever going through the keyboard —
+                    // no xkb group, no IME, no `shell`'s `TextEdit`. Whatever
+                    // shows up over the head from this key is exactly what
+                    // `0xAD` → `0xAE` → `text::collect` do with known-good
+                    // bytes, with typing entirely ruled out as a variable.
+                    KeyCode::F9 => {
+                        self.say("AbCdEfGh The Quick Brown Fox 123".to_owned());
+                        false
+                    }
                     _ => false,
                 };
                 if changed {
@@ -948,6 +1031,11 @@ impl ApplicationHandler<link::Update> for App {
             // case of it going down between two steps.
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.steer.set_running(modifiers.state().shift_key());
+                // Toggling Ctrl mid-drag switches the right-hold from a
+                // heading to a move order (or back) on the next cursor move —
+                // no special-casing needed, `walk_toward_cursor` reads this
+                // fresh every call.
+                self.ctrl_held = modifiers.state().control_key();
             }
             // A window that loses focus never hears the key come up, and a
             // character that keeps walking into a wall while its player is in
@@ -990,12 +1078,13 @@ impl ApplicationHandler<link::Update> for App {
                 });
                 let (x, y) = (position.x as i32 - origin.0, position.y as i32 - origin.1);
                 let mut changed = self.control.cursor_moved(x, y);
-                // Held, the button steers rather than picking one tile: the
-                // destination follows the cursor, which is the walk-where-I-am-
-                // pointing every UO client has and every strategy game's
-                // move-order held down.
+                // Held, the button steers: a heading toward wherever the cursor
+                // is, by default, or a Ctrl-held move order — see
+                // `walk_toward_cursor` and `steer.rs`'s module docs for why
+                // those are two different things and not one idiom stated
+                // twice.
                 if self.aiming {
-                    changed |= self.walk_to_cursor();
+                    changed |= self.walk_toward_cursor();
                 }
                 if changed {
                     if let Some(window) = self.window.as_ref() {
@@ -1020,15 +1109,25 @@ impl ApplicationHandler<link::Update> for App {
                         window.window.request_redraw();
                     }
                 }
-                // And a right click is a move order: walk there, and keep
-                // walking there while the button is held. Left is spoken for by
-                // the Tile panel above, and the middle button pans.
+                // A right hold is a heading toward the cursor by default, or a
+                // Ctrl-held move order — either way it stays under way while
+                // the button is, driven from `CursorMoved`. Left is spoken for
+                // by the Tile panel above, and the middle button pans.
                 if button == winit::event::MouseButton::Right {
                     self.aiming = state == ElementState::Pressed;
-                    if self.aiming && self.walk_to_cursor() {
-                        if let Some(window) = self.window.as_ref() {
-                            window.window.request_redraw();
+                    if self.aiming {
+                        if self.walk_toward_cursor() {
+                            if let Some(window) = self.window.as_ref() {
+                                window.window.request_redraw();
+                            }
                         }
+                    } else {
+                        // A heading stops the instant the button does — unlike
+                        // a move order, which keeps walking itself there after
+                        // the button that gave it is gone. `mouse_up` only
+                        // touches the heading; a Ctrl-held destination in
+                        // flight is untouched.
+                        self.steer.mouse_up();
                     }
                 }
             }
@@ -1074,7 +1173,8 @@ impl ApplicationHandler<link::Update> for App {
         // anything past it is a rate, which is what the clock is for.
         let mut moved = false;
         for _ in 0..2 {
-            let Some(facing) = self.steer.due(now, self.player.at, self.player.facing) else {
+            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+            let Some(facing) = self.steer.due(now, self.player.at, self.player.facing, &terrain) else {
                 break;
             };
             moved |= self.walk(facing);
@@ -1152,11 +1252,17 @@ impl App {
         let x = (i32::from(self.player.at.x) + dx).clamp(0, self.map.width() as i32 - 1);
         let y = (i32::from(self.player.at.y) + dy).clamp(0, self.map.height() as i32 - 1);
         let (x, y) = (x as u16, y as u16);
-        // On the *ground* there, not at some height of the camera's — a mobile
-        // below the terrain is correctly hidden by it, which is what the depth
+        // On the surface there — the ground's average, or a platform static's
+        // deck, whichever is nearest where the body already stands — not at
+        // some height of the camera's, and not the land alone: a mobile below
+        // the terrain is correctly hidden by it, which is what the depth
         // buffer is for and what looks exactly like a mobile that failed to
-        // draw.
-        let ground = self.map.land(x, y).map_or(self.player.at.z, |cell| cell.z);
+        // draw, and the same held for a pier or a bridge before `predict_z`
+        // weighed their deck. See `link.rs`'s online `Command::Step`, which
+        // wants the identical answer once a server is involved.
+        let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+        let ground =
+            i8::try_from(terrain.predict_z(x, y, i32::from(self.player.at.z))).unwrap_or(self.player.at.z);
         // The crowd's clock first, before the step is folded in, and for the
         // same reason `App::user_event` does it for a step off the wire: a step
         // is timestamped with `Crowd`'s own `now`, and this is called from
@@ -1172,6 +1278,11 @@ impl App {
         // Through the crowd like anyone else, so the placeholder walks when it
         // walks and stands when it stops. `None` is who it is: no shard has
         // named it, so it has no serial.
+        // `Crowd::see` starts a fresh `Mobile` with no equipment — nobody
+        // sent this placeholder a `0x78` — so whatever it was already wearing
+        // is carried across by hand, the way `WorldView` carries it across a
+        // `0x77`/`0x20` that names none either.
+        let equipment = std::mem::take(&mut self.player.equipment);
         self.player = self.crowd.see(
             None,
             Point::new(x, y, ground),
@@ -1179,6 +1290,11 @@ impl App {
             facing,
             self.player.hue,
         );
+        self.player.equipment = equipment;
+        // Offline there is no shard to refuse a step, so nothing here is
+        // speculative the way an online prediction is — trusted outright,
+        // same as a correction is.
+        self.cutaway_at = self.player.at;
         // Offline the body is what the camera is locked to, exactly as the
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
@@ -1199,17 +1315,41 @@ impl App {
     /// viewport names no tile and is left alone rather than treated as the
     /// nearest one — a move order nobody gave is worse than one that did
     /// nothing.
-    fn walk_to_cursor(&mut self) -> bool {
+    /// The mouse's whole share of walking, one call for both of its idioms:
+    /// `self.ctrl_held` says which. Without Ctrl this is a heading — no map
+    /// touched, no route planned, the same "run toward the cursor" a strategy
+    /// game's held mouse button means. With it, a move order: a route planned
+    /// with `find_path` to the exact tile. See `steer.rs`'s module docs for why
+    /// they are not the same thing wearing one name.
+    fn walk_toward_cursor(&mut self) -> bool {
         // As above: between frames, what is on screen is what the last frame drew.
         let Some(tile) = self.pick_tile(*self.control.camera()) else {
             return false;
         };
-        match self.steer.go_to(
-            (tile.x, tile.y),
-            self.player.at,
-            Instant::now(),
-            self.player.facing,
-        ) {
+        let facing = if self.ctrl_held {
+            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+            self.steer.go_to(
+                (tile.x, tile.y),
+                self.player.at,
+                Instant::now(),
+                self.player.facing,
+                &terrain,
+            )
+        } else {
+            let direction = openshard_movement::heading_toward(
+                self.player.at,
+                Point::new(tile.x, tile.y, self.player.at.z),
+            );
+            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+            self.steer.steer(
+                direction,
+                self.player.at,
+                Instant::now(),
+                self.player.facing,
+                &terrain,
+            )
+        };
+        match facing {
             Some(facing) => {
                 // The marker under the destination has moved even when the step
                 // itself changes nothing on screen, so the redraw is not the
@@ -1356,9 +1496,12 @@ impl App {
             // way there, and an eye that eased across a facet is a second
             // motion on top of the one being looked at.
             let (body, hue) = (Graphic(self.player.body), self.player.hue);
+            let equipment = std::mem::take(&mut self.player.equipment);
             self.player = self
                 .crowd
                 .snap(self.me(), start, body, Facing::walking(self.player.facing), hue);
+            self.player.equipment = equipment;
+            self.cutaway_at = self.player.at;
             self.control.relock(mobiles::gaze(&self.player));
         }
         // The frames either side of a start are two different runs, and a metric
@@ -1379,10 +1522,13 @@ impl App {
         let finished = replay.finished();
         for step in moves {
             let (body, hue) = (Graphic(self.player.body), self.player.hue);
+            let equipment = std::mem::take(&mut self.player.equipment);
             self.player = match step.glided {
                 true => self.crowd.see(self.me(), step.to, body, step.facing, hue),
                 false => self.crowd.snap(self.me(), step.to, body, step.facing, hue),
             };
+            self.player.equipment = equipment;
+            self.cutaway_at = self.player.at;
         }
         if finished {
             self.replay = None;
@@ -1532,6 +1678,24 @@ impl App {
                 view.player.hue,
             ),
         };
+        self.player.equipment = crowd::worn(&view.player.equipment, &self.tiledata);
+        // `cutaway_at` follows the same prediction `player.at` does, with one
+        // guard: it only ever advances to a tile the client's own static map
+        // agrees is reachable from the one it already held. A correction is
+        // the server's own word and is trusted outright, same as `player.at`
+        // is; an optimistic step is only trusted here when it is not one
+        // `Steering::detour` is going to have offered into a wall this end
+        // can already see — see the field's own doc for why.
+        self.cutaway_at = match body.corrected {
+            true => body.predicted.position,
+            false => {
+                let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+                match terrain.can_step(self.cutaway_at, body.predicted.position) {
+                    Some(_) => body.predicted.position,
+                    None => self.cutaway_at,
+                }
+            }
+        };
         // Sorted by serial: a `HashMap`'s order is not one, and an atlas built
         // in a different order every frame is a rebuild every frame.
         let mut others: Vec<_> = view.mobiles.iter().collect();
@@ -1540,11 +1704,11 @@ impl App {
             .into_iter()
             .map(|(serial, mobile)| {
                 let who = Some(*serial);
-                (
-                    who,
-                    self.crowd
-                        .see(who, mobile.position, mobile.body, mobile.facing, mobile.hue),
-                )
+                let mut drawn = self
+                    .crowd
+                    .see(who, mobile.position, mobile.body, mobile.facing, mobile.hue);
+                drawn.equipment = crowd::worn(&mobile.equipment, &self.tiledata);
+                (who, drawn)
             })
             .collect();
         // Whoever the view no longer holds walked out of range, and their clock
@@ -1747,6 +1911,7 @@ impl App {
             frames: self.frames.frames().to_vec(),
             frames_span: self.frames.span(),
             worst_fps: self.frames.worst_fps(),
+            repacks: self.repacks,
             // What is currently *asking* for frames, which is the other half of
             // any answer about the frame rate: a picture drawn every 80ms is not
             // a slow frame if the loop is on the animation clock, it is a frame
@@ -1792,7 +1957,7 @@ impl App {
     /// Our own body first, and `None` for it while no shard has named us.
     fn drawn_mobiles(&self) -> Vec<(Who, Mobile)> {
         let mut mobiles = Vec::with_capacity(self.others.len() + 1);
-        mobiles.push((self.me(), self.player));
+        mobiles.push((self.me(), self.player.clone()));
         mobiles.extend_from_slice(&self.others);
         mobiles
     }
@@ -1822,6 +1987,15 @@ impl App {
                 .create_window(attributes)
                 .map_err(StartupError::Window)?,
         );
+        // Without this, the compositor never starts an IME session for this
+        // window, and on Wayland that is what feeds `egui-winit` composed
+        // text: a layout that needs one (Cyrillic under a caps-lock layout
+        // switch, an East Asian input method) either loses every keystroke or
+        // the raw keysym instead of the composed character, silently, while a
+        // plain Latin layout still works because it needs no composition —
+        // the shell's "say" box looked fine to type in for exactly that
+        // reason and nothing else.
+        window.set_ime_allowed(true);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
@@ -2009,7 +2183,14 @@ impl App {
             .into_iter()
             .map(|(_, mobile)| mobile)
             .collect();
-        wanted_in(&self.map, bands, &self.items, &drawn, &self.tile_animations)
+        wanted_in(
+            &self.map,
+            bands,
+            &self.items,
+            &drawn,
+            &self.tile_animations,
+            &self.equip_conv,
+        )
     }
 
     fn draw(&mut self) {
@@ -2155,6 +2336,11 @@ impl App {
             &window.statics,
             &window.mobile_pass,
         );
+        // Set only in the branch below, on a successful rebuild — this is the
+        // counter `docs/camera.md` asks for, so the frame that stalled for it
+        // can be told apart from one that is merely heavy. See
+        // [`Frame::repacked`](frames::Frame).
+        let mut repacked = false;
         match grown {
             Ok(()) => self.covered = Some(want),
             // Full, and this is the eviction: pack an atlas for what is on
@@ -2179,8 +2365,9 @@ impl App {
                         &self.map,
                         [camera.visible_tiles()],
                         &self.items,
-                        &drawn.iter().map(|(_, mobile)| *mobile).collect::<Vec<_>>(),
+                        &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
                         &self.tile_animations,
+                        &self.equip_conv,
                     ),
                 ) {
                     Ok(atlases) => {
@@ -2207,6 +2394,8 @@ impl App {
                         );
                         window.atlases = atlases;
                         self.covered = Some(want);
+                        repacked = true;
+                        self.repacks += 1;
                     }
                     // One screen does not fit one atlas, which is a different
                     // statement from "the atlas filled up": no eviction can help
@@ -2338,7 +2527,11 @@ impl App {
         // camera's: a free camera looking at a rooftop three streets away has
         // not walked indoors, and the client's rule is about where the body is.
         // See `openshard_client_render::cutaway`.
-        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.player.at, true);
+        //
+        // `self.cutaway_at`, not `self.player.at`: the latter is this end's
+        // own unconfirmed prediction, which for one frame can be a tile a
+        // held direction was refused on — see the field's own doc.
+        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
         let quads = ground::collect(
             &self.map,
             &camera,
@@ -2369,7 +2562,13 @@ impl App {
             ));
             quads
         };
-        let mobile_quads = mobiles::collect(&drawn, &camera, &window.atlases.mobiles, &cutaway);
+        let mobile_quads = mobiles::collect(
+            &drawn,
+            &camera,
+            &window.atlases.mobiles,
+            &cutaway,
+            &self.equip_conv,
+        );
         let labels: Vec<Label<'_>> = speech
             .iter()
             .map(|(anchor, line, font, hue)| Label {
@@ -2474,6 +2673,7 @@ impl App {
             ui_cost,
             scene,
             wait,
+            repacked,
         );
         self.last_frame = started;
     }

@@ -7617,13 +7617,13 @@ impl Terrain for FrameTerrain {
     fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
         Some(to)
     }
-    fn statics_at(&self, x: u16, y: u16, out: &mut Vec<(u16, i8)>) {
-        if y == 100 && (x == 100 || x == 102) {
+    fn statics_at(&self, tile: Tile, out: &mut Vec<(u16, i8)>) {
+        if tile.y == 100 && (tile.x == 100 || tile.x == 102) {
             out.push((0x0007, 0)); // 0x0007 is both a west and an east frame
         }
     }
-    fn can_fit(&self, x: u16, y: u16, _z: i32, _height: i32) -> bool {
-        !(self.walled && (x, y) == (101, 100))
+    fn can_fit(&self, tile: Tile, _z: i32, _height: i32) -> bool {
+        !(self.walled && (tile.x, tile.y) == (101, 100))
     }
 }
 
@@ -10242,10 +10242,10 @@ impl Terrain for RaisedFloorTerrain {
     fn can_step(&self, _from: Point, to: Point) -> Option<Point> {
         Some(to)
     }
-    fn stand_z(&self, _x: u16, _y: u16, _near_z: i32) -> Option<i32> {
+    fn stand_z(&self, _tile: Tile, _near_z: i32) -> Option<i32> {
         None
     }
-    fn spawn_z(&self, _x: u16, _y: u16, _near_z: i32) -> Option<i32> {
+    fn spawn_z(&self, _tile: Tile, _near_z: i32) -> Option<i32> {
         Some(7)
     }
 }

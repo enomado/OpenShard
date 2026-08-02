@@ -78,6 +78,13 @@ pub struct Frame {
     /// What the display cost — time blocked acquiring the surface texture, which
     /// is the vsync wait and not work this client did.
     pub wait: Duration,
+    /// Whether this frame paid for a full atlas repack — the synchronous
+    /// eviction `AtlasError::Full` triggers, rebuilding every pass from
+    /// scratch. Its cost lands inside [`Frame::scene`] like any other world
+    /// work, and without this flag a repack and a merely heavy screen are the
+    /// same number: this is the counter `docs/camera.md` asks for, so the
+    /// panel can name the stall instead of just showing it.
+    pub repacked: bool,
 }
 
 impl Frame {
@@ -127,7 +134,14 @@ impl Frames {
     /// A zero interval is dropped rather than recorded. Two frames at the same
     /// instant is not a rate — it is a redraw requested twice for one wake —
     /// and it is the one value the reciprocal cannot be taken of.
-    pub fn record(&mut self, interval: Duration, ui: Duration, scene: Duration, wait: Duration) {
+    pub fn record(
+        &mut self,
+        interval: Duration,
+        ui: Duration,
+        scene: Duration,
+        wait: Duration,
+        repacked: bool,
+    ) {
         if interval.is_zero() {
             return;
         }
@@ -138,6 +152,7 @@ impl Frames {
             ui,
             scene,
             wait,
+            repacked,
         });
         let cutoff = self.at.saturating_sub(self.span);
         let keep = self
@@ -193,7 +208,7 @@ mod tests {
         let mut frames = Frames::new(Duration::from_millis(500));
         for _ in 0..100 {
             let (interval, ui, scene, wait) = frame(16, 1, 1);
-            frames.record(interval, ui, scene, wait);
+            frames.record(interval, ui, scene, wait, false);
         }
         let held = frames.frames();
         assert_eq!(held.last().unwrap().at, Duration::from_millis(1_600));
@@ -209,9 +224,9 @@ mod tests {
     fn the_rate_is_the_interval_and_not_the_cost() {
         let mut frames = Frames::new(Duration::from_secs(4));
         let (interval, ui, scene, wait) = frame(16, 0, 1);
-        frames.record(interval, ui, scene, wait);
+        frames.record(interval, ui, scene, wait, false);
         let (interval, ui, scene, wait) = frame(80, 0, 1);
-        frames.record(interval, ui, scene, wait);
+        frames.record(interval, ui, scene, wait, false);
         let held = frames.frames();
         assert!((held[0].fps() - 62.5).abs() < 0.01, "{}", held[0].fps());
         assert!((held[1].fps() - 12.5).abs() < 0.01, "{}", held[1].fps());
@@ -225,7 +240,7 @@ mod tests {
     fn a_frame_at_no_interval_at_all_is_not_recorded() {
         let mut frames = Frames::new(Duration::from_secs(4));
         let (interval, ui, scene, wait) = frame(0, 1, 1);
-        frames.record(interval, ui, scene, wait);
+        frames.record(interval, ui, scene, wait, false);
         assert!(frames.frames().is_empty());
         assert_eq!(frames.worst_fps(), None);
     }
@@ -242,6 +257,7 @@ mod tests {
             Duration::from_millis(9),
             Duration::from_millis(1),
             Duration::from_millis(6),
+            false,
         );
         // The same total, the other way round.
         frames.record(
@@ -249,6 +265,7 @@ mod tests {
             Duration::from_millis(1),
             Duration::from_millis(9),
             Duration::from_millis(6),
+            false,
         );
         let held = frames.frames();
         assert_eq!(held[0].build(), held[1].build(), "the same frame time");
@@ -258,5 +275,21 @@ mod tests {
         // slept out the vsync is idle, and reporting the sleep as build time
         // would call it saturated.
         assert_eq!(held[0].build(), Duration::from_millis(10));
+    }
+
+    /// A repack is a fact about *one* frame, not about the ring: a screen that
+    /// is merely heavy never sets it, so the panel can tell "the world is
+    /// full" apart from "the atlas just evicted" even though both are large
+    /// numbers in [`Frame::scene`].
+    #[test]
+    fn a_repack_marks_only_the_frame_that_paid_for_it() {
+        let mut frames = Frames::new(Duration::from_secs(4));
+        let (interval, ui, scene, wait) = frame(16, 0, 1);
+        frames.record(interval, ui, scene, wait, false);
+        let (interval, ui, scene, wait) = frame(16, 0, 40);
+        frames.record(interval, ui, scene, wait, true);
+        let held = frames.frames();
+        assert!(!held[0].repacked, "an ordinary frame");
+        assert!(held[1].repacked, "the frame that evicted the atlas");
     }
 }

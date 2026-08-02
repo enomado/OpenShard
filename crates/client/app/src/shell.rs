@@ -83,6 +83,10 @@ pub struct Hud {
     /// The worst frame rate in that window, and `None` before there is a frame
     /// to have a rate.
     pub worst_fps: Option<f64>,
+    /// How many full atlas repacks this session has paid for. See
+    /// [`crate::frames::Frame::repacked`] for which frame in the window below
+    /// was one of them.
+    pub repacks: u64,
     /// What is currently asking for frames.
     ///
     /// Shown beside the rate because it is the *reason* for it: a client paced
@@ -791,6 +795,20 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
         ui.label(last.map_or("—".to_string(), |frame| format!("{:.1} ms", ms(frame.wait))));
         ui.end_row();
     });
+    // The counter `docs/camera.md` asks for: without it, a full atlas repack
+    // is indistinguishable from an ordinary heavy frame, both being a large
+    // number in `world` above. `repacked` marks which frame in the window
+    // paid for one; the total survives past that window.
+    if last.is_some_and(|frame| frame.repacked) {
+        ui.label(egui::RichText::new("this frame repacked the atlas").color(egui::Color32::YELLOW));
+    }
+    if hud.repacks > 0 {
+        ui.label(
+            egui::RichText::new(format!("atlas repacks this session: {}", hud.repacks))
+                .weak()
+                .small(),
+        );
+    }
     // The sentence that turns "the frame rate dropped" from a bug report into a
     // reading. What is asking for frames is the whole answer, and when it is the
     // animation clock that is a rule rather than a symptom — see `App::pacing`.

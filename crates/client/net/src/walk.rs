@@ -29,7 +29,7 @@
 //! It also holds no map. [`openshard_movement::intend`] carries `z` over
 //! unchanged, because neither end of it has terrain — so the height comes in as
 //! an argument to [`Walk::step`], from whoever loaded a facet. A caller with no
-//! map passes `|_, _| None` and gets the old flat prediction, which drifts up a
+//! map passes `|_, _, _| None` and gets the old flat prediction, which drifts up a
 //! hill until a `0x20` or a `0x21` corrects it. What is deliberately *not*
 //! predicted here is whether a step is allowed at all: that is the server's
 //! answer and it arrives as a `0x21`.
@@ -317,24 +317,29 @@ impl Walk {
     /// and moves it nowhere — that is a whole step in UO, it gets its own
     /// sequence number and its own ack, and this predicts it as one.
     ///
-    /// `ground` answers the height of the land at a tile, and it is what stops
-    /// the prediction drifting up a hill: [`intend`] carries `z` over unchanged
-    /// because neither end of it has terrain, while the server *does* read the
-    /// map and lands the step wherever the ground is — and says nothing, since a
-    /// `0x22` carries no position. A caller with no map passes `|_, _| None` and
-    /// gets the old flat prediction, which is honest; a guessed height would be
-    /// indistinguishable from a real one.
+    /// `ground` answers the height to stand at on a tile, given where this end
+    /// currently believes it is standing, and it is what stops the prediction
+    /// drifting up a hill — or into the water under a pier: [`intend`] carries
+    /// `z` over unchanged because neither end of it has terrain, while the
+    /// server *does* read the map and lands the step wherever the ground (or a
+    /// static a body can stand on) is — and says nothing, since a `0x22` carries
+    /// no position. A caller with no map passes `|_, _, _| None` and gets the
+    /// old flat prediction, which is honest; a guessed height would be
+    /// indistinguishable from a real one. `openshard_movement::MapTerrain`'s
+    /// `predict_z` is the answer a caller with a map wants: it never refuses (see
+    /// below), and unlike the land alone it also weighs a pier's or a bridge's
+    /// deck, so a step onto one predicts the deck and not the water underneath.
     ///
-    /// Deliberately the ground and not `openshard_movement::Terrain`: this
-    /// predicts a *height*, and it must not predict a *refusal*. Whether a step
-    /// is allowed is the server's answer, arriving as a `0x21`, and a client
-    /// that decided it here would need every rule about statics, doors and
-    /// mounts to agree exactly — where a wrong height costs a body drawn a few
-    /// pixels off until the next `0x20`.
+    /// Deliberately not `openshard_movement::Terrain::can_step`: this predicts a
+    /// *height*, and it must not predict a *refusal*. Whether a step is allowed
+    /// is the server's answer, arriving as a `0x21`, and a client that decided
+    /// it here would need every rule about statics, doors and mounts to agree
+    /// exactly — where a wrong height costs a body drawn a few pixels off until
+    /// the next `0x20`.
     pub fn step(
         &mut self,
         facing: Facing,
-        ground: impl Fn(u16, u16) -> Option<i8>,
+        ground: impl Fn(u16, u16, i8) -> Option<i8>,
     ) -> Result<Vec<u8>, NotSent> {
         // Two refusals before anything is decided about the geometry, and the
         // reference checks the same two first thing in `PlayerMobile.Walk`.
@@ -356,10 +361,12 @@ impl Walk {
         let (position, facing) = match intend(self.predicted.position, self.predicted.facing, facing) {
             Intent::Turned { facing } => (self.predicted.position, facing),
             Intent::Stepped { target, facing } => {
-                // The land under the target, if the caller knows it. A tile the
-                // map has no cell for is left at the height it came with rather
-                // than dropped to zero, which would put the body underground.
-                let landed = match ground(target.x, target.y) {
+                // The surface under the target, if the caller knows one, reached
+                // from where this end currently believes it is standing. A tile
+                // the map has no cell for is left at the height it came with
+                // rather than dropped to zero, which would put the body
+                // underground.
+                let landed = match ground(target.x, target.y, self.predicted.position.z) {
                     Some(z) => Point::new(target.x, target.y, z),
                     None => target,
                 };
@@ -520,7 +527,7 @@ mod tests {
     #[test]
     fn a_step_lands_on_the_ground_and_a_turn_does_not() {
         let mut walk = Walk::new(Point::new(100, 100, 20), Facing::walking(Direction::North));
-        let hill = |_x: u16, _y: u16| Some(25);
+        let hill = |_x: u16, _y: u16, _near_z: i8| Some(25);
 
         walk.step(Facing::walking(Direction::East), hill).unwrap();
         assert_eq!(
@@ -534,7 +541,8 @@ mod tests {
         // And a tile the caller knows nothing about keeps the height it had.
         // Dropping it to zero would put the body underground, where the terrain
         // in front of it hides it.
-        walk.step(Facing::walking(Direction::East), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::East), |_, _, _| None)
+            .unwrap();
         assert_eq!(walk.predicted().position, Point::new(102, 100, 25));
     }
 
@@ -550,10 +558,17 @@ mod tests {
         // The one sequence rule the server actually enforces: a fresh
         // connection opens at zero or the step is refused.
         let mut walk = walk();
-        let bytes = walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        let bytes = walk
+            .step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
         assert_eq!(sent(&bytes).1, 0);
         assert_eq!(
-            sent(&walk.step(Facing::walking(Direction::North), |_, _| None).unwrap()).1,
+            sent(
+                &walk
+                    .step(Facing::walking(Direction::North), |_, _, _| None)
+                    .unwrap()
+            )
+            .1,
             1
         );
     }
@@ -564,7 +579,8 @@ mod tests {
         // the client must predict that or it puts itself a tile ahead of the
         // server for the rest of the session.
         let mut walk = walk();
-        walk.step(Facing::walking(Direction::East), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::East), |_, _, _| None)
+            .unwrap();
         assert_eq!(
             walk.predicted(),
             Predicted {
@@ -574,7 +590,8 @@ mod tests {
             "a turn moves nobody"
         );
 
-        walk.step(Facing::walking(Direction::East), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::East), |_, _, _| None)
+            .unwrap();
         assert_eq!(walk.predicted().position, Point::new(101, 100, 0));
         assert_eq!(walk.in_flight(), 2, "a turn is a step and gets its own ack");
     }
@@ -585,8 +602,10 @@ mod tests {
         // the first only when the first ack comes back, and about the second
         // only when the second does.
         let mut walk = walk();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
         assert_eq!(walk.in_flight(), 2);
 
         assert_eq!(
@@ -623,7 +642,8 @@ mod tests {
         // refuses that one too, and the client never walks again.
         let mut walk = walk();
         for _ in 0..3 {
-            walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+            walk.step(Facing::walking(Direction::North), |_, _, _| None)
+                .unwrap();
         }
 
         assert_eq!(
@@ -640,7 +660,9 @@ mod tests {
         assert_eq!(walk.in_flight(), 0, "everything in flight is void");
         assert_eq!(walk.predicted().position, Point::new(100, 100, 0));
 
-        let bytes = walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        let bytes = walk
+            .step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
         assert_eq!(sent(&bytes).1, 0, "both ends are fresh again");
     }
 
@@ -650,8 +672,10 @@ mod tests {
         // sends a 0x20. A client that kept counting would be refused on its very
         // next step, because a fresh server takes nothing but zero.
         let mut walk = walk();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
 
         let update = PlayerUpdate {
             serial: Serial::new(0x0000_002A).unwrap(),
@@ -669,7 +693,12 @@ mod tests {
             })
         );
         assert_eq!(
-            sent(&walk.step(Facing::walking(Direction::South), |_, _| None).unwrap()).1,
+            sent(
+                &walk
+                    .step(Facing::walking(Direction::South), |_, _, _| None)
+                    .unwrap()
+            )
+            .1,
             0
         );
         assert_eq!(walk.predicted().position, Point::new(2000, 2001, -5));
@@ -678,7 +707,8 @@ mod tests {
     #[test]
     fn a_second_player_start_is_a_jump_as_well() {
         let mut walk = walk();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
         let start = PlayerStart {
             serial: Serial::new(0x0000_002A).unwrap(),
             body: Graphic(0x0190),
@@ -716,7 +746,8 @@ mod tests {
         );
 
         let mut walk = walk();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
         assert_eq!(
             walk.on_packet(&ServerPacket::WalkAck(WalkAck {
                 sequence: StepSequence(9),
@@ -738,7 +769,7 @@ mod tests {
     fn the_world_edge_is_refused_here_rather_than_asked_about() {
         let mut walk = Walk::new(Point::new(0, 0, 0), Facing::walking(Direction::West));
         assert_eq!(
-            walk.step(Facing::walking(Direction::West), |_, _| None),
+            walk.step(Facing::walking(Direction::West), |_, _, _| None),
             Err(NotSent::AtTheWorldEdge(AtTheWorldEdge {
                 from: Point::new(0, 0, 0),
                 facing: Facing::walking(Direction::West),
@@ -746,7 +777,7 @@ mod tests {
         );
         assert_eq!(walk.in_flight(), 0, "nothing was sent, so nothing is pending");
         assert_eq!(
-            walk.step(Facing::walking(Direction::East), |_, _| None)
+            walk.step(Facing::walking(Direction::East), |_, _, _| None)
                 .map(|bytes| sent(&bytes).1),
             Ok(0),
             "and the sequence was not spent on it"
@@ -766,7 +797,8 @@ mod tests {
     fn the_answers_to_steps_a_rollback_voided_are_not_a_desync() {
         let mut walk = walk();
         for _ in 0..3 {
-            walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+            walk.step(Facing::walking(Direction::North), |_, _, _| None)
+                .unwrap();
         }
 
         // The shard refused the first of the three. That answers one of them;
@@ -782,7 +814,8 @@ mod tests {
         // A step asked for after the rollback, which is what makes this hurt: a
         // client that treated the stale answers as its own would confirm or
         // roll back *this* step with them.
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
 
         // Now the two answers from before arrive. Whatever they are — the shard
         // refuses out-of-sequence steps, so both are `0x21`s here — they change
@@ -822,7 +855,8 @@ mod tests {
     #[test]
     fn an_ack_owed_to_nobody_is_still_a_desync() {
         let mut walk = walk();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
         let reject = ServerPacket::WalkReject(WalkReject {
             sequence: StepSequence(0),
             position: Point::new(100, 100, 0),
@@ -852,7 +886,8 @@ mod tests {
     #[test]
     fn a_desync_stops_the_walk_until_the_server_says_where_the_body_is() {
         let mut walk = walk();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
         assert!(!walk.out_of_step());
 
         // An ack for a step nobody sent, with nothing owed from a rollback: a
@@ -866,7 +901,7 @@ mod tests {
         );
         assert!(walk.out_of_step(), "the walk stopped rather than guessing");
         assert_eq!(
-            walk.step(Facing::walking(Direction::North), |_, _| None),
+            walk.step(Facing::walking(Direction::North), |_, _, _| None),
             Err(NotSent::OutOfStep),
             "and nothing is sent on top of the disagreement"
         );
@@ -889,7 +924,7 @@ mod tests {
         );
         assert!(!walk.out_of_step(), "and the walk is free again");
         assert_eq!(
-            walk.step(Facing::walking(Direction::North), |_, _| None)
+            walk.step(Facing::walking(Direction::North), |_, _, _| None)
                 .map(|bytes| sent(&bytes).1),
             Ok(0),
             "from a fresh sequence, which is what the server also went back to"
@@ -906,11 +941,11 @@ mod tests {
     fn a_silent_shard_stops_the_walk_after_five_steps() {
         let mut walk = Walk::new(Point::new(100, 1000, 0), Facing::walking(Direction::North));
         for step in 0..MAX_IN_FLIGHT {
-            walk.step(Facing::walking(Direction::North), |_, _| None)
+            walk.step(Facing::walking(Direction::North), |_, _, _| None)
                 .unwrap_or_else(|_| panic!("step {step} is within the cap"));
         }
         assert_eq!(
-            walk.step(Facing::walking(Direction::North), |_, _| None),
+            walk.step(Facing::walking(Direction::North), |_, _, _| None),
             Err(NotSent::Backlogged {
                 in_flight: MAX_IN_FLIGHT
             })
@@ -927,8 +962,14 @@ mod tests {
             notoriety: Notoriety::Innocent,
         }))
         .unwrap();
-        assert!(walk.step(Facing::walking(Direction::North), |_, _| None).is_ok());
-        assert!(walk.step(Facing::walking(Direction::North), |_, _| None).is_err());
+        assert!(
+            walk.step(Facing::walking(Direction::North), |_, _, _| None)
+                .is_ok()
+        );
+        assert!(
+            walk.step(Facing::walking(Direction::North), |_, _, _| None)
+                .is_err()
+        );
     }
 
     #[test]
@@ -941,7 +982,9 @@ mod tests {
         // different refusal and would hide this one.
         let mut walk = Walk::new(Point::new(100, 1000, 0), Facing::walking(Direction::North));
         for step in 0..260 {
-            let bytes = walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+            let bytes = walk
+                .step(Facing::walking(Direction::North), |_, _, _| None)
+                .unwrap();
             let sequence = sent(&bytes).1;
             assert!(step == 0 || sequence != 0, "step {step} sent a second zero");
             walk.on_packet(&ServerPacket::WalkAck(WalkAck {

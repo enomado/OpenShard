@@ -39,6 +39,7 @@
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Hue;
 use openshard_protocol::world::Point;
+use openshard_uofiles::equipconv::EquipConv;
 
 use crate::atlas::{AnimAtlas, FrameKey};
 use crate::camera::{Camera, ViewPixel, WorldPoint};
@@ -55,7 +56,7 @@ use crate::sprite::SpriteQuad;
 /// [`Mobile::drawn`], which is *history*: only the previous packet says a body
 /// moved. Deliberately a plain value rather than a handle into a `WorldView`:
 /// this crate renders what it is given and owns no model of the world.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Mobile {
     /// The tile the server put it on — or, mid-step, the one it is going to.
     ///
@@ -103,6 +104,29 @@ pub struct Mobile {
     /// height is kept out of the vertical axis so it can have its own clock, and
     /// the rounding happens once, at the end (D2, D7).
     pub drawn: Gaze,
+    /// What it is wearing. Not the item's own wire graphic — its tiledata
+    /// `AnimID`, already resolved by the caller (this crate has no tiledata
+    /// reference), because that is what a worn item draws with *by default*.
+    /// [`collect`] only asks [`EquipConv`] whether this mobile's body wants a
+    /// *different* picture for it.
+    pub equipment: Vec<EquipmentLayer>,
+}
+
+/// One worn item, ready to place: an `AnimID`, not a picture.
+///
+/// Drawn in this order and no other — there is no paperdoll layer-ordering
+/// table in this engine (see [`openshard_protocol::wire::Layer`]'s own doc
+/// comment), so items layer in the order the server listed them in, which is
+/// usually close to right and not guaranteed to be.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct EquipmentLayer {
+    /// The body-animation-space graphic this item draws with when
+    /// [`EquipConv`] has nothing to say about it — its own tiledata `AnimID`,
+    /// not its wire graphic. [`EquipConv::resolve`] is keyed on this same
+    /// number, not on the wire graphic either.
+    pub graphic: u16,
+    /// Its hue, or [`Hue::NONE`] for none.
+    pub hue: Hue,
 }
 
 /// Where a mobile is asking to be looked at.
@@ -149,14 +173,22 @@ fn cell_centre(mobile: &Mobile, camera: &Camera) -> Vec2 {
 /// exist before a quad can be given a region. The frame index is absent on
 /// purpose — [`AnimAtlas::build`] packs a whole animation at a time, because
 /// reading one frame of it costs the same as reading all of them.
-pub fn needed_animations(mobiles: &[Mobile]) -> Vec<(u16, u8, u8)> {
-    let mut wanted: Vec<(u16, u8, u8)> = mobiles
-        .iter()
-        .map(|mobile| {
-            let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
-            (mobile.body, mobile.group, direction)
-        })
-        .collect();
+///
+/// Also yields every equipment layer's *resolved* body-anim triple, so the
+/// atlas has what a worn item needs before [`collect`] asks for it — its own
+/// `AnimID` ordinarily, or [`EquipConv`]'s override where this body has one.
+pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(u16, u8, u8)> {
+    let mut wanted: Vec<(u16, u8, u8)> = Vec::new();
+    for mobile in mobiles {
+        let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
+        wanted.push((mobile.body, mobile.group, direction));
+        for layer in &mobile.equipment {
+            let graphic = equip_conv
+                .resolve(mobile.body, layer.graphic)
+                .map_or(layer.graphic, |entry| entry.graphic.0);
+            wanted.push((graphic, mobile.group, direction));
+        }
+    }
     wanted.sort_unstable();
     wanted.dedup();
     wanted
@@ -176,10 +208,15 @@ struct Placement {
 
 /// The mobile's frame in the atlas, placed on screen — or `None` if the atlas
 /// holds no such frame.
-fn place(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Placement> {
+///
+/// `body` is the atlas key's body id and not always [`Mobile::body`]: an
+/// equipment layer's picture lives under its *resolved* body-anim graphic
+/// (see [`EquipConv`]), read at the same group, direction and frame as the
+/// mobile wearing it — a worn item has no clock of its own.
+fn place(mobile: &Mobile, body: u16, camera: &Camera, atlas: &AnimAtlas) -> Option<Placement> {
     let (direction, mirrored) = openshard_uofiles::anim::facing(mobile.facing);
     let key = FrameKey {
-        body: mobile.body,
+        body,
         group: mobile.group,
         direction,
         frame: mobile.frame,
@@ -231,7 +268,22 @@ fn place(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Placemen
 /// `cutaway` hides a body on the storey above with that storey. It is the same
 /// `max_z` the statics are tested against and deliberately not `no_draw_roofs`:
 /// a mobile is never a roof, and the client asks it the one question.
-pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas, cutaway: &Cutaway) -> Vec<SpriteQuad> {
+///
+/// A mobile's equipment draws over its body for free, without a second depth
+/// pass: every layer gets the *same* [`depth::Order`] as the body quad, and
+/// the sort below is stable, so pushing the body first and its layers after —
+/// in wire order, there being no layer-ordering table here — is what keeps
+/// them on top. A layer draws with its own `AnimID`
+/// ([`EquipmentLayer::graphic`]) unless [`EquipConv`] overrides it for this
+/// body; only a resolved graphic the atlas has no frame for this frame is
+/// dropped, the same rule a missing body animation gets.
+pub fn collect(
+    mobiles: &[Mobile],
+    camera: &Camera,
+    atlas: &AnimAtlas,
+    cutaway: &Cutaway,
+    equip_conv: &EquipConv,
+) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
@@ -240,18 +292,40 @@ pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas, cutaway: 
         if !cutaway.shows_mobile(mobile.at.z) {
             continue;
         }
-        let Some(placement) = place(mobile, camera, atlas) else {
+        let Some(placement) = place(mobile, mobile.body, camera, atlas) else {
             continue;
         };
+        let order = placement.order;
         quads.push((
-            placement.order,
+            order,
             SpriteQuad {
                 rect: placement.rect,
                 region: placement.region,
-                depth: placement.order.to_depth(base),
+                depth: order.to_depth(base),
                 hue: u32::from(mobile.hue.0),
             },
         ));
+
+        for layer in &mobile.equipment {
+            let entry = equip_conv.resolve(mobile.body, layer.graphic);
+            let graphic = entry.map_or(layer.graphic, |entry| entry.graphic.0);
+            let Some(worn) = place(mobile, graphic, camera, atlas) else {
+                continue;
+            };
+            let hue = match (layer.hue == Hue::NONE, entry) {
+                (true, Some(entry)) => entry.color,
+                _ => layer.hue,
+            };
+            quads.push((
+                order,
+                SpriteQuad {
+                    rect: worn.rect,
+                    region: worn.region,
+                    depth: order.to_depth(base),
+                    hue: u32::from(hue.0),
+                },
+            ));
+        }
     }
 
     // Back to front, and a *stable* sort on the order alone: two bodies on one
@@ -271,7 +345,7 @@ pub fn collect(mobiles: &[Mobile], camera: &Camera, atlas: &AnimAtlas, cutaway: 
 /// same tile centre and hold their heads at wildly different heights, and only
 /// the packed frame's own rectangle knows which.
 pub fn head_anchor(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<ViewPixel> {
-    let placement = place(mobile, camera, atlas)?;
+    let placement = place(mobile, mobile.body, camera, atlas)?;
     Some(ViewPixel {
         x: (placement.rect.x + placement.rect.width / 2.0).round() as i32,
         y: placement.rect.y.round() as i32,
@@ -308,6 +382,12 @@ mod tests {
         .expect("one frame fits")
     }
 
+    /// A table with no entries — every test below except the one for
+    /// equipment itself draws bare bodies.
+    fn no_equip() -> EquipConv {
+        EquipConv::default()
+    }
+
     /// The placement arithmetic, in numbers rather than in a picture.
     ///
     /// Two ways to get this wrong look identical on a screenshot until a mobile
@@ -330,10 +410,12 @@ mod tests {
                 from: None,
                 hue: Hue::NONE,
                 drawn: Gaze::on(Point::new(100, 100, 0)),
+                equipment: Vec::new(),
             }],
             &camera,
             &atlas,
             &Cutaway::OPEN,
+            &no_equip(),
         );
         assert_eq!(quads.len(), 1);
         // The camera puts its own tile's centre at (400, 300).
@@ -361,10 +443,12 @@ mod tests {
                     from: None,
                     hue: Hue::NONE,
                     drawn: Gaze::on(Point::new(100, 100, 0)),
+                    equipment: Vec::new(),
                 }],
                 &camera,
                 &atlas,
                 &Cutaway::OPEN,
+                &no_equip(),
             )
         };
         let plain = quads(Direction::South);
@@ -400,12 +484,29 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: Vec::new(),
         };
-        assert!(collect(&[missing], &camera, &atlas, &Cutaway::OPEN).is_empty());
+        assert!(
+            collect(
+                std::slice::from_ref(&missing),
+                &camera,
+                &atlas,
+                &Cutaway::OPEN,
+                &no_equip()
+            )
+            .is_empty()
+        );
         // And the same mobile at frame 0 is not, so the drop above is a
         // decision about the frame rather than about the body.
         assert_eq!(
-            collect(&[Mobile { frame: 0, ..missing }], &camera, &atlas, &Cutaway::OPEN).len(),
+            collect(
+                &[Mobile { frame: 0, ..missing }],
+                &camera,
+                &atlas,
+                &Cutaway::OPEN,
+                &no_equip()
+            )
+            .len(),
             1,
         );
     }
@@ -426,8 +527,15 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: Vec::new(),
         };
-        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN);
+        let quads = collect(
+            std::slice::from_ref(&mobile),
+            &camera,
+            &atlas,
+            &Cutaway::OPEN,
+            &no_equip(),
+        );
         let anchor = head_anchor(&mobile, &camera, &atlas).expect("packed");
         assert_eq!(anchor.x as f32, quads[0].rect.x + quads[0].rect.width / 2.0);
         assert_eq!(anchor.y as f32, quads[0].rect.y);
@@ -448,6 +556,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: Vec::new(),
         };
         assert!(head_anchor(&missing, &camera, &atlas).is_none());
     }
@@ -472,8 +581,15 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(101, 100, 0)),
+            equipment: Vec::new(),
         };
-        let standing = collect(&[on_its_tile], &camera, &atlas, &Cutaway::OPEN);
+        let standing = collect(
+            std::slice::from_ref(&on_its_tile),
+            &camera,
+            &atlas,
+            &Cutaway::OPEN,
+            &no_equip(),
+        );
         // Half a tile back the way it came: a step east is eleven pixels right
         // and eleven down, so half of one is eleven of each.
         let mid_step = collect(
@@ -484,6 +600,7 @@ mod tests {
             &camera,
             &atlas,
             &Cutaway::OPEN,
+            &no_equip(),
         );
         assert_eq!(standing.len(), 1);
         assert_eq!(mid_step.len(), 1);
@@ -528,8 +645,15 @@ mod tests {
             from: Some(Point::new(100, 100, 0)),
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 99, 0)).back_towards(Gaze::on(Point::new(100, 100, 0)), 0.5),
+            equipment: Vec::new(),
         };
-        let quads = collect(&[walking_north], &camera, &atlas, &Cutaway::OPEN);
+        let quads = collect(
+            std::slice::from_ref(&walking_north),
+            &camera,
+            &atlas,
+            &Cutaway::OPEN,
+            &no_equip(),
+        );
         assert_eq!(quads.len(), 1);
         assert!(
             quads[0].depth < ground_left_behind,
@@ -548,6 +672,7 @@ mod tests {
             &camera,
             &atlas,
             &Cutaway::OPEN,
+            &no_equip(),
         );
         assert!(
             arrived[0].depth > quads[0].depth,
@@ -567,13 +692,140 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(0, 0, 0)),
+            equipment: Vec::new(),
         };
         // East and South share a picture, so they are one animation to read.
-        let wanted = needed_animations(&[
-            mobile(Direction::East),
-            mobile(Direction::South),
-            mobile(Direction::SouthEast),
-        ]);
+        let wanted = needed_animations(
+            &[
+                mobile(Direction::East),
+                mobile(Direction::South),
+                mobile(Direction::SouthEast),
+            ],
+            &no_equip(),
+        );
         assert_eq!(wanted, vec![(400, 4, 0), (400, 4, 1)]);
+    }
+
+    /// An equipment layer draws over the body, resolved through
+    /// [`EquipConv`] to its own body-anim graphic and hued from the entry
+    /// when the wire hue is [`Hue::NONE`].
+    #[test]
+    fn a_worn_item_draws_over_the_body_from_its_resolved_graphic() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let frame = |body: u16| {
+            (
+                FrameKey {
+                    body,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 12,
+                    center_y: -3,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            )
+        };
+        // Two bodies in one atlas: the mobile's own (400) and the robe's
+        // resolved graphic (7005), the way a real frame would hold both.
+        let atlas = AnimAtlas::pack([frame(400), frame(7005)]).expect("both frames fit");
+
+        let equip_conv = EquipConv::parse("400\t7017\t7005\t0\t0\n");
+        let mobile = Mobile {
+            at: Point::new(100, 100, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+            from: None,
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: vec![EquipmentLayer {
+                graphic: 7017,
+                hue: Hue::NONE,
+            }],
+        };
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &equip_conv);
+        assert_eq!(quads.len(), 2, "the body and its one worn item");
+        assert_eq!(
+            quads[0].depth, quads[1].depth,
+            "a layer shares its body's depth so the stable sort keeps it on top"
+        );
+    }
+
+    /// An item with no `EquipConv` entry draws from its own `AnimID` — the
+    /// ordinary case, since a plain shirt has no entry at all and still has
+    /// to be drawn.
+    #[test]
+    fn an_unmapped_item_draws_from_its_own_anim_id() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let frame = |body: u16| {
+            (
+                FrameKey {
+                    body,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 12,
+                    center_y: -3,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            )
+        };
+        // The body (400) and the shirt's own AnimID (7017) — no conversion
+        // entry for either, the way a plain shirt ships none.
+        let atlas = AnimAtlas::pack([frame(400), frame(7017)]).expect("both frames fit");
+        let mobile = Mobile {
+            at: Point::new(100, 100, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+            from: None,
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: vec![EquipmentLayer {
+                graphic: 7017,
+                hue: Hue::NONE,
+            }],
+        };
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip());
+        assert_eq!(
+            quads.len(),
+            2,
+            "the body and the shirt, drawn from its own AnimID"
+        );
+    }
+
+    /// An item with no `EquipConv` entry, and no atlas frame packed for its
+    /// own `AnimID` either, is dropped rather than drawn wrong — the same
+    /// rule a missing body animation gets.
+    #[test]
+    fn an_unpacked_item_draws_nothing() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let atlas = atlas(400, 0, 40, 60, (12, -3));
+        let mobile = Mobile {
+            at: Point::new(100, 100, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+            from: None,
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: vec![EquipmentLayer {
+                graphic: 7017,
+                hue: Hue::NONE,
+            }],
+        };
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip());
+        assert_eq!(
+            quads.len(),
+            1,
+            "only the body, the item's own AnimID was never packed"
+        );
     }
 }

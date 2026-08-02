@@ -512,9 +512,15 @@ impl Sim {
                 let act = acts.next().unwrap();
                 match act.input {
                     Input::Press(direction) => {
-                        if let Some(facing) =
-                            self.steering.press(direction, self.instant(), self.player.facing)
-                        {
+                        // `OpenWorld`, not `self.field` — see the note on
+                        // `about_to_wait`.
+                        if let Some(facing) = self.steering.press(
+                            direction,
+                            self.player.at,
+                            self.instant(),
+                            self.player.facing,
+                            &OpenWorld,
+                        ) {
                             self.send(facing);
                         }
                     }
@@ -601,12 +607,20 @@ impl Sim {
 
     /// The ten lines of `App::about_to_wait` that walking goes through.
     fn about_to_wait(&mut self) {
+        // `OpenWorld`, not `self.field`: `field` models the wall the *shard*
+        // enforces (see its own doc), and the client's own static map is a
+        // separate, empty one in every scenario this harness runs — the
+        // point of the rollback scenarios below is a wall this end finds out
+        // about only from a `0x21`. Handing `Steering::due` the shard's own
+        // `field` would let `Steering::detour` route around exactly the
+        // obstacle those scenarios exist to walk blindly into.
+        //
         // Twice at most, exactly as `App::about_to_wait` does it: a turn costs
         // no time, so the step it precedes leaves in the same wake.
         for _ in 0..2 {
-            let Some(facing) = self
-                .steering
-                .due(self.instant(), self.player.at, self.player.facing)
+            let Some(facing) =
+                self.steering
+                    .due(self.instant(), self.player.at, self.player.facing, &OpenWorld)
             else {
                 break;
             };
@@ -645,13 +659,13 @@ impl Sim {
     /// because the *order* they impose is real.
     fn send(&mut self, facing: Facing) {
         let before = self.walk.predicted().position;
-        // No map, so no height: `|_, _| None` is what a caller without one
+        // No map, so no height: `|_, _, _| None` is what a caller without one
         // passes, and the flat prediction is the honest answer.
         //
         // `link.rs` logs a refusal and sends nothing, and so does this: a step
         // past the cap on unanswered ones is a shard that has gone quiet, and the
         // body waits where it is.
-        let bytes = match self.walk.step(facing, |_, _| None) {
+        let bytes = match self.walk.step(facing, |_, _, _| None) {
             Ok(bytes) => bytes,
             Err(refusal) => {
                 self.not_sent.push((self.now, refusal));

@@ -1101,12 +1101,14 @@ Found while planning this, and not to be lost in it.
   the staging note above ends on, and it wants the same fix.
 - **The atlas eviction is a full repack in the middle of a frame.**
   `AtlasError::Full` rebuilds three `SpriteRenderer`s and repacks everything on
-  screen (`crates/client/app/src/lib.rs:2045`), synchronously, on whichever frame
+  screen (`crates/client/app/src/lib.rs`), synchronously, on whichever frame
   happens to walk onto the graphic that did not fit. "Costly and rare" is
-  accurate and it is still a stall the player sees while scrolling, and there is
-  nothing on screen that says it happened — the `Frames` panel reports the spike
-  as world cost with no way to tell it from a heavy screen. A counter would name
-  it; doing the pack off the critical path is the real fix.
+  accurate and it is still a stall the player sees while scrolling. ~~there is
+  nothing on screen that says it happened — the `Frames` panel reports the
+  spike as world cost with no way to tell it from a heavy screen.~~ Named now:
+  `Frame::repacked` marks the one frame that paid for it and `App::repacks`
+  keeps the session total, both shown in the frames panel. Doing the pack off
+  the critical path is still the real fix — the counter only lets it be seen.
 - **`FRAMES_SPAN` is a constant the panel cannot change, again.** The same item
   the scope's span just stopped being, and left as a constant deliberately: the
   slider belongs to whichever of the two rings turns out to be looked at

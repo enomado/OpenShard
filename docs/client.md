@@ -1117,6 +1117,19 @@ own understanding had written.
 - **Nothing reads `Feature` or the client version yet.** The renderer draws what
   the files hold. That is right for ground, and it stops being right at the
   first packet the client draws from.
+- **A pier or bridge's deck has no ground plane of its own.** `GroundQuad`
+  (`ground.rs:17-24`) builds its four heights from the land layer only —
+  documented as deliberate ("there is no single height to fold" from a single
+  land tile) but a platform static (a pier, a bridge, stairs) is exactly a
+  second surface at its own height, and `statics.rs` draws it as a sprite over
+  the land quad without ever raising the quad or adding a plane at the static's
+  own top. Combined with the walk backlog entry below (the avatar's predicted Z
+  on such a tile also comes from the land layer, never the static), a walk onto
+  a pier draws the avatar sinking into a ground plane that was never the deck to
+  begin with — reported by a player 2026-08-02 as falling underground,
+  specifically on piers and bridges. The two entries are one bug with two
+  causes: the drawn floor is wrong here, the predicted Z is wrong in
+  [`Walk::step`](#backlog-found-while-joining-the-window-to-the-wire) below.
 
 ## Backlog, found while drawing the statics and the mobiles
 
@@ -1155,10 +1168,43 @@ own understanding had written.
   Body 400 group 4 does not hit this, which is why the clock does not
   compensate for it; the fix is `AnimAtlas` exposing the actual packed indices
   rather than a count, whenever a body that needs it turns up.
-- **Equipment, mounts and corpses are not drawn.** `MobileView` layers a body,
-  its clothes and what it is riding, each from its own animation, and this draws
-  the body alone. That is the next thing a real character needs and it is
-  entirely additional: layers are more sprites at the same depth.
+- ~~**Equipment is not drawn.**~~ Worn items are, now. A worn item is not
+  drawn from its own art — its *default* picture is its own tiledata entry's
+  `AnimID` field (`StaticTile::anim_id`, `crates/common/uofiles/src/tiledata.rs`
+  — present in the file and in this reader's own layout comment the whole
+  time, but never actually read until now), the same index space and the same
+  `anim.mul` machinery the body itself draws through. `Equipconv.def` only
+  *overrides* that default, for the `(body, AnimID)` pairs where this body
+  needs a different picture — chiefly a race or gender variant of the same
+  garment — which is why an ordinary shirt has no entry in it at all. Getting
+  this backwards was the first cut at this feature: treating "no entry" as
+  "draw nothing" instead of "the default already draws right" silently
+  dropped every piece of plain clothing on every NPC, caught only by looking
+  at a live client rather than by any test, because every test here packs its
+  own atlas and never has an item *without* a conversion entry to notice the
+  gap. `openshard_uofiles::equipconv::EquipConv` reads `Equipconv.def` — text,
+  not one of this crate's binary formats, the same shape as `Body.def` — and
+  `mobiles::collect` pushes one extra `SpriteQuad` per layer at the *same*
+  `depth::Order` as the body, so the existing stable sort draws it on top with
+  no second depth pass. Only a layer whose resolved `AnimID` the atlas has no
+  frame for this frame is dropped, the same rule a missing body animation
+  gets.
+
+  **Mounts and corpses are still not drawn** — a mount replaces or extends the
+  body draw rather than layering over it, and neither was touched here.
+  Left out of the same pass, deliberately:
+  - **`mobtypes.txt` and the gargoyle graphic offset.** Nothing here tells a
+    gargoyle body from a human one, so a gargoyle's equipment resolves through
+    the same table a human's does and comes out wrong or absent.
+  - **Paperdoll layer ordering.** `PaperdollOrder`'s T1/T2/T3 tables and
+    point-fix rules (cloak-by-facing, helmet-over-hair) have no counterpart
+    here — `Layer` is a bare `u8` on purpose (see its own doc comment), so
+    layers draw in whatever order the server listed them in `0x78`, which is
+    usually close to right and not guaranteed to be.
+  - **Incremental equip/unequip.** `Equipment` only ever changes as a
+    full-list replacement inside a fresh `0x78`; there is still no `0x2E` or
+    per-item wear/drop decoder, so a shard that only updates one worn slot
+    rather than resending the whole list will not be reflected here.
 - **`anim2` through `anim5` are openable and not addressable.** `Anim::from_files`
   takes a pair, but the index arithmetic implemented is the first file's, and the
   others re-base the three body kinds differently. Left undone rather than
@@ -1217,10 +1263,15 @@ own understanding had written.
   body stands; but a client-side height that disagreed with the reference client
   on the same map is worth knowing about before the flat/stretched decision is
   ever revisited.
-- **Two sprite passes mean two atlases and two pipelines.** They are the same
-  pipeline built twice, which is the cost of a draw call binding one texture. If
-  a third sprite layer arrives — equipment — it is worth asking whether one
-  atlas keyed by a tagged id beats three of these.
+- ~~**Two sprite passes mean two atlases and two pipelines... if a third
+  sprite layer arrives, does it need a third?**~~ It arrived, and it did not:
+  an equipment layer's resolved body-anim graphic reads through `Anim::frames`
+  exactly the way a body does, so it packs into the *same* `AnimAtlas` under
+  its own `FrameKey.body` — no tag needed, because two different resolved
+  graphics are already two different keys, and two equipment layers that
+  happen to resolve to the *same* graphic correctly share one packed frame,
+  the way two mobiles of the same body already do. Still two passes: the third
+  layer turned out to be more entries in the mobile atlas, not a third pass.
 - ~~**The labels still are not drawn.**~~ They are now, above whoever the
   crowd last heard from. `crates/common/uofiles::font::AsciiFonts` reads
   `fonts.mul`; `crate::atlas::FontAtlas` packs every glyph it defines — all
@@ -1379,43 +1430,134 @@ own understanding had written.
   dropping the destination rather than queuing behind it. `keys.rs` is now the
   arrow stack and nothing else.
 
-  The route is greedy — the straight-line direction, a step at a time — because
-  this end has no walkability to plan over: whether a step is allowed is the
-  server's answer, arriving as a `0x21`. So a wall is discovered by walking into
-  it, and what must not happen is walking into it for ever: a destination that
-  has not moved the body in four steps is given up on. **Planning around the wall
-  wants a `Terrain` over the client's own map**, which `common/movement`'s
-  `find_path` would then take as it stands — the trait is one required method and
-  the client already holds the map and `tiledata`. Worth doing, and not a reason
-  to have no click-to-walk until it exists. Still open — see the next entry.
+  ~~The route is greedy — the straight-line direction, a step at a time —
+  because this end has no walkability to plan over.~~ It plans now — see the
+  next entry.
 
-- **A click-to-walk destination does not route around anything.** The live state
-  of the entry above, stated on its own so it stops reading as finished.
-  `Steering::asking` is `direction_toward(from, goal)` and nothing else
-  (`client/app/src/steer.rs`), so a body sent to a tile behind a wall walks into
-  the wall, is refused four times by `0x21`, and gives up standing next to it
-  (`STUCK_STEPS`). Against a house that is every destination on the far side of
-  it. The fix is not new pathfinding: `common/movement::find_path` is an A* over
-  the `Terrain` trait, already corner-aware, and the client holds `map0.uop` and
-  `tiledata.mul` — what is missing is a `Terrain` implementation on this side of
-  the wire. Three things it has to decide, and they are why this is an entry and
-  not a chore:
+- ~~**A click-to-walk destination does not route around anything.**~~ Planned.
+  `Steering::go_to`/`due` take a `&dyn Terrain` and run `common/movement::find_path`
+  on the click, then walk the returned route one direction per step instead of
+  `direction_toward(from, goal)` (`client/app/src/steer.rs`). The three decisions
+  the entry named, and how each landed:
 
-  - **Where the check lives.** `MapTerrain::check` (`server/world/src/terrain.rs`)
-    is the tuned one — the ServUO/Sphere blend the walk ack depends on — and it is
-    in a `server` crate a client may not depend on. Reimplementing it here means
-    two copies of the rule the two ends must agree on, which is the failure the
-    blend was written to end. So the move is to lift the height check into
-    `common/` beside `find_path` and have `world` keep only what needs the
-    registry, not to write a second one.
-  - **A client cannot see the dynamic half.** Doors, placed impassables and fields
-    live in the server's `Obstructions`; this end knows only what `WorldView` has
-    been shown. So a planned route is a *guess* over the statics, and the `0x21`
-    stall detector stays as the correction — plan, then keep the give-up rule for
-    what the plan could not know.
-  - **Replanning cadence.** A refusal invalidates the route, and a route replanned
-    every step is A* at the walk rate. Plan on the click, replan on a `0x21`, drop
-    the goal on the same `STUCK_STEPS` rule.
+  - **Where the check lives.** Lifted: `MapTerrain` and its `check` moved from
+    `server/world/src/terrain.rs` into `common/movement/src/terrain.rs`, beside
+    `find_path`, generic over `M: AsRef<Map>, T: AsRef<TileData>` so the server
+    keeps building one owned at boot (`MapTerrain::new(map, tiles)`) and the
+    client builds one borrowing (`MapTerrain::new(self.map.as_ref(),
+    &self.tiledata)`) fresh per click rather than cloning the facet. `world`'s
+    own `terrain.rs` is now a two-line re-export plus the one test
+    (`the_layer_byte_reads_the_hand_a_weapon_is_held_in`) that needs
+    `openshard-state`'s layer constants, which `common/movement` may not depend
+    on.
+  - **A client cannot see the dynamic half.** Unchanged, and still the reason a
+    plan is a guess: `Obstructions`/`LiveTerrain` (`server/state/src/obstruct.rs`)
+    stay server-side. The `0x21` stall detector (`STUCK_STEPS`) is still the
+    correction for what the plan could not know.
+  - **Replanning cadence.** Plan on the click (`Steering::go_to`); on a step that
+    left the body exactly where it was — a refusal — `Steering::take` replans from
+    the body's real position before trying again, rather than repeating the same
+    refused step until `STUCK_STEPS` gives up.
+
+  Two things the fix turned up that were not in the plan:
+
+  - `find_path`'s A* is tied on Chebyshev cost between a straight cardinal line
+    and any equal-length route that drifts diagonally off it and back, so an
+    axis-aligned click could come back zig-zagging. `common/movement::path`'s
+    open list now breaks ties by Manhattan distance to the goal, which is
+    smaller for the route that stayed straight — a tie-break, not a second
+    heuristic, so it does not change *whether* a shortest route is found, only
+    which equally-short one A* settles on. This also straightens whatever else
+    calls `find_path` (an NPC's chase), not only the click.
+  - **The first cut of this ran `find_path` on every mouse-move, not every
+    step, and froze on some routes.** `go_to` is called on the click *and*
+    again on every raw `CursorMoved` event while the button stays down —
+    `client/app/src/lib.rs`'s `walk_to_cursor` — which is tens of events a
+    second while dragging, not one. Planning eagerly there meant an A* search
+    that many times a second, and a destination expensive to search (out of
+    reach, so every search burns the whole node budget) froze the window for
+    as long as dragging lasted. `go_to` now only ever restates *where* — it
+    drops the stale route and leaves the new destination unplanned — and
+    `Steering::take` is the sole place a search runs, gated by the same step
+    cadence as a step itself, so a plan costs at most once per
+    `WALK_HOLD`/`RUN_HOLD` no matter how fast the cursor moves.
+    `restating_a_destination_mid_step_does_not_search_the_terrain`
+    (`client/app/src/steer.rs`) pins it with a terrain that counts its own
+    calls. `PLAN_BUDGET` also came down from a first guess of 4,000 to 600,
+    in line with `common/movement`'s own "a few hundred is ample for a town" —
+    the eager version's cost per search was the bigger problem, but an
+    unreachable destination still pays the full budget once a step, `STUCK_STEPS`
+    times over, and a smaller cap bounds that too.
+  - **The default right-hold was still `go_to` — a destination, not a
+    heading — which is the wrong idiom for "run toward the cursor" and is its
+    own entry next: a body doing nothing but chase the cursor around a room
+    would occasionally lurch at a pillar directly under it, refuse, snap back,
+    and restart the walk animation for it.
+
+- **The mouse's held-right-button idiom was one input made to do two jobs, and
+  the seam showed as a lurch into a pillar.** The click-to-walk fix above made
+  a destination's refusal-and-fallback behaviour reasoned about and tested,
+  but a player dragging the mouse to say "run this way" was still, underneath,
+  issuing a stream of *destination* orders — one per cursor tile — and a destination
+  that cannot be reached degrades to walking at it anyway, refusal by refusal,
+  which is exactly the honest behaviour a real move order wants and exactly
+  the wrong one for a heading a player is only pointing, not aiming.
+  `client/app/src/steer.rs` now answers two different questions from the
+  mouse, matching what was already true of the keyboard versus a click:
+
+  - **`Steering::steer(direction)`** — the default right-hold, no modifier.
+    Not an order to reach a tile: a compass heading from the body to the
+    cursor, recomputed every move and driven exactly like a held arrow key.
+    It has no notion of arrival or of being stuck, and it never touches
+    `find_path` or the map — but a blocked direction is no longer walked into
+    forever either: [`detour`](../crates/client/app/src/steer.rs) tries the
+    nearest way still legal past it (an O(1) `Terrain::can_step` look, not a
+    search), so a runner slides past an obstacle instead of standing against
+    it. What "legal" means is not symmetric: a wall dead ahead of a held
+    *cardinal* has no diagonal past it at all — the server's own corner rule
+    (`LiveTerrain::can_step`, and `find_path`'s `corner_open`) requires both
+    cardinal tiles flanking a diagonal step to be open, and the blocked
+    direction is unconditionally one of those two flanks for either diagonal
+    beside it, so neither ever passes; `detour` offers the cardinal along the
+    wall's face instead, the same sidestep a body hugging a wall makes. A
+    blocked *diagonal*, pinned by a corner rather than a wall, has the
+    opposite shape: the two cardinals it splits into have no corner to cut,
+    so those are what is tried. Offering the wrong one of the two — a
+    diagonal past a wall, which an earlier version of this did — is not a
+    cosmetic bug: the body is drawn slipping through the wall's corner for a
+    round trip and rubber-banded back, worse than the stand-and-bump this
+    replaced, on every retry for as long as the direction is held. This
+    applies from the very first ask, not just the steps `Steering::due`
+    answers afterward: `Steering::steer`/`press` now take a `terrain` too
+    (constructed on demand at their call sites in `App`, the same
+    `MapTerrain` `due`/`go_to` already built) and route through the same
+    `Steering::take` `due` does, rather than answering directly. That first
+    ask is not the rare case for the mouse heading in particular — a player
+    working a corner is actively moving the cursor, and every sector change
+    is a fresh `steer()` call; answering those without the detour meant a
+    player *trying* to route around a corner hit the undetoured path on
+    almost every attempt, and only the occasional still-held, re-asked-at-
+    the-next-hold heading ever saw the fix. Released, it stops at once;
+    unlike a destination, there is nothing behind a heading once nobody is
+    pointing it any more.
+  - **`Steering::go_to(tile)`** — unchanged in mechanism, now reached only by
+    holding Ctrl. The real move order: `find_path` plans a route, a refusal
+    replans, and — the one behavioural change here — a destination `find_path`
+    proves has no route at all no longer gives up outright. It falls back to
+    the same straight-line heading `steer` would use, still under the
+    `STUCK_STEPS` patience, because Ctrl+drag is an explicit "go to this exact
+    spot" and walking up to an obstacle and stopping (classic UO's own answer
+    to clicking on a wall) is the right honest answer for *that* idiom — the
+    lurch was never the fallback itself, it was the fallback firing for input
+    that never meant to ask a pathfinding question in the first place.
+
+  `keys` still outranks both, and `go_to`/`steer` clear each other, so exactly
+  one of "arrows", "heading" or "destination" drives a step at a time — see
+  `Steering::asking`. `a_heading_never_gives_up`,
+  `releasing_the_mouse_stops_the_heading_but_not_the_keyboard`,
+  `the_keyboard_takes_over_from_a_heading` and
+  `a_destination_with_no_route_falls_back_to_a_heading_then_gives_up`
+  (`client/app/src/steer.rs`) are what pin the split.
 
 - ~~**The walk stuttered once a tile.**~~ Three causes, all of them in the same
   400ms:
@@ -1857,7 +1999,14 @@ own understanding had written.
   whether a step is allowed is the server's answer, and deciding it here would
   need every rule about statics, doors and mounts to agree exactly. What is
   still flat: a step onto a *floor* — a building's second storey is a static,
-  not land, and the height predicted for it is the ground underneath.
+  not land, and the height predicted for it is the ground underneath. A pier
+  or a bridge is the same case with a visible symptom rather than a subtle
+  one: reported by a player 2026-08-02 as falling underground specifically on
+  piers and bridges, because the predicted Z sits at the water or ravine floor
+  under the deck rather than the deck itself, and `ground.rs` draws no plane
+  at the deck's height either — see the matching entry in "found while
+  drawing the ground". `App::walk`'s offline path (`lib.rs:1167`) has the
+  identical gap: `self.map.land(x, y)`, no static.
 
 ## Backlog, found while building M0, M1 and M1a
 
@@ -2063,3 +2212,17 @@ the way and not done:
 - **`depth::mobile_priority_z` has no corpse or effect arm.** The client's
   `AddGameObject` gives a corpse `z + 1` like a mobile and a `GameEffect`
   `z + 2`. Both belong with whatever draws them.
+- ~~**`Cutaway::at` was fed the unconfirmed prediction, not a trusted
+  position.**~~ `App::draw` (`client/app/src/lib.rs`) read `self.player.at` —
+  `link::Body`'s own optimistic guess, published the instant a step is sent
+  and corrected only a round trip later — straight into `Cutaway::at` every
+  frame. Deliberate for the body's own drawn position (`docs/camera.md`'s
+  "follow the prediction"), but roof visibility flipping on an unconfirmed
+  guess was never weighed as its own question; a held direction retried
+  against a wall (`Steering::detour`, above) made it visible — a building's
+  roof popped for one frame on every retry, for as long as the direction was
+  held. Fixed with a second field, `App::cutaway_at`, that only advances to a
+  tile the client's own static map agrees is reachable from the one it
+  already held, and is snapped outright on a correction — same trust level
+  as `player.at`, minus the one case (a step this end already knows is
+  doomed) that was never worth predicting through for a roof.

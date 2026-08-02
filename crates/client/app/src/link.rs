@@ -29,6 +29,7 @@ use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::world::ResyncRequest;
 use openshard_uofiles::map::Map;
+use openshard_uofiles::tiledata::TileData;
 use winit::event_loop::EventLoopProxy;
 
 /// Where this client's own body is *drawn*, which is not where the
@@ -154,10 +155,11 @@ impl Link {
 /// Returns as soon as the thread is spawned: the login conversation is several
 /// round trips and a window that waited for it would open blank and frozen.
 ///
-/// The map comes along because the walk predicts a height and the server does
-/// not send one — see [`Walk::step`]. Shared rather than loaded twice: it is a
-/// few hundred megabytes of plain data, read by both threads and written by
-/// neither.
+/// The map and the tile definitions come along because the walk predicts a
+/// height and the server does not send one — see [`Walk::step`], which needs
+/// both: `tiledata.mul` is what tells a pier or a bridge's deck apart from
+/// the water it stands over. Shared rather than loaded twice: plain data,
+/// read by both threads and written by neither.
 ///
 /// `dial` is how the connection is opened and the only thing here that knows
 /// what a socket is: `Tcp` for a shard on a network, and something else for one
@@ -167,12 +169,13 @@ pub fn connect<D: Dial + Send + 'static>(
     plan: Plan,
     version: ClientVersion,
     map: Arc<Map>,
+    tiles: Arc<TileData>,
     proxy: EventLoopProxy<Update>,
 ) -> Link {
     let (sender, commands) = tokio::sync::mpsc::unbounded_channel();
     std::thread::Builder::new()
         .name("shard".to_owned())
-        .spawn(move || run(dial, plan, version, &map, &proxy, commands))
+        .spawn(move || run(dial, plan, version, &map, &tiles, &proxy, commands))
         // The thread is the connection; a client that could not spawn it has
         // nothing to fall back to, and the OS refusing a thread at startup is
         // not a condition worth a variant in `Update`.
@@ -187,6 +190,7 @@ fn run<D: Dial>(
     plan: Plan,
     version: ClientVersion,
     map: &Map,
+    tiles: &TileData,
     proxy: &EventLoopProxy<Update>,
     commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
 ) {
@@ -198,7 +202,7 @@ fn run<D: Dial>(
         }
     };
     runtime.block_on(async move {
-        let reason = play(dial, plan, version, map, proxy, commands).await;
+        let reason = play(dial, plan, version, map, tiles, proxy, commands).await;
         report(proxy, Update::Lost(reason));
     });
 }
@@ -209,6 +213,7 @@ async fn play<D: Dial>(
     plan: Plan,
     version: ClientVersion,
     map: &Map,
+    tiles: &TileData,
     proxy: &EventLoopProxy<Update>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
 ) -> String {
@@ -281,19 +286,28 @@ async fn play<D: Dial>(
                 // is this thread's business.
                 let bytes = match command {
                     Command::Step(facing) => {
-                        // The land under the target: without it every step predicts
+                        // The surface under the target: without it every step predicts
                         // the height it started at, and a body drawn below the terrain
                         // is hidden by it — which looks exactly like one that failed to
-                        // draw. The server lands the step on the ground and says
+                        // draw. The server lands the step wherever a body actually
+                        // stands — the ground, or a platform static — and says
                         // nothing, since a `0x22` carries no position.
                         //
-                        // The tile's *average* and not the cell's stored corner,
-                        // which is the same number the shard's own `ground_z`
-                        // computes: on a slope the two differ by most of the
-                        // tile's relief, and a body predicted at the corner is
-                        // drawn sunk into the hill *and* sorted behind it — the
-                        // ground's own depth is that average, less two.
-                        match walk.step(facing, |x, y| map.average_land_z(x, y)) {
+                        // `MapTerrain::predict_z` weighs both: the land's *average*
+                        // (the same number the shard's own `ground_z` computes — on a
+                        // slope the raw corner differs by most of the tile's relief,
+                        // and a body predicted at the corner is drawn sunk into the
+                        // hill and sorted behind it), and the stand height of every
+                        // platform static on the tile, a pier's or a bridge's deck
+                        // among them, picking whichever is nearest where the body
+                        // already is. Never a refusal — see `predict_z`'s own doc —
+                        // so it cannot desync from a server that disagrees; it can only
+                        // draw the wrong deck for one step, corrected by the next
+                        // `0x20`.
+                        let terrain = openshard_movement::MapTerrain::new(map, tiles);
+                        match walk.step(facing, |x, y, near_z| {
+                            i8::try_from(terrain.predict_z(x, y, i32::from(near_z))).ok()
+                        }) {
                             Ok(bytes) => {
                                 // The body moves *now*, on this end's own
                                 // prediction, rather than a round trip later
@@ -426,7 +440,8 @@ mod tests {
         // fed packets to the view would walk on the server and stand still on
         // the screen.
         let (mut view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
 
         let ack = ServerPacket::WalkAck(WalkAck {
             sequence: StepSequence(0),
@@ -443,7 +458,8 @@ mod tests {
         // And the other direction: a 0x21 is the server disagreeing, and the
         // view has no arm for it — only `Walk` knows the step it undoes.
         let (mut view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
 
         let reject = ServerPacket::WalkReject(WalkReject {
             sequence: StepSequence(0),
@@ -474,7 +490,8 @@ mod tests {
     #[test]
     fn a_step_is_predicted_before_the_server_has_answered() {
         let (view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _, _| None)
+            .unwrap();
 
         let Update::World {
             view: published,

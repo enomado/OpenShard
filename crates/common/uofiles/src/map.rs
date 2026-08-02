@@ -187,6 +187,12 @@ impl fmt::Debug for Map {
     }
 }
 
+impl AsRef<Map> for Map {
+    fn as_ref(&self) -> &Map {
+        self
+    }
+}
+
 impl Map {
     /// Load a facet from a path alone, working out its size from the file.
     ///

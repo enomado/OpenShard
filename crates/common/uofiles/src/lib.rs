@@ -19,6 +19,7 @@ pub mod anim;
 pub mod animdata;
 pub mod art;
 pub mod color;
+pub mod equipconv;
 pub mod font;
 pub mod gumpart;
 pub mod hues;

@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use openshard_entities::EntityId;
-use openshard_movement::{OpenWorld, Terrain};
+use openshard_movement::{OpenWorld, Terrain, Tile};
 use openshard_protocol::world::Point;
 
 /// A mobile's body height in z-units, for deciding what overlaps it. Matches the
@@ -201,27 +201,27 @@ impl Terrain for LiveTerrain<'_> {
         Some(landed)
     }
 
-    fn ground_z(&self, x: u16, y: u16) -> Option<i8> {
-        self.map.and_then(|m| m.ground_z(x, y))
+    fn ground_z(&self, tile: Tile) -> Option<i8> {
+        self.map.and_then(|m| m.ground_z(tile))
     }
 
-    fn land_tile(&self, x: u16, y: u16) -> Option<u16> {
-        self.map.and_then(|m| m.land_tile(x, y))
+    fn land_tile(&self, tile: Tile) -> Option<u16> {
+        self.map.and_then(|m| m.land_tile(tile))
     }
 
-    fn statics_at(&self, x: u16, y: u16, out: &mut Vec<(u16, i8)>) {
+    fn statics_at(&self, tile: Tile, out: &mut Vec<(u16, i8)>) {
         if let Some(map) = self.map {
-            map.statics_at(x, y, out);
+            map.statics_at(tile, out);
         }
     }
 
-    fn stand_z(&self, x: u16, y: u16, near_z: i32) -> Option<i32> {
-        self.map.and_then(|m| m.stand_z(x, y, near_z))
+    fn stand_z(&self, tile: Tile, near_z: i32) -> Option<i32> {
+        self.map.and_then(|m| m.stand_z(tile, near_z))
     }
 
-    fn can_fit(&self, x: u16, y: u16, z: i32, height: i32) -> bool {
-        self.map.is_none_or(|m| m.can_fit(x, y, z, height))
-            && self.obstructions.blocker_at_z(x, y, z).is_none()
+    fn can_fit(&self, tile: Tile, z: i32, height: i32) -> bool {
+        self.map.is_none_or(|m| m.can_fit(tile, z, height))
+            && self.obstructions.blocker_at_z(tile.x, tile.y, z).is_none()
     }
 
     fn sight_clear(&self, from: Point, to: Point) -> bool {
@@ -229,9 +229,13 @@ impl Terrain for LiveTerrain<'_> {
             return false;
         }
         // A shut door is opaque; a crate is furniture, not a wall.
-        openshard_movement::line_tiles((from.x, from.y), (to.x, to.y))
+        openshard_movement::line_tiles(Tile::new(from.x, from.y), Tile::new(to.x, to.y))
             .into_iter()
-            .all(|(x, y)| self.obstructions.blocker_at(x, y).is_none_or(|o| !o.door))
+            .all(|tile| {
+                self.obstructions
+                    .blocker_at(tile.x, tile.y)
+                    .is_none_or(|o| !o.door)
+            })
     }
 }
 

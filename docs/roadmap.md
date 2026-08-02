@@ -391,6 +391,35 @@ surfaced on stacked geometry (stairs, house floors). The whole of it is
 `MapTerrain::check` / `start_surface`, ported with the arithmetic audited as
 everywhere else.
 
+### Backlog: a pier or bridge over low ground can drop a walker under it
+
+`MapTerrain::check`'s `landCheck` guard (`movement/src/terrain.rs:207-217`) is
+ServUO's own `Movement.cs` `landCheck`, ported variable-for-variable and
+direction-for-direction — audited against the reference, not a porting bug. It
+exists to discard a low decorative static the terrain visibly pokes through (a
+rock embedded in a hillside): when the land under a platform static is walkable
+and its average height (`land_center`) is close to or above the static's own
+stand height (`our_z`), the static is dropped from the candidate list and the
+walker falls through to the land instead.
+
+ServUO's own `landCheck` does not exempt `Bridge`/climbable statics from this
+either — the flag only changes `itemTop` (how high a step must reach to clear
+the static), never the guard itself. That is fine as long as a bridge or pier
+sits over water, where `land_is_ground` is false and the guard never fires. It
+is not fine at the shore end of a pier or the bank end of a bridge over a
+ravine, where the ground underneath is ordinary walkable land whose average
+height can read close to the deck: the guard fires, the deck static is
+discarded, and the walker lands on `land_center` — which for a structure
+spanning a drop is often well below the deck. That reads as "fell under the
+bridge," and matches a player report (2026-08-02) of falling underground
+specifically on piers and bridges.
+
+Not fixed yet because it is a real divergence from the cited reference, not an
+arithmetic slip, and needs a decision rather than a silent patch: exempting
+`is_climbable()` statics from this guard would be a deliberate deviation from
+`Movement.cs`, and wants a repro against real client files (a pier whose shore
+tiles are dry land, not water) confirming the fall before touching it.
+
 ### Backlog: a mobile is not an obstacle
 
 The step check asks two things — `MapTerrain::check` for the client's files, and
