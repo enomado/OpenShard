@@ -12,6 +12,7 @@
 use openshard_client_render::debug;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Lighting, Spot};
+use openshard_client_render::occlusion;
 use openshard_client_render::scene::{self, CENTRE, DOORWAY, Scene};
 
 /// The flicker's instant. Always zero: a flame's brightness swings by a tenth,
@@ -439,6 +440,86 @@ fn a_frame_without_a_sun_reports_none_rather_than_nothing() {
     let scene = scene::room();
     let lighting = scene.lighting(STILL);
     assert!(light::sample(spot(CENTRE, 0.0), &lighting).sun.is_none());
+}
+
+/// How much of the sky a tile of a scene can see.
+fn sky(scene: &Scene, tile: (u16, u16)) -> u8 {
+    scene
+        .lighting(STILL)
+        .occlusion
+        .sky_at(i32::from(tile.0), i32::from(tile.1))
+}
+
+/// A tile well outside the house, for the "and the street is open" half of
+/// everything below.
+const STREET: (u16, u16) = (CENTRE.0, CENTRE.1 + scene::ROOM_HALF + 3);
+
+/// A room under a roof does not get the sky's light, and the street outside it
+/// does.
+///
+/// `docs/lighting_world.md`, decision 1, and it is the largest visible change
+/// this plan makes: today a room is lit exactly as brightly as the road, because
+/// the ambient is one colour for the whole frame. Nothing about a flame is in
+/// this test — the field is what a *place* has before anything burns in it.
+#[test]
+fn a_roof_takes_the_sky_from_the_room_under_it() {
+    let house = scene::roofed_room();
+    let street = sky(&house, STREET);
+    let room = sky(&house, CENTRE);
+    assert_eq!(street, occlusion::SKY_OPEN, "the street is not open sky");
+    assert_eq!(room, 0, "the middle of a roofed room still sees the sky");
+}
+
+/// The threshold of an open door is brighter than the room and darker than the
+/// street.
+///
+/// Decision 2: the blur is what makes a doorway a gradient. Without it the field
+/// steps from 1 to 0 at the wall line, which is the artefact the whole track
+/// exists to remove — and the two scenes differ by exactly one graphic, so a
+/// difference between them is the door and nothing else.
+#[test]
+fn a_doorway_is_a_threshold_and_not_a_step() {
+    let open = scene::roofed_room_with_open_door();
+    let shut = scene::roofed_room();
+
+    let threshold = sky(&open, DOORWAY);
+    assert!(
+        threshold > 0 && threshold < occlusion::SKY_OPEN,
+        "the doorway of {} reads {threshold}, which is the room or the street",
+        open.name,
+    );
+    assert!(
+        threshold > sky(&shut, DOORWAY),
+        "an open door is worth no more sky than a shut one",
+    );
+    assert!(
+        threshold < sky(&open, STREET),
+        "the doorway is as bright as the road outside it",
+    );
+}
+
+/// A glazed wall is worth some of the sky, and a solid one is worth none.
+///
+/// The crude half of decision 14, and the whole of what stands in for
+/// `docs/lighting.md`'s step 16 until it lands: a pane passes its share in the
+/// column, and the blur is what carries it inwards. What is asserted is the
+/// ordering and not the level — how much a pane passes is `occlusion::PANE`,
+/// which is a guess about glass and not a number from any file.
+#[test]
+fn a_window_is_worth_more_sky_than_the_wall_it_replaces() {
+    let glazed = scene::roofed_room_with_window();
+    let solid = scene::roofed_room();
+    let inside = (scene::WINDOW_TILE.0 - 1, scene::WINDOW_TILE.1);
+
+    assert!(
+        sky(&glazed, scene::WINDOW_TILE) > sky(&solid, scene::WINDOW_TILE),
+        "the pane itself is as dark as a wall",
+    );
+    assert!(
+        sky(&glazed, inside) > sky(&solid, inside),
+        "the room behind the window is no lighter than a cellar",
+    );
+    assert_eq!(sky(&solid, inside), 0, "and the windowless room is a cellar");
 }
 
 /// Every scene draws a diagram with something in it.

@@ -33,6 +33,47 @@
 //! Every occluder is tested with the frame's [`Cutaway`], exactly as the flames
 //! are. A shadow cast by a wall the cutaway took away is a dark band with
 //! nothing in the picture making it, which is the worse bug of the two.
+//!
+//! # The sky a tile can see
+//!
+//! The grid answers a second question, and it is the cheapest one it can be
+//! asked: *can this tile see straight up*. A tile that cannot does not get the
+//! sky's share of the ambient — which is what makes the inside of a house darker
+//! than the street outside it with nothing in either. `docs/lighting_world.md`,
+//! decisions 1, 2, 3 and 14, and the field is [`Occlusion::sky_at`].
+//!
+//! Three things about it are not the shadow walk's answers, and each is a
+//! decision rather than an accident:
+//!
+//! - **It ignores the [`Cutaway`].** Standing indoors deletes the roof so that
+//!   the player can be seen; if the sky test read the *drawn* statics, walking
+//!   through a door would flood the room with noon and the player would carry
+//!   daylight into every building. A shadow from a static that is not in the
+//!   picture is an artefact; the missing ambient of a roof the player walked
+//!   under is the point. So this is the one reader of the walk that does not ask
+//!   [`cutaway::shows`].
+//! - **It is blurred by a tile.** A raw column test steps from 1 to 0 at the
+//!   wall line, and a step is the artefact this whole track exists to remove.
+//!   One 3x3 pass over a grid a few hundred tiles across makes the threshold of
+//!   an open door brighter than the middle of the room and the eave of a roof
+//!   brighter than what is under it. It is not a simulation of anything — it is
+//!   the shape the right answer has, for one blur of a small array.
+//! - **A pane passes its share.** The column multiplies by what each occluder
+//!   leaves, so a glazed roof lets four fifths of the sky through where a slate
+//!   one lets none. That is the crude half of decision 14, and it is what keeps
+//!   a chapel from reading as a crypt until an aperture arrives.
+//!
+//! # One plane per answer, beside the cell and not inside it
+//!
+//! [`Cell`] is four channels and all four are spoken for, so the sky needed
+//! room. It gets a **second texture over the same rectangle** rather than a
+//! wider cell — see [`Occlusion::field_bytes`], whose four channels are the
+//! places the answers that are not about *stopping a ray* go: the sky today, an
+//! aperture and a body's opacity when `docs/lighting.md`'s step 16 and
+//! `docs/lighting_world.md`'s step 8 land. One decision for all three, which is
+//! what the plans asked for, and the split is along the line that matters: the
+//! occluder cell is what a ray walks through, and this is what a *tile* is,
+//! read once per fragment and never in a loop.
 
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
@@ -118,6 +159,9 @@ pub struct Cell {
     pub opacity: u8,
 }
 
+/// A tile with nothing at all over it: the whole of the sky.
+pub const SKY_OPEN: u8 = 255;
+
 /// The occluders of one frame, as a rectangle of tiles.
 ///
 /// Absent cells are the ordinary case — most of a street is open sky — and
@@ -129,6 +173,12 @@ pub struct Occlusion {
     /// Row-major over `bounds`, `x` fastest: the order [`Occlusion::bytes`]
     /// uploads and the shader indexes.
     cells: Vec<Option<Cell>>,
+    /// How much of the sky each tile can see, in the same order — see this
+    /// module's header and [`Occlusion::sky_at`].
+    ///
+    /// A byte and not an `Option`: every tile has an answer, and the answer for
+    /// a tile with nothing over it is [`SKY_OPEN`] rather than "absent".
+    sky: Vec<u8>,
 }
 
 impl Occlusion {
@@ -145,12 +195,18 @@ impl Occlusion {
             max_y: -1,
         },
         cells: Vec::new(),
+        sky: Vec::new(),
     };
 
-    /// An empty grid over `bounds`: nothing stops anything.
+    /// An empty grid over `bounds`: nothing stops anything, and every tile sees
+    /// the whole sky.
     pub fn new(bounds: TileBounds) -> Self {
-        let cells = vec![None; (bounds.width() * bounds.height()) as usize];
-        Self { bounds, cells }
+        let tiles = (bounds.width() * bounds.height()) as usize;
+        Self {
+            bounds,
+            cells: vec![None; tiles],
+            sky: vec![SKY_OPEN; tiles],
+        }
     }
 
     /// The rectangle of tiles this covers.
@@ -198,6 +254,99 @@ impl Occlusion {
     /// outside the rectangle.
     pub fn at(&self, x: i32, y: i32) -> Option<Cell> {
         self.cells[self.index(x, y)?]
+    }
+
+    /// Take a tile's sky away, as far as one static standing over it does.
+    ///
+    /// `floor` is the height of the ground under the tile, and it is what makes
+    /// this a *column over the floor* rather than a census of the tile: a
+    /// cellar's wall is below the street it stands under and takes none of that
+    /// street's sky, which is the same three-dimensional honesty the shadow walk
+    /// gets from a cell's span.
+    ///
+    /// Multiplicative, so two roofs over one tile do not make it darker than
+    /// black and a pane under a slate roof is as dark as the slate — and so that
+    /// a pane on its own passes its share. Deliberately **not** filtered by the
+    /// frame's [`Cutaway`]; the module header says why, and it is the one place
+    /// this crate reads the map as it is rather than as it is drawn.
+    ///
+    /// A tile outside [`Occlusion::bounds`] is dropped, exactly as
+    /// [`Occlusion::add`] drops one.
+    pub fn shade(&mut self, x: u16, y: u16, z: i8, floor: i8, tile: &StaticTile) {
+        let opacity = opacity(tile);
+        if opacity == CLEAR {
+            return;
+        }
+        let top = i32::from(z) + calc_height(tile);
+        if top < i32::from(floor) {
+            return;
+        }
+        let Some(index) = self.index(i32::from(x), i32::from(y)) else {
+            return;
+        };
+        let passes = u32::from(SKY_OPEN - opacity);
+        self.sky[index] = ((u32::from(self.sky[index]) * passes) / u32::from(SKY_OPEN)) as u8;
+    }
+
+    /// How much of the sky one tile can see: [`SKY_OPEN`] under open air, `0`
+    /// under a roof, and between under glass or beside a doorway.
+    ///
+    /// Open sky outside the rectangle, which is the honest default in the one
+    /// direction that matters: the grid is grown by the widest pool's reach, so
+    /// a tile outside it is a tile the frame does not draw, and a caller
+    /// sampling one is asking about a place this frame knows nothing about.
+    /// Answering "dark" there would put a band of night around every frame.
+    pub fn sky_at(&self, x: i32, y: i32) -> u8 {
+        match self.index(x, y) {
+            Some(index) => self.sky[index],
+            None => SKY_OPEN,
+        }
+    }
+
+    /// Soften the sky field by a tile: one 3x3 pass, in place.
+    ///
+    /// The last thing done to the field and never done twice — [`collect`] calls
+    /// it once, after every occluder has been shaded in, because a blur of a
+    /// half-built field is a blur of the wrong picture.
+    ///
+    /// The edge of the rectangle repeats rather than falling off: a tile outside
+    /// the grid is open sky by [`Occlusion::sky_at`]'s rule, and averaging that
+    /// in would draw a bright rim around the inside of every frame's border —
+    /// which is a picture of where the grid ends, not of where the roof does.
+    pub fn blur_sky(&mut self) {
+        let (width, height) = (self.bounds.width(), self.bounds.height());
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let mut blurred = vec![SKY_OPEN; self.sky.len()];
+        for row in 0..height {
+            for column in 0..width {
+                let mut total = 0_u32;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let x = (column + dx).clamp(0, width - 1);
+                        let y = (row + dy).clamp(0, height - 1);
+                        total += u32::from(self.sky[(y * width + x) as usize]);
+                    }
+                }
+                blurred[(row * width + column) as usize] = (total / 9) as u8;
+            }
+        }
+        self.sky = blurred;
+    }
+
+    /// The second plane the shader reads: `Rgba8Uint`, one texel a tile, in
+    /// [`Occlusion::bytes`]'s own order over the same rectangle.
+    ///
+    /// `(sky, 0, 0, 0)`. The three zeros are not padding, they are the format
+    /// being decided once — see this module's header. What a tile *is* goes
+    /// here; what a ray passes through stays in [`Occlusion::bytes`].
+    pub fn field_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.sky.len() * 4);
+        for sky in &self.sky {
+            bytes.extend_from_slice(&[*sky, 0, 0, 0]);
+        }
+        bytes
     }
 
     /// The highest `z` anything in this grid stops light at, or `None` for a
@@ -258,6 +407,10 @@ impl Occlusion {
 /// **a door is an item**, sent by the server and swapped for its open graphic
 /// when it is opened. A closed door that let the light through would be the one
 /// occluder a player watches change.
+/// The sky field is built out of the same walk, and the two halves of this
+/// function are deliberately not the same rule: everything is shaded into the
+/// sky, and only what the frame *draws* is added to the occluders. See the
+/// module header.
 pub fn collect(
     map: &Map,
     items: &[GroundItem],
@@ -266,9 +419,14 @@ pub fn collect(
     cutaway: &Cutaway,
 ) -> Occlusion {
     let mut occlusion = Occlusion::new(bounds);
+    // The ground each tile's column is measured from. Off the map it is zero:
+    // there is no floor there and nothing draws, and a static hanging over the
+    // void still has to shade something rather than be skipped by an `unwrap`.
+    let floor = |x: u16, y: u16| map.land(x, y).map_or(0, |cell| cell.z);
 
     crate::statics::for_each_static_in(map, bounds, |item| {
         let tile = tiledata.static_tile(item.tile);
+        occlusion.shade(item.x, item.y, item.z, floor(item.x, item.y), tile);
         if cutaway::shows(cutaway, item.z, tile) {
             occlusion.add(item.x, item.y, item.z, tile);
         }
@@ -276,11 +434,13 @@ pub fn collect(
 
     for item in items {
         let tile = tiledata.static_tile(item.graphic.0);
+        occlusion.shade(item.at.x, item.at.y, item.at.z, floor(item.at.x, item.at.y), tile);
         if cutaway::shows(cutaway, item.at.z, tile) {
             occlusion.add(item.at.x, item.at.y, item.at.z, tile);
         }
     }
 
+    occlusion.blur_sky();
     occlusion
 }
 
@@ -411,6 +571,153 @@ mod tests {
         );
     }
 
+    /// The column, in every direction it has to be right in: a roof takes the
+    /// sky, a pane passes most of it, a barrel takes none, and a wall down in a
+    /// cellar takes none of the street's.
+    ///
+    /// Before the blur, because these are claims about the column test and the
+    /// blur is a claim about the neighbourhood — mixing the two would leave
+    /// every number here a function of what is on eight other tiles.
+    #[test]
+    fn the_column_over_a_tile_is_what_takes_its_sky() {
+        let mut occlusion = Occlusion::new(bounds());
+        assert_eq!(occlusion.sky_at(100, 100), SKY_OPEN, "nothing built yet");
+
+        occlusion.shade(100, 100, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+        assert_eq!(occlusion.sky_at(100, 100), 0, "a roof over the floor");
+
+        occlusion.shade(101, 100, 20, 0, &tile(TileFlags::WINDOW, 5));
+        assert_eq!(
+            occlusion.sky_at(101, 100),
+            204,
+            "a glazed roof passes four fifths of the sky",
+        );
+
+        occlusion.shade(102, 100, 20, 0, &tile(TileFlags::BLOCK, 5));
+        assert_eq!(occlusion.sky_at(102, 100), SKY_OPEN, "a crate is not a lid");
+
+        // A cellar's wall, twenty tall, standing forty below the street: its top
+        // is still under the floor, so the street above it is open sky.
+        occlusion.shade(103, 100, -40, 0, &tile(TileFlags::NO_SHOOT, 20));
+        assert_eq!(occlusion.sky_at(103, 100), SKY_OPEN);
+
+        // And two panes are darker than one: the column multiplies.
+        occlusion.shade(101, 100, 30, 0, &tile(TileFlags::WINDOW, 5));
+        assert!(occlusion.sky_at(101, 100) < 204);
+
+        assert_eq!(occlusion.sky_at(0, 0), SKY_OPEN, "outside the grid is sky");
+    }
+
+    /// The blur is a tile wide and it does not brighten the border.
+    ///
+    /// The second half is the one worth a test: the grid's edge is where the
+    /// *frame* ends, not where the roof does, and a blur that averaged in the
+    /// open sky outside would draw a bright rim around the inside of every
+    /// frame — a picture of the rectangle rather than of the world.
+    #[test]
+    fn the_blur_spreads_a_tile_and_leaves_the_border_alone() {
+        let small = TileBounds {
+            min_x: 0,
+            max_x: 2,
+            min_y: 0,
+            max_y: 2,
+        };
+        let mut occlusion = Occlusion::new(small);
+        for x in 0..=2u16 {
+            for y in 0..=2u16 {
+                occlusion.shade(x, y, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+            }
+        }
+        occlusion.blur_sky();
+        for x in 0..=2 {
+            for y in 0..=2 {
+                assert_eq!(occlusion.sky_at(x, y), 0, "({x}, {y}) is under the roof");
+            }
+        }
+
+        // One roofed tile in the middle of open ground: it lifts off zero and
+        // its neighbours come down off the sky, which is the doorway's gradient
+        // arriving from the other side.
+        let mut one = Occlusion::new(bounds());
+        one.shade(105, 105, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+        one.blur_sky();
+        // Eight open neighbours and itself dark: 255 * 8 / 9.
+        assert_eq!(one.sky_at(105, 105), 226);
+        assert!(one.sky_at(106, 105) < SKY_OPEN, "the eave shades its neighbour");
+        assert_eq!(one.sky_at(107, 105), SKY_OPEN, "and nothing two tiles away");
+    }
+
+    /// The sky is read off the map as it is, not as it is drawn.
+    ///
+    /// `docs/lighting_world.md`'s decision 3, and it is a real inversion of the
+    /// rule beside it: the same roof that must stop casting a shadow the moment
+    /// the cutaway removes it must go on keeping the daylight out. Otherwise
+    /// walking through a door floods the room with noon, and the player carries
+    /// daylight into every building they enter.
+    #[test]
+    fn the_cutaway_takes_a_roof_from_the_eye_and_not_from_the_sky() {
+        let map = Map::from_blocks(1, 1, |_, _| LandCell { tile: 0, z: 0 });
+        let graphic = Graphic(0x000A);
+        let mut tiledata = TileData::empty();
+        tiledata.set_static_tile(graphic.0, tile(TileFlags::NO_SHOOT, 5));
+        // A patch of roof wide enough that the middle of it is roofed on all
+        // nine of the tiles the blur reads.
+        let items: Vec<GroundItem> = (2..=6u16)
+            .flat_map(|x| {
+                (2..=6u16).map(move |y| GroundItem {
+                    at: Point::new(x, y, 20),
+                    graphic,
+                    hue: Hue::NONE,
+                })
+            })
+            .collect();
+        let bounds = TileBounds {
+            min_x: 0,
+            max_x: 7,
+            min_y: 0,
+            max_y: 7,
+        };
+
+        let open = collect(&map, &items, bounds, &tiledata, &Cutaway::OPEN);
+        let cut = collect(
+            &map,
+            &items,
+            bounds,
+            &tiledata,
+            &Cutaway {
+                max_z: 20,
+                no_draw_roofs: true,
+                ..Cutaway::OPEN
+            },
+        );
+
+        assert!(open.at(4, 4).is_some(), "with nothing cut it occludes");
+        assert_eq!(cut.at(4, 4), None, "and the cutaway takes it out of the walk");
+        assert_eq!(open.sky_at(4, 4), 0, "the roof keeps the sky off the floor");
+        assert_eq!(
+            cut.sky_at(4, 4),
+            open.sky_at(4, 4),
+            "the room brightened when the player walked in",
+        );
+    }
+
+    /// The second plane is the field, in the same order as the cells, with the
+    /// three channels the aperture and a body are going to want left at zero.
+    #[test]
+    fn the_field_bytes_are_the_sky_in_the_cells_own_order() {
+        let mut occlusion = Occlusion::new(TileBounds {
+            min_x: 0,
+            max_x: 1,
+            min_y: 0,
+            max_y: 1,
+        });
+        occlusion.shade(1, 0, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+        let bytes = occlusion.field_bytes();
+        assert_eq!(bytes.len(), 4 * 4, "one texel a tile, four channels");
+        assert_eq!(&bytes[0..4], &[SKY_OPEN, 0, 0, 0], "(0,0) is open sky");
+        assert_eq!(&bytes[4..8], &[0, 0, 0, 0], "(1,0) is x-fastest, and roofed");
+    }
+
     /// A wall the cutaway has taken away casts no shadow. The storey above the
     /// player is not drawn, and a dark band under a wall that is not in the
     /// picture is worse than the light leaking.
@@ -446,5 +753,82 @@ mod tests {
             },
         );
         assert_eq!(cut.at(4, 4), None);
+    }
+
+    /// Britain's houses are dark inside and its streets are not.
+    ///
+    /// The scenes above are built, which is what makes them readable and is also
+    /// what makes them unable to answer this: they contain a roof *this crate
+    /// placed*, flagged the way this crate assumed a roof is flagged. The whole
+    /// column test rests on a real roof being in the grid at all — membership is
+    /// `WINDOW | NO_SHOOT`, which is a fact about arrows, and nothing said it was
+    /// also a fact about lids. Measured here rather than assumed: every one of
+    /// the 203 roof statics over this block of Britain carries `NO_SHOOT`, so the
+    /// answer is yes and `TileFlags::ROOF` is not needed for it.
+    ///
+    /// The classifier is the cutaway, which is the client's own idea of indoors
+    /// and was ported from `UpdateMaxDrawZ` — so the two are independent: one
+    /// reads the tile the player stands on and the tile a roof draws on, the
+    /// other reads the column over each tile. Where they agree, they agree for
+    /// two reasons.
+    ///
+    /// Stated as means over a block and not per tile: the eaves and the
+    /// thresholds are *meant* to be in between, and a per-tile assertion would
+    /// either forbid the blur or have to name every doorway in Britain.
+    ///
+    /// Skipped without the client's files.
+    #[test]
+    fn britains_rooms_are_dark_and_its_streets_are_not() {
+        let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let map = Map::load_facet(&dir, 0).expect("Felucca");
+        let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+        // The same block of Britain the cutaway's own tests walk: wide enough to
+        // hold whole buildings and the streets between them.
+        let (from, to) = ((1470u16, 1600u16), (1530u16, 1660u16));
+        let bounds = TileBounds {
+            min_x: i32::from(from.0),
+            max_x: i32::from(to.0),
+            min_y: i32::from(from.1),
+            max_y: i32::from(to.1),
+        };
+        let grid = collect(&map, &[], bounds, &tiledata, &Cutaway::OPEN);
+
+        let (mut indoors, mut outdoors) = (Vec::new(), Vec::new());
+        let (mut roofs, mut roofs_in_the_grid) = (0, 0);
+        for y in from.1..=to.1 {
+            for x in from.0..=to.0 {
+                let Some(land) = map.land(x, y) else { continue };
+                let here = openshard_protocol::world::Point::new(x, y, land.z);
+                let sky = grid.sky_at(i32::from(x), i32::from(y));
+                match Cutaway::at(&map, &tiledata, here, true) == Cutaway::OPEN {
+                    true => outdoors.push(sky),
+                    false => indoors.push(sky),
+                }
+                for item in map.statics_at(x, y) {
+                    let tile = tiledata.static_tile(item.tile);
+                    if !tile.flags.is_roof() {
+                        continue;
+                    }
+                    roofs += 1;
+                    roofs_in_the_grid += usize::from(stops_light(tile));
+                }
+            }
+        }
+
+        // A sweep that found nothing would assert nothing at all.
+        assert!(indoors.len() > 500, "only {} indoor tiles", indoors.len());
+        assert!(outdoors.len() > 500, "only {} outdoor tiles", outdoors.len());
+        assert!(roofs > 100, "only {roofs} roof statics over this block");
+        assert_eq!(
+            roofs_in_the_grid, roofs,
+            "a roof is not in the occlusion grid, so no column test can find it",
+        );
+
+        let mean = |tiles: &[u8]| tiles.iter().map(|sky| u32::from(*sky)).sum::<u32>() / tiles.len() as u32;
+        let (inside, outside) = (mean(&indoors), mean(&outdoors));
+        assert!(inside < 64, "Britain's rooms average {inside} of the sky");
+        assert!(outside > 200, "Britain's streets average {outside} of the sky");
     }
 }

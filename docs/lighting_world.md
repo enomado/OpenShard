@@ -9,13 +9,17 @@ it is built. This is the other half, and its subject is not shadows — it is
 
 ## Where the next session starts
 
-**Nothing here is built yet.** Step 1 is first and depends on nothing in this
-file: the sky field is a column test over a grid that already exists, and it is
-the single largest visible change in the list — a room stops being as bright as
-the street. Steps 2 and 3 follow it because they are what the field is *for*.
-Steps 9 and 10 are blocked on [`lighting.md`](lighting.md)'s steps 15 and 16 and
-should not be started before them; step 8 wants its step 14 first, for the reason
-decision 9 gives.
+**Step 1 is built and nothing reads it yet.** The sky field is computed, blurred
+and tested — on the built scenes and on Britain, where a room averages 28 of 255
+against a street's 234 — and it goes to the GPU as `Occlusion::field_bytes`. What
+does not exist is a consumer: `Lighting::ambient` is still one colour for the
+whole frame. **Step 2 is next**, and it is short — the field is already the shape
+the shader wants.
+
+Step 3 follows it because it is what the field is *for*. Steps 9 and 10 are
+blocked on [`lighting.md`](lighting.md)'s steps 15 and 16 and should not be
+started before them; step 8 wants its step 14 first, for the reason decision 9
+gives — as does the drawn half of step 1, which is the one part of it still open.
 
 Step 7, the tonal response, is the one to take when the appetite is for a
 screenshot rather than for a subsystem: it touches one shader, it is judged by
@@ -71,11 +75,14 @@ The seam, stated once so neither plan has to guess at the other:
   the unpacking answers about its copy of the frame.
 - **Step 15 is what a wall's ambient waits for** — decision 13 below.
 - **Step 16 is what a lit room at noon waits for** — decision 14 below.
-- **One widening of the occlusion cell, not three.** The cell is `Rgba8Uint` and
-  full; step 16 already says its aperture needs room. The sky byte needs room,
-  and a soft body's opacity would like a fifth answer. That is one format
-  decision with three callers, and it belongs to whichever step lands first —
-  which by the order above is this plan's step 1.
+- **One widening of the occlusion cell, not three — and it is made.** The cell is
+  `Rgba8Uint` and full; step 16 needs room for its aperture, the sky byte needed
+  room, and a soft body's opacity wants a fifth answer. One format decision with
+  three callers, taken by step 1 because it landed first: a **second plane** over
+  the same rectangle, `(sky, aperture, body, unused)`, rather than a wider cell.
+  The occluder cell is what a ray walks through, cell after cell in a loop; the
+  plane is what a tile *is*, read once. Step 16 writes the second channel and
+  nothing about the first moves.
 - **Step 6's measurement gates both.** Nothing here turns on by default before
   the number the other plan owes.
 
@@ -273,20 +280,31 @@ and each step states what it cost.
 
 ## Steps
 
-- [ ] **1. The sky field.** `occlusion.rs` gains a per-tile sky byte from the
+- [x] **1. The sky field.** `occlusion.rs` gained a per-tile sky byte from the
       un-cut column test of decision 1/3, the `PANE` leak of decision 14, and the
-      blur of decision 2. This step owns the widening the cell needs — a second
-      texture beside the occlusion one, or a wider format — and it takes
-      [`lighting.md`](lighting.md)'s step 16 into account when it chooses, so
-      that the aperture has somewhere to go and the format is decided once.
-      Unit-tested without client files on `scene`'s room: floor tiles under a
-      roof read 0, the doorway reads between, the street reads 1, and the room
-      with a window reads above the room without one.
+      blur of decision 2 — `Occlusion::shade`, `blur_sky` and `sky_at`, built out
+      of `collect`'s existing walk rather than a second one. The format is a
+      **second `Rgba8Uint` plane over the same rectangle**, `field_bytes`, whose
+      channels are `(sky, aperture, body, unused)`: the cell stays what a *ray*
+      walks through and the plane is what a *tile is*, which is the line the
+      three callers actually fall on. Decided once, as the seam above asks.
 
-      Drawn, not only asserted: the sky byte shades the boxes
-      [`lighting.md`](lighting.md)'s step 14 strokes, under the same checkbox.
-      A field this cheap to compute is a field it is cheap to be wrong about
-      everywhere at once.
+      Tested on the built scenes — `roofed_room`, `roofed_room_with_open_door`
+      and `roofed_room_with_window` are new, and the last two differ from the
+      first by one graphic each — and on Britain, which is where the assumption
+      underneath the whole column test is checked: see the backlog.
+
+      **The cost**, per decision 15: one land lookup per static in a walk that
+      already touched it, and one 9-tap pass over the grid — 187x187 tiles at the
+      widest zoom, on the CPU, once a frame. Nothing per fragment: no shader
+      reads the plane until step 2.
+
+      **Left undone**: the drawn half. The sky byte was to shade the boxes
+      [`lighting.md`](lighting.md)'s step 14 strokes, and step 14 does not exist
+      yet — so the field is asserted and not looked at. It is not a small
+      omission: a field this cheap to compute is a field it is cheap to be wrong
+      about everywhere at once, and the backlog below says why the wireframe is
+      the wrong instrument for it anyway.
 - [ ] **2. The two ambients.** `Lighting::ambient` splits into a sky colour and a
       ground colour; `blit.wgsl` reads the sky field and mixes. `light::sample`
       gains the same term in the same commit — the parity test of the other
@@ -357,13 +375,36 @@ Written while drafting this, and not to be lost:
   honest instrument is the field drawn on the ground, as the terrain overlay
   already draws a per-tile number, and it is worth remembering before adding a
   third view rather than a second use of that one.
-- **`FLOOR` may be the roof test that already exists.** Step 15's facing tells a
-  wall's edge apart, but the sky test does not need an edge — it needs "is this
-  static a lid". `place::Stance`, which is `TileFlags::FLOOR`, is exactly that
-  question already answered for the attachment, and a roof tile is a floor that
-  happens to be above you. If it holds, decision 1's column test is a flag lookup
-  rather than a height comparison, and roofs and floors of upper storeys come out
-  right for one reason instead of two.
+- **~~`FLOOR` may be the roof test that already exists.~~ Settled: a real roof is
+  already in the grid.** The column test rests on a roof being an occluder at
+  all, and membership is `WINDOW | NO_SHOOT` — a fact about *arrows*, which
+  nothing said was also a fact about lids. Measured over the block of Britain the
+  cutaway's tests walk: **203 roof statics, 203 of them `NO_SHOOT`**. So the
+  height comparison stands, no flag lookup is needed, and
+  `occlusion::britains_rooms_are_dark_and_its_streets_are_not` is what says so if
+  a patch ever changes it. The wider question that entry was really asking —
+  whether an upper storey's *floor* is a lid for the storey below — is untouched
+  and still open: a floor plank is not `NO_SHOOT`, so a cellar under a house
+  currently reads whatever the house's roof gives it.
+- **A wall tile has no sky of its own, and decision 13 is what that costs.** A
+  wall shades its own column, so every wall tile reads 0 and the ring of a house
+  is as dark as the room inside it. That is invisible today — nothing samples the
+  field — and it is exactly the case decision 13 exists for: at step 2 the outer
+  face of a house will take the ambient of a cell that never sees the sun. The
+  fallback until step 15 offers a facing is the tile's own cell, which is this
+  zero; whether that reads as "wrong" or as "a wall in shadow" is a question for
+  the first screenshot of step 2, and it may want the wall's *brightest*
+  neighbour rather than its own cell as the interim answer.
+- **28 of 2560 tiles the cutaway calls outdoors read dark.** The measurement
+  above, in its other direction. Some are wall tiles (the entry above); the rest
+  are the overhangs the courtyard entry names, arriving from the side that can be
+  counted. Worth re-reading when that scene exists: the number is a bound on how
+  wrong the eave case actually is, and it is small.
+- **`field_bytes` has three channels nobody writes.** Deliberate — the format is
+  decided once, per the seam above — but a plane of zeros uploaded every frame is
+  a thing that can be forgotten. Whoever lands step 16's aperture or step 8's
+  soft body should find them already waiting; if neither has landed by the time
+  something else wants the space, that is when to reconsider, not before.
 - **Nothing in this plan knows about weather.** An overcast sky is exactly the
   sky term of decision 1 multiplied by a number, and rain is the same with a
   colour — which is to say this arrives almost for free once the sky field is a

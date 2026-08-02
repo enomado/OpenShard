@@ -141,6 +141,23 @@ impl Scene {
         self.with_at(at, 0, graphic)
     }
 
+    /// The same room with a roof on: [`ROOF`] over every tile inside the ring
+    /// of wall, at the top of it.
+    ///
+    /// Over the *inside* and not over the wall tiles, which is how a real house
+    /// is built and is what leaves the ring of wall the only tile a roofed room
+    /// has that the sky can still reach. Decision 1 of `docs/lighting_world.md`
+    /// is measured on the difference.
+    fn roofed(mut self) -> Self {
+        let (cx, cy) = CENTRE;
+        for x in cx - ROOM_HALF + 1..=cx + ROOM_HALF - 1 {
+            for y in cy - ROOM_HALF + 1..=cy + ROOM_HALF - 1 {
+                self = self.with_at((x, y), ROOF_Z, ROOF);
+            }
+        }
+        self
+    }
+
     /// And with it standing at a height — a roof, or a storey above one.
     fn with_at(mut self, at: (u16, u16), z: i8, graphic: Graphic) -> Self {
         self.items.push(GroundItem {
@@ -371,18 +388,60 @@ pub const WINDOW_TILE: (u16, u16) = (CENTRE.0 + ROOM_HALF, CENTRE.1);
 /// in is the pane — so what appears inside is a band along the sunward wall and
 /// shadow everywhere else.
 pub fn sunlit_room_with_window() -> Scene {
-    let (cx, cy) = CENTRE;
     let mut scene = empty("a roofed, sunlit room with a window");
     scene.sun = Some(noon());
     for tile in room_wall_tiles() {
         scene = scene.with(tile, if tile == WINDOW_TILE { PANE } else { WALL });
     }
-    for x in cx - ROOM_HALF + 1..=cx + ROOM_HALF - 1 {
-        for y in cy - ROOM_HALF + 1..=cy + ROOM_HALF - 1 {
-            scene = scene.with_at((x, y), ROOF_Z, ROOF);
-        }
+    scene.roofed()
+}
+
+/// A shut, roofed house in the daylight, with nothing burning in it.
+///
+/// The base case of `docs/lighting_world.md`'s decision 1, and the one the whole
+/// step is judged on: nothing here is dark because a flame failed to reach it —
+/// what is dark is dark because a roof is between the floor and the sky. The
+/// pair it is read against is [`roofed_room_with_open_door`], which differs by
+/// one graphic.
+pub fn roofed_room() -> Scene {
+    let mut scene = empty("a shut, roofed house at noon");
+    scene.sun = Some(noon());
+    for tile in room_wall_tiles() {
+        scene = scene.with(tile, WALL);
     }
-    scene
+    scene.roofed()
+}
+
+/// The same house with its door standing open: the threshold.
+///
+/// The open leaf carries no `NO_SHOOT` — see [`DOOR_OPEN`] — so the doorway tile
+/// is the one tile of the ring that the sky reaches, and decision 2's blur is
+/// what turns that into a threshold brighter than the room and darker than the
+/// street. Without the blur the two are one step at the wall line, which is the
+/// artefact this whole track exists to remove.
+pub fn roofed_room_with_open_door() -> Scene {
+    let mut scene = empty("a roofed house at noon with its door open");
+    scene.sun = Some(noon());
+    for tile in room_wall_tiles() {
+        scene = scene.with(tile, if tile == DOORWAY { DOOR_OPEN } else { WALL });
+    }
+    scene.roofed()
+}
+
+/// A roofed house with a window in one wall, and nothing burning in it.
+///
+/// [`sunlit_room_with_window`] without the sun's own beam: the same glazed wall,
+/// read for what it does to the *sky* the room gets rather than to the patch of
+/// light on its floor. The crude half of decision 14 — a pane passes its share
+/// of the sky where a wall passes none — and the scene it is measured against is
+/// [`roofed_room`], which differs by that one graphic.
+pub fn roofed_room_with_window() -> Scene {
+    let mut scene = empty("a roofed house at noon with a window");
+    scene.sun = Some(noon());
+    for tile in room_wall_tiles() {
+        scene = scene.with(tile, if tile == WINDOW_TILE { PANE } else { WALL });
+    }
+    scene.roofed()
 }
 
 /// Every scene above, for a test that wants to sweep them.
@@ -397,5 +456,8 @@ pub fn all() -> Vec<Scene> {
         diagonal_gap(),
         wall_in_the_sun(),
         sunlit_room_with_window(),
+        roofed_room(),
+        roofed_room_with_open_door(),
+        roofed_room_with_window(),
     ]
 }
