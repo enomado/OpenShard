@@ -969,6 +969,35 @@ text; and the journal, of which the speech strip is a six-line stand-in.
 Single and double click (`0x09`, `0x06`), drag and drop (`0x07`, `0x08`),
 targeting (`0x6C`, `0x6B`), war mode. Speech (`0xAD`) landed early — see M4.
 
+**Double-click landed early too, because a door needs it.** A door is an entity
+the shard placed, and the only thing that opens one is a `0x06` naming its
+serial — there is no open-door packet, and what "use" means is decided entirely
+server-side (`crates/server/items/src/doors.rs`). So the client's half is three
+pieces and nothing about doors in any of them:
+
+- `openshard_client_net::interact::use_object` — the `0x06`, with
+  `DoubleClick::encode` in `common/protocol` as its other half. A test in each
+  crate says what this client writes is what this server's own dispatch reads,
+  and reads as a *use* rather than as the paperdoll request sharing the id.
+- `openshard_client_render::items::pick` — **which item the cursor is over,
+  picked against the picture**. Not against the tile: a door's leaf is drawn two
+  tiles up the screen from the tile it stands on, so `App::pick_tile`'s answer —
+  right for the Tile panel — names the tile *behind* the door and a player could
+  never open the one they are pointing at. A hit is an opaque texel
+  (`StaticAtlas::opaque_at`), because static art is mostly empty space and a
+  bounding box picks whatever tall thing the cursor is merely inside; the
+  topmost drawn wins, which is the largest `depth::Order` with the same
+  later-wins tie-break the depth test gives the frame. `items::place` is the
+  placement both `collect` and `pick` go through, so what is drawn and what is
+  clicked cannot drift.
+- `App::use_under_cursor`, on the second left click inside ClassicUO's own
+  350ms (`Mouse.MOUSE_DELAY_DOUBLE_CLICK`), plus `App::item_serials` — the
+  serial the renderer drops, put back by index.
+
+Nothing is done locally on the way out: the door swings when the `0x1A` that
+redraws it arrives. A client that also opened it itself would show a door the
+shard refused — a lock, or reach — standing open.
+
 ## Decisions to take before they are taken by accident
 
 - **The client is multi-shard and multi-session**, `[shard → {characters}]` —
@@ -2487,3 +2516,80 @@ the way and not done:
   walk agrees with, and a caller that asks `stand_z` alone gets a surface with a
   barrel standing on it. Either the two should consult the index or the trait
   should say plainly that they answer for the map only.
+
+## Backlog, found while giving the client the double-click
+
+- **Only ground items are pickable.** `items::pick` walks `App::items` and
+  nothing else, so the map's own statics and every mobile are invisible to a
+  click. A static has no serial and never will — it is not an entity — but a
+  mobile does, and double-clicking one is the *paperdoll* arm of `0x06`
+  (`DoubleClick::interpret`), waiting on a paperdoll to show. The picking rule
+  itself is the same one: the topmost opaque texel, over one more list.
+- **Picking is per click and rebuilds the cutaway to do it.** `use_under_cursor`
+  calls `Cutaway::at` again rather than reading the one the frame was drawn
+  with, because the frame keeps none. Cheap at click rates and wrong in shape:
+  the frame's cutaway, camera and item placement are one state and a click asks
+  three of them separately. If a hover-highlight of the item under the cursor
+  lands — it should, the classic client has one — this becomes per frame and
+  wants the frame's own answer kept.
+- **Nothing on this end knows a door from a barrel, still.** The double-click
+  goes out for whatever was clicked and the shard decides; that is right. What
+  it costs is feedback — no cursor change over something usable, and a click on
+  scenery is silence rather than "you cannot reach that". The `0x1A` that comes
+  back is the only signal, and only when the shard did something.
+- **The pairing is time alone, with no gesture layer.** `App::last_click` is two
+  fields and a comparison in the `MouseInput` arm. It matches the reference and
+  it is enough for one button, but single click (`0x09`) is the same event
+  *without* a pair — it has to wait out the window before it can fire, which is
+  a timer this end does not have. Whoever adds `0x09` writes the small state
+  machine both go through rather than a second timestamp beside this one.
+- **There is no end-to-end test that a door opens.** The chain is covered in
+  three places — encode, decode, pick — and joined nowhere: a shard spawned by
+  `crates/e2e/shard` has no doors in it, because doors come from the community
+  pack's `op_generate_doors` and the engine holds no decoration data of its own.
+  The test that would be worth having places one item the client can name and
+  then double-clicks it, which needs the e2e shard to be able to put something
+  in the world without a pack.
+
+## Backlog, found while chasing a player sprite that disappears
+
+- **`Cutaway::at`'s second loop read the wrong mask, and it is fixed.** The
+  client's `0x204` is Surface and *Transparent*; the port had Surface and
+  *Climbable*. A roof a player can walk onto carries Climbable, and reading
+  that bit into the mask stops such a roof from ever being cut — the roof stays
+  drawn over whoever just climbed onto it. No roof static in the Britain block
+  carries Climbable, so nothing observable changed there, but the bit is the
+  kind that is only ever wrong on the one map somebody plays. Both masks are
+  now pinned by `the_two_cutaway_masks_are_the_flags_they_are_named_after`.
+- **Nothing ties the tile the cutaway was taken from to the body it hides.**
+  `Cutaway::at(self.cutaway_at, ..)` and `shows_mobile(mobile.at.z)` read two
+  different positions, and `cutaway_at` deliberately lags `player.at` (see the
+  field's own doc). `a_cutaway_never_hides_the_player_it_was_taken_from` pins
+  that a cutaway taken from a body's *own* tile never cuts it — so any frame
+  where the player vanishes to `shows_mobile` is a frame where the two
+  positions had drifted. The by-construction fix is for the type to carry the
+  point it was computed from, so "hide the body this was taken for" is not
+  expressible; today it is only a test.
+- **The cut is hard where the client fades.** Deliberate (see the module's own
+  "What is deliberately absent"), and the cost is worth naming beside it: the
+  client walks alpha down 25 a frame, so a `_maxZ` that is wrong for one frame
+  is invisible there and is a whole-body blink here. Every transient this
+  module can have is maximally visible until something blends.
+- **`AnimAtlas` counts frames one way and looks them up another.**
+  `AnimAtlas::grow` skips a blank frame but keeps the file's frame index, so a
+  blank in the middle leaves a hole; `frame_count` counts what is *packed*, and
+  the caller picks `ticks % count` — an index that can land in the hole and
+  addresses nothing past it. A body would vanish for one frame delay every
+  cycle. Not reachable in this install (350 animations of bodies 400, 401, 605
+  and 606 hold no blank frame), and cheap to make unrepresentable: pack a blank
+  as a zero-area region, or count by the file's frame count rather than by the
+  map's length.
+- **The atlas is grown for one animation group and drawn from another.**
+  `wanted_in` reads `self.player.group` — the group as of the last packet —
+  while the loop below the pack overwrites `mobile.group` from
+  `Crowd::group_for`, which changes on the crowd's own clock. A live group the
+  pack never asked for has `frame_count == 0`, and `mobiles::collect` then
+  drops the body *and its equipment* with no diagnostic at all. Today every
+  group a body reaches has also been the snapshot group at some packet, so the
+  hole does not open; the ordering is an accident and not an invariant, and the
+  silent drop is what makes it undiagnosable when it does.

@@ -166,9 +166,16 @@ impl Cutaway {
                 let tile_z = i32::from(piece.z);
                 // A roof, and *only* a roof: a wall standing on the tile in
                 // front is not what the player is under.
+                //
+                // The mask is `0x204` in the client, unnamed there and pinned
+                // by a test here: Surface and Transparent, *not* Climbable.
+                // A rooftop you can walk up onto carries `Climbable`, and
+                // reading that bit into this mask is the difference between
+                // the roof coming off and the player being drawn under it —
+                // which is exactly what a stair to an upper level walks into.
                 if tile_z > pz14
                     && max_z > tile_z
-                    && !tile.flags.has(TileFlags::PLATFORM | TileFlags::CLIMBABLE)
+                    && !tile.flags.has(TileFlags::PLATFORM | TileFlags::TRANSPARENT)
                     && tile.flags.is_roof()
                 {
                     max_z = tile_z;
@@ -403,6 +410,21 @@ mod tests {
 
     use super::*;
 
+    /// The two unnamed masks `UpdateMaxDrawZ` tests with, pinned against the
+    /// flags this workspace gave names to.
+    ///
+    /// `0x20004` is the first loop's and `0x204` the second's, and the second
+    /// is the one worth a test of its own: `0x4` is Transparent and `0x200` is
+    /// Surface, so the bit that is *not* in it is Climbable (`0x400`). Reading
+    /// Climbable into that mask stops a walkable rooftop from ever being cut,
+    /// which draws the roof over the player who just climbed onto it.
+    #[test]
+    fn the_two_cutaway_masks_are_the_flags_they_are_named_after() {
+        assert_eq!(TileFlags::FOLIAGE | TileFlags::TRANSPARENT, 0x0002_0004);
+        assert_eq!(TileFlags::PLATFORM | TileFlags::TRANSPARENT, 0x0000_0204);
+        assert_eq!(TileFlags::CLIMBABLE, 0x0000_0400, "not in either mask");
+    }
+
     fn tile(flags: u64, height: u8) -> StaticTile {
         StaticTile {
             flags: TileFlags::new(flags),
@@ -571,6 +593,53 @@ mod tests {
             roofs_cut > 20,
             "only {roofs_cut} tiles in Britain have a roof drawn over them"
         );
+    }
+
+    /// The cutaway exists so that the player can be seen, so the one body it
+    /// must never hide is the one it was computed from.
+    ///
+    /// On the real map and at every height a body can stand at, because the
+    /// interesting cases are the ones a fixture would not think to build: a
+    /// stairwell, a second storey, a tile that is under a roof and on a bridge
+    /// at once.
+    ///
+    /// Skipped without the client's files.
+    #[test]
+    fn a_cutaway_never_hides_the_player_it_was_taken_from() {
+        let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let map = openshard_uofiles::map::Map::load_facet(&dir, 0).expect("Felucca");
+        let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+
+        let mut checked = 0;
+        for y in 1600..1660u16 {
+            for x in 1470..1530u16 {
+                // Every surface on the tile is somewhere a body might stand:
+                // the ground, a stair tread, the floor of the storey above.
+                let heights: Vec<i8> = stack(&map, &tiledata, x, y)
+                    .into_iter()
+                    .map(|piece| match piece.tile {
+                        None => piece.z,
+                        Some(tile) => top_of(i32::from(piece.z), tile).clamp(-128, 127) as i8,
+                    })
+                    .collect();
+                for z in heights {
+                    let cutaway = Cutaway::at(
+                        &map,
+                        &tiledata,
+                        openshard_protocol::world::Point::new(x, y, z),
+                        true,
+                    );
+                    assert!(
+                        cutaway.shows_mobile(z),
+                        "standing at {x},{y},{z} hides the player: {cutaway:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "only {checked} standing places were tried");
     }
 
     /// A mobile is cut by the same `max_z` as a static, and by the ceiling with
