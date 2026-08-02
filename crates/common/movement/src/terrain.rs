@@ -169,8 +169,8 @@ where
     /// this end only has to draw the body somewhere sane until it does.
     pub fn predict_step(&self, from: Point, x: u16, y: u16) -> i32 {
         let from_z = i32::from(from.z);
-        let (start_z, start_top) = self.start_surface(from.x, from.y, from_z);
-        self.check(x, y, start_z, start_top)
+        let (_, start_top) = self.start_surface(from.x, from.y, from_z);
+        self.check(x, y, from_z, start_top)
             .unwrap_or_else(|| self.predict_z(x, y, from_z))
     }
 
@@ -226,16 +226,27 @@ where
         }
     }
 
-    /// Whether a mobile standing on the surface described by `(start_z,
-    /// start_top)` may step onto `(x, y)`, and the height it lands at.
+    /// Whether a mobile whose feet are at `start_z`, standing on a surface
+    /// topping out at `start_top`, may step onto `(x, y)` — and the height it
+    /// lands at.
     ///
-    /// A blend of the two reference engines, because the shard serves the 2D
-    /// client and each got one half right for it:
+    /// A blend of the three implementations, because the shard serves the 2D
+    /// client and each got a different part of this right for it:
     ///
     /// - **Reach** is ServUO/RunUO's: a step reaches `start_top + 2` — the top of
     ///   the surface underfoot plus a step, not the feet. Starting from the feet
     ///   refuses steps up a slope the client took, which is what rubber-banded
     ///   every hillside before this.
+    /// - **The body** is the client's own: it stands `PLAYER_HEIGHT` above
+    ///   `start_z`, and `start_z` is the mobile's *feet*. ServUO measures it from
+    ///   the base of the surface underfoot instead (`GetStartZ`'s `zLow` into
+    ///   `checkTop`), which for anything thicker than a paving stone puts the
+    ///   body below where it is standing: on a floor twenty tall the shard
+    ///   thought the head was at the knees, and a wall four units below the feet
+    ///   on the next tile was something to fall past rather than walk into.
+    ///   ClassicUO's `CalculateMinMaxZ` seeds `minZ` from the surface's
+    ///   *averageZ* — the height a body stands at — and refuses that step, which
+    ///   makes ServUO's version a rubber-band even where it is not a fall.
     /// - **Selection** is Sphere's `GetFixPoint`: among the surfaces in reach,
     ///   stand on the **highest**, not the one nearest the current height. This is
     ///   how a staircase is climbed — a stair tile carries both the floor below
@@ -509,8 +520,12 @@ where
         // Reach the next tile from the top of what we stand on, not from our feet:
         // on a slope those differ, and starting from the feet refuses steps up the
         // slope the client took. `start_surface` is what the client reaches from.
-        let (start_z, start_top) = self.start_surface(from.x, from.y, from_z);
-        let landing = self.check(to.x, to.y, start_z, start_top)?;
+        // The body is measured from `from_z` — its feet — and only the *reach*
+        // comes from the surface underfoot. `start_surface`'s other half, the
+        // base that surface stands on, is ServUO's `checkTop` and is the one
+        // thing in this port the 2D client disagrees with; see `check`.
+        let (_, start_top) = self.start_surface(from.x, from.y, from_z);
+        let landing = self.check(to.x, to.y, from_z, start_top)?;
         let z = i8::try_from(landing).ok()?;
         Some(Point { x: to.x, y: to.y, z })
     }
