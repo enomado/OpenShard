@@ -2121,6 +2121,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
             &atlas,
             &Cutaway::OPEN,
             &EquipConv::default(),
+            None,
         );
         assert_eq!(quads.len(), 1, "the frame is packed, so it draws");
         let frame = render_both(
@@ -2594,7 +2595,7 @@ fn dump_a_frame_of_britain() {
     let equip_conv = EquipConv::default();
     let mobile_atlas =
         AnimAtlas::build(&mut anim, mobiles::needed_animations(&people, &equip_conv)).expect("a body fits");
-    let mobile_quads = mobiles::collect(&people, &camera, &mobile_atlas, &Cutaway::OPEN, &equip_conv);
+    let mobile_quads = mobiles::collect(&people, &camera, &mobile_atlas, &Cutaway::OPEN, &equip_conv, None);
 
     let frame = render_both(
         &device,
@@ -2790,7 +2791,10 @@ fn render_outlined(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     ground_pass.render(device, queue, &mut encoder, target, &[]);
     sprites.render(device, queue, &mut encoder, target, quads);
-    sprites.render_mask(device, queue, &mut encoder, target, &mask_view, outlined);
+    // One quad, one ring — the item case, and what the tests below assert
+    // about two sprites that touch.
+    let rings: Vec<&[SpriteQuad]> = outlined.iter().map(std::slice::from_ref).collect();
+    sprites.render_mask(device, queue, &mut encoder, target, &mask_view, &rings);
 
     let (surface_width, surface_height) = (
         width * zoom.numerator() / zoom.denominator(),

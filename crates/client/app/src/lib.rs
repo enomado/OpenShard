@@ -133,6 +133,7 @@ use openshard_client_render::occlusion;
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
 use openshard_movement::{Heading, Lean, Leeway, Terrain};
@@ -527,7 +528,7 @@ pub fn run<D: Dial + Send + 'static>(
         // resting cursor hears `CursorEntered` on the first move.
         pointer_inside: false,
         show_terrain: false,
-        show_occluders: false,
+        show_occluders: true,
         // The item under the cursor, ringed and lit, and the ground otherwise:
         // see `shell::HighlightTarget` and `shell::HighlightStyle`.
         highlight: shell::HighlightTarget::default(),
@@ -1747,6 +1748,26 @@ impl App {
         // barrel hidden under a roof this client is not drawing is not something
         // the player can have pointed at.
         let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
+        // A creature under the cursor takes the click and nothing is used: it is
+        // what the highlight is telling the player they are pointing at, and
+        // using the barrel *behind* the shopkeeper is the one answer that is
+        // certainly wrong. What a mobile's own double-click asks for — a
+        // paperdoll — waits on there being a paperdoll to show.
+        let on_mobile = mobiles::pick(
+            &self
+                .drawn_now(&window.atlases.mobiles)
+                .into_iter()
+                .map(|(_, mobile)| mobile)
+                .collect::<Vec<_>>(),
+            &camera,
+            &window.atlases.mobiles,
+            &cutaway,
+            &self.equip_conv,
+            self.control.cursor(),
+        );
+        if on_mobile.is_some() {
+            return;
+        }
         let Some(index) = items::pick(
             &self.items,
             &camera,
@@ -2428,7 +2449,8 @@ impl App {
         self.pointer_inside && !self.shell.as_ref().is_some_and(shell::Shell::holds_pointer)
     }
 
-    /// `lit_item` is what [`items::pick`] answered for this frame, handed in
+    /// `lit_item` and `lit_mobile` are what [`items::pick`] and
+    /// [`mobiles::pick`] answered for this frame, handed in
     /// rather than asked again: the HUD and the world passes are two readers of
     /// one picture, and the tile marker is drawn or not drawn on the strength of
     /// whether an item took the highlight. Asking twice would be two answers to
@@ -2439,7 +2461,13 @@ impl App {
     /// occluder overlay draws the grid the frame's lighting is about to build,
     /// and a grid built from a second cutaway would draw boxes for the storey
     /// this frame took away.
-    fn hud(&self, camera: Camera, lit_item: Option<usize>, cutaway: &Cutaway) -> shell::Hud {
+    fn hud(
+        &self,
+        camera: Camera,
+        lit_item: Option<usize>,
+        lit_mobile: Option<usize>,
+        cutaway: &Cutaway,
+    ) -> shell::Hud {
         let hover = match self.world_owns_pointer() {
             true => self.pick_tile(camera),
             false => None,
@@ -2500,7 +2528,7 @@ impl App {
             // `Items` nothing ever does, which is the mode's whole content; the
             // ground is still hovered and the panel still reads it.
             hover_lit: match self.highlight {
-                shell::HighlightTarget::Auto => lit_item.is_none(),
+                shell::HighlightTarget::Auto => lit_item.is_none() && lit_mobile.is_none(),
                 shell::HighlightTarget::Items => false,
                 shell::HighlightTarget::Tiles => true,
             },
@@ -2565,6 +2593,64 @@ impl App {
         mobiles.push((self.me(), self.player.clone()));
         mobiles.extend_from_slice(&self.others);
         mobiles
+    }
+
+    /// Fill in the three time-varying halves of every mobile from the crowd's
+    /// clocks: which group is playing, which frame of it, where the body is
+    /// drawn, and which tile the step is sorted at.
+    ///
+    /// An associated function taking the two fields it reads rather than a
+    /// method, because both callers hold a borrow of one of `App`'s fields
+    /// while they ask: the frame holds `self.window` mutably, and the pick
+    /// holds it shared. A `&self` method would borrow all of `App` and neither
+    /// could call it.
+    ///
+    /// `atlas` is asked for the frame *count*: a group's length is the
+    /// animation's, and taking it from anywhere else makes "frame 7 of a
+    /// 6-frame walk" expressible. Under the body the atlas packed — for a ghost
+    /// the living body it borrows its pictures from — or a ghost counts zero
+    /// frames, lands on frame 0 for ever and slides along standing still.
+    fn advance_to_clocks(crowd: &Crowd, atlas: &AnimAtlas, drawn: &mut [(Who, Mobile)]) {
+        for (who, mobile) in drawn.iter_mut() {
+            // The group is read back first and not only the frame and the
+            // glide: `Crowd::advance` drops a walking body to standing on its
+            // own timer, with nothing that looks like a packet to refresh
+            // `mobile.group` from — a group read once and left stale plays the
+            // walking sprite for ever, timed by a clock that has moved on to
+            // the standing group's.
+            if let Some(group) = crowd.group_for(*who) {
+                mobile.group = group;
+            }
+            let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
+            let frame_count = atlas.frame_count(
+                openshard_uofiles::anim::animation_body(mobile.body),
+                mobile.group,
+                direction,
+            );
+            mobile.frame = crowd.frame_for(*who, frame_count);
+            if let Some(at) = crowd.drawn_for(*who) {
+                mobile.drawn = at;
+            }
+            // And which tile it sorts at, which is a step's own clock too: the
+            // crossing ends without a packet to say so, and a body still sorted
+            // on the tile it left would keep drawing over the ground behind it.
+            mobile.from = crowd.stepping_from(*who);
+        }
+    }
+
+    /// Everyone as they are drawn *this instant*, clocks and all — the list
+    /// [`mobiles::pick`] and [`mobiles::collect`] both index into.
+    ///
+    /// Built twice a frame, once for the pick and once for the picture, rather
+    /// than threaded between them: the two happen either side of the atlas
+    /// growth and of a mutable borrow of the window, and the work is a handful
+    /// of map lookups over whoever is on screen. What matters is that the
+    /// *order* is [`App::drawn_mobiles`]'s both times, so an index answered by
+    /// the pick still names the same creature to the passes below.
+    fn drawn_now(&self, atlas: &AnimAtlas) -> Vec<(Who, Mobile)> {
+        let mut drawn = self.drawn_mobiles();
+        Self::advance_to_clocks(&self.crowd, atlas, &mut drawn);
+        drawn
     }
 
     fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<Screen, StartupError> {
@@ -2963,7 +3049,30 @@ impl App {
         // be pointed at, and is pickable a frame later; the alternative was a
         // tile marker that decides whether to draw itself from the previous
         // frame's answer, which flickers along every item's edge.
-        let lit_item = match owns_pointer && self.highlight != shell::HighlightTarget::Tiles {
+        let lighting_cursor = owns_pointer && self.highlight != shell::HighlightTarget::Tiles;
+        // Creatures are asked first and they win: a mobile stands *on* the
+        // clutter of its tile — it is sorted above whatever is lying there, and
+        // it is what a player pointing at a shopkeeper standing on a rug means.
+        // One highlight a frame, so an item under a creature is dropped here
+        // rather than lit as well; see `HighlightTarget`.
+        let lit_mobile = match lighting_cursor {
+            true => self.window.as_ref().and_then(|window| {
+                mobiles::pick(
+                    &self
+                        .drawn_now(&window.atlases.mobiles)
+                        .into_iter()
+                        .map(|(_, mobile)| mobile)
+                        .collect::<Vec<_>>(),
+                    &camera,
+                    &window.atlases.mobiles,
+                    &cutaway,
+                    &self.equip_conv,
+                    cursor,
+                )
+            }),
+            false => None,
+        };
+        let lit_item = match lighting_cursor && lit_mobile.is_none() {
             true => self.window.as_ref().and_then(|window| {
                 items::pick(
                     &self.items,
@@ -2993,7 +3102,7 @@ impl App {
         // in it is a function of them. The one sampling of time that the frame is
         // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud(camera, lit_item, &cutaway);
+        let hud = self.hud(camera, lit_item, lit_mobile, &cutaway);
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {
@@ -3111,43 +3220,10 @@ impl App {
         // Three time-varying halves of a mobile, filled in per frame rather
         // than per packet: the crowd is the only thing that knows what a
         // clock — and a group — has done since the `0x77` landed, and
-        // `self.player`/`self.others` were built when it did. The group is
-        // read back first and not only the frame and the glide: `Crowd::advance`
-        // drops a walking body to standing on its own timer, with nothing
-        // that looks like a packet to refresh `mobile.group` from — a group
-        // read once here and left stale plays the walking group's sprite
-        // forever, timed by a clock that already moved on to the standing
-        // group's, which is a body that has stopped walking but not stopped
-        // *looking* like it is. The frame comes from how many the atlas
-        // actually packed — asking the atlas rather than remembering the
-        // count is what keeps "frame 7 of a 6-frame walk" from being
-        // expressible — and the glide is how far into its step the body has
-        // walked.
-        for (who, mobile) in &mut drawn {
-            if let Some(group) = self.crowd.group_for(*who) {
-                mobile.group = group;
-            }
-            let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
-            // Under the body the *atlas* packed, which for a ghost is the
-            // living body it borrows its pictures from — the same
-            // `anim::animation_body` `mobiles::collect` looks its frame up with.
-            // Asked under the wire's body instead, a ghost counts zero frames
-            // and every clock lands on frame 0: the sprite is drawn and never
-            // moves, which is a walking body that slides along standing still.
-            let frame_count = window.atlases.mobiles.frame_count(
-                openshard_uofiles::anim::animation_body(mobile.body),
-                mobile.group,
-                direction,
-            );
-            mobile.frame = self.crowd.frame_for(*who, frame_count);
-            if let Some(drawn) = self.crowd.drawn_for(*who) {
-                mobile.drawn = drawn;
-            }
-            // And which tile it sorts at, which is a step's own clock too: the
-            // crossing ends without a packet to say so, and a body still sorted
-            // on the tile it left would keep drawing over the ground behind it.
-            mobile.from = self.crowd.stepping_from(*who);
-        }
+        // `self.player`/`self.others` were built when it did. Against the atlas
+        // as it stands *after* this frame's growth, which is the one the
+        // picture below is drawn from.
+        Self::advance_to_clocks(&self.crowd, &window.atlases.mobiles, &mut drawn);
         // Whoever the crowd is still holding a line for, hung above whichever
         // of `drawn`'s mobiles their serial belongs to. Read out here, before
         // `who` is dropped below: a label with no mobile to anchor to has
@@ -3285,12 +3361,27 @@ impl App {
             ));
             quads
         };
+        // The same two effects for a creature, off the same style switch and
+        // the same one-pick-a-frame rule: `lit_mobile` and `lit_item` are never
+        // both `Some` (see where they are asked), so exactly one of the four
+        // lists below is ever non-empty.
+        let mobile_hued = self.highlight_style.hues().then_some(lit_mobile).flatten();
+        let mobile_ringed = self.highlight_style.rings().then_some(lit_mobile).flatten();
+        let mobile_outline = mobiles::outlined(
+            &drawn,
+            &camera,
+            &window.atlases.mobiles,
+            &cutaway,
+            &self.equip_conv,
+            mobile_ringed,
+        );
         let mobile_quads = mobiles::collect(
             &drawn,
             &camera,
             &window.atlases.mobiles,
             &cutaway,
             &self.equip_conv,
+            mobile_hued,
         );
         let labels: Vec<Label<'_>> = speech
             .iter()
@@ -3372,14 +3463,32 @@ impl App {
         let mask_view = window
             .outline_mask
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // One item is one ring; the pass numbers groups, so each quad is a group
+        // of its own — see `SpriteRenderer::render_mask`.
+        let item_rings: Vec<&[SpriteQuad]> = outline_quads.iter().map(std::slice::from_ref).collect();
         window.statics.render_mask(
             &window.device,
             &window.queue,
             &mut encoder,
             target,
             &mask_view,
-            &outline_quads,
+            &item_rings,
         );
+        // And a creature through its own atlas, in *one* group: a body and
+        // everything it wears is one thing being pointed at, and one ring goes
+        // round the lot. This pass clears the mask too, which is why it is
+        // skipped when nothing is ringed — the items' pass above has already
+        // written the frame's answer, and a second clear would erase it.
+        if !mobile_outline.is_empty() {
+            window.mobile_pass.render_mask(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                target,
+                &mask_view,
+                &[&mobile_outline],
+            );
+        }
         // `ttf_pass` when the run is drawing through it — bound to a
         // different texture than `text_pass`, so a mix of the two within one
         // frame would sample one atlas with quads packed for the other.

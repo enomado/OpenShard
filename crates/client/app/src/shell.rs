@@ -272,27 +272,29 @@ pub struct Request {
 /// What the cursor is allowed to light up.
 ///
 /// Two kinds of highlight exist and they say different things: a *tile* marker
-/// is the ground the click would walk to, and an *item* highlight is the thing
-/// the click would use. Drawn together they contradict each other — the ring
-/// round a barrel and a diamond on the ground under it are two answers to one
-/// question — so one of them wins per frame, and this is who.
+/// is the ground the click would walk to, and an *object* highlight is the thing
+/// the click would act on — an item on the ground or a creature standing on it.
+/// Drawn together they contradict each other — the ring round a barrel and a
+/// diamond on the ground under it are two answers to one question — so one of
+/// them wins per frame, and this is who.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum HighlightTarget {
-    /// The item under the cursor when there is one, the tile under it
-    /// otherwise. What a player wants without being asked: pointing at a barrel
-    /// lights the barrel, pointing at the road beside it lights the road.
+    /// The creature or item under the cursor when there is one, the tile under
+    /// it otherwise. What a player wants without being asked: pointing at a
+    /// shopkeeper lights the shopkeeper, at a barrel the barrel, and at the road
+    /// beside them the road.
     #[default]
     Auto,
-    /// Items only. The ground stays unmarked even where there is no item — for
-    /// looking at what is *takeable* on a crowded floor without the diamond
-    /// under it moving as well.
+    /// Creatures and items only. The ground stays unmarked even where there is
+    /// neither — for looking at what is *there* on a crowded floor without the
+    /// diamond under it moving as well.
     Items,
-    /// Tiles only. An item under the cursor is drawn like any other, which is
-    /// what walking somewhere across a littered street wants.
+    /// Tiles only. An item or a creature under the cursor is drawn like any
+    /// other, which is what walking somewhere across a littered street wants.
     Tiles,
 }
 
-/// How an item says it is the one under the cursor.
+/// How an item or a creature says it is the one under the cursor.
 ///
 /// Both were designed to compose — they are two passes over different pixels,
 /// see `docs/outline.md` — and for a while both were simply drawn. This is the
@@ -696,8 +698,17 @@ fn layout(
                 // terrain one has counts: an empty picture is a grid with
                 // nothing standing in it and a grid that was never built, and on
                 // screen those two are one thing.
+                // Both numbers, because the second is the one the picture does
+                // not show: a view that silently drops most of the grid reads as
+                // a grid with nothing in it, which is the failure this whole
+                // overlay exists to make impossible. See [`stands`].
                 Some(occluders) => {
-                    ui.label(format!("{} boxes standing", occluders.boxes().count()));
+                    let total = occluders.boxes().count();
+                    let drawn = occluders.boxes().filter(|(_, _, cell)| stands(cell)).count();
+                    ui.label(format!(
+                        "{drawn} boxes standing, {} flat and not drawn",
+                        total - drawn
+                    ));
                 }
                 None => {
                     ui.label("off");
@@ -1405,6 +1416,22 @@ fn draw_terrain(
     }
 }
 
+/// Whether a cell is a box or a sheet.
+///
+/// The first frame of the wireframe was a dock, and it was **2011 boxes** — one
+/// flat diamond on every plank of the pier, because a deck static is in the grid
+/// like everything else that stops an arrow. Nothing was wrong with the picture
+/// and nothing was readable in it either: the walls a person is looking for were
+/// drawn on top of a red hatch covering the whole ground.
+///
+/// So the view draws what stands up, and the panel counts what it dropped. A
+/// zero-height cell stops a ray only at exactly its own `z`, which is a thing to
+/// know about the *grid* rather than a thing to see in a picture of it — and if
+/// it turns out to matter, the number beside the checkbox is what says so.
+fn stands(cell: &openshard_client_render::occlusion::Cell) -> bool {
+    cell.top > cell.bottom
+}
+
 /// The occlusion grid, drawn as the boxes it is.
 ///
 /// `docs/lighting.md`, step 14, and it is an instrument rather than a picture:
@@ -1413,6 +1440,9 @@ fn draw_terrain(
 /// nothing stands" could only be answered by reading the map by hand. The first
 /// thing it is expected to show is that **a door's shadow is a tile wide**,
 /// because the occluder is the whole tile and not the leaf.
+///
+/// What stands up, and not every cell — see [`stands`], and the count beside the
+/// checkbox for what that leaves out.
 ///
 /// Twelve strokes a box and no fill: the boxes stand in front of each other by
 /// the dozen, and a filled one hides both the art it is a claim about and the
@@ -1432,7 +1462,7 @@ fn draw_occluders(
     use openshard_client_render::occlusion::{OPAQUE, PANE};
 
     let clip = painter.clip_rect();
-    for (x, y, cell) in occluders.boxes() {
+    for (x, y, cell) in occluders.boxes().filter(|(_, _, cell)| stands(cell)) {
         // The grid is grown past the map's own corner by the widest pool's
         // reach — see `light::lit_tiles` — so a tile of it can be off the map
         // entirely. Skipped rather than clamped, for `Occlusion::add`'s reason:

@@ -6,11 +6,13 @@
 // differs is the fragment half: instead of the art's colour it writes *which
 // object* the texel belongs to, into an `R8Uint` mask.
 //
-// The id is `instance_index + 1`, so zero stays free for "nothing here". That
-// is why the caller hands this pass a list of only the sprites to be outlined
-// rather than the whole frame's: the list's own order is the numbering, and no
-// field on `SpriteQuad` has to carry it. 255 outlined objects at once, against
-// the one the cursor is over today.
+// The id arrives per instance, in a buffer of its own, and zero is left free
+// for "nothing here". Per instance and not `instance_index`, because a ring is
+// not a sprite: a creature is a body plus every layer it wears, and those must
+// share one id or the ring pass finds a boundary between the tunic and the arm
+// inside it and draws an edge along every seam. The caller hands this pass only
+// what is to be outlined, grouped — see `SpriteRenderer::render_mask`. 255 rings
+// at once, against the one the cursor is over today.
 //
 // The depth buffer is the world's, loaded and tested but not written: the mask
 // must hold the id of whoever is *visible*, or a barrel behind a wall would be
@@ -36,12 +38,12 @@ struct VertexOut {
 
 @vertex
 fn vs_main(
-    @builtin(instance_index) instance: u32,
     @location(0) corner: vec2<f32>,
     @location(1) origin: vec2<f32>,
     @location(2) size: vec2<f32>,
     @location(3) region: vec4<f32>,
     @location(4) depth: f32,
+    @location(5) ring: u32,
 ) -> VertexOut {
     let pixel = origin + corner * size;
     let real = (pixel - viewport.origin) * viewport.scale + viewport.size * 0.5;
@@ -53,8 +55,9 @@ fn vs_main(
     var out: VertexOut;
     out.clip = vec4<f32>(ndc, depth, 1.0);
     out.uv = region.xy + corner * region.zw;
-    // Zero is "nothing here", so the first instance is 1.
-    out.id = instance + 1u;
+    // Given rather than counted: `render_mask` numbers the groups, and zero is
+    // reserved for "nothing here".
+    out.id = ring;
     return out;
 }
 

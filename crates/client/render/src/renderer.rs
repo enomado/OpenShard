@@ -593,6 +593,15 @@ pub struct SpriteRenderer {
     /// because the two lists are drawn in the same frame and one is a handful
     /// of quads while the other is the whole screen.
     mask_instances: wgpu::Buffer,
+    /// One `u32` per instance of `mask_instances`: which *ring* that quad
+    /// belongs to.
+    ///
+    /// A buffer and not the instance index, because a ring is not a sprite. A
+    /// creature is a body and everything it is wearing — several quads that
+    /// must come out under one id, or the ring pass finds a boundary between
+    /// the tunic and the arm under it and draws an edge along every seam. See
+    /// [`SpriteRenderer::render_mask`].
+    mask_rings: wgpu::Buffer,
     mask_capacity: u64,
     /// The atlas texture, kept so that it can be grown into rather than
     /// replaced. See [`SpriteRenderer::upload_rows`].
@@ -886,6 +895,20 @@ impl SpriteRenderer {
                             },
                         ],
                     }),
+                    // The ring each instance belongs to, in its own buffer:
+                    // several quads of one creature share an id, so it cannot
+                    // be the instance index and there is no room for it in
+                    // `SpriteQuad` — which is the picture passes' layout and
+                    // has no business carrying a highlight's identity.
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 4,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 0,
+                            shader_location: 5,
+                        }],
+                    }),
                 ],
             },
             fragment: Some(wgpu::FragmentState {
@@ -943,6 +966,7 @@ impl SpriteRenderer {
         // caller ever outlines more.
         let mask_capacity = 8;
         let mask_instances = new_static_instance_buffer(device, mask_capacity);
+        let mask_rings = new_ring_buffer(device, mask_capacity);
 
         Self {
             pipeline,
@@ -953,6 +977,7 @@ impl SpriteRenderer {
             instances,
             capacity: INITIAL_QUADS,
             mask_instances,
+            mask_rings,
             mask_capacity,
             atlas_texture,
         }
@@ -1061,14 +1086,21 @@ impl SpriteRenderer {
         pass.draw(0..4, 0..quads.len() as u32);
     }
 
-    /// Draw `quads` into an outline mask as shapes, one id each.
+    /// Draw `groups` into an outline mask as shapes, **one id per group**.
     ///
-    /// `quads` is *only* what is to be outlined, not the frame — the id a
-    /// silhouette is written in is its position in this list plus one, so the
-    /// list is the numbering and nothing on [`SpriteQuad`] carries it. Past
-    /// [`MAX_OUTLINED`](crate::outline::MAX_OUTLINED) the tail is dropped rather
-    /// than wrapped: an id that wrapped to another object's would ring the two
-    /// as one, silently.
+    /// `groups` is *only* what is to be outlined, not the frame — the id a
+    /// silhouette is written in is its group's position in this list plus one,
+    /// so the list is the numbering and nothing on [`SpriteQuad`] carries it.
+    /// Past [`MAX_OUTLINED`](crate::outline::MAX_OUTLINED) the tail is dropped
+    /// rather than wrapped: an id that wrapped to another object's would ring
+    /// the two as one, silently.
+    ///
+    /// **A group and not a quad, because a ring is not a sprite.** An item is
+    /// one quad and one ring, but a creature is a body and every layer it is
+    /// wearing, and those have to come out under one id: the ring pass draws an
+    /// edge wherever two *different* ids meet, so a tunic numbered apart from
+    /// the arm inside it is ringed along every seam of the clothing. One quad
+    /// per group is the item case, written `&[&[quad]]` and costing nothing.
     ///
     /// `target`'s `view` is ignored and `mask` is drawn into instead; everything
     /// else about it — the size, the projection, the depth buffer — is the
@@ -1086,7 +1118,7 @@ impl SpriteRenderer {
         encoder: &mut wgpu::CommandEncoder,
         target: Target<'_>,
         mask: &wgpu::TextureView,
-        quads: &[SpriteQuad],
+        groups: &[&[SpriteQuad]],
     ) {
         // The same uniform block the picture pass writes, written again rather
         // than assumed: this is called with the frame's own target and the two
@@ -1107,17 +1139,27 @@ impl SpriteRenderer {
         }
         queue.write_buffer(&self.uniforms, 0, &uniform_bytes);
 
-        let quads = &quads[..quads.len().min(crate::outline::MAX_OUTLINED)];
-        if quads.len() as u64 > self.mask_capacity {
-            self.mask_capacity = (quads.len() as u64).next_power_of_two();
+        let groups = &groups[..groups.len().min(crate::outline::MAX_OUTLINED)];
+        let instances: usize = groups.iter().map(|group| group.len()).sum();
+        if instances as u64 > self.mask_capacity {
+            self.mask_capacity = (instances as u64).next_power_of_two();
             self.mask_instances = new_static_instance_buffer(device, self.mask_capacity);
+            self.mask_rings = new_ring_buffer(device, self.mask_capacity);
         }
-        let mut instance_bytes = Vec::with_capacity(quads.len() * SpriteQuad::STRIDE as usize);
-        for quad in quads {
-            quad.write(&mut instance_bytes);
+        let mut instance_bytes = Vec::with_capacity(instances * SpriteQuad::STRIDE as usize);
+        let mut ring_bytes = Vec::with_capacity(instances * 4);
+        for (index, group) in groups.iter().enumerate() {
+            // Zero is "nothing here" in the mask, so the first group is 1 —
+            // `silhouette.wgsl` reads this number and does not add to it.
+            let ring = index as u32 + 1;
+            for quad in *group {
+                quad.write(&mut instance_bytes);
+                ring_bytes.extend_from_slice(&ring.to_le_bytes());
+            }
         }
         if !instance_bytes.is_empty() {
             queue.write_buffer(&self.mask_instances, 0, &instance_bytes);
+            queue.write_buffer(&self.mask_rings, 0, &ring_bytes);
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1146,7 +1188,7 @@ impl SpriteRenderer {
             occlusion_query_set: None,
         });
 
-        if quads.is_empty() {
+        if instances == 0 {
             // The clear still happened, which is the frame with nothing lit.
             return;
         }
@@ -1155,13 +1197,25 @@ impl SpriteRenderer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.mask_instances.slice(..));
-        pass.draw(0..4, 0..quads.len() as u32);
+        pass.set_vertex_buffer(2, self.mask_rings.slice(..));
+        pass.draw(0..4, 0..instances as u32);
     }
 }
 
 /// Bytes of the sprite pass's uniform block: the target's size, the scale, the
 /// origin, and the padding a uniform block's size is rounded up to.
 const STATIC_UNIFORM_BYTES: u64 = 32;
+
+/// The silhouette pass's per-instance ring ids, at the same capacity as the
+/// quads they belong to — the two are written together and grow together.
+fn new_ring_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("silhouette rings"),
+        size: quads * 4,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
 
 fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {

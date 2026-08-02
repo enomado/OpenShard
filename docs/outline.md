@@ -98,6 +98,17 @@ The ceiling is `outline::MAX_OUTLINED` — 255, the mask being one byte. Past it
 the tail is dropped rather than wrapped: an id that wrapped onto another
 object's would ring the two as one, silently.
 
+**Amended for creatures: the numbering is per *group*, not per quad.** A ring is
+not a sprite. An item is one quad and one ring, but a mobile is a body plus every
+layer it is wearing — several quads that must come out under one id, or the ring
+pass finds a boundary between the tunic and the arm inside it and draws an edge
+along every seam of the clothing, which is a creature drawn as a diagram of what
+it has on. So `SpriteRenderer::render_mask` takes `&[&[SpriteQuad]]`, one slice
+per ring, and the id rides in a small per-instance buffer of its own rather than
+in `instance_index`. Still no field on `SpriteQuad`: that struct is the picture
+passes' layout and has no business carrying a highlight's identity. An item is
+written `&[&[quad]]` and costs nothing.
+
 ### D3 — the atlas has no padding, and it turns out not to matter
 
 **Corrected.** The claim was that *every* outline technique samples neighbouring
@@ -202,10 +213,28 @@ per-item flag, no highlight state kept between frames.
 Two copies of that arithmetic would be a ring half a pixel off its sprite, and
 nothing in either copy would look wrong.
 
-Ground items only, for now, for the reason the picking has: statics are not
-entities and mobiles are the paperdoll arm of `0x06`. Both are listed in
-`docs/client.md`'s M5 backlog and neither changes anything here — the pass takes
-a list of quads and does not care where they came from.
+**Creatures are picked and ringed too, through the same shape.** `mobiles::pick`
+is `items::pick` against animation frames — the picture and not the tile, an
+opaque texel and not a box, the topmost order winning — with two additions of its
+own: a worn layer counts as its *wearer* (a cursor on a hat is a cursor on the
+creature), and a mirrored facing has its flip undone before the atlas is asked,
+since the atlas holds one picture for both and half the creatures on screen face
+a mirrored way. `mobiles::outlined` and `mobiles::collect` build their quads
+through one `mobiles::push_quads`, for the reason the items' pair share
+`quad_of`, and the silhouette goes in as **one group** — see D2's amendment.
+
+Creatures are asked *first* and win the frame: a mobile is sorted above whatever
+is lying on its tile, and a player pointing at a shopkeeper standing on a rug
+means the shopkeeper. One highlight a frame either way, so an item under a
+creature is dropped rather than lit as well. A double-click there uses nothing:
+using the barrel *behind* the shopkeeper is the one answer that is certainly
+wrong, and what a mobile's own double-click asks for — a paperdoll — waits on
+there being a paperdoll to show.
+
+The map's statics stay unpickable, for the reason the picking has: they are not
+entities and have no serial to name. That is listed in `docs/client.md`'s M5
+backlog and changes nothing here — the pass takes a list of quads and does not
+care where they came from.
 
 ### D7 — the tile marker and the item highlight are one answer, not two
 
@@ -283,10 +312,23 @@ ramp replaces the picture with one.
 
 ## Backlog, in advance
 
-- **Nothing else on screen is outlined yet, and the moment a mobile is, the
-  pass needs the mobile atlas too.** It is a second texture bound to the same
-  pipeline, not a second pipeline; worth knowing before the mask draw is
-  written against `StaticAtlas` alone.
+- **Done: mobiles are outlined, through the mobile pass's own `render_mask`.**
+  It came out as the second `SpriteRenderer` drawing into the same mask rather
+  than a second texture on one pipeline — each renderer owns its atlas, its
+  sampler and its uniform block, and sharing them is what guarantees the
+  silhouette lands where the picture did. The cost is that **both passes clear
+  the mask**, so the mobile one is skipped when nothing is ringed or it would
+  erase the items' answer. The day two things are lit at once — a target
+  cursor's victim and the thing under the mouse — that clear has to move out of
+  `render_mask` into a caller that owns the frame's mask.
+- **The pick builds the crowd's drawn list twice a frame.** Once at the top for
+  `mobiles::pick` and once below the atlas growth for the passes
+  (`App::drawn_now`). They agree because both go through
+  `App::advance_to_clocks` over `App::drawn_mobiles`' order, and the second is
+  the authority for what is drawn; what is duplicated is a handful of map
+  lookups per creature. It becomes wrong the day the two orders can differ —
+  a filtered list, a sort — and the fix is to thread the first list through
+  rather than to rebuild it.
 - **A wall under the cursor lights the ground.** `HighlightTarget::Auto` falls
   back to the tile when the *item* pick finds nothing, and a static is not an
   item — so pointing at a house front says "you would walk here", which is not

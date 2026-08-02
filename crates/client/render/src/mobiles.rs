@@ -246,6 +246,14 @@ struct Placement {
     rect: Rect,
     region: crate::atlas::Region,
     order: depth::Order,
+    /// Which frame of the atlas it is showing. Carried so [`pick`] can ask that
+    /// frame's own texels whether the cursor hit the picture, rather than
+    /// re-deriving the key from the mobile and drifting from what was drawn.
+    key: FrameKey,
+    /// Whether the picture is sampled right to left. The atlas holds one
+    /// picture for both facings, so a texel test has to undo the flip — see
+    /// [`AnimAtlas::opaque_at`].
+    mirrored: bool,
 }
 
 /// The mobile's frame in the atlas, placed on screen — or `None` if the atlas
@@ -300,6 +308,8 @@ fn place(mobile: &Mobile, body: u16, camera: &Camera, atlas: &AnimAtlas) -> Opti
         },
         region,
         order,
+        key,
+        mirrored,
     })
 }
 
@@ -322,61 +332,31 @@ fn place(mobile: &Mobile, body: u16, camera: &Camera, atlas: &AnimAtlas) -> Opti
 /// ([`EquipmentLayer::graphic`]) unless [`EquipConv`] overrides it for this
 /// body; only a resolved graphic the atlas has no frame for this frame is
 /// dropped, the same rule a missing body animation gets.
+///
+/// `highlight` is the index [`pick`] answered with — the creature the cursor is
+/// over, drawn in [`items::HIGHLIGHT_HUE`](crate::items::HIGHLIGHT_HUE) instead
+/// of its own hue, body and worn layers alike. An index and not a flag on the
+/// mobile, for the reason [`items::collect`](crate::items::collect) takes one:
+/// being pointed at is a fact about *this frame* and not about the creature.
 pub fn collect(
     mobiles: &[Mobile],
     camera: &Camera,
     atlas: &AnimAtlas,
     cutaway: &Cutaway,
     equip_conv: &EquipConv,
+    highlight: Option<usize>,
 ) -> Vec<SpriteQuad> {
-    let (eye_x, eye_y) = camera.eye_tile();
-    let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
-    for mobile in mobiles {
-        if !cutaway.shows_mobile(mobile.at.z) {
-            continue;
-        }
-        let Some(placement) = place(
-            mobile,
-            openshard_uofiles::anim::animation_body(mobile.body),
-            camera,
-            atlas,
-        ) else {
-            continue;
+    for (index, mobile) in mobiles.iter().enumerate() {
+        // The highlight replaces the creature's own hue rather than combining
+        // with it, exactly as an item's does — the shader has one hue per
+        // sprite and a ramp *replaces* the art's colour.
+        let hue = match highlight == Some(index) {
+            true => Some(crate::items::HIGHLIGHT_HUE),
+            false => None,
         };
-        let order = placement.order;
-        quads.push((
-            order,
-            SpriteQuad {
-                rect: placement.rect,
-                region: placement.region,
-                depth: order.to_depth(base),
-                hue: u32::from(mobile.hue.0),
-                place: crate::place::Place::of_mobile(mobile.at),
-            },
-        ));
-
-        for layer in &mobile.equipment {
-            let Some((graphic, hue)) = worn_graphic(mobile, *layer, equip_conv) else {
-                continue;
-            };
-            let Some(worn) = place(mobile, graphic, camera, atlas) else {
-                continue;
-            };
-            quads.push((
-                order,
-                SpriteQuad {
-                    rect: worn.rect,
-                    region: worn.region,
-                    depth: order.to_depth(base),
-                    hue: u32::from(hue.0),
-                    // The body's tile, not the sprite's: a hat is lit as the
-                    // head under it is, and it has no tile of its own.
-                    place: crate::place::Place::of_mobile(mobile.at),
-                },
-            ));
-        }
+        push_quads(mobile, camera, atlas, cutaway, equip_conv, hue, &mut quads);
     }
 
     // Back to front, and a *stable* sort on the order alone: two bodies on one
@@ -386,6 +366,195 @@ pub fn collect(
     // already on the tile at its `PriorityZ`.
     quads.sort_by_key(|(order, _)| *order);
     quads.into_iter().map(|(_, quad)| quad).collect()
+}
+
+/// One creature's quads — its body, then everything it is wearing — appended to
+/// `out` beside the order they all sort at.
+///
+/// The one copy of "what a mobile is made of on screen", so [`collect`] and
+/// [`outlined`] cannot disagree about it. They must not: the silhouette is grown
+/// from these quads and the picture from those, and a ring half a pixel off its
+/// creature is the defect this exists to make impossible.
+///
+/// `hue` overrides both the body's and every layer's own colour when it is
+/// given; `None` leaves each with what it arrived wearing.
+fn push_quads(
+    mobile: &Mobile,
+    camera: &Camera,
+    atlas: &AnimAtlas,
+    cutaway: &Cutaway,
+    equip_conv: &EquipConv,
+    hue: Option<Hue>,
+    out: &mut Vec<(depth::Order, SpriteQuad)>,
+) {
+    if !cutaway.shows_mobile(mobile.at.z) {
+        return;
+    }
+    // Derived from the camera rather than handed in: it is a function of where
+    // the eye is and of nothing else, and an argument would be one more thing
+    // the two callers could pass differently.
+    let (eye_x, eye_y) = camera.eye_tile();
+    let base = depth::base_for(eye_x, eye_y);
+    let Some(placement) = place(
+        mobile,
+        openshard_uofiles::anim::animation_body(mobile.body),
+        camera,
+        atlas,
+    ) else {
+        return;
+    };
+    let order = placement.order;
+    out.push((
+        order,
+        SpriteQuad {
+            rect: placement.rect,
+            region: placement.region,
+            depth: order.to_depth(base),
+            hue: u32::from(hue.unwrap_or(mobile.hue).0),
+            place: crate::place::Place::of_mobile(mobile.at),
+        },
+    ));
+
+    for layer in &mobile.equipment {
+        let Some((graphic, worn_hue)) = worn_graphic(mobile, *layer, equip_conv) else {
+            continue;
+        };
+        let Some(worn) = place(mobile, graphic, camera, atlas) else {
+            continue;
+        };
+        out.push((
+            order,
+            SpriteQuad {
+                rect: worn.rect,
+                region: worn.region,
+                depth: order.to_depth(base),
+                hue: u32::from(hue.unwrap_or(worn_hue).0),
+                // The body's tile, not the sprite's: a hat is lit as the
+                // head under it is, and it has no tile of its own.
+                place: crate::place::Place::of_mobile(mobile.at),
+            },
+        ));
+    }
+}
+
+/// The quads to draw a silhouette from, for the creature the cursor is over.
+///
+/// **One creature is one ring, and that is why this returns its layers
+/// together.** The silhouette pass numbers *groups*, not quads (see
+/// [`SpriteRenderer::render_mask`](crate::renderer::SpriteRenderer::render_mask)):
+/// a body and the tunic over it drawn under two ids would have the ring pass
+/// find a boundary between them and draw an edge along every seam of the
+/// clothing, which is a creature drawn as a diagram of what it is wearing.
+///
+/// The quads are the *same* quads [`collect`] draws, through the same
+/// [`push_quads`], because the silhouette has to land exactly on the picture.
+/// The hues are never read: the silhouette shader wants the shape, and the
+/// shape is the alpha.
+///
+/// `highlight` is what [`pick`] answered. `None` comes back empty rather than
+/// being a case the caller has to handle.
+pub fn outlined(
+    mobiles: &[Mobile],
+    camera: &Camera,
+    atlas: &AnimAtlas,
+    cutaway: &Cutaway,
+    equip_conv: &EquipConv,
+    highlight: Option<usize>,
+) -> Vec<SpriteQuad> {
+    let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    if let Some(mobile) = highlight.and_then(|index| mobiles.get(index)) {
+        push_quads(mobile, camera, atlas, cutaway, equip_conv, None, &mut quads);
+    }
+    quads.into_iter().map(|(_, quad)| quad).collect()
+}
+
+/// Which creature the cursor is over: an index into `mobiles`, or `None`.
+///
+/// [`items::pick`](crate::items::pick)'s rules, against animation frames:
+///
+/// - **The picture is what is hit, not the tile.** A dragon's sprite covers
+///   several tiles' worth of screen and stands on one of them; picking by tile
+///   would make most of a creature unclickable and the ground behind it
+///   clickable through its body.
+/// - **A hit is an opaque texel** — see [`AnimAtlas::opaque_at`]. A creature's
+///   frame is mostly empty air, and a box test picks the gap under a rider's
+///   arm.
+/// - **Equipment counts as the wearer.** A hat is not a thing standing beside
+///   the creature; a cursor on it is a cursor on the creature, and it is the
+///   *wearer's* index that comes back.
+/// - **The topmost drawn wins**, which is the largest [`depth::Order`] and on a
+///   tie the later mobile in `mobiles` — what the depth test does to two bodies
+///   at one order, see [`collect`]'s sort.
+///
+/// `cursor` is a viewport pixel, the same pair `winit` reports.
+#[must_use]
+pub fn pick(
+    mobiles: &[Mobile],
+    camera: &Camera,
+    atlas: &AnimAtlas,
+    cutaway: &Cutaway,
+    equip_conv: &EquipConv,
+    cursor: (i32, i32),
+) -> Option<usize> {
+    let in_view = camera.to_view(camera.pick(cursor.0, cursor.1));
+    let mut hit: Option<(depth::Order, usize)> = None;
+    for (index, mobile) in mobiles.iter().enumerate() {
+        if !cutaway.shows_mobile(mobile.at.z) {
+            continue;
+        }
+        // The body first, then what it wears: any one of them is the creature.
+        let body = openshard_uofiles::anim::animation_body(mobile.body);
+        let worn = mobile
+            .equipment
+            .iter()
+            .filter_map(|layer| worn_graphic(mobile, *layer, equip_conv).map(|(graphic, _)| graphic));
+        let mut touched = None;
+        for graphic in std::iter::once(body).chain(worn) {
+            let Some(placement) = place(mobile, graphic, camera, atlas) else {
+                continue;
+            };
+            if !opaque_under(&placement, atlas, in_view) {
+                continue;
+            }
+            touched = Some(placement.order);
+            break;
+        }
+        let Some(order) = touched else {
+            continue;
+        };
+        // `>=`, so a later mobile at the same order takes it: the tie-break is
+        // the caller's order, and the one drawn last is the one on top.
+        if hit.is_none_or(|(best, _)| order >= best) {
+            hit = Some((order, index));
+        }
+    }
+    hit.map(|(_, index)| index)
+}
+
+/// Whether a placed frame has a drawn texel under a point of the drawn image.
+///
+/// The flip is undone here and nowhere else: the atlas holds one picture for
+/// both facings, so a mirrored sprite's leftmost *drawn* pixel is its picture's
+/// rightmost one. Asked without it, half the creatures on screen are pickable
+/// along the silhouette of their own mirror image.
+fn opaque_under(placement: &Placement, atlas: &AnimAtlas, in_view: ViewPixel) -> bool {
+    // Into the sprite's own pixels. Negative is above or left of it, and
+    // `try_from` failing is the whole of that test.
+    let (Ok(x), Ok(y)) = (
+        u16::try_from(in_view.x - placement.rect.x as i32),
+        u16::try_from(in_view.y - placement.rect.y as i32),
+    ) else {
+        return false;
+    };
+    let width = placement.rect.width as u16;
+    if x >= width {
+        return false;
+    }
+    let texel_x = match placement.mirrored {
+        true => width - 1 - x,
+        false => x,
+    };
+    atlas.opaque_at(placement.key, texel_x, y)
 }
 
 /// Where a label belongs above this mobile's head, in view pixels — the
@@ -444,6 +613,275 @@ mod tests {
         EquipConv::default()
     }
 
+    /// A body standing still on its tile, hue and equipment free.
+    fn body_at(x: u16, facing: Direction) -> Mobile {
+        Mobile {
+            at: Point::new(x, 100, 0),
+            body: 400,
+            group: 4,
+            facing,
+            frame: 0,
+            from: None,
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(x, 100, 0)),
+            equipment: Vec::new(),
+        }
+    }
+
+    /// The viewport pixel a point in the drawn image sits at — the inverse of
+    /// what [`pick`] undoes, so a test can click on a sprite it has placed.
+    fn cursor_over(camera: &Camera, at: Rect, dx: f32, dy: f32) -> (i32, i32) {
+        let spot = camera.to_viewport(ViewPixel {
+            x: (at.x + dx) as i32,
+            y: (at.y + dy) as i32,
+        });
+        (spot.x as i32, spot.y as i32)
+    }
+
+    /// Where a mobile's body lands, asked the way the passes ask it.
+    fn placed(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Rect {
+        place(
+            mobile,
+            openshard_uofiles::anim::animation_body(mobile.body),
+            camera,
+            atlas,
+        )
+        .expect("the frame is packed")
+        .rect
+    }
+
+    /// A frame with a hole in it: the left half transparent, the right half
+    /// drawn. Most animation frames are mostly empty air, which is the whole
+    /// reason picking is a texel test.
+    fn holed(body: u16, direction: u8, width: u16, height: u16) -> AnimAtlas {
+        let mut pixels = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for _ in 0..height {
+            for x in 0..width {
+                pixels.push(match x < width / 2 {
+                    true => Color16::TRANSPARENT,
+                    false => Color16(0x7C00),
+                });
+            }
+        }
+        AnimAtlas::pack([(
+            FrameKey {
+                body,
+                group: 4,
+                direction,
+                frame: 0,
+            },
+            AnimFrame {
+                center_x: 12,
+                center_y: -3,
+                image: Image::new(width, height, pixels),
+            },
+        )])
+        .expect("one frame fits")
+    }
+
+    /// A click on a creature's own pixels picks it, and one on the empty air
+    /// inside its rectangle does not.
+    #[test]
+    fn a_click_on_a_mobile_s_own_pixels_picks_it() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        // Facing 3 is stored direction 0, unflipped.
+        let atlas = holed(400, 0, 40, 60);
+        let mobile = body_at(100, Direction::SouthEast);
+        let at = placed(&mobile, &camera, &atlas);
+        let pick_at = |dx, dy| {
+            pick(
+                std::slice::from_ref(&mobile),
+                &camera,
+                &atlas,
+                &Cutaway::OPEN,
+                &no_equip(),
+                cursor_over(&camera, at, dx, dy),
+            )
+        };
+        assert_eq!(pick_at(30.0, 30.0), Some(0), "the drawn half was not hit");
+        assert_eq!(
+            pick_at(5.0, 30.0),
+            None,
+            "the transparent half was picked — this is a box test, not a texel one"
+        );
+        assert_eq!(pick_at(-5.0, 30.0), None, "a pixel left of the sprite was picked");
+        assert_eq!(pick_at(30.0, 70.0), None, "a pixel below the sprite was picked");
+    }
+
+    /// A mirrored facing is picked against the picture as *drawn*, not as
+    /// stored. Half the creatures on screen face a mirrored way, and asking the
+    /// atlas without undoing the flip makes them pickable along the silhouette
+    /// of their own mirror image — clickable where they are transparent and
+    /// dead where they are drawn.
+    #[test]
+    fn a_mirrored_facing_is_picked_through_the_flip() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        // Facings 2 and 4 share stored direction 1; 2 is the flipped one.
+        let atlas = holed(400, 1, 40, 60);
+        let mobile = body_at(100, Direction::East);
+        let at = placed(&mobile, &camera, &atlas);
+        let pick_at = |dx| {
+            pick(
+                std::slice::from_ref(&mobile),
+                &camera,
+                &atlas,
+                &Cutaway::OPEN,
+                &no_equip(),
+                cursor_over(&camera, at, dx, 30.0),
+            )
+        };
+        // The art's drawn half is its right; flipped, it is drawn on the left.
+        assert_eq!(pick_at(5.0), Some(0), "the flipped picture's drawn half");
+        assert_eq!(pick_at(30.0), None, "the flipped picture's transparent half");
+    }
+
+    /// A cursor on a hat is a cursor on whoever is wearing it — the wearer's
+    /// index comes back, not a second object's.
+    #[test]
+    fn a_click_on_worn_equipment_picks_its_wearer() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        // The body is transparent on its left half and the robe is solid, so a
+        // hit on that half can only have come from the layer.
+        let mut atlas = holed(400, 0, 40, 60);
+        atlas
+            .pack_more([(
+                FrameKey {
+                    body: 7005,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 12,
+                    center_y: -3,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            )])
+            .expect("both frames fit");
+        let mobile = Mobile {
+            equipment: vec![EquipmentLayer {
+                graphic: 7005,
+                hue: Hue::NONE,
+            }],
+            ..body_at(100, Direction::SouthEast)
+        };
+        let at = placed(&mobile, &camera, &atlas);
+        assert_eq!(
+            pick(
+                std::slice::from_ref(&mobile),
+                &camera,
+                &atlas,
+                &Cutaway::OPEN,
+                &no_equip(),
+                cursor_over(&camera, at, 5.0, 30.0),
+            ),
+            Some(0),
+            "the robe's own pixels did not count as the creature",
+        );
+    }
+
+    /// Two creatures overlapping on screen: the one drawn on top takes the
+    /// click, which is the answer the depth buffer gives the frame.
+    #[test]
+    fn the_topmost_mobile_wins_an_overlap() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let atlas = atlas(400, 0, 44, 120, (22, 0));
+        // Given furthest first, which is *not* what decides it: the order is.
+        let mobiles = [
+            body_at(100, Direction::SouthEast),
+            body_at(101, Direction::SouthEast),
+        ];
+        let near = placed(&mobiles[1], &camera, &atlas);
+        assert_eq!(
+            pick(
+                &mobiles,
+                &camera,
+                &atlas,
+                &Cutaway::OPEN,
+                &no_equip(),
+                // Inside the near sprite's top strip, over the far one's body.
+                cursor_over(&camera, near, 22.0, 10.0),
+            ),
+            Some(1),
+            "the creature behind was picked through the one in front",
+        );
+    }
+
+    /// The creature the cursor is over is drawn in the highlight ramp — body
+    /// and worn layers alike, so a robe is not left in its own colour round a
+    /// highlighted body.
+    #[test]
+    fn the_highlighted_mobile_is_drawn_in_the_highlight_hue() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let mut atlas = atlas(400, 0, 40, 60, (12, -3));
+        atlas
+            .pack_more([(
+                FrameKey {
+                    body: 7005,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 12,
+                    center_y: -3,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            )])
+            .expect("both frames fit");
+        // Their own hues, so the assertion is "replaced" and not "set".
+        let dressed = |x: u16| Mobile {
+            hue: Hue(0x03B2),
+            equipment: vec![EquipmentLayer {
+                graphic: 7005,
+                hue: Hue(0x0455),
+            }],
+            ..body_at(x, Direction::SouthEast)
+        };
+        let quads = collect(
+            &[dressed(100), dressed(101)],
+            &camera,
+            &atlas,
+            &Cutaway::OPEN,
+            &no_equip(),
+            Some(1),
+        );
+        assert_eq!(quads.len(), 4, "two bodies and a robe each");
+        // Back to front, so the nearer creature — index 1 — is the last pair.
+        assert_eq!(
+            (quads[2].hue, quads[3].hue),
+            (
+                u32::from(crate::items::HIGHLIGHT_HUE.0),
+                u32::from(crate::items::HIGHLIGHT_HUE.0)
+            ),
+            "the pointed-at creature, robe and all",
+        );
+        assert_eq!((quads[0].hue, quads[1].hue), (0x03B2, 0x0455), "and nothing else");
+    }
+
+    /// The silhouette is the picture's own rectangles, so the ring lands on the
+    /// creature rather than beside it. The assertion is the *comparison*: two
+    /// numbers here would go on passing if the two paths drifted apart.
+    #[test]
+    fn the_outline_quads_are_the_drawn_quads() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let atlas = atlas(400, 0, 40, 60, (12, -3));
+        let mobiles = [
+            body_at(100, Direction::SouthEast),
+            body_at(101, Direction::SouthEast),
+        ];
+        let drawn = collect(&mobiles, &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
+        let ringed = outlined(&mobiles, &camera, &atlas, &Cutaway::OPEN, &no_equip(), Some(0));
+        assert_eq!(ringed.len(), 1, "one creature, one silhouette");
+        // Index 0 is the further creature, which the sort puts first.
+        assert_eq!(ringed[0].rect, drawn[0].rect);
+        assert_eq!(ringed[0].depth, drawn[0].depth);
+        assert!(
+            outlined(&mobiles, &camera, &atlas, &Cutaway::OPEN, &no_equip(), None).is_empty(),
+            "nothing pointed at is an empty list and not a case to handle",
+        );
+    }
+
     /// The placement arithmetic, in numbers rather than in a picture.
     ///
     /// Two ways to get this wrong look identical on a screenshot until a mobile
@@ -472,6 +910,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &no_equip(),
+            None,
         );
         assert_eq!(quads.len(), 1);
         // The camera puts its own tile's centre at (400, 300).
@@ -505,6 +944,7 @@ mod tests {
                 &atlas,
                 &Cutaway::OPEN,
                 &no_equip(),
+                None,
             )
         };
         let plain = quads(Direction::South);
@@ -548,7 +988,8 @@ mod tests {
                 &camera,
                 &atlas,
                 &Cutaway::OPEN,
-                &no_equip()
+                &no_equip(),
+                None
             )
             .is_empty()
         );
@@ -560,7 +1001,8 @@ mod tests {
                 &camera,
                 &atlas,
                 &Cutaway::OPEN,
-                &no_equip()
+                &no_equip(),
+                None
             )
             .len(),
             1,
@@ -610,6 +1052,7 @@ mod tests {
                 &atlas(400, 0, 40, 60, (12, -3)),
                 &Cutaway::OPEN,
                 &no_equip(),
+                None,
             )
             .len(),
             1,
@@ -623,6 +1066,7 @@ mod tests {
                 &atlas(402, 0, 40, 60, (12, -3)),
                 &Cutaway::OPEN,
                 &no_equip(),
+                None,
             )
             .is_empty()
         );
@@ -652,6 +1096,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &no_equip(),
+            None,
         );
         let anchor = head_anchor(&mobile, &camera, &atlas).expect("packed");
         assert_eq!(anchor.x as f32, quads[0].rect.x + quads[0].rect.width / 2.0);
@@ -706,6 +1151,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &no_equip(),
+            None,
         );
         // Half a tile back the way it came: a step east is eleven pixels right
         // and eleven down, so half of one is eleven of each.
@@ -718,6 +1164,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &no_equip(),
+            None,
         );
         assert_eq!(standing.len(), 1);
         assert_eq!(mid_step.len(), 1);
@@ -770,6 +1217,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &no_equip(),
+            None,
         );
         assert_eq!(quads.len(), 1);
         assert!(
@@ -790,6 +1238,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &no_equip(),
+            None,
         );
         assert!(
             arrived[0].depth > quads[0].depth,
@@ -863,7 +1312,7 @@ mod tests {
                 hue: Hue::NONE,
             }],
         };
-        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &equip_conv);
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &equip_conv, None);
         assert_eq!(quads.len(), 2, "the body and its one worn item");
         assert_eq!(
             quads[0].depth, quads[1].depth,
@@ -935,7 +1384,7 @@ mod tests {
             "the body alone; body 0 is not an animation anybody asked for",
         );
         assert_eq!(
-            collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip()).len(),
+            collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None).len(),
             1,
             "the body alone, with no monster's frame worn over it",
         );
@@ -979,7 +1428,7 @@ mod tests {
                 hue: Hue::NONE,
             }],
         };
-        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip());
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(
             quads.len(),
             2,
@@ -1008,7 +1457,7 @@ mod tests {
                 hue: Hue::NONE,
             }],
         };
-        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip());
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(
             quads.len(),
             1,

@@ -996,6 +996,15 @@ pub struct PackedFrame {
     pub center_x: i16,
     /// The vertical half of the same pair.
     pub center_y: i16,
+    /// Its top-left corner in atlas pixels.
+    ///
+    /// Private, and kept beside the region rather than recovered from it, for
+    /// the reason [`Packed::origin`] is: a region is normalised, and
+    /// multiplying `u * side` back to an integer is a second answer to a
+    /// question that already has one. [`AnimAtlas::opaque_at`] reads the texel
+    /// picking is decided by, and a one-pixel miss there is a creature that
+    /// cannot be pointed at along its own edge.
+    origin: (u32, u32),
 }
 
 /// Animation frames, packed into one texture.
@@ -1192,6 +1201,7 @@ impl AnimAtlas {
                     },
                     center_x: frame.center_x,
                     center_y: frame.center_y,
+                    origin: (origin_x, origin_y),
                 },
             );
         }
@@ -1222,6 +1232,32 @@ impl AnimAtlas {
     /// One frame, or `None` if it was never packed.
     pub fn frame(&self, key: FrameKey) -> Option<PackedFrame> {
         self.frames.get(&key).copied()
+    }
+
+    /// Whether the pixel at `(x, y)` *within* a frame's own picture is drawn
+    /// rather than transparent — [`StaticAtlas::opaque_at`]'s question, asked of
+    /// an animation frame.
+    ///
+    /// Same reason and same answer: a creature's frame is a tall rectangle with
+    /// a thin body in it, and a box test picks whatever the cursor is merely
+    /// *inside* — the empty air beside a dragon's wing, or the gap between a
+    /// rider's legs. `x` is in the frame's own left-to-right pixels, so a
+    /// mirrored facing is the caller's to undo before asking: the atlas holds
+    /// one picture for both, and the flip lives where the quad is built.
+    ///
+    /// `false` for a frame that is not packed and for a coordinate outside the
+    /// picture.
+    pub fn opaque_at(&self, key: FrameKey, x: u16, y: u16) -> bool {
+        let Some(packed) = self.frames.get(&key) else {
+            return false;
+        };
+        if x >= packed.sprite.width || y >= packed.sprite.height {
+            return false;
+        }
+        let side = ATLAS_SIDE as usize;
+        let (origin_x, origin_y) = packed.origin;
+        let at = ((origin_y as usize + usize::from(y)) * side + origin_x as usize + usize::from(x)) * 4;
+        self.pixels[at + 3] != 0
     }
 
     /// How many frames a body's animation has, as packed.
