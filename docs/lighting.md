@@ -23,11 +23,14 @@ answered with a **tile** where the question was about a **surface**.
   the surface — a face and an upright exempt their own cell, a floor pixel does
   not.
 
-**Decision 29 is the next one and it is written but not built**: a cell should
-hold a small list of panels rather than one merged span, which is what a window's
-aperture (step 16) needs, what stops a lid and a wall on one tile from merging,
-and what "polygons, honestly" means in a world where every surface is
-tile-aligned. Read it before touching the grid's format.
+**Decisions 29 and 30 are written and not built, and 30 is the one to read.** The
+world's occluders become a *baked* list of surfaces — quads with `z` spans and
+holes — indexed by the tile grid, derived from the art and overridable by hand.
+It is worth 2.0ms of a 3.3ms CPU budget on its own, it is what a real window with
+a real shaft needs, and its seven micro-decisions are settled in the plan so that
+nothing there has to be re-argued. **Step 16 comes first regardless**: an aperture
+has to be measured off the art before any storage can hold one, and that
+measurement is a pure function with a test against the client.
 
 **Read decision 26 first, then 25.** They are one session and the second half is
 the one a player pointed at: a lamp post standing in the street lit the far side
@@ -1009,8 +1012,11 @@ the side the pixel **is the face of** — which is what decision 23 says in word
 a corner's perpendicular panel is a different surface and stops the ray as it
 always did. A pixel that is not a face is part of no run and gets nothing.
 
-**29. What a cell should hold: panels, not one merged span.** *(the shape of the
-next format change, not built)*
+**29. What a cell should hold: panels, not one merged span.** ~~*(the shape of the
+next format change)*~~ — **superseded in its storage half by decision 30**, which
+puts the panels in a list the texel points at rather than inline in the texel.
+What it says about *why* a cell needs more than one surface is why 30 exists, and
+it is kept for that.
 
 A cell is `(z_bottom, z_top, opacity, PRESENT | edges)` — one `Rgba8Uint` texel a
 tile — which is an axis-aligned box with four bits saying which of its sides are
@@ -1037,6 +1043,79 @@ and whether the second plane `Occlusion::field_bytes` already uploads is where
 they go. What is **not** on the table is a list of boxes with an index of its own:
 the CPU is already thirteen times the GPU on this pass and the grid build is most
 of it.
+
+**30. The occluding world is a baked list of surfaces, indexed by the tile grid
+— derived from the art, and overridable by hand.** *(decided, not built)*
+
+The grid is rebuilt **every frame**: `occlusion::collect` is 2.0ms of the pass's
+3.3ms CPU against 0.31ms on the GPU. A house does not change between frames; the
+camera moves. That is the strongest argument for baking and it is not about
+freedom or effects — it is the largest single number in this pass.
+
+What baking with real geometry buys on top of that, and what it does not:
+
+- **Sub-tile holes.** A window is a hole *in* a surface, so a real one needs a
+  rectangle in the plane of a panel. Today a pane dims the whole tile, which is a
+  dimmer tile and not a beam.
+- **Baked light.** A sky field, an ambient occlusion, a lightmap for the static
+  world — computed once per region rather than blurred per frame, which is what
+  `docs/lighting_world.md` does today.
+- **A shaft with a shape** (step 17): the mask can come from the opening's own
+  geometry rather than from a tile-sized approximation.
+- **It does not remove the G-buffer.** What is drawn is a sprite, and a sprite's
+  pixels do not lie where a box's faces do — the art has thickness, ornament and
+  overhang, 44 pixels of picture on a 22-pixel edge. The place attachment stays
+  the bridge from a drawn pixel to a world surface, and the stance stays its
+  normal. **Geometry replaces the occluder, not the source of normals.**
+- **It does not remove the measurement, which is the hard half.** A box has a
+  window only if something read the hole off the art. Step 16 is that, it is the
+  same machinery as `facing::facing_of`, and it comes first whatever the storage
+  is.
+
+The micro-decisions, numbered so one can be argued with alone:
+
+**30.1 Derived first, authored as an override.** The geometry is measured from the
+client's own art, so a stock install gets windows with no assets at all; a shard
+that ships models overrides by graphic. The engine must not require content the
+world does not come with — and a hand-made mesh per building is thousands of
+assets, which is a Community Pack's business.
+
+**30.2 A surface is a quad with holes.** A plane (one of the tile's four sides, or
+a horizontal lid), a `z` span, a span along the run, an opacity, and up to `K`
+apertures as `(v, z)` rectangles in the surface's own coordinates. That is the
+whole vocabulary the art can be measured into, and it is what decision 25's
+corner, decision 27's lid and step 16's window all are.
+
+**30.3 The index stays the tile grid.** A texel becomes `(offset, count)` into the
+surface list; the DDA walk is unchanged in shape and iterates a cell's two or
+three surfaces instead of reading one merged span. A uniform grid over a world
+whose every surface is tile-aligned **is** the acceleration structure — a BVH
+would put its build on the CPU, which is the side that is already thirteen times
+the GPU.
+
+**30.4 Baked per block and per storey band.** The cutaway removes the storeys the
+player is not on, so a bake keyed by block alone would be invalidated by walking
+through a door; keyed by band, the cutaway *selects* rather than rebuilds. What
+the server changes — a door's graphic, a ground item — stays in the per-frame
+path, which is small and already exists.
+
+**30.5 No storage buffers.** The ceiling is WebGL2 (`crates/client/render/src/lib.rs`):
+no compute, no storage buffers. So the list is a **texture** read with
+`textureLoad`, and the bake is CPU-side. This is the constraint that decides the
+format, and it is written here because it is the one a session would otherwise
+design around for an hour before finding it.
+
+**30.6 The truncation is measured, not chosen.** How many surfaces a cell may hold
+comes from a distribution printed over Britain, and whatever is dropped is
+*logged* rather than silently capped — a grid that quietly truncates reads as
+"covered everything" when it did not.
+
+**30.7 The walk's rules carry over untouched.** Decisions 17, 18, 23, 24, 25, 26,
+27 and 28 are already stated about *surfaces* — a panel is pierced, a body is
+travelled through, a surface does not shadow itself, a face is one-sided, a lid
+looks up. That is what the last three sessions bought and it is why this is a
+change of representation rather than a rewrite: the rules do not get relitigated,
+and the parity test keeps holding both implementations to them.
 
 ## Steps
 
@@ -1280,19 +1359,38 @@ of it.
       here it is shading that looks odd. 76% is the number that conversation now
       starts from — and it is the same key that unlocks the sconce lighting
       through its own wall and the sun lighting both faces of one.
-- [ ] **16. The window's aperture, and the beam on the ground.** A pane passes
-      four fifths of the light *across the whole tile* today, which is a dimmer
-      tile and not a beam. The hole is in the art — a window graphic's silhouette
-      has a transparent gap in an opaque wall — so the same measurement as step
-      15 yields the aperture: a span of `v` along the face and a span of `z`.
+- [ ] **16. The window's aperture, measured off the art.** A pane passes four
+      fifths of the light *across the whole tile* today, which is a dimmer tile
+      and not a beam. The hole is in the art — a window graphic's silhouette has a
+      transparent gap inside an opaque wall — so the same measurement as step 15
+      yields it: a span of `v` along the face and a span of `z`, in the surface's
+      own coordinates.
 
-      Two things change. The occlusion cell has to carry it, and it is full at
-      four bytes (`Rgba8Uint`), so this wants a second texture or a wider format.
-      And the walk, which already knows where the ray enters and leaves a cell
-      and at what height, tests whether that crossing passes through the
-      aperture's rectangle on the face — a few lines where the span test is.
+      **Nothing else changes in this step, and that is the point.** Decision 30
+      settles where an aperture is *stored* and it is a bigger change than this
+      one; the measurement is what every version of that storage needs, it is a
+      pure function of an `Image` like `facing::facing_of`, and it is testable
+      against the client without a single byte of format moving. So: measure,
+      print the coverage over the install and over Britain the way `tests/facing.rs`
+      does, and pin a handful of named graphics by hand.
 
-      What comes out is a fan on the street: narrow at the wall, widening with
+      The gates it will need are the ones step 15 was taught by being caught:
+      a hole that reaches the silhouette's edge is not a hole, a graphic whose
+      "hole" is the gap between two separate things is not a window, and a
+      coverage count is what says the detector reads anything at all.
+- [ ] **21. The baked surface list, and the aperture in the walk.** Decision 30:
+      surfaces measured once per block rather than a grid rebuilt per frame, the
+      tile grid demoted to an index of `(offset, count)`, and the walk testing
+      whether a crossing passes through an aperture's rectangle — a few lines
+      where the span test is.
+
+      What it is worth, before it is started: **2.0ms of a 3.3ms CPU budget**,
+      which is thirteen times what the whole GPU pass costs. Read decision 30's
+      seven micro-decisions first; 30.5 is the one that decides the format
+      (WebGL2: a texture, not a storage buffer) and 30.6 is the one that decides
+      how many surfaces a cell holds (a distribution over Britain, not a guess).
+
+      What comes out on the street is a fan: narrow at the wall, widening with
       distance, with the soft edge decision 14's penumbra already gives it.
 - [ ] **17. The shaft.** The screen-space pass of decision 12, over the mask step
       11 produces — and, once step 16 exists, over the beam from a window too.
