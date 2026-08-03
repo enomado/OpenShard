@@ -23,7 +23,9 @@ use std::fmt;
 
 use crate::codec::PacketWriter;
 use crate::combat::{AttackTarget, HealthBar, WarMode};
-use crate::containers::{ContainerContents, add_to_container_length, open_container_length};
+use crate::containers::{
+    AddToContainer, ContainerContents, OpenContainer, add_to_container_length, open_container_length,
+};
 use crate::context::ContextMenu;
 use crate::error::{DecodeError, expect_id};
 use crate::feature::Feature;
@@ -125,6 +127,10 @@ pub enum ServerPacket {
     DragCancel(DragCancel),
     /// `0x2E` — a mobile is now wearing an item.
     EquipUpdate(EquipUpdate),
+    /// `0x24` — open a container's gump window.
+    OpenContainer(OpenContainer),
+    /// `0x25` — one more item inside a container gump already open.
+    AddToContainer(AddToContainer),
     /// `0x3C` — the full contents of a container, all at once.
     ContainerContents(ContainerContents),
     /// `0x74` — the prices and labels for a vendor's buy container.
@@ -197,7 +203,9 @@ impl ServerPacket {
             Self::WorldItem(_) => <WorldItem as EncodePacket>::ID,
             Self::DragCancel(_) => DragCancel::ID,
             Self::EquipUpdate(_) => EquipUpdate::ID,
-            Self::ContainerContents(_) => ContainerContents::ID,
+            Self::OpenContainer(_) => <OpenContainer as DecodePacket>::ID,
+            Self::AddToContainer(_) => <AddToContainer as DecodePacket>::ID,
+            Self::ContainerContents(_) => <ContainerContents as EncodePacket>::ID,
             Self::BuyList(_) => BuyList::ID,
             Self::SellList(_) => SellList::ID,
             Self::TooltipRevision(_) => TooltipRevision::ID,
@@ -214,8 +222,14 @@ impl ServerPacket {
     }
 
     /// How the packet is framed: a fixed size, or a length field to patch.
+    ///
+    /// Takes the version because two packets cannot answer without it: `0x24`
+    /// grows by the High Seas container type and `0x25` by the grid byte. That
+    /// is also why neither of them is an
+    /// [`EncodePacket`](crate::packet::EncodePacket) — its `LENGTH` is a `const`
+    /// with nothing to ask — and why this is not a `const fn`.
     #[must_use]
-    pub const fn length(&self) -> PacketLength {
+    pub fn length(&self, version: ClientVersion) -> PacketLength {
         match self {
             Self::TargetCursor(_) => TargetCursor::LENGTH,
             Self::WarMode(_) => <WarMode as EncodePacket>::LENGTH,
@@ -252,7 +266,9 @@ impl ServerPacket {
             Self::WorldItem(_) => WorldItem::LENGTH,
             Self::DragCancel(_) => DragCancel::LENGTH,
             Self::EquipUpdate(_) => EquipUpdate::LENGTH,
-            Self::ContainerContents(_) => ContainerContents::LENGTH,
+            Self::OpenContainer(_) => open_container_length(version),
+            Self::AddToContainer(_) => add_to_container_length(version),
+            Self::ContainerContents(_) => <ContainerContents as EncodePacket>::LENGTH,
             Self::BuyList(_) => BuyList::LENGTH,
             Self::SellList(_) => SellList::LENGTH,
             Self::TooltipRevision(_) => TooltipRevision::LENGTH,
@@ -274,7 +290,7 @@ impl ServerPacket {
     /// [`frame_body`] and by nothing else, so no payload can forget it.
     #[must_use]
     pub fn encode(&self, version: ClientVersion) -> Vec<u8> {
-        frame_body(self.id(), self.length(), |out| {
+        frame_body(self.id(), self.length(version), |out| {
             self.encode_body(out, version);
         })
     }
@@ -317,6 +333,8 @@ impl ServerPacket {
             Self::WorldItem(packet) => packet.encode_body(out, version),
             Self::DragCancel(packet) => packet.encode_body(out, version),
             Self::EquipUpdate(packet) => packet.encode_body(out, version),
+            Self::OpenContainer(packet) => packet.write_body(out, version),
+            Self::AddToContainer(packet) => packet.write_body(out, version),
             Self::ContainerContents(packet) => packet.encode_body(out, version),
             Self::BuyList(packet) => packet.encode_body(out, version),
             Self::SellList(packet) => packet.encode_body(out, version),
@@ -426,6 +444,15 @@ impl ServerPacket {
             <GumpDisplay as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::GumpDisplay)
                 .map_err(ServerDecodeError::GumpDisplay)?,
+            <OpenContainer as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::OpenContainer)
+                .map_err(ServerDecodeError::OpenContainer)?,
+            <AddToContainer as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::AddToContainer)
+                .map_err(ServerDecodeError::AddToContainer)?,
+            <ContainerContents as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::ContainerContents)
+                .map_err(ServerDecodeError::ContainerContents)?,
             _ => return Ok(None),
         };
         Ok(Some(decoded))
@@ -474,6 +501,12 @@ pub enum ServerDecodeError {
     UnicodeMessage(DecodeError),
     /// `0xB0` did not decode.
     GumpDisplay(DecodeError),
+    /// `0x24` did not decode.
+    OpenContainer(DecodeError),
+    /// `0x25` did not decode.
+    AddToContainer(DecodeError),
+    /// `0x3C` did not decode.
+    ContainerContents(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -496,6 +529,9 @@ impl fmt::Display for ServerDecodeError {
             Self::SpokenMessage(error) => ("0x1C spoken message", error),
             Self::UnicodeMessage(error) => ("0xAE unicode message", error),
             Self::GumpDisplay(error) => ("0xB0 gump display", error),
+            Self::OpenContainer(error) => ("0x24 open container", error),
+            Self::AddToContainer(error) => ("0x25 add to container", error),
+            Self::ContainerContents(error) => ("0x3C container contents", error),
         };
         write!(f, "{name}: {error}")
     }
@@ -567,7 +603,7 @@ pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLeng
         0x2C => DeathStatus::LENGTH,
         0x2E => EquipUpdate::LENGTH,
         0x3A => SkillsFull::LENGTH,          // and SkillUpdate: same id, both Variable
-        0x3C => ContainerContents::LENGTH,
+        0x3C => <ContainerContents as EncodePacket>::LENGTH,
         0x4F => LightLevel::LENGTH,
         0x54 => PlaySound::LENGTH,
         0x55 => <LoginComplete as EncodePacket>::LENGTH,
@@ -834,7 +870,7 @@ mod tests {
                 hue: crate::wire::Hue(0x0021),
             }),
             ServerPacket::ContainerContents(crate::containers::ContainerContents {
-                container: crate::serial::Serial::new(0x4000_0001).unwrap(),
+                container: Some(crate::serial::Serial::new(0x4000_0001).unwrap()),
                 items: Vec::new(),
             }),
             ServerPacket::BuyList(crate::vendor::BuyList {
@@ -948,7 +984,7 @@ mod tests {
         // encoder shows up here.
         for packet in one_of_each() {
             let bytes = packet.encode(version());
-            match packet.length() {
+            match packet.length(version()) {
                 PacketLength::Fixed(size) => {
                     assert_eq!(bytes.len(), size as usize, "{packet:?}");
                 }
