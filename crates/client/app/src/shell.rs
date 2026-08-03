@@ -151,6 +151,17 @@ pub struct Hud {
     pub highlight: HighlightTarget,
     /// And how an item says it, when it is the one lit.
     pub highlight_style: HighlightStyle,
+    /// The static a left click last landed on — a wall, a stair, a door frame —
+    /// kept until the next click and washed in the world by
+    /// `openshard_client_render::select`.
+    ///
+    /// Named here as well as washed there, because the wash says *which* and this
+    /// says *what*: a graphic id and the height it stands at are what a person
+    /// looking at a piece of the map is after, and they are exactly what the
+    /// picture cannot show. It is also the companion the wash needs — a selection
+    /// that drew nothing and a selection that was never made are one blank screen
+    /// otherwise.
+    pub selected_static: Option<openshard_client_render::statics::PickedStatic>,
     /// The tile a left click last landed on. Kept until the next click, which
     /// is what makes its numbers holdable still long enough to copy — the
     /// live hover moves out from under the cursor the moment it does.
@@ -936,6 +947,20 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     // selection is the one thing on this tab that only changes when the player
     // clicks, so it stays under the cursor long enough to be read and copied.
     ui.label("selected — glows cyan, click a tile to hold it here");
+    // What the same click is holding of the map itself, above the tile's own
+    // rows: a click on a wall names both, and the wall is the thing that was
+    // pointed at while the tile is where the ground under the cursor was.
+    match &hud.selected_static {
+        Some(picked) => {
+            ui.label(format!(
+                "static 0x{:04X} at {}, {}, {} — washed with its ground",
+                picked.graphic.0, picked.at.x, picked.at.y, picked.at.z,
+            ));
+        }
+        None => {
+            ui.label("no static held — click a wall to wash it and the tile under it");
+        }
+    }
     tile_panel(ui, "selected", hud.selected.as_ref());
     ui.separator();
     ui.label("hover — glows yellow, moves with the cursor");

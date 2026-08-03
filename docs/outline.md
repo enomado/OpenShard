@@ -265,6 +265,46 @@ pick handed to each pass rather than a mode either pass has to branch on. The
 default is `Outline` — the ring and its glow *add* a statement, where the hue
 ramp replaces the picture with one.
 
+### D8 — a *held* selection is a wash, and it needs both records
+
+A ring says which thing the cursor is on. What a person editing or debugging a
+map wants is a different statement: **which wall, and which tile it stands on**,
+held while they read the numbers off the panel. Those are two claims about two
+different surfaces, and a ring can make neither of them — an edge round a wall
+says nothing about the ground, and the ground has no silhouette of its own to
+ring.
+
+So the third form is a **wash**: `select::Select`, one full-screen pass after the
+blit, drawn from a click's answer rather than from the cursor's. Cyan at 0.30
+over the picked static and 0.18 over its ground, premultiplied so the art shows
+through — the same cyan the Tile panel's held-tile diamond already uses, because
+a client that said "selected" in two colours would be saying two things.
+
+The pass reads **two records, and it needs both**:
+
+- the **mask**, for what the selected thing is. `statics::selected` hands its
+  quad to the same `render_mask` the ring uses, so what is washed is what is
+  *visible* of it;
+- the **place attachment**, for what the ground under it is — every texel already
+  names the tile the pixel came from, so "the tile it stands on" is a comparison
+  and costs no second mask.
+
+Neither replaces the other, and the second is the interesting half. A wall's
+pixels *cannot* be told from another wall's on the same tile out of the
+attachment alone: both write the same tile, the same stance and the same range of
+heights. A wash keyed on the tile would light the wall beside the one that was
+picked, which is the mutation `tests/select.rs` is built around.
+
+The ground of a tile is **land or a static lying flat in it**, not land alone.
+Indoors the land is under a wooden floor and never drawn, so the land-only rule
+comes out unshaded in exactly the building being pointed at.
+
+**Its own mask texture, not the ring's.** The ring pass draws an edge round every
+id it finds, so a selection sharing that mask would come out ringed *and* washed
+— and the two would then be one statement made twice, which is D7's whole
+complaint. Two masks, two passes, and the wash goes under the ring: the held
+answer is context and the live one has to stay readable crossing it.
+
 ## Techniques: what to search for
 
 - **Pixel outline, one pass:** *sprite outline shader alpha dilation*, an 8-tap
@@ -329,13 +369,31 @@ ramp replaces the picture with one.
   lookups per creature. It becomes wrong the day the two orders can differ —
   a filtered list, a sort — and the fix is to thread the first list through
   rather than to rebuild it.
-- **A wall under the cursor lights the ground.** `HighlightTarget::Auto` falls
-  back to the tile when the *item* pick finds nothing, and a static is not an
-  item — so pointing at a house front says "you would walk here", which is not
-  what a click there does. The gap is the picking's, not this pass's: give
-  `items::pick` a static-shaped sibling and both the ring and the fallback are
-  right, since the silhouette pass takes quads and does not care where they came
-  from. See `docs/client.md`'s M5 backlog.
+- **Half done: the static-shaped sibling of `items::pick` exists.**
+  `statics::pick` walks the visible cells, tests the same opaque texel and
+  answers a `PickedStatic` — where it stands and what it is, since the map's
+  furniture has no serial to name. It is what D8's wash is picked with, and the
+  placement it draws from is now one function (`statics::place`/`quad_of`), used
+  by the map's statics, the server's items, the silhouettes and the picks alike.
+  What is *not* done is the hover: `HighlightTarget::Auto` still falls back to
+  the tile marker when the item pick finds nothing, so pointing at a house front
+  still says "you would walk here". Wiring it is now three lines and one
+  question — whether a hovered wall should ring, wash, or neither — which is a
+  thing to look at rather than to argue.
+- **The selection is picked against the atlas as it stands at the click.** The
+  same caveat `items::pick` carries: a wall whose art this frame has not packed
+  yet cannot be clicked on, and is selectable a frame later. It is one frame at a
+  camera boundary and has never been seen.
+- **Nothing but a click on bare ground clears the wash.** There is no Escape and
+  no button; it was not asked for, and a selection that survives until the next
+  click is the point. Worth a line on the Tile tab the day somebody has to be
+  told how to put it out.
+- **A selected static that stops being drawn leaves the wash to the ground
+  alone.** The mask comes out empty — the cutaway hid it, or the camera walked
+  away — and the pass is skipped entirely (it is gated on the quad list), so the
+  ground stops being washed too. That is the honest picture and it is also
+  indistinguishable from "nothing is selected"; the panel is what tells the two
+  apart, which is why the held static is named there.
 - **The mask and the glow's pair are allocated for every frame, whether anything
   is outlined or not.** One byte per world pixel and two RGBA quarter-images,
   cleared each frame by passes that usually draw nothing. Trivial next to the

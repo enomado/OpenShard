@@ -100,6 +100,27 @@ pub fn graphics_in(
     });
 }
 
+/// One static of the map, named by where it stands and what it is.
+///
+/// What [`pick`] answers with, and the only thing this crate can say about a
+/// static: the map's furniture has no serial — a serial is an entity's, and
+/// these are not entities — so a *reference* to one is its tile, its height and
+/// its graphic. That is enough to place its picture again, which is all a
+/// selection needs; it is deliberately not enough to ask a shard about, because
+/// there is nothing there to ask about.
+///
+/// Two identical graphics on one tile at one height are one value here and draw
+/// one picture, so nothing downstream can tell them apart and nothing needs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PickedStatic {
+    /// Where it stands.
+    pub at: Point,
+    /// Its graphic — the *placed* one, which for an animated static is the
+    /// cycle's start rather than the frame on screen. The same value
+    /// [`collect`] sorts and looks up tiledata by.
+    pub graphic: Graphic,
+}
+
 /// The quads for every visible static.
 ///
 /// A graphic the atlas does not hold is dropped — the client ships no art for
@@ -130,52 +151,22 @@ pub fn collect(
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
-        let tile = tiledata.static_tile(item.tile);
-        if !cutaway::shows(cutaway, item.z, tile) {
-            return;
-        }
-        // What this static is showing at the instant the frame was sampled. The
-        // *placed* graphic still decides the sort and the depth below: a fire's
-        // frames are different art of the same size standing in the same place,
-        // and ordering by whichever one is on screen would let a stack reshuffle
-        // itself every hundred milliseconds.
-        let graphic = animations.showing(Graphic(item.tile));
-        let Some(sprite) = atlas.sprite(graphic) else {
+        let at = Point::new(item.x, item.y, item.z);
+        let Some(placed) = place(
+            at,
+            Graphic(item.tile),
+            camera,
+            tiledata,
+            animations,
+            atlas,
+            cutaway,
+        ) else {
             return;
         };
-        let order = depth::Order {
-            tile: i32::from(item.x) + i32::from(item.y),
-            priority_z: depth::static_priority_z(item.z, tile),
-        };
-        // The cell's centre, height folded in: `to_screen` already lifts `z` by
-        // four pixels a unit, which is the same lift the ground gets.
-        let at = stand_on(camera, Point::new(item.x, item.y, item.z), &sprite);
-        if !on_screen(camera, at, &sprite) {
+        if !on_screen(camera, placed.at, &placed.sprite) {
             return;
         }
-        quads.push((
-            order,
-            SpriteQuad {
-                rect: Rect {
-                    x: at.x,
-                    y: at.y,
-                    width: f32::from(sprite.width),
-                    height: f32::from(sprite.height),
-                },
-                region: sprite.region,
-                // A floor's pixels are spread across its tile, a wall's run
-                // along the one edge it stands on, and anything else claims the
-                // tile's middle. The tiledata answers the first; the *art*
-                // answers the second, measured once when the atlas packed this
-                // sprite. See `crate::place::Stance` and `crate::facing`.
-                place: crate::place::Place {
-                    stance: crate::place::Stance::of(tile, sprite.facing),
-                    ..crate::place::Place::of_static(Point::new(item.x, item.y, item.z))
-                },
-                depth: order.to_depth(base),
-                hue: u32::from(item.hue),
-            },
-        ));
+        quads.push((placed.order, quad_of(at, &placed, base, u32::from(item.hue))));
     });
 
     // Back to front, and a *stable* sort on the order alone: two statics on one
@@ -187,6 +178,194 @@ pub fn collect(
     // accident of the art's numbering.
     quads.sort_by_key(|(order, _)| *order);
     quads.into_iter().map(|(_, quad)| quad).collect()
+}
+
+/// One placed picture: where it lands, which frame it is showing, and where it
+/// sorts.
+///
+/// The one copy of the arithmetic, so that nothing which draws a static — the
+/// map's own furniture, an item the server dropped, a silhouette, a pick — can
+/// answer those three questions differently. They must not: what a click hits is
+/// *the picture on the screen*, and a placement written a second time is one that
+/// drifts from the drawing one — the click lands a tile away and nothing in
+/// either copy looks wrong.
+///
+/// `pub(crate)` and not private because [`crate::items`] is the same picture
+/// standing the same way, differing only in where the list came from.
+pub(crate) struct Placed {
+    /// Where it sorts against everything else drawn this frame.
+    pub(crate) order: depth::Order,
+    /// Its top-left corner in the drawn image.
+    pub(crate) at: Vec2,
+    /// The atlas entry for the frame it is showing.
+    pub(crate) sprite: Sprite,
+    /// That frame's graphic, which is what the atlas is keyed by — not the
+    /// placed one, which for an animated static is only the cycle's start.
+    pub(crate) showing: Graphic,
+    /// Which way its picture faces — a rug on the ground is as flat as a floor
+    /// built into the map. See [`crate::place::Stance`].
+    pub(crate) stance: crate::place::Stance,
+}
+
+/// Place one static, or `None` when there is nothing on screen for it: hidden by
+/// the cutaway, or a graphic the atlas holds no art for.
+///
+/// `graphic` is the *placed* one and not the frame on screen. It decides the sort
+/// and the tiledata lookup: a fire's frames are different art of the same size
+/// standing in the same place, and ordering by whichever one is showing would let
+/// a stack reshuffle itself every hundred milliseconds.
+pub(crate) fn place(
+    at: Point,
+    graphic: Graphic,
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+    cutaway: &Cutaway,
+) -> Option<Placed> {
+    let tile = tiledata.static_tile(graphic.0);
+    if !cutaway::shows(cutaway, at.z, tile) {
+        return None;
+    }
+    let showing = animations.showing(graphic);
+    let sprite = atlas.sprite(showing)?;
+    Some(Placed {
+        order: depth::Order {
+            tile: i32::from(at.x) + i32::from(at.y),
+            priority_z: depth::static_priority_z(at.z, tile),
+        },
+        // The cell's centre, height folded in: `to_screen` already lifts `z` by
+        // four pixels a unit, which is the same lift the ground gets.
+        at: stand_on(camera, at, &sprite),
+        sprite,
+        showing,
+        // A floor's pixels are spread across its tile, a wall's run along the one
+        // edge it stands on, and anything else claims the tile's middle. The
+        // tiledata answers the first; the *art* answers the second, measured once
+        // when the atlas packed this sprite. See `crate::place::Stance` and
+        // `crate::facing`.
+        stance: crate::place::Stance::of(tile, sprite.facing),
+    })
+}
+
+/// One placed picture as an instance the sprite passes can draw.
+///
+/// `hue` is a parameter rather than read off anything here because the same
+/// placement is drawn in three hues: the thing's own, the highlight ramp, and —
+/// for a silhouette, where the colour is never read — whatever the caller had.
+pub(crate) fn quad_of(at: Point, placed: &Placed, base: i32, hue: u32) -> SpriteQuad {
+    SpriteQuad {
+        rect: Rect {
+            x: placed.at.x,
+            y: placed.at.y,
+            width: f32::from(placed.sprite.width),
+            height: f32::from(placed.sprite.height),
+        },
+        region: placed.sprite.region,
+        place: crate::place::Place {
+            stance: placed.stance,
+            ..crate::place::Place::of_static(at)
+        },
+        depth: placed.order.to_depth(base),
+        hue,
+    }
+}
+
+/// Which static of the map the cursor is over, or `None` for none.
+///
+/// [`crate::items::pick`]'s two rules, over the map's furniture rather than over
+/// the server's list, and for the same reasons — stated there once:
+///
+/// - **A hit is an opaque texel**, not a bounding box.
+/// - **The topmost drawn wins**, which is the largest [`depth::Order`]; a tie
+///   goes to the one the map file has last, which is the one drawn last and so
+///   the one on top.
+///
+/// The cells walked are [`Camera::visible_tiles`]' — the same set [`collect`]
+/// draws — so what can be picked is what was drawn, cutaway included: a wall on
+/// a storey this frame is not showing is not something the player can have
+/// pointed at.
+///
+/// `cursor` is a viewport pixel, the pair `winit` reports and [`Camera::pick`]
+/// takes; the zoom is undone here, once.
+#[must_use]
+pub fn pick(
+    map: &Map,
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+    cutaway: &Cutaway,
+    cursor: (i32, i32),
+) -> Option<PickedStatic> {
+    let in_view = camera.to_view(camera.pick(cursor.0, cursor.1));
+    let mut hit: Option<(depth::Order, PickedStatic)> = None;
+    for_each_static_in(map, camera.visible_tiles(), |item| {
+        let at = Point::new(item.x, item.y, item.z);
+        let graphic = Graphic(item.tile);
+        let Some(placed) = place(at, graphic, camera, tiledata, animations, atlas, cutaway) else {
+            return;
+        };
+        // Into the sprite's own pixels. Negative is above or left of it, and
+        // `try_from` failing is the whole of that test.
+        let (Ok(x), Ok(y)) = (
+            u16::try_from(in_view.x - placed.at.x as i32),
+            u16::try_from(in_view.y - placed.at.y as i32),
+        ) else {
+            return;
+        };
+        if !atlas.opaque_at(placed.showing, x, y) {
+            return;
+        }
+        // `>=`, so a later static at the same order takes it: the tie-break is
+        // the file's order, which is the order the picture was drawn in.
+        if hit.is_none_or(|(order, _)| placed.order >= order) {
+            hit = Some((placed.order, PickedStatic { at, graphic }));
+        }
+    });
+    hit.map(|(_, picked)| picked)
+}
+
+/// The quads to draw a mask from, for a static that is selected.
+///
+/// The *same* quads [`collect`] draws — same placement, same region, same depth,
+/// through the same [`quad_of`] — because a mask drawn from anything else would
+/// shade pixels the picture is not at. See [`crate::items::outlined`], which is
+/// this for the server's list and exists for the same reason.
+///
+/// A list rather than an `Option` because the pass that consumes it takes one,
+/// and because the day a second static is selected this is where it is appended.
+/// `None` comes back empty rather than being a case the caller has to handle.
+///
+/// The hue is nought: a mask is a shape, and the shape is the alpha.
+pub fn selected(
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+    cutaway: &Cutaway,
+    selection: Option<PickedStatic>,
+) -> Vec<SpriteQuad> {
+    let (eye_x, eye_y) = camera.eye_tile();
+    let base = depth::base_for(eye_x, eye_y);
+    selection
+        .and_then(|picked| {
+            let placed = place(
+                picked.at,
+                picked.graphic,
+                camera,
+                tiledata,
+                animations,
+                atlas,
+                cutaway,
+            )?;
+            match on_screen(camera, placed.at, &placed.sprite) {
+                true => Some(quad_of(picked.at, &placed, base, 0)),
+                false => None,
+            }
+        })
+        .into_iter()
+        .collect()
 }
 
 /// Walk every static on the visible cells, calling back for each.
@@ -221,7 +400,238 @@ pub(crate) fn for_each_static_in(
 
 #[cfg(test)]
 mod tests {
+    use openshard_uofiles::color::Color16;
+    use openshard_uofiles::image::Image;
+    use openshard_uofiles::map::{LandCell, StaticItem};
+
     use super::*;
+
+    /// A map big enough for a camera at (100, 100), with flat ground and nothing
+    /// standing on it. Statics are placed by the tests that want them.
+    fn field() -> Map {
+        Map::from_blocks(16, 16, |_, _| LandCell { tile: 3, z: 0 })
+    }
+
+    /// An atlas holding one graphic, drawn solid at a known size.
+    fn atlas(graphic: Graphic, width: u16, height: u16) -> StaticAtlas {
+        StaticAtlas::pack([(
+            graphic,
+            Image::new(
+                width,
+                height,
+                vec![Color16(0x7C00); usize::from(width) * usize::from(height)],
+            ),
+        )])
+        .expect("one sprite fits")
+    }
+
+    /// Art with a hole in it: the left half transparent, the right half drawn.
+    /// Most static art is this shape — a wall's picture is a diagonal band in a
+    /// rectangle — which is the whole reason picking is a texel test.
+    fn holed(graphic: Graphic, width: u16, height: u16) -> StaticAtlas {
+        let mut pixels = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for _ in 0..height {
+            for x in 0..width {
+                pixels.push(match x < width / 2 {
+                    true => Color16::TRANSPARENT,
+                    false => Color16(0x7C00),
+                });
+            }
+        }
+        StaticAtlas::pack([(graphic, Image::new(width, height, pixels))]).expect("one sprite fits")
+    }
+
+    /// The viewport pixel a point in the drawn image sits at — the inverse of
+    /// what [`pick`] undoes, so a test can click on a sprite it has placed.
+    fn cursor_over(camera: &Camera, at: Vec2, dx: f32, dy: f32) -> (i32, i32) {
+        let spot = camera.to_viewport(crate::camera::ViewPixel {
+            x: (at.x + dx) as i32,
+            y: (at.y + dy) as i32,
+        });
+        (spot.x as i32, spot.y as i32)
+    }
+
+    /// A click on a wall's own pixels picks that wall, and a click through the
+    /// transparent half of its picture picks nothing.
+    ///
+    /// The second assertion is the one worth having: a box test passes the first
+    /// and fails this, and a box test is what selecting a wall by its rectangle
+    /// would be — the cursor a tile away from any wall, inside the empty corner
+    /// of its art, selecting it.
+    #[test]
+    fn a_click_on_a_wall_s_own_pixels_picks_it() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0006);
+        let atlas = holed(graphic, 44, 60);
+        let tiledata = TileData::empty();
+        let mut map = field();
+        map.place_static(StaticItem {
+            tile: graphic.0,
+            x: 100,
+            y: 100,
+            z: 0,
+            hue: 0,
+        });
+        let sprite = atlas.sprite(graphic).expect("packed");
+        let at = stand_on(&camera, Point::new(100, 100, 0), &sprite);
+        let pick_at = |dx, dy| {
+            pick(
+                &map,
+                &camera,
+                &tiledata,
+                &StaticAnimations::default(),
+                &atlas,
+                &Cutaway::OPEN,
+                cursor_over(&camera, at, dx, dy),
+            )
+        };
+        assert_eq!(
+            pick_at(30.0, 30.0),
+            Some(PickedStatic {
+                at: Point::new(100, 100, 0),
+                graphic,
+            }),
+            "the drawn half was not hit",
+        );
+        assert_eq!(
+            pick_at(5.0, 30.0),
+            None,
+            "the transparent half of the picture was picked — this is a box test, not a texel one",
+        );
+        assert_eq!(pick_at(-5.0, 30.0), None, "a pixel left of the sprite was picked");
+        assert_eq!(pick_at(30.0, 70.0), None, "a pixel below the sprite was picked");
+    }
+
+    /// Two walls of one building overlap on screen. The one drawn on top is the
+    /// one the click gets — the same answer the depth buffer gives the frame,
+    /// which is what the player sees.
+    #[test]
+    fn the_topmost_wall_wins_an_overlap() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0006);
+        // Tall enough that the nearer tile's sprite covers the further one's.
+        let atlas = atlas(graphic, 44, 120);
+        let tiledata = TileData::empty();
+        let mut map = field();
+        for (x, y) in [(100, 100), (101, 101)] {
+            map.place_static(StaticItem {
+                tile: graphic.0,
+                x,
+                y,
+                z: 0,
+                hue: 0,
+            });
+        }
+        let sprite = atlas.sprite(graphic).expect("packed");
+        let near = stand_on(&camera, Point::new(101, 101, 0), &sprite);
+        let found = pick(
+            &map,
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+            &Cutaway::OPEN,
+            // Inside the near sprite's top strip, which is over the far one's
+            // body: both are hit and only one may come back.
+            cursor_over(&camera, near, 22.0, 10.0),
+        );
+        assert_eq!(
+            found.map(|picked| picked.at),
+            Some(Point::new(101, 101, 0)),
+            "the wall behind was picked through the one in front",
+        );
+    }
+
+    /// A wall the cutaway is not drawing cannot be pointed at.
+    ///
+    /// The pick asks the same question the collector does, so a roof the frame
+    /// has taken away is not something the player can select through the hole it
+    /// left. Without this the client would hand back a wall that is not on the
+    /// screen — and then wash it, which draws nothing and reads as a broken
+    /// selection.
+    #[test]
+    fn a_wall_the_cutaway_hides_is_not_picked() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0006);
+        let atlas = atlas(graphic, 44, 60);
+        let tiledata = TileData::empty();
+        let mut map = field();
+        map.place_static(StaticItem {
+            tile: graphic.0,
+            x: 100,
+            y: 100,
+            z: 20,
+            hue: 0,
+        });
+        let sprite = atlas.sprite(graphic).expect("packed");
+        let at = stand_on(&camera, Point::new(100, 100, 20), &sprite);
+        let cursor = cursor_over(&camera, at, 22.0, 30.0);
+        let ask = |cutaway: &Cutaway| {
+            pick(
+                &map,
+                &camera,
+                &tiledata,
+                &StaticAnimations::default(),
+                &atlas,
+                cutaway,
+                cursor,
+            )
+        };
+        assert!(ask(&Cutaway::OPEN).is_some(), "the scene proves nothing");
+        // Everything at or above the storey's floor is taken out of the frame.
+        let indoors = Cutaway {
+            max_z: 10,
+            ..Cutaway::OPEN
+        };
+        assert_eq!(ask(&indoors), None, "a wall this frame did not draw was picked");
+    }
+
+    /// The quad the wash is drawn from is the quad the picture was drawn from.
+    ///
+    /// Stated as a comparison rather than as coordinates: the two are one
+    /// arithmetic now, and this is what says the selection pass is using it. Two
+    /// numbers here would go on passing if a second copy appeared and drifted —
+    /// and a mask half a pixel off its sprite is a wash with a bright fringe
+    /// down one side of the wall.
+    #[test]
+    fn a_selected_wall_s_quad_is_the_one_the_frame_drew() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0006);
+        let atlas = atlas(graphic, 44, 60);
+        let tiledata = TileData::empty();
+        let mut map = field();
+        map.place_static(StaticItem {
+            tile: graphic.0,
+            x: 101,
+            y: 99,
+            z: 5,
+            hue: 0,
+        });
+        let animations = StaticAnimations::default();
+        let drawn = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN);
+        assert_eq!(drawn.len(), 1);
+        let picked = PickedStatic {
+            at: Point::new(101, 99, 5),
+            graphic,
+        };
+        let washed = selected(
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            Some(picked),
+        );
+        assert_eq!(washed.len(), 1);
+        assert_eq!(washed[0].rect, drawn[0].rect);
+        assert_eq!(washed[0].region, drawn[0].region);
+        assert_eq!(washed[0].depth, drawn[0].depth);
+        assert_eq!(washed[0].place, drawn[0].place);
+        assert!(
+            selected(&camera, &tiledata, &animations, &atlas, &Cutaway::OPEN, None).is_empty(),
+            "nothing selected is an empty list, not a quad nobody asked for",
+        );
+    }
 
     /// Where a sprite of a given size lands on a given tile, stated in numbers
     /// rather than by drawing it.

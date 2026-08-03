@@ -27,11 +27,10 @@ use openshard_uofiles::tiledata::TileData;
 use crate::animate::StaticAnimations;
 use crate::atlas::StaticAtlas;
 use crate::camera::Camera;
-use crate::cutaway::{self, Cutaway};
+use crate::cutaway::Cutaway;
 use crate::depth;
-use crate::geometry::Rect;
 use crate::sprite::SpriteQuad;
-use crate::statics::{on_screen, stand_on};
+use crate::statics::{Placed, on_screen, quad_of};
 
 /// One thing lying on the ground, as the client has been told about it.
 ///
@@ -130,7 +129,7 @@ pub fn collect(
             true => u32::from(HIGHLIGHT_HUE.0),
             false => u32::from(item.hue.0),
         };
-        quads.push((order, quad_of(item, &placed, base, hue)));
+        quads.push((order, quad_of(item.at, &placed, base, hue)));
     }
 
     // Back to front, and a *stable* sort on the order alone: two items on one
@@ -174,7 +173,7 @@ pub fn outlined(
         .and_then(|(item, _)| {
             let placed = place(item, camera, tiledata, animations, atlas, cutaway)?;
             match on_screen(camera, placed.at, &placed.sprite) {
-                true => Some(quad_of(item, &placed, base, u32::from(item.hue.0))),
+                true => Some(quad_of(item.at, &placed, base, u32::from(item.hue.0))),
                 false => None,
             }
         })
@@ -182,55 +181,15 @@ pub fn outlined(
         .collect()
 }
 
-/// One placed item as an instance the sprite passes can draw.
-///
-/// The one copy of the arithmetic, so [`collect`] and [`outlined`] cannot
-/// disagree about where an item's rectangle is. They must not: the silhouette
-/// is drawn from these quads and the picture from those, and a ring half a pixel
-/// off its sprite is the defect this exists to make impossible.
-fn quad_of(item: &GroundItem, placed: &Placed, base: i32, hue: u32) -> SpriteQuad {
-    SpriteQuad {
-        rect: Rect {
-            x: placed.at.x,
-            y: placed.at.y,
-            width: f32::from(placed.sprite.width),
-            height: f32::from(placed.sprite.height),
-        },
-        region: placed.sprite.region,
-        depth: placed.order.to_depth(base),
-        hue,
-        place: crate::place::Place {
-            stance: placed.stance,
-            ..crate::place::Place::of_static(item.at)
-        },
-    }
-}
-
-/// One item's picture, placed: where it lands, which frame it is showing, and
-/// where it sorts.
-///
-/// Only exists so [`collect`] and [`pick`] cannot answer those three questions
-/// differently. They must not: what a click hits is *the picture on the screen*,
-/// and a picking rule written a second time is a rule that drifts from the
-/// drawing one — the click lands a tile away and nothing in either copy looks
-/// wrong.
-struct Placed {
-    /// Where it sorts against everything else drawn this frame.
-    order: depth::Order,
-    /// Its top-left corner in the drawn image.
-    at: crate::geometry::Vec2,
-    /// The atlas entry for the frame it is showing.
-    sprite: crate::atlas::Sprite,
-    /// That frame's graphic, which is what the atlas is keyed by — not the
-    /// item's own, which for an animated static is only the cycle's start.
-    showing: Graphic,
-    /// Which way its picture faces — a rug on the ground is as flat as a floor
-    /// built into the map. See [`crate::place::Stance`].
-    stance: crate::place::Stance,
-}
-
 /// Place one item, or `None` when there is nothing on screen for it: hidden by
 /// the cutaway, or a graphic the atlas holds no art for.
+///
+/// [`statics::place`](crate::statics::place) and nothing else. A ground item is
+/// ordered as a static is, and from the same table — the client reads
+/// `tiledata`'s *static* entry for an item's graphic too, so a wall lying on the
+/// floor and a wall built into the map sort alike — so the placement is that one
+/// rather than a second copy of it. See [`Placed`](crate::statics::Placed) for
+/// why there is only one.
 fn place(
     item: &GroundItem,
     camera: &Camera,
@@ -239,27 +198,15 @@ fn place(
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
 ) -> Option<Placed> {
-    // A ground item is ordered as a static is, and from the same table: the
-    // client reads `tiledata`'s static entry for an item's graphic too, so a
-    // wall lying on the floor and a wall built into the map sort alike.
-    let tile = tiledata.static_tile(item.graphic.0);
-    if !cutaway::shows(cutaway, item.at.z, tile) {
-        return None;
-    }
-    // The frame on screen; the *placed* graphic still decides the sort and
-    // the tiledata lookup above. See [`statics::collect`](crate::statics::collect).
-    let showing = animations.showing(item.graphic);
-    let sprite = atlas.sprite(showing)?;
-    Some(Placed {
-        order: depth::Order {
-            tile: i32::from(item.at.x) + i32::from(item.at.y),
-            priority_z: depth::static_priority_z(item.at.z, tile),
-        },
-        at: stand_on(camera, item.at, &sprite),
-        sprite,
-        showing,
-        stance: crate::place::Stance::of(tile, sprite.facing),
-    })
+    crate::statics::place(
+        item.at,
+        item.graphic,
+        camera,
+        tiledata,
+        animations,
+        atlas,
+        cutaway,
+    )
 }
 
 /// Which item the cursor is over: an index into `items`, or `None` for none.
@@ -323,6 +270,10 @@ mod tests {
     use openshard_uofiles::image::Image;
 
     use super::*;
+    // Where a sprite of this size lands, which the assertions below are stated
+    // against: the tests place a cursor over a picture they have placed
+    // themselves, and this is the one arithmetic that says where that is.
+    use crate::statics::stand_on;
 
     /// An atlas holding one graphic at a known size.
     fn atlas(graphic: Graphic, width: u16, height: u16) -> StaticAtlas {

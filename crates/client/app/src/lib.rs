@@ -141,7 +141,9 @@ use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::paperdoll;
 use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::select::{self, Select, Selection};
 use openshard_client_render::sprite::SpriteQuad;
+use openshard_client_render::statics::PickedStatic;
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
 use openshard_movement::{Heading, Lean, Leeway, Terrain};
@@ -634,6 +636,7 @@ pub fn run<D: Dial + Send + 'static>(
         window: None,
         pending: shell::Request::default(),
         selected_tile: None,
+        selected_static: None,
         // No click has landed, so the next one cannot be the second of a pair.
         last_click: None,
         // Nobody has pointed at anything yet, and a window that opens under a
@@ -914,6 +917,18 @@ struct Screen {
     /// The pass that turns that mask into a ring on the surface — see
     /// `openshard_client_render::outline`.
     outline: Outline,
+    /// The same, for what a click is *holding*: the selected static's own
+    /// silhouette, in a texture of its own.
+    ///
+    /// Not [`Screen::outline_mask`], and the separation is the point: the ring
+    /// pass draws an edge round every id it finds, so a selection sharing that
+    /// mask would come out ringed as well as washed — and the hover ring would
+    /// then be two statements in one shape. Recreated with [`Screen::world`],
+    /// like its neighbour and for the same reason.
+    select_mask: wgpu::Texture,
+    /// The pass that washes that silhouette, and the ground under it, after the
+    /// blit — see `openshard_client_render::select`.
+    select: Select,
     /// The interface's pass, bound to [`App::gump_atlas`]'s texture and to the
     /// *surface's* format: it draws over the finished frame, not into the world
     /// image. `None` exactly when `App::gumps` is.
@@ -1252,6 +1267,21 @@ struct App {
     /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
     /// slide off the tile the moment the mouse does.
     selected_tile: Option<(u16, u16)>,
+    /// The static a left click last landed on — a wall, a door frame, a stair —
+    /// kept until the next click, and washed along with the ground it stands on.
+    /// See `openshard_client_render::select`.
+    ///
+    /// Held rather than hovered, which is the whole difference from
+    /// [`App::lit_item`]'s ring: what this is for is looking at a piece of the
+    /// map — reading its graphic and its height off the panel, seeing which tile
+    /// it really stands on — and a highlight that moved with the mouse would be
+    /// gone by the time the eye reached the numbers.
+    ///
+    /// Not the same question as [`App::selected_tile`] and answered by a
+    /// different pick: the tile is where the *ground* under the cursor is, and a
+    /// wall's picture stands two tiles up the screen from the tile it is on. Both
+    /// are kept because both are asked — see [`statics::pick`].
+    selected_static: Option<PickedStatic>,
     /// When the last left click landed, or `None` when the one before it
     /// already made a pair.
     ///
@@ -1720,6 +1750,18 @@ impl ApplicationHandler<link::Update> for App {
                     // is clicking on.
                     let camera = *self.control.camera();
                     self.selected_tile = self.pick_tile(camera).map(|tile| (tile.x, tile.y));
+                    // And what the click was *pointing at*, which is a different
+                    // question with a different answer: the tile above is the
+                    // ground under the cursor, and a wall's picture stands up the
+                    // screen from the tile it is built on, so a click on a wall
+                    // resolves to the tile behind it. Picked against the drawn
+                    // pixels instead — `statics::pick` — the way a double-click
+                    // already is.
+                    //
+                    // A click on bare ground answers `None` and clears what was
+                    // held, which is how a selection is put out: there is nothing
+                    // to select where nothing is standing.
+                    self.selected_static = self.pick_static(camera);
                     // And the second click of a pair is a *use*: a door opens, a
                     // container opens, food is eaten. Which of those it is, is
                     // the shard's answer and not this end's — see
@@ -2168,6 +2210,35 @@ impl App {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),
         }
+    }
+
+    /// Which static of the map the cursor is over, or `None`.
+    ///
+    /// The map's own furniture — walls, floors, doors frames, trees — and not the
+    /// server's items: those are [`items::pick`] and they have serials. A static
+    /// has none, so what comes back is where it stands and what it is, which is
+    /// what the wash needs and all this end can honestly say about it.
+    ///
+    /// Answered against **this frame's atlas and this frame's cutaway**, the same
+    /// two the picture was drawn from, so a wall on a storey the client is not
+    /// showing cannot be selected through the hole where its roof was. Offline —
+    /// or before the first frame — there is no atlas and therefore nothing drawn
+    /// to have clicked on.
+    fn pick_static(&self, camera: Camera) -> Option<PickedStatic> {
+        if !self.world_owns_pointer() {
+            return None;
+        }
+        let window = self.window.as_ref()?;
+        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
+        statics::pick(
+            &self.map,
+            &camera,
+            &self.tiledata,
+            &self.tile_animations,
+            &window.atlases.statics,
+            &cutaway,
+            self.control.cursor(),
+        )
     }
 
     /// Real pixels per gump pixel, which is egui's own scale.
@@ -3224,6 +3295,7 @@ impl App {
             hover,
             neighbours,
             selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
+            selected_static: self.selected_static,
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
             gumps: self
                 .view
@@ -3560,6 +3632,14 @@ impl App {
             self.control.camera().render_width(),
             self.control.camera().render_height(),
         );
+        // The selection's own, at the same size and in the same format: it is a
+        // colour attachment of the same silhouette pass, sharing the same depth
+        // buffer, so it can be neither larger nor smaller than the world image.
+        let select_mask = outline::mask_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
         let place = place::texture(
             &device,
             self.control.camera().render_width(),
@@ -3570,6 +3650,9 @@ impl App {
         // blit's output, so that a highlight is not dimmed by the night the way
         // the picture under it is.
         let outline = Outline::new(&device, format);
+        // And the selection's wash, over the same finished picture and for the
+        // same reason: what is held must stay legible after dark.
+        let select = Select::new(&device, format);
         // And the interface's, bound to the surface's format for the same
         // reason: a gump is drawn on the finished picture, and the night that
         // dimmed the world has already been applied to it.
@@ -3601,6 +3684,8 @@ impl App {
             ttf_pass,
             outline_mask,
             outline,
+            select_mask,
+            select,
             gump_pass,
         })
     }
@@ -4055,6 +4140,7 @@ impl App {
             // depth attachment is that buffer, and wgpu requires the two to be
             // one size.
             window.outline_mask = outline::mask_texture(&window.device, render_width, render_height);
+            window.select_mask = outline::mask_texture(&window.device, render_width, render_height);
             // And the place channel, which is an attachment of those same
             // passes and is read texel for texel against that image.
             window.place = place::texture(&window.device, render_width, render_height);
@@ -4086,6 +4172,18 @@ impl App {
         // handed an empty list.
         let hued = self.highlight_style.hues().then_some(lit_item).flatten();
         let ringed = self.highlight_style.rings().then_some(lit_item).flatten();
+        // What a click is holding, placed exactly as the picture placed it —
+        // `statics::selected` is `statics::collect`'s own arithmetic — so the
+        // mask lands on the wall's pixels rather than beside them. Empty on
+        // every frame with nothing selected, which is what switches the pass off.
+        let select_quads = statics::selected(
+            &camera,
+            &self.tiledata,
+            &self.tile_animations,
+            &window.atlases.statics,
+            &cutaway,
+            self.selected_static,
+        );
         // The same quads as the picture's, so the ring lands on the sprite
         // rather than beside it — see `items::outlined`.
         let outline_quads = items::outlined(
@@ -4238,6 +4336,25 @@ impl App {
                 &[&mobile_outline],
             );
         }
+        // And the held selection into its own mask, through the same pass and
+        // the same depth buffer: what is washed is what is *visible* of the
+        // selected static, so a wall the player has walked behind is not painted
+        // over the thing now in front of it. One group, because a selection is
+        // one thing — the pass numbers groups for the ring's sake and the wash
+        // reads only "is this texel nought".
+        let select_view = window
+            .select_mask
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        if !select_quads.is_empty() {
+            window.statics.render_mask(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                target,
+                &select_view,
+                &[&select_quads],
+            );
+        }
         // `ttf_pass` when the run is drawing through it — bound to a
         // different texture than `text_pass`, so a mix of the two within one
         // frame would sample one atlas with quads packed for the other.
@@ -4327,6 +4444,36 @@ impl App {
             },
             &lighting,
         );
+        // The held selection's wash, first of the two things drawn over the lit
+        // picture: the wall the click named and the ground it stands on. Under
+        // the ring rather than over it, because they answer different questions
+        // — the wash is what is *held* and the ring is what the cursor is on —
+        // and the live one has to stay readable while it passes over the held
+        // one.
+        //
+        // Skipped when nothing is selected, and the whole cost of a frame with
+        // nothing selected is that comparison: the mask is not drawn either.
+        if let Some(picked) = self.selected_static.filter(|_| !select_quads.is_empty()) {
+            window.select.render(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                select::Frame {
+                    target: &view,
+                    mask: &select_view,
+                    place: &place_view,
+                    size: (render_width, render_height),
+                    rect: viewport,
+                },
+                // The tile the *static* stands on, and not `selected_tile`: the
+                // ground being washed is the ground under the thing that was
+                // picked, which is the whole of "and the tile it stands on". The
+                // two are usually different tiles — a wall's picture stands up
+                // the screen from its own cell, so the ground under the cursor is
+                // the cell behind it.
+                Selection::DEFAULT.on((picked.at.x, picked.at.y)),
+            );
+        }
         // And the ring on top of that, over the same rectangle — after the blit
         // so it is drawn in screen pixels and unlit: a highlight that dimmed at
         // night would stop working exactly when the picture is hardest to read.
