@@ -685,6 +685,13 @@ pub fn collect(
         lights.push(place(item.at, flame(item.graphic), time));
     }
 
+    // The grid before the flames are placed, because where a mounted flame burns
+    // is a fact about what it is mounted *on* — see `mounted_at`.
+    let occlusion = crate::occlusion::collect(map, items, bounds, tiledata, cutaway, atlas);
+    for light in &mut lights {
+        light.at = mounted_at(light.at, &occlusion);
+    }
+
     if lights.len() > Lighting::MAX {
         // Nearest the player first — which is the eye's tile, and at every zoom
         // the middle of what is drawn. A total order and not a partial one: two
@@ -706,7 +713,7 @@ pub fn collect(
     Lighting {
         ambient,
         lights,
-        occlusion: crate::occlusion::collect(map, items, bounds, tiledata, cutaway, atlas),
+        occlusion,
         // No sky here. What the sun is doing is not a property of the tiles this
         // walked — it is one direction for the whole world, and the caller that
         // knows the time of day sets it on the way to the blit.
@@ -716,6 +723,62 @@ pub fn collect(
         // looking, not of the world walked here.
         view: crate::debug::View::Lit,
     }
+}
+
+/// How far outside the plane a mounted flame is placed, in tiles.
+///
+/// Half a tile takes it from its tile's centre to the plane the panel stands on,
+/// and [`FACE_EDGE`] more takes it clear of the band the facing test softens
+/// over — so the wall it hangs on is lit at full strength rather than at the half
+/// a flame lying exactly in the plane would give it.
+///
+/// The consequence worth stating: it lands on the *next* tile, so the wall it is
+/// mounted on stops being the flame's own cell and starts being an ordinary
+/// occluder. That is what makes a sconce light the street and not the room behind
+/// it, and it is the whole reason this is a move rather than an exemption.
+const MOUNTED_CLEARANCE: f32 = 0.5 + FACE_EDGE;
+
+/// Where a flame standing on a wall tile actually burns: outside the plane its
+/// own tile names, on the side the wall's picture is drawn from.
+///
+/// A sconce, a lamp bracket, a torch in a wall ring — a static whose tile carries
+/// a **panel** — is bolted to the *outside* of that panel, and the map does not
+/// say so: it says the tile. Left at its tile's centre it is behind the plane of
+/// the face it lights, and two things follow that a person can see. Its own wall
+/// comes out dark, because a face is one-sided and the flame is behind it. And
+/// its own tile is exempt from shadowing it (decisions 3 and 17), so the room on
+/// the other side of that wall is lit exactly as brightly as the street.
+///
+/// `docs/lighting.md`'s backlog has carried the shape of this since the first
+/// version of the pass — *"a lamp mounted on a wall wants pushing off it, not
+/// exempting from it"* — and the grid already holds what it needs. Moving the
+/// flame answers both, and it is what let the facing test lose its exemption for
+/// a flame standing in a wall's line, which is a whole street long and lit every
+/// wall in it.
+///
+/// A tile with no panel is not moved, and that covers the ordinary cases by
+/// construction: a torch on the ground, a lamp post in the street, a brazier in a
+/// room. So is a cell whose sides cancel — [`EDGE_ANY`](crate::occlusion::EDGE_ANY),
+/// the whole-tile answer for a graphic the art would not name, and a lid — because
+/// there is no direction in it to move along and a guess would be a wrong one.
+fn mounted_at(at: Vec2, occlusion: &crate::occlusion::Occlusion) -> Vec2 {
+    let Some(cell) = occlusion.at(at.x.floor() as i32, at.y.floor() as i32) else {
+        return at;
+    };
+    // Componentwise and not along one normalised direction, so that a flame on a
+    // **corner** — two panels, and every building has them — goes clear of both
+    // planes rather than half clear of each.
+    let toward = |positive: u8, negative: u8| match (cell.edges & positive != 0, cell.edges & negative != 0) {
+        (true, false) => MOUNTED_CLEARANCE,
+        (false, true) => -MOUNTED_CLEARANCE,
+        // Neither side, or both: a lid, a whole-tile occluder, or a tile holding
+        // two walls that face away from each other. No direction, no move.
+        _ => 0.0,
+    };
+    Vec2::new(
+        at.x + toward(crate::occlusion::EDGE_EAST, crate::occlusion::EDGE_WEST),
+        at.y + toward(crate::occlusion::EDGE_SOUTH, crate::occlusion::EDGE_NORTH),
+    )
 }
 
 /// One flame, from its tile to where it burns: the tile itself, lifted to the
@@ -1068,21 +1131,13 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
             Some(beam) => beam.lights(offset.map(|axis| -axis)),
             None => 1.0,
         };
-        // And whether the flame is on the side this surface looks at. `blit.wgsl`
-        // argues both halves: a wall is one-sided, and a flame standing in the
-        // wall's own line is part of that wall and lights all of it.
+        // And whether the flame is on the side this surface looks at — geometry
+        // and nothing else. `blit.wgsl` argues why there is no longer an
+        // exemption for a flame standing in the wall's own line, and
+        // [`mounted_at`] is what replaced it.
         let facing = match spot.face {
             None => 1.0,
-            Some(face) => {
-                let same_line = match face.runs_along_x() {
-                    true => light.at.y.floor() == spot.at.y.floor(),
-                    false => light.at.x.floor() == spot.at.x.floor(),
-                };
-                match same_line {
-                    true => 1.0,
-                    false => faces(face.outward(), [offset[0], offset[1]]),
-                }
-            }
+            Some(face) => faces(face.outward(), [offset[0], offset[1]]),
         };
         let (through, stopped_by) = walk(spot, light, &lighting.occlusion);
         let fall = 1.0 - d;

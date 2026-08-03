@@ -959,22 +959,18 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // one-sided and its two faces are one tile, so this is the only thing that
         // keeps a torch in a room from lighting the outside of the house.
         //
-        // **Unless the flame stands in the wall's own line**, in which case it is
-        // part of that wall — a lamp mounted on a house sits at its tile's centre,
-        // which is behind the plane of the face it hangs on, and testing it would
-        // black out the very wall it is bolted to. The line and not just the tile:
-        // a run of wall is one surface and a lamp anywhere along it lights all of
-        // it, which is what `own_run` says about the shadow of the same run.
+        // Geometry and nothing else. This used to exempt a flame standing in the
+        // wall's own row or column, because a lamp mounted on a house sits at its
+        // tile's centre — behind the plane of the face it is bolted to — and
+        // testing it blacked out the very wall it hangs on. But a *line* is the
+        // whole length of a street: a lamp post standing south of a house is in
+        // the column of its east wall, and that wall's faces came out fully lit
+        // from a flame half a tile behind their plane, for the length of the run.
+        // Reported from the client at Britain's `(1441, 1692)`. What answers it is
+        // moving the mounted flame instead of excusing it — `light::mounted_at`,
+        // and `docs/lighting.md`'s decision 26.
         if any(normal != vec2<f32>(0.0)) {
-            let along_x = abs(normal.y) > 0.5;
-            let same_line = select(
-                i32(floor(to.x)) == i32(place.x),
-                i32(floor(to.y)) == i32(place.y),
-                along_x,
-            );
-            if !same_line {
-                lit_by = lit_by * faces(normal, vec2<f32>(to.x - at.x, to.y - at.y));
-            }
+            lit_by = lit_by * faces(normal, vec2<f32>(to.x - at.x, to.y - at.y));
         }
         // The flame's own tile is exempt, and a flame is a body a tile wide:
         // `walk`'s two parameters, and the only two things that make this ray

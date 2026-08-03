@@ -9,6 +9,20 @@ copied.
 
 ## Where the next session starts
 
+**Read decision 26 first, then 25.** They are one session and the second half is
+the one a player pointed at: a lamp post standing in the street lit the far side
+of a house's east wall, because the facing test excused any flame in a wall's own
+row or column and a column is a whole street long. That exemption existed to
+protect a *mounted* lamp, which sits at its tile's centre behind the plane of the
+face it is bolted to — so the answer was to move the flame outside that plane
+rather than to excuse it, which also closed the oldest entry in this file's
+backlog: a sconce no longer lights the room behind its own wall.
+
+The instrument grew the line that report needed. `tests/onsite.rs` now prints a
+tile's four faces with **`through` and `facing` apart** — a face behind the flame
+reads `through 1.000, facing 1.000` and a shadowed one reads `through 0.000`, and
+those are two different defects that no picture of the ground can tell apart.
+
 **Read decision 25 and the backlog's "found while giving a corner its two
 faces"**. The missing fact the session before named — a corner is two faces and
 the art would not name either — is measured now: `facing::facing_of` answers
@@ -681,13 +695,17 @@ graphics out of 1197 — so a south face's picture is the surface turned towards
 over a band `FACE_EDGE` wide so that a lamp walking past the end of a wall does
 not switch its face off between two frames.
 
-**Except a flame standing in the wall's own line, which is part of that wall.** A
+~~**Except a flame standing in the wall's own line, which is part of that
+wall.**~~ **Superseded by decision 26, and it was the wrong half of the pair.** A
 lamp mounted on a house sits at its tile's *centre* — behind the plane of the very
-face it is bolted to — so testing it would black out the wall it hangs on. The
-line and not merely the tile, because a run of wall is one surface and a lamp
-anywhere along it lights all of it: the same statement decision 23 makes about
-that run's shadow. What would answer it properly is placing a mounted light
-outside the plane its tile names, which is in the backlog and is not this.
+face it is bolted to — so testing it blacked out the wall it hangs on, and the
+exemption was what kept that from happening. What the exemption could not tell is
+a mounted lamp from a **lamp post standing in the street**: a line is a whole
+street long, so a post south of a house was "part of" the east wall three tiles
+north of it and lit every face of that run at full strength. Reported from the
+client, with coordinates. The answer was the one this paragraph already named and
+put in the backlog — place the mounted light outside the plane its tile names —
+and once it is placed there, the facing test needs no exemption at all.
 
 **23. A wall does not shadow the rest of the wall it is part of.**
 
@@ -850,6 +868,57 @@ where a pillar's are in the open, so a ray clipping a pillar's far corner now
 passes where it used to be stopped by the length rule. It is in the backlog with
 what it would take; it is not a whole-tile answer coming back, because that would
 take the street-lighting back with it.
+
+**26. A mounted flame burns outside the plane its tile names, and the facing test
+is geometry with no exceptions in it.**
+
+Reported from the client with the coordinates, which is the shape of report this
+pass has learned to want: the lamp at `(1441, 1693)`, the corner tile at
+`(1441, 1692)`, and *the face leaning towards `(1442, 1692)`* — the corner's east
+one — lit when it should not be. The lamp stands at `x = 1441.5` and that face
+lies in the plane `x = 1442`, so the flame is half a tile **behind** the surface
+it was lighting.
+
+What lit it was decision 22's exemption: a flame standing in a wall's own row or
+column is part of that wall. That is true of a sconce and false of everything
+else standing in a street, and a column is as long as the street — so one lamp
+post lit the far side of every wall in its column. `tests/onsite.rs` says it in
+one line now, because that is the instrument this report needed: it prints each
+of a tile's four faces with `through` and `facing` apart, and a face behind the
+flame reads `through 1.000, facing 1.000` where a shadowed one reads
+`through 0.000`. Two numbers, two different defects, and one of them invisible in
+any picture of the ground.
+
+The exemption existed for a real reason: a lamp bolted to a wall sits at its
+tile's *centre*, which is behind the plane of the face it lights, so the geometry
+blacks out the very wall it hangs on. But that is a fact about **where the flame
+is**, not about which surfaces it may light — the map says "this tile" because a
+tile is all the map has, and the lamp is really on the outside of the panel. So
+the flame is moved rather than excused: `light::mounted_at` puts a flame whose own
+cell carries a panel half a tile plus `FACE_EDGE` outside that plane, on the side
+the wall's picture is drawn from, componentwise so that a corner's two panels are
+both cleared.
+
+Three things fall out of the move, and the second is the one that has been in
+this file's backlog since its first version:
+
+- **The wall it hangs on is lit at full strength**, because the flame is now in
+  front of the plane by more than the band the facing test softens over.
+- **A sconce stops lighting the room behind its wall.** The flame lands on the
+  *next* tile, so the wall stops being the flame's own cell — which decisions 3
+  and 17 exempt from shadowing it — and becomes an ordinary occluder. The oldest
+  known-wrong entry in this file, and the test that pinned it
+  (`a_sconce_lights_through_its_own_wall`) is now
+  `a_sconce_lights_the_street_and_not_the_room_behind_it`.
+- **The facing test loses its only exception.** A surface is lit if the flame is
+  in front of its own plane, and that is the whole rule. Two comparisons less per
+  light per fragment, in both implementations.
+
+A flame on a tile with **no** panel is not moved, and that is what covers the
+ordinary cases by construction: a torch on the ground, a brazier in a room, and
+the lamp post the report was about. Neither is one whose sides cancel — a lid, or
+the whole-tile `EDGE_ANY` of a graphic the art would not name — because there is
+no direction in those to move along, and a guess would be a wrong one.
 
 ## Steps
 
@@ -1337,16 +1406,14 @@ Found while giving a wall a side to be lit from:
 
 Found while starting again, from the picture rather than from the argument:
 
-- **A lamp mounted on a wall wants pushing off it, not exempting from it.** The
-  exemption is back (decision 17's amendment) and it is a placeholder for the
-  real answer, which the grid already holds: the cell a mounted light stands on
-  carries *which side* its wall is on, so the flame could be placed just outside
-  that plane. Then the street is lit, the room behind the wall is not, and the
-  "a sconce lights through its own wall" entry at the bottom of this backlog is
-  answered rather than pinned. What is not known is which of the two sides the
-  lamp is on — but the art only ever draws the two faces a camera can see (step
-  15), so "outside the panel, on the side the picture is drawn from" is a guess
-  with a measurement behind it.
+- ~~**A lamp mounted on a wall wants pushing off it, not exempting from it.**~~
+  Done, decision 26, and the entry's own guess is what was built: outside the
+  panel, on the side the picture is drawn from. What it did *not* predict is that
+  the same move would let the facing test drop its line exemption, which is what
+  the reported defect actually was. The **shadow** walk still exempts a flame's
+  own cell (decision 17's amendment) — it is just that a mounted flame's own cell
+  is now the street rather than the wall, so the exemption stopped mattering
+  where it did harm.
 - **The flame is still placed by its tile and not by its sprite.** With the pools
   legible again this is the next visible thing: a torch in a wall sconce burns at
   the tile's centre and half a tile up, and the flame in the picture is neither.
@@ -1704,17 +1771,13 @@ Found while giving a corner its two faces:
   ground on all four sides, which `occlusion::collect` is already walking. Until
   then it is a sliver of light past a pillar against a room leaking into a
   street, and this file has taken the second every time.
-- **Decision 22's exemption is a whole row or column, and a street lamp can stand
-  in one.** A flame in a wall's own line is treated as part of that wall, because
-  a lamp mounted anywhere along a run lights all of it. Nothing distinguishes that
-  from a lamp standing in the street *due south* of a north-south run — which is
-  where the lamp in the Britain report stands — so the run's back faces are lit as
-  brightly as its front ones for the whole length of the column. It is the same
-  placeholder the entry below names from the other end: what answers it is placing
-  a mounted light outside the plane its tile names, after which the exemption can
-  go entirely. Where it bites: `scene::house_corner_named_by_its_art` has to put
-  its lamp north-east of the corner rather than due south, because due south the
-  scene would be measuring the exemption instead of the geometry.
+- ~~**Decision 22's exemption is a whole row or column, and a street lamp can
+  stand in one.**~~ Written down as a finding one session and reported from the
+  client the next, with the coordinates: decision 26. Worth keeping as a note on
+  how it was found, because the entry was written from *reading the rule* and the
+  report came from *looking at the frame*, and the two arrived at the same line of
+  code from opposite ends. `scene::house_corner_named_by_its_art` now stands where
+  Britain does — the lamp due south — instead of standing clear of the exemption.
 - **A corner is not in the elevation view.** `plan::elevation` unrolls one run of
   one face — `wall.face` is a single `Face` — so the instrument that made
   decisions 22 and 23 visible cannot draw the join a corner makes between two
@@ -1727,7 +1790,7 @@ Found while giving a corner its two faces:
 
 Found while writing this plan:
 
-- **A sconce lights through its own wall.** Decision 3 exempts the light's own
-  tile from occluding it, which is right for a torch standing in a doorway and
-  wrong for a sconce mounted on a wall: both sides of that wall are lit. The
-  fix wants the wall's *facing*, which is decision 3's whole problem.
+- ~~**A sconce lights through its own wall.**~~ The oldest entry in this backlog,
+  closed by decision 26. It wanted the wall's facing and it got it — by way of
+  step 15 measuring one and decision 26 using it to place the flame rather than to
+  excuse it.

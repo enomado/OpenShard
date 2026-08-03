@@ -33,6 +33,7 @@ use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::StaticAtlas;
 use openshard_client_render::camera::{Camera, TileBounds};
 use openshard_client_render::cutaway::Cutaway;
+use openshard_client_render::facing::Face;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::items::GroundItem;
 use openshard_client_render::light::{self, Spot};
@@ -234,6 +235,62 @@ fn what_the_lighting_knows_about_a_place() {
             })
             .collect();
         println!("{line}");
+    }
+
+    // And the *faces* of the tile being asked about, which the sweep above cannot
+    // reach: its pixels are on the ground, and a wall's are not. Each face is
+    // sampled at the middle of its own plane, halfway up the wall — the point
+    // `statics.wgsl` writes for a pixel there — so what comes out is what the
+    // frame will draw on that surface and not an average of the tile.
+    //
+    // This is the half a report about a glowing wall is made of. `through` is
+    // what the walk let past and `cone` is how much of the flame the surface is
+    // turned towards: a face behind the flame's plane reads a `through` of 1 and a
+    // `cone` of 0, and only the two apart tell that from a shadow.
+    println!("\n=== and its four faces, halfway up ===");
+    let inside = 1.0 - 1.0 / 127.0;
+    for (face, at, z) in [
+        (
+            Face::North,
+            Vec2::new(f32::from(at_x) + 0.5, f32::from(at_y)),
+            10.0,
+        ),
+        (
+            Face::East,
+            Vec2::new(f32::from(at_x) + inside, f32::from(at_y) + 0.5),
+            10.0,
+        ),
+        (
+            Face::South,
+            Vec2::new(f32::from(at_x) + 0.5, f32::from(at_y) + inside),
+            10.0,
+        ),
+        (
+            Face::West,
+            Vec2::new(f32::from(at_x), f32::from(at_y) + 0.5),
+            10.0,
+        ),
+    ] {
+        let sample = light::sample(
+            Spot {
+                at,
+                z,
+                face: Some(face),
+            },
+            &lighting,
+        );
+        let nearest = sample
+            .reaches
+            .iter()
+            .filter(|reach| reach.within)
+            .min_by(|a, b| a.distance.total_cmp(&b.distance));
+        match nearest {
+            None => println!("{face:?}: no flame reaches it"),
+            Some(reach) => println!(
+                "{face:?}: through {:.3}  facing {:.3}  from the flame {:.1} tiles away",
+                reach.through, reach.cone, reach.distance,
+            ),
+        }
     }
 }
 

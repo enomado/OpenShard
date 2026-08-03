@@ -395,30 +395,40 @@ fn the_face_of_a_wall_is_lit_from_inside_the_room() {
     }
 }
 
-/// A sconce lights through the wall it is mounted on. **This is wrong, and it is
-/// pinned so that fixing it is visible.**
+/// A sconce lights the street it hangs over and not the room behind it.
 ///
-/// A light's own tile is exempted from occluding it — decision 3 — because a
-/// torch standing in a doorway must not shadow itself. For a sconce that
-/// exemption lights the street outside as brightly as the room inside, and the
-/// fix wants the wall's *facing*, which is nowhere in `tiledata.mul`. Until
-/// there is one, this test states the behaviour rather than pretending it is not
-/// there; it fails the day a facing arrives, and that failure is the point.
+/// **The test that was the other way round for as long as this pass existed.** A
+/// light's own tile is exempt from occluding it — decision 3, and right for a
+/// torch standing in a doorway — so a lamp bolted to a house lit the room inside
+/// exactly as brightly as the street outside, and the old version of this
+/// asserted the two were *equal* and said it would fail the day a facing arrived.
+///
+/// What answered it is not an exemption but a place: the wall's own art names
+/// which side of its tile it stands on, so the flame belongs outside that plane
+/// rather than at its tile's centre — `light::mounted_at`, decision 26. The wall
+/// then stops being the flame's own cell and becomes an ordinary occluder, and
+/// the room goes dark for the same reason any room behind a wall does.
+///
+/// Both sides are asserted, and the second is what keeps the fix honest: a sconce
+/// that lit nothing at all would pass "the room is dark" perfectly.
 #[test]
-fn a_sconce_lights_through_its_own_wall() {
+fn a_sconce_lights_the_street_and_not_the_room_behind_it() {
     let scene = scene::sconce_on_wall();
     let lighting = scene.lighting(STILL);
-    let (in_front, behind) = ((CENTRE.0, CENTRE.1 - 1), (CENTRE.0, CENTRE.1 + 1));
-    let north = at(&lighting, in_front, 0.0);
-    let south = at(&lighting, behind, 0.0);
+    let picture = picture(&scene, &lighting);
+    // The wall stands on its tiles' south edge, so the street it faces is south
+    // and the room is north.
+    let (street, room) = ((CENTRE.0, CENTRE.1 + 1), (CENTRE.0, CENTRE.1 - 1));
+    let lit = at(&lighting, street, 0.0);
+    let dark = at(&lighting, room, 0.0);
     assert!(
-        (north - south).abs() < 1e-6,
-        "a facing has appeared — update this test and decision 3: {north} against {south}{}",
-        picture(&scene, &lighting),
+        lit > ambient(&lighting, street) + 0.2,
+        "the sconce lights nothing at all: {lit}{picture}",
     );
     assert!(
-        north > ambient(&lighting, in_front) + 0.2,
-        "the sconce lights nothing at all: {north}"
+        (dark - ambient(&lighting, room)).abs() < 1e-6,
+        "the sconce lights through its own wall: {dark} against an ambient of {}{picture}",
+        ambient(&lighting, room),
     );
 }
 
@@ -662,12 +672,18 @@ fn a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it() {
 /// a wall and could not reach a corner, because there was nothing in the
 /// attachment to fix it with.
 ///
-/// The lamp stands north-east of the corner — see
-/// [`scene::house_corner_named_by_its_art`] for why that is the one quadrant that
-/// can say this — so the corner's **east** face looks at it and its **south**
-/// face looks away. Both samples are on the corner's own tile, at the same
-/// height, differing in nothing but which surface they are a point of, which is
-/// the whole claim: one tile, two answers.
+/// The lamp stands due south of the corner, where Britain's own lamp post stands
+/// — so the corner's **south** face is turned towards it and its **east** face is
+/// turned away, half a tile behind the plane the lamp is in front of. Both
+/// samples are on the corner's own tile, at the same height, differing in nothing
+/// but which surface they are a point of, which is the whole claim: one tile, two
+/// answers.
+///
+/// Reported from the client with the coordinates: lamp at `(1441, 1693)`, corner
+/// at `(1441, 1692)`, and the face leaning towards `(1442, 1692)` — the east one
+/// — lit when it should not be. What lit it was the facing test's exemption for a
+/// flame in the wall's own line, which a lamp post in the street is in for the
+/// length of the column. Decision 26.
 ///
 /// What says the renderer agrees is two other tests. `frame.rs`'s
 /// `a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on` is what puts
@@ -701,16 +717,16 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     };
     // `cone` is where a surface's facing lands — the same number a beam does,
     // because both are "how much of this flame is turned this way".
-    let towards = reach(Vec2::new(cx + inside, cy + 0.5), Face::East);
-    let away = reach(Vec2::new(cx + 0.5, cy + inside), Face::South);
+    let towards = reach(Vec2::new(cx + 0.5, cy + inside), Face::South);
+    let away = reach(Vec2::new(cx + inside, cy + 0.5), Face::East);
 
     assert!(
         towards > 0.5,
-        "the corner's east face does not see the lamp standing east of it: {towards}{picture}",
+        "the corner's south face does not see the lamp standing south of it: {towards}{picture}",
     );
     assert!(
         away < 1e-6,
-        "the corner's south face is lit by a flame behind it: {away}{picture}",
+        "the corner's east face is lit by a flame behind its plane: {away}{picture}",
     );
 }
 
@@ -1071,10 +1087,13 @@ fn light_runs_along_a_wall_and_stops_across_it() {
         scene.name,
     );
 
-    // Across: south of the wall, and south of a tile that is *not* the torch's
-    // own — a flame's own tile never shadows it, so a spot directly below the
-    // sconce would be lit for a reason that has nothing to do with this test.
-    let across = through(&scene, (cx - 1, cy + 2));
+    // Across: on the far side of the wall from the flame, which is the *north*
+    // side. The wall stands on its tiles' south edge and a sconce bolted to it
+    // burns outside that plane (`light::mounted_at`), so what is across the wall
+    // from the lamp is the room and not the street it hangs over. Two tiles back
+    // and one tile west, so the ray crosses a panel that is not the flame's own
+    // cell's — a flame's own tile never shadows it.
+    let across = through(&scene, (cx - 1, cy - 2));
     assert!(
         across < 0.5,
         "{}: the wall let light through its own face — {across:.3} of it arrives",

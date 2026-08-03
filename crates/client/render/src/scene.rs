@@ -492,31 +492,18 @@ pub fn house_corner() -> Scene {
 /// wall a side to be lit from and could not reach a corner, because
 /// `Stance::Upright` has no outward normal at all.
 ///
-/// **The lamp stands north-east of the corner here and due south in
-/// [`house_corner`]**, and that is not tidying. There is only one quadrant a lamp
-/// can be in and light one of these two faces without the other:
-///
-/// - Due *south* is in front of the south face and behind the east one, which is
-///   the arrangement this wants — but it is also in the **column** the east face
-///   stands on, and decision 22 exempts a flame standing in a wall's own line
-///   because a lamp mounted anywhere along a run of wall lights all of it. The
-///   scene would be measuring the exemption rather than the geometry. Due east
-///   is the same thing mirrored, in the south face's own row.
-/// - Diagonally *outside* the corner — south-east — is in front of both.
-/// - **North-east** is in front of the east face, behind the south one, and in
-///   neither line: the street on the far side of the east run, which is an
-///   ordinary place for a lamp to hang.
-///
-/// The exemption is a placeholder for placing a mounted light outside the plane
-/// its tile names — see the backlog in `docs/lighting.md` — and until it is, a
-/// fixture about facing has to stand clear of it.
-///
-/// `docs/lighting.md`, decision 25.
+/// **The lamp stands due south, where Britain's own does**, and that is the
+/// arrangement the report came in as: the corner's south face is turned towards
+/// it and its east face is turned away, half a tile behind the plane the lamp
+/// stands in front of. One flame, one tile, two answers — and for a while the
+/// east one was wrong, because the facing test exempted a flame standing in the
+/// wall's own column and a column is a whole street long. `light::mounted_at`
+/// replaced that exemption with a place; `docs/lighting.md`, decisions 25 and 26.
 pub fn house_corner_named_by_its_art() -> Scene {
     corner_house(
         "the corner of a house whose art names both its faces",
         corner_of_a_house_the_art_names(),
-        (1, -1),
+        (0, 1),
     )
 }
 
@@ -596,8 +583,11 @@ pub fn room_with_open_door() -> Scene {
 /// - **Along** the wall — the torch and the lit spot both on the wall's own row,
 ///   so the ray enters each tile through one side and leaves through the other
 ///   without ever crossing the face. Nothing should stop it.
-/// - **Across** it — the torch north of the row and the spot south of it, so the
-///   ray goes through the face. Everything should stop it.
+/// - **Across** it — the spot on the far side of the wall from the flame, so the
+///   ray goes through the face. Everything should stop it. The far side is the
+///   *north* one: the wall stands on its tiles' south edge and a sconce bolted to
+///   it burns outside that plane (`light::mounted_at`), so the street it hangs
+///   over is the south and what is across the wall from it is the room.
 ///
 /// One scene and not two, because the two rays differ in nothing but direction:
 /// a mistake that let the second through would be invisible in a scene that only
@@ -637,17 +627,25 @@ pub fn room_with_window() -> Scene {
 
 /// A straight wall with a torch standing on one of its tiles: a sconce.
 ///
-/// The known-wrong case. Decision 3 exempts a light's own tile from occluding
-/// it, which is right for a torch in a doorway and wrong for a sconce: both
-/// sides of the wall are lit. There is no facing in `tiledata.mul` to fix it
-/// with, so the scene pins the current behaviour and will fail the day somebody
-/// invents one — which is what a backlog entry with a test looks like.
+/// **The case that was known-wrong for as long as this pass has existed.** A
+/// light's own tile is exempt from occluding it — decision 3, and right for a
+/// torch standing in a doorway — so a sconce lit both sides of the wall it is
+/// bolted to, and the room behind a lamp on a house was as bright as the street
+/// under it. The fix is not an exemption but a *place*: the wall's own art says
+/// which side of its tile it stands on, so the flame belongs outside that plane.
+/// `light::mounted_at`, and `docs/lighting.md`'s decision 26.
+///
+/// So this scene carries the art, and that is the whole of what makes it the
+/// fixture rather than the pin it used to be: without a picture nothing names an
+/// edge, there is no plane to be outside of, and the sconce goes on lighting the
+/// room.
 pub fn sconce_on_wall() -> Scene {
     let (cx, cy) = CENTRE;
     let mut scene = empty("a sconce on a straight wall");
     for x in cx - ROOM_HALF..=cx + ROOM_HALF {
         scene = scene.with((x, cy), WALL);
     }
+    scene.art = Some(south_faced_wall());
     scene.with(CENTRE, TORCH)
 }
 
