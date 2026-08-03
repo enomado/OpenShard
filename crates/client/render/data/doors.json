@@ -1,0 +1,19 @@
+{
+  "_source": "ServUO, Scripts/Items/Functional/Doors.cs. Every BaseDoor subclass is base(closed + 2 * facing, closed + 1 + 2 * facing, ...) over the eight DoorFacing values, so a family is sixteen consecutive graphics: even offsets shut, odd offsets swung open.",
+  "_why": "Nothing in the client's own files says which of a door's graphics is the open one. tiledata.mul gives an open leaf exactly the flags of its shut twin - measured, identical in all 104 pairs; the DOOR flag comes in runs of 1 to 98 graphics so there is no parity to read off the layout; and 'an open leaf's picture is wider than a tile' holds for 46 of the 104 because a door swung to four of the eight facings is still 44 across. See docs/lighting.md, decision 11.",
+  "families": [
+    { "base": 1653, "name": "MetalDoor" },
+    { "base": 1669, "name": "BarredMetalDoor" },
+    { "base": 1685, "name": "RattanDoor" },
+    { "base": 1701, "name": "DarkWoodDoor" },
+    { "base": 1717, "name": "MediumWoodDoor" },
+    { "base": 1733, "name": "MetalDoor2" },
+    { "base": 1749, "name": "LightWoodDoor" },
+    { "base": 1765, "name": "StrongWoodDoor" },
+    { "base": 2084, "name": "IronGate" },
+    { "base": 2105, "name": "LightWoodGate" },
+    { "base": 2124, "name": "IronGateShort" },
+    { "base": 2150, "name": "DarkWoodGate" },
+    { "base": 8173, "name": "BarredMetalDoor2" }
+  ]
+}

@@ -1116,6 +1116,9 @@ fn a_wall_stops_the_light_behind_it() {
         101,
         ROW,
         0,
+        // A plain wall graphic: `occlusion::opacity` asks `doors` first, and a
+        // door would be exempt for a reason this test is not about.
+        Graphic(0x0100),
         &StaticTile {
             flags: TileFlags::new(TileFlags::NO_SHOOT),
             height: 20,

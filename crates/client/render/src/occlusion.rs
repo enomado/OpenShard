@@ -75,6 +75,7 @@
 //! occluder cell is what a ray walks through, and this is what a *tile* is,
 //! read once per fragment and never in a loop.
 
+use openshard_protocol::wire::Graphic;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
@@ -119,7 +120,25 @@ pub const PANE: u8 = 51;
 /// flagged as a solid window is more likely to be a shuttered one than a
 /// transparent wall, and the union is the conservative direction — darkening is
 /// visible, leaking a room into the street is a bug.
-pub fn opacity(tile: &StaticTile) -> u8 {
+///
+/// # Why the graphic, when the flags are right here
+///
+/// Because an **open door** has the flags of a shut one. `tiledata.mul` gives a
+/// door's two leaves identical entries — measured over all 104 of ServUO's
+/// open/shut pairs — so a door left to its flags lays a whole tile of wall
+/// across its own doorway, which decision 3 makes the coarsest possible wrong
+/// answer. [`crate::doors`] is the table that knows, and this is where it is
+/// asked, before anything else: a leaf that has swung open stops nothing.
+///
+/// Which is the general shape and not a door-shaped patch. A flag is a fact
+/// about a *picture*, and anything that opens, lifts or breaks is a fact about
+/// the *thing*: a shutter, a portcullis, a drawbridge are all this question
+/// again. So the argument is the graphic, and the flags are what it falls back
+/// on.
+pub fn opacity(graphic: Graphic, tile: &StaticTile) -> u8 {
+    if crate::doors::is_open(graphic) {
+        return CLEAR;
+    }
     if tile.flags.has(TileFlags::NO_SHOOT) {
         return OPAQUE;
     }
@@ -237,8 +256,8 @@ impl Occlusion {
     /// A tile outside [`Occlusion::bounds`] is dropped rather than clamped: it
     /// is a caller walking wider than it asked the grid for, and folding it onto
     /// the edge would put a wall where the map has none.
-    pub fn add(&mut self, x: u16, y: u16, z: i8, tile: &StaticTile) {
-        let opacity = opacity(tile);
+    pub fn add(&mut self, x: u16, y: u16, z: i8, graphic: Graphic, tile: &StaticTile) {
+        let opacity = opacity(graphic, tile);
         if opacity == CLEAR {
             return;
         }
@@ -283,8 +302,8 @@ impl Occlusion {
     ///
     /// A tile outside [`Occlusion::bounds`] is dropped, exactly as
     /// [`Occlusion::add`] drops one.
-    pub fn shade(&mut self, x: u16, y: u16, z: i8, floor: i8, tile: &StaticTile) {
-        let opacity = opacity(tile);
+    pub fn shade(&mut self, x: u16, y: u16, z: i8, floor: i8, graphic: Graphic, tile: &StaticTile) {
+        let opacity = opacity(graphic, tile);
         if opacity == CLEAR {
             return;
         }
@@ -454,17 +473,31 @@ pub fn collect(
 
     crate::statics::for_each_static_in(map, bounds, |item| {
         let tile = tiledata.static_tile(item.tile);
-        occlusion.shade(item.x, item.y, item.z, floor(item.x, item.y), tile);
+        occlusion.shade(
+            item.x,
+            item.y,
+            item.z,
+            floor(item.x, item.y),
+            Graphic(item.tile),
+            tile,
+        );
         if cutaway::shows(cutaway, item.z, tile) {
-            occlusion.add(item.x, item.y, item.z, tile);
+            occlusion.add(item.x, item.y, item.z, Graphic(item.tile), tile);
         }
     });
 
     for item in items {
         let tile = tiledata.static_tile(item.graphic.0);
-        occlusion.shade(item.at.x, item.at.y, item.at.z, floor(item.at.x, item.at.y), tile);
+        occlusion.shade(
+            item.at.x,
+            item.at.y,
+            item.at.z,
+            floor(item.at.x, item.at.y),
+            item.graphic,
+            tile,
+        );
         if cutaway::shows(cutaway, item.at.z, tile) {
-            occlusion.add(item.at.x, item.at.y, item.at.z, tile);
+            occlusion.add(item.at.x, item.at.y, item.at.z, item.graphic, tile);
         }
     }
 
@@ -474,6 +507,10 @@ pub fn collect(
 
 #[cfg(test)]
 mod tests {
+    /// A graphic in none of `crate::doors`' families, for the tests here that are
+    /// about flags rather than about doors. Zero is below every family base.
+    const NOT_A_DOOR: Graphic = Graphic(0);
+
     use openshard_protocol::wire::{Graphic, Hue};
     use openshard_protocol::world::Point;
     use openshard_uofiles::map::{LandCell, Map};
@@ -487,6 +524,43 @@ mod tests {
             height,
             ..StaticTile::default()
         }
+    }
+
+    /// An open door leaves the grid, and the graphic is the only thing that says
+    /// so.
+    ///
+    /// The defect this is the fix for: `tiledata.mul` gives an open leaf the
+    /// flags of its shut twin, so a door read by its flags alone lays a whole
+    /// tile of wall across its own doorway — and decision 3's occluder being a
+    /// tile makes that a band of shadow with nothing visible casting it. The
+    /// pair below is the same `StaticTile` twice, which is the point: nothing in
+    /// it differs, and the answers do.
+    #[test]
+    fn an_open_door_stops_nothing_and_its_shut_twin_stops_everything() {
+        // `MetalDoor` facing 0, from `crate::doors` — and the flags the client
+        // actually gives both of its leaves.
+        let (shut, open) = (Graphic(0x0675), Graphic(0x0676));
+        let leaf = tile(TileFlags::NO_SHOOT | TileFlags::BLOCK | TileFlags::WALL, 20);
+        assert_eq!(opacity(shut, &leaf), OPAQUE, "a shut door is a wall");
+        assert_eq!(opacity(open, &leaf), CLEAR, "an open door is a doorway");
+
+        // And the grid keeps no cell for it, which is what the shadow walk reads.
+        let mut occlusion = Occlusion::new(bounds());
+        occlusion.add(100, 100, 0, shut, &leaf);
+        occlusion.add(101, 100, 0, open, &leaf);
+        assert!(occlusion.at(100, 100).is_some(), "the shut leaf left the grid");
+        assert_eq!(
+            occlusion.at(101, 100),
+            None,
+            "the open leaf is still a tile of wall across its own doorway",
+        );
+
+        // The sky too, and for the same reason: a doorway you can see through is
+        // a doorway you can see the sky through. `shade` and `add` reading one
+        // `opacity` is what keeps those two from drifting apart.
+        let mut occlusion = Occlusion::new(bounds());
+        occlusion.shade(101, 100, 0, 0, open, &leaf);
+        assert_eq!(occlusion.sky_at(101, 100), SKY_OPEN, "an open door took the sky");
     }
 
     /// A rectangle big enough for a few tiles around the origin of a test.
@@ -507,15 +581,18 @@ mod tests {
     /// makes a lit room invisible from the road.
     #[test]
     fn a_wall_stops_light_a_pane_dims_it_and_a_barrel_does_not() {
-        assert_eq!(opacity(&tile(TileFlags::NO_SHOOT, 20)), OPAQUE);
-        assert_eq!(opacity(&tile(TileFlags::WINDOW, 20)), PANE);
-        assert_eq!(opacity(&tile(TileFlags::BLOCK, 10)), CLEAR);
+        assert_eq!(opacity(NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20)), OPAQUE);
+        assert_eq!(opacity(NOT_A_DOOR, &tile(TileFlags::WINDOW, 20)), PANE);
+        assert_eq!(opacity(NOT_A_DOOR, &tile(TileFlags::BLOCK, 10)), CLEAR);
         // A real wall carries both, and the rule must not need the pair.
-        assert_eq!(opacity(&tile(TileFlags::NO_SHOOT | TileFlags::BLOCK, 20)), OPAQUE);
+        assert_eq!(
+            opacity(NOT_A_DOOR, &tile(TileFlags::NO_SHOOT | TileFlags::BLOCK, 20)),
+            OPAQUE
+        );
         // And a static flagged as both a window and solid is the solid one: the
         // union darkens, which is the direction that cannot leak a room.
         assert_eq!(
-            opacity(&tile(TileFlags::NO_SHOOT | TileFlags::WINDOW, 20)),
+            opacity(NOT_A_DOOR, &tile(TileFlags::NO_SHOOT | TileFlags::WINDOW, 20)),
             OPAQUE
         );
         const { assert!(PANE > CLEAR && PANE < OPAQUE, "a pane is neither open nor a wall") };
@@ -525,7 +602,7 @@ mod tests {
     #[test]
     fn a_wall_carries_the_span_it_stands_in() {
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(102, 103, 5, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(102, 103, 5, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
         assert_eq!(
             occlusion.at(102, 103),
             Some(Cell {
@@ -543,7 +620,13 @@ mod tests {
     #[test]
     fn a_climbable_static_occludes_half_its_height() {
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(100, 100, 0, &tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20));
+        occlusion.add(
+            100,
+            100,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20),
+        );
         assert_eq!(occlusion.at(100, 100).unwrap().top, 10);
     }
 
@@ -553,8 +636,8 @@ mod tests {
     #[test]
     fn two_occluders_on_one_tile_span_both() {
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(105, 105, 0, &tile(TileFlags::NO_SHOOT, 20));
-        occlusion.add(105, 105, 40, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(105, 105, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(105, 105, 40, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
         assert_eq!(
             occlusion.at(105, 105),
             Some(Cell {
@@ -571,7 +654,7 @@ mod tests {
     #[test]
     fn a_tile_outside_the_bounds_is_dropped_and_not_clamped() {
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(99, 100, 0, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(99, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
         assert_eq!(occlusion.at(99, 100), None);
         assert_eq!(occlusion.at(100, 100), None, "and did not land on the edge");
     }
@@ -586,8 +669,8 @@ mod tests {
             min_y: 0,
             max_y: 1,
         });
-        occlusion.add(1, 0, -10, &tile(TileFlags::NO_SHOOT, 20));
-        occlusion.add(0, 1, 120, &tile(TileFlags::NO_SHOOT, 60));
+        occlusion.add(1, 0, -10, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(0, 1, 120, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 60));
         let bytes = occlusion.bytes();
         assert_eq!(bytes.len(), 4 * 4);
         assert_eq!(&bytes[0..4], &[0, 0, 0, 0], "(0,0) is open");
@@ -611,8 +694,8 @@ mod tests {
             min_y: 200,
             max_y: 201,
         });
-        occlusion.add(102, 200, 0, &tile(TileFlags::NO_SHOOT, 20));
-        occlusion.add(100, 201, 5, &tile(TileFlags::WINDOW, 10));
+        occlusion.add(102, 200, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(100, 201, 5, NOT_A_DOOR, &tile(TileFlags::WINDOW, 10));
         let boxes: Vec<_> = occlusion.boxes().collect();
         assert_eq!(
             boxes,
@@ -653,26 +736,26 @@ mod tests {
         let mut occlusion = Occlusion::new(bounds());
         assert_eq!(occlusion.sky_at(100, 100), SKY_OPEN, "nothing built yet");
 
-        occlusion.shade(100, 100, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+        occlusion.shade(100, 100, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
         assert_eq!(occlusion.sky_at(100, 100), 0, "a roof over the floor");
 
-        occlusion.shade(101, 100, 20, 0, &tile(TileFlags::WINDOW, 5));
+        occlusion.shade(101, 100, 20, 0, NOT_A_DOOR, &tile(TileFlags::WINDOW, 5));
         assert_eq!(
             occlusion.sky_at(101, 100),
             204,
             "a glazed roof passes four fifths of the sky",
         );
 
-        occlusion.shade(102, 100, 20, 0, &tile(TileFlags::BLOCK, 5));
+        occlusion.shade(102, 100, 20, 0, NOT_A_DOOR, &tile(TileFlags::BLOCK, 5));
         assert_eq!(occlusion.sky_at(102, 100), SKY_OPEN, "a crate is not a lid");
 
         // A cellar's wall, twenty tall, standing forty below the street: its top
         // is still under the floor, so the street above it is open sky.
-        occlusion.shade(103, 100, -40, 0, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.shade(103, 100, -40, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
         assert_eq!(occlusion.sky_at(103, 100), SKY_OPEN);
 
         // And two panes are darker than one: the column multiplies.
-        occlusion.shade(101, 100, 30, 0, &tile(TileFlags::WINDOW, 5));
+        occlusion.shade(101, 100, 30, 0, NOT_A_DOOR, &tile(TileFlags::WINDOW, 5));
         assert!(occlusion.sky_at(101, 100) < 204);
 
         assert_eq!(occlusion.sky_at(0, 0), SKY_OPEN, "outside the grid is sky");
@@ -695,7 +778,7 @@ mod tests {
         let mut occlusion = Occlusion::new(small);
         for x in 0..=2u16 {
             for y in 0..=2u16 {
-                occlusion.shade(x, y, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+                occlusion.shade(x, y, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
             }
         }
         occlusion.blur_sky();
@@ -709,7 +792,7 @@ mod tests {
         // its neighbours come down off the sky, which is the doorway's gradient
         // arriving from the other side.
         let mut one = Occlusion::new(bounds());
-        one.shade(105, 105, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+        one.shade(105, 105, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
         one.blur_sky();
         // Eight open neighbours and itself dark: 255 * 8 / 9.
         assert_eq!(one.sky_at(105, 105), 226);
@@ -781,7 +864,7 @@ mod tests {
             min_y: 0,
             max_y: 1,
         });
-        occlusion.shade(1, 0, 20, 0, &tile(TileFlags::NO_SHOOT, 5));
+        occlusion.shade(1, 0, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
         let bytes = occlusion.field_bytes();
         assert_eq!(bytes.len(), 4 * 4, "one texel a tile, four channels");
         assert_eq!(&bytes[0..4], &[SKY_OPEN, 0, 0, 0], "(0,0) is open sky");

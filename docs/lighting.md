@@ -229,11 +229,35 @@ the *fact*, and it is not in the client:
   the 104 pairs and no better, because a door swung to four of the eight facings
   is still 44 across.
 
-Which leaves the door table itself, and it lives on the server: the shard is what
-changes the graphic. Porting ServUO's thirteen families with the citation above
-is the repository's own idiom and covers every door the client ships; a shard's
-custom door would keep today's behaviour, which is the safe direction. Not done —
-see the backlog.
+Which leaves the door table itself, and it is ServUO's. `render/src/doors.rs`
+and `data/doors.json`: the thirteen family bases, sixteen graphics each, even
+shut and odd open — and `occlusion::opacity` asks it **before** it looks at a
+flag, so an open leaf stops nothing and takes none of the tile's sky.
+
+Two things follow from where the question is asked. `opacity` takes the
+**graphic** now and not only the tiledata entry, which is the general shape
+rather than a door-shaped patch: a flag is a fact about a *picture*, and
+anything that opens, lifts or breaks — a shutter, a portcullis, a drawbridge —
+is a fact about the *thing*. And **a graphic the table does not know keeps
+today's behaviour exactly**, so a shard's own door goes on occluding rather than
+a wrong guess opening a room to the street; the same refusal decision 15's
+detector makes.
+
+Held to by three tests, two of which need a real install. The client is the
+oracle a ported table needs: every one of the 208 graphics the table claims is
+flagged `DOOR` in `tiledata.mul` bar four, which is the client's own gap and not
+a mistyped base. The second asserts the module's *premise* — that the stopping
+flags of an open leaf and its shut twin are identical, 103 of the 104 pairs, the
+one exception (`0x0683`/`0x0684`) named rather than tolerated by a percentage.
+The day that stops being true, the right move is to delete the table and read the
+flags, and the test says so. The third is in the grid: the same `StaticTile`
+twice, two graphics, and only the open one leaves no cell.
+
+`server/world/src/doorgen.rs` ports the same `+ 2 * facing` rule for the doors a
+shard generates. Two copies, because `client/*` and `server/*` never depend on
+each other and a table of art indices is not something both ends of the wire
+agree on. If a third reader appears, the table moves down; the boundary does
+not.
 
 **12. The sun is a direction; a sunbeam on the floor is the same walk without an
 endpoint.** A flame is a point and the walk between a fragment and it is bounded
@@ -891,20 +915,29 @@ Found while measuring a wall's facing out of its art:
 
 Found while asking what an open door does:
 
-- **An open door is a tile-wide wall across its own doorway.** The whole of
-  decision 11, above: the fact "this door is open" is in no client file, so
-  nothing tells the grid to let go of the tile. It is the most visible defect in
-  the pass right now, because the leaf beside the band is brightly lit and the
-  band has nothing casting it.
+- ~~**An open door is a tile-wide wall across its own doorway.**~~ Fixed:
+  `render/src/doors.rs` and decision 11. What is left of it is the shape of the
+  fix rather than the fix — see the two items below.
 - **The shading half of a door already works.** 558 graphics carry `DOOR`; the
   ones `facing::face_of` reads sit on a tile edge as squarely as a plain wall —
   median distance zero, none over two pixels — so an open leaf is shaded along
   the axis it swung to. Only the occlusion half is wrong.
-- **`occlusion::opacity` asks the graphic and the graphic is the wrong witness
-  for anything that changes state.** A door is the case that exists; a shutter, a
-  portcullis and a drawbridge are the same shape of problem. Whatever answers it
-  wants to be a question about the *item*, not about its picture — which is a
-  seam the client half of this workspace does not have yet.
+- **The door table is thirteen families and a shard's own door is not in it.**
+  `doors::is_open` answers `false` for anything it does not know, so a custom
+  door occludes shut or open alike. The right home for that fact is the shard —
+  it is what changes the graphic — and the wire does not carry it. A pack that
+  ships doors would want to ship the table beside them, which is the shape
+  `data/doors.json` is already in.
+- **Four of the 208 graphics the table claims are not flagged `DOOR`.**
+  `0x0692`, `0x0844`, `0x0846`, `0x0873`. Measured and left alone: they sit
+  inside otherwise solid families, so it is the client's gap rather than a
+  mistyped base, and nothing reads the `DOOR` flag anyway. Worth a look if one of
+  them ever turns up drawn.
+- **A pane and a door are the same question asked twice.** `occlusion::opacity`
+  now takes the graphic because a flag describes a *picture* and an open door is
+  a fact about a *thing*. A shutter, a portcullis and a drawbridge are the same
+  shape and none of them is handled; what they all want is the client knowing an
+  item's state, which is a seam this half of the workspace does not have.
 
 Found while writing this plan:
 
