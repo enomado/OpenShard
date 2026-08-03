@@ -56,7 +56,7 @@ use crate::camera::Camera;
 use crate::cutaway::{self, Cutaway};
 use crate::geometry::Vec2;
 use crate::items::GroundItem;
-use crate::occlusion::Occlusion;
+use crate::occlusion::{EDGE_ANY, Occlusion};
 
 /// One point light, where it stands in the world.
 ///
@@ -1080,11 +1080,16 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
             },
         };
         let crossing = entry | exit;
-        if cell != first && cell != last {
-            if let Some(stands) = occlusion
-                .at(cell.0, cell.1)
-                .filter(|stands| stands.edges == 0 || stands.edges & crossing != 0)
-            {
+        let stands = occlusion.at(cell.0, cell.1);
+        // A *named* side, and the flame's own tile is exempt only while nothing
+        // names one. `blit.wgsl`'s `reaches` argues it at length: the flame sits
+        // at its tile's centre, inside the panel, so a ray crossing that panel is
+        // leaving the wall. The lit tile stays exempt whatever it holds, because a
+        // wall's two faces are one tile and there is no telling which of them a
+        // pixel is on.
+        let named = stands.is_some_and(|stands| stands.edges != 0 && stands.edges != EDGE_ANY);
+        if cell != first && (cell != last || named) {
+            if let Some(stands) = stands.filter(|stands| stands.edges == 0 || stands.edges & crossing != 0) {
                 // The ray's own height over this crossing, against the span the
                 // tile occupies: what counts is how much of the two overlap.
                 let from = spot.z + delta[2] * entered;

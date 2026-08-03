@@ -412,6 +412,24 @@ is stopped only where it *crosses* one of them. Three things make that cheap:
   and `present` was a byte holding a bare yes; it is `PRESENT | mask` now.
 - The face is already measured: `Sprite::face`, once, when the picture is packed.
 
+**And the flame's own tile stops being exempt.** That exemption was decision 3's
+— a sconce must not be shadowed by the wall it hangs on, and with a whole-tile
+occluder there was nothing else to do. With a panel there is, because the flame
+sits at its tile's *centre*, which is inside the panel: a ray crossing it is
+leaving the wall. Keeping the exemption is not merely generous, it is *visibly*
+wrong — it lets a bright wedge straight out through the wall while the
+neighbouring tiles' panels cut everything either side of it, so a street lamp
+reads as a starburst and its own street is blown out. Measured on Britain
+1439,1693: the tiles east of the lamp came out at 0.72 with the exemption and
+0.41 without.
+
+The tile *being lit* stays exempt whatever it holds, and the asymmetry is the
+point. A wall's two faces are one tile — the backlog has carried that since the
+sun arrived — so a pixel's fraction is clamped inside its tile whichever face it
+is on, and testing its own panel would darken whichever face the flame is not
+behind. There is no telling which that is. The flame's position is known; the
+fragment's side is not.
+
 Three answers and not two, and the third is the one to be careful about. A mask
 of **all four** is "it stands up and the art would not say" — a corner, a post, a
 tree — which is the whole-tile occluder decision 3 started with, so an unread
@@ -961,12 +979,15 @@ Found while measuring a wall's facing out of its art:
 
 Found while asking why a lamp on a house does not light the street:
 
-- **Thin dark spokes fan out of a lamp where a wall run ends.** Visible in the
-  `View::Light` dump beside the fix, and new: with the whole tile gone, rays that
-  graze the end of a wall are stopped at some angles and not at neighbouring
-  ones, which reads as a starburst rather than as an edge. Smaller than the band
-  it replaces and worth a look at the live client, where it can be judged
-  moving.
+- **Thin spokes still fan out of a lamp standing against a wall.** Most of the
+  starburst was the flame's own-tile exemption and is gone with it, but not all:
+  a run of wall with a doorway in it passes light where the gap is and stops it
+  either side, and a panel is a line rather than a slab, so the boundary between
+  the two is exact and reads as a blade. It is *correct* geometry drawn without
+  a penumbra worth the name — decision 14's softening is scaled by how far along
+  the ray the occluder is, and says nothing about how narrow the opening was.
+  The honest fix is the several jittered rays the backlog already asks for.
+  Judge it moving, in the client, rather than in a still.
 - **A ray through the corner between two panels passes between them.** The
   diagonal gap the backlog already carries, arriving with more room to happen in:
   two walls meeting at a tile corner used to be two solid tiles and are now two

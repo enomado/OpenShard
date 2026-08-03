@@ -290,11 +290,30 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
             }
         }
         let crossing = entry | exit;
+        let stands = occluder_at(cell.x, cell.y);
+        let sides = stands.w & EDGE_MASK;
+        // A *named* side: one or more, but not all four. All four is "it stands up
+        // and the art would not say", which is the whole tile decision 3 had.
+        let named = sides != 0u && sides != EDGE_MASK;
+        // The tile being lit is always exempt, so a wall's own face stays the
+        // brightest thing beside a torch. A pixel of a wall claims a fraction
+        // clamped *inside* its tile whichever face of the wall it is on — the two
+        // faces are one tile, which `docs/lighting.md`'s backlog carries — so
+        // testing its own panel would darken whichever of the two the flame is
+        // not behind, and there is no way to know which that is.
+        //
+        // The flame's tile is exempt only while nothing names a side. That
+        // exemption exists so a sconce is not shadowed by the wall it hangs on,
+        // and with a whole-tile occluder there was no alternative. With a panel
+        // there is: the flame is at its tile's centre, which is *inside* the
+        // panel, so a ray crossing that panel is leaving the wall and must be
+        // stopped. Keeping the exemption instead lets a bright wedge straight out
+        // through the wall while the neighbouring tiles' panels cut everything
+        // either side of it, which reads as a starburst — measured, and the reason
+        // this line is not the obvious one.
         let exempt = (cell.x == first.x && cell.y == first.y)
-            || (cell.x == last.x && cell.y == last.y);
+            || (cell.x == last.x && cell.y == last.y && !named);
         if !exempt {
-            let stands = occluder_at(cell.x, cell.y);
-            let sides = stands.w & EDGE_MASK;
             // A lid (`sides == 0`) is tested by its `z` span alone; a panel also
             // has to be on a side the ray goes through.
             if stands.w != 0u && (sides == 0u || (sides & crossing) != 0u) {
