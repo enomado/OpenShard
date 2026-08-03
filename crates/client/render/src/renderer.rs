@@ -1290,7 +1290,12 @@ pub(crate) fn upload(
 /// that produced the range and the texture it is written into are the same size
 /// by construction, so a range outside it is a bug in this crate and not
 /// something a frame should die of.
-pub(crate) fn write_rows(queue: &wgpu::Queue, texture: &wgpu::Texture, pixels: &[u8], rows: std::ops::Range<u32>) {
+pub(crate) fn write_rows(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    pixels: &[u8],
+    rows: std::ops::Range<u32>,
+) {
     let width = texture.width();
     let height = texture.height();
     let (top, bottom) = (rows.start.min(height), rows.end.min(height));

@@ -103,6 +103,12 @@ bytes = "1"
 # before, so a shell that exports it and a shell that types it get the same run,
 # and `--help` is the one place both are written down.
 clap = { version = "4", features = ["derive", "env"] }
+# Rasterizes an operator-supplied TrueType/OpenType face
+# (`openshard_uofiles::ttf_font`) for the code points `fonts.mul` never
+# shipped — Cyrillic today. Pure Rust, no system font stack: the same
+# rasterizer runs identically on every platform this workspace targets,
+# including the wasm32 client build.
+fontdue = "0.9"
 # `.env` beside the workspace root, read before the command line is parsed. What
 # it holds is one operator's client install — a path that must never be
 # committed, which is why the file is in `.gitignore` and `.env.example` is the

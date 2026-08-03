@@ -96,6 +96,11 @@ struct Cli {
     /// The `tracing` filter, in `RUST_LOG` syntax.
     #[arg(long, env = "RUST_LOG", default_value = "info", value_name = "FILTER")]
     log: String,
+
+    /// Draw overhead speech through this TrueType or OpenType face instead of
+    /// `fonts.mul`. See `openshard_client_app`'s own flag of the same name.
+    #[arg(long, env = "OPENSHARD_TTF_FONT", value_name = "FILE")]
+    ttf_font: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -159,7 +164,7 @@ fn main() -> ExitCode {
     // On this thread, because `winit` requires the event loop to own the one it
     // was built on. The shard is the one that moved.
     let plan = openshard_e2e_shard::plan_for(&cli.account, &cli.character);
-    let code = openshard_client_app::run(&dir, Some((dial, plan)));
+    let code = openshard_client_app::run(&dir, Some((dial, plan)), cli.ttf_font);
 
     // The window is gone, so the shard is asked to stop and waited for. The wait
     // is not a formality any more: with a config naming a database, the last

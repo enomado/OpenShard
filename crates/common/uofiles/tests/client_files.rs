@@ -20,7 +20,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::anim::{Anim, BodyKind, DIRECTIONS};
 use openshard_uofiles::art::Art;
 use openshard_uofiles::equipconv::EquipConv;
-use openshard_uofiles::font::{AsciiFonts, CHARS_PER_FONT, FONT_COUNT};
+use openshard_uofiles::font::{AsciiFonts, CHARS_PER_FONT, FONT_COUNT, GLYPH_BASE};
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::texmaps::{TEXTURE_COUNT, TexMaps, TextureId};
@@ -818,10 +818,14 @@ fn a_real_fonts_mul_parses_to_ten_plausible_faces() {
     let mut widest = 0usize;
     let mut sampled = 0usize;
     for font in 0..FONT_COUNT as u16 {
-        for char in 0..CHARS_PER_FONT as u8 {
+        // `GLYPH_BASE` upward: the table has no record at all below it, so a
+        // code point down there is the one input `glyph` is supposed to
+        // refuse rather than sample.
+        for offset in 0..CHARS_PER_FONT as u16 {
+            let char = (u16::from(GLYPH_BASE) + offset) as u8;
             let glyph = fonts
                 .glyph(Font(font), char)
-                .unwrap_or_else(|| panic!("font {font} character {char} missing from the table"));
+                .unwrap_or_else(|| panic!("font {font} character {char:#04X} missing from the table"));
             assert!(
                 usize::from(glyph.width()) < 64 && usize::from(glyph.height()) < 64,
                 "font {font} character {char:#04X} came out {}x{}, which is not a glyph",
@@ -840,13 +844,39 @@ fn a_real_fonts_mul_parses_to_ten_plausible_faces() {
     // `'A'` (0x41) and space (0x20) are drawn in every face; a stride that had
     // slipped would make at least one of the ten faces' `'A'` come out
     // zero-sized or absurdly large, the way a control code's glyph looks.
+    //
+    // This is also the assertion `GLYPH_BASE` exists for. The table's real
+    // base is `0x20`, not code point `0`: read without the offset, `glyph(3,
+    // 0x41)` silently returns table index 65, which is the record for
+    // `'a'` (`0x61 - GLYPH_BASE`) and not `'A'` at all — width 8, height 19
+    // on this client, versus 12x21 for the real `'A'`. Both are "some glyph,
+    // not zero-sized", which is why width alone cannot catch this: it takes
+    // knowing that `'A'` is drawn *wider* than space, not merely drawn.
     for font in 0..FONT_COUNT as u16 {
         let letter = fonts.glyph(Font(font), 0x41).unwrap();
+        let space = fonts.glyph(Font(font), 0x20).unwrap();
         assert!(
             letter.width() > 0 && letter.height() > 0,
             "font {font}'s 'A' is {}x{}, not drawn at all",
             letter.width(),
             letter.height()
         );
+        assert!(
+            letter.width() > space.width(),
+            "font {font}'s 'A' ({}px) is not wider than its space ({}px) — GLYPH_BASE is off",
+            letter.width(),
+            space.width(),
+        );
     }
+
+    // Font 3 (`Font::DEFAULT`, what every stock line of speech draws in) on
+    // this client's 7.0.116.0 `fonts.mul`, pinned exactly: the regression this
+    // whole test exists for is a systematic 32-record (`GLYPH_BASE`) shift,
+    // and a shift that size changes both numbers on every printable
+    // character, so an exact pin here is a much sharper trip wire than the
+    // shape checks above.
+    let a = fonts.glyph(Font(3), 0x41).unwrap();
+    assert_eq!((a.width(), a.height()), (12, 21), "font 3's 'A'");
+    let space = fonts.glyph(Font(3), 0x20).unwrap();
+    assert_eq!((space.width(), space.height()), (6, 20), "font 3's space");
 }
