@@ -491,7 +491,16 @@ fn row(
     Ok((
         Graphic(graphic),
         Row {
-            shape: Shape { facing, hole },
+            // **The table does not carry a prism yet.** A row is `facing` and
+            // `hole`, so a solid measured by `Shape::of` on a machine with no
+            // table is lost on one that has it — see `docs/lighting.md`'s
+            // backlog. The safe direction, and the one this picks: no prism is
+            // what every graphic had before prisms existed.
+            shape: Shape {
+                facing,
+                hole,
+                prism: None,
+            },
             authored,
         },
     ))
@@ -567,6 +576,7 @@ mod tests {
             Shape {
                 facing: Some(Facing::One(Face::East)),
                 hole: Some(WINDOW),
+                prism: None,
             },
         );
         table.derive(

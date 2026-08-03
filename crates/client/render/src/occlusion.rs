@@ -229,6 +229,20 @@ pub struct Shape {
     /// above the *static's own base*. [`Builder::add`] is where the two meet,
     /// because it is the one place that knows which `z` this instance stands at.
     pub hole: Option<Hole>,
+    /// The solid this picture is of, where it is a picture of one.
+    ///
+    /// A different *kind* of answer from [`Shape::facing`], and the two are not
+    /// alternatives by accident: a facing says which edge of the tile a plane
+    /// stands on, and a prism says what shape fills the tile. A stair has both
+    /// answers — the wall detector reads its base as a corner of two walls,
+    /// because a solid's base is pixel for pixel what two walls meeting leave —
+    /// and the prism is the true one. See `docs/lighting.md`'s backlog, "found on
+    /// a staircase in Britain".
+    ///
+    /// Which of the two is believed is not decided here: this is what the picture
+    /// says, and [`Builder::add`] is where the client's own `CLIMBABLE` bit picks
+    /// between them.
+    pub prism: Option<crate::facing::Prism>,
 }
 
 impl Shape {
@@ -236,6 +250,7 @@ impl Shape {
     pub const UNREAD: Self = Self {
         facing: None,
         hole: None,
+        prism: None,
     };
 
     /// A graphic whose face the art named and whose hole it did not — which is
@@ -244,6 +259,16 @@ impl Shape {
         Self {
             facing: Some(facing),
             hole: None,
+            prism: None,
+        }
+    }
+
+    /// A graphic the art reads as a solid: a box, or a flight of steps.
+    pub fn solid(prism: crate::facing::Prism) -> Self {
+        Self {
+            facing: None,
+            hole: None,
+            prism: Some(prism),
         }
     }
 
@@ -268,6 +293,18 @@ impl Shape {
         Self {
             facing,
             hole: facing.and_then(|facing| crate::facing::aperture_of(image, facing)),
+            // **Only offered to a picture the wall detector called a corner.**
+            // Not a shortcut for the cost, though it saves nearly all of it: a
+            // solid's base *is* two 45° runs meeting at the tile's south corner,
+            // so every prism the client draws reads as a corner first. A picture
+            // that reads as one plain face is a wall standing on one edge, and
+            // scoring prisms against it would be asking whether a wall is a box —
+            // a question whose best answer is 0.81 and therefore a question worth
+            // not asking.
+            prism: match facing {
+                Some(Facing::Corner { .. }) => crate::facing::prism_of(image),
+                _ => None,
+            },
         }
     }
 }
@@ -951,6 +988,47 @@ impl Builder {
         };
         let bottom = i32::from(z);
         let top = bottom + calc_height(tile);
+        // **A climbable static is a solid, and the art says which one.**
+        //
+        // A stair's base is two 45° runs meeting at the tile's south corner,
+        // which is pixel for pixel what two walls meeting at a corner leave — so
+        // `facing_of` reads a flight of steps as a corner of a house and the grid
+        // used to stand two opaque panels on its east and south edges. A
+        // staircase then shadowed a street like a run of wall, and its own treads
+        // shadowed each other.
+        //
+        // The client's own `CLIMBABLE` bit is what admits the other reading, and
+        // it is asked *first* for the reason `is_background` is: a fit alone
+        // cannot decide it, because the measure scores a plain wall at 0.81
+        // against its best prism. See `facing::PRISM_FITS`.
+        //
+        // The height comes off the art with it. `tiledata` states ten for the
+        // landing at `0x071E` and the artist drew five; it states five for the
+        // flight at `0x0736` and the artist drew five. The same field means the
+        // full height on one and the drawn height on the other — `Sphere` halves
+        // it, `movement::scene::stair` stands a walker half way up it — so the
+        // measurement is what this believes.
+        if let (true, Some(prism)) = (tile.flags.is_climbable(), shape.prism) {
+            self.push(
+                index,
+                Surface {
+                    bottom,
+                    top: bottom + i32::from(prism.top()),
+                    opacity,
+                    // A **body**: a solid a ray travels through, rather than a
+                    // plane it is stopped by crossing. That is already the right
+                    // rule for a stair — light climbs a staircase, it does not
+                    // stop dead at one edge of it — and it is as far as one
+                    // surface can say. The *treads* are the next step: a tread is
+                    // a body over part of the tile, and nothing in this format
+                    // says "part of".
+                    edges: EDGE_ANY,
+                    aperture: None,
+                    roof: tile.flags.is_roof(),
+                },
+            );
+            return;
+        }
         // A floor or a rug is a **lid**: its occlusion is the `z` it lies at and
         // no vertical side of the tile describes it, so it names no edge.
         // Everything that stands up names the edge the art gave it, or all four
@@ -1221,6 +1299,7 @@ pub fn collect(
             .and_then(|atlas| atlas.sprite(graphic))
             .and_then(|s| s.facing),
         hole: atlas.and_then(|atlas| atlas.hole(graphic)),
+        prism: atlas.and_then(|atlas| atlas.prism(graphic)),
     };
 
     crate::statics::for_each_static_in(map, bounds, |item| {
@@ -1561,6 +1640,7 @@ mod tests {
             Shape {
                 facing: Some(Facing::One(Face::South)),
                 hole: Some(hole),
+                prism: None,
             },
         );
         // A graphic the art would not name is a body, and drops it.
@@ -1573,6 +1653,7 @@ mod tests {
             Shape {
                 facing: None,
                 hole: Some(hole),
+                prism: None,
             },
         );
         // And a floor is a lid, whatever its silhouette read as.
@@ -1585,6 +1666,7 @@ mod tests {
             Shape {
                 facing: Some(Facing::One(Face::South)),
                 hole: Some(hole),
+                prism: None,
             },
         );
         // A corner is two panels and the hole is on both.
@@ -1600,6 +1682,7 @@ mod tests {
                     left: Face::South,
                 }),
                 hole: Some(hole),
+                prism: None,
             },
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
@@ -1666,6 +1749,7 @@ mod tests {
                     bottom: 1,
                     top: 9,
                 }),
+                prism: None,
             },
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
@@ -1715,6 +1799,51 @@ mod tests {
             Shape::UNREAD,
         );
         assert_eq!(occlusion.finish(&Cutaway::OPEN).at(100, 100).unwrap().top, 10);
+    }
+
+    /// **A staircase is a solid, not a corner of a house.**
+    ///
+    /// The defect this is the fix for, in the terms the grid sees it: a stair's
+    /// base is two 45° runs meeting at the tile's south corner, `facing_of` reads
+    /// that as `Corner { East, South }` — the same verdict it reaches about two
+    /// walls meeting — and the grid stood two opaque panels on the tile's east and
+    /// south edges. A flight of steps then shadowed the street like a run of wall.
+    ///
+    /// Two things are asserted and they are the two halves of the change. The
+    /// **shape**: one body a ray travels through, on no named edge. And the
+    /// **height**: five, off the picture, where the tile's own field says twenty —
+    /// which is what a climbable static's `height` means about half the time. See
+    /// `Builder::add`, and `docs/lighting.md`'s backlog.
+    #[test]
+    fn a_stair_is_a_body_and_its_height_comes_off_the_art() {
+        use crate::facing::{Face, Facing, Prism};
+
+        let stair = tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20);
+        let read_as = |shape| {
+            let mut occlusion = Builder::new(bounds());
+            occlusion.add(100, 100, 0, NOT_A_DOOR, &stair, shape);
+            let finished = occlusion.finish(&Cutaway::OPEN);
+            let surfaces: Vec<Surface> = finished.surfaces_at(100, 100).to_vec();
+            surfaces
+        };
+
+        // What the art actually says about `0x0736`: three treads climbing west,
+        // five `z` in all — measured in `tests/prism.rs` against the real sprite.
+        let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let solid = read_as(Shape::solid(prism));
+        assert_eq!(solid.len(), 1, "one surface and not two panels");
+        assert_eq!(solid[0].edges, EDGE_ANY, "a body a ray travels through");
+        assert_eq!(solid[0].top, 5, "five z of stair, off the picture");
+
+        // And with no prism measured it is what it always was: the wall
+        // detector's corner, two panels, half the stated height. Nothing gets
+        // worse where the art was not read.
+        let corner = read_as(Shape::faced(Facing::Corner {
+            right: Face::East,
+            left: Face::South,
+        }));
+        assert_eq!(corner.len(), 2, "a corner is still two panels");
+        assert_eq!(corner[0].top, 10, "and still half of what tiledata states");
     }
 
     /// Two occluders on one tile are **two surfaces**, and the gap between them
@@ -2490,6 +2619,7 @@ mod tests {
         let shape = |graphic: Graphic| Shape {
             facing: atlas.sprite(graphic).and_then(|s| s.facing),
             hole: atlas.hole(graphic),
+            prism: None,
         };
         let floor = |x: u16, y: u16| map.land(x, y).map_or(0, |cell| cell.z);
 

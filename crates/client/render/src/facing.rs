@@ -999,36 +999,68 @@ pub fn corner_silhouette(right: Face, left: Face, height: u16) -> Image {
 /// *which edge I stand on*, and a prism says *what shape fills me*. A box is the
 /// degenerate case with one tread, and every climbable static in the client's
 /// files is one of the two.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// It carries its treads in a fixed array rather than a `Vec`, and the fields are
+/// private behind [`Prism::new`]: a shape rides on
+/// [`Shape`](crate::occlusion::Shape), which is copied down the whole path from
+/// the art table to the grid, and an allocation there would be one per static per
+/// frame. [`MAX_TREADS`] is the cap and it is a cap on the *measurement* — three
+/// is the most any of the client's stairs draws.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Prism {
     /// The side of the tile the climb ends at: the high side.
     ///
     /// A [`Face`] and not a direction of its own, because it is the same four
     /// edges everything else here names, and because the two faces a camera can
     /// see are the two a stair is nearly always drawn climbing towards.
-    pub up: Face,
+    up: Face,
     /// How tall each tread stands above the static's own base, in `z`, in the
-    /// order they are climbed.
-    ///
-    /// The treads divide the tile evenly along the climb: `n` of them means each
-    /// covers `1/n` of the run. A one-tread prism is a box, and its single
-    /// number is the box's height.
-    pub treads: Vec<u8>,
+    /// order they are climbed. Only the first [`Prism::treads`] entries mean
+    /// anything.
+    heights: [u8; MAX_TREADS as usize],
+    /// How many of them there are: at least one, at most [`MAX_TREADS`].
+    count: u8,
 }
 
 impl Prism {
+    /// A prism from a profile, or `None` if the profile is empty or longer than
+    /// [`MAX_TREADS`].
+    ///
+    /// The treads divide the tile evenly along the climb: `n` of them means each
+    /// covers `1/n` of the run.
+    pub fn new(up: Face, treads: &[u8]) -> Option<Self> {
+        if treads.is_empty() || treads.len() > MAX_TREADS as usize {
+            return None;
+        }
+        let mut heights = [0; MAX_TREADS as usize];
+        heights[..treads.len()].copy_from_slice(treads);
+        Some(Self {
+            up,
+            heights,
+            count: treads.len() as u8,
+        })
+    }
+
     /// A box: one tread across the whole tile.
     ///
-    /// The shape `0x071E` is — a cube ten `z` tall — and the fallback for any
+    /// The shape `0x071E` is — a cube five `z` tall — and the fallback for any
     /// climbable static whose treads cannot be read off its picture.
     pub fn box_of(height: u8) -> Self {
-        Self {
-            // The high side of a box is every side, so this names the one a
-            // camera sees. Nothing reads it for a single tread: the profile is
-            // constant, so which way it runs cannot be observed.
-            up: Face::East,
-            treads: vec![height],
-        }
+        // The high side of a box is every side, so this names the one a camera
+        // sees. Nothing reads it for a single tread: the profile is constant, so
+        // which way it runs cannot be observed.
+        //
+        // One tread is always a legal profile, which is what the `unwrap` says.
+        Self::new(Face::East, &[height]).unwrap()
+    }
+
+    /// Which side of the tile it climbs towards.
+    pub fn up(self) -> Face {
+        self.up
+    }
+
+    /// Its profile: one height per tread, in the order they are climbed.
+    pub fn treads(&self) -> &[u8] {
+        &self.heights[..usize::from(self.count)]
     }
 
     /// How tall the prism stands where a fraction `run` along the climb is,
@@ -1038,19 +1070,19 @@ impl Prism {
     /// Saturating at both ends, because a sprite draws a sliver of itself past
     /// the tile's own edge and those pixels belong to the end tread.
     pub fn height_at(&self, run: f32) -> u8 {
-        let treads = self.treads.len();
-        // `treads` is never empty — every constructor here puts at least one in
-        // — so the index is in range and the `min` is what keeps `run == 1.0`
-        // from stepping off the end.
-        let index = ((run.clamp(0.0, 1.0) * treads as f32) as usize).min(treads - 1);
-        self.treads[index]
+        let treads = self.treads();
+        // `treads` is never empty — `new` refuses an empty profile — so the index
+        // is in range and the `min` is what keeps `run == 1.0` from stepping off
+        // the end.
+        let index = ((run.clamp(0.0, 1.0) * treads.len() as f32) as usize).min(treads.len() - 1);
+        treads[index]
     }
 
     /// The tallest it stands. What a tile's occluder spans, and how tall a
     /// picture of it has to be.
     pub fn top(&self) -> u8 {
         // Same invariant as `height_at`: never empty.
-        self.treads.iter().copied().max().unwrap()
+        self.treads().iter().copied().max().unwrap()
     }
 }
 
@@ -1122,6 +1154,147 @@ pub fn prism_silhouette(prism: &Prism) -> Image {
         }
     }
     Image::new(width, rows, pixels)
+}
+
+/// How closely a picture has to match a prism's silhouette before it is that
+/// prism.
+///
+/// Measured rather than chosen — `tests/prism.rs` runs the comparison against a
+/// real install: the two stair statics of the staircase this model came from fit
+/// at **0.977** and **0.975**, and a plain wall, which is not a prism at all,
+/// fits its best candidate at **0.812**. Nine tenths sits in that gap with room
+/// on both sides.
+///
+/// The gap is also why the fit is not the only gate. A measure that scores a wall
+/// at 0.81 *likes* walls, so what admits a prism is the client's own `CLIMBABLE`
+/// bit first and this score second — the order-of-policy [`crate::place::Stance`]
+/// already uses for a floor.
+pub const PRISM_FITS: f32 = 0.9;
+
+/// The tallest prism [`prism_of`] will consider, in `z`. Twenty is a wall's
+/// height and taller than any climbable static the client ships.
+const MAX_PRISM: u8 = 20;
+
+/// And the most treads a prism may have. Four: `0x0736`'s three are the most any
+/// of the client's stairs draws, and a fourth is one more than that rather than a
+/// limit anything has been seen to want.
+///
+/// It is a cap on the *model*, which is why it is public: it is what makes a
+/// [`Prism`] a fixed-size `Copy` value with no allocation behind it.
+pub const MAX_TREADS: u16 = 4;
+
+/// What solid this picture is of, or `None` where no prism is a good enough
+/// likeness of it.
+///
+/// The inverse of [`prism_silhouette`], and the same relationship [`facing_of`]
+/// has with [`silhouette`]: the shape is stated once, in the forward direction,
+/// and the measurement is a search over it. There is no separate reading of the
+/// pixels to drift from the drawing.
+///
+/// # Why a search and not a reading
+///
+/// A wall's face can be read straight off the art because its base is a *line*,
+/// and a line has two ends to fit. A solid's silhouette is the union of every
+/// column of material in it, so the top contour at one screen column is a maximum
+/// over a whole diagonal of the tile — invertible only by assuming the very
+/// profile that is being looked for. Scoring candidates asks the question
+/// forwards, and the answer comes with a number saying how well it did, which a
+/// reading never has.
+///
+/// # What it costs
+///
+/// A few hundred silhouettes per picture, which is milliseconds and **not a
+/// per-frame cost**: this is `openshard-client-artscan`'s kind of work, measured
+/// once into an `ArtTable` beside the client. Decision 31 is the argument.
+pub fn prism_of(image: &Image) -> Option<Prism> {
+    let (best, score) = best_prism(image);
+    (score >= PRISM_FITS).then_some(best)
+}
+
+/// The best-fitting prism for a picture and how much of it agrees, whether or not
+/// that is enough to be an answer.
+///
+/// What the tools call: a person looking at a graphic wants the score even when
+/// it is 0.4, because a refusal with no number attached cannot be argued with.
+/// [`prism_of`] is this with [`PRISM_FITS`] applied.
+pub fn best_prism(image: &Image) -> (Prism, f32) {
+    let mut best = (Prism::box_of(0), 0.0);
+    let mut consider = |candidate: Prism| {
+        let score = silhouettes_agree(image, &prism_silhouette(&candidate));
+        if score > best.1 {
+            best = (candidate, score);
+        }
+    };
+    for height in 0..=MAX_PRISM {
+        consider(Prism::box_of(height));
+    }
+    for up in [Face::North, Face::East, Face::South, Face::West] {
+        for treads in 2..=MAX_TREADS {
+            for top in 1..=u16::from(MAX_PRISM) {
+                // An even climb: the treads rise in equal steps to `top`, which
+                // is how every stair the client draws is built. An uneven profile
+                // is a search this does not make until a graphic wants one — and
+                // a graphic that wants one shows up as a *score*, not as a
+                // silent wrong answer.
+                let profile: Vec<u8> = (1..=treads).map(|i| (top * i / treads) as u8).collect();
+                // The profile is `treads` long and `treads` runs to `MAX_TREADS`,
+                // so this is a legal prism by construction.
+                consider(Prism::new(up, &profile).unwrap());
+            }
+        }
+    }
+    best
+}
+
+/// How much two silhouettes agree: the drawn pixels they share over the drawn
+/// pixels either of them has.
+///
+/// Lined up by the **bottom row** and the **centre column**, which is not a fit
+/// parameter but where the client itself puts a sprite —
+/// [`statics::stand_on`](crate::statics::stand_on) stands every static on the
+/// bottom edge of its picture. A measure that slid one picture over the other
+/// until it liked what it saw would have a free variable nobody stated.
+///
+/// Both directions of disagreement count. A model smaller than the art leaves
+/// drawn pixels with no surface under them; a model bigger than the art puts
+/// surface where the artist drew air, and that one is worse — it is a shadow with
+/// nothing in the picture casting it.
+fn silhouettes_agree(art: &Image, model: &Image) -> f32 {
+    let rows = art.height().max(model.height());
+    let (mut both, mut either) = (0u32, 0u32);
+    for column in 0..44u16 {
+        for row in 0..rows {
+            let (a, b) = (drawn_at(art, column, row), drawn_at(model, column, row));
+            both += u32::from(a && b);
+            either += u32::from(a || b);
+        }
+    }
+    match either {
+        0 => 0.0,
+        _ => both as f32 / either as f32,
+    }
+}
+
+/// Whether a picture draws anything `row` rows up from its own bottom edge, in
+/// the column `column` of a 44-wide tile.
+///
+/// A graphic narrower than a tile is centred on the tile's column, which is where
+/// the client draws one.
+fn drawn_at(image: &Image, column: u16, row: u16) -> bool {
+    use openshard_uofiles::color::Color16;
+
+    if row >= image.height() {
+        return false;
+    }
+    let offset = (44 - i32::from(image.width())) / 2;
+    let x = i32::from(column) - offset;
+    if x < 0 || x >= i32::from(image.width()) {
+        return false;
+    }
+    !image
+        .pixel(x as u16, image.height() - 1 - row)
+        .unwrap_or(Color16::TRANSPARENT)
+        .is_transparent()
 }
 
 #[cfg(test)]
@@ -1745,10 +1918,7 @@ mod tests {
     /// and it never falls.
     #[test]
     fn a_stair_climbs_towards_its_high_side() {
-        let stair = Prism {
-            up: Face::East,
-            treads: vec![2, 4, 6],
-        };
+        let stair = Prism::new(Face::East, &[2, 4, 6]).expect("three treads is a legal profile");
         assert_eq!(stair.height_at(0.0), 2);
         assert_eq!(stair.height_at(0.5), 4);
         assert_eq!(stair.height_at(1.0), 6);

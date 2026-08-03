@@ -753,6 +753,15 @@ pub struct StaticAtlas {
     /// [`aperture_of`](crate::facing::aperture_of), which is what fills it, and
     /// [`StaticAtlas::state_hole`] for a scene that states one instead.
     holes: BTreeMap<Graphic, crate::facing::Hole>,
+    /// The solid each graphic that is one is a picture of — see
+    /// [`Prism`](crate::facing::Prism).
+    ///
+    /// Beside the atlas rather than on [`Sprite`] for the reason the holes are:
+    /// what reads it is the occlusion grid, which asks about a *graphic* while it
+    /// walks the map, and nothing that places a quad has any use for it. A stair
+    /// is a rarity in an install — 576 climbable statics of 39,189 pictures — so a
+    /// map is the right shape for it and a field on every sprite is not.
+    prisms: BTreeMap<Graphic, crate::facing::Prism>,
     /// What was measured off this install's art before the client started, or
     /// `None` for an atlas that has to measure as it packs.
     ///
@@ -832,6 +841,7 @@ impl StaticAtlas {
         Self {
             sprites: BTreeMap::new(),
             holes: BTreeMap::new(),
+            prisms: BTreeMap::new(),
             table: None,
             asked: BTreeSet::new(),
             shelf: Shelf::default(),
@@ -980,6 +990,9 @@ impl StaticAtlas {
             if let Some(hole) = shape.hole {
                 self.holes.insert(graphic, hole);
             }
+            if let Some(prism) = shape.prism {
+                self.prisms.insert(graphic, prism);
+            }
 
             self.sprites.insert(
                 graphic,
@@ -1027,6 +1040,24 @@ impl StaticAtlas {
     /// fifty-eight of a real install's pictures. See [`Hole`](crate::facing::Hole).
     pub fn hole(&self, graphic: Graphic) -> Option<crate::facing::Hole> {
         self.holes.get(&graphic).copied()
+    }
+
+    /// The solid a graphic is a picture of, or `None` where no prism fits it.
+    ///
+    /// Whether it is *believed* is not settled here: a wall scores 0.81 against
+    /// its best prism, so what admits one is the client's own `CLIMBABLE` bit
+    /// first — see [`Builder::add`](crate::occlusion::Builder::add).
+    pub fn prism(&self, graphic: Graphic) -> Option<crate::facing::Prism> {
+        self.prisms.get(&graphic).copied()
+    }
+
+    /// Say what solid a graphic is, without measuring one.
+    ///
+    /// The pair to [`StaticAtlas::state_hole`], and for the same reason: a built
+    /// scene names the shape it wants to reason about rather than drawing a
+    /// staircase convincing enough to be measured.
+    pub fn state_prism(&mut self, graphic: Graphic, prism: crate::facing::Prism) {
+        self.prisms.insert(graphic, prism);
     }
 
     /// Say what hole a graphic has, without measuring one.
@@ -2145,6 +2176,7 @@ mod tests {
             crate::occlusion::Shape {
                 facing: Some(Facing::One(Face::East)),
                 hole: Some(WINDOW),
+                prism: None,
             },
         );
 

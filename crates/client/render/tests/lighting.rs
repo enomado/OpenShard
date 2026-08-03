@@ -1451,6 +1451,7 @@ fn wall_with_hole(hole: openshard_client_render::facing::Hole) -> occlusion::Occ
         occlusion::Shape {
             facing: Some(Facing::One(Face::South)),
             hole: Some(hole),
+            prism: None,
         },
     );
     grid.finish(&Cutaway::OPEN)
