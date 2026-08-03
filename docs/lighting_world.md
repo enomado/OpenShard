@@ -397,6 +397,33 @@ Written while drafting this, and not to be lost:
   torch on the player's tile (decision 5) is right for the torch and wrong for
   night sight, which is not a light at all but a change to how dark the dark is
   *for one viewer*. Both want to exist: a source, and a floor under the ambient.
+- **~~The occluder wireframe draws tiles, not surfaces.~~ Fixed, and it is the
+  view a gap is looked for in.** It drew `Occlusion::boxes()` — the *merged*
+  `at()` — which is the world as it was before [`lighting.md`](lighting.md)'s
+  step 21.2: a floor and the wall on its tile came out as one box from the
+  floor's `z` to the wall's top, two walls with a storey of air between them came
+  out as one box through the air, and which edge a panel stands on was not in the
+  picture at all. Every gap the view is opened to find is a gap between two of
+  those things. It now draws each of the walk's three kinds as the shape it is —
+  a lid is one horizontal quad, a panel is one vertical quad **on its named
+  edge**, a body is the box — and the count beside the checkbox counts surfaces.
+  The table between the diamond's corner order and `facing::Face`'s naming is
+  derived in a test from `Face::place_at`, which is what the shader places a face
+  pixel with, so the wireframe cannot draw a wall on a side its pixels are not on.
+- **A narrow graphic becomes a whole tile of occluder, and a house's corner is
+  one.** Britain's `1509,1635` — the tile that reads as lit when its neighbours
+  are dark — carries `0x00CC`: a 44-wide picture whose silhouette occupies
+  **columns 12 to 31**, a centred peak, with `0x00DF` above it the same shape
+  thirty-three pixels tall (`artscan`'s `shape` example prints both).
+  `facing::facing_of` refuses it by its own rule — a picture narrower than a tile
+  cannot cover an edge of the half it belongs to — and the fallback is
+  `EDGE_ANY`, so twenty columns of art become an occluder across the whole
+  square, standing among neighbours that are panels on one edge. It over-blocks
+  in every direction at once, and it is what the eye reads as the odd tile. The
+  model has no narrow body: a surface is a plane on an edge or the whole tile. So
+  this is a decision rather than a fix — what a centred picture wants is a body
+  whose *footprint* is the columns it covers, which is a second measurement per
+  graphic, a second number per surface and a third rule in the walk.
 - **A box is drawn for what stands, and the sky is what does not.** The wireframe
   of [`lighting.md`](lighting.md)'s step 14 shows occluders; the failure this
   plan will actually hit is a tile that is *wrongly open* — an eave that did not
