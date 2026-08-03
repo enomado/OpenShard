@@ -14,6 +14,11 @@
 //! appearance, and belongs with whatever eventually models the status bar rather
 //! than with a record of what is on screen.
 //!
+//! Containers are here too: `0x24` opens a window over one, `0x3C` lists what
+//! is inside and `0x25` adds to it. Which container a window is over and what
+//! that container holds are two tables rather than one — see
+//! [`WorldView::contents`] for the vendor that makes them separate.
+//!
 //! Two of those packets can name the client's own serial, and neither means
 //! what it means about anybody else: a `0x78` about ourselves is the paperdoll
 //! a shard sends exactly once at world entry, and a `0x77` about ourselves is
@@ -22,6 +27,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::layout::{Element, parse};
 use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
@@ -219,6 +225,29 @@ pub struct WorldView {
     /// Removed by [`gump_closed`](Self::gump_closed) when this client answers,
     /// which is the one thing here the server does not tell us — see its docs.
     pub gumps: Vec<OpenGump>,
+    /// The gump art of every container the shard has opened a window for
+    /// (`0x24`), by container serial.
+    ///
+    /// A map and not one entry: a player has a backpack open and opens a chest,
+    /// and both windows stand. Removed by
+    /// [`container_closed`](Self::container_closed) — closing one is a click,
+    /// exactly as closing a gump is, and the wire has no packet for it either.
+    pub containers: HashMap<Serial, Graphic>,
+    /// What each container holds, as far as this client has been told
+    /// (`0x3C`, then `0x25` per addition), in the order the shard listed it.
+    ///
+    /// # Deliberately not a field of the window
+    ///
+    /// The wire keys the two on different things and a vendor is where that
+    /// shows: the shop window is a `0x24` naming the *vendor*, and the goods are
+    /// a `0x3C` naming the crate worn on its shop layer. Fold the contents into
+    /// the window and there is nowhere to put a listing whose container has no
+    /// window — which is a thing the shard sends, on purpose.
+    ///
+    /// A `Vec` and not a map keyed by serial, because painter's order is data
+    /// here: a container's icons overlap, and the shard's order is the order the
+    /// reference client draws them in.
+    pub contents: HashMap<Serial, Vec<ContainedItem>>,
 }
 
 /// A dialog the server has opened on this client, layout already read.
@@ -274,7 +303,25 @@ impl WorldView {
             items: HashMap::new(),
             journal: VecDeque::new(),
             gumps: Vec::new(),
+            containers: HashMap::new(),
+            contents: HashMap::new(),
         }
+    }
+
+    /// Forget a container window this client has just closed.
+    ///
+    /// [`gump_closed`](Self::gump_closed)'s twin, and the same fact about the
+    /// protocol: closing a window is a click and nothing on the wire carries it.
+    /// The shard keeps its own list of who has what open (`WorldState`'s
+    /// `open_containers`) and will keep pushing `0x25`s at a window this end has
+    /// shut; dropping the *contents* as well is what makes those additions land
+    /// nowhere instead of quietly rebuilding a window nobody can see.
+    ///
+    /// Answers whether a window was actually open, so a stale click can be told
+    /// from a real close.
+    pub fn container_closed(&mut self, container: Serial) -> bool {
+        self.contents.remove(&container);
+        self.containers.remove(&container).is_some()
     }
 
     /// Forget a dialog this client has just answered.
@@ -487,13 +534,75 @@ impl WorldView {
                 self.items.insert(item.serial, fresh);
                 changed
             }
+            // A window over a container. The contents are a separate packet and
+            // arrive in the same breath, so this only records the art: see
+            // `WorldView::contents` for why the two are not one field.
+            //
+            // A `0x24` for a container already open is the shard re-drawing it —
+            // the same shape as a second `0xB0` — and the `0x3C` behind it is
+            // authoritative, so what is held now is dropped rather than merged.
+            // Merging would leave an item the shard has since removed on screen
+            // until something else happened to that container.
+            ServerPacket::OpenContainer(open) => {
+                self.contents.remove(&open.container);
+                self.containers.insert(open.container, open.gump) != Some(open.gump)
+            }
+            // An empty listing names no container at all — the wire has no field
+            // for it — so there is nothing this can be about. See
+            // `ContainerContents::container`.
+            ServerPacket::ContainerContents(listing) => match listing.container {
+                None => false,
+                Some(container) => {
+                    let changed = self.contents.get(&container) != Some(&listing.items);
+                    self.contents.insert(container, listing.items.clone());
+                    changed
+                }
+            },
+            // One more item in a container, which may be one this client has no
+            // window for: a shard pushes a `0x25` to everyone it thinks has the
+            // container open, and its list and ours part company the moment the
+            // player closes a window (see `container_closed`). Recorded anyway —
+            // the packet is a statement about the world, and dropping it because
+            // no window is up would be this end deciding what it was told.
+            //
+            // Keyed by serial rather than appended blindly: the shard sends a
+            // `0x25` for an item whose stack merely grew, and the reference
+            // client replaces the record it already has.
+            ServerPacket::AddToContainer(added) => {
+                let held = self.contents.entry(added.container).or_default();
+                match held.iter_mut().find(|item| item.serial == added.item.serial) {
+                    Some(item) if *item == added.item => false,
+                    Some(item) => {
+                        *item = added.item;
+                        true
+                    }
+                    None => {
+                        held.push(added.item);
+                        true
+                    }
+                }
+            }
             // Mobiles walking out of range and items being picked up arrive the
             // same way — the client does not distinguish, it just forgets the
-            // serial. Only one of the two maps can ever hold it.
+            // serial. Only one of the three places can ever hold it: a serial is
+            // a mobile, or a ground item, or inside exactly one container.
+            //
+            // The container arm is what makes an item picked *out* of a bag
+            // leave the window it was drawn in — there is no "removed from
+            // container" packet, a `0x1D` is the whole of it.
             ServerPacket::Remove(remove) => {
                 let had_mobile = self.mobiles.remove(&remove.serial).is_some();
                 let had_item = self.items.remove(&remove.serial).is_some();
-                had_mobile || had_item
+                let mut was_held = false;
+                for held in self.contents.values_mut() {
+                    let before = held.len();
+                    held.retain(|item| item.serial != remove.serial);
+                    was_held |= held.len() != before;
+                }
+                // A container that is itself removed takes its window with it.
+                let had_window = self.containers.remove(&remove.serial).is_some();
+                self.contents.remove(&remove.serial);
+                had_mobile || had_item || was_held || had_window
             }
             _ => false,
         }
@@ -502,6 +611,7 @@ impl WorldView {
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::containers::{AddToContainer, ContainerContents};
     use openshard_protocol::direction::Direction;
     use openshard_protocol::items::WorldItem;
     use openshard_protocol::mobile::{MobileIncoming, MobileMove, Remove};
@@ -922,6 +1032,169 @@ mod tests {
         assert!(
             !view.apply(&ServerPacket::Remove(Remove { serial: item.serial })),
             "forgetting something already gone changes nothing"
+        );
+    }
+
+    fn chest() -> Serial {
+        Serial::new(0x4000_0100).unwrap()
+    }
+
+    fn candle() -> ContainedItem {
+        ContainedItem {
+            serial: Serial::new(0x4000_0101).unwrap(),
+            graphic: Graphic(0x0A28),
+            amount: 1,
+            at: GumpPoint::new(44, 65),
+            grid: openshard_protocol::containers::GridSlot(0),
+            hue: Hue::NONE,
+        }
+    }
+
+    fn opened(container: Serial) -> ServerPacket {
+        ServerPacket::OpenContainer(openshard_protocol::containers::OpenContainer {
+            container,
+            gump: Graphic(0x003C),
+        })
+    }
+
+    /// What a double-clicked chest actually looks like on the wire: the window
+    /// and its contents are two packets, and both have to land for anything to
+    /// be drawn.
+    #[test]
+    fn opening_a_chest_is_a_window_and_a_listing() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&opened(chest())));
+        assert!(view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(chest()),
+            items: vec![candle()],
+        })));
+
+        assert_eq!(view.containers.get(&chest()), Some(&Graphic(0x003C)));
+        assert_eq!(view.contents.get(&chest()).unwrap(), &[candle()]);
+    }
+
+    /// The listing that cannot say what it is about. Nothing to fold in, and
+    /// nothing to clear either — the window that came before it is what says
+    /// the container is open.
+    #[test]
+    fn an_empty_listing_leaves_the_window_alone() {
+        let mut view = WorldView::entered(start());
+        view.apply(&opened(chest()));
+        assert!(!view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: None,
+            items: Vec::new(),
+        })));
+        assert!(view.containers.contains_key(&chest()));
+    }
+
+    /// A shard re-opening a container it has already shown is re-drawing it, and
+    /// the listing behind the `0x24` is the truth. Keeping the old items would
+    /// leave something the shard has since taken out on screen.
+    #[test]
+    fn re_opening_a_container_drops_what_was_in_it() {
+        let mut view = WorldView::entered(start());
+        view.apply(&opened(chest()));
+        view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(chest()),
+            items: vec![candle()],
+        }));
+        view.apply(&opened(chest()));
+        assert!(!view.contents.contains_key(&chest()));
+    }
+
+    /// A `0x25` for an item already listed is the shard saying its stack grew,
+    /// not that there are two of it — the reference client replaces the record.
+    #[test]
+    fn an_addition_replaces_the_item_it_names() {
+        let mut view = WorldView::entered(start());
+        view.apply(&opened(chest()));
+        assert!(view.apply(&ServerPacket::AddToContainer(AddToContainer {
+            item: candle(),
+            container: chest(),
+        })));
+        let grown = ContainedItem {
+            amount: 7,
+            ..candle()
+        };
+        assert!(view.apply(&ServerPacket::AddToContainer(AddToContainer {
+            item: grown,
+            container: chest(),
+        })));
+        assert_eq!(view.contents.get(&chest()).unwrap(), &[grown]);
+        assert!(
+            !view.apply(&ServerPacket::AddToContainer(AddToContainer {
+                item: grown,
+                container: chest(),
+            })),
+            "the same record twice settles"
+        );
+    }
+
+    /// There is no "taken out of the container" packet: an item leaving a bag is
+    /// a `0x1D` and nothing else, so a `0x1D` has to reach the contents or the
+    /// icon stays in the window forever.
+    #[test]
+    fn taking_an_item_out_of_a_bag_is_a_plain_remove() {
+        let mut view = WorldView::entered(start());
+        view.apply(&opened(chest()));
+        view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(chest()),
+            items: vec![candle()],
+        }));
+        assert!(view.apply(&ServerPacket::Remove(Remove {
+            serial: candle().serial
+        })));
+        assert!(view.contents.get(&chest()).unwrap().is_empty());
+    }
+
+    /// Removing the container itself — dropped, stolen, decayed — takes its
+    /// window with it. Nothing else would ever close it: the wire has no packet
+    /// that does.
+    #[test]
+    fn removing_the_chest_closes_its_window() {
+        let mut view = WorldView::entered(start());
+        view.apply(&opened(chest()));
+        view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(chest()),
+            items: vec![candle()],
+        }));
+        assert!(view.apply(&ServerPacket::Remove(Remove { serial: chest() })));
+        assert!(!view.containers.contains_key(&chest()));
+        assert!(!view.contents.contains_key(&chest()));
+    }
+
+    /// A vendor's goods arrive as a listing for the crate worn on its shop
+    /// layer, and the window is a `0x24` naming the *vendor* — so contents with
+    /// no window of their own are a shape the shard sends on purpose, and this
+    /// end keeps them.
+    #[test]
+    fn a_listing_with_no_window_is_still_written_down() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(chest()),
+            items: vec![candle()],
+        })));
+        assert!(view.contents.contains_key(&chest()));
+        assert!(!view.containers.contains_key(&chest()));
+    }
+
+    /// Closing a window is a click and no packet carries it — the same fact as
+    /// `gump_closed`. The contents go with it, so the `0x25`s a shard keeps
+    /// pushing at a window this end has shut land nowhere.
+    #[test]
+    fn closing_a_container_is_this_end_knowing_something_the_wire_never_said() {
+        let mut view = WorldView::entered(start());
+        view.apply(&opened(chest()));
+        view.apply(&ServerPacket::ContainerContents(ContainerContents {
+            container: Some(chest()),
+            items: vec![candle()],
+        }));
+        assert!(view.container_closed(chest()));
+        assert!(!view.containers.contains_key(&chest()));
+        assert!(!view.contents.contains_key(&chest()));
+        assert!(
+            !view.container_closed(chest()),
+            "closing it twice is a stale click"
         );
     }
 }
