@@ -987,6 +987,143 @@ pub fn corner_silhouette(right: Face, left: Face, height: u16) -> Image {
     Image::new(a.width(), a.height(), pixels)
 }
 
+/// Which way a stepped prism climbs, and how high each of its treads stands.
+///
+/// **The shape a stair actually is**, and the one the client's own art draws:
+/// a height field over the tile that varies along *one* axis and is constant
+/// across the other — a profile, extruded. See `docs/lighting.md`'s backlog,
+/// "found on a staircase in Britain".
+///
+/// It is a model of the whole tile rather than of a surface on one of its edges,
+/// which is what makes it a different kind of answer from [`Facing`]: a wall says
+/// *which edge I stand on*, and a prism says *what shape fills me*. A box is the
+/// degenerate case with one tread, and every climbable static in the client's
+/// files is one of the two.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Prism {
+    /// The side of the tile the climb ends at: the high side.
+    ///
+    /// A [`Face`] and not a direction of its own, because it is the same four
+    /// edges everything else here names, and because the two faces a camera can
+    /// see are the two a stair is nearly always drawn climbing towards.
+    pub up: Face,
+    /// How tall each tread stands above the static's own base, in `z`, in the
+    /// order they are climbed.
+    ///
+    /// The treads divide the tile evenly along the climb: `n` of them means each
+    /// covers `1/n` of the run. A one-tread prism is a box, and its single
+    /// number is the box's height.
+    pub treads: Vec<u8>,
+}
+
+impl Prism {
+    /// A box: one tread across the whole tile.
+    ///
+    /// The shape `0x071E` is — a cube ten `z` tall — and the fallback for any
+    /// climbable static whose treads cannot be read off its picture.
+    pub fn box_of(height: u8) -> Self {
+        Self {
+            // The high side of a box is every side, so this names the one a
+            // camera sees. Nothing reads it for a single tread: the profile is
+            // constant, so which way it runs cannot be observed.
+            up: Face::East,
+            treads: vec![height],
+        }
+    }
+
+    /// How tall the prism stands where a fraction `run` along the climb is,
+    /// `run` counted from the low side to the high one.
+    ///
+    /// The profile itself, sampled: the tread a point falls on, and its height.
+    /// Saturating at both ends, because a sprite draws a sliver of itself past
+    /// the tile's own edge and those pixels belong to the end tread.
+    pub fn height_at(&self, run: f32) -> u8 {
+        let treads = self.treads.len();
+        // `treads` is never empty — every constructor here puts at least one in
+        // — so the index is in range and the `min` is what keeps `run == 1.0`
+        // from stepping off the end.
+        let index = ((run.clamp(0.0, 1.0) * treads as f32) as usize).min(treads - 1);
+        self.treads[index]
+    }
+
+    /// The tallest it stands. What a tile's occluder spans, and how tall a
+    /// picture of it has to be.
+    pub fn top(&self) -> u8 {
+        // Same invariant as `height_at`: never empty.
+        self.treads.iter().copied().max().unwrap()
+    }
+}
+
+/// The silhouette of a [`Prism`], drawn the way the projection draws one.
+///
+/// The forward direction of the measurement, and the pair to [`silhouette`]: that
+/// one draws a wall standing on an edge, this one draws a solid filling the tile.
+/// What makes it worth having as a function rather than as a picture is that the
+/// *detector* will compare a real sprite against it — a candidate prism is scored
+/// by how much of its silhouette the art agrees with — so both directions have to
+/// come from one statement of the shape.
+///
+/// # How it is drawn
+///
+/// Every column of the solid is a vertical run in the image: a point `(u, v)` in
+/// the tile projects to a column `(u - v) * 22` and a row `(u + v - 1) * 22`, and
+/// the material above it rises `Z_STEP` pixels per `z`. So the picture is a sweep
+/// over the tile's own square, each sample painting one vertical run — no
+/// rasteriser and no polygon, and every pixel of the answer is a point the solid
+/// really contains.
+///
+/// The sweep is at 1/128 of a tile, which is four samples per pixel column at the
+/// widest: fine enough that no column of the picture is missed, which is the only
+/// property the drawing needs.
+pub fn prism_silhouette(prism: &Prism) -> Image {
+    use openshard_uofiles::color::Color16;
+
+    let width = 44u16;
+    // The diamond is 44 tall — its north vertex 22 rows above the tile's centre
+    // row and its south vertex 22 below — and the solid lifts the whole of it by
+    // its own height.
+    let rows = 45 + u16::from(prism.top()) * Z_STEP as u16;
+    let mut pixels = vec![Color16::TRANSPARENT; usize::from(width) * usize::from(rows)];
+    // The bottom row of the picture is the diamond's south vertex, which is where
+    // `statics::stand_on` puts every static's base whatever its art holds.
+    let bottom = f32::from(rows) - 1.0;
+
+    const SAMPLES: i32 = 128;
+    for i in 0..=SAMPLES {
+        for j in 0..=SAMPLES {
+            let (u, v) = (i as f32 / SAMPLES as f32, j as f32 / SAMPLES as f32);
+            // How far along the climb this sample is. The high side is `up`, and
+            // the run counts towards it.
+            let run = match prism.up {
+                Face::East => u,
+                Face::West => 1.0 - u,
+                Face::South => v,
+                Face::North => 1.0 - v,
+            };
+            let height = f32::from(prism.height_at(run));
+            let across = (u - v) * HALF_TILE_WIDTH;
+            let column = (across + f32::from(width) / 2.0).floor();
+            if column < 0.0 || column >= f32::from(width) {
+                continue;
+            }
+            // The row this column of material stands on, and the row its top is
+            // at: `down` from the tile's centre row, measured off the bottom of
+            // the picture.
+            let down = (u + v - 1.0) * HALF_TILE_WIDTH;
+            let foot = bottom + down - HALF_TILE_WIDTH;
+            let head = foot - height * Z_STEP;
+            for row in head.max(0.0).round() as u16..=foot.max(0.0).round() as u16 {
+                if row >= rows {
+                    continue;
+                }
+                pixels[usize::from(row) * usize::from(width) + column as usize] =
+                    Color16(0b0_11111_00000_00000);
+            }
+        }
+    }
+    Image::new(width, rows, pixels)
+}
+
 #[cfg(test)]
 mod tests {
     use openshard_uofiles::color::Color16;
@@ -1500,5 +1637,134 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The lowest and highest drawn pixel of every column, as an offset from the
+    /// bottom of the picture — the same profile `tests/artshot.rs` prints off a
+    /// real sprite, so a model's silhouette and the client's own can be compared
+    /// by eye and by assertion in the same terms.
+    fn profile(image: &Image) -> Vec<Option<(u16, u16)>> {
+        (0..image.width())
+            .map(|column| {
+                let drawn: Vec<u16> = (0..image.height())
+                    .filter(|row| !image.pixel(column, *row).unwrap().is_transparent())
+                    .collect();
+                let last = image.height() - 1;
+                Some((last - *drawn.last()?, last - *drawn.first()?))
+            })
+            .collect()
+    }
+
+    /// A flat prism is the tile's own diamond, **filled**: a column of the
+    /// picture is a vertical run and not a single pixel, because a column of the
+    /// image is a whole diagonal of the tile.
+    ///
+    /// That is worth pinning on its own, and it is the thing the first version of
+    /// this test got wrong: the base of a floor descends 1:1 towards the centre
+    /// column, but what stands *above* that base is the rest of the diamond, 44
+    /// rows of it at the middle and none at either end. Every prism below is this
+    /// shape lifted.
+    #[test]
+    fn a_prism_of_no_height_is_the_tile_it_stands_in() {
+        let flat = prism_silhouette(&Prism::box_of(0));
+        assert_eq!(flat.width(), 44);
+        assert_eq!(flat.height(), 45);
+        for (column, band) in profile(&flat).iter().enumerate() {
+            let (base, top) = band.expect("the diamond covers every column");
+            // How far this column is from the centre of the tile's own column,
+            // which is what the diamond's two edges are measured from.
+            //
+            // Within a pixel, and the pixel is real rather than slack: a column
+            // covers a *band* of the tile's diagonal and not a line, so the two
+            // end columns are two pixels of diamond rather than none. Stating it
+            // exactly would be stating the sweep's rounding.
+            let across = (column as i32 - 22).abs();
+            assert!(
+                (i32::from(base) - (across - 1).max(0)).abs() <= 1,
+                "base of column {column}: {base} against {across} across",
+            );
+            assert!(
+                (i32::from(top) - (44 - across)).abs() <= 1,
+                "top of column {column}: {top} against {across} across",
+            );
+        }
+    }
+
+    /// A box is that diamond with `Z_STEP` pixels of side per `z` under it — in
+    /// **every** column, which is the whole of what "extruded" means.
+    ///
+    /// Measured as the difference against the flat prism rather than against a
+    /// formula: a column of the picture is a band of the tile's diagonal, so its
+    /// exact depth is the sweep's rounding, and the *difference* between one
+    /// height and another is not.
+    #[test]
+    fn a_box_is_the_diamond_raised_by_its_own_height() {
+        let height = 10u8;
+        let flat = profile(&prism_silhouette(&Prism::box_of(0)));
+        let boxed = profile(&prism_silhouette(&Prism::box_of(height)));
+        for column in 0..44 {
+            let (base, top) = boxed[column].expect("a box covers every column");
+            let (flat_base, flat_top) = flat[column].expect("so does the diamond");
+            let grew = (i32::from(top) - i32::from(base)) - (i32::from(flat_top) - i32::from(flat_base));
+            assert_eq!(
+                grew,
+                i32::from(height) * Z_STEP as i32,
+                "the side of the box at column {column}",
+            );
+        }
+    }
+
+    /// **The defect this shape was written for.** A box's base is two 45° runs
+    /// meeting at the tile's south corner, which is pixel for pixel what two walls
+    /// meeting at a corner leave — so the wall detector reads a solid as a corner
+    /// of a house and every pixel of its lid is lit as a vertical face.
+    ///
+    /// Asserted rather than described because it is the fixture the fix is
+    /// measured against: what has to change is not this verdict but that
+    /// something asks a different question first. See `docs/lighting.md`'s
+    /// backlog, "found on a staircase in Britain".
+    #[test]
+    fn the_wall_detector_reads_a_solid_as_a_corner_of_a_house() {
+        for height in [5u8, 10, 20] {
+            assert_eq!(
+                facing_of(&prism_silhouette(&Prism::box_of(height))),
+                Some(Facing::Corner {
+                    right: Face::East,
+                    left: Face::South
+                }),
+                "a box {height} tall",
+            );
+        }
+    }
+
+    /// A stair's treads are flats in the picture, and they climb towards the side
+    /// the prism says is up.
+    ///
+    /// The property that separates a stair from a box without depending on how
+    /// many treads a particular graphic has: sample the profile along the climb
+    /// and it never falls.
+    #[test]
+    fn a_stair_climbs_towards_its_high_side() {
+        let stair = Prism {
+            up: Face::East,
+            treads: vec![2, 4, 6],
+        };
+        assert_eq!(stair.height_at(0.0), 2);
+        assert_eq!(stair.height_at(0.5), 4);
+        assert_eq!(stair.height_at(1.0), 6);
+        assert_eq!(stair.top(), 6);
+
+        // And the drawing says the same thing, read where the diamond has no
+        // thickness to add: the picture's right end is the tile's east corner and
+        // its left end the west one, so those two columns are the two ends of the
+        // climb and nothing else.
+        let picture = prism_silhouette(&stair);
+        let profile = profile(&picture);
+        let side = |column: usize| {
+            let (base, top) = profile[column].expect("a drawn column");
+            (i32::from(top) - i32::from(base)) / Z_STEP as i32
+        };
+        assert_eq!(side(0), 2, "the west corner stands on the low tread");
+        assert_eq!(side(43), 6, "the east corner stands on the high one");
     }
 }

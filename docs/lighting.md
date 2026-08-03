@@ -3064,10 +3064,30 @@ Found on a staircase in Britain:
     which is exactly the silhouette two walls meeting at a corner leave. The
     detector answers about the two vertical faces it can see and there is no
     third answer in `Facing` for the lid on top of them.
-  - **The geometry needs nothing measured.** A box is fixed by one number the
-    client already ships: `StaticTile::height`. Its lid is the tile's diamond
-    raised `4h` pixels, so the fragment shader can decide lid-or-face from
-    `across` and `down`, which it already has — `|across| + |down + 4h| <= 22` is
-    inside the lid, and the sign of `across` picks the face otherwise. The art is
-    only needed for the *stepped* lid, and that is `arttable`'s kind of job: a
-    per-column top contour is what `artshot` already prints.
+  - **The geometry is a profile, extruded.** A height field over the tile that
+    varies along one axis and is constant across the other: `facing::Prism`, with
+    `up` naming the high side and `treads` the profile. A box is the one-tread
+    case. `facing::prism_silhouette` is its forward projection, drawn the way
+    `facing::silhouette` draws a wall, and every column of it is a vertical run
+    the solid really contains rather than a rasterised polygon.
+  - **And the fit against the client's own art says the model is right.**
+    `tests/prism.rs` scores every candidate prism against a real sprite by
+    intersection over union of the two silhouettes, aligned by the bottom row and
+    the centre column — no free placement parameter. Measured on the staircase
+    this came from:
+
+    | graphic | best prism | agreement | tiledata height | drawn height |
+    |---|---|---|---|---|
+    | `0x071E` the landing | box, 5 `z` | **0.977** | 10 | 5 |
+    | `0x0736` the flight | 3 treads climbing west, to 5 `z` | **0.975** | 5 | 5 |
+    | `0x00C8` a plain wall | (control) | 0.812 | 20 | — |
+
+    Two things fall out of that table and neither was expected. **The height
+    cannot come from `tiledata`**: the landing states ten and the artist drew
+    five, the flight states five and the artist drew five — the same field means
+    the full height on one and the drawn height on the other, which is the same
+    ambiguity `movement::scene::stair`'s "stand half way up it" lives with. The
+    art is the measurement. And **the fit alone is not a gate**: a wall that is
+    not a prism at all still scores 0.81, so what admits a prism is `CLIMBABLE`
+    first and the score second — the order-of-policy `Stance::of` already uses
+    for a floor.
