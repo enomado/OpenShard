@@ -22,7 +22,14 @@ it.
 **ServUO** (C#, on GitHub), for a second opinion on the same problems. Where the
 two agree about the client, that is as close to a specification as this genre has.
 
-Do **not** read either for architecture. Copying their structure is the one thing
+**Iris2** (C++/Ogre3D, on GitHub, archived), the one open reference that ever put
+Ultima Online on screen in *actual* 3D rather than as sprites. Read it for the
+`.grn` model format and for the tables that map a body to a model and an
+animation — see "3D character models" below. It is **GPL**, and this project is
+MIT/Apache-2.0: not a line of its code and not one of its assets may land here.
+Its observations may, rewritten.
+
+Do **not** read any of them for architecture. Copying their structure is the one thing
 this project exists to avoid — and where they agree about *engine* design, that
 is often the strongest available argument for doing it differently. Both stop the
 world to save it; `crates/server/persistence/src/journal.rs` explains at length
@@ -268,6 +275,52 @@ never wired into the `StaticTile` struct or read. It sat between two fields
 that already were read (`layer` before it, `height` after): a field can be
 *in the comment* and still not be in the code, and nothing short of a
 consumer asking for it says so.
+
+**3D character models exist in the client's files, and nobody ever built them.**
+Origin shipped a 3D client — Third Dawn, later UO:3D — and its installer laid a
+`Models/` directory beside the `.mul` files: skinned character meshes with
+skeletal animation, in **Granny** (`.grn`, RAD Game Tools). Iris2, the archived
+C++/Ogre3D client above, renders UO in 3D by reading exactly that directory out
+of the player's own install, the same way anything here reads `art.mul`. It
+authors no geometry of its own: its `data/grannys/` holds one material and the
+skinning shaders, and nothing else. So "3D characters" is not a modelling
+project — it is a file-format project, and the art is already on disk.
+
+What that costs, in the order it has to be solved:
+
+- **The format is proprietary and was reverse-engineered by hand.** Granny's
+  official `granny2.dll` is a paid SDK and unusable in a GPL project, so Iris2
+  wrote its own chunk walker: a magic of `0xCA5E____`, a visitor over a tree of
+  chunks — points, normals, texcoords, polygons, weights, bones, bone ties,
+  animation. It is **not fully decoded**. The structs are honest about it:
+  fields named `iUnknown[7]`, comments reading "order unknown", "might be
+  scale", "doesn't look like floats". Anyone porting this inherits the gaps, not
+  a specification.
+- **Three tables in the client answer "which file".** `Models.txt` maps a body
+  id to a type (`0` monster, `1` sea, `2` animal, `3` human), a model name, a
+  default hue and three scale factors; `Human.lst` / `Animal.lst` / `Monster.lst`
+  / `Sea.lst` map an animation id to an animation name; together they produce a
+  path like `Models/Animals/Deer_Stag_Walk.grn`, with textures in `Models/Maps/`.
+  This is the 3D counterpart of `Bodyconv.def` and `anim*.mul`, and it is a
+  separate id space again.
+- **A humanoid is stitched from parts, not loaded as one mesh.** Head, torso,
+  legs, hair and every worn item are separate meshes sharing one skeleton
+  (`stitchin.def`). The invariant Iris2 states in a comment beside the code and
+  is worth stealing: **the skeleton is chosen by the body id, never by what the
+  body is wearing** — equipment supplies meshes, not bones.
+- **Conventions differ from any engine you will bind it to.** Granny orders a
+  quaternion `x,y,z,w` where Ogre wants `w,x,y,z`; bones carry a parent index
+  plus a local translate and rotation, so a derived transform is a walk up the
+  hierarchy; skin weights are two bones per vertex, which is what makes GPU
+  skinning straightforward.
+
+The reason this is a finding and not a plan: `Models/` is present only where a
+Third Dawn / UO:3D install once existed, and later clients do not ship it at all.
+Iris2 knows this and pops a dialog — "No 3D Character Models found in UO-dir" —
+because for most players it simply is not there. Measured against the population
+in [`client_versions.md`](client_versions.md), a renderer that requires those
+files serves a small and shrinking slice, so the value here is the format and the
+body→model→animation mapping, not a route to a 3D client.
 
 **No client files are in this repository and none ever will be.** They are
 copyrighted and they are not ours to redistribute. `world.client_files` points
