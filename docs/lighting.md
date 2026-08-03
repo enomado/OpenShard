@@ -2173,6 +2173,16 @@ Carried from `client.md`'s firelight backlog and still true:
 
 Found while building it:
 
+- **The per-tile cap and `dropped` now count the map, not the frame.** Decision
+  33 puts every surface into the builder, so `MAX_SURFACES_PER_TILE` is reached
+  by surfaces a frame was about to cut away — a tile could in principle drop a
+  *drawn* surface because undrawn ones filled it, and `Occlusion::dropped` counts
+  what the map has rather than what the picture lost. Nothing is at risk today:
+  the worst tile in Britain is 21 of 255 (decision 30.6's distribution), and the
+  distribution was measured under `Cutaway::OPEN`, which is the same set the
+  builder now holds. It becomes a real question only if the cap is ever lowered
+  to fit a format, and the honest fix then is to cut before the cap rather than
+  after — which the builder cannot do, because it does not know the frame.
 - **The land itself does not occlude.** A hill between a campfire and a valley
   stops nothing: only statics are in the grid. The map has the four corner
   heights for every tile and the grid already carries a span, so the shape of the
