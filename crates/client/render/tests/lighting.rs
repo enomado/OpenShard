@@ -42,10 +42,7 @@ fn at(lighting: &Lighting, tile: (u16, u16), z: f32) -> f32 {
 
 /// The middle of a tile, at a height.
 fn spot(tile: (u16, u16), z: f32) -> Spot {
-    Spot {
-        at: Vec2::new(f32::from(tile.0) + 0.5, f32::from(tile.1) + 0.5),
-        z,
-    }
+    Spot::at(Vec2::new(f32::from(tile.0) + 0.5, f32::from(tile.1) + 0.5), z)
 }
 
 /// The room, drawn, for the message a failing assertion carries.
@@ -122,10 +119,7 @@ fn the_edge_of_a_shadow_passes_through_the_values_in_between() {
     let sweep: Vec<(f32, f32)> = (-100..=100)
         .map(|step| f32::from(DOORWAY.0) + 0.5 + step as f32 / 100.0)
         .map(|x| {
-            let spot = Spot {
-                at: Vec2::new(x, y),
-                z: 0.0,
-            };
+            let spot = Spot::at(Vec2::new(x, y), 0.0);
             let through = light::sample(spot, &lighting)
                 .reaches
                 .iter()

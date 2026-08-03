@@ -96,6 +96,37 @@ impl Face {
         }
     }
 
+    /// Which way this face looks, in tiles.
+    ///
+    /// The *drawn* direction, which is the same thing: the art only ever draws
+    /// the two faces an isometric camera can see, so a south face's picture is
+    /// the surface turned towards `+y` and an east face's towards `+x`. North and
+    /// west are five graphics out of 1197 and exist here because the geometry has
+    /// four edges.
+    ///
+    /// What it is for is the lighting: a wall's two faces are one tile, one
+    /// plane, one fraction and one height, so nothing else in the attachment can
+    /// tell the street side of a house from the room side. `blit.wgsl`'s
+    /// `outward`, and the two are one table.
+    pub fn outward(self) -> [f32; 2] {
+        match self {
+            Self::North => [0.0, -1.0],
+            Self::East => [1.0, 0.0],
+            Self::South => [0.0, 1.0],
+            Self::West => [-1.0, 0.0],
+        }
+    }
+
+    /// Whether the run of wall this face belongs to lies along `+x`.
+    ///
+    /// A north or south face stands on a `y` edge, so its run is a row; an east
+    /// or west face stands on an `x` edge, so its run is a column. What asks is
+    /// anything that treats a run of wall as one surface — see
+    /// [`light::own_run`](crate::light) and the facing test beside it.
+    pub fn runs_along_x(self) -> bool {
+        matches!(self, Self::North | Self::South)
+    }
+
     /// Where this face's own edge is on the screen: how far *below* the tile's
     /// centre row the ground line is, for a pixel `across` pixels from the tile's
     /// column.

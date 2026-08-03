@@ -311,6 +311,40 @@ pub fn torch_before_a_wall() -> Scene {
     scene.with((cx, cy - 2), TORCH)
 }
 
+/// How many tiles of wall [`wall_run_lit_from_along_it`] has. Four, so that the
+/// picture holds three seams and the near end and the far end of the run are lit
+/// differently enough to tell apart.
+pub const RUN: u16 = 4;
+
+/// A run of wall with a lamp standing in front of it and off to one end, so that
+/// the light runs **along** the face rather than into it.
+///
+/// **The scene a seam is read in**, and the arrangement matters far more than the
+/// length. A wall's face lies *on* the panel it is the face of — decision 16 — so
+/// a ray leaving a pixel of the face towards a lamp that is only half a tile out
+/// from the wall crosses the wall's own plane almost immediately, and *where* it
+/// crosses is a little further along the run than the pixel is. For the pixels
+/// near the far end of each tile that crossing point lands in the **next** tile,
+/// whose panel is a wall — so the ray is stopped by a wall it is standing on the
+/// face of, and every tile of the run gets a dark stroke down its last few
+/// hundredths. Reported from the client as a strange artefact between walls.
+///
+/// How wide the stroke is is the ratio of the two offsets: a lamp far along the
+/// run and close in to the wall draws a wide one, and a lamp straight out in
+/// front of the wall draws none at all — which is exactly the difference the
+/// report described, and the reason this scene is not the perpendicular one.
+pub fn wall_run_lit_from_along_it() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("a wall run with a lamp along it");
+    for x in cx..cx + RUN {
+        scene = scene.with((x, cy), WALL);
+    }
+    scene.art = Some(south_faced_wall());
+    // In front of the wall by one tile — the flame lands half a tile out from the
+    // face — and a tile past the far end of the run.
+    scene.with((cx + RUN, cy + 1), TORCH)
+}
+
 /// The picture a scene hands the occlusion grid when it wants a wall that stands
 /// on one *side* of its tile rather than filling it.
 ///
@@ -590,6 +624,7 @@ pub fn all() -> Vec<Scene> {
     vec![
         torch_on_open_ground(),
         torch_before_a_wall(),
+        wall_run_lit_from_along_it(),
         room(),
         room_with_shut_door(),
         room_with_open_door(),

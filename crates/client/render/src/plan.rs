@@ -32,6 +32,7 @@
 
 use crate::camera::{TileBounds, Zoom};
 use crate::debug::View;
+use crate::facing::Face;
 use crate::light::Lighting;
 use crate::occlusion::{self, Cell};
 
@@ -138,6 +139,20 @@ impl Picture {
                 self.plot(x, from.1, color);
                 self.plot(x + 1, from.1, color);
             }
+        }
+    }
+
+    /// Mark the tile seams of an [`elevation`]: one dashed line down the picture
+    /// wherever one tile of the run ends and the next begins.
+    ///
+    /// The seams are the whole subject of an elevation. A run of wall is drawn by
+    /// as many sprites as it has tiles and lit as one surface, and every defect
+    /// this picture is for shows up *at* a seam — so a person reading it needs to
+    /// know where they are without counting pixels.
+    pub fn mark_seams(&mut self) {
+        let scale = self.scale as i32;
+        for seam in 0..=(self.width as i32 / scale) {
+            self.dashed((seam * scale, 0), (seam * scale, self.height as i32 - 1), GRID);
         }
     }
 
@@ -267,30 +282,161 @@ pub fn draw(
 ) -> Picture {
     let width = bounds.width().max(1) as u32 * scale;
     let height = bounds.height().max(1) as u32 * scale;
-
-    let world = crate::blit::world_texture(device, width, height);
-    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = crate::place::texture(device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
-
     // Every pixel is flat ground on the tile above it, with the fraction of the
     // tile it sits at. `crate::place`'s packing, written here rather than built
     // through `Place` because there is no quad and no instance — this is the
     // attachment a world pass *would* have written for a floor covering
     // everything.
+    let pixels = drawn(device, queue, lighting, view, width, height, |px, py| {
+        let tile_x = bounds.min_x + (px / scale) as i32;
+        let tile_y = bounds.min_y + (py / scale) as i32;
+        let sub_x = (px % scale) * 127 / scale;
+        let sub_y = (py % scale) * 127 / scale;
+        [
+            tile_x as u16,
+            tile_y as u16,
+            128,
+            1 | (sub_x as u16) << 2 | (sub_y as u16) << 9,
+        ]
+    });
+    Picture {
+        bounds,
+        scale,
+        width,
+        height,
+        pixels,
+    }
+}
+
+/// One run of wall, **unrolled**: how the light falls across its face.
+///
+/// The second question a plan view cannot answer. A wall's pixels are not on the
+/// ground — they are on a vertical plane standing on one edge of a tile — so a
+/// picture of the floor says nothing about them, and the defects that live there
+/// are their own: a seam between two tiles of one run, a face lit from the wrong
+/// side, a gradient that steps at a tile boundary rather than running through it.
+///
+/// The picture is the face laid flat: **across** is how far along the run, one
+/// tile to `scale` pixels, and **down** is height, from `wall.top` at the top of
+/// the picture to `z = 0` at the bottom, at the same scale so that a tile of run
+/// and a tile of height are the same size. Each pixel is written into the place
+/// attachment exactly as `statics.wgsl` would write it for that point of that
+/// face — which is what makes this a picture of the shader's answer rather than
+/// of a second one.
+pub fn elevation(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lighting: &Lighting,
+    view: View,
+    wall: Wall,
+    scale: u32,
+) -> Picture {
+    let width = wall.tiles * scale;
+    let height = (wall.top.max(1) as u32 * scale) / crate::light::Z_PER_TILE as u32;
+    let along_x = matches!(wall.face, Face::North | Face::South);
+    let pixels = drawn(device, queue, lighting, view, width, height, |px, py| {
+        // How far along the run, in tiles, and the height — the picture's two
+        // axes, turned back into a point on the face.
+        let along = px as f32 / scale as f32;
+        let z = wall.top as f32 * (1.0 - py as f32 / height as f32);
+        let (tile, run) = (along.floor() as u16, along.fract());
+        // The face's own fraction, held one step of the seven-bit grid inside the
+        // tile: decision 16, and the same `INSIDE` clamp `statics.wgsl` applies —
+        // a fraction of exactly one names the tile beyond the wall.
+        let inside = 126.0 / 127.0;
+        let (sub_x, sub_y) = match wall.face {
+            Face::North => (run, 0.0),
+            Face::South => (run, inside),
+            Face::West => (0.0, run),
+            Face::East => (inside, run),
+        };
+        let (tile_x, tile_y) = match along_x {
+            true => (wall.from.0 + tile, wall.from.1),
+            false => (wall.from.0, wall.from.1 + tile),
+        };
+        // The stance rides above the height, exactly as `statics.wgsl` writes it
+        // — this picture is of a *wall's face*, and a face that did not say which
+        // way it looks would be lit from behind. `crate::place::STANCE_SHIFT`.
+        let stance = match wall.face {
+            Face::North => crate::place::Stance::FaceNorth,
+            Face::East => crate::place::Stance::FaceEast,
+            Face::South => crate::place::Stance::FaceSouth,
+            Face::West => crate::place::Stance::FaceWest,
+        };
+        [
+            tile_x,
+            tile_y,
+            (z.round() as i32 + 128).clamp(0, 255) as u16 | (stance as u16) << crate::place::STANCE_SHIFT,
+            2 | ((sub_x * 127.0) as u16) << 2 | ((sub_y * 127.0) as u16) << 9,
+        ]
+    });
+    Picture {
+        // The run, as a rectangle one tile deep: `Picture::tile` is meaningless
+        // for an elevation and `at` is about the plan's axes, so what this carries
+        // is where the run was rather than a coordinate system.
+        bounds: TileBounds {
+            min_x: i32::from(wall.from.0),
+            max_x: i32::from(wall.from.0)
+                + match along_x {
+                    true => wall.tiles as i32 - 1,
+                    false => 0,
+                },
+            min_y: i32::from(wall.from.1),
+            max_y: i32::from(wall.from.1)
+                + match along_x {
+                    true => 0,
+                    false => wall.tiles as i32 - 1,
+                },
+        },
+        scale,
+        width,
+        height,
+        pixels,
+    }
+}
+
+/// Which run of wall an [`elevation`] is of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Wall {
+    /// The tile the run starts at — its lowest `x` for a north or south face, its
+    /// lowest `y` for an east or west one.
+    pub from: (u16, u16),
+    /// Which edge of its tiles it stands on, and therefore which way it runs: a
+    /// north or south face runs along `+x`, an east or west face along `+y`.
+    pub face: Face,
+    /// How many tiles of it to draw.
+    pub tiles: u32,
+    /// The height at the top of the picture. The bottom is `z = 0`.
+    pub top: i32,
+}
+
+/// Run the blit over a place attachment this caller writes, and read the surface
+/// back.
+///
+/// The half [`draw`] and [`elevation`] share: everything except *where a pixel
+/// says it is*, which is the only thing either of them invents.
+fn drawn(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lighting: &Lighting,
+    view: View,
+    width: u32,
+    height: u32,
+    place_of: impl Fn(u32, u32) -> [u16; 4],
+) -> Vec<u8> {
+    let world = crate::blit::world_texture(device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = crate::place::texture(device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // The place attachment the caller describes, texel by texel: `crate::place`'s
+    // packing, written here rather than built through `Place` because there is no
+    // quad and no instance — this is what a world pass *would* have written for
+    // the surface being asked about.
     let mut texels: Vec<u16> = Vec::with_capacity((width * height * 4) as usize);
     for py in 0..height {
         for px in 0..width {
-            let tile_x = bounds.min_x + (px / scale) as i32;
-            let tile_y = bounds.min_y + (py / scale) as i32;
-            let sub_x = (px % scale) * 127 / scale;
-            let sub_y = (py % scale) * 127 / scale;
-            texels.extend_from_slice(&[
-                tile_x as u16,
-                tile_y as u16,
-                128,
-                1 | (sub_x as u16) << 2 | (sub_y as u16) << 9,
-            ]);
+            texels.extend_from_slice(&place_of(px, py));
         }
     }
     let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -372,14 +518,7 @@ pub fn draw(
         &lighting,
     );
     queue.submit([encoder.finish()]);
-
-    Picture {
-        bounds,
-        scale,
-        width,
-        height,
-        pixels: read_back(device, queue, &surface, width, height),
-    }
+    read_back(device, queue, &surface, width, height)
 }
 
 /// An RGBA8 texture, as rows with the copy's padding taken off.

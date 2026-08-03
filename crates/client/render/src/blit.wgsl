@@ -124,6 +124,59 @@ const SUB_TILE: f32 = 127.0;
 // number in a test; this is the only other place it appears.
 const KIND_NOTHING: u32 = 0u;
 
+// The third channel is `z + 128` in its low eight bits and the sprite's stance in
+// three of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
+// writes it. The four faces are the only values this pass reads: a flat or
+// faceless surface has no direction to be lit from.
+const PLACE_STANCE_SHIFT: u32 = 8u;
+const PLACE_STANCE_MASK: u32 = 7u;
+const PLACE_Z_MASK: u32 = 255u;
+const STANCE_FACE_NORTH: u32 = 2u;
+const STANCE_FACE_EAST: u32 = 3u;
+const STANCE_FACE_SOUTH: u32 = 4u;
+const STANCE_FACE_WEST: u32 = 5u;
+
+// Which way a face looks, in tiles. Zero for everything that has no face.
+//
+// The direction is the *drawn* one, which is the same thing: the art only ever
+// draws the two faces an isometric camera can see — a wall stands on its tile's
+// `y1` or `x1` edge and its picture is the surface turned towards the viewer —
+// so a south face looks towards `+y` and an east face towards `+x`. North and
+// west are five graphics out of 1197 and are here because the geometry has four
+// edges. `docs/lighting.md`, step 15.
+fn outward(stance: u32) -> vec2<f32> {
+    switch stance {
+        case STANCE_FACE_NORTH: { return vec2<f32>(0.0, -1.0); }
+        case STANCE_FACE_EAST: { return vec2<f32>(1.0, 0.0); }
+        case STANCE_FACE_SOUTH: { return vec2<f32>(0.0, 1.0); }
+        case STANCE_FACE_WEST: { return vec2<f32>(-1.0, 0.0); }
+        default: { return vec2<f32>(0.0); }
+    }
+}
+
+// How wide the band is, in tiles, over which a flame passing behind a face stops
+// lighting it.
+//
+// Not a step, for the reason a beam's rim is not a step: a hard edge is what the
+// eye finds first, and a lamp walking past the end of a wall would switch its
+// face off between two frames. A fifth of a tile is narrow enough that a wall is
+// still plainly one-sided and wide enough that nothing pops.
+const FACE_EDGE: f32 = 0.2;
+
+// How much of a flame at `toward` reaches a surface facing `normal`: 1 in front
+// of it, 0 behind it, and a gradient `FACE_EDGE` wide across the plane.
+//
+// **The one thing a fraction cannot say.** A wall's two faces are one tile and
+// one plane — the same tile, the same fraction, the same height — so without a
+// facing a torch inside a room lights the outside of the house exactly as
+// brightly as the inside. That was reported from the client as a wall behaving
+// like glass, and it is what this fixes.
+//
+// `light::faces`, and the two are one formula.
+fn faces(normal: vec2<f32>, toward: vec2<f32>) -> f32 {
+    return clamp(dot(normal, toward) / FACE_EDGE + 0.5, 0.0, 1.0);
+}
+
 // How many `z` units make one tile — `light::Z_PER_TILE`, and the same
 // derivation: 44 virtual pixels of tile over 4 pixels a unit of height.
 const Z_PER_TILE: f32 = 11.0;
@@ -229,6 +282,38 @@ fn panel_stop(cell: vec2<i32>, crossed: u32, z: f32, tall: f32) -> f32 {
     return f32(stands.z) / 255.0 * pierces(z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
 }
 
+// Which of a cell's sides are **the same wall the lit end is part of**, and
+// therefore must not shadow it.
+//
+// A wall's face lies *on* the panel it is the face of — that is what decision 16
+// is about — so a pixel of a wall is a point in the plane of its own tile's
+// panel, and the panels of the tiles either side of it are in that same plane.
+// Every ray leaving such a pixel along the wall therefore *grazes* the
+// neighbours' panels, and whether it counts as crossing one is decided by the
+// last bits of a float. It showed as a thin dark stroke down the wall at every
+// tile seam, one per corner, on any wall lit by a lamp standing near it —
+// the same corner ambiguity that used to draw bright spokes, arriving with the
+// sign reversed.
+//
+// A run of wall is one surface, and no part of a surface shadows another part of
+// it. So a panel on the same side of its tile as the lit end's own, on the same
+// *line* — the same row for a north or south face, the same column for an east
+// or west one — is not an occluder for this ray. Anything else about that cell
+// still is: a wall tile that also carries the perpendicular face of a corner
+// stops the ray on that face as it always did.
+//
+// `light::own_run`.
+fn own_run(own: u32, cell: vec2<i32>, first: vec2<i32>) -> u32 {
+    var line = 0u;
+    if cell.y == first.y {
+        line = line | EDGE_NORTH | EDGE_SOUTH;
+    }
+    if cell.x == first.x {
+        line = line | EDGE_EAST | EDGE_WEST;
+    }
+    return own & line;
+}
+
 // What stands on one tile, or all zeros for open ground and for anything
 // outside the grid.
 fn occluder_at(x: i32, y: i32) -> vec4<u32> {
@@ -319,6 +404,9 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
     let first = vec2<i32>(i32(floor(start.x)), i32(floor(start.y)));
     let last = vec2<i32>(i32(floor(finish.x)), i32(floor(finish.y)));
     var cell = first;
+    // Which sides the lit end's *own* tile has a wall on. What it is for is
+    // `own_run` below: a wall does not shadow the rest of the wall it is part of.
+    let own = occluder_at(first.x, first.y).w & EDGE_MASK;
     // Which way each axis steps, how much of the whole segment one tile of it is
     // worth, and how far along the segment the first boundary is. An axis the
     // ray does not move along never reaches its boundary, which is what the
@@ -437,10 +525,13 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
                 // it looked like — a wall with no hole in it leaking light in
                 // stripes. See `docs/lighting.md`, decision 18.
                 let tall = soft * Z_PER_TILE;
-                if (sides & entry) != 0u {
+                // Less whatever of this cell is the same run of wall the lit end
+                // stands in — see `own_run`, and the seam it was drawing.
+                let stops = sides & ~own_run(own, cell, first);
+                if (stops & entry) != 0u {
                     stopped = max(stopped, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
                 }
-                if (sides & exit) != 0u {
+                if (stops & exit) != 0u {
                     stopped = max(stopped, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
                 }
             }
@@ -482,11 +573,13 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
             var corner = 0.0;
             if !(by_x.x == first.x && by_x.y == first.y)
                 && !(skip_last && by_x.x == last.x && by_x.y == last.y) {
-                corner = max(corner, panel_stop(by_x, enter_x | opposite(enter_y), z, tall));
+                let crossed = (enter_x | opposite(enter_y)) & ~own_run(own, by_x, first);
+                corner = max(corner, panel_stop(by_x, crossed, z, tall));
             }
             if !(by_y.x == first.x && by_y.y == first.y)
                 && !(skip_last && by_y.x == last.x && by_y.y == last.y) {
-                corner = max(corner, panel_stop(by_y, enter_y | opposite(enter_x), z, tall));
+                let crossed = (enter_y | opposite(enter_x)) & ~own_run(own, by_y, first);
+                corner = max(corner, panel_stop(by_y, crossed, z, tall));
             }
             through = through * (1.0 - corner);
             if through <= 0.004 {
@@ -775,7 +868,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         f32((place.w >> 2u) & SUB_TILE_MASK) / SUB_TILE,
         f32((place.w >> 9u) & SUB_TILE_MASK) / SUB_TILE,
     );
-    let at = vec3<f32>(f32(place.x) + sub.x, f32(place.y) + sub.y, f32(place.z) - 128.0);
+    let at = vec3<f32>(f32(place.x) + sub.x, f32(place.y) + sub.y, f32(place.z & PLACE_Z_MASK) - 128.0);
+    // And which way the surface drawn here looks, where it is a wall's face. Zero
+    // for the ground, for a mobile and for anything standing up whose art would
+    // not name an edge — none of those has a side to be lit from.
+    let normal = outward((place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK);
 
     // The ambient this *tile* has: the sky's share of it scaled by how much of
     // the sky the column over the tile can see, plus the floor everything gets.
@@ -821,6 +918,27 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         var lit_by = 1.0;
         if light.beam.w > -1.0 {
             lit_by = cone(light.beam, -offset);
+        }
+        // And whether the flame is on the side this surface looks at. A wall is
+        // one-sided and its two faces are one tile, so this is the only thing that
+        // keeps a torch in a room from lighting the outside of the house.
+        //
+        // **Unless the flame stands in the wall's own line**, in which case it is
+        // part of that wall — a lamp mounted on a house sits at its tile's centre,
+        // which is behind the plane of the face it hangs on, and testing it would
+        // black out the very wall it is bolted to. The line and not just the tile:
+        // a run of wall is one surface and a lamp anywhere along it lights all of
+        // it, which is what `own_run` says about the shadow of the same run.
+        if any(normal != vec2<f32>(0.0)) {
+            let along_x = abs(normal.y) > 0.5;
+            let same_line = select(
+                i32(floor(to.x)) == i32(place.x),
+                i32(floor(to.y)) == i32(place.y),
+                along_x,
+            );
+            if !same_line {
+                lit_by = lit_by * faces(normal, vec2<f32>(to.x - at.x, to.y - at.y));
+            }
         }
         // The flame's own tile is exempt, and a flame is a body a tile wide:
         // `walk`'s two parameters, and the only two things that make this ray

@@ -1685,6 +1685,10 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // The fraction of a tile a place holds, as the shaders pack it: seven bits
     // each, above the two the kind takes.
     let sub = |place: [u16; 4]| ((place[3] >> 2) & 127, (place[3] >> 9) & 127);
+    // The third channel is a height *and* a stance — `crate::place::STANCE_SHIFT`
+    // — so a test about heights has to say which half it means.
+    let height = |place: [u16; 4]| place[2] & 0xFF;
+    let stance = |place: [u16; 4]| place[2] >> openshard_client_render::place::STANCE_SHIFT;
 
     let at = Point::new(301, 400, 15);
     let places = render_places(
@@ -1715,9 +1719,18 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // And a floor is at one height everywhere: what runs down its picture is the
     // tile, which the fraction has already spent.
     assert_eq!(
-        [middle[2], places.at(62, 72)[2]],
+        [height(middle), height(places.at(62, 72))],
         [(i32::from(at.z) + 128) as u16; 2],
         "a floor's pixels stand at different heights",
+    );
+    // And it says it is a floor, in the bits above the height. That the channel
+    // carries a stance at all is what lets the lighting refuse to light a wall
+    // from behind — see `crate::place::Stance` — and a floor's own value is what
+    // says the bits are being written rather than left at zero.
+    assert_eq!(
+        stance(middle),
+        openshard_client_render::place::Stance::Flat as u16,
+        "a floor's pixel does not carry its stance",
     );
 
     let places = render_places(
@@ -3399,6 +3412,7 @@ fn parity_frame(
     lighting: &Lighting,
     width: u32,
     height: u32,
+    face: Option<openshard_client_render::facing::Face>,
 ) -> Frame {
     let world = openshard_client_render::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
@@ -3409,10 +3423,26 @@ fn parity_frame(
     for py in 0..height {
         for px in 0..width {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
-            // `(x, y, z + 128, kind | sub)`: the packing `crate::place` documents
-            // and `blit.wgsl` takes apart. Land, at `z = 0`, which is the ground
-            // of the room.
-            texels.extend_from_slice(&[x, y, 128, 1 | sub_x << 2 | sub_y << 9]);
+            // `(x, y, z + 128 | stance, kind | sub)`: the packing `crate::place`
+            // documents and `blit.wgsl` takes apart. Land at `z = 0` — the ground
+            // of the room — unless the fixture is about a wall's face, in which
+            // case every pixel is a static standing on that face.
+            //
+            // The stance is what the facing test reads, and a fixture without one
+            // would leave the whole of that test uncompared: `light::sample` would
+            // agree with the shader about a formula neither of them ran.
+            let (kind, stance) = match face {
+                None => (1u16, 0u16),
+                Some(face) => (
+                    openshard_client_render::place::Kind::Static as u16,
+                    openshard_client_render::place::Stance::of(
+                        &openshard_uofiles::tiledata::StaticTile::default(),
+                        Some(face),
+                    ) as u16,
+                ),
+            };
+            let z = 128 | stance << openshard_client_render::place::STANCE_SHIFT;
+            texels.extend_from_slice(&[x, y, z, kind | sub_x << 2 | sub_y << 9]);
         }
     }
     let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -3558,6 +3588,59 @@ fn the_shader_and_light_sample_agree_about_the_sun() {
     assert_parity(&device, &queue, &scene.lighting(0.0));
 }
 
+/// And the same for a frame whose every pixel is a wall's face.
+///
+/// The facing term is the newest one in the loop and the only one that reads the
+/// *stance* out of the attachment — every other parity fixture is flat ground,
+/// which has no side to be lit from, so a shader that ignored the stance
+/// altogether would agree with `sample` on all of them.
+///
+/// The fixture asserts its own coverage first, and that is not ceremony: a south
+/// face over `scene::room` is lit from behind by the torch in the middle of the
+/// room and from in front by nothing, so a sweep that happened to land entirely
+/// on one side of the plane would compare a formula that was never exercised.
+/// What is checked is that both sides are in it.
+#[test]
+fn the_shader_and_light_sample_agree_about_a_wall_that_faces_away() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let face = openshard_client_render::facing::Face::South;
+    let scene = openshard_client_render::scene::room();
+    let lighting = scene.lighting(0.0);
+
+    let (mut lit, mut behind) = (0, 0);
+    for py in 0..64 {
+        for px in 0..64 {
+            let (x, y, sub_x, sub_y) = parity_place(px, py);
+            let spot = openshard_client_render::light::Spot {
+                face: Some(face),
+                ..openshard_client_render::light::Spot::at(
+                    Vec2::new(
+                        f32::from(x) + f32::from(sub_x) / 127.0,
+                        f32::from(y) + f32::from(sub_y) / 127.0,
+                    ),
+                    0.0,
+                )
+            };
+            let reach = openshard_client_render::light::sample(spot, &lighting).reaches[0];
+            if !reach.within {
+                continue;
+            }
+            match reach.cone > 0.5 {
+                true => lit += 1,
+                false => behind += 1,
+            }
+        }
+    }
+    assert!(
+        lit > 100 && behind > 100,
+        "{lit} pixels of face towards the flame, {behind} away from it",
+    );
+
+    assert_parity_of(&device, &queue, &lighting, Some(face));
+}
+
 /// And the same for a frame with a beam in it.
 ///
 /// The cone is the one term the other parity scenes cannot exercise: every flame
@@ -3582,13 +3665,13 @@ fn the_shader_and_light_sample_agree_about_a_carried_beam() {
     for py in 0..64 {
         for px in 0..64 {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
-            let spot = openshard_client_render::light::Spot {
-                at: Vec2::new(
+            let spot = openshard_client_render::light::Spot::at(
+                Vec2::new(
                     f32::from(x) + f32::from(sub_x) / 127.0,
                     f32::from(y) + f32::from(sub_y) / 127.0,
                 ),
-                z: 0.0,
-            };
+                0.0,
+            );
             let reach = openshard_client_render::light::sample(spot, &lighting).reaches[0];
             if !reach.within {
                 continue;
@@ -3673,19 +3756,36 @@ fn the_shader_and_light_sample_agree_about_the_sky_a_tile_can_see() {
 /// divergence in the falloff, in either ray walk or in the exemptions all show
 /// up here.
 fn assert_parity(device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting) {
+    assert_parity_of(device, queue, lighting, None);
+}
+
+/// The same, over a frame whose every pixel is a wall's face rather than ground.
+///
+/// One more fixture and not a second test for every scene: what a face changes is
+/// one term of the loop — see `light::faces` — and the loop is what parity is
+/// about. `docs/lighting.md`, decision 22.
+fn assert_parity_of(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lighting: &Lighting,
+    face: Option<openshard_client_render::facing::Face>,
+) {
     let (width, height) = (64, 64);
-    let frame = parity_frame(device, queue, lighting, width, height);
+    let frame = parity_frame(device, queue, lighting, width, height, face);
 
     let mut compared = 0;
     for py in 0..height {
         for px in 0..width {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
             let spot = openshard_client_render::light::Spot {
-                at: Vec2::new(
-                    f32::from(x) + f32::from(sub_x) / 127.0,
-                    f32::from(y) + f32::from(sub_y) / 127.0,
-                ),
-                z: 0.0,
+                face,
+                ..openshard_client_render::light::Spot::at(
+                    Vec2::new(
+                        f32::from(x) + f32::from(sub_x) / 127.0,
+                        f32::from(y) + f32::from(sub_y) / 127.0,
+                    ),
+                    0.0,
+                )
             };
             let sample = openshard_client_render::light::sample(spot, lighting);
             let drawn = frame.pixel(px, py);
@@ -3728,7 +3828,7 @@ fn the_light_view_keeps_a_pools_shape_where_it_is_brightest() {
     let scene = openshard_client_render::scene::room();
     let mut lighting = scene.lighting(0.0);
     lighting.view = View::Light;
-    let frame = parity_frame(&device, &queue, &lighting, width, height);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, None);
 
     // The torch is at the room's centre, which the fixture puts at the middle of
     // the frame: a row through it runs from the pool's rim to its brightest
@@ -3799,7 +3899,7 @@ fn dump_the_lighting_views() {
         for view in View::ALL {
             let mut lighting = scene.lighting(0.0);
             lighting.view = view;
-            let frame = parity_frame(&device, &queue, &lighting, width, height);
+            let frame = parity_frame(&device, &queue, &lighting, width, height, None);
             let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
             for pixel in frame.pixels.chunks_exact(4) {
                 ppm.extend_from_slice(&pixel[..3]);
@@ -3827,7 +3927,7 @@ fn a_debug_view_reaches_the_shader() {
     let scene = openshard_client_render::scene::room();
     let mut lighting = scene.lighting(0.0);
     lighting.view = View::Kind;
-    let frame = parity_frame(&device, &queue, &lighting, width, height);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, None);
 
     // Every pixel of the fixture is land, and the kind view paints land one
     // colour whatever the lighting did — so a frame that still shows a pool of

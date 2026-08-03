@@ -96,12 +96,22 @@ fn picture(
 ) -> Picture {
     let mut drawn = plan::draw(device, queue, lighting, view, around(), SCALE);
     drawn.mark(lighting);
+    written(name, view, "plan", &drawn);
+    drawn
+}
+
+/// Put one drawn picture where somebody can look at it, and say where that was.
+///
+/// `shape` tells a plan from an elevation in the file name: they are pictures of
+/// the same scene in the same view and of two different surfaces, and a directory
+/// where those collide is a directory where the one you are looking at is the one
+/// that happened to be written last.
+fn written(name: &str, view: View, shape: &str, drawn: &Picture) {
     let directory = directory();
     std::fs::create_dir_all(&directory).expect("the picture directory");
-    let path = directory.join(format!("{name}.{}.ppm", view.name().to_lowercase()));
+    let path = directory.join(format!("{name}.{}.{shape}.ppm", view.name().to_lowercase()));
     std::fs::write(&path, drawn.ppm()).expect("writing the picture");
     eprintln!("wrote {}", path.display());
-    drawn
 }
 
 /// A scene's name as a file name.
@@ -260,6 +270,146 @@ fn a_lone_flame_falls_off_all_the_way_from_its_middle() {
             pair[1],
         );
     }
+}
+
+/// A wall lit from one end is **not darker at the seam between its tiles**.
+///
+/// The elevation's own claim, and the defect it was built for: a wall's face lies
+/// on the panel it is the face of, so every ray leaving a wall pixel along the
+/// wall grazes the panel of the tile next to it, and whether that counts as
+/// crossing one was decided by the last bits of a float. It drew a thin dark
+/// stroke down the join — reported from the client as a strange artefact between
+/// walls that only appears when the lamp is beside the wall rather than in front
+/// of it.
+///
+/// Asserted as **monotonicity along the run** rather than as "no dark line": the
+/// lamp is at one end, so every step away from it must be darker than the last,
+/// and a seam artefact is a step that is darker than *both* its neighbours. A
+/// threshold on how dark a stroke may be would be a number about this scene; the
+/// order is a fact about any wall lit from one end.
+#[test]
+fn a_wall_lit_from_one_end_has_no_dark_stroke_at_its_seam() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = scene::wall_run_lit_from_along_it();
+    let lighting = scene.lighting(STILL);
+    let wall = plan::Wall {
+        from: CENTRE,
+        face: openshard_client_render::facing::Face::South,
+        tiles: u32::from(scene::RUN),
+        top: i32::from(scene::WALL_HEIGHT),
+    };
+    let drawn = plan::elevation(&device, &queue, &lighting, View::Flames, wall, SCALE * 4);
+
+    // Across the face at a third of its height, from the lamp's end back along
+    // the run. Measured **before** anything is drawn over the picture: a mark is
+    // not a measurement, and the seams are exactly where both would land.
+    let row = drawn.height / 3;
+    let across: Vec<(u32, f32)> = (0..drawn.width)
+        .rev()
+        .map(|x| {
+            let pixel = drawn.pixel(x, row);
+            (
+                x,
+                pixel[..3].iter().map(|c| f32::from(*c) / 255.0).sum::<f32>() / 3.0,
+            )
+        })
+        .collect();
+
+    let mut marked = drawn.clone();
+    marked.mark_seams();
+    written(&slug(&scene), View::Flames, "elevation", &marked);
+
+    // The lamp is east of the run, so the face is brightest at its east end and
+    // every step west of that is darker than the last. A seam artefact is a
+    // column darker than *both* its neighbours, which is what breaks the order.
+    assert!(
+        across.len() > 200,
+        "the sweep across the face measured almost nothing: {across:?}",
+    );
+    for pair in across.windows(2) {
+        assert!(
+            pair[1].1 <= pair[0].1 + 0.01,
+            "the wall brightens away from the lamp between {:?} and {:?} — a stroke \
+             at a seam\n{across:?}",
+            pair[0],
+            pair[1],
+        );
+    }
+    // And the face is lit at all, or the order above holds for a black picture.
+    assert!(
+        across[0].1 > 0.2,
+        "the end of the wall beside the lamp is dark: {:?}",
+        across[0],
+    );
+}
+
+/// A wall is **one-sided**: a torch behind it does not light the face turned
+/// away from it.
+///
+/// Reported from the client as a wall lit from inside a house glowing on the
+/// street as though it were made of glass, and it is the one thing a fraction
+/// cannot say. A wall's two faces are one tile, one plane, one fraction and one
+/// height — everything the attachment carried until the stance was written into
+/// it — so a torch in a room lit the outside of the house exactly as brightly as
+/// the inside.
+///
+/// The scene is the same one the shadow test uses, read from the other side: the
+/// torch stands north of a run of wall whose art puts its face on the *south*
+/// edge, which is the surface a camera sees. The ground north of the wall is lit
+/// and the wall's own face, drawn towards the street, is not.
+#[test]
+fn a_wall_is_not_lit_from_behind_its_own_face() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = scene::torch_before_a_wall();
+    let lighting = scene.lighting(STILL);
+    let wall = plan::Wall {
+        from: (CENTRE.0 - 4, CENTRE.1),
+        face: openshard_client_render::facing::Face::South,
+        tiles: 9,
+        top: i32::from(scene::WALL_HEIGHT),
+    };
+    let drawn = plan::elevation(&device, &queue, &lighting, View::Flames, wall, SCALE);
+    written(&slug(&scene), View::Flames, "elevation", &drawn);
+
+    // `View::Flames` is the flames' own contribution on black, so a face nothing
+    // reaches is black — no ambient to subtract and no threshold to argue about.
+    let mut brightest = 0.0_f32;
+    for y in 0..drawn.height {
+        for x in 0..drawn.width {
+            let pixel = drawn.pixel(x, y);
+            brightest = brightest.max(pixel[..3].iter().map(|c| f32::from(*c) / 255.0).sum::<f32>() / 3.0);
+        }
+    }
+    assert!(
+        brightest < 0.02,
+        "the torch behind the wall lights its street face: {brightest} at the brightest",
+    );
+
+    // And the same face *is* lit when the flame is on its own side, or the
+    // assertion above would hold for a stance that switched every wall off.
+    let lit = scene::wall_run_lit_from_along_it();
+    let front = plan::elevation(
+        &device,
+        &queue,
+        &lit.lighting(STILL),
+        View::Flames,
+        plan::Wall {
+            from: CENTRE,
+            face: openshard_client_render::facing::Face::South,
+            tiles: u32::from(scene::RUN),
+            top: i32::from(scene::WALL_HEIGHT),
+        },
+        SCALE,
+    );
+    let near = front.pixel(front.width - 2, front.height / 2);
+    assert!(
+        near[0] > 60,
+        "a wall lit from its own side came out dark too: {near:?}",
+    );
 }
 
 /// A wall in front of a torch throws one band of shadow, and it has a straight

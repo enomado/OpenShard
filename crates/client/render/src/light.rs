@@ -54,6 +54,7 @@ use openshard_uofiles::tiledata::TileData;
 
 use crate::camera::Camera;
 use crate::cutaway::{self, Cutaway};
+use crate::facing::Face;
 use crate::geometry::Vec2;
 use crate::items::GroundItem;
 use crate::occlusion::{EDGE_ANY, Occlusion};
@@ -810,6 +811,30 @@ const CORNER_TIE: f32 = 1e-4;
 /// `z`, where the cell is a panel. Zero for open ground, for a lid, and for a
 /// panel on a side the ray does not go through.
 ///
+/// Which of a cell's sides are **the same wall the lit end is part of**, and
+/// therefore must not shadow it.
+///
+/// `blit.wgsl`'s `own_run` argues it: a wall's face lies *on* the panel it is the
+/// face of, so a ray leaving a wall pixel along the wall grazes the panels of the
+/// tiles either side of it, and whether that counts as a crossing is decided by
+/// the last bits of a float. It drew a thin dark stroke down every tile seam of
+/// any wall lit by a lamp standing near it. A run of wall is one surface and no
+/// part of a surface shadows another part of it.
+///
+/// Only the panels on the *same line*: the same row for a north or south face,
+/// the same column for an east or west one. A wall tile that also carries the
+/// perpendicular face of a corner stops the ray on that face as it always did.
+fn own_run(own: u8, cell: (i32, i32), first: (i32, i32)) -> u8 {
+    let mut line = 0;
+    if cell.1 == first.1 {
+        line |= crate::occlusion::EDGE_NORTH | crate::occlusion::EDGE_SOUTH;
+    }
+    if cell.0 == first.0 {
+        line |= crate::occlusion::EDGE_EAST | crate::occlusion::EDGE_WEST;
+    }
+    own & line
+}
+
 /// `blit.wgsl`'s `panel_stop`. Split out of [`walk_cells`] for the corner case,
 /// which has two cells to ask about and no crossing length to speak of.
 fn panel_stop(stands: Option<crate::occlusion::Cell>, crossed: u8, z: f32, tall: f32) -> f32 {
@@ -832,6 +857,42 @@ pub struct Spot {
     pub at: Vec2,
     /// Its height, in the map's own `z` units.
     pub z: f32,
+    /// Which way the surface here looks, where it is a wall's face.
+    ///
+    /// `None` is the ground, a mobile, and anything standing up whose art would
+    /// not name an edge — none of those has a side to be lit from, and every
+    /// caller that predates faces passes it. A face is one-sided:
+    /// see [`faces`], and `docs/lighting.md`'s decision 22 for why the attachment
+    /// carries this at all when it already carries a fraction.
+    pub face: Option<Face>,
+}
+
+impl Spot {
+    /// A point with no facing: the ground, or anything else with no side to it.
+    ///
+    /// Most callers, and the reason it is a constructor rather than a `Default`:
+    /// a spot always has a place, and only the face is ever absent.
+    pub fn at(at: Vec2, z: f32) -> Self {
+        Self { at, z, face: None }
+    }
+}
+
+/// How wide the band is, in tiles, over which a flame passing behind a face
+/// stops lighting it. `blit.wgsl`'s `FACE_EDGE`, and the two are one number.
+///
+/// Not a step, for the reason a beam's rim is not one: a hard edge is what the
+/// eye finds first, and a lamp walking past the end of a wall would switch its
+/// face off between two frames.
+const FACE_EDGE: f32 = 0.2;
+
+/// How much of a flame `toward` reaches a surface facing `normal` — `1.0` in
+/// front of it, `0.0` behind it, and a gradient [`FACE_EDGE`] wide across the
+/// plane. Both in tiles.
+///
+/// `blit.wgsl`'s `faces`, and the two are one formula.
+fn faces(normal: [f32; 2], toward: [f32; 2]) -> f32 {
+    let along = normal[0] * toward[0] + normal[1] * toward[1];
+    (along / FACE_EDGE + 0.5).clamp(0.0, 1.0)
 }
 
 /// What one flame did to one spot, and why.
@@ -853,9 +914,14 @@ pub struct Reach {
     /// a wall, and between for a partial occluder. Only meaningful when
     /// [`Reach::within`].
     pub through: f32,
-    /// How much of the flame's [`Beam`] falls here: `1.0` for a fire that lights
-    /// every direction and for a spot the beam points straight at,
-    /// [`BEAM_SPILL`] for one behind it.
+    /// How much of the flame's [`Beam`] falls here, **and how much of it the
+    /// surface is turned towards**: `1.0` for a fire that lights every direction
+    /// falling on a floor, [`BEAM_SPILL`] for a spot behind a carried lantern, and
+    /// `0.0` for a wall's face with the flame behind it.
+    ///
+    /// The two are one number because they are the same question asked of the two
+    /// ends — which way the light points, and which way the surface looks — and a
+    /// dark tile that is neither is what the shadow term is for.
     ///
     /// A separate number from [`Reach::through`] and not folded into it, because
     /// the two answer the questions a person asks in the order they ask them:
@@ -1002,11 +1068,27 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
             Some(beam) => beam.lights(offset.map(|axis| -axis)),
             None => 1.0,
         };
+        // And whether the flame is on the side this surface looks at. `blit.wgsl`
+        // argues both halves: a wall is one-sided, and a flame standing in the
+        // wall's own line is part of that wall and lights all of it.
+        let facing = match spot.face {
+            None => 1.0,
+            Some(face) => {
+                let same_line = match face.runs_along_x() {
+                    true => light.at.y.floor() == spot.at.y.floor(),
+                    false => light.at.x.floor() == spot.at.x.floor(),
+                };
+                match same_line {
+                    true => 1.0,
+                    false => faces(face.outward(), [offset[0], offset[1]]),
+                }
+            }
+        };
         let (through, stopped_by) = walk(spot, light, &lighting.occlusion);
         let fall = 1.0 - d;
         let added = light
             .color
-            .map(|channel| channel * light.intensity * fall * fall * through * cone);
+            .map(|channel| channel * light.intensity * fall * fall * through * cone * facing);
         for (total, channel) in multiplier.iter_mut().zip(added) {
             *total += channel;
         }
@@ -1015,7 +1097,7 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
             distance,
             within: true,
             through,
-            cone,
+            cone: cone * facing,
             stopped_by,
             added,
         });
@@ -1140,10 +1222,7 @@ fn walk_cells(
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<(i32, i32)>) {
-    let spot = Spot {
-        at: Vec2::new(from[0], from[1]),
-        z: from[2],
-    };
+    let spot = Spot::at(Vec2::new(from[0], from[1]), from[2]);
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -1154,6 +1233,9 @@ fn walk_cells(
     let first = (from[0].floor() as i32, from[1].floor() as i32);
     let last = (to[0].floor() as i32, to[1].floor() as i32);
     let mut cell = first;
+    // Which sides the lit end's own tile has a wall on — see [`own_run`], and the
+    // seam it was drawing down every wall.
+    let own = occlusion.at(first.0, first.1).map_or(0, |cell| cell.edges);
     // Which way each axis steps, how much of the whole segment one tile of it is
     // worth, and how far along the segment the first boundary is. An axis the
     // ray does not move along never reaches its boundary, which is what the
@@ -1251,9 +1333,12 @@ fn walk_cells(
                     // of spokes out of every lamp near a wall.
                     edges => {
                         let tall = soft * Z_PER_TILE;
+                        // Less whatever of this cell is the same run of wall the
+                        // lit end stands in — see [`own_run`].
+                        let stops = edges & !own_run(own, cell, first);
                         let mut stopped: f32 = 0.0;
                         for (side, at) in [(entry, entered), (exit, leaves)] {
-                            if edges & side != 0 {
+                            if stops & side != 0 {
                                 stopped =
                                     stopped.max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
                             }
@@ -1300,6 +1385,7 @@ fn walk_cells(
                 if at == first || (skip_last && at == last) {
                     continue;
                 }
+                let crossed = crossed & !own_run(own, at, first);
                 let stops = panel_stop(occlusion.at(at.0, at.1), crossed, z, tall);
                 if stops > corner {
                     corner = stops;

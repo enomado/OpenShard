@@ -608,6 +608,66 @@ tile and the backlog has carried that since the beginning; here it is the whole
 point, because a halo half a tile from the burning sprite reads as a mistake
 rather than as light.
 
+**22. A wall's face is one-sided, and the stance is what says so.**
+
+Reported from the client: a wall lit from inside a house glows on the street as
+though it were made of glass. It is the one fact the attachment did not carry.
+A wall's two faces are **one tile, one plane, one fraction and one height** —
+everything decisions 2, 13 and 16 write — so nothing in the frame could tell the
+street side of a house from the room side, and a torch in a room lit both
+equally. `docs/lighting_world.md`'s backlog has been carrying it as "the sun has
+no facing either" since the sun arrived.
+
+Step 15 already measured the answer and threw it away: the *stance* — which edge
+of its tile a wall stands on — was used to place a pixel's fraction and then
+dropped, because the attachment's fourth channel is two bits of kind and fourteen
+of fraction with nothing spare. It is not the only channel. The **third** is a
+`z + 128` in the low eight bits of a `u16`, and the eight above it were empty; the
+stance rides there now (`place::STANCE_SHIFT`), and `blit.wgsl` turns it into an
+outward normal.
+
+Which way is *outward* is not a guess. The art only ever draws the two faces an
+isometric camera can see — step 15 measured that too, north and west being five
+graphics out of 1197 — so a south face's picture is the surface turned towards
+`+y` and an east face's towards `+x`. A flame behind that plane lights nothing,
+over a band `FACE_EDGE` wide so that a lamp walking past the end of a wall does
+not switch its face off between two frames.
+
+**Except a flame standing in the wall's own line, which is part of that wall.** A
+lamp mounted on a house sits at its tile's *centre* — behind the plane of the very
+face it is bolted to — so testing it would black out the wall it hangs on. The
+line and not merely the tile, because a run of wall is one surface and a lamp
+anywhere along it lights all of it: the same statement decision 23 makes about
+that run's shadow. What would answer it properly is placing a mounted light
+outside the plane its tile names, which is in the backlog and is not this.
+
+**23. A wall does not shadow the rest of the wall it is part of.**
+
+The second thing reported from the same picture: a thin dark stroke down every
+tile seam of a wall, appearing only when the lamp is *beside* the wall rather
+than in front of it.
+
+Decision 16 is why. A wall's face lies **on** the panel it is the face of, so a
+pixel of the face is a point in the plane of its own tile's panel — and the panels
+of the tiles either side of it are in that same plane. A ray from that pixel to a
+lamp half a tile out from the wall crosses the plane almost at once, and *where*
+it crosses is a little further along the run than the pixel is: for the pixels
+near the far end of each tile the crossing lands in the **next** tile, whose
+panel is a wall. The ray is stopped by the wall it is standing on the face of.
+The perpendicular case is clean because the crossing then lands in the pixel's
+own tile, which is exempt — which is exactly the difference the report described.
+
+A run of wall is one surface and no part of a surface shadows another part of it.
+So a panel on the same side of its tile as the lit end's own, on the same *line*
+— the same row for a north or south face, the same column for an east or west one
+— is not an occluder for that ray. Anything else about that cell still is: a wall
+tile that also carries the perpendicular face of a corner stops the ray on that
+face as it always did.
+
+The elevation view is what this was found in and it is worth keeping the order:
+the artefact is invisible in a plan, because a plan's pixels are on the *ground*
+and this is a defect of pixels on a *wall*.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -928,8 +988,20 @@ rather than as light.
 
       ```sh
       cargo test -p openshard-client-render --test pictures -- --nocapture
-      magick target/lighting/one-torch-on-open-ground.flames.ppm /tmp/look.png
+      magick target/lighting/one-torch-on-open-ground.flames.plan.ppm /tmp/look.png
       ```
+
+      **And the elevation, which is the other half of it.** A plan's pixels are on
+      the ground; a wall's are not, and the two defects decisions 22 and 23 name
+      are invisible in a plan for exactly that reason. `plan::elevation` unrolls
+      one run of wall: across is how far along the run, down is height, and each
+      pixel is written into the attachment as `statics.wgsl` would write it for
+      that point of that face — stance included, or the picture would be lit from
+      behind. A seam artefact is then a vertical stroke a person can point at, and
+      `mark_seams` says where the joins are. The scene it was found in is
+      `scene::wall_run_lit_from_along_it`, and the arrangement matters far more
+      than the length: a lamp *along* the wall draws the strokes and a lamp in
+      front of it draws none.
 
 - [ ] **20. The glow, as its own layer.** Decision 21: the screen-space halo
       around a flame's own sprite, added over the lit frame rather than
@@ -1054,6 +1126,29 @@ Found while drawing the boxes:
   over — and the tile it *should* have covered draws nothing, which looks exactly
   like open ground. `View::Sky` on the ground is the instrument for that half,
   and the two want reading together rather than one replacing the other.
+
+Found while giving a wall a side to be lit from:
+
+- **The sun still has no facing.** Decision 22 gives a flame one and the sunbeam
+  does not ask: `sunlight` walks the grid and never looks at the normal, so every
+  wall in a daylit frame is still lit on the side turned away from the sun. It is
+  the same two lines and the same `outward`, and it is left because the sun is off
+  by default and every scene that would judge it is a firelit one.
+- **The facing is binary where a real surface is a cosine.** What a wall gets is
+  `1` in front and `0` behind with a fifth of a tile of gradient between, and a
+  real surface lit obliquely gets less than one lit head-on. Lambert would be one
+  `dot` more — but UO's art is pre-shaded, so a wall's picture *already* has a
+  light in it, and multiplying by a second one is a decision that wants a scene
+  rather than a formula.
+- **A mobile has no facing either, and it has one on the wire.** A body is drawn
+  as a billboard and lit as `Stance::Upright`, so a character walking through a
+  pool is lit identically front and back. The direction is already parsed —
+  `light::carried` uses it for the beam — so what is missing is the will to decide
+  whether a paper-doll sprite should be shaded at all.
+- **Three bits of the height channel are spent and five are left.** The stance
+  took the first three of the eight a `z + 128` leaves free in a `u16`. Worth
+  remembering before the next thing wants a channel: step 16's aperture is asking
+  for one.
 
 Found while starting again, from the picture rather than from the argument:
 

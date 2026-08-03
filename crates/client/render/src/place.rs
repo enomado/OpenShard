@@ -97,11 +97,19 @@ pub enum Kind {
 ///   offset as `x - y`, as this did for one commit, spreads the pixels along the
 ///   one direction no wall ever runs, and it looks like it.
 ///
-/// This never reaches the attachment — it decides what the world pass writes
-/// into it, and is carried here because a [`Place`] is what an instance already
-/// hands the shader about where it is. It rides in **three bits** of the
-/// instance's second word, which is what the six values need and what
-/// [`Place::packed`] reserves.
+/// It rides in **three bits** of the instance's second word, which is what the
+/// six values need and what [`Place::packed`] reserves — and it reaches the
+/// attachment too, in the eight bits a `z + 128` leaves spare in the third
+/// channel's `u16`. See [`STANCE_SHIFT`].
+///
+/// **Why the lighting needs it, when the fraction is already there.** A fraction
+/// says where in its tile a pixel is; a face says **which way that surface
+/// looks**. The two are not the same fact and the second cannot be recovered
+/// from the first: a wall's two faces are one tile and one plane, so a pixel of
+/// the street side and a pixel of the room side of the same wall carry the same
+/// tile, the same fraction and the same height. Without the stance a torch in a
+/// room lights the outside of the house exactly as brightly as the inside, which
+/// is what it did, and reads as a wall made of glass.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Stance {
@@ -257,6 +265,18 @@ impl Place {
         ]
     }
 }
+
+/// Where a [`Stance`] rides in the attachment's third channel, above the height.
+///
+/// The channel is a `u16` holding `z + 128`, which needs eight bits and has
+/// sixteen. Three of the spare eight carry the stance, so a fragment can ask
+/// which way the surface it is looking at faces without a second attachment or a
+/// wider format.
+///
+/// `statics.wgsl`'s `PLACE_STANCE_SHIFT` and `blit.wgsl`'s reader are the other
+/// two places this number appears, and nothing but a person can compare the
+/// three. A test below writes and reads one back.
+pub const STANCE_SHIFT: u32 = 8;
 
 /// The format of the attachment. See this module's header.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Uint;

@@ -117,6 +117,11 @@ const HALF_TILE_HEIGHT: f32 = 22.0;
 // can check that these agree with them.
 const STANCE_SHIFT: u32 = 16u;
 const STANCE_MASK: u32 = 7u;
+// And where it rides in the *attachment*, which is a different word: the third
+// channel is a `z + 128` in the low eight bits of a `u16`, and the eight above it
+// were spare. `blit.wgsl` reads it back with the same shift, and
+// `crate::place::STANCE_SHIFT` states it once in Rust.
+const PLACE_STANCE_SHIFT: u32 = 8u;
 const STANCE_UPRIGHT: u32 = 0u;
 const STANCE_FLAT: u32 = 1u;
 const STANCE_FACE_NORTH: u32 = 2u;
@@ -300,10 +305,16 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         z = base + ((sub.x + sub.y - 1.0) * HALF_TILE_HEIGHT - down) / Z_STEP;
     }
 
+    // The stance rides into the attachment above the height, in the eight bits a
+    // `z` leaves free in a `u16`. It is not a duplicate of what the fraction
+    // already says: a fraction says *where in its tile* a pixel is, and a face
+    // says **which way that surface looks** — which is the one thing the lighting
+    // cannot recover, because a wall's two faces are one tile and one plane. See
+    // `crate::place::Place` and `blit.wgsl`'s `outward`.
     out.place = vec4<u32>(
         in.place.x & 0xFFFFu,
         in.place.x >> 16u,
-        u32(clamp(round(z), -128.0, 127.0) + 128.0),
+        u32(clamp(round(z), -128.0, 127.0) + 128.0) | (stance << PLACE_STANCE_SHIFT),
         ((in.place.y >> 8u) & KIND_MASK)
             | (u32(round(sub.x * SUB_TILE)) << 2u)
             | (u32(round(sub.y * SUB_TILE)) << 9u),
