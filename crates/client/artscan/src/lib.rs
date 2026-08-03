@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 
 use openshard_client_render::arttable::{ArtTable, Stamp, TableError};
 use openshard_client_render::facing;
+use openshard_client_render::occlusion::Shape;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::art::Art;
 
@@ -125,7 +126,10 @@ pub fn measure(art: &Art, stamp: Stamp, keep: &[ArtTable]) -> ArtTable {
         let Ok(Some(image)) = art.static_art(graphic) else {
             continue;
         };
-        table.derive(graphic, facing::facing_of(&image));
+        // Both measurements, by the same call the client's own fallback path
+        // makes — see `Shape::of`. Two routes to one answer is how a table and a
+        // client come to disagree about a picture.
+        table.derive(graphic, Shape::of(&image));
     }
     table
 }
@@ -320,7 +324,10 @@ mod tests {
             detector: facing::DETECTOR,
         };
         let mut table = ArtTable::measured(stamp.clone());
-        table.derive(Graphic(0x0007), Some(facing::Facing::One(facing::Face::South)));
+        table.derive(
+            Graphic(0x0007),
+            Shape::faced(facing::Facing::One(facing::Face::South)),
+        );
         save(&path, &table).expect("writing the table");
 
         let read =

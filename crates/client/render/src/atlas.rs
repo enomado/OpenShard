@@ -739,8 +739,7 @@ pub struct Sprite {
 /// which is exactly why they are separate atlases rather than one with a prefix.
 pub struct StaticAtlas {
     sprites: BTreeMap<Graphic, Packed>,
-    /// The hole in each graphic that has one — see
-    /// [`Aperture`](crate::occlusion::Aperture).
+    /// The hole in each graphic that has one — see [`Hole`](crate::facing::Hole).
     ///
     /// Beside the sprites rather than on [`Sprite`], which is the opposite of
     /// where [`Sprite::facing`] lives, and the difference is who asks. A facing
@@ -750,10 +749,10 @@ pub struct StaticAtlas {
     /// draws, so a map keyed by graphic costs the drawing path nothing and keeps
     /// four bytes off every sprite of every atlas, most of which are letters.
     ///
-    /// Empty today for a real install: step 16 is the measurement that fills it
-    /// from the art, and until then the only entries are the ones a built scene
-    /// states with [`StaticAtlas::state_aperture`].
-    apertures: BTreeMap<Graphic, crate::occlusion::Aperture>,
+    /// Fifty-eight entries on a 2D install and nearly all of them windows — see
+    /// [`aperture_of`](crate::facing::aperture_of), which is what fills it, and
+    /// [`StaticAtlas::state_hole`] for a scene that states one instead.
+    holes: BTreeMap<Graphic, crate::facing::Hole>,
     /// What was measured off this install's art before the client started, or
     /// `None` for an atlas that has to measure as it packs.
     ///
@@ -832,7 +831,7 @@ impl StaticAtlas {
         let side = ATLAS_SIDE as usize;
         Self {
             sprites: BTreeMap::new(),
-            apertures: BTreeMap::new(),
+            holes: BTreeMap::new(),
             table: None,
             asked: BTreeSet::new(),
             shelf: Shelf::default(),
@@ -965,6 +964,23 @@ impl StaticAtlas {
             // both loses nothing.
             copy_sprite(&mut self.pixels, &image, origin_x, origin_y);
 
+            // A lookup where there is a table, and the two measurements over the
+            // pixels just copied where there is not — see `Sprite::facing` and
+            // `self.table` for why the walk is no longer the only answer, and
+            // `crate::facing::aperture_of` for the second one.
+            //
+            // A table's *absent* row is a graphic it measured and refused, so
+            // this does not fall back to measuring on a miss: doing that would
+            // put the frame cost back on precisely the graphics the tool already
+            // decided nothing can be said about, which is most of them.
+            let shape = match &self.table {
+                Some(table) => table.shape(graphic),
+                None => crate::occlusion::Shape::of(&image),
+            };
+            if let Some(hole) = shape.hole {
+                self.holes.insert(graphic, hole);
+            }
+
             self.sprites.insert(
                 graphic,
                 Packed {
@@ -972,20 +988,7 @@ impl StaticAtlas {
                         region: region_at(origin_x, origin_y, width, height),
                         width,
                         height,
-                        // A lookup where there is a table, and one more walk
-                        // over the pixels just copied where there is not — see
-                        // `Sprite::facing` for what it is, and `self.table` for
-                        // why the walk is no longer the only answer.
-                        //
-                        // A table's *absent* row is a graphic it measured and
-                        // refused, so this does not fall back to measuring on a
-                        // miss: doing that would put the frame cost back on
-                        // precisely the graphics the tool already decided
-                        // nothing can be said about, which is most of them.
-                        facing: match &self.table {
-                            Some(table) => table.facing(graphic),
-                            None => crate::facing::facing_of(&image),
-                        },
+                        facing: shape.facing,
                     },
                     origin: (origin_x, origin_y),
                 },
@@ -1020,26 +1023,26 @@ impl StaticAtlas {
         self.sprites.get(&graphic).map(|packed| packed.sprite)
     }
 
-    /// The hole in a graphic's surface, or `None` for a solid — which is every
-    /// graphic in a real install today. See
-    /// [`Aperture`](crate::occlusion::Aperture).
-    pub fn aperture(&self, graphic: Graphic) -> Option<crate::occlusion::Aperture> {
-        self.apertures.get(&graphic).copied()
+    /// The hole in a graphic's surface, or `None` for a solid — which is all but
+    /// fifty-eight of a real install's pictures. See [`Hole`](crate::facing::Hole).
+    pub fn hole(&self, graphic: Graphic) -> Option<crate::facing::Hole> {
+        self.holes.get(&graphic).copied()
     }
 
     /// Say what hole a graphic has, without measuring one.
     ///
-    /// **The seam step 16 will write into**, and what a built scene uses in the
-    /// meantime: `docs/lighting.md`'s step 21.3 is the *mechanism* — a hole in
-    /// the walk, tested on a scene that states one — and step 16 is the
-    /// measurement that reads it off a real window's silhouette. The two are
-    /// deliberately independent, and this method is the line between them.
+    /// What a built scene uses: `docs/lighting.md`'s step 21.3 is the *mechanism*
+    /// — a hole in the walk, tested on a scene that states one — and step 16 is
+    /// the measurement that reads it off a real window's silhouette. The two are
+    /// deliberately independent, and this method is the line between them: a
+    /// scene names the hole it wants to reason about instead of drawing a window
+    /// convincing enough to be measured.
     ///
     /// It does not need the graphic to be packed. A scene that states a hole in a
     /// wall it also draws will pack it; one that only wants the occluder need
     /// not, and refusing here would make the order of two unrelated calls matter.
-    pub fn state_aperture(&mut self, graphic: Graphic, aperture: crate::occlusion::Aperture) {
-        self.apertures.insert(graphic, aperture);
+    pub fn state_hole(&mut self, graphic: Graphic, hole: crate::facing::Hole) {
+        self.holes.insert(graphic, hole);
     }
 
     /// Whether the pixel at `(x, y)` *within* a graphic's own picture is drawn
@@ -2130,11 +2133,30 @@ mod tests {
             bytes: 1,
             detector: crate::facing::DETECTOR,
         });
-        table.author(Graphic(1), Some(Facing::One(Face::South)));
-        table.author(Graphic(2), None);
+        table.author(
+            Graphic(1),
+            crate::occlusion::Shape::faced(Facing::One(Face::South)),
+        );
+        table.author(Graphic(2), crate::occlusion::Shape::UNREAD);
+        // And a row that says this picture has a window in it, which the picture
+        // does not: the hole travels by the same lookup the face does.
+        table.author(
+            Graphic(3),
+            crate::occlusion::Shape {
+                facing: Some(Facing::One(Face::East)),
+                hole: Some(WINDOW),
+            },
+        );
 
-        let atlas = StaticAtlas::pack_from([(Graphic(1), wall.clone()), (Graphic(2), wall)], Some(table))
-            .expect("two sprites fit");
+        let atlas = StaticAtlas::pack_from(
+            [
+                (Graphic(1), wall.clone()),
+                (Graphic(2), wall.clone()),
+                (Graphic(3), wall),
+            ],
+            Some(table),
+        )
+        .expect("three sprites fit");
         assert_eq!(
             atlas.sprite(Graphic(1)).expect("packed").facing,
             Some(Facing::One(Face::South)),
@@ -2145,21 +2167,46 @@ mod tests {
             None,
             "a row a person wrote to say nothing may be read off this picture",
         );
+        assert_eq!(atlas.hole(Graphic(3)), Some(WINDOW), "the table's hole");
+        assert_eq!(atlas.hole(Graphic(1)), None, "and a row with none has none");
     }
+
+    /// `0x003C`'s hole, which is what the detector reads off the client's own
+    /// window — see the sweep in `openshard-client-artscan`.
+    const WINDOW: crate::facing::Hole = crate::facing::Hole {
+        near: 93,
+        far: 185,
+        bottom: 10,
+        top: 15,
+    };
 
     /// And with no table at all, the picture is measured as it always was —
     /// which is the client decision 31.6 promises: a slow first frame rather
     /// than a shard that will not start.
+    ///
+    /// **Both measurements**, because they are one answer about one picture and a
+    /// fallback that read the face and not the hole would be a client where
+    /// windows exist only on machines somebody ran a tool on.
     #[test]
     fn a_packed_sprite_with_no_table_is_measured_as_it_is_packed() {
         use crate::facing::{Face, Facing};
 
-        let atlas = StaticAtlas::pack([(Graphic(1), crate::facing::silhouette(Face::East, 80))])
-            .expect("one sprite fits");
+        let atlas = StaticAtlas::pack([
+            (Graphic(1), crate::facing::silhouette(Face::East, 80)),
+            (Graphic(2), crate::facing::pierced(Face::East, 80, WINDOW)),
+        ])
+        .expect("two sprites fit");
         assert_eq!(
             atlas.sprite(Graphic(1)).expect("packed").facing,
             Some(Facing::One(Face::East)),
         );
+        assert_eq!(atlas.hole(Graphic(1)), None, "a solid wall has no window");
+        assert_eq!(
+            atlas.sprite(Graphic(2)).expect("packed").facing,
+            Some(Facing::One(Face::East)),
+            "a wall with a window in it is still a wall",
+        );
+        assert_eq!(atlas.hole(Graphic(2)), Some(WINDOW));
     }
 
     /// A sprite bigger than the atlas is its own error, because it is not a

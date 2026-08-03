@@ -69,6 +69,15 @@
 //! The sweep in `tests/facing.rs` is what says how much of a real install this
 //! reads, because a detector with no coverage count is a green light for having
 //! checked nothing.
+//!
+//! # And the hole in it
+//!
+//! [`aperture_of`] is the second measurement off the same silhouette — step 16 of
+//! `docs/lighting.md`. A window is a *hole in a wall*, so what the art left
+//! transparent inside an opaque face is the rectangle a ray passes through. It
+//! lives beside the face rather than in a module of its own because it needs one:
+//! which half of the picture is a surface, and which way the run counts along it,
+//! are the face's answers, and the two verdicts are one row of one table.
 
 use openshard_uofiles::image::Image;
 
@@ -81,12 +90,17 @@ use openshard_uofiles::image::Image;
 /// measured from has not changed, so nothing else in the stamp can say so.
 ///
 /// **Bump it when a gate here changes** — `MIN_FILLED`, `SPILL`, `OVERHANG`,
-/// `STRAIGHT`, `SQUARE`, `OFF_EDGE`, `MIN_STANDING`, or the shape of
-/// [`facing_of`] itself. Nothing enforces that, and nothing can: it is a claim
-/// about a diff. What catches a bump that was forgotten is the sweep in
+/// `STRAIGHT`, `SQUARE`, `OFF_EDGE`, `MIN_STANDING`, `HOLE_MIN_RUN`,
+/// `HOLE_MIN_RISE`, `HOLE_MARGIN`, or the shape of [`facing_of`] or
+/// [`aperture_of`]. Nothing enforces that, and nothing can: it is a claim about a
+/// diff. What catches a bump that was forgotten is the sweep in
 /// `openshard-client-artscan`, which reads a real install and compares every row
 /// of a table against a live measurement — see that crate's `agrees` test.
-pub const DETECTOR: u32 = 1;
+///
+/// **Two** since the hole joined the face: a table written by detector 1 has a
+/// row for every window and a hole in none of them, and nothing else in the
+/// stamp could say so.
+pub const DETECTOR: u32 = 2;
 
 /// Which edge of its tile a wall stands on.
 ///
@@ -262,6 +276,42 @@ const SQUARE: i32 = 3;
 /// here with nothing to argue about: see where it is used.
 const OFF_EDGE: f32 = 3.0;
 
+/// How many pixels up the screen one unit of `z` is.
+///
+/// `crate::camera::Z_STEP` is the same four, and this module cannot borrow it for
+/// the reason [`TILE_WIDTH`] is spelled out here: a function handed nothing but
+/// pixels should not have to be handed a camera. Pinned against it in the tests
+/// below.
+const Z_STEP: f32 = 4.0;
+
+/// How many columns of a face a hole must span before it is a hole.
+///
+/// Three, which is a hole a fifth of a tile wide at its narrowest. Under it are
+/// the two things a wall's picture has that are not windows: the single stray
+/// transparent pixel an artist left inside a run, and the one-column notch
+/// between two bricks. Both would otherwise be measured as a slot for light to
+/// come through — and unlike a refused face, a wrong hole is *brighter* than the
+/// truth, which is the direction this pass refuses everywhere else.
+const HOLE_MIN_RUN: usize = 3;
+
+/// And how tall it must stand, in pixels.
+///
+/// Eight, which is two units of `z` — the same order as the width gate, and for
+/// the same reason. A hole one `z` tall is a scratch in the art.
+const HOLE_MIN_RISE: i32 = 8;
+
+/// How many solid columns of the face must stand either side of the hole.
+///
+/// **The gate that says a hole is a hole and not an edge.** A window is
+/// surrounded by its wall; a gap that runs to the end of the picture is the space
+/// between two things the artist drew in one sprite — an arch's leg, a fence's
+/// post, a wall with a pillar beside it — and reading it as an aperture would cut
+/// a hole through a surface whose *silhouette* stops there anyway.
+///
+/// Two rather than one: the last drawn column of a face is antialiasing, so a
+/// one-column margin is a margin that may not be picture at all.
+const HOLE_MARGIN: usize = 2;
+
 /// How tall the wall must stand over its base, in pixels, before this is willing
 /// to call it a wall.
 ///
@@ -368,6 +418,235 @@ pub fn facing_of(image: &Image) -> Option<Facing> {
     let right = Half::Right.read(&base, width, height, Second::Allowed)?;
     let left = Half::Left.read(&base, width, height, Second::Allowed)?;
     Some(Facing::Corner { right, left })
+}
+
+/// A hole in a wall, measured off the wall's own picture, in the surface's own
+/// coordinates.
+///
+/// What [`aperture_of`] answers and what a row of an
+/// [`ArtTable`](crate::arttable::ArtTable) carries. It is deliberately *not*
+/// [`Aperture`](crate::occlusion::Aperture), which is the same rectangle placed
+/// in the world: a picture is drawn once and stood on a hundred tiles at a
+/// hundred heights, so the measurement can only be relative to the thing it was
+/// measured from. [`Aperture::above`](crate::occlusion::Aperture::above) is where
+/// the two meet, and it is called once per static with that static's own `z`.
+///
+/// - `near` and `far` run along the face, in
+///   [`RUN_STEPS`](crate::occlusion::RUN_STEPS)ths of a tile, counted the way
+///   [`Face::run_at`] counts — so `near` is the low corner of the world axis the
+///   face lies along whichever way the picture happens to be drawn.
+/// - `bottom` and `top` are `z` **above the static's own base**, in the map's
+///   units.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Hole {
+    /// Where the hole starts along the run.
+    pub near: u8,
+    /// And where it ends.
+    pub far: u8,
+    /// The lowest `z` it reaches, above the static's base.
+    pub bottom: u8,
+    /// And the highest.
+    pub top: u8,
+}
+
+/// The hole in a wall's face, or `None` where the art draws none.
+///
+/// Pure, like [`facing_of`], and called next to it: `facing` is the verdict that
+/// function already reached, passed in rather than measured again, because a
+/// hole is a rectangle *in a face* and there is nothing to measure without one.
+///
+/// # What is measured
+///
+/// A face is a plane, and this projection draws it so that a point on it has a
+/// screen column that depends only on how far along the run it is, and a screen
+/// row that is its base line minus its height. So a rectangle in the surface's
+/// coordinates is drawn as a parallelogram: **vertical sides at the two ends of
+/// the run, and 45° top and bottom that descend with the base line**. Which means
+/// the whole measurement is per column: the transparent run inside a column's own
+/// picture, taken as a height above that column's base pixel, is the hole's `z`
+/// span there — and it is the same span in every column the hole covers.
+///
+/// # The rectangle is the largest one that fits
+///
+/// The client's windows are not rectangles. `0x003C` — the one every third house
+/// in Britain has — is an arch: a doorway with a flat sill, straight sides and a
+/// rounded top, and its transparent region is two pixels taller in the middle
+/// than at the ends. There is one honest rectangle in a shape like that and it is
+/// the **largest one inscribed in it**: a bounding box would let light through
+/// stone the artist drew.
+///
+/// So the columns' spans are searched for the sub-run of greatest area, which is
+/// `O(n²)` over at most 22 columns — the sort of arithmetic decision 31's budget
+/// was bought for, and it would have been a scanline trick in a frame.
+///
+/// # And what it refuses
+///
+/// The same refusal culture as the face above it, with one extra reason to be
+/// careful: a face this cannot read is a wall shaded oddly, and a *hole* this
+/// reads wrongly is light coming through a stone wall. So:
+///
+/// - **A corner.** Two faces, one picture, and a hole measured on one half of it
+///   would be given to both panels — a window in the wall it is cut into and a
+///   window in the wall beside it. Nothing in a silhouette says which half a hole
+///   belongs to, so this says nothing.
+/// - **A gap that reaches the end of the face** — [`HOLE_MARGIN`]. That is the
+///   space between two things drawn in one picture, not a hole through one thing.
+/// - **Two gaps in one column**, and **gaps that do not stand in one run of
+///   columns**: either is two holes, and a surface carries one.
+/// - **Anything smaller than [`HOLE_MIN_RUN`] by [`HOLE_MIN_RISE`]**, which is
+///   the stray transparent pixel and the notch between two bricks.
+pub fn aperture_of(image: &Image, facing: Facing) -> Option<Hole> {
+    // A corner is refused before anything is measured — see above.
+    let Facing::One(face) = facing else {
+        return None;
+    };
+    let width = image.width();
+    let middle = f32::from(width) / 2.0;
+    let base = base_edge(image);
+
+    // The face's own half, in column order, with each column's single gap. The
+    // *other* half is the wall's thickness (`SPILL`) and whatever the artist drew
+    // standing against it, and neither is a surface a ray crosses.
+    let mut columns: Vec<Column> = Vec::new();
+    for (column, bottom) in base.columns() {
+        let across = f32::from(column) + 0.5 - middle;
+        let into = match face {
+            Face::North | Face::East => across,
+            Face::South | Face::West => -across,
+        };
+        if into <= 0.0 || into > HALF_TILE_WIDTH {
+            continue;
+        }
+        // Every column of the half has a top, since it has a bottom.
+        let top = base.top[usize::from(column)].unwrap();
+        let gap = match gap_in(image, column, top, bottom) {
+            // Two holes in one column is not one rectangle, and the surface
+            // carries one. Refused for the whole picture rather than for the
+            // column, because "the hole is wherever the picture is simple" is a
+            // measurement of the detector rather than of the art.
+            Gap::Several => return None,
+            Gap::Solid => None,
+            // Heights above this column's own base pixel, which is what makes
+            // the 45° descent drop out: a hole level in the surface is a
+            // constant here and a slanted one is not.
+            Gap::One(from, to) => Some((
+                i32::from(bottom) - i32::from(to),
+                i32::from(bottom) - i32::from(from),
+            )),
+        };
+        columns.push(Column { column, gap });
+    }
+
+    // Where the gap columns are, and that they are one run of them with wall
+    // either side.
+    let first = columns.iter().position(|column| column.gap.is_some())?;
+    let last = columns.iter().rposition(|column| column.gap.is_some()).unwrap();
+    if columns[first..=last].iter().any(|column| column.gap.is_none()) {
+        return None;
+    }
+    if first < HOLE_MARGIN || last + HOLE_MARGIN >= columns.len() {
+        return None;
+    }
+
+    // The largest rectangle inscribed in the gap: every sub-run of columns, held
+    // to the lowest ceiling and the highest floor in it.
+    let spans: Vec<(i32, i32)> = columns[first..=last]
+        .iter()
+        .map(|column| column.gap.unwrap())
+        .collect();
+    let mut best: Option<(usize, usize, i32, i32)> = None;
+    let mut largest = 0;
+    for from in 0..spans.len() {
+        let mut bottom = i32::MIN;
+        let mut top = i32::MAX;
+        for (steps, span) in spans[from..].iter().enumerate() {
+            bottom = bottom.max(span.0);
+            top = top.min(span.1);
+            let rise = top - bottom;
+            if rise <= 0 {
+                break;
+            }
+            let area = (steps as i32 + 1) * rise;
+            if area > largest {
+                largest = area;
+                best = Some((from, from + steps, bottom, top));
+            }
+        }
+    }
+    let (from, to, bottom, top) = best?;
+    if to - from + 1 < HOLE_MIN_RUN || top - bottom < HOLE_MIN_RISE {
+        return None;
+    }
+
+    // And out into the surface's own coordinates. The run is measured at the
+    // *edges* of the end columns rather than at their centres — a hole eight
+    // pixels wide is eight pixels of wall missing, and half a pixel at each end
+    // of it is the difference between a rectangle and the pixels it was read off.
+    let edge = |column: u16, side: f32| face.run_at(f32::from(column) + side - middle);
+    let start = edge(columns[first + from].column, 0.0);
+    let end = edge(columns[first + to].column, 1.0);
+    let step = |run: f32| (run.clamp(0.0, 1.0) * crate::occlusion::RUN_STEPS).round() as u8;
+    Some(Hole {
+        near: step(start.min(end)),
+        far: step(start.max(end)),
+        // Nearest rather than inwards: the span is already the inscribed one, and
+        // rounding an inscribed rectangle inwards twice is a hole a `z` narrower
+        // than the art's on both sides.
+        bottom: (bottom as f32 / Z_STEP).round().clamp(0.0, 255.0) as u8,
+        top: (top as f32 / Z_STEP).round().clamp(0.0, 255.0) as u8,
+    })
+}
+
+/// One column of a face: where it is, and the hole in it if it has one, as
+/// heights above the column's own base pixel.
+struct Column {
+    /// Its index in the picture.
+    column: u16,
+    /// `(bottom, top)` of the transparent run inside it, in pixels above the
+    /// base. `None` for a column of solid wall.
+    gap: Option<(i32, i32)>,
+}
+
+/// What one column has inside its own picture.
+enum Gap {
+    /// Nothing: every row between its ends is drawn.
+    Solid,
+    /// One transparent run, `(first row, last row)` inclusive.
+    One(u16, u16),
+    /// More than one, which is not a rectangle in any plane.
+    Several,
+}
+
+/// The transparent run strictly inside one column's drawn pixels.
+///
+/// `top` and `bottom` are that column's own first and last drawn row, so a run
+/// found between them has picture above it and picture below it by construction
+/// — which is half of what makes a hole a hole rather than a notch. The other
+/// half is the margin along the run, and that is [`aperture_of`]'s.
+fn gap_in(image: &Image, column: u16, top: u16, bottom: u16) -> Gap {
+    let mut found: Option<(u16, u16)> = None;
+    let mut open: Option<u16> = None;
+    for row in top..=bottom {
+        // Inside the rectangle, so there is a pixel; transparency is the
+        // question, and it is the client's own rule — see `base_edge`.
+        let clear = image.pixel(column, row).unwrap().is_transparent();
+        match (clear, open) {
+            (true, None) => open = Some(row),
+            (false, Some(start)) => {
+                if found.is_some() {
+                    return Gap::Several;
+                }
+                found = Some((start, row - 1));
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    // A run cannot still be open: `bottom` is a drawn row by construction.
+    match found {
+        None => Gap::Solid,
+        Some((from, to)) => Gap::One(from, to),
+    }
 }
 
 /// Whether a half being read may have a second face drawn on the other half of
@@ -636,6 +915,51 @@ pub fn silhouette(face: Face, height: u16) -> Image {
     Image::new(width, rows, pixels)
 }
 
+/// The same wall with a window cut out of it: [`silhouette`], with the rectangle
+/// `hole` names made transparent.
+///
+/// The forward projection of a [`Hole`], and [`aperture_of`] is its inverse — the
+/// same relationship [`silhouette`] has with [`facing_of`], and `pub` for the
+/// same reason: the readers are the tests in other crates, and a second
+/// hand-drawn window would be a second opinion about what one looks like.
+///
+/// It draws what the projection says: a column's pixels are cleared where the
+/// hole covers that column's run, between the two heights, which comes out as a
+/// parallelogram with vertical sides. A real window is not quite this — the
+/// client's are arched — and that is what [`aperture_of`]'s inscribed rectangle
+/// is for; what this fixture is for is the arithmetic in between.
+pub fn pierced(face: Face, height: u16, hole: Hole) -> Image {
+    use openshard_uofiles::color::Color16;
+
+    let wall = silhouette(face, height);
+    let (width, rows) = (wall.width(), wall.height());
+    let mut pixels = wall.pixels().to_vec();
+    let middle = f32::from(width) / 2.0;
+    let near = f32::from(hole.near) / crate::occlusion::RUN_STEPS;
+    let far = f32::from(hole.far) / crate::occlusion::RUN_STEPS;
+    for column in 0..width {
+        let across = f32::from(column) + 0.5 - middle;
+        let run = face.run_at(across);
+        if run < near || run > far {
+            continue;
+        }
+        // This column's base pixel, the way `silhouette` placed it: the wall's
+        // own bottom row here, whatever the ornament above it.
+        let Some(base) = (0..rows).rev().find(|row| {
+            !pixels[usize::from(*row) * usize::from(width) + usize::from(column)].is_transparent()
+        }) else {
+            continue;
+        };
+        let lift = |z: u8| f32::from(z) * Z_STEP;
+        let from = f32::from(base) - lift(hole.top);
+        let to = f32::from(base) - lift(hole.bottom);
+        for row in from.max(0.0) as u16..=to.max(0.0) as u16 {
+            pixels[usize::from(row) * usize::from(width) + usize::from(column)] = Color16::TRANSPARENT;
+        }
+    }
+    Image::new(width, rows, pixels)
+}
+
 /// A corner's silhouette: the two faces of [`silhouette`] drawn into one
 /// picture, which is what the client's own corner graphics are.
 ///
@@ -867,6 +1191,237 @@ mod tests {
             }
         }
         Image::new(width, height, pixels)
+    }
+
+    /// `0x003C`'s hole, which is what the detector reads off the client's own
+    /// window: the middle third of the tile, from ten `z` above the sill to
+    /// fifteen. Every fixture below is a variation on it, so that a number that
+    /// moves can be compared with a real one.
+    const WINDOW: Hole = Hole {
+        near: 93,
+        far: 185,
+        bottom: 10,
+        top: 15,
+    };
+
+    /// A window is read back off its own picture, on every face.
+    ///
+    /// All four for the reason [`each_face_is_read_back_off_its_own_silhouette`]
+    /// tests all four: the run is measured along the face's own axis and it
+    /// counts *the other way* on two of them, so a detector that had the sign
+    /// wrong would read a window at one end of the wall as a window at the other
+    /// — and a test of one face would never say so.
+    #[test]
+    fn a_window_is_read_back_off_its_own_silhouette() {
+        for face in [Face::North, Face::East, Face::South, Face::West] {
+            let window = pierced(face, 80, WINDOW);
+            assert_eq!(
+                facing_of(&window),
+                Some(Facing::One(face)),
+                "{face:?}: a wall with a window in it is still a wall",
+            );
+            assert_eq!(aperture_of(&window, Facing::One(face)), Some(WINDOW), "{face:?}");
+        }
+    }
+
+    /// And a wall with nothing cut out of it has no hole. The other half of the
+    /// property above, and the one that says the detector is not answering
+    /// `Some` at whatever it is shown.
+    #[test]
+    fn a_solid_wall_has_no_hole() {
+        for face in [Face::North, Face::East, Face::South, Face::West] {
+            let wall = silhouette(face, 80);
+            assert_eq!(aperture_of(&wall, Facing::One(face)), None, "{face:?}");
+        }
+    }
+
+    /// A corner is refused, whatever its picture holds.
+    ///
+    /// Two faces in one picture, and a hole given to a corner would be given to
+    /// *both* of its panels — a window in the wall it is cut into and a window in
+    /// the wall beside it. Nothing in a silhouette says which half a hole belongs
+    /// to, so this says nothing. The fixture is a picture with a real hole in it,
+    /// because the refusal has to be about the corner rather than about there
+    /// being nothing to find.
+    #[test]
+    fn a_corner_is_refused_a_hole() {
+        let window = pierced(Face::East, 80, WINDOW);
+        assert_eq!(
+            aperture_of(
+                &window,
+                Facing::Corner {
+                    right: Face::East,
+                    left: Face::South,
+                },
+            ),
+            None,
+        );
+    }
+
+    /// A gap that runs off the end of the face is not a hole.
+    ///
+    /// [`HOLE_MARGIN`], and what it is defending against is a picture of two
+    /// things rather than one thing with a hole in it: an arch's leg, a post
+    /// beside a wall, the space between a building and the fence next to it. A
+    /// window has wall all the way round it, and the run is the direction the
+    /// column-by-column measurement cannot see that in.
+    #[test]
+    fn a_gap_at_the_end_of_a_face_is_not_a_hole() {
+        for (near, far) in [(0, 128), (128, 255)] {
+            let open = Hole { near, far, ..WINDOW };
+            let picture = pierced(Face::East, 80, open);
+            assert_eq!(
+                aperture_of(&picture, Facing::One(Face::East)),
+                None,
+                "a gap from {near} to {far} along the run",
+            );
+        }
+    }
+
+    /// A scratch is not a window, in either direction.
+    ///
+    /// [`HOLE_MIN_RUN`] and [`HOLE_MIN_RISE`]. A stray transparent pixel inside a
+    /// run of art and a one-column notch between two bricks are both real things
+    /// in the client's own pictures, and either would otherwise be a slot for
+    /// light to come through — which is the direction that shows: a wrong hole is
+    /// *brighter* than the truth.
+    #[test]
+    fn a_scratch_is_not_a_window() {
+        let thin = Hole {
+            near: 120,
+            far: 128,
+            ..WINDOW
+        };
+        assert_eq!(
+            aperture_of(&pierced(Face::East, 80, thin), Facing::One(Face::East)),
+            None
+        );
+        let low = Hole {
+            bottom: 10,
+            top: 11,
+            ..WINDOW
+        };
+        assert_eq!(
+            aperture_of(&pierced(Face::East, 80, low), Facing::One(Face::East)),
+            None
+        );
+    }
+
+    /// Two holes in one column are refused rather than merged.
+    ///
+    /// A surface carries one rectangle, and a column with two gaps is a picture
+    /// of something else — a lattice, a pair of arrow slits, a leaded window with
+    /// its mullions drawn. Reading the two as one would open the stone between
+    /// them; picking one would be picking whichever the scan met first.
+    #[test]
+    fn two_gaps_in_one_column_are_refused() {
+        let upper = Hole {
+            bottom: 16,
+            top: 19,
+            ..WINDOW
+        };
+        let both = both_holes(Face::East, 80, WINDOW, upper);
+        assert_eq!(aperture_of(&both, Facing::One(Face::East)), None);
+    }
+
+    /// Two windows side by side are one refusal too: the gap columns are not one
+    /// run of them, so neither is "the" hole and a surface has one.
+    #[test]
+    fn two_holes_along_the_run_are_refused() {
+        let right = Hole {
+            near: 30,
+            far: 70,
+            ..WINDOW
+        };
+        let left = Hole {
+            near: 150,
+            far: 200,
+            ..WINDOW
+        };
+        let both = both_holes(Face::East, 80, right, left);
+        assert_eq!(aperture_of(&both, Facing::One(Face::East)), None);
+    }
+
+    /// One wall with two rectangles cut out of it.
+    fn both_holes(face: Face, height: u16, one: Hole, other: Hole) -> Image {
+        let (a, b) = (pierced(face, height, one), pierced(face, height, other));
+        let pixels = a
+            .pixels()
+            .iter()
+            .zip(b.pixels())
+            .map(|(over, under)| match over.is_transparent() {
+                true => *over,
+                false => *under,
+            })
+            .collect();
+        Image::new(a.width(), a.height(), pixels)
+    }
+
+    /// **The rectangle is the largest one that fits**, and which way it grows is
+    /// decided by area rather than by a rule about shapes.
+    ///
+    /// The client's windows are arches: `0x003C` is two pixels taller in the
+    /// middle than at its ends, so a bounding box would let light through the
+    /// stone the artist drew round the corners. Both directions are here because
+    /// the trade is real — losing height to keep the width, and losing width to
+    /// keep the height — and a detector that always did one of them would pass a
+    /// test of the other only by accident.
+    #[test]
+    fn the_hole_is_the_largest_rectangle_that_fits_inside_it() {
+        // An arch: the two end columns closed off above `z = 15`, where the six
+        // between them are open to sixteen. Keeping all eight columns and giving
+        // up the top `z` is 8 by 20 pixels; keeping the height and losing the two
+        // ends is 6 by 24, which is smaller.
+        let arched = filled(&pierced(Face::East, 80, TALL), Face::East, 80, &[28, 35], 15);
+        assert_eq!(aperture_of(&arched, Facing::One(Face::East)), Some(WINDOW));
+
+        // And a chimney: five of the eight closed off at twelve, so the wide
+        // rectangle is 8 by 8 and the tall one is 3 by 24.
+        let chimney = filled(
+            &pierced(Face::East, 80, TALL),
+            Face::East,
+            80,
+            &[28, 29, 33, 34, 35],
+            12,
+        );
+        assert_eq!(
+            aperture_of(&chimney, Facing::One(Face::East)),
+            Some(Hole {
+                near: 128,
+                far: 162,
+                bottom: 10,
+                top: 16,
+            }),
+        );
+    }
+
+    /// [`WINDOW`] with one more `z` of height on it, which the two shapes above
+    /// are cut back from.
+    const TALL: Hole = Hole { top: 16, ..WINDOW };
+
+    /// Put the wall back over part of a window: in the named columns of the
+    /// picture, everything above `keep` `z` is stone again.
+    ///
+    /// Stated in the surface's own coordinates rather than in rows, because the
+    /// base line descends: "above fifteen `z`" is a different row in every column
+    /// and the same statement about the wall.
+    fn filled(window: &Image, face: Face, height: u16, columns: &[u16], keep: u8) -> Image {
+        let solid = silhouette(face, height);
+        let (width, rows) = (window.width(), window.height());
+        let mut pixels = window.pixels().to_vec();
+        for column in columns {
+            let base = (0..rows)
+                .rev()
+                .find(|row| !solid.pixel(*column, *row).unwrap().is_transparent())
+                .expect("a column of the face");
+            // Strictly above the row `keep` names, so that the hole's top in this
+            // column is exactly `keep`.
+            for row in 0..base - u16::from(keep) * Z_STEP as u16 {
+                pixels[usize::from(row) * usize::from(width) + usize::from(*column)] =
+                    solid.pixel(*column, row).unwrap();
+            }
+        }
+        Image::new(width, rows, pixels)
     }
 
     /// A slab whose base is a clean 45° run is still not a wall.

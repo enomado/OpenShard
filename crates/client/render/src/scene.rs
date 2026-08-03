@@ -101,17 +101,17 @@ pub const WALL_HOLED: Graphic = Graphic(0x000D);
 /// The hole in [`WALL_HOLED`]: the middle half of the tile, all the way up.
 ///
 /// **A slot and not a window**, deliberately. A real window is a rectangle in
-/// both directions and step 16 is what measures one; this scene is about the
-/// axis that is *new* — where along the run the ray goes through — so the `z`
-/// span is opened wide enough that every ray along the ground passes it and the
-/// only thing deciding is `v`. The height half of the rule is pinned by
-/// `light`'s own unit tests, where a ray can be aimed at a stated `z` instead of
-/// being whatever a floor pixel and a flame happen to make.
-pub const WALL_HOLE: crate::occlusion::Aperture = crate::occlusion::Aperture {
+/// both directions and `facing::aperture_of` is what measures one off the art;
+/// this scene is about the axis that is *new* — where along the run the ray goes
+/// through — so the `z` span is opened from the wall's own base to further up
+/// than any wall stands, and the only thing deciding is `v`. The height half of
+/// the rule is pinned by `light`'s own unit tests, where a ray can be aimed at a
+/// stated `z` instead of being whatever a floor pixel and a flame happen to make.
+pub const WALL_HOLE: crate::facing::Hole = crate::facing::Hole {
     near: 64,
     far: 191,
-    bottom: -128,
-    top: 127,
+    bottom: 0,
+    top: 255,
 };
 
 /// A torch. Flagged `LIGHT_SOURCE`, which is the only reason anything burns —
@@ -122,6 +122,19 @@ pub const TORCH: Graphic = Graphic(0x0A12);
 /// walls and no roof is a courtyard, and the sun floods it — which is correct,
 /// and is why the sunlit scenes have one and the firelit ones do not.
 pub const ROOF: Graphic = Graphic(0x000A);
+
+/// The floor of an upper storey: the plank a room stands on, and the ceiling of
+/// the room below it.
+///
+/// **Its flags are a real one's, measured rather than invented.** Over a
+/// hundred-and-twenty-tile square of Britain — the block `column.rs` reads —
+/// every floor static of a house carries `FLOOR | NO_SHOOT | PLATFORM` and a
+/// height of **zero**: 4,534 of the 4,647 lids in that square are zero deep.
+/// That last number is the whole reason this graphic exists as a scene: a lid is
+/// a *plane*, it has no thickness for a ray to travel through, and a rule that
+/// asks how far a ray ran inside its span asks a question a floor has no answer
+/// to. See [`storey_over_a_torch`].
+pub const FLOOR: Graphic = Graphic(0x000E);
 
 /// How high a room's roof sits: on top of its walls.
 pub const ROOF_Z: i8 = WALL_HEIGHT as i8;
@@ -292,6 +305,11 @@ fn tiledata() -> TileData {
     set(DOOR_OPEN, TileFlags::BLOCK, WALL_HEIGHT);
     set(TORCH, TileFlags::LIGHT_SOURCE, 0);
     set(ROOF, TileFlags::NO_SHOOT, ROOF_THICKNESS);
+    // A floor's own flags, off a real install, height included — see [`FLOOR`].
+    // The zero is load-bearing: it is what makes the lid a plane rather than a
+    // slab, and a scene that gave it a thickness would pass a rule that a house
+    // does not.
+    set(FLOOR, TileFlags::FLOOR | TileFlags::NO_SHOOT | TileFlags::PLATFORM, 0);
     tiledata
 }
 
@@ -670,9 +688,11 @@ pub fn wall_with_a_hole_in_it() -> Scene {
         crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
     )])
     .expect("two silhouettes fit");
-    // The seam step 16 will write into: the picture is a plain wall's, and the
-    // hole is stated rather than measured. See `StaticAtlas::state_aperture`.
-    art.state_aperture(WALL_HOLED, WALL_HOLE);
+    // The picture is a plain wall's and the hole is stated rather than measured,
+    // which is what keeps this scene about the walk: see
+    // `StaticAtlas::state_hole`, and `facing::aperture_of` for the measurement it
+    // stands in for.
+    art.state_hole(WALL_HOLED, WALL_HOLE);
     scene.art = Some(art);
     scene.with((cx, cy - 2), TORCH)
 }
@@ -735,6 +755,59 @@ pub fn cellar_under_street() -> Scene {
         hue: Hue::NONE,
     });
     scene
+}
+
+/// Where the torch of [`storey_over_a_torch`] burns, and where that scene is
+/// read: opposite ends of the ground floor.
+///
+/// Apart, and by more than one tile, because a ray that climbs a storey in one
+/// tile of ground crosses the floor inside the lit end's **own** cell — which
+/// every walk exempts, and rightly: a pixel standing on a floor is not shadowed
+/// by the floor it stands on. Four tiles apart the crossing lands a whole tile
+/// away, on a lid that is nobody's own, which is the arrangement a house
+/// actually has: a torch on one side of a room and the storey above the other.
+pub const STOREY_TORCH: (u16, u16) = (CENTRE.0 - 2, CENTRE.1);
+/// The far end, read at [`STOREY_Z`].
+pub const STOREY_SPOT: (u16, u16) = (CENTRE.0 + 2, CENTRE.1);
+
+/// How high above the upper floor that scene is read: inside the upper room,
+/// clear of its own floor.
+pub const STOREY_Z: f32 = WALL_HEIGHT as f32 + 5.0;
+
+/// A house with two storeys and a torch on the ground floor of it.
+///
+/// **The scene a floor is a plane in.** A room of wall, a torch in it, a
+/// [`FLOOR`] over every tile of the inside at the top of that wall, and a second
+/// ring of wall standing on the first — so the upper storey is a room like the
+/// lower one, shut from it by one plane of planks and by nothing else.
+///
+/// What it is here to catch is light arriving through that plane. A floor is
+/// zero `z` deep (see [`FLOOR`]), so a rule that scales what an occluder stops by
+/// how far the ray ran *inside* it gets zero from every floor in the world, and
+/// a torch on the ground floor lights the storey above it — the upper wall
+/// brightest of all, since a wall's face takes the ray head on. That is what a
+/// player sees: a house whose second floor is lit from under its own floorboards.
+///
+/// The ring above is [`WALL`] and not something new: the point is that the wall
+/// of the upper storey is an ordinary wall which happens to stand above a lid,
+/// and that nothing about *it* is what should keep the light out.
+pub fn storey_over_a_torch() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("a torch on the ground floor of a two-storey house");
+    for tile in room_wall_tiles() {
+        scene = scene.with(tile, WALL).with_at(tile, WALL_HEIGHT as i8, WALL);
+    }
+    // The floor of the upper storey, over the inside of the room and not over
+    // the ring: a house is built that way — the planks run between the walls —
+    // and it leaves the wall tiles carrying wall and nothing else, so an
+    // assertion about the upper wall's face is about the wall rather than about
+    // a lid that happened to be on the same tile.
+    for x in cx - ROOM_HALF + 1..=cx + ROOM_HALF - 1 {
+        for y in cy - ROOM_HALF + 1..=cy + ROOM_HALF - 1 {
+            scene = scene.with_at((x, y), WALL_HEIGHT as i8, FLOOR);
+        }
+    }
+    scene.with(STOREY_TORCH, TORCH)
 }
 
 /// Two wall tiles touching at one corner, with a torch on the far diagonal.
@@ -883,6 +956,7 @@ pub fn all() -> Vec<Scene> {
         sconce_on_wall(),
         lantern_in_a_room(),
         cellar_under_street(),
+        storey_over_a_torch(),
         diagonal_gap(),
         wall_in_the_sun(),
         sunlit_room_with_window(),

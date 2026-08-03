@@ -22,14 +22,22 @@
 //! is that a shard fixing one wall edits a file rather than patching a detector:
 //!
 //! ```text
-//! table 1
-//! detector 1
+//! table 2
+//! detector 2
 //! art artLegacyMUL.uop 447160596
 //! examined 15234
 //! 0x0007 face S
+//! 0x003C face E hole 93 185 10 15
 //! 0x0104 corner E S
 //! 0x0171 none authored
 //! ```
+//!
+//! A `hole` is the second verdict [`crate::facing`] reads off the same picture —
+//! `near far bottom top`, the four numbers of a [`Hole`](crate::facing::Hole) —
+//! and it is optional because almost nothing has one. Only a `face` may carry it:
+//! a corner is two surfaces in one picture and there is nothing in a silhouette
+//! that says which of them a hole belongs to, so the parser refuses the pairing
+//! rather than letting a row state something the detector will not.
 //!
 //! **A row that is not there is a graphic that was measured and refused**, which
 //! is why [`ArtTable::examined`] is in the header: it is the coverage count that
@@ -59,15 +67,23 @@ use std::fmt;
 
 use openshard_protocol::wire::Graphic;
 
-use crate::facing::{Face, Facing};
+use crate::facing::{Face, Facing, Hole};
+use crate::occlusion::Shape;
 
 /// The version of this file format.
 ///
 /// A table written by a newer build is refused rather than half-read: the rows
 /// are the same shape today and the day a row grows a field, a reader that
 /// ignored what it did not understand would answer confidently about a graphic
-/// whose aperture it never saw.
-pub const FORMAT: u32 = 1;
+/// whose hole it never saw.
+///
+/// **Two** since step 16, which is that day arriving: a row may now carry the
+/// hole measured off the picture, and a build reading a format-1 table would
+/// read every window as a solid wall while looking perfectly fresh. The
+/// [`Stamp`]'s detector version says the same thing about the same tables and it
+/// is deliberately not the only one that does — a format is about what the file
+/// can *say*, a detector about what was said.
+pub const FORMAT: u32 = 2;
 
 /// What a table was measured from, and by which rules.
 ///
@@ -96,10 +112,11 @@ pub struct Stamp {
 /// One graphic's verdict, and where it came from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Row {
-    /// What the art says the picture is a surface of, or `None` for a graphic
-    /// nothing may be said about — which is only ever written down when a person
-    /// said so, since a derived refusal is the absence of a row.
-    facing: Option<Facing>,
+    /// What the art says the picture is: which surface, and the hole in it. Both
+    /// `None` is a graphic nothing may be said about — which is only ever written
+    /// down when a person said so, since a derived refusal is the absence of a
+    /// row.
+    shape: Shape,
     /// Whether a person wrote this row. The tool leaves it alone.
     authored: bool,
 }
@@ -139,20 +156,25 @@ impl ArtTable {
     /// mechanism: the tool walks every graphic in the install and calls this for
     /// each, and a row a person wrote survives the walk. It is still counted as
     /// examined — the coverage number is about the *art*, not about who answered.
-    pub fn derive(&mut self, graphic: Graphic, facing: Option<Facing>) {
+    pub fn derive(&mut self, graphic: Graphic, shape: Shape) {
         self.examined += 1;
         if self.rows.get(&graphic).is_some_and(|row| row.authored) {
             return;
         }
-        match facing {
+        match shape.facing {
             // A refusal is the absence of a row: writing fifteen thousand
             // `none`s would bury the two hundred lines a person might want to
             // read, and `examined` is what makes the absence mean something.
+            //
+            // The *facing* is what decides, and a hole with no face is not a
+            // half-answer worth keeping: a hole is a rectangle in a plane, so
+            // without the plane there is nothing to write down. `aperture_of`
+            // refuses one for the same reason at the other end.
             None => self.rows.remove(&graphic),
-            Some(facing) => self.rows.insert(
+            Some(_) => self.rows.insert(
                 graphic,
                 Row {
-                    facing: Some(facing),
+                    shape,
                     authored: false,
                 },
             ),
@@ -161,14 +183,15 @@ impl ArtTable {
 
     /// Write a row by hand, overriding whatever was derived.
     ///
-    /// `None` is a person saying *nothing may be said about this picture*, which
-    /// is a different statement from a derived refusal and is therefore written
-    /// down: it survives a re-derivation, where a derived refusal does not.
-    pub fn author(&mut self, graphic: Graphic, facing: Option<Facing>) {
+    /// [`Shape::UNREAD`] is a person saying *nothing may be said about this
+    /// picture*, which is a different statement from a derived refusal and is
+    /// therefore written down: it survives a re-derivation, where a derived
+    /// refusal does not.
+    pub fn author(&mut self, graphic: Graphic, shape: Shape) {
         self.rows.insert(
             graphic,
             Row {
-                facing,
+                shape,
                 authored: true,
             },
         );
@@ -187,14 +210,20 @@ impl ArtTable {
         }
     }
 
-    /// What this says about a graphic: the surface its picture is of, or `None`
-    /// for a graphic nothing may be said about.
+    /// What this says about a graphic: which surface its picture is of, and the
+    /// hole in it. [`Shape::UNREAD`] for a graphic nothing may be said about.
     ///
-    /// The two `None`s — refused by the detector and refused by a person — are
-    /// deliberately one answer here. They differ in whether a re-derivation keeps
-    /// them, and nothing that *draws* has any use for the difference.
+    /// The two refusals — by the detector and by a person — are deliberately one
+    /// answer here. They differ in whether a re-derivation keeps them, and
+    /// nothing that *draws* has any use for the difference.
+    pub fn shape(&self, graphic: Graphic) -> Shape {
+        self.rows.get(&graphic).map_or(Shape::UNREAD, |row| row.shape)
+    }
+
+    /// The surface half of it alone, which is what everything that places a quad
+    /// asks — see [`Sprite::facing`](crate::atlas::Sprite).
     pub fn facing(&self, graphic: Graphic) -> Option<Facing> {
-        self.rows.get(&graphic).and_then(|row| row.facing)
+        self.shape(graphic).facing
     }
 
     /// Whether this table describes the install in front of it, measured by the
@@ -215,7 +244,20 @@ impl ArtTable {
 
     /// How many of them it could say something about.
     pub fn decided(&self) -> usize {
-        self.rows.values().filter(|row| row.facing.is_some()).count()
+        self.rows
+            .values()
+            .filter(|row| row.shape.facing.is_some())
+            .count()
+    }
+
+    /// And how many of *those* have a hole in them, which is the tail step 16
+    /// added: fifty-eight over a 2D install, and the only rows a window comes
+    /// from. Its own number and not a share, for the reason [`corners`] is —
+    /// a percentage would hide it going to zero.
+    ///
+    /// [`corners`]: Self::corners
+    pub fn holed(&self) -> usize {
+        self.rows.values().filter(|row| row.shape.hole.is_some()).count()
     }
 
     /// How many rows it holds at all — the decided ones and the hand-written
@@ -240,7 +282,7 @@ impl ArtTable {
     pub fn corners(&self) -> usize {
         self.rows
             .values()
-            .filter(|row| matches!(row.facing, Some(Facing::Corner { .. })))
+            .filter(|row| matches!(row.shape.facing, Some(Facing::Corner { .. })))
             .count()
     }
 
@@ -257,15 +299,19 @@ impl ArtTable {
             out.push_str(&format!("examined {}\n", self.examined));
         }
         for (graphic, row) in &self.rows {
-            let verdict = match row.facing {
+            let verdict = match row.shape.facing {
                 None => "none".to_string(),
                 Some(Facing::One(face)) => format!("face {}", letter(face)),
                 Some(Facing::Corner { right, left }) => {
                     format!("corner {} {}", letter(right), letter(left))
                 }
             };
+            let hole = match row.shape.hole {
+                None => String::new(),
+                Some(hole) => format!(" hole {} {} {} {}", hole.near, hole.far, hole.bottom, hole.top),
+            };
             let authored = if row.authored { " authored" } else { "" };
-            out.push_str(&format!("{:#06X} {verdict}{authored}\n", graphic.0));
+            out.push_str(&format!("{:#06X} {verdict}{hole}{authored}\n", graphic.0));
         }
         out
     }
@@ -376,7 +422,8 @@ fn number<T: std::str::FromStr>(
         .ok_or(TableError::Line { at, detail: what })
 }
 
-/// One row: `0x0104 corner E S`, with `authored` optional on the end.
+/// One row: `0x0104 corner E S`, with `hole N F B T` and `authored` optional on
+/// the end, in that order.
 fn row(
     head: &str,
     words: &mut std::str::SplitWhitespace<'_>,
@@ -411,6 +458,29 @@ fn row(
         }
         _ => return Err(bad),
     };
+    // The hole, if the row states one. **Only a face may**: a corner is two
+    // surfaces in one picture and nothing in a silhouette says which of them a
+    // hole belongs to, so `aperture_of` refuses to measure one there and a row
+    // that stated one anyway would be a window in the wall beside the window.
+    let hole = match words.clone().next() {
+        Some("hole") => {
+            words.next();
+            if !matches!(facing, Some(Facing::One(_))) {
+                return Err(TableError::Line {
+                    at,
+                    detail: "only a `face` may carry a hole",
+                });
+            }
+            let mut span = || number::<u8>(words, at, "a hole is `near far bottom top`");
+            Some(Hole {
+                near: span()?,
+                far: span()?,
+                bottom: span()?,
+                top: span()?,
+            })
+        }
+        _ => None,
+    };
     let authored = match words.clone().next() {
         Some("authored") => {
             words.next();
@@ -418,7 +488,13 @@ fn row(
         }
         _ => false,
     };
-    Ok((Graphic(graphic), Row { facing, authored }))
+    Ok((
+        Graphic(graphic),
+        Row {
+            shape: Shape { facing, hole },
+            authored,
+        },
+    ))
 }
 
 /// Why a table would not parse.
@@ -469,8 +545,13 @@ mod tests {
         }
     }
 
+    /// The shape a plain wall has: one face and no hole.
+    fn faced(face: Face) -> Shape {
+        Shape::faced(Facing::One(face))
+    }
+
     /// Every verdict survives the round trip, including the two a corner is made
-    /// of and the hand-written refusal.
+    /// of, the hole step 16 measures, and the hand-written refusal.
     ///
     /// The property is that the *whole table* comes back equal, which is what
     /// makes a re-derivation a diff of what changed rather than a diff of how it
@@ -478,34 +559,53 @@ mod tests {
     #[test]
     fn a_table_reads_back_as_the_table_it_was_written_from() {
         let mut table = ArtTable::measured(stamp());
-        table.derive(Graphic(0x0007), Some(Facing::One(Face::South)));
-        table.derive(Graphic(0x0100), Some(Facing::One(Face::East)));
+        table.derive(Graphic(0x0007), faced(Face::South));
+        table.derive(Graphic(0x0100), faced(Face::East));
+        // A window: the same face, with the rectangle the art left out of it.
+        table.derive(
+            Graphic(0x003C),
+            Shape {
+                facing: Some(Facing::One(Face::East)),
+                hole: Some(WINDOW),
+            },
+        );
         table.derive(
             Graphic(0x0104),
-            Some(Facing::Corner {
+            Shape::faced(Facing::Corner {
                 right: Face::East,
                 left: Face::South,
             }),
         );
-        table.derive(Graphic(0x0009), None);
-        table.author(Graphic(0x0171), None);
-        table.author(Graphic(0x02D8), Some(Facing::One(Face::West)));
+        table.derive(Graphic(0x0009), Shape::UNREAD);
+        table.author(Graphic(0x0171), Shape::UNREAD);
+        table.author(Graphic(0x02D8), faced(Face::West));
 
         let read = ArtTable::parse(&table.to_text()).expect("its own text");
         assert_eq!(read, table);
-        assert_eq!(read.examined(), 4, "the four derived, not the two authored");
-        assert_eq!(read.decided(), 4, "three derived faces and one authored");
+        assert_eq!(read.examined(), 5, "the five derived, not the two authored");
+        assert_eq!(read.decided(), 5, "four derived faces and one authored");
         assert_eq!(read.authored(), 2);
         assert_eq!(read.corners(), 1);
+        assert_eq!(read.holed(), 1);
+        assert_eq!(read.shape(Graphic(0x003C)).hole, Some(WINDOW));
         assert!(read.fresh(&stamp()));
     }
+
+    /// `0x003C`'s own hole, as the detector reads it off a real install: the
+    /// middle third of the tile, from ten `z` above the sill to fifteen.
+    const WINDOW: Hole = Hole {
+        near: 93,
+        far: 185,
+        bottom: 10,
+        top: 15,
+    };
 
     /// A graphic the detector refused has no row, and that is how a reader tells
     /// it from one nobody looked at — with [`ArtTable::examined`] beside it.
     #[test]
     fn a_refused_graphic_is_an_absent_row() {
         let mut table = ArtTable::measured(stamp());
-        table.derive(Graphic(0x0009), None);
+        table.derive(Graphic(0x0009), Shape::UNREAD);
         assert_eq!(table.facing(Graphic(0x0009)), None);
         assert!(
             !table.to_text().contains("0x0009"),
@@ -525,11 +625,11 @@ mod tests {
     #[test]
     fn a_rederivation_leaves_an_authored_row_alone() {
         let mut table = ArtTable::measured(stamp());
-        table.author(Graphic(0x02D8), Some(Facing::One(Face::West)));
-        table.author(Graphic(0x0171), None);
+        table.author(Graphic(0x02D8), faced(Face::West));
+        table.author(Graphic(0x0171), Shape::UNREAD);
 
-        table.derive(Graphic(0x02D8), Some(Facing::One(Face::East)));
-        table.derive(Graphic(0x0171), Some(Facing::One(Face::North)));
+        table.derive(Graphic(0x02D8), faced(Face::East));
+        table.derive(Graphic(0x0171), faced(Face::North));
 
         assert_eq!(table.facing(Graphic(0x02D8)), Some(Facing::One(Face::West)));
         assert_eq!(table.facing(Graphic(0x0171)), None);
@@ -544,14 +644,14 @@ mod tests {
     /// format with a precedence rule to argue about.
     #[test]
     fn an_override_sheet_hands_its_rows_to_a_measured_table() {
-        let sheet = ArtTable::parse("table 1\n0x02D8 face W authored\n0x0100 face N\n")
+        let sheet = ArtTable::parse("table 2\n0x02D8 face W authored\n0x0100 face N\n")
             .expect("a sheet of overrides");
         assert!(sheet.stamp().is_none());
         assert!(!sheet.fresh(&stamp()), "a sheet describes no install");
 
         let mut table = ArtTable::measured(stamp());
-        table.derive(Graphic(0x02D8), Some(Facing::One(Face::East)));
-        table.derive(Graphic(0x0100), Some(Facing::One(Face::East)));
+        table.derive(Graphic(0x02D8), faced(Face::East));
+        table.derive(Graphic(0x0100), faced(Face::East));
         table.adopt_authored(&sheet);
 
         assert_eq!(table.facing(Graphic(0x02D8)), Some(Facing::One(Face::West)));
@@ -586,8 +686,15 @@ mod tests {
         );
         assert_eq!(ArtTable::parse("0x0007 face S\n"), Err(TableError::NoFormat));
         assert_eq!(
-            ArtTable::parse("table 1\nart artLegacyMUL.uop 12\n"),
+            ArtTable::parse("table 2\nart artLegacyMUL.uop 12\n"),
             Err(TableError::HalfStamped)
+        );
+        // And the format this one replaced, which is the case the bump is for: a
+        // table of faces measured before holes existed reads every window as
+        // solid stone and says nothing about it.
+        assert_eq!(
+            ArtTable::parse("table 1\n0x0007 face S\n"),
+            Err(TableError::Format { found: 1 })
         );
     }
 
@@ -595,19 +702,43 @@ mod tests {
     ///
     /// Each of these is a plausible hand-edit: a face that is not one of the
     /// four, a corner with its halves the wrong way round — which would light a
-    /// wall from inside the house — and a verdict nobody defined.
+    /// wall from inside the house — a verdict nobody defined, and a hole with a
+    /// number missing.
     #[test]
     fn an_unreadable_row_names_its_line() {
         for text in [
-            "table 1\n0x0007 face Q\n",
-            "table 1\n0x0007 corner S E\n",
-            "table 1\n0x0007 wall\n",
-            "table 1\nnotahex face S\n",
-            "table 1\n0x0007 face S and more\n",
+            "table 2\n0x0007 face Q\n",
+            "table 2\n0x0007 corner S E\n",
+            "table 2\n0x0007 wall\n",
+            "table 2\nnotahex face S\n",
+            "table 2\n0x0007 face S and more\n",
+            "table 2\n0x0007 face S hole 93 185 10\n",
+            "table 2\n0x0007 face S hole 93 185 10 300\n",
         ] {
             let error = ArtTable::parse(text).expect_err(text);
             assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
         }
+    }
+
+    /// A hole belongs to a face, and a corner may not carry one.
+    ///
+    /// The refusal `aperture_of` makes at the other end, stated in the grammar so
+    /// that a hand-written row cannot say what the detector will not: a corner is
+    /// two surfaces in one picture, and a hole given to both is a window in the
+    /// wall beside the window.
+    #[test]
+    fn only_a_face_may_carry_a_hole() {
+        assert!(matches!(
+            ArtTable::parse("table 2\n0x0104 corner E S hole 93 185 10 15\n"),
+            Err(TableError::Line { at: 2, .. })
+        ));
+        assert!(matches!(
+            ArtTable::parse("table 2\n0x0104 none hole 93 185 10 15\n"),
+            Err(TableError::Line { at: 2, .. })
+        ));
+        let table = ArtTable::parse("table 2\n0x003C face E hole 93 185 10 15 authored\n").expect("a row");
+        assert_eq!(table.shape(Graphic(0x003C)).hole, Some(WINDOW));
+        assert_eq!(table.authored(), 1, "the marker after the hole is still read");
     }
 
     /// Comments and blank lines are a person's, and the parser keeps its hands
@@ -615,7 +746,7 @@ mod tests {
     #[test]
     fn comments_and_blank_lines_are_skipped() {
         let table =
-            ArtTable::parse("# what this is\ntable 1\n\n0x0007 face S  # the south face of a marble wall\n")
+            ArtTable::parse("# what this is\ntable 2\n\n0x0007 face S  # the south face of a marble wall\n")
                 .expect("a commented sheet");
         assert_eq!(table.facing(Graphic(0x0007)), Some(Facing::One(Face::South)));
     }

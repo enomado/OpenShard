@@ -15,9 +15,9 @@
 //!
 //! What it prints is the coverage, because a detector with no coverage count is a
 //! green light for having checked nothing: how many pictures were looked at, how
-//! many were read, the breakdown by face, and the corners as their own number
-//! rather than as a share — a tail hidden in a percentage is a tail that can go to
-//! zero unnoticed.
+//! many were read, the breakdown by face, and the corners and windows as their
+//! own numbers rather than as shares — a tail hidden in a percentage is a tail
+//! that can go to zero unnoticed.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -107,6 +107,7 @@ fn report(table: &ArtTable, kept: usize) {
     println!("pictures with art: {examined}");
     println!("read:              {decided}  ({:.1}%)", share * 100.0);
     println!("corners:           {}", table.corners());
+    println!("windows:           {}", table.holed());
     println!(
         "authored rows:     {} kept, {} in the table",
         kept,

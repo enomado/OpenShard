@@ -343,8 +343,8 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
-    // What was measured off that art before this run — which edge of its tile
-    // each wall stands on, and eventually the hole in each window.
+    // What was measured off that art before this run: which edge of its tile
+    // each wall stands on, and the hole in each window.
     // `docs/lighting.md`'s decision 31: the measurement is a tool's, and this is
     // the client reading what it wrote.
     //
@@ -357,9 +357,10 @@ pub fn run<D: Dial + Send + 'static>(
     let surfaces = match openshard_client_artscan::load(dir) {
         Ok(table) => {
             eprintln!(
-                "art table: {} of {} pictures read, {} written by hand",
+                "art table: {} of {} pictures read, {} with a window, {} written by hand",
                 table.decided(),
                 table.examined(),
+                table.holed(),
                 table.authored(),
             );
             Some(table)

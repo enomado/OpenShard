@@ -28,6 +28,7 @@
 use std::collections::BTreeMap;
 
 use openshard_client_render::facing::{self, Face, Facing};
+use openshard_client_render::occlusion::Shape;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
@@ -62,6 +63,14 @@ const MUST_DECIDE_MAP: f64 = 0.85;
 /// 296 of them the east-and-south pair a camera can see and one north-and-west —
 /// and the floor is well under it for the reason the two above are.
 const MUST_READ_CORNERS: usize = 100;
+
+/// And how many wall statics standing in Britain have a **window** in them.
+///
+/// Step 16's tail, weighted by the map for the reason [`britain`] exists at all:
+/// the install has fifty-eight graphics with a hole read off them and what
+/// matters is whether any of them is a wall of a house somebody walks past.
+/// Measured at 85 statics over four graphics; the floor is well under it.
+const MUST_STAND_WINDOWS: usize = 40;
 
 /// The tiles the map sweep reads: Britain, from the bank down to the docks.
 /// Wide enough to hold several districts, so the answer is not one architect's.
@@ -206,9 +215,10 @@ fn britain_s_walls_are_read_where_they_stand() {
 
     // Read once per graphic, the way the atlas does: the answer is a property of
     // the picture, and a city repeats its pictures thousands of times.
-    let mut known: BTreeMap<u16, Option<Facing>> = BTreeMap::new();
+    let mut known: BTreeMap<u16, Shape> = BTreeMap::new();
     let mut standing = 0usize;
     let mut decided = 0usize;
+    let mut windows = 0usize;
     let mut faces: BTreeMap<String, usize> = BTreeMap::new();
     let mut worst: BTreeMap<u16, usize> = BTreeMap::new();
     let (xs, ys) = BRITAIN;
@@ -219,13 +229,14 @@ fn britain_s_walls_are_read_where_they_stand() {
                     continue;
                 }
                 standing += 1;
-                let facing = *known.entry(item.tile).or_insert_with(|| {
+                let shape = *known.entry(item.tile).or_insert_with(|| {
                     art.static_art(Graphic(item.tile))
                         .ok()
                         .flatten()
-                        .and_then(|image| facing::facing_of(&image))
+                        .map_or(Shape::UNREAD, |image| Shape::of(&image))
                 });
-                match facing {
+                windows += usize::from(shape.hole.is_some());
+                match shape.facing {
                     Some(facing) => {
                         decided += 1;
                         *faces.entry(label(facing)).or_default() += 1;
@@ -268,6 +279,20 @@ fn britain_s_walls_are_read_where_they_stand() {
         "only {:.1}% of the walls standing in Britain were read, under the {:.0}% floor",
         share * 100.0,
         MUST_DECIDE_MAP * 100.0,
+    );
+
+    // And the windows, which is the number that says step 16 changes a picture
+    // somebody is looking at rather than a row in a table. Eighty-five wall
+    // statics in these tiles have a hole measured off their art, out of four
+    // graphics: `0x003C` and `0x003B`, the arched windows of a plaster house, and
+    // `0x00B9`/`0x00BA`, the same in stone. A count and not a share for the reason
+    // the corners are one.
+    println!("windows standing:      {windows}");
+    assert!(
+        windows >= MUST_STAND_WINDOWS,
+        "only {windows} wall statics with a window in them are standing in Britain, under the \
+         floor of {MUST_STAND_WINDOWS} — the detector reads holes off the art and none of them \
+         is anywhere a player goes",
     );
 }
 

@@ -564,6 +564,57 @@ fn a_cellar_does_not_light_the_street_above_it() {
     );
 }
 
+/// A torch on the ground floor does not light the storey above it.
+///
+/// **A floor is a plane, and a plane has no thickness to be travelled through.**
+/// Every other occluder in these scenes is a slab — a wall twenty `z` deep, a
+/// roof five — and what one of those stops is scaled by how far the ray ran
+/// inside its span, which is right for a solid and is exactly zero for a floor:
+/// a real one is `height 0` in `tiledata.mul`, in 4,534 of the 4,647 lids over
+/// the block of Britain `artscan`'s `column` example reads. So the whole upper
+/// storey of a house came out lit from under its own floorboards, brightest on
+/// the upper wall, which takes the ray head on.
+///
+/// Read four tiles across the room from the flame — see [`scene::STOREY_TORCH`]:
+/// nearer than that and the ray crosses the floor inside the lit end's own cell,
+/// which every walk exempts and must, since a pixel standing on a floor is not
+/// shadowed by the floor it stands on.
+///
+/// The third assertion is the one that keeps this honest: the ground floor is
+/// lit. Without it the scene would pass with the torch never collected at all.
+#[test]
+fn a_torch_does_not_light_the_storey_above_it() {
+    let scene = scene::storey_over_a_torch();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+
+    let upstairs = at(&lighting, scene::STOREY_SPOT, scene::STOREY_Z);
+    assert!(
+        (upstairs - ambient(&lighting, scene::STOREY_SPOT)).abs() < 1e-6,
+        "the torch lights the room above its own ceiling: {upstairs} against the \
+         ambient's {}{picture}",
+        ambient(&lighting, scene::STOREY_SPOT),
+    );
+
+    // And the upper storey's *wall*, which is what a player actually sees lit:
+    // the ring tile beyond the far end of the room, at the same height.
+    let upper_wall = (CENTRE.0 + scene::ROOM_HALF, CENTRE.1);
+    let face = at(&lighting, upper_wall, scene::STOREY_Z);
+    assert!(
+        (face - ambient(&lighting, upper_wall)).abs() < 1e-6,
+        "the storey's wall is lit through the floor under it: {face} against the \
+         ambient's {}{picture}",
+        ambient(&lighting, upper_wall),
+    );
+
+    let downstairs = at(&lighting, scene::STOREY_SPOT, 0.0);
+    assert!(
+        downstairs > ambient(&lighting, scene::STOREY_SPOT) + 0.2,
+        "the ground floor itself is dark, so the scene proves nothing: \
+         {downstairs}{picture}"
+    );
+}
+
 /// A ray does **not** slip between two walls that touch only at their corners.
 ///
 /// This test used to pin the opposite, and the leak it pinned was real: the walk
@@ -1246,8 +1297,10 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
 /// `Builder` says in a line and a `Map` makes fiddly. The panel stands on the
 /// **south** side of `HOLED_WALL`, so it lies in the plane `y = HOLED_WALL.1 + 1`
 /// and what runs along it is `x` — which is the coordinate a hole's `near` and
-/// `far` are measured in. See `occlusion::Aperture`.
-fn wall_with_hole(hole: occlusion::Aperture) -> occlusion::Occlusion {
+/// `far` are measured in. See `facing::Hole`, which is what the art measures and
+/// what a `Shape` carries; the wall here stands at `z = 0`, so the rectangle the
+/// grid ends up with is the same four numbers placed.
+fn wall_with_hole(hole: openshard_client_render::facing::Hole) -> occlusion::Occlusion {
     use openshard_client_render::camera::TileBounds;
     use openshard_client_render::facing::{Face, Facing};
     use openshard_uofiles::tiledata::{StaticTile, TileFlags};
@@ -1270,7 +1323,7 @@ fn wall_with_hole(hole: occlusion::Aperture) -> occlusion::Occlusion {
         },
         occlusion::Shape {
             facing: Some(Facing::One(Face::South)),
-            aperture: Some(hole),
+            hole: Some(hole),
         },
     );
     grid.finish()
@@ -1324,15 +1377,26 @@ fn ray(grid: &occlusion::Occlusion, from: (f32, f32, f32), to: (f32, f32, f32)) 
 /// half. A test that moved the wall instead would be measuring two walls.
 #[test]
 fn a_ray_through_a_hole_in_a_wall_passes_and_one_beside_it_does_not() {
-    // The middle half of the run, open at every height, so that the only thing
-    // deciding either ray is `v`. The height half is the test below.
-    let grid = wall_with_hole(occlusion::Aperture::new(0.25, 0.75, -128, 127));
+    // The middle half of the run, open from the wall's own base to higher than
+    // it stands, so that the only thing deciding either ray is `v`. The height
+    // half is the test below.
+    let grid = wall_with_hole(openshard_client_render::facing::Hole {
+        near: 64,
+        far: 191,
+        bottom: 0,
+        top: 255,
+    });
     // Five tiles north of the wall: far enough that the crossing is a twentieth
     // of the way along the ray, which is the sharpest penumbra the walk draws.
-    let flame = (105.5, 100.5, 0.0);
+    //
+    // Level, at five `z`: **well inside the hole rather than on its sill**. A
+    // hole is measured above the base of the wall it is cut into, so its floor
+    // is a real edge with a real penumbra across it, and a ray along `z = 0`
+    // would be asking about the softening rather than about `v`.
+    let flame = (105.5, 100.5, 5.0);
 
-    let middle = ray(&grid, (105.5, 106.2, 0.0), flame);
-    let beside = ray(&grid, (105.95, 106.2, 0.0), flame);
+    let middle = ray(&grid, (105.5, 106.2, 5.0), flame);
+    let beside = ray(&grid, (105.95, 106.2, 5.0), flame);
 
     assert!(
         middle > 0.95,
@@ -1358,7 +1422,12 @@ fn a_ray_through_a_hole_in_a_wall_passes_and_one_beside_it_does_not() {
 fn a_ray_over_a_hole_in_a_wall_is_stopped_by_the_wall_above_it() {
     // Open across the whole run, so that `v` cannot be what decides either ray,
     // and the bottom half of a twenty-tall wall.
-    let grid = wall_with_hole(occlusion::Aperture::new(0.0, 1.0, 0, 10));
+    let grid = wall_with_hole(openshard_client_render::facing::Hole {
+        near: 0,
+        far: 255,
+        bottom: 0,
+        top: 10,
+    });
 
     // Level rays, so the height a ray crosses at is the height it is asked at.
     let through_it = ray(&grid, (105.5, 106.2, 5.0), (105.5, 100.5, 5.0));

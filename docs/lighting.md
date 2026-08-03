@@ -9,7 +9,33 @@ copied.
 
 ## Where the next session starts
 
-**Step 20b has landed: the measurement has left the frame.**
+**Step 16 has landed: a window is a hole the art was measured for.**
+`facing::aperture_of` reads the rectangle a window graphic leaves out of its own
+silhouette — **58 pictures of 39,189, 56 of them the client's own `WINDOW`
+flag**, and **85 wall statics standing in Britain**. It is the largest rectangle
+*inscribed* in the transparent region, because the client's windows are arches
+and a bounding box would let light through drawn stone. A measurement is a height
+above the picture's own base (`facing::Hole`); `Aperture::above` places it on the
+static that is standing at a `z`, and that conversion happens once, in
+`Builder::add`.
+
+Nothing else moved, which was the step's own claim: the walk already knew what to
+do with a hole (step 21.3), so what a real install gained is that four graphics
+stopped being solid stone. `Shape` is now both verdicts about one picture, and
+`Shape::of` is the one function the tool and a table-less client both measure
+through.
+
+**Start at step 21, decision 30's remaining four changes** — 21.1, 21.2 and 21.3
+have landed, and what is left is the *bake*: 30.4's per-block, per-storey-band
+list, which is where the 2.0ms of a 3.3ms CPU budget is. Step 17, the shaft, is
+the other open one and it now has real windows to be a shaft through. And the
+backlog's newest entry is the one to read first if windows look wrong in a house:
+**the leaded window is refused**, 46 pictures with a lattice drawn across them,
+four of which stand in Britain.
+
+Everything below this line is the session before it.
+
+**Step 20b: the measurement has left the frame.**
 `openshard-client-artscan` reads an install, offers every picture in it to
 `facing::facing_of`, and writes one table beside the client; the atlas looks a
 graphic up in that table instead of walking its pixels on the frame it is first
@@ -1506,25 +1532,55 @@ everywhere else, arriving as a refusal to *require*.
       here it is shading that looks odd. 76% is the number that conversation now
       starts from — and it is the same key that unlocks the sconce lighting
       through its own wall and the sun lighting both faces of one.
-- [ ] **16. The window's aperture, measured off the art.** A pane passes four
-      fifths of the light *across the whole tile* today, which is a dimmer tile
-      and not a beam. The hole is in the art — a window graphic's silhouette has a
-      transparent gap inside an opaque wall — so the same measurement as step 15
-      yields it: a span of `v` along the face and a span of `z`, in the surface's
-      own coordinates.
+- [x] **16. The window's aperture, measured off the art.** A pane passed four
+      fifths of the light *across the whole tile*, which is a dimmer tile and not
+      a beam. The hole is in the art — a window graphic's silhouette has a
+      transparent gap inside an opaque wall — and `facing::aperture_of` reads it:
+      a span of `v` along the face and a span of `z`, in the surface's own
+      coordinates.
 
-      **Nothing else changes in this step, and that is the point.** Decision 30
-      settles where an aperture is *stored* and it is a bigger change than this
-      one; the measurement is what every version of that storage needs, it is a
-      pure function of an `Image` like `facing::facing_of`, and it is testable
-      against the client without a single byte of format moving. So: measure,
-      print the coverage over the install and over Britain the way `tests/facing.rs`
-      does, and pin a handful of named graphics by hand.
+      **58 pictures out of 39,189, and 56 of them carry the client's own `WINDOW`
+      flag** — which is the cross-check worth having, because nothing in the
+      detector looks at a flag: the agreement is between a silhouette and a table
+      neither half was reading. The other two are `0x21FF` and `0x2200`, a ruined
+      wall with a hole knocked in it, and they are right too. Weighted by what
+      stands in a city: **85 wall statics in Britain** have a window, out of four
+      graphics — `0x003C` and `0x003B`, the arched windows of a plaster house, and
+      `0x00B9`/`0x00BA`, the same in stone.
 
-      The gates it will need are the ones step 15 was taught by being caught:
-      a hole that reaches the silhouette's edge is not a hole, a graphic whose
-      "hole" is the gap between two separate things is not a window, and a
-      coverage count is what says the detector reads anything at all.
+      **What is measured is a rectangle in the surface, and the art draws an
+      arch.** `0x003C` is a doorway with a flat sill, straight sides and a rounded
+      top — two pixels taller in the middle than at its ends. So the answer is the
+      **largest rectangle inscribed** in what the art left transparent, searched
+      over every sub-run of the columns (`O(n²)` over at most 22 of them, which is
+      the sort of arithmetic decision 31's budget was bought for). A bounding box
+      would let light through stone the artist drew.
+
+      **A measurement is relative and a placement is absolute**, and that is the
+      one structural thing this step added: `facing::Hole` is `z` above the
+      *static's own base*, because one picture stands on a hundred tiles at a
+      hundred heights, and `Aperture::above` is the single conversion, called in
+      `Builder::add` where the instance's `z` is. `Shape` carries the measurement
+      — one row, one lookup, both verdicts — and `Shape::of` is the one function
+      the tool and the table-less client both measure through, so the two cannot
+      drift into a window that exists only where somebody ran a tool.
+
+      The gates, each of which a real client picture fails: a hole must have wall
+      either side of it along the run (`HOLE_MARGIN`), a column with two gaps in
+      it is a lattice and not a rectangle, gap columns that are not one run of
+      them are two windows, a corner is refused outright (nothing in a silhouette
+      says which of its two faces a hole is in), and anything under three columns
+      by two `z` is a scratch in the art. The refusals are counted, not guessed
+      at: of the 244 `WINDOW`-flagged pictures the detector reads a face on, 81
+      have no hole drawn at all (the glass is painted opaque — `0x00CB` is one),
+      46 are lattices, and 61 fail a gate.
+
+      Held by nine tests in `facing.rs` — the round trip on all four faces, a
+      solid wall with none, the corner's refusal, the margin, the scratch, two
+      gaps in a column, two holes along the run, and **both directions of the
+      inscribed rectangle** (an arch that keeps its width and a chimney that keeps
+      its height) — plus the format's round trip, the atlas seam with and without
+      a table, and the install sweep, which pins `0x003C`'s four numbers by hand.
 - [x] **20b. The measuring tool, and the table it writes.** Decision 31: the
       silhouette work leaves the frame. `tests/facing.rs`'s sweep was most of it
       already — it walks an install, reads every `WALL` graphic and prints the
@@ -2582,3 +2638,51 @@ Found while cutting a hole in a wall:
   to be a fact about a *surface* rather than about a tile, so it went beside the
   surface list instead (decision 30.8). What that plane is for is unchanged and
   it has one more channel to spend than it thought.
+
+Found while measuring a window off its own art:
+
+- **The leaded window is refused, and it is the biggest thing left here.** 46 of
+  the install's pictures draw a lattice — mullions across the glass, so a column
+  of the sprite has two, three or four transparent runs in it rather than one —
+  and the detector refuses the whole picture rather than pick one of them or
+  merge them. Four of those 46 stand in Britain and one of them, `0x000E`, is on
+  twenty walls in the tiles the sweep reads. It is the conservative direction (a
+  refused window is a solid wall, which is what every wall was until this step)
+  but it is the wrong answer for the most ordinary window in the game. The shape
+  of a fix, and why it was not done here: a lattice is *mostly* hole, so the
+  honest measurement is the largest rectangle over a region defined by how much
+  of it is transparent rather than by a single run per column — which needs a
+  threshold nobody has measured yet, and a threshold invented on the way past is
+  how a detector starts reading light through stone.
+- **A second gap anywhere in the picture refuses the first.** The gate is per
+  *picture*, not per region: `0x24F6` is a porthole with a small second shape
+  beside it, and both are lost. Refusing the picture is right when the two are
+  windows; when one is a scratch it throws away a real one. What it wants is the
+  same thing the entry above wants — a notion of *which region* is the hole —
+  and the two are one piece of work.
+- **A corner may not have a window.** `aperture_of` refuses a corner outright,
+  because a hole would go to both of its panels and there is nothing in a
+  silhouette that says which face it was cut into. No corner graphic in the
+  install has a hole to lose, so this costs nothing today; what would change it
+  is measuring the hole's *columns* against the halves, which is the same
+  information the corner's two faces are already read from.
+- **81 `WINDOW`-flagged pictures have no hole drawn at all.** `0x00CB` is one: a
+  solid wall with the glass painted opaque. That is the flag and the art
+  disagreeing, and the art wins here on purpose — decision 3's refusal, arriving
+  for a second kind of measurement. What it means in a frame is that a flagged
+  window with painted glass keeps `occlusion::PANE`'s fifth stopped across the
+  whole tile, which is exactly the behaviour this step was supposed to replace.
+  It is not a defect; it is where the art stops saying anything.
+- **The measured `z` is quantised to whole units.** A hole's edge lands on a
+  pixel and one unit of `z` is four of them, so a sill measured at 41 pixels
+  becomes ten and a quarter and is written down as ten. The rounding is to
+  nearest and the rectangle it rounds is already the inscribed one, so the error
+  is under half a `z` in each direction and always at the *edge* of a penumbra
+  the walk softens anyway. Worth knowing before anybody reads `Hole`'s numbers as
+  exact.
+- **A hole's `near` and `far` are the run of the whole tile, and a window is
+  drawn on 22 pixels of it.** So the quantisation the other way is a 255th of a
+  tile, which is finer than the art can say — `RUN_STEPS` was chosen for the
+  walk's own agreement between shader and Rust, and it is comfortably finer than
+  this measurement needs. Nothing to do; the asymmetry between the two axes is
+  worth not being surprised by.

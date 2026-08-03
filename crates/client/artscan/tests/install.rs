@@ -45,6 +45,19 @@ const MUST_READ: usize = 800;
 /// `tests/facing.rs` puts under it.
 const MUST_READ_CORNERS: usize = 100;
 
+/// And the windows, which are step 16's tail and a smaller one.
+///
+/// **Fifty-eight** over a 2D install, fifty-six of them carrying the client's own
+/// `WINDOW` flag — which is the cross-check that says these are windows and not
+/// an artefact of the gates: nothing here looks at a flag, so the agreement is
+/// between a silhouette and a table nobody involved was reading. The other two
+/// are `0x21FF` and `0x2200`, a ruined wall with a real hole knocked in it.
+///
+/// The floor is well under the measurement for the reason the others are: what
+/// it catches is a gate tightened until the feature stops applying, not an
+/// install with a window or two fewer.
+const MUST_READ_HOLES: usize = 30;
+
 /// **The table says exactly what a live measurement says.**
 ///
 /// Every graphic the install ships, twice: once through [`artscan::measure`] and
@@ -69,6 +82,7 @@ fn a_written_table_says_what_a_live_measurement_says() {
     println!("pictures with art: {}", table.examined());
     println!("read:              {}", table.decided());
     println!("corners:           {}", table.corners());
+    println!("holes:             {}", table.holed());
     assert!(
         table.examined() >= MUST_EXAMINE,
         "a sweep that looked at {} pictures did not look at an install",
@@ -85,12 +99,44 @@ fn a_written_table_says_what_a_live_measurement_says() {
         "only {} corners, under the floor of {MUST_READ_CORNERS}",
         table.corners(),
     );
+    assert!(
+        table.holed() >= MUST_READ_HOLES,
+        "only {} windows, under the floor of {MUST_READ_HOLES} — a wall with no hole in it is \
+         what every wall was before step 16, so this going to zero is invisible in every other \
+         number here",
+        table.holed(),
+    );
 
     // Through the text, because the text is what the client reads. A comparison
     // against the in-memory table would test the sweep and nothing about the
     // file, which is the half that is new here.
     let read = ArtTable::parse(&table.to_text()).expect("its own text");
     assert!(read.fresh(&stamp), "the table it wrote describes this install");
+
+    // The window every third house in Britain has, by hand: an east face with an
+    // arched doorway in the middle third of it, ten `z` above the sill and five
+    // tall. Read off the picture with a pencil before the code was written — the
+    // module header of `facing.rs` is the same practice, and it is the only thing
+    // here that a detector agreeing with itself cannot satisfy.
+    let window = read.shape(Graphic(0x003C));
+    assert_eq!(
+        window.facing,
+        Some(facing::Facing::One(facing::Face::East)),
+        "0x003C is the east face of a wall",
+    );
+    assert_eq!(
+        window.hole,
+        Some(facing::Hole {
+            near: 93,
+            far: 185,
+            bottom: 10,
+            top: 15,
+        }),
+        "0x003C's window moved",
+    );
+    // And a plain wall beside it has none, so the row above is a measurement
+    // rather than something every face gets.
+    assert_eq!(read.shape(Graphic(0x0100)).hole, None, "0x0100 is solid marble");
 
     let mut checked = 0usize;
     for id in 0..=u16::MAX {
@@ -100,8 +146,8 @@ fn a_written_table_says_what_a_live_measurement_says() {
         };
         checked += 1;
         assert_eq!(
-            read.facing(graphic),
-            facing::facing_of(&image),
+            read.shape(graphic),
+            openshard_client_render::occlusion::Shape::of(&image),
             "{graphic:?} — the table and a live measurement disagree",
         );
     }

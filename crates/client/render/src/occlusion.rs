@@ -89,7 +89,7 @@
 
 use openshard_protocol::wire::Graphic;
 
-use crate::facing::{Face, Facing};
+use crate::facing::{Face, Facing, Hole};
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
@@ -211,23 +211,53 @@ pub struct Shape {
     /// Which sides of its tile the picture stands on, or `None` for "the art
     /// would not say" — see [`edges_of`].
     pub facing: Option<Facing>,
-    /// The hole in it, or `None` for a solid. See [`Aperture`].
-    pub aperture: Option<Aperture>,
+    /// The hole in it, or `None` for a solid.
+    ///
+    /// A [`Hole`] and not an [`Aperture`], which is the difference between a
+    /// measurement and a placement: the picture is drawn once and stood on a
+    /// hundred tiles at a hundred heights, so what the art can say is a rectangle
+    /// above the *static's own base*. [`Builder::add`] is where the two meet,
+    /// because it is the one place that knows which `z` this instance stands at.
+    pub hole: Option<Hole>,
 }
 
 impl Shape {
     /// Nothing was measured: the whole-tile occluder, with no hole in it.
     pub const UNREAD: Self = Self {
         facing: None,
-        aperture: None,
+        hole: None,
     };
 
     /// A graphic whose face the art named and whose hole it did not — which is
-    /// every wall in the world until step 16 lands.
+    /// every wall in the world but the fifty-eight windows step 16 reads.
     pub fn faced(facing: Facing) -> Self {
         Self {
             facing: Some(facing),
-            aperture: None,
+            hole: None,
+        }
+    }
+
+    /// Everything one picture says about its own geometry, measured off it.
+    ///
+    /// The two detectors in the order they depend on each other: a hole is a
+    /// rectangle *in a face*, so a picture [`facing_of`](crate::facing::facing_of)
+    /// would not name is never offered to
+    /// [`aperture_of`](crate::facing::aperture_of).
+    ///
+    /// One function because the two callers must not drift: the tool that writes
+    /// the table (`openshard-client-artscan`) and the atlas packing a sprite on a
+    /// machine that has no table. Two routes to one answer is how a table and a
+    /// client come to disagree about a picture — and the disagreement would look
+    /// like a window that exists only where somebody ran a tool.
+    ///
+    /// It is the expensive one. `docs/lighting.md`'s decision 31 is that it
+    /// belongs off the clock; the atlas calls it only where there is no table to
+    /// read instead.
+    pub fn of(image: &openshard_uofiles::image::Image) -> Self {
+        let facing = crate::facing::facing_of(image);
+        Self {
+            facing,
+            hole: facing.and_then(|facing| crate::facing::aperture_of(image, facing)),
         }
     }
 }
@@ -353,6 +383,23 @@ impl Aperture {
             far: step(far),
             bottom,
             top,
+        }
+    }
+
+    /// The hole the art measured off a picture, placed on the static that is
+    /// standing at `base`.
+    ///
+    /// **The one conversion between the two**, and it is where it is because
+    /// `base` is a fact about an *instance*: the same window graphic stands on
+    /// the ground floor and on the storey above it, and a measurement that had
+    /// been made absolute anywhere earlier would have had to pick one of them.
+    /// See [`Hole`].
+    pub fn above(base: i32, hole: Hole) -> Self {
+        Self {
+            near: hole.near,
+            far: hole.far,
+            bottom: base + i32::from(hole.bottom),
+            top: base + i32::from(hole.top),
         }
     }
 }
@@ -924,7 +971,12 @@ impl Builder {
                                 // which half a hole belonged to, so the honest
                                 // answer is the one that does not invent a
                                 // difference.
-                                aperture: shape.aperture,
+                                //
+                                // And the placement happens here, because here
+                                // is where `z` is: the art measured a rectangle
+                                // above the picture's own base and this static
+                                // is standing at one.
+                                aperture: shape.hole.map(|hole| Aperture::above(bottom, hole)),
                             },
                         );
                     }
@@ -1110,13 +1162,13 @@ pub fn collect(
     // way. See `Occlusion::add` and `crate::facing`.
     //
     // The hole comes off the same lookup and for the same reasons: a graphic the
-    // atlas does not hold has none, which is a solid wall, which is what every
-    // wall in the world is until step 16 measures one.
+    // atlas does not hold has none, which is a solid wall, which is what all but
+    // fifty-eight of the install's pictures are.
     let shape = |graphic: Graphic| Shape {
         facing: atlas
             .and_then(|atlas| atlas.sprite(graphic))
             .and_then(|s| s.facing),
-        aperture: atlas.and_then(|atlas| atlas.aperture(graphic)),
+        hole: atlas.and_then(|atlas| atlas.hole(graphic)),
     };
 
     crate::statics::for_each_static_in(map, bounds, |item| {
@@ -1431,7 +1483,16 @@ mod tests {
     fn only_a_named_panel_carries_a_hole() {
         use crate::facing::{Face, Facing};
 
-        let hole = Aperture::new(0.25, 0.75, 0, 10);
+        // Measured off the picture, so it is a height above the static's base —
+        // and every static here stands at `z = 0`, which is what makes the
+        // placed `Aperture` below the same four numbers.
+        let hole = Hole {
+            near: 64,
+            far: 191,
+            bottom: 0,
+            top: 10,
+        };
+        let placed = Aperture::above(0, hole);
         let wall = tile(TileFlags::NO_SHOOT, 20);
         let mut occlusion = Builder::new(bounds());
         // A named panel keeps it.
@@ -1443,7 +1504,7 @@ mod tests {
             &wall,
             Shape {
                 facing: Some(Facing::One(Face::South)),
-                aperture: Some(hole),
+                hole: Some(hole),
             },
         );
         // A graphic the art would not name is a body, and drops it.
@@ -1455,7 +1516,7 @@ mod tests {
             &wall,
             Shape {
                 facing: None,
-                aperture: Some(hole),
+                hole: Some(hole),
             },
         );
         // And a floor is a lid, whatever its silhouette read as.
@@ -1467,7 +1528,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
             Shape {
                 facing: Some(Facing::One(Face::South)),
-                aperture: Some(hole),
+                hole: Some(hole),
             },
         );
         // A corner is two panels and the hole is on both.
@@ -1482,12 +1543,12 @@ mod tests {
                     right: Face::East,
                     left: Face::South,
                 }),
-                aperture: Some(hole),
+                hole: Some(hole),
             },
         );
         let occlusion = occlusion.finish();
 
-        assert_eq!(occlusion.surfaces_at(100, 100)[0].aperture, Some(hole));
+        assert_eq!(occlusion.surfaces_at(100, 100)[0].aperture, Some(placed));
         assert_eq!(
             occlusion.surfaces_at(101, 100)[0].aperture,
             None,
@@ -1501,7 +1562,7 @@ mod tests {
         let corner = occlusion.surfaces_at(103, 100);
         assert_eq!(corner.len(), 2);
         assert!(
-            corner.iter().all(|surface| surface.aperture == Some(hole)),
+            corner.iter().all(|surface| surface.aperture == Some(placed)),
             "a corner's two faces are one picture and the hole is in both of them",
         );
     }
@@ -1538,7 +1599,17 @@ mod tests {
             &wall,
             Shape {
                 facing: Some(Facing::One(Face::East)),
-                aperture: Some(Aperture::new(0.25, 0.75, 6, 14)),
+                // Measured a `z` above the picture's base and a nine, on a
+                // static standing at five — so the bytes below are the placed
+                // rectangle and not the measured one. A conversion that had
+                // dropped the base would pass every test that stood its walls on
+                // the ground.
+                hole: Some(Hole {
+                    near: 64,
+                    far: 191,
+                    bottom: 1,
+                    top: 9,
+                }),
             },
         );
         let occlusion = occlusion.finish();
