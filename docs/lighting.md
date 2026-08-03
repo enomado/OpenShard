@@ -1439,6 +1439,65 @@ place, on one line, over a list that already exists — so the day light is made
 reach the storey above a torch, that is a change to which set `finish` keeps and
 nothing else.
 
+**34. A body has a footprint, and the art can only measure one axis of it.**
+
+A surface is a plane on an edge, a lid, or **the whole tile**, and the third is a
+fallback: `facing_of` refuses a picture it cannot read an edge in, and what the
+grid then does is stop light across the entire square. Measured on Britain's
+`1509,1635` — the tile a person pointed at because it was the one lit thing in a
+dark house — the graphic is `0x00CC`, whose silhouette occupies **columns 12 to
+31 of 44**. Twenty columns of art became an occluder across the whole tile,
+standing among neighbours that are panels on one edge. It over-blocks in every
+direction at once, and the view shows it as the odd shape it is.
+
+So a body gets a **footprint**, and the whole of the decision is what can honestly
+be measured for one. The projection is what says: world `+x` moves the screen by
+`(+22, +22)` and `+y` by `(-22, +22)`, so a sprite's **column** is
+`(fx - fy)` and nothing else. The other diagonal, `(fx + fy)`, is depth — a single
+picture cannot say how far back a thing goes, and inventing it would be decision
+3's mistake made again.
+
+A footprint is therefore a **band across the tile in the `(fx - fy)` axis,
+unbounded along the other** — which is exactly the shape a panel's run already
+is, one axis measured and one refused. It is `(near, far)` in
+[`RUN_STEPS`](crate::occlusion::RUN_STEPS)ths, the same units and the same byte
+pair a `Hole` carries.
+
+What it costs, and why this is the cheap one of the two:
+
+- **The measurement is a pass that already happens.** `facing_of` scans the
+  silhouette by column; the band is the first and last column with a pixel in it.
+- **The format already fits.** The surface texel is full, but the *aperture*
+  plane beside it is `(near, far, bottom, top)` per surface and is allocated only
+  when something has a hole. A body's footprint is two of those four numbers, so
+  it rides in the same plane under a flag of its own, and no texture grows.
+- **The walk gains one clip.** A body is travelled through, so what changes is the
+  length: the segment inside the cell is clipped to the strip. Closed form, exact,
+  a few ALU. The side pierce of decision 24 moves with it — the sides that stop a
+  ray are the strip's own boundaries rather than the tile's.
+- **A full-width picture gets no footprint at all.** The band is only written down
+  when it is narrower than the tile, so every body in the world behaves exactly as
+  it does today unless the art says otherwise. That is the direction this file
+  takes at every fork.
+
+**35. A sloped surface is deferred, and the reason is that its consumer does not
+exist yet.** Four corner heights instead of two, which is a second texel per
+surface; and the lid's crossing test stops being a plane test and becomes a
+bilinear patch — two triangles, a ray-plane test each and a containment test,
+in both implementations. Worse than the arithmetic is what it reopens: the
+strictness of the seam, `on_surface`, and the direction `stand_clear` nudges a
+point are all *stated about an axis-aligned plane*, and each of the three was a
+defect found the hard way.
+
+And it would not buy the thing it looks like it buys. A roof in this client is a
+slab five `z` deep and decision 24 deliberately keeps the travelled-through rule
+for it, so a ray at 45° cannot step over it. What is genuinely sloped in this
+world is the **land** — four corner heights per tile — and the land is not in the
+occlusion grid at all (the backlog's "a hill between a campfire and a valley
+stops nothing"). So the order is: land in the grid first, and slopes with it or
+not at all. Written down here so that the next person to want it finds the price
+rather than the idea.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -2068,6 +2127,75 @@ nothing else.
       What comes out on the street at the end is a fan: narrow at the wall,
       widening with distance, with the soft edge decision 14's penumbra already
       gives it.
+- [ ] **22. A body's footprint.** Decision 34, and it is five changes in the
+      order that keeps each one testable alone. Nothing here waits on anything
+      outside this list, and every step but the last leaves the picture exactly as
+      it is — which is the property that makes the last one readable.
+
+      1. **The measurement.** `facing::footprint_of(image) -> Option<Footprint>`,
+         beside `facing_of` and off the same one pass over the pixels: the first
+         and last column with a pixel in it, mapped across the tile's diamond and
+         quantised to `RUN_STEPS`ths. `None` for a picture that reaches both
+         corners, which is every full-width graphic in the install — so the
+         measurement can only narrow the grid and never widen it.
+
+         **Two things to get right and both are cheap to state.** The units are
+         counted from the **west** corner (`fx - fy = -1`) to the east, because
+         that is left to right across the sprite. And the sprite is centred on its
+         tile's column, so the tile's own diamond is the middle 44 columns
+         whatever the picture's width — a graphic that overhangs is clamped rather
+         than refused, since what it covers *of its own tile* is still everything
+         on that side.
+
+         **DoD:** a unit test that builds a synthetic silhouette of a stated width
+         and reads the band back; a test that a full-width picture measures
+         `None`; and a sweep over the install printing how many bodies get a
+         footprint at all, which is the number that says whether the rest of this
+         step is worth doing. `0x00CC` — columns 12 to 31 of 44 — is the fixture
+         the numbers are checked against.
+      2. **The table.** `arttable::Shape` gains the footprint, which is a format
+         bump (to 3) and a `facing::DETECTOR` bump, for the reason the last one
+         was: a table written under the old rules describes yesterday's detector
+         exactly and looks perfectly fresh. Authoring comes free with it — a
+         person may write a band for a graphic the measurement got wrong, and
+         `adopt_authored` already carries it over a re-derivation.
+
+         **DoD:** a round trip through the file, and a stale table refused rather
+         than half-read.
+      3. **The grid.** `occlusion::Surface` gains it, and it rides in the
+         **aperture plane** — `(near, far, ., .)` under a flag of its own beside
+         `HOLED`, because that plane already exists per surface and is allocated
+         only when something is in it. No texture grows and no texel widens.
+         `Builder::add` writes one only for a body, exactly as it drops a hole
+         offered to a lid.
+
+         **DoD:** `only_a_body_carries_a_footprint`, and the upload test that a
+         footprint lands at its own surface's index — the same failure mode a hole
+         had, where a shader reading the wrong index draws something everywhere
+         and is wrong only where the thing is.
+      4. **The walk.** A body is travelled through, so what changes is the
+         *length*: the segment inside the cell is clipped to the strip
+         `near <= (fx - fy + 1) / 2 <= far`, which is closed form and exact. The
+         side pierce of decision 24 moves with it — the sides that stop a ray
+         become the strip's own two boundaries rather than the tile's four edges.
+         Both implementations, held by the parity test.
+
+         **DoD:** a scene — a narrow body in the open with a torch beside it —
+         where the ground either side of the strip is lit and the strip's own
+         shadow is narrower than a tile; the parity test green; and every existing
+         scene unmoved, because none of them has a narrow graphic in it.
+      5. **The view.** The occluder overlay draws the strip rather than the
+         square, which is the step that makes the whole thing visible: a body is
+         currently the one kind whose drawn shape and whose behaviour are the same
+         wrong answer.
+
+         **DoD:** the tile a person pointed at — Britain's `1509,1635` — reads as
+         a narrow violet slab among red panels rather than as a full square.
+
+      **What this does not do**, stated so the next session does not go looking:
+      it says nothing about depth (`fx + fy`), which no single picture can
+      measure; a footprint is one band, not a polygon; and it is per *graphic*,
+      so the same picture is the same band on every tile it stands on.
 - [ ] **17. The shaft.** The screen-space pass of decision 12, over the mask step
       11 produces — and, once step 16 exists, over the beam from a window too.
       Nothing in this renderer draws air, so a visible shaft is a blur of the lit
