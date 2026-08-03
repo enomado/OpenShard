@@ -2962,6 +2962,19 @@ Found while making a floor stop light (decision 32):
   was argued in, and on the real one at `1509,1637` the wall's face at the floor's
   own `z` went from `through 1.00` to `0.09`, brightness `0.62` to `0.24` against
   an ambient of `0.20`.
+- **A flame's height is not its width, and for a day it was.** `crosses` cuts a
+  source by the plane it straddles, and the band it does that over was
+  `FLAME_SPREAD * Z_PER_TILE` — a flame a whole tile tall. A house's sconce burns
+  three to five `z` under the floor above it (Britain's at `1491,1636` is `z 31`
+  under boards at `40`), so a tenth of every one of them was above the plane and
+  the storey over it read `through 0.09` — a faint wash on the wall, reported
+  from a frame right after the line at the floor was closed. `FLAME_DEPTH` is its
+  own constant now, half a tile, which is `FLAME_LIFT`'s number and the only one
+  in the file that is about a flame's *height* rather than the lateral softness
+  of what it casts. Both houses now read `through 0.00` with the blocking cell
+  named. `scene::storey_over_a_lit_room` burns its flame at sconce height for
+  this reason: on the ground it would be fourteen `z` under the boards, far
+  enough that any band at all would pass.
 - **What is left above a wall is the flame's assumed size, not a gap.** On the
   corner tile at `1509,1635` — a faceless graphic, so an `Upright` pixel and a
   whole-tile body — a sconce three tiles away inside the house reads `through

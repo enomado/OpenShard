@@ -888,6 +888,12 @@ fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
 /// side. `source` is the ray's far end in `z` and `spread` how big the flame is,
 /// in tiles — a sunbeam passes `0.0` and gets the hard edge a point source casts.
 ///
+/// **How tall that flame is, though, is [`FLAME_DEPTH`] and not its width.** The
+/// two were one number for a day and it lit the storey over every wall sconce in
+/// Britain: a sconce burns four or five `z` under the floor above it, and a flame
+/// eleven `z` tall — [`FLAME_SPREAD`] of one tile, which is the *lateral*
+/// softness of a shadow edge — pokes a tenth of itself through the boards.
+///
 /// `blit.wgsl`'s `crosses`, and the two are one formula.
 fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread: f32) -> f32 {
     let (under, over) = (entering.min(leaving), entering.max(leaving));
@@ -899,8 +905,22 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
         true => source - high,
         false => low - source,
     };
-    (beyond / (spread * Z_PER_TILE).max(1e-3) + 0.5).clamp(0.0, 1.0)
+    (beyond / (spread * FLAME_DEPTH).max(1e-3) + 0.5).clamp(0.0, 1.0)
 }
+
+/// How tall a flame is, in `z` units, for the one question that asks: how much of
+/// it a floor cuts off ([`crosses`]).
+///
+/// Half a tile, which is [`FLAME_LIFT`]'s own number and for the same reason —
+/// it is the only measurement in this file that is about a flame's *height*
+/// rather than about the softness of what it casts sideways. A flame sits half a
+/// tile above the thing carrying it, and taking it to be about that tall is the
+/// answer that does not invent a second number.
+///
+/// Scaled by the caller's `spread` so that a point source stays a point: the sun
+/// passes `0.0` and a plane cuts it cleanly, which is what a floor's own shadow
+/// on the ground under it is made of.
+const FLAME_DEPTH: f32 = Z_PER_TILE / 2.0;
 
 /// How far in front of its own plane a **face** pixel is walked from, in tiles.
 ///

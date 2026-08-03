@@ -206,6 +206,11 @@ fn faces(normal: vec3<f32>, toward: vec3<f32>) -> f32 {
 // How many `z` units make one tile — `light::Z_PER_TILE`, and the same
 // derivation: 44 virtual pixels of tile over 4 pixels a unit of height.
 const Z_PER_TILE: f32 = 11.0;
+// How tall a flame is, for the one question that asks: how much of it a floor
+// cuts off. `light::FLAME_DEPTH`, and half a tile is `FLAME_LIFT`'s own number —
+// the only measurement about a flame's *height* rather than about the softness
+// of what it casts sideways.
+const FLAME_DEPTH: f32 = Z_PER_TILE / 2.0;
 
 // How many cells of the grid one ray may look at.
 //
@@ -313,6 +318,12 @@ fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
 // cuts the source, so what gets through is the share of it left on the lit side.
 // A sunbeam passes a `spread` of 0 and gets the hard edge a point source casts.
 //
+// **How tall that flame is, though, is `FLAME_DEPTH` and not its width** — half a
+// tile, `light::FLAME_LIFT`'s own number. The two were one for a day and it lit
+// the storey over every wall sconce in Britain: a sconce burns four or five `z`
+// under the floor above it, and a flame eleven `z` tall pokes a tenth of itself
+// through the boards.
+//
 // `light::crosses`, and the two are one formula.
 fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread: f32) -> f32 {
     let under = min(entering, leaving);
@@ -322,7 +333,7 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
     }
     // How far past the lid the flame itself stands, on the side the ray left by.
     let beyond = select(low - source, source - high, leaving >= entering);
-    return clamp(beyond / max(spread * Z_PER_TILE, 1.0e-3) + 0.5, 0.0, 1.0);
+    return clamp(beyond / max(spread * FLAME_DEPTH, 1.0e-3) + 0.5, 0.0, 1.0);
 }
 
 // How far in front of its own plane a **face** pixel is walked from, in tiles,

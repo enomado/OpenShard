@@ -679,17 +679,16 @@ fn a_hole_in_a_floor_lets_the_light_through() {
 /// **Read at the face's own fraction.** `statics.wgsl` puts a face pixel at
 /// [`scene::INSIDE`], eight thousandths of a tile short of the plane it is the
 /// face of, and that is the only horizontal position a frame ever draws one at.
-/// The middle of the tile is swept beside it for the two claims that are about
-/// the *room* — its own wall is lit, the storey over it is not — and deliberately
-/// not for the line at the floor, which is where the two positions part: what
-/// closes the line is `light::stand_clear` walking a face pixel from a hair in
-/// **front** of its plane, so that the cell the ray starts in is the one the
-/// floor is in. From the middle of a tile that hair is half a tile short, the ray
-/// crosses the floor's plane inside the wall's own column — which has no plank
-/// over it, because a house's floor stops at its wall — and the line comes back.
-/// A model whose answer depends on where in its cell a pixel stands is worth
-/// saying out loud; what makes it sound is that the drawn position is the only
-/// one that exists.
+/// The middle of the tile is swept beside it for the claim that is about the
+/// *room* — its own wall is lit — and deliberately not for anything at or above
+/// the floor line, which is where the two positions part. What closes the line is
+/// `light::stand_clear` walking a face pixel from a hair in **front** of its
+/// plane, so that the cell the ray starts in is the one the floor is in; from the
+/// middle of a tile that hair is half a tile short, the ray crosses the floor's
+/// plane inside the wall's own column — which has no plank over it, because a
+/// house's floor stops at its wall — and the light comes back. A model whose
+/// answer depends on where in its cell a pixel stands is worth saying out loud;
+/// what makes it sound is that the drawn position is the only one that exists.
 ///
 /// The other half is [`light::ON_TOP`], and neither half closes it alone: a
 /// pixel whose `z` is exactly the floor's lies *in* the plane, and the crossing
@@ -710,10 +709,11 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
         light::sample(Spot::face(at, z, Face::East), &lighting).brightness()
     };
 
+    // The ground floor's own wall, lit by the ground floor's own sconce, at both
+    // fractions: this half is not sensitive to where in its cell the point is,
+    // and it is what fails if the floor starts stopping everything rather than
+    // what crosses it.
     for across in [scene::INSIDE, 0.5] {
-        // The ground floor's own wall, lit by the ground floor's own torch. The
-        // control, and it is the half that would fail if the floor had started
-        // stopping everything rather than what crosses it.
         for z in [10.0, f32::from(scene::WALL_HEIGHT) - 1.0] {
             let inside = face(across, z);
             assert!(
@@ -722,26 +722,24 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
                  {inside}{picture}",
             );
         }
-
-        // The storey's wall, at three heights up it: the ambient exactly. One
-        // spot could pass on a ray that happened to miss the room.
-        for z in [f32::from(scene::WALL_HEIGHT) + 1.0, 25.0, 35.0] {
-            let storey = face(across, z);
-            assert!(
-                (storey - ambient).abs() < 1e-6,
-                "the torch lights the storey's wall at {across}, z {z}: {storey} \
-                 against the ambient's {ambient}{picture}",
-            );
-        }
     }
 
-    // And the line at the floor itself, at the fraction a frame draws it at.
-    let seam = face(scene::INSIDE, f32::from(scene::WALL_HEIGHT));
-    assert!(
-        (seam - ambient).abs() < 1e-6,
-        "the line at the floor is lit: {seam} against the ambient's \
-         {ambient}{picture}",
-    );
+    // And everything from the floor line up, at the fraction a frame draws a face
+    // pixel at. The line itself first, then three heights of the storey's wall:
+    // one spot could pass on a ray that happened to miss the room.
+    for z in [
+        f32::from(scene::WALL_HEIGHT),
+        f32::from(scene::WALL_HEIGHT) + 1.0,
+        25.0,
+        35.0,
+    ] {
+        let storey = face(scene::INSIDE, z);
+        assert!(
+            (storey - ambient).abs() < 1e-6,
+            "the sconce lights the storey at z {z}: {storey} against the \
+             ambient's {ambient}{picture}",
+        );
+    }
 }
 
 /// A ray does **not** slip between two walls that touch only at their corners.

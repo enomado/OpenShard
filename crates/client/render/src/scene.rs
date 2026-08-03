@@ -866,6 +866,17 @@ pub const INSIDE: f32 = 126.0 / 127.0;
 /// Where that room's torch stands, and the tile of its floor that is read.
 pub const LIT_ROOM_TORCH: (u16, u16) = (CENTRE.0 + 2, CENTRE.1);
 
+/// And how high it burns: a **sconce**, not a torch on the ground.
+///
+/// `light::FLAME_LIFT` puts the flame five and a half `z` over the item, so this
+/// one burns four and a half under the boards — which is where a house's sconce
+/// burns (Britain's at `1491,1636` is `z 31` under a floor at `40`, three and a
+/// half under) and is the geometry the straddle band of `light::crosses` gets
+/// wrong when it is given a flame's *width* for its height. On the ground it
+/// would burn fourteen `z` under the floor, far enough that any band at all
+/// would pass this scene.
+pub const LIT_ROOM_SCONCE: i8 = 10;
+
 /// A room with a torch in it and **a second storey over it**, built the way a
 /// real house is: an east-faced run of wall, the floor of the storey laid over
 /// the room beside it, and the wall of the storey standing on the wall below.
@@ -911,7 +922,7 @@ pub fn storey_over_a_lit_room() -> Scene {
         )])
         .expect("one silhouette fits"),
     );
-    scene.with(LIT_ROOM_TORCH, TORCH)
+    scene.with_at(LIT_ROOM_TORCH, LIT_ROOM_SCONCE, TORCH)
 }
 
 /// Two wall tiles touching at one corner, with a torch on the far diagonal.
