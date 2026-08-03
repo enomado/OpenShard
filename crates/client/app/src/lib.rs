@@ -1471,7 +1471,12 @@ impl ApplicationHandler<link::Update> for App {
                     // no chat line yet that would swallow one, and when there is,
                     // a key that walked the body would be the bug.
                     KeyCode::F1 => {
-                        self.desk.open = !self.desk.open;
+                        // The shell's `Desk` and not this one: see
+                        // `Shell::toggle_dev`. Before there is a shell there is no
+                        // window either, so this arm cannot be reached without one.
+                        if let Some(shell) = self.shell.as_mut() {
+                            shell.toggle_dev();
+                        }
                         true
                     }
                     KeyCode::Home => {

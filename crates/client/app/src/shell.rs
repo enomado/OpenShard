@@ -477,6 +477,17 @@ impl Shell {
         }
     }
 
+    /// Show or hide the dev window — the strip's `dev` toggle, reached from a key.
+    ///
+    /// It has to come through here, and not through the app's own [`Desk`]: the
+    /// one the panels are laid out against is *this* one. The app's copy is what
+    /// was loaded at startup and what will be written at exit, and between those
+    /// two moments nothing draws from it, so a key that flipped it would change a
+    /// value nobody reads and take effect on the next launch.
+    pub fn toggle_dev(&mut self) {
+        self.desk.open = !self.desk.open;
+    }
+
     /// Offer an event to the UI, answering whether it took it.
     ///
     /// A `true` here means the camera and the walk keys must not see the event.
