@@ -724,6 +724,48 @@ const SOFT_CROSSING_MAX: f32 = 0.7;
 /// byte's worth of light either way.
 const RAY_CUTOFF: f32 = 0.004;
 
+/// How much of a panel a ray pierces at height `z` runs into: `1.0` well inside
+/// the span it occupies, `0.0` well outside, and a gradient `tall` `z` units wide
+/// across its edges.
+///
+/// The vertical half of decision 14's penumbra, and all that is left of it: a
+/// flame is a body rather than a point, so a ray grazing the top of a wall is
+/// dimmed rather than switched.
+///
+/// The band is centred on the *top* edge and hangs below the bottom one, for the
+/// reason `blit.wgsl`'s `pierces` states at length: a wall is based on the ground
+/// it stands on and the ray a person looks at runs along that base, so a band
+/// centred there would let half of every flame along every wall in the frame.
+///
+/// `blit.wgsl`'s `pierces`, and the two are one formula.
+fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
+    let band = tall.max(1e-3);
+    ((z - low + band * 0.5).min(high - z) / band + 0.5).clamp(0.0, 1.0)
+}
+
+/// How near two boundaries have to be, along the ray, for the ray to be crossing
+/// a **corner** rather than a side. `blit.wgsl`'s `CORNER_TIE`, and the two are
+/// one number — this is a comparison the two implementations have to answer the
+/// same way, and what makes that safe is that the tolerance is a thousand times
+/// the last bits of a float and a thirtieth of a pixel of world.
+const CORNER_TIE: f32 = 1e-4;
+
+/// How much one cell stops a ray that crosses the sides in `crossed` at height
+/// `z`, where the cell is a panel. Zero for open ground, for a lid, and for a
+/// panel on a side the ray does not go through.
+///
+/// `blit.wgsl`'s `panel_stop`. Split out of [`walk_cells`] for the corner case,
+/// which has two cells to ask about and no crossing length to speak of.
+fn panel_stop(stands: Option<crate::occlusion::Cell>, crossed: u8, z: f32, tall: f32) -> f32 {
+    match stands.filter(|stands| stands.edges != 0 && stands.edges & crossed != 0) {
+        None => 0.0,
+        Some(stands) => {
+            f32::from(stands.opacity) / 255.0
+                * pierces(z, stands.bottom as f32, stands.top as f32, tall)
+        }
+    }
+}
+
 /// A point in the world, as the lighting sees one: a fractional tile and a `z`.
 ///
 /// Fractional because that is what the place attachment carries — where in its
@@ -1105,7 +1147,6 @@ fn walk_cells(
                 (false, false) => crate::occlusion::EDGE_NORTH,
             },
         };
-        let crossing = entry | exit;
         let stands = occlusion.at(cell.0, cell.1);
         // A *named* side, and the far end's tile is exempt only for a flame, and
         // then only while nothing names one. `blit.wgsl`'s `walk` argues it at
@@ -1115,23 +1156,9 @@ fn walk_cells(
         // no telling which of them a pixel is on.
         let named = stands.is_some_and(|stands| stands.edges != 0 && stands.edges != EDGE_ANY);
         if cell != first && (!skip_last || cell != last || named) {
-            if let Some(stands) = stands.filter(|stands| stands.edges == 0 || stands.edges & crossing != 0) {
-                // The ray's own height over this crossing, against the span the
-                // tile occupies: what counts is how much of the two overlap.
-                let from = spot.z + delta[2] * entered;
-                let to = spot.z + delta[2] * leaves;
-                let (bottom, top) = (from.min(to), from.max(to));
+            if let Some(stands) = stands {
                 let (low, high) = (stands.bottom as f32, stands.top as f32);
-                let share = match top - bottom > 1e-6 {
-                    true => (top.min(high) - bottom.max(low)).max(0.0) / (top - bottom),
-                    // A level ray: it is inside the span or it is not, and there
-                    // is no length of it to take a share of.
-                    false => match bottom >= low && bottom <= high {
-                        true => 1.0,
-                        false => 0.0,
-                    },
-                };
-                let crossed = (leaves - entered) * ground * share;
+                let opacity = f32::from(stands.opacity) / 255.0;
                 // How soft this cell's own edge is: the penumbra a source of
                 // this size casts from this far along the ray. See
                 // [`FLAME_SPREAD`]; a `spread` of zero is a point source, and the
@@ -1139,7 +1166,47 @@ fn walk_cells(
                 let middle = (entered + leaves) * 0.5;
                 let soft =
                     (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
-                let stopped = f32::from(stands.opacity) / 255.0 * (crossed / soft).clamp(0.0, 1.0);
+                let stopped = match stands.edges {
+                    // A **body** — a lid (a floor, a roof) or a whole tile that
+                    // stands up and whose art would not say which way. Either is a
+                    // solid the ray travels through, so what it stops is scaled by
+                    // the length of the run inside the span. `blit.wgsl`'s `walk`
+                    // argues why all four sides belongs here: a roof five `z` deep
+                    // is pierced by neither of its sides at 45°, and a sealed
+                    // house came out sunlit.
+                    0 | EDGE_ANY => {
+                        let from = spot.z + delta[2] * entered;
+                        let to = spot.z + delta[2] * leaves;
+                        let (bottom, top) = (from.min(to), from.max(to));
+                        let share = match top - bottom > 1e-6 {
+                            true => (top.min(high) - bottom.max(low)).max(0.0) / (top - bottom),
+                            // A level ray: it is inside the span or it is not, and
+                            // there is no length of it to take a share of.
+                            false => match bottom >= low && bottom <= high {
+                                true => 1.0,
+                                false => 0.0,
+                            },
+                        };
+                        let crossed = (leaves - entered) * ground * share;
+                        opacity * (crossed / soft).clamp(0.0, 1.0)
+                    }
+                    // A **panel** — a surface on one side of the tile. What it does
+                    // to a ray is decided where the ray *pierces* it, at a point
+                    // and at a height, and not by how long the ray spent in the
+                    // cell. `blit.wgsl`'s `walk` argues it: the length version let
+                    // a ray through the corner between two panels and drew a fan
+                    // of spokes out of every lamp near a wall.
+                    edges => {
+                        let tall = soft * Z_PER_TILE;
+                        let mut stopped: f32 = 0.0;
+                        for (side, at) in [(entry, entered), (exit, leaves)] {
+                            if edges & side != 0 {
+                                stopped = stopped.max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
+                            }
+                        }
+                        stopped
+                    }
+                };
                 through *= 1.0 - stopped;
                 if through <= RAY_CUTOFF {
                     return (0.0, Some(cell));
@@ -1150,14 +1217,57 @@ fn walk_cells(
             break;
         }
         entered = next;
+        // Which sides the neighbours touch this corner or this boundary by: a ray
+        // moving east leaves through an east side and enters a west one.
+        let enter_x = match toward.0 > 0 {
+            true => crate::occlusion::EDGE_WEST,
+            false => crate::occlusion::EDGE_EAST,
+        };
+        let enter_y = match toward.1 > 0 {
+            true => crate::occlusion::EDGE_NORTH,
+            false => crate::occlusion::EDGE_SOUTH,
+        };
+        if (boundary[0] - boundary[1]).abs() <= CORNER_TIE {
+            // **A corner** — `blit.wgsl`'s `walk` argues it: four tiles meet at
+            // the point the ray leaves by, and the two the walk does not step
+            // into are as much in the way as the one it does. Both are asked, and
+            // then the walk steps diagonally past them.
+            let by_x = (cell.0 + toward.0, cell.1);
+            let by_y = (cell.0, cell.1 + toward.1);
+            let z = spot.z + delta[2] * next;
+            let tall = (spread * next / (1.0 - next).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX)
+                * Z_PER_TILE;
+            let mut corner: f32 = 0.0;
+            let mut blamed = None;
+            for (at, crossed) in [
+                (by_x, enter_x | crate::occlusion::opposite(enter_y)),
+                (by_y, enter_y | crate::occlusion::opposite(enter_x)),
+            ] {
+                if at == first || (skip_last && at == last) {
+                    continue;
+                }
+                let stops = panel_stop(occlusion.at(at.0, at.1), crossed, z, tall);
+                if stops > corner {
+                    corner = stops;
+                    blamed = Some(at);
+                }
+            }
+            through *= 1.0 - corner;
+            if through <= RAY_CUTOFF {
+                return (0.0, blamed);
+            }
+            cell = (by_x.0, by_y.1);
+            boundary[0] += per_tile[0];
+            boundary[1] += per_tile[1];
+            // The cell beyond is entered by *both* the sides that meet at the
+            // corner, so a wall on either of them stops the ray there too.
+            entry = enter_x | enter_y;
+            continue;
+        }
         // The neighbour's own entry is this cell's exit seen from the other
         // side: leaving east is entering west.
         entry = crate::occlusion::opposite(exit);
-        // Into the neighbour across whichever boundary is nearer. A tie is a
-        // corner: either order visits both cells, and the one taken second is
-        // crossed over a zero length and stops nothing — which is the diagonal
-        // gap this crate's backlog names, kept deliberately rather than closed
-        // by an accident of which comparison ran first.
+        // Into the neighbour across whichever boundary is nearer.
         match out_by_x {
             true => {
                 cell.0 += toward.0;

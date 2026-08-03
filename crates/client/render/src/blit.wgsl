@@ -179,6 +179,55 @@ const EDGE_SOUTH: u32 = 4u;
 const EDGE_WEST: u32 = 8u;
 const EDGE_MASK: u32 = 15u;
 
+// How much of a panel a ray pierces at height `z` runs into: 1 well inside the
+// span it occupies, 0 well outside, and a gradient `tall` `z` units wide across
+// its edges.
+//
+// The gradient is the vertical half of decision 14's penumbra, and it is all that
+// is left of it: a flame is a body rather than a point, so a ray grazing the top
+// of a wall is dimmed rather than switched.
+//
+// **The band is centred on the top edge and hangs below the bottom one**, which is
+// the one asymmetry here and it is not cosmetic. A wall is based at the height of
+// the ground it stands on, and the ray a person actually looks at — a torch and a
+// floor, both at `z = 0` — runs exactly along that bottom edge. Centred there too,
+// it would meet half the wall and every wall in the frame would pass half its
+// light along the ground. Measured: a shut room's shadow read `0.378` against the
+// `0.356` of its ambient before this line said so.
+//
+// `light::pierces`, and the two are one formula.
+fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
+    let band = max(tall, 1.0e-3);
+    let inside = min(z - low + band * 0.5, high - z);
+    return clamp(inside / band + 0.5, 0.0, 1.0);
+}
+
+// How near two boundaries have to be, along the ray, for the ray to be crossing
+// a **corner** rather than a side.
+//
+// A share of the whole segment, so a hundredth of a tile on a six-tile ray. What
+// it decides is whether the walk looks at one of the two cells that share the
+// corner or at both — see `walk`. It has to be well above the last bits of a
+// float and well below anything a person could see, and it is both: the two ends
+// of this comparison are the same arithmetic in two languages, and a
+// ten-thousandth of a ray is a thirtieth of a pixel.
+const CORNER_TIE: f32 = 1.0e-4;
+
+// How much one cell stops a ray that crosses the sides in `crossed` at height
+// `z`, where the cell is a panel. Zero for open ground, for a lid and for a panel
+// on a side the ray does not go through.
+//
+// Split out of `walk` for the corner case, which has two cells to ask about and
+// no crossing length to speak of. `light::panel_stop`.
+fn panel_stop(cell: vec2<i32>, crossed: u32, z: f32, tall: f32) -> f32 {
+    let stands = occluder_at(cell.x, cell.y);
+    let sides = stands.w & EDGE_MASK;
+    if stands.w == 0u || sides == 0u || (sides & crossed) == 0u {
+        return 0.0;
+    }
+    return f32(stands.z) / 255.0 * pierces(z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
+}
+
 // What stands on one tile, or all zeros for open ground and for anything
 // outside the grid.
 fn occluder_at(x: i32, y: i32) -> vec4<u32> {
@@ -332,14 +381,35 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
         // this line is not the obvious one.
         let exempt = (cell.x == first.x && cell.y == first.y)
             || (skip_last && cell.x == last.x && cell.y == last.y && !named);
-        if !exempt {
-            // A lid (`sides == 0`) is tested by its `z` span alone; a panel also
-            // has to be on a side the ray goes through.
-            if stands.w != 0u && (sides == 0u || (sides & crossing) != 0u) {
-                let low = f32(stands.x) - 128.0;
-                let high = f32(stands.y) - 128.0;
-                // The ray's own height over this crossing, against the span the
-                // tile occupies: what counts is how much of the two overlap.
+        if !exempt && stands.w != 0u {
+            let low = f32(stands.x) - 128.0;
+            let high = f32(stands.y) - 128.0;
+            let opacity = f32(stands.z) / 255.0;
+            // How soft this cell's own edge is: the penumbra a source of this
+            // size casts from this far along the ray. See `FLAME_SPREAD`; a
+            // `spread` of zero is a point source, and the clamp below leaves it
+            // the narrowest edge the walk draws.
+            let middle = (entered + leaves) * 0.5;
+            let soft = clamp(
+                spread * middle / max(1.0 - middle, 1.0e-3),
+                SOFT_CROSSING_MIN,
+                SOFT_CROSSING_MAX,
+            );
+            var stopped = 0.0;
+            if sides == 0u || sides == EDGE_MASK {
+                // A **body** — a lid (a floor, a roof, a plank) or a whole tile
+                // that stands up and whose art would not say which way (a corner,
+                // a post, a tree). Either way it is a solid the ray travels
+                // *through*, so what it stops is scaled by how far the ray ran
+                // inside the span it occupies.
+                //
+                // All four sides has to be here and not below with the panels,
+                // and the sun is what says so: a roof is a slab five `z` deep, and
+                // a ray at 45° that entered its cell at 19 and left at 22 pierces
+                // neither side inside the span while passing straight through the
+                // middle of it. That is the "stepped over the top of a wall"
+                // failure `docs/lighting.md`'s backlog names, arriving from the
+                // other direction — and it lit the floor of a sealed house.
                 let entering = lit.z + delta.z * entered;
                 let leaving = lit.z + delta.z * leaves;
                 let bottom = min(entering, leaving);
@@ -353,37 +423,91 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
                     share = 1.0;
                 }
                 let crossed = (leaves - entered) * ground * share;
-                // How soft this cell's own edge is: the penumbra a source of
-                // this size casts from this far along the ray. See
-                // `FLAME_SPREAD`; a `spread` of zero is a point source, and the
-                // clamp below leaves it the narrowest edge the walk draws.
-                let middle = (entered + leaves) * 0.5;
-                let soft = clamp(
-                    spread * middle / max(1.0 - middle, 1.0e-3),
-                    SOFT_CROSSING_MIN,
-                    SOFT_CROSSING_MAX,
-                );
-                let stopped = f32(stands.z) / 255.0 * clamp(crossed / soft, 0.0, 1.0);
-                through = through * (1.0 - stopped);
-                if through <= 0.004 {
-                    // Under a byte's worth of light: nothing further can matter,
-                    // and a wall is the common case.
-                    return 0.0;
+                stopped = opacity * clamp(crossed / soft, 0.0, 1.0);
+            } else {
+                // A **panel** — a wall standing on one side of its tile. It is a
+                // *surface*, and what a surface does to a ray is decided where the
+                // ray pierces it: at a point, at a height, once. Not by how far
+                // the ray ran inside the cell.
+                //
+                // That distinction is the whole of this branch and it is not
+                // pedantry. Scaling a panel by the length of the crossing lets a
+                // ray that clips the corner between two panels through *both* of
+                // them: it leaves the first cell sideways, so that cell's own
+                // face was never crossed, and it enters the second across the
+                // corner, where the crossing is a hair long and `crossed / soft`
+                // rounds to nothing. The result is a fan of bright spokes out of
+                // any lamp near a wall, one per tile corner, which is exactly what
+                // it looked like — a wall with no hole in it leaking light in
+                // stripes. See `docs/lighting.md`, decision 18.
+                let tall = soft * Z_PER_TILE;
+                if (sides & entry) != 0u {
+                    stopped = max(stopped, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
                 }
+                if (sides & exit) != 0u {
+                    stopped = max(stopped, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
+                }
+            }
+            through = through * (1.0 - stopped);
+            if through <= 0.004 {
+                // Under a byte's worth of light: nothing further can matter,
+                // and a wall is the common case.
+                return 0.0;
             }
         }
         if next >= 1.0 {
             break;
         }
         entered = next;
+        // Which sides the neighbours touch this corner or this boundary by. The
+        // ray moving east leaves through an east side and enters a west one.
+        let enter_x = select(EDGE_EAST, EDGE_WEST, toward.x > 0);
+        let enter_y = select(EDGE_SOUTH, EDGE_NORTH, toward.y > 0);
+        if abs(boundary.x - boundary.y) <= CORNER_TIE {
+            // **A corner.** Four tiles meet at the point the ray is leaving by,
+            // and the two the walk does not step into are as much in the way as
+            // the one it does: a ray running the diagonal of a room's corner used
+            // to pass between two walls that touch there, because whichever cell
+            // the comparison picked second was crossed over no length at all and
+            // stopped nothing. So both are asked, at the corner's own height, and
+            // then the walk steps diagonally past them into the cell beyond.
+            //
+            // The exemptions are the same two as above and are repeated rather
+            // than shared, because the cells are: a flame standing at a corner of
+            // its own tile must not be shadowed by the tile it stands on.
+            let by_x = vec2<i32>(cell.x + toward.x, cell.y);
+            let by_y = vec2<i32>(cell.x, cell.y + toward.y);
+            let z = lit.z + delta.z * next;
+            let tall = clamp(
+                spread * next / max(1.0 - next, 1.0e-3),
+                SOFT_CROSSING_MIN,
+                SOFT_CROSSING_MAX,
+            ) * Z_PER_TILE;
+            var corner = 0.0;
+            if !(by_x.x == first.x && by_x.y == first.y)
+                && !(skip_last && by_x.x == last.x && by_x.y == last.y) {
+                corner = max(corner, panel_stop(by_x, enter_x | opposite(enter_y), z, tall));
+            }
+            if !(by_y.x == first.x && by_y.y == first.y)
+                && !(skip_last && by_y.x == last.x && by_y.y == last.y) {
+                corner = max(corner, panel_stop(by_y, enter_y | opposite(enter_x), z, tall));
+            }
+            through = through * (1.0 - corner);
+            if through <= 0.004 {
+                return 0.0;
+            }
+            cell = vec2<i32>(by_x.x, by_y.y);
+            boundary.x = boundary.x + per_tile.x;
+            boundary.y = boundary.y + per_tile.y;
+            // The cell beyond is entered by *both* of the sides that meet at the
+            // corner, so a wall on either of them stops the ray there too.
+            entry = enter_x | enter_y;
+            continue;
+        }
         // The neighbour's own entry is this cell's exit seen from the other
         // side: leaving east is entering west.
         entry = opposite(exit);
-        // Into the neighbour across whichever boundary is nearer. A tie is a
-        // corner: either order visits both cells, and the one taken second is
-        // crossed over a zero length and stops nothing — which is the diagonal
-        // gap `docs/lighting.md` names, kept deliberately rather than closed by
-        // an accident of which comparison ran first.
+        // Into the neighbour across whichever boundary is nearer.
         if out_by_x {
             cell.x = cell.x + toward.x;
             boundary.x = boundary.x + per_tile.x;

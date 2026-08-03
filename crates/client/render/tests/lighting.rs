@@ -457,22 +457,42 @@ fn a_cellar_does_not_light_the_street_above_it() {
     );
 }
 
-/// A ray slips between two walls that touch only at their corners. **Also
-/// wrong, also pinned.**
+/// A ray does **not** slip between two walls that touch only at their corners.
 ///
-/// The walk is Chebyshev-sampled, one cell a step, so a ray running along a
-/// diagonal passes through the corner where two wall tiles meet. Real walls are
-/// rows and this has not been seen in a house; the backlog's fix is a supercover
-/// walk that visits both cells of every crossing, at about twice the samples.
-/// This is what will say the fix worked.
+/// This test used to pin the opposite, and the leak it pinned was real: the walk
+/// steps one cell at a time, so a ray running the diagonal left the first cell
+/// and entered the second across the corner — over a crossing of no length, which
+/// the old length-scaled occluder rounded to nothing. Whichever of the two cells
+/// the comparison happened to pick was the only one asked, and the other was
+/// asked over nothing.
+///
+/// What closed it is the corner case in `light::walk_cells` and `blit.wgsl`'s
+/// `walk`: where the two boundaries land together the walk asks *both* cells that
+/// share the corner, at the height the ray is at when it passes through it, and
+/// then steps diagonally past them. Which is the supercover walk the backlog
+/// asked for, at two extra samples on the rays that hit a corner exactly rather
+/// than at twice the samples everywhere.
 #[test]
-fn a_ray_slips_between_two_walls_that_touch_at_a_corner() {
+fn a_ray_does_not_slip_between_two_walls_that_touch_at_a_corner() {
     let scene = scene::diagonal_gap();
     let lighting = scene.lighting(STILL);
     let behind = at(&lighting, CENTRE, 0.0);
     assert!(
-        behind > ambient(&lighting, CENTRE) + 0.1,
-        "the diagonal gap has been closed — update this test: {behind}{}",
+        (behind - ambient(&lighting, CENTRE)).abs() < 1e-6,
+        "light slips through the corner where two walls touch: {behind} against \
+         the ambient's {}{}",
+        ambient(&lighting, CENTRE),
+        picture(&scene, &lighting),
+    );
+
+    // And the flame is real: a tile the walls do not stand between is lit. Without
+    // this the assertion above would hold for a scene whose torch was never
+    // collected at all.
+    let open = (CENTRE.0 + 2, CENTRE.1 + 1);
+    let lit = at(&lighting, open, 0.0);
+    assert!(
+        lit > ambient(&lighting, open) + 0.1,
+        "the torch lights nothing at all: {lit}{}",
         picture(&scene, &lighting),
     );
 }

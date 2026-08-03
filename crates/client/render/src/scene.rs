@@ -273,6 +273,59 @@ pub fn room_wall_tiles() -> Vec<(u16, u16)> {
 /// Where a room's door is: the middle of its south wall.
 pub const DOORWAY: (u16, u16) = (CENTRE.0, CENTRE.1 + ROOM_HALF);
 
+/// One torch on open ground, and nothing else in the world at all.
+///
+/// **The simplest scene there is, and the one to look at first.** No wall, no
+/// roof, no second flame, no sun: what a picture of this scene shows is the
+/// falloff and nothing else, so a pool that is not a circle here is not a circle
+/// anywhere. Every other scene adds exactly one thing to it.
+///
+/// It exists because every scene before it had a room around it. A shape that is
+/// wrong in the middle of a pool — flat where it should fall away — is invisible
+/// against four walls and a shadow, and it was: the flat disc
+/// `docs/lighting.md`'s "where the next session starts" describes was in every
+/// one of these scenes and none of them was looking at it.
+pub fn torch_on_open_ground() -> Scene {
+    empty("one torch on open ground").with(CENTRE, TORCH)
+}
+
+/// A straight wall with a torch two tiles in front of it: one shadow, and
+/// nothing else.
+///
+/// The second-simplest scene, and the one shadows are read in. The wall runs east
+/// to west on its tiles' **south** side — where the client draws nearly all of
+/// them — and the torch stands north of it, so the shadow is the ground south of
+/// the run and the lit side is everything north.
+///
+/// Long enough (nine tiles) that the pool does not simply reach round both ends,
+/// which is what makes the shadow a band rather than a notch. The art is the
+/// synthetic silhouette [`wall_with_a_torch_beside_it`] uses, for the same
+/// reason: without it nothing names an edge and every occluder is a whole tile.
+pub fn torch_before_a_wall() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("a torch two tiles in front of a straight wall");
+    for x in cx - 4..=cx + 4 {
+        scene = scene.with((x, cy), WALL);
+    }
+    scene.art = Some(south_faced_wall());
+    scene.with((cx, cy - 2), TORCH)
+}
+
+/// The picture a scene hands the occlusion grid when it wants a wall that stands
+/// on one *side* of its tile rather than filling it.
+///
+/// A synthetic silhouette and not a client graphic: this workspace ships no art,
+/// and a hand-drawn parallelogram is the projection and nothing else — so what a
+/// scene using it demonstrates is the grid's edge mask, with the art table's own
+/// coverage taken out of the question. See [`crate::facing`].
+fn south_faced_wall() -> StaticAtlas {
+    StaticAtlas::pack([(
+        WALL,
+        crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
+    )])
+    .expect("one silhouette fits")
+}
+
 /// A shut room with a torch in the middle of it.
 ///
 /// The base case, and the one the whole pass was built for: inside is lit,
@@ -343,13 +396,7 @@ pub fn wall_with_a_torch_beside_it() -> Scene {
     for x in cx - 3..=cx + 3 {
         scene = scene.with((x, cy), WALL);
     }
-    scene.art = Some(
-        StaticAtlas::pack([(
-            WALL,
-            crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
-        )])
-        .expect("one silhouette fits"),
-    );
+    scene.art = Some(south_faced_wall());
     // On the wall's own row, at its east end: the sconce a house carries. Its own
     // tile is exempt from shadowing it, as every flame's is, so what this scene
     // is about is the *other six* tiles of the same wall.
@@ -541,6 +588,8 @@ pub fn roofed_room_with_window() -> Scene {
 /// Every scene above, for a test that wants to sweep them.
 pub fn all() -> Vec<Scene> {
     vec![
+        torch_on_open_ground(),
+        torch_before_a_wall(),
         room(),
         room_with_shut_door(),
         room_with_open_door(),

@@ -55,6 +55,7 @@ pub mod occlusion;
 pub mod outline;
 pub mod paperdoll;
 pub mod place;
+pub mod plan;
 pub mod renderer;
 pub mod scene;
 pub mod sprite;
