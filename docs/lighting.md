@@ -3219,3 +3219,24 @@ Found on a staircase in Britain:
     not a prism at all still scores 0.81, so what admits a prism is `CLIMBABLE`
     first and the score second — the order-of-policy `Stance::of` already uses
     for a floor.
+  - **The grid believes it now, and the picture is one body per stair.**
+    `Builder::add` asks `CLIMBABLE` first and, where the art fitted a prism,
+    stands one `EDGE_ANY` surface at the *measured* height instead of two opaque
+    panels on the tile's east and south edges. Measured at `(1493, 1639)` in
+    Britain: the stair tiles read `edges NESW` where they read `-ES-`. A
+    staircase no longer shadows a street like a run of wall.
+  - **What is left is the treads themselves.** A tread is a body over *part* of
+    a tile, and `Surface` has no way to say "part of": its three kinds are a
+    panel on one edge, a lid, and a body over the whole tile. The format has
+    room — the hole plane already carries a `near`/`far` along the run and a body
+    never has a hole — and two opposite bits in `edges` (`EAST|WEST`,
+    `NORTH|SOUTH`) are a free encoding for which axis the span runs along, since
+    a panel is one bit and a body is four. What it costs is a rule in
+    `blit.wgsl`: a ray crossing a partial body has to be clipped to that span.
+    Until then a flight of steps occludes as one box the height of its top tread.
+  - **`ArtTable` does not carry a prism.** A row is `facing` and `hole`, so a
+    solid measured by `Shape::of` on a machine with no table is lost on one that
+    has it — the client would quietly go back to reading stairs as corners. It
+    wants a third verdict in the grammar and a `FORMAT` bump, and `artscan` is
+    where the measurement belongs anyway: the fit is a few hundred silhouettes a
+    picture, which is decision 31's whole argument.
