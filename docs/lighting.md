@@ -9,11 +9,17 @@ copied.
 
 ## Where the next session starts
 
-**Start at step 21.1**: the occlusion cell becomes a *list of surfaces* and the
-walk iterates it, with today's union kept so that the picture does not move and
-every existing test stays green. Decision 30 is the argument and its seven
-micro-decisions are settled; step 21 is the same change broken into the five
-pieces that are each testable alone, in the order to do them. Decision 31 is why
+**Step 21.1 has landed: the cell is a list now.** A tile is `(offset, count)`
+into `Occlusion::surfaces_at`, both walks iterate it, and the picture did not
+move — every test stayed green, the CPU/GPU parity tests included. What is left
+of the merge lives in one function, `occlusion::Builder::add`.
+
+**Start at step 21.2**: split the union. Two statics on one tile stop sharing a
+span and a mask, which is the one place in step 21 where the picture *has* to
+change, and it is now a change to `Builder::add` and to `push_surfaces` beside
+it — nothing downstream of them knows how many surfaces a tile has. Decision 30
+is the argument and its seven micro-decisions are settled; step 21 is the same
+change broken into five pieces that are each testable alone. Decision 31 is why
 the measuring leaves the frame.
 
 The three sessions below are what that rests on, and the short version is that
@@ -1452,17 +1458,42 @@ everywhere else, arriving as a refusal to *require*.
       one**. They are listed in the order that keeps every one of them testable on
       its own, and nothing here waits on anything else:
 
-      1. **The list and the walk over it, with the union kept.** A cell stops
-         being one merged span and becomes `(offset, count)` into a list of
-         surfaces; the walk iterates a cell's two or three instead of reading one.
-         **The picture must not move**, and that is the whole point of doing it
-         first: today's cell maps one-to-one onto surfaces — a lid is one
-         horizontal, named sides are a quad each with the same span, and
-         `EDGE_ANY` is one **body** rather than four quads, which is why the list
-         has two kinds of element exactly as the walk has two rules. Every
-         existing test stays green and the parity test keeps holding both
-         implementations, which is what makes a break here land in the plumbing
-         and nowhere else.
+      1. ✅ **The list and the walk over it, with the union kept.** A cell stopped
+         being one merged span and became `(offset, count)` into a list of
+         surfaces; both walks iterate a cell's one or two or three. The picture
+         did not move, which is the whole point of doing it first: a cell maps
+         one-to-one onto surfaces — a lid is one horizontal, named sides are a
+         quad each with the same span, and `EDGE_ANY` is one **body** rather than
+         four quads, which is why the list has two kinds of element exactly as
+         the walk has two rules. Every existing test stayed green, the parity
+         tests included, so the break it could have made would have landed in the
+         plumbing and nowhere else.
+
+         What it is made of: `occlusion::Surface` and `occlusion::Builder` — the
+         merge now lives in the builder and only there, which is what makes 21.2
+         a change to one function. `Occlusion::at` survives as the **merged
+         view**, folded on demand for the readers whose question is genuinely
+         about a tile: the wireframe overlay, the plan view, and which way a
+         mounted flame steps out of its own cell. Three textures instead of two —
+         the grid is the index `(offset & 255, offset >> 8, offset >> 16, count)`,
+         and the list is a texture `SURFACE_ROW` wide read with `textureLoad`,
+         which is decision 30.5 arriving. A cell's surfaces are combined with
+         **`max` and not a product**: two panels on one tile are two faces of one
+         corner, and a ray crossing both has gone through one thing once.
+
+         And the first number for decision 30.6, off Britain at the widest zoom:
+         **10,212 standing cells hold 10,653 surfaces**. Four hundred and forty
+         one cells in a city block carry more than one, which says what the union
+         has been merging away — and what 21.2 is about to multiply.
+
+         The cost, measured on the same frame, is the new baseline rather than a
+         comparison: `light::collect` 3.37ms of CPU with `occlusion::collect`
+         2.06ms of it, 0.05ms to lay all three planes out as bytes, and on the
+         GPU `copy` 0.181ms, `dark` 0.254ms, `night` 0.368ms, `sun` 0.514ms. No
+         like-for-like before-and-after was taken — the scene has changed since
+         step 6's numbers, so the two are not comparable, and what would want
+         watching is that the walk now reads two texels a cell where it read one.
+         Step 21.5 is where that is bought back several times over.
       2. **Split the union.** Two statics on one tile stop merging into one span
          with one mask. This is the one place the picture *has* to change — it is
          the backlog's "a cell merges a lid and a panel into one mask and one
@@ -2086,6 +2117,39 @@ Found while deciding what a cell should hold:
   surfaces, inside the same loop. The GPU has the headroom — the whole pass is
   0.31ms against a 16ms frame — but it is a real change in the shape of the inner
   loop and it belongs in the measurement of step 21 rather than in its surprise.
+
+Found while turning the cell into a list:
+
+- **A cell's fetch count went from one to `1 + count`, and the measurement it was
+  promised is not a comparison.** The entry above asked for it to land in step
+  21's measurement rather than in its surprise, and here it is with a caveat: the
+  cost instrument was run *after* the change and there is no before beside it,
+  because the scene it walks has changed since step 6's numbers and the two are
+  not like for like. The new baseline is in step 21.1. What a comparison would
+  have to hold still is the flame count — this run found 7 where step 6 found 64.
+- **The union's own cost is now countable, and it is 441 cells.** 10,212 standing
+  cells hold 10,653 surfaces over Britain, so all but a few hundred tiles are one
+  surface and the list costs almost nothing over the merged cell. That is the
+  cheerful reading; the other one is that 441 cells is what step 21.2 will
+  multiply, and a distribution — decision 30.6 — still wants printing rather than
+  a total.
+- **The surface texture is padded to a whole row, and the row is 1024.** A frame
+  with 12 surfaces uploads 4KB. It does not matter at Britain's scale, where the
+  list is ten rows, but it is a floor rather than a cost that scales, and a narrow
+  scene pays it every frame. The fix, if one is ever wanted, is a row width that
+  is a function of the count rather than a constant — which is a second number
+  the shader would have to be told.
+- **`Occlusion::at` folds on every call, and `boxes()` calls it per tile.** The
+  merged view is derived rather than stored, so the wireframe overlay now costs a
+  fold per cell where it used to cost a read. Nothing in a frame's hot path asks
+  it, and the overlay is a debug view — but `shell.rs` draws it per frame when it
+  is on, and that is the place it would show.
+- **A tile's surfaces are contiguous, and that is an invariant nothing states.**
+  `(offset, count)` names a run, and it only names one because `Builder::finish`
+  packs in the index's own order. Nothing outside that function could break it
+  today, and nothing outside that function is stopped from breaking it either —
+  the list and the index are two private `Vec`s that agree by construction and
+  not by type.
 
 Found while giving a corner its two faces:
 

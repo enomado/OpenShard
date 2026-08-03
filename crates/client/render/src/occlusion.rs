@@ -1,9 +1,17 @@
 //! What stands between a flame and the ground it would light.
 //!
-//! A grid over the tiles this frame's flames can reach, one cell a tile, saying
-//! how much of a ray crossing that tile survives it and between which heights.
-//! [`crate::light`] hands it to the blit, which walks the cells between a
-//! fragment and each flame — see `docs/lighting.md`, decisions 3 through 6.
+//! A list of the surfaces this frame's flames can reach, and a grid over the
+//! same tiles as its index: a cell is `(offset, count)` into the list, and a
+//! surface says how much of a ray crossing it survives and between which
+//! heights. [`crate::light`] hands both to the blit, which walks the cells
+//! between a fragment and each flame — see `docs/lighting.md`, decisions 3
+//! through 6, and decision 30 for why the cell is a list rather than one merged
+//! span.
+//!
+//! Nothing appends to an [`Occlusion`]. It is built by a [`Builder`], which is
+//! where a tile's occluders are merged, and packed by [`Builder::finish`] — a
+//! tile's surfaces have to be contiguous for an `(offset, count)` to name them,
+//! and they cannot be while anything can still be added.
 //!
 //! # Why a tile and not a wall's edge
 //!
@@ -65,15 +73,19 @@
 //!
 //! # One plane per answer, beside the cell and not inside it
 //!
-//! [`Cell`] is four channels and all four are spoken for, so the sky needed
-//! room. It gets a **second texture over the same rectangle** rather than a
-//! wider cell — see [`Occlusion::field_bytes`], whose four channels are the
+//! A [`Surface`] is four channels and all four are spoken for, so the sky needed
+//! room. It gets a **third texture over the grid's rectangle** rather than a
+//! wider surface — see [`Occlusion::field_bytes`], whose four channels are the
 //! places the answers that are not about *stopping a ray* go: the sky today, an
 //! aperture and a body's opacity when `docs/lighting.md`'s step 16 and
 //! `docs/lighting_world.md`'s step 8 land. One decision for all three, which is
-//! what the plans asked for, and the split is along the line that matters: the
-//! occluder cell is what a ray walks through, and this is what a *tile* is,
-//! read once per fragment and never in a loop.
+//! what the plans asked for, and the split is along the line that matters: a
+//! surface is what a ray walks through, and this is what a *tile* is, read once
+//! per fragment and never in a loop.
+//!
+//! So a frame uploads three: the index over the camera's rectangle, this field
+//! over the same rectangle, and the surface list, whose length is what the
+//! camera happens to be looking at rather than how big it is.
 
 use openshard_protocol::wire::Graphic;
 
@@ -238,12 +250,48 @@ fn calc_height(tile: &StaticTile) -> i32 {
     }
 }
 
-/// One tile's worth of occlusion: how much it stops, and between which heights.
+/// One surface something stands on a tile: a plane, the heights it occupies,
+/// and how much of a ray crossing it survives.
+///
+/// The element of the list a cell indexes — `docs/lighting.md`'s decision 30 —
+/// and **the walk's two rules are its two kinds**: [`Surface::edges`] naming one
+/// side is a *panel*, a ray is stopped where it crosses it; zero is a *lid* and
+/// all four a *body*, and a ray is stopped by how far it ran inside the span.
+///
+/// It carries the same four fields [`Cell`] does and that is not an accident:
+/// a cell is what the surfaces of one tile merge to, and the merge is what step
+/// 21.2 takes apart. Until then a tile's surfaces all share its span and its
+/// opacity, which is what makes this step a change of storage and nothing else.
 ///
 /// The span is in `z` units — the map's own, not pixels — and it is inclusive of
 /// `bottom` and `top`. A wall based at `z = 0` and 20 tall stops a ray passing
 /// through `0..=20` and no other, which is what keeps a cellar's wall out of the
 /// street and an upper storey's out of the ground floor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Surface {
+    /// The lowest `z` this surface stops anything at.
+    pub bottom: i32,
+    /// The highest.
+    pub top: i32,
+    /// How much of a ray crossing it is stopped.
+    pub opacity: u8,
+    /// Which side of the tile it stands on: one of [`EDGE_NORTH`],
+    /// [`EDGE_EAST`], [`EDGE_SOUTH`], [`EDGE_WEST`] for a panel, `0` for a lid,
+    /// or [`EDGE_ANY`] for a body. Never two named sides — a corner is two
+    /// panels, which is what the list is for.
+    pub edges: u8,
+}
+
+/// One tile's worth of occlusion: how much it stops, and between which heights.
+///
+/// **The merged view**, and no longer what is stored: the union of everything on
+/// the tile, folded out of [`Occlusion::surfaces_at`] for the readers whose
+/// question is about a *tile* rather than about a surface — the wireframe
+/// overlay, the plan view, the mounted flame's own cell. The walk does not ask
+/// it any more.
+///
+/// The span is in `z` units — the map's own, not pixels — and it is inclusive of
+/// `bottom` and `top`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
     /// The lowest `z` this tile stops anything at.
@@ -264,19 +312,52 @@ pub struct Cell {
 /// A tile with nothing at all over it: the whole of the sky.
 pub const SKY_OPEN: u8 = 255;
 
-/// The occluders of one frame, as a rectangle of tiles.
+/// Where one tile's surfaces are: the index `docs/lighting.md`'s decision 30.3
+/// keeps the tile grid as.
 ///
-/// Absent cells are the ordinary case — most of a street is open sky — and
-/// [`Occlusion::at`] answers `None` for them and for anything outside the
-/// rectangle, so a caller never has to know where the edge is.
+/// A count of zero is open ground, and the offset is then meaningless — a caller
+/// reads [`Occlusion::surfaces_at`], which hands back an empty slice for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct Span {
+    /// Where this tile's run begins in [`Occlusion::surfaces`]. Twenty-four bits
+    /// of it survive the upload — see [`Occlusion::bytes`].
+    offset: u32,
+    /// How many surfaces stand on the tile. One byte, for the same reason.
+    count: u8,
+}
+
+/// How wide the surface list is as a texture, in texels.
+///
+/// The list is one dimensional and a texture is not, so it is folded into rows
+/// of this — `blit.wgsl`'s `SURFACE_ROW`, and the two are one number. A thousand
+/// and twenty-four rather than the 2048 WebGL2 guarantees, because the guarantee
+/// is the floor and a row that is exactly it leaves no room for the folding to
+/// be wrong in only one direction.
+pub const SURFACE_ROW: u32 = 1024;
+
+/// The occluders of one frame: a list of surfaces, and the tile grid as its
+/// index.
+///
+/// Decision 30 — a cell is `(offset, count)` into [`Occlusion::surfaces_at`],
+/// and the walk iterates a tile's two or three rather than reading one merged
+/// span. Empty cells are the ordinary case, most of a street being open sky, and
+/// both [`Occlusion::at`] and [`Occlusion::surfaces_at`] answer for a tile
+/// outside the rectangle without the caller having to know where the edge is.
+///
+/// Built by a [`Builder`] and immutable afterwards: the merge is the builder's
+/// business, and what comes out of it is a list nothing appends to. That is what
+/// lets a tile's surfaces be contiguous, which is what an `(offset, count)` is.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Occlusion {
     bounds: TileBounds,
     /// Row-major over `bounds`, `x` fastest: the order [`Occlusion::bytes`]
     /// uploads and the shader indexes.
-    cells: Vec<Option<Cell>>,
-    /// How much of the sky each tile can see, in the same order — see this
-    /// module's header and [`Occlusion::sky_at`].
+    index: Vec<Span>,
+    /// Every surface in the frame, the ones of a tile contiguous. The order is
+    /// the index's, which is what [`Occlusion::surface_bytes`] uploads.
+    surfaces: Vec<Surface>,
+    /// How much of the sky each tile can see, in the same order as the index —
+    /// see this module's header and [`Occlusion::sky_at`].
     ///
     /// A byte and not an `Option`: every tile has an answer, and the answer for
     /// a tile with nothing over it is [`SKY_OPEN`] rather than "absent".
@@ -286,7 +367,7 @@ pub struct Occlusion {
 impl Occlusion {
     /// A grid covering no tiles at all, which occludes nothing anywhere.
     ///
-    /// A `const` and therefore an empty `Vec`, which allocates nothing: it is
+    /// A `const` and therefore empty `Vec`s, which allocate nothing: it is
     /// what [`Lighting::NONE`](crate::light::Lighting::NONE) is built from, and
     /// a daylit frame must not pay for a grid it will not read.
     pub const EMPTY: Self = Self {
@@ -296,20 +377,10 @@ impl Occlusion {
             min_y: 0,
             max_y: -1,
         },
-        cells: Vec::new(),
+        index: Vec::new(),
+        surfaces: Vec::new(),
         sky: Vec::new(),
     };
-
-    /// An empty grid over `bounds`: nothing stops anything, and every tile sees
-    /// the whole sky.
-    pub fn new(bounds: TileBounds) -> Self {
-        let tiles = (bounds.width() * bounds.height()) as usize;
-        Self {
-            bounds,
-            cells: vec![None; tiles],
-            sky: vec![SKY_OPEN; tiles],
-        }
-    }
 
     /// The rectangle of tiles this covers.
     pub fn bounds(&self) -> TileBounds {
@@ -324,7 +395,216 @@ impl Occlusion {
     /// the caller that asks this — [`Lighting::is_identity`](crate::light::Lighting::is_identity)
     /// — is asking whether there is a field to read at all.
     pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.index.is_empty()
+    }
+
+    /// The surfaces standing on one tile, in no order the walk depends on — and
+    /// an empty slice for open ground and for anything outside the rectangle.
+    ///
+    /// What the walk reads. A tile carries one lid, or one body, or a panel per
+    /// side its art named; a caller combines them itself, and the combination is
+    /// a rule rather than a fold — see `light::walk_cells`, which takes the
+    /// largest and not the product, because two panels of one wall are one wall.
+    pub fn surfaces_at(&self, x: i32, y: i32) -> &[Surface] {
+        let Some(index) = self.index(x, y) else {
+            return &[];
+        };
+        let span = self.index[index];
+        let from = span.offset as usize;
+        &self.surfaces[from..from + usize::from(span.count)]
+    }
+
+    /// What stands on one tile as one box, or `None` for open ground and for
+    /// anything outside the rectangle.
+    ///
+    /// The **merged view** of [`Occlusion::surfaces_at`] and derived from it on
+    /// every call: the union of the spans, the largest opacity and the union of
+    /// the sides. For the readers whose question is genuinely about a tile — the
+    /// wireframe, the plan view, which way a mounted flame steps out of its own
+    /// cell — and not for the walk, which stopped asking it when the list
+    /// arrived.
+    pub fn at(&self, x: i32, y: i32) -> Option<Cell> {
+        let surfaces = self.surfaces_at(x, y);
+        let (first, rest) = surfaces.split_first()?;
+        Some(rest.iter().fold(
+            Cell {
+                bottom: first.bottom,
+                top: first.top,
+                opacity: first.opacity,
+                edges: first.edges,
+            },
+            |cell, surface| Cell {
+                bottom: cell.bottom.min(surface.bottom),
+                top: cell.top.max(surface.top),
+                opacity: cell.opacity.max(surface.opacity),
+                edges: cell.edges | surface.edges,
+            },
+        ))
+    }
+
+    /// How much of the sky one tile can see: [`SKY_OPEN`] under open air, `0`
+    /// under a roof, and between under glass or beside a doorway.
+    ///
+    /// Open sky outside the rectangle, which is the honest default in the one
+    /// direction that matters: the grid is grown by the widest pool's reach, so
+    /// a tile outside it is a tile the frame does not draw, and a caller
+    /// sampling one is asking about a place this frame knows nothing about.
+    /// Answering "dark" there would put a band of night around every frame.
+    pub fn sky_at(&self, x: i32, y: i32) -> u8 {
+        match self.index(x, y) {
+            Some(index) => self.sky[index],
+            None => SKY_OPEN,
+        }
+    }
+
+    /// Every tile something stands on, as `(x, y, cell)` — the grid as the boxes
+    /// it is, for whatever wants to draw it.
+    ///
+    /// Open tiles are skipped: a grid is mostly nothing, and a caller drawing a
+    /// box per cell would spend most of its work on cells with no box. The order
+    /// is the rectangle's own, row by row, which is [`Occlusion::bytes`]'s and
+    /// therefore stable frame to frame for a camera that has not moved.
+    pub fn boxes(&self) -> impl Iterator<Item = (i32, i32, Cell)> + '_ {
+        let bounds = self.bounds;
+        let width = bounds.width();
+        (0..self.index.len() as i32).filter_map(move |index| {
+            let (x, y) = (bounds.min_x + index % width, bounds.min_y + index / width);
+            Some((x, y, self.at(x, y)?))
+        })
+    }
+
+    /// The second plane the shader reads: `Rgba8Uint`, one texel a tile, in
+    /// [`Occlusion::bytes`]'s own order over the same rectangle.
+    ///
+    /// `(sky, 0, 0, 0)`. The three zeros are not padding, they are the format
+    /// being decided once — see this module's header. What a tile *is* goes
+    /// here; what a ray passes through stays in [`Occlusion::bytes`].
+    pub fn field_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.sky.len() * 4);
+        for sky in &self.sky {
+            bytes.extend_from_slice(&[*sky, 0, 0, 0]);
+        }
+        bytes
+    }
+
+    /// The highest `z` anything in this grid stops light at, or `None` for a
+    /// grid with nothing standing in it.
+    ///
+    /// What sunlight is bounded by. A flame's ray ends at the flame; the sun's
+    /// has no end, so it needs something to stop walking at — and the honest
+    /// answer is "as soon as the ray is above everything that could stop it".
+    /// One number for the frame rather than a per-cell test, because the walk is
+    /// leaving the grid upwards and what it has to beat is the tallest thing
+    /// anywhere ahead of it.
+    pub fn tallest(&self) -> Option<i32> {
+        self.surfaces.iter().map(|surface| surface.top).max()
+    }
+
+    /// How many surfaces stand in the frame at all — what
+    /// [`Occlusion::surface_bytes`] uploads, and the number decision 30.6 will
+    /// have a distribution of.
+    pub fn surface_count(&self) -> usize {
+        self.surfaces.len()
+    }
+
+    /// Where a tile lives in [`Occlusion::index`].
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        let bounds = self.bounds;
+        if x < bounds.min_x || x > bounds.max_x || y < bounds.min_y || y > bounds.max_y {
+            return None;
+        }
+        let (column, row) = (x - bounds.min_x, y - bounds.min_y);
+        Some((row * bounds.width() + column) as usize)
+    }
+
+    /// The **index** as the texture the shader reads: `Rgba8Uint`, one texel a
+    /// tile, row-major from the rectangle's `(min_x, min_y)` corner.
+    ///
+    /// `(offset & 255, offset >> 8, offset >> 16, count)` — decision 30.3's
+    /// `(offset, count)`, with the offset spread over three channels because one
+    /// byte holds 255 surfaces and a city block holds thousands. Twenty-four bits
+    /// is sixteen million, which is four hundred surfaces on every tile of the
+    /// widest frame this renderer draws.
+    ///
+    /// A count of zero is open ground, and it is the whole of the presence test:
+    /// the offset of an empty tile is whatever the run before it ended at, and
+    /// the shader never reads it. What used to be the `PRESENT` bit of a cell is
+    /// now this — and `PRESENT` moved with the span it belongs to, into
+    /// [`Occlusion::surface_bytes`].
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.index.len() * 4);
+        for span in &self.index {
+            bytes.extend_from_slice(&[
+                (span.offset & 0xFF) as u8,
+                ((span.offset >> 8) & 0xFF) as u8,
+                ((span.offset >> 16) & 0xFF) as u8,
+                span.count,
+            ]);
+        }
+        bytes
+    }
+
+    /// The **list** as the texture the shader reads: `Rgba8Uint`, one texel a
+    /// surface, folded into rows [`SURFACE_ROW`] wide and padded to a whole row.
+    ///
+    /// `(bottom + 128, top + 128, opacity, PRESENT | edges)` — which is what a
+    /// cell's texel was before the list existed, moved down a level unchanged.
+    /// The `z` offset is what makes an `i8` fit an unsigned channel, and both
+    /// ends are clamped into it: a map's `z` is an `i8`, but `z + height` is not
+    /// — a 255-tall static based at 100 has a top no channel holds, and a wall
+    /// that reaches past the top of the world may as well stop there.
+    ///
+    /// [`PRESENT`] is still written, and it is still not padding: a lid's mask is
+    /// legitimately zero, so a texel of all zeros has to be distinguishable from
+    /// a horizontal surface at `z = -128`. What says a *tile* is empty is the
+    /// index's count.
+    pub fn surface_bytes(&self) -> Vec<u8> {
+        let row = SURFACE_ROW as usize;
+        let rows = self.surfaces.len().div_ceil(row).max(1);
+        let mut bytes = Vec::with_capacity(rows * row * 4);
+        for surface in &self.surfaces {
+            let channel = |z: i32| (z.clamp(-128, 127) + 128) as u8;
+            bytes.extend_from_slice(&[
+                channel(surface.bottom),
+                channel(surface.top),
+                surface.opacity,
+                PRESENT | surface.edges,
+            ]);
+        }
+        bytes.resize(rows * row * 4, 0);
+        bytes
+    }
+}
+
+/// Builds one frame's [`Occlusion`]: everything that merges, merges here.
+///
+/// The grid is written tile by tile — a static at a time, in whatever order the
+/// map walk finds them — and what comes out is a packed list nothing appends to.
+/// The two are separate types because the two are separate shapes: a tile's
+/// surfaces have to be contiguous for an `(offset, count)` to name them, and
+/// they cannot be while anything can still be added.
+///
+/// The **union** lives here and only here, which is what makes
+/// `docs/lighting.md`'s step 21.2 a change to one function.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Builder {
+    bounds: TileBounds,
+    /// One merged cell a tile, row-major over `bounds` — see [`Builder::add`].
+    cells: Vec<Option<Cell>>,
+    /// How much of the sky each tile can see, in the same order.
+    sky: Vec<u8>,
+}
+
+impl Builder {
+    /// An empty grid over `bounds`: nothing stops anything, and every tile sees
+    /// the whole sky.
+    pub fn new(bounds: TileBounds) -> Self {
+        let tiles = (bounds.width() * bounds.height()) as usize;
+        Self {
+            bounds,
+            cells: vec![None; tiles],
+            sky: vec![SKY_OPEN; tiles],
+        }
     }
 
     /// Add one occluder, merging with whatever already stands on that tile.
@@ -336,9 +616,14 @@ impl Occlusion {
     /// more often than it is two walls with air between, and darkening a foot of
     /// air is invisible where leaking a room into the street is not.
     ///
-    /// A tile outside [`Occlusion::bounds`] is dropped rather than clamped: it
-    /// is a caller walking wider than it asked the grid for, and folding it onto
-    /// the edge would put a wall where the map has none.
+    /// It is also what step 21.2 takes apart — a lid and a panel on one tile
+    /// have no business sharing a span or a mask — and keeping it while the
+    /// storage changed under it is what lets this step promise that the picture
+    /// does not move.
+    ///
+    /// A tile outside the rectangle is dropped rather than clamped: it is a
+    /// caller walking wider than it asked the grid for, and folding it onto the
+    /// edge would put a wall where the map has none.
     pub fn add(
         &mut self,
         x: u16,
@@ -389,19 +674,13 @@ impl Occlusion {
         });
     }
 
-    /// What stands on one tile, or `None` for open ground and for anything
-    /// outside the rectangle.
-    pub fn at(&self, x: i32, y: i32) -> Option<Cell> {
-        self.cells[self.index(x, y)?]
-    }
-
     /// Take a tile's sky away, as far as one static standing over it does.
     ///
     /// `floor` is the height of the ground under the tile, and it is what makes
     /// this a *column over the floor* rather than a census of the tile: a
     /// cellar's wall is below the street it stands under and takes none of that
     /// street's sky, which is the same three-dimensional honesty the shadow walk
-    /// gets from a cell's span.
+    /// gets from a surface's span.
     ///
     /// Multiplicative, so two roofs over one tile do not make it darker than
     /// black and a pane under a slate roof is as dark as the slate — and so that
@@ -409,8 +688,8 @@ impl Occlusion {
     /// frame's [`Cutaway`]; the module header says why, and it is the one place
     /// this crate reads the map as it is rather than as it is drawn.
     ///
-    /// A tile outside [`Occlusion::bounds`] is dropped, exactly as
-    /// [`Occlusion::add`] drops one.
+    /// A tile outside the rectangle is dropped, exactly as [`Builder::add`]
+    /// drops one.
     pub fn shade(&mut self, x: u16, y: u16, z: i8, floor: i8, graphic: Graphic, tile: &StaticTile) {
         let opacity = opacity(graphic, tile);
         if opacity == CLEAR {
@@ -427,36 +706,13 @@ impl Occlusion {
         self.sky[index] = ((u32::from(self.sky[index]) * passes) / u32::from(SKY_OPEN)) as u8;
     }
 
-    /// How much of the sky one tile can see: [`SKY_OPEN`] under open air, `0`
-    /// under a roof, and between under glass or beside a doorway.
-    ///
-    /// Open sky outside the rectangle, which is the honest default in the one
-    /// direction that matters: the grid is grown by the widest pool's reach, so
-    /// a tile outside it is a tile the frame does not draw, and a caller
-    /// sampling one is asking about a place this frame knows nothing about.
-    /// Answering "dark" there would put a band of night around every frame.
+    /// How much of the sky one tile can see, part-built — [`Occlusion::sky_at`]'s
+    /// own answer, asked of the grid before it is packed.
     pub fn sky_at(&self, x: i32, y: i32) -> u8 {
         match self.index(x, y) {
             Some(index) => self.sky[index],
             None => SKY_OPEN,
         }
-    }
-
-    /// Every tile something stands on, as `(x, y, cell)` — the grid as the boxes
-    /// it is, for whatever wants to draw it.
-    ///
-    /// Open tiles are skipped: a grid is mostly nothing, and a caller drawing a
-    /// box per cell would spend most of its work on cells with no box. The order
-    /// is the rectangle's own, row by row, which is [`Occlusion::bytes`]'s and
-    /// therefore stable frame to frame for a camera that has not moved.
-    pub fn boxes(&self) -> impl Iterator<Item = (i32, i32, Cell)> + '_ {
-        let bounds = self.bounds;
-        let width = bounds.width();
-        self.cells.iter().enumerate().filter_map(move |(index, cell)| {
-            let cell = (*cell)?;
-            let index = index as i32;
-            Some((bounds.min_x + index % width, bounds.min_y + index / width, cell))
-        })
     }
 
     /// Soften the sky field by a tile: one 3x3 pass, in place.
@@ -491,34 +747,33 @@ impl Occlusion {
         self.sky = blurred;
     }
 
-    /// The second plane the shader reads: `Rgba8Uint`, one texel a tile, in
-    /// [`Occlusion::bytes`]'s own order over the same rectangle.
+    /// Pack the grid into the list the walk reads.
     ///
-    /// `(sky, 0, 0, 0)`. The three zeros are not padding, they are the format
-    /// being decided once — see this module's header. What a tile *is* goes
-    /// here; what a ray passes through stays in [`Occlusion::bytes`].
-    pub fn field_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.sky.len() * 4);
-        for sky in &self.sky {
-            bytes.extend_from_slice(&[*sky, 0, 0, 0]);
+    /// One pass in the index's own order, so a tile's surfaces come out
+    /// contiguous and in the order the tiles are in — which is what makes the
+    /// grid's texture and the list's two views of one thing.
+    pub fn finish(self) -> Occlusion {
+        let mut index = Vec::with_capacity(self.cells.len());
+        let mut surfaces = Vec::with_capacity(self.cells.len());
+        for cell in &self.cells {
+            let offset = surfaces.len() as u32;
+            if let Some(cell) = *cell {
+                push_surfaces(cell, &mut surfaces);
+            }
+            index.push(Span {
+                offset,
+                count: (surfaces.len() as u32 - offset) as u8,
+            });
         }
-        bytes
+        Occlusion {
+            bounds: self.bounds,
+            index,
+            surfaces,
+            sky: self.sky,
+        }
     }
 
-    /// The highest `z` anything in this grid stops light at, or `None` for a
-    /// grid with nothing standing in it.
-    ///
-    /// What sunlight is bounded by. A flame's ray ends at the flame; the sun's
-    /// has no end, so it needs something to stop walking at — and the honest
-    /// answer is "as soon as the ray is above everything that could stop it".
-    /// One number for the frame rather than a per-cell test, because the walk is
-    /// leaving the grid upwards and what it has to beat is the tallest thing
-    /// anywhere ahead of it.
-    pub fn tallest(&self) -> Option<i32> {
-        self.cells.iter().flatten().map(|cell| cell.top).max()
-    }
-
-    /// Where a tile lives in [`Occlusion::cells`].
+    /// Where a tile lives in [`Builder::cells`].
     fn index(&self, x: i32, y: i32) -> Option<usize> {
         let bounds = self.bounds;
         if x < bounds.min_x || x > bounds.max_x || y < bounds.min_y || y > bounds.max_y {
@@ -527,40 +782,36 @@ impl Occlusion {
         let (column, row) = (x - bounds.min_x, y - bounds.min_y);
         Some((row * bounds.width() + column) as usize)
     }
+}
 
-    /// The grid as the texture the shader reads: `Rgba8Uint`, one texel a tile,
-    /// row-major from the rectangle's `(min_x, min_y)` corner.
-    ///
-    /// `(bottom + 128, top + 128, opacity, present)`. The `z` offset is what
-    /// makes an `i8` fit an unsigned channel, and both ends are clamped into it:
-    /// a map's `z` is an `i8`, but `z + height` is not — a 255-tall static based
-    /// at 100 has a top no channel holds, and a wall that reaches past the top of
-    /// the world may as well stop there.
-    ///
-    /// `present` is `0` or `255` rather than a `bool`, because the shader reads
-    /// four channels of one type and a cell with nothing on it must not be a
-    /// wall from `z = -128` to `z = -128`.
-    pub fn bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.cells.len() * 4);
-        for cell in &self.cells {
-            match cell {
-                None => bytes.extend_from_slice(&[0, 0, 0, 0]),
-                Some(cell) => {
-                    let channel = |z: i32| (z.clamp(-128, 127) + 128) as u8;
-                    // The fourth channel is `PRESENT` and the edge mask, not a
-                    // bare "yes": a lid's mask is legitimately zero, so presence
-                    // needs a bit of its own. `blit.wgsl` takes the two apart
-                    // with the same constants.
-                    bytes.extend_from_slice(&[
-                        channel(cell.bottom),
-                        channel(cell.top),
-                        cell.opacity,
-                        PRESENT | cell.edges,
-                    ]);
+/// The surfaces one merged cell is, appended in the order the sides are numbered
+/// in.
+///
+/// **One to one with what the cell already meant**, which is the whole of why
+/// this step can promise the picture does not move: a lid is one horizontal, a
+/// body — all four sides, "it stands up and the art would not say which way" —
+/// is one solid, and a named mask is a quad on each side it names, every one of
+/// them carrying the cell's own span and opacity.
+///
+/// So a cell is never a mixture: it is one lid, or one body, or panels. That is
+/// the union talking, and step 21.2 is where a tile gets to hold a lid *and* a
+/// panel with spans of their own.
+fn push_surfaces(cell: Cell, out: &mut Vec<Surface>) {
+    let quad = |edges| Surface {
+        bottom: cell.bottom,
+        top: cell.top,
+        opacity: cell.opacity,
+        edges,
+    };
+    match cell.edges {
+        0 | EDGE_ANY => out.push(quad(cell.edges)),
+        named => {
+            for side in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
+                if named & side != 0 {
+                    out.push(quad(side));
                 }
             }
         }
-        bytes
     }
 }
 
@@ -584,7 +835,7 @@ pub fn collect(
     cutaway: &Cutaway,
     atlas: Option<&crate::atlas::StaticAtlas>,
 ) -> Occlusion {
-    let mut occlusion = Occlusion::new(bounds);
+    let mut occlusion = Builder::new(bounds);
     // The ground each tile's column is measured from. Off the map it is zero:
     // there is no floor there and nothing draws, and a static hanging over the
     // void still has to shade something rather than be skipped by an `unwrap`.
@@ -647,7 +898,7 @@ pub fn collect(
     }
 
     occlusion.blur_sky();
-    occlusion
+    occlusion.finish()
 }
 
 #[cfg(test)]
@@ -690,9 +941,10 @@ mod tests {
         assert_eq!(opacity(open, &leaf), CLEAR, "an open door is a doorway");
 
         // And the grid keeps no cell for it, which is what the shadow walk reads.
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         occlusion.add(100, 100, 0, shut, &leaf, None);
         occlusion.add(101, 100, 0, open, &leaf, None);
+        let occlusion = occlusion.finish();
         assert!(occlusion.at(100, 100).is_some(), "the shut leaf left the grid");
         assert_eq!(
             occlusion.at(101, 100),
@@ -703,7 +955,7 @@ mod tests {
         // The sky too, and for the same reason: a doorway you can see through is
         // a doorway you can see the sky through. `shade` and `add` reading one
         // `opacity` is what keeps those two from drifting apart.
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         occlusion.shade(101, 100, 0, 0, open, &leaf);
         assert_eq!(occlusion.sky_at(101, 100), SKY_OPEN, "an open door took the sky");
     }
@@ -746,8 +998,9 @@ mod tests {
     /// A wall occupies the heights it occupies, and the grid says which.
     #[test]
     fn a_wall_carries_the_span_it_stands_in() {
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         occlusion.add(102, 103, 5, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        let occlusion = occlusion.finish();
         assert_eq!(
             occlusion.at(102, 103),
             Some(Cell {
@@ -791,7 +1044,7 @@ mod tests {
         assert_eq!(edges_of(Some(Facing::One(Face::South))), EDGE_SOUTH);
         assert_eq!(edges_of(None), EDGE_ANY);
 
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         occlusion.add(
             102,
             103,
@@ -800,11 +1053,80 @@ mod tests {
             &tile(TileFlags::NO_SHOOT, 20),
             Some(corner),
         );
+        let occlusion = occlusion.finish();
         assert_eq!(
             occlusion.at(102, 103).unwrap().edges,
             EDGE_EAST | EDGE_SOUTH,
             "the cell did not take the corner's two sides",
         );
+        // And in the list it is **two surfaces**, which is the shape decision 30
+        // gives a corner: one quad a side, each with the tile's own span. The
+        // merged view above is a fold over exactly these.
+        assert_eq!(
+            occlusion.surfaces_at(102, 103),
+            &[
+                Surface {
+                    bottom: 0,
+                    top: 20,
+                    opacity: OPAQUE,
+                    edges: EDGE_EAST,
+                },
+                Surface {
+                    bottom: 0,
+                    top: 20,
+                    opacity: OPAQUE,
+                    edges: EDGE_SOUTH,
+                },
+            ],
+        );
+    }
+
+    /// What a cell is in the list: a lid is one horizontal, a body is one solid,
+    /// and a named mask is a quad a side.
+    ///
+    /// The claim that makes step 21.1 a change of storage and nothing else. A
+    /// cell is never a mixture of the two kinds — that is the union in `add`
+    /// talking — and the walk's two rules are exactly these two kinds, so a
+    /// surface list built any other way would move the picture.
+    #[test]
+    fn a_cell_becomes_the_surfaces_it_always_meant() {
+        let mut occlusion = Builder::new(bounds());
+        // A floor: a lid, and one surface naming no side.
+        occlusion.add(
+            100,
+            100,
+            10,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
+            None,
+        );
+        // A graphic nothing measured: a body, and one surface on all four sides
+        // rather than four quads. The walk travels *through* it, which is a rule
+        // about a solid and not about four planes.
+        occlusion.add(101, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        let occlusion = occlusion.finish();
+
+        assert_eq!(
+            occlusion.surfaces_at(100, 100),
+            &[Surface {
+                bottom: 10,
+                top: 10,
+                opacity: OPAQUE,
+                edges: 0,
+            }],
+        );
+        assert_eq!(
+            occlusion.surfaces_at(101, 100),
+            &[Surface {
+                bottom: 0,
+                top: 20,
+                opacity: OPAQUE,
+                edges: EDGE_ANY,
+            }],
+        );
+        assert_eq!(occlusion.surfaces_at(102, 100), &[], "open ground stands nothing");
+        assert_eq!(occlusion.surfaces_at(0, 0), &[], "and neither does off the grid");
+        assert_eq!(occlusion.surface_count(), 2, "and nothing else got into the list");
     }
 
     /// Stairs count as half their height, the way every other reader of this
@@ -812,7 +1134,7 @@ mod tests {
     /// landing it leads to.
     #[test]
     fn a_climbable_static_occludes_half_its_height() {
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         occlusion.add(
             100,
             100,
@@ -821,7 +1143,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20),
             None,
         );
-        assert_eq!(occlusion.at(100, 100).unwrap().top, 10);
+        assert_eq!(occlusion.finish().at(100, 100).unwrap().top, 10);
     }
 
     /// Two occluders on one tile become one span covering both. The union is the
@@ -829,9 +1151,10 @@ mod tests {
     /// pins that it is what happens.
     #[test]
     fn two_occluders_on_one_tile_span_both() {
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         occlusion.add(105, 105, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         occlusion.add(105, 105, 40, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        let occlusion = occlusion.finish();
         assert_eq!(
             occlusion.at(105, 105),
             Some(Cell {
@@ -849,17 +1172,25 @@ mod tests {
     /// the border, where it would be a wall the map does not have.
     #[test]
     fn a_tile_outside_the_bounds_is_dropped_and_not_clamped() {
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         occlusion.add(99, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        let occlusion = occlusion.finish();
         assert_eq!(occlusion.at(99, 100), None);
         assert_eq!(occlusion.at(100, 100), None, "and did not land on the edge");
     }
 
-    /// The upload is the grid, in the order the shader indexes it, with `z`
-    /// offset into an unsigned channel and clamped at both ends of it.
+    /// The upload is two textures now: the index in the grid's own order, and
+    /// the list it points into.
+    ///
+    /// The `z` offset and its clamp moved down into the surface with the span
+    /// they belong to, and what is left in the grid is `(offset, count)` — so
+    /// a tile that stands nothing is a count of zero and the offset beside it is
+    /// not read. Getting the three-channel offset backwards would point every
+    /// wall at some other wall's span, which is why each byte of it is named
+    /// here.
     #[test]
-    fn the_bytes_are_the_grid_row_major() {
-        let mut occlusion = Occlusion::new(TileBounds {
+    fn the_bytes_are_the_index_and_the_surfaces_it_points_into() {
+        let mut occlusion = Builder::new(TileBounds {
             min_x: 0,
             max_x: 1,
             min_y: 0,
@@ -867,22 +1198,45 @@ mod tests {
         });
         occlusion.add(1, 0, -10, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         occlusion.add(0, 1, 120, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 60), None);
+        let occlusion = occlusion.finish();
+
         let bytes = occlusion.bytes();
-        assert_eq!(bytes.len(), 4 * 4);
-        assert_eq!(&bytes[0..4], &[0, 0, 0, 0], "(0,0) is open");
-        // The fourth channel is `PRESENT` and the edge mask, not a bare yes:
-        // neither of these was given a face, so both are the whole tile.
-        let whole = PRESENT | EDGE_ANY;
-        assert_eq!(&bytes[4..8], &[118, 138, OPAQUE, whole], "(1,0) is x-fastest");
+        assert_eq!(bytes.len(), 4 * 4, "one texel a tile");
+        assert_eq!(&bytes[0..4], &[0, 0, 0, 0], "(0,0) stands nothing");
         assert_eq!(
-            &bytes[8..12],
-            &[248, 255, OPAQUE, whole],
-            "(0,1) reaches past the top of the world and stops there",
+            &bytes[4..8],
+            &[0, 0, 0, 1],
+            "(1,0) is x-fastest, and the first surface"
         );
+        assert_eq!(&bytes[8..12], &[1, 0, 0, 1], "(0,1) is the second");
+        assert_eq!(
+            &bytes[12..16],
+            &[2, 0, 0, 0],
+            "and (1,1) stands nothing after them"
+        );
+
+        // The list is the spans, in the index's order, with the fourth channel
+        // `PRESENT` and the edge mask rather than a bare yes: neither of these
+        // was given a face, so both are the whole tile.
+        let whole = PRESENT | EDGE_ANY;
+        let surfaces = occlusion.surface_bytes();
+        assert_eq!(
+            surfaces.len(),
+            SURFACE_ROW as usize * 4,
+            "one row, padded — the fold into a texture is `SURFACE_ROW` wide",
+        );
+        assert_eq!(&surfaces[0..4], &[118, 138, OPAQUE, whole]);
+        assert_eq!(
+            &surfaces[4..8],
+            &[248, 255, OPAQUE, whole],
+            "reaches past the top of the world and stops there",
+        );
+        assert_eq!(&surfaces[8..12], &[0, 0, 0, 0], "and nothing follows it");
+
         // A lid's mask is zero and it is still present, which is the one thing
         // `PRESENT` exists for — a fourth channel of zero has to mean nothing
         // stands here and nothing else.
-        let mut lid = Occlusion::new(TileBounds {
+        let mut lid = Builder::new(TileBounds {
             min_x: 0,
             max_x: 0,
             min_y: 0,
@@ -897,7 +1251,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            lid.bytes()[3],
+            lid.finish().surface_bytes()[3],
             PRESENT,
             "a floor is present with no side of its own"
         );
@@ -909,7 +1263,7 @@ mod tests {
     /// like a camera bug rather than like an index one.
     #[test]
     fn the_boxes_name_the_tiles_they_stand_on() {
-        let mut occlusion = Occlusion::new(TileBounds {
+        let mut occlusion = Builder::new(TileBounds {
             min_x: 100,
             max_x: 102,
             min_y: 200,
@@ -917,6 +1271,7 @@ mod tests {
         });
         occlusion.add(102, 200, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         occlusion.add(100, 201, 5, NOT_A_DOOR, &tile(TileFlags::WINDOW, 10), None);
+        let occlusion = occlusion.finish();
         let boxes: Vec<_> = occlusion.boxes().collect();
         assert_eq!(
             boxes,
@@ -956,7 +1311,7 @@ mod tests {
     /// every number here a function of what is on eight other tiles.
     #[test]
     fn the_column_over_a_tile_is_what_takes_its_sky() {
-        let mut occlusion = Occlusion::new(bounds());
+        let mut occlusion = Builder::new(bounds());
         assert_eq!(occlusion.sky_at(100, 100), SKY_OPEN, "nothing built yet");
 
         occlusion.shade(100, 100, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
@@ -998,7 +1353,7 @@ mod tests {
             min_y: 0,
             max_y: 2,
         };
-        let mut occlusion = Occlusion::new(small);
+        let mut occlusion = Builder::new(small);
         for x in 0..=2u16 {
             for y in 0..=2u16 {
                 occlusion.shade(x, y, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
@@ -1014,7 +1369,7 @@ mod tests {
         // One roofed tile in the middle of open ground: it lifts off zero and
         // its neighbours come down off the sky, which is the doorway's gradient
         // arriving from the other side.
-        let mut one = Occlusion::new(bounds());
+        let mut one = Builder::new(bounds());
         one.shade(105, 105, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
         one.blur_sky();
         // Eight open neighbours and itself dark: 255 * 8 / 9.
@@ -1082,14 +1437,14 @@ mod tests {
     /// three channels the aperture and a body are going to want left at zero.
     #[test]
     fn the_field_bytes_are_the_sky_in_the_cells_own_order() {
-        let mut occlusion = Occlusion::new(TileBounds {
+        let mut occlusion = Builder::new(TileBounds {
             min_x: 0,
             max_x: 1,
             min_y: 0,
             max_y: 1,
         });
         occlusion.shade(1, 0, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
-        let bytes = occlusion.field_bytes();
+        let bytes = occlusion.finish().field_bytes();
         assert_eq!(bytes.len(), 4 * 4, "one texel a tile, four channels");
         assert_eq!(&bytes[0..4], &[SKY_OPEN, 0, 0, 0], "(0,0) is open sky");
         assert_eq!(&bytes[4..8], &[0, 0, 0, 0], "(1,0) is x-fastest, and roofed");

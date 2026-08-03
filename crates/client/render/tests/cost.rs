@@ -378,7 +378,9 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         // What the upload sends. Timed apart and `black_box`ed, because a length
         // nobody reads is an allocation a release build may delete.
         let start = Instant::now();
-        std::hint::black_box(built.occlusion.bytes().len() + grid.field_bytes().len());
+        std::hint::black_box(
+            built.occlusion.bytes().len() + grid.field_bytes().len() + grid.surface_bytes().len(),
+        );
         cpu_bytes = cpu_bytes.min(start.elapsed());
     }
     let night = collect(0.0);
@@ -501,15 +503,17 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         VIEWPORT.1
     );
     eprintln!(
-        "{} flames, {cells} standing cells in a {}x{} grid, {} of them lit this frame",
+        "{} flames, {cells} standing cells in a {}x{} grid holding {} surfaces, \
+         {} of them lit this frame",
         night.lights.len(),
         grid.width(),
         grid.height(),
+        night.occlusion.surface_count(),
         changed,
     );
     eprintln!(
         "CPU a frame: light::collect {:.2}ms — of which the grid {:.2}ms, and {:.2}ms more \
-         to lay both planes out as bytes for the queue\n",
+         to lay the three planes out as bytes for the queue\n",
         cpu.as_secs_f64() * 1e3,
         cpu_grid.as_secs_f64() * 1e3,
         cpu_bytes.as_secs_f64() * 1e3,

@@ -35,15 +35,20 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // sampled — an integer texture has no filtering, and a place averaged with its
 // neighbour would name a third tile nothing was drawn on.
 @group(0) @binding(3) var place_of: texture_2d<u32>;
-// What stands in the light's way, one texel a tile over the rectangle in
-// `lighting.grid`: (z_bottom + 128, z_top + 128, opacity, present). See
-// `crate::occlusion`.
+// Where each tile's surfaces are, one texel a tile over the rectangle in
+// `lighting.grid`: (offset & 255, offset >> 8, offset >> 16, count). The index
+// of `docs/lighting.md`'s decision 30 — a count of zero is open ground, and
+// nothing else says a tile stands nothing. See `crate::occlusion`.
 @group(0) @binding(4) var occluders: texture_2d<u32>;
 // What each of those tiles *is*, over the same rectangle: (sky, aperture, body,
 // unused). Only the sky channel is written today. See `crate::occlusion`, and
 // `docs/lighting_world.md` for why this is a second plane rather than four more
 // channels of the cell above.
 @group(0) @binding(5) var field: texture_2d<u32>;
+// And the surfaces themselves, one texel each, folded into rows `SURFACE_ROW`
+// wide: (z_bottom + 128, z_top + 128, opacity, PRESENT | edges). A texture and
+// not a storage buffer because the ceiling is WebGL2 — decision 30.5.
+@group(0) @binding(6) var surfaces: texture_2d<u32>;
 
 // One flame. Three `vec4`s rather than nine fields, because a uniform array's
 // stride is rounded up to 16 bytes either way and this is what the CPU writes:
@@ -287,13 +292,22 @@ const CORNER_TIE: f32 = 1.0e-4;
 //
 // Split out of `walk` for the corner case, which has two cells to ask about and
 // no crossing length to speak of. `light::panel_stop`.
+// The **largest** of the cell's surfaces and not their product, for the reason
+// `walk` takes the largest: two panels on one tile are the two faces of one
+// corner, and a ray that crosses both has gone through one thing once.
 fn panel_stop(cell: vec2<i32>, crossed: u32, z: f32, tall: f32) -> f32 {
-    let stands = occluder_at(cell.x, cell.y);
-    let sides = stands.w & EDGE_MASK;
-    if stands.w == 0u || sides == 0u || (sides & crossed) == 0u {
-        return 0.0;
+    let span = surfaces_at(cell.x, cell.y);
+    var stopped = 0.0;
+    for (var i = 0u; i < span.y; i = i + 1u) {
+        let stands = surface_at(span.x + i);
+        let sides = stands.w & EDGE_MASK;
+        if sides == 0u || (sides & crossed) == 0u {
+            continue;
+        }
+        let stops = f32(stands.z) / 255.0 * pierces(z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
+        stopped = max(stopped, stops);
     }
-    return f32(stands.z) / 255.0 * pierces(z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
+    return stopped;
 }
 
 // Which of a cell's sides are **the same wall the lit end is part of**, and
@@ -342,14 +356,53 @@ fn own_run(own: u32, cell: vec2<i32>, first: vec2<i32>) -> u32 {
     return own & line;
 }
 
-// What stands on one tile, or all zeros for open ground and for anything
-// outside the grid.
-fn occluder_at(x: i32, y: i32) -> vec4<u32> {
+// How wide the surface list is as a texture, in texels. `occlusion::SURFACE_ROW`,
+// and the two are one number — the list is one dimensional and a texture is not.
+const SURFACE_ROW: u32 = 1024u;
+
+// Where one tile's surfaces are: `(offset, count)`, and `(0, 0)` for open ground
+// and for anything outside the grid.
+//
+// The three-channel offset is `crate::occlusion::Occlusion::bytes`: one byte
+// holds 255 surfaces and a city block holds thousands, so it is spread over the
+// three channels the count does not need.
+fn surfaces_at(x: i32, y: i32) -> vec2<u32> {
     let cell = vec2<i32>(x - lighting.grid.x, y - lighting.grid.y);
     if cell.x < 0 || cell.y < 0 || cell.x >= lighting.grid.z || cell.y >= lighting.grid.w {
+        return vec2<u32>(0u, 0u);
+    }
+    let span = textureLoad(occluders, cell, 0);
+    return vec2<u32>(span.x | (span.y << 8u) | (span.z << 16u), span.w);
+}
+
+// One surface of the list: (z_bottom + 128, z_top + 128, opacity, PRESENT | edges).
+fn surface_at(index: u32) -> vec4<u32> {
+    let at = vec2<i32>(i32(index % SURFACE_ROW), i32(index / SURFACE_ROW));
+    return textureLoad(surfaces, at, 0);
+}
+
+// One tile's surfaces as one box: the union of the spans, the largest opacity
+// and the union of the sides, with a `w` of zero for a tile that stands nothing.
+//
+// `Occlusion::at`'s merged view, and for the same readers — a picture of the
+// grid rather than a step of the walk. The walk stopped asking it when the list
+// arrived, so nothing in the hot loop pays for this.
+fn merged_at(x: i32, y: i32) -> vec4<u32> {
+    let span = surfaces_at(x, y);
+    if span.y == 0u {
         return vec4<u32>(0u);
     }
-    return textureLoad(occluders, cell, 0);
+    var merged = surface_at(span.x);
+    for (var i = 1u; i < span.y; i = i + 1u) {
+        let surface = surface_at(span.x + i);
+        merged = vec4<u32>(
+            min(merged.x, surface.x),
+            max(merged.y, surface.y),
+            max(merged.z, surface.z),
+            merged.w | surface.w,
+        );
+    }
+    return merged;
 }
 
 // How much of the sky one tile can see, `0..=1`.
@@ -477,8 +530,21 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
                 exit = select(EDGE_NORTH, EDGE_SOUTH, toward.y > 0);
             }
         }
-        let stands = occluder_at(cell.x, cell.y);
-        let sides = stands.w & EDGE_MASK;
+        let span = surfaces_at(cell.x, cell.y);
+        let own_cell = cell.x == first.x && cell.y == first.y;
+        // The union of the sides the tile's surfaces stand on. A *tile's* answer
+        // and deliberately so: what a pixel is exempted from below is the tile it
+        // is on and not one surface of it. `light::walk_cells`.
+        //
+        // Only on the ray's own cell, which is the only place it is read: every
+        // other cell of the walk would be paying for a second pass over its
+        // surfaces to answer a question about a pixel that is not on it.
+        var sides = 0u;
+        if own_cell {
+            for (var i = 0u; i < span.y; i = i + 1u) {
+                sides = sides | (surface_at(span.x + i).w & EDGE_MASK);
+            }
+        }
         // **A surface does not shadow itself**, which is what "neither end of the
         // ray is shadowed by the tile it is on" was always reaching for.
         //
@@ -499,14 +565,15 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
         // And the flame's end (`skip_last`) is a whole tile, because a mounted
         // flame now burns outside the plane its tile names (`light::mounted_at`)
         // and what is left on that tile is not between it and anything.
-        let own_cell = cell.x == first.x && cell.y == first.y;
         let own_shadows = own_cell && stance == STANCE_FLAT && sides != 0u && sides != EDGE_MASK;
         let exempt = (own_cell && !own_shadows)
             || (skip_last && cell.x == last.x && cell.y == last.y);
-        if !exempt && stands.w != 0u {
-            let low = f32(stands.x) - 128.0;
-            let high = f32(stands.y) - 128.0;
-            let opacity = f32(stands.z) / 255.0;
+        // Which of this tile's sides may shadow the pixel that is on it: all of
+        // them where the pixel is a floor on a walled tile, and none anywhere
+        // else. A lid's zero never matches, which is the exemption above said a
+        // surface at a time.
+        let admitted = select(0u, sides, own_shadows);
+        if !exempt && span.y != 0u {
             // How soft this cell's own edge is: the penumbra a source of this
             // size casts from this far along the ray. See `FLAME_SPREAD`; a
             // `spread` of zero is a point source, and the clamp below leaves it
@@ -517,94 +584,114 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
                 SOFT_CROSSING_MIN,
                 SOFT_CROSSING_MAX,
             );
+            // What the *cell* stops is the **largest** of what its surfaces stop,
+            // and not the product: two panels on one tile are the two faces of
+            // one corner, and a ray crossing both has gone through one thing
+            // once. It is also what keeps the picture where it was when a cell
+            // was one merged span — every surface of a tile carries that span.
             var stopped = 0.0;
-            if sides == 0u || sides == EDGE_MASK {
-                // A **body** — a lid (a floor, a roof, a plank) or a whole tile
-                // that stands up and whose art would not say which way (a corner,
-                // a post, a tree). Either way it is a solid the ray travels
-                // *through*, so what it stops is scaled by how far the ray ran
-                // inside the span it occupies.
-                //
-                // All four sides has to be here and not below with the panels,
-                // and the sun is what says so: a roof is a slab five `z` deep, and
-                // a ray at 45° that entered its cell at 19 and left at 22 pierces
-                // neither side inside the span while passing straight through the
-                // middle of it. That is the "stepped over the top of a wall"
-                // failure `docs/lighting.md`'s backlog names, arriving from the
-                // other direction — and it lit the floor of a sealed house.
-                //
-                // Which is why the length stays and the pierce below is taken
-                // *beside* it rather than instead of it. See decision 24.
-                let entering = lit.z + delta.z * entered;
-                let leaving = lit.z + delta.z * leaves;
-                let bottom = min(entering, leaving);
-                let top = max(entering, leaving);
-                var share = 0.0;
-                if top - bottom > 1.0e-6 {
-                    share = max(0.0, min(top, high) - max(bottom, low)) / (top - bottom);
-                } else if bottom >= low && bottom <= high {
-                    // A level ray: it is inside the span or it is not, and there
-                    // is no length of it to take a share of.
-                    share = 1.0;
+            for (var i = 0u; i < span.y; i = i + 1u) {
+                let stands = surface_at(span.x + i);
+                let sides = stands.w & EDGE_MASK;
+                // On the lit end's own cell only the panels the pixel admits are
+                // asked, and never the body: a pixel standing inside a solid is not
+                // shadowed by the solid it stands in.
+                if own_cell && (sides & admitted) == 0u {
+                    continue;
                 }
-                let crossed = (leaves - entered) * ground * share;
-                stopped = opacity * clamp(crossed / soft, 0.0, 1.0);
-                // And a thing that **stands up** is a surface on every side of
-                // its tile as well as a solid inside it, so the sides the ray is
-                // crossed by are pierced too, and the larger of the two answers
-                // is taken. Decision 24, and it is decision 18's own sentence
-                // arriving at the answer everything falls back to.
-                //
-                // The length has to stay: it is what keeps a slab five `z` deep
-                // opaque to a ray that pierces neither of its sides while going
-                // straight through the middle, which is the roof case above. What
-                // the pierce adds is the sliver — a ray clipping the corner of a
-                // whole-tile occluder leaves it sideways over almost no length, so
-                // `crossed / soft` rounded to nothing and the ray went through a
-                // house corner into the room behind it. That is exactly the spoke
-                // decision 18 named, surviving where a run of wall has to turn:
-                // `facing` refuses a corner graphic, a refused graphic is all four
-                // sides, and all four sides was the one branch still scaled by a
-                // length.
-                //
-                // A lid names no side, so `sides == 0u` skips this entirely: a
-                // floor has no vertical surface for a ray to pierce.
-                if sides == EDGE_MASK {
+                let low = f32(stands.x) - 128.0;
+                let high = f32(stands.y) - 128.0;
+                let opacity = f32(stands.z) / 255.0;
+                var by_surface = 0.0;
+                if sides == 0u || sides == EDGE_MASK {
+                    // A **body** — a lid (a floor, a roof, a plank) or a whole tile
+                    // that stands up and whose art would not say which way (a corner,
+                    // a post, a tree). Either way it is a solid the ray travels
+                    // *through*, so what it stops is scaled by how far the ray ran
+                    // inside the span it occupies.
+                    //
+                    // All four sides has to be here and not below with the panels,
+                    // and the sun is what says so: a roof is a slab five `z` deep, and
+                    // a ray at 45° that entered its cell at 19 and left at 22 pierces
+                    // neither side inside the span while passing straight through the
+                    // middle of it. That is the "stepped over the top of a wall"
+                    // failure `docs/lighting.md`'s backlog names, arriving from the
+                    // other direction — and it lit the floor of a sealed house.
+                    //
+                    // Which is why the length stays and the pierce below is taken
+                    // *beside* it rather than instead of it. See decision 24.
+                    let entering = lit.z + delta.z * entered;
+                    let leaving = lit.z + delta.z * leaves;
+                    let bottom = min(entering, leaving);
+                    let top = max(entering, leaving);
+                    var share = 0.0;
+                    if top - bottom > 1.0e-6 {
+                        share = max(0.0, min(top, high) - max(bottom, low)) / (top - bottom);
+                    } else if bottom >= low && bottom <= high {
+                        // A level ray: it is inside the span or it is not, and there
+                        // is no length of it to take a share of.
+                        share = 1.0;
+                    }
+                    let crossed = (leaves - entered) * ground * share;
+                    by_surface = opacity * clamp(crossed / soft, 0.0, 1.0);
+                    // And a thing that **stands up** is a surface on every side of
+                    // its tile as well as a solid inside it, so the sides the ray is
+                    // crossed by are pierced too, and the larger of the two answers
+                    // is taken. Decision 24, and it is decision 18's own sentence
+                    // arriving at the answer everything falls back to.
+                    //
+                    // The length has to stay: it is what keeps a slab five `z` deep
+                    // opaque to a ray that pierces neither of its sides while going
+                    // straight through the middle, which is the roof case above. What
+                    // the pierce adds is the sliver — a ray clipping the corner of a
+                    // whole-tile occluder leaves it sideways over almost no length, so
+                    // `crossed / soft` rounded to nothing and the ray went through a
+                    // house corner into the room behind it. That is exactly the spoke
+                    // decision 18 named, surviving where a run of wall has to turn:
+                    // `facing` refuses a corner graphic, a refused graphic is all four
+                    // sides, and all four sides was the one branch still scaled by a
+                    // length.
+                    //
+                    // A lid names no side, so `sides == 0u` skips this entirely: a
+                    // floor has no vertical surface for a ray to pierce.
+                    if sides == EDGE_MASK {
+                        let tall = soft * Z_PER_TILE;
+                        let stops = EDGE_MASK & ~own_run(own, cell, first);
+                        if (stops & entry) != 0u {
+                            by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
+                        }
+                        if (stops & exit) != 0u {
+                            by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
+                        }
+                    }
+                } else {
+                    // A **panel** — a wall standing on one side of its tile. It is a
+                    // *surface*, and what a surface does to a ray is decided where the
+                    // ray pierces it: at a point, at a height, once. Not by how far
+                    // the ray ran inside the cell.
+                    //
+                    // That distinction is the whole of this branch and it is not
+                    // pedantry. Scaling a panel by the length of the crossing lets a
+                    // ray that clips the corner between two panels through *both* of
+                    // them: it leaves the first cell sideways, so that cell's own
+                    // face was never crossed, and it enters the second across the
+                    // corner, where the crossing is a hair long and `crossed / soft`
+                    // rounds to nothing. The result is a fan of bright spokes out of
+                    // any lamp near a wall, one per tile corner, which is exactly what
+                    // it looked like — a wall with no hole in it leaking light in
+                    // stripes. See `docs/lighting.md`, decision 18.
                     let tall = soft * Z_PER_TILE;
-                    let stops = EDGE_MASK & ~own_run(own, cell, first);
+                    // Less whatever of this cell is the same run of wall the lit end
+                    // stands in — see `own_run`, and the seam it was drawing.
+                    let stops = sides & ~own_run(own, cell, first);
                     if (stops & entry) != 0u {
-                        stopped = max(stopped, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
+                        by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
                     }
                     if (stops & exit) != 0u {
-                        stopped = max(stopped, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
+                        by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
                     }
                 }
-            } else {
-                // A **panel** — a wall standing on one side of its tile. It is a
-                // *surface*, and what a surface does to a ray is decided where the
-                // ray pierces it: at a point, at a height, once. Not by how far
-                // the ray ran inside the cell.
-                //
-                // That distinction is the whole of this branch and it is not
-                // pedantry. Scaling a panel by the length of the crossing lets a
-                // ray that clips the corner between two panels through *both* of
-                // them: it leaves the first cell sideways, so that cell's own
-                // face was never crossed, and it enters the second across the
-                // corner, where the crossing is a hair long and `crossed / soft`
-                // rounds to nothing. The result is a fan of bright spokes out of
-                // any lamp near a wall, one per tile corner, which is exactly what
-                // it looked like — a wall with no hole in it leaking light in
-                // stripes. See `docs/lighting.md`, decision 18.
-                let tall = soft * Z_PER_TILE;
-                // Less whatever of this cell is the same run of wall the lit end
-                // stands in — see `own_run`, and the seam it was drawing.
-                let stops = sides & ~own_run(own, cell, first);
-                if (stops & entry) != 0u {
-                    stopped = max(stopped, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
-                }
-                if (stops & exit) != 0u {
-                    stopped = max(stopped, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
-                }
+                stopped = max(stopped, by_surface);
             }
             through = through * (1.0 - stopped);
             if through <= 0.004 {
@@ -853,7 +940,7 @@ fn debug_color(
         return vec3<f32>(ramp, band * 0.8, 1.0 - ramp);
     }
     if view == VIEW_OCCLUDERS {
-        let cell = occluder_at(i32(floor(at.x)), i32(floor(at.y)));
+        let cell = merged_at(i32(floor(at.x)), i32(floor(at.y)));
         if cell.w == 0u {
             return vec3<f32>(0.06, 0.06, 0.10);
         }

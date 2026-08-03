@@ -900,13 +900,18 @@ fn own_run(own: u8, cell: (i32, i32), first: (i32, i32)) -> u8 {
 
 /// `blit.wgsl`'s `panel_stop`. Split out of [`walk_cells`] for the corner case,
 /// which has two cells to ask about and no crossing length to speak of.
-fn panel_stop(stands: Option<crate::occlusion::Cell>, crossed: u8, z: f32, tall: f32) -> f32 {
-    match stands.filter(|stands| stands.edges != 0 && stands.edges & crossed != 0) {
-        None => 0.0,
-        Some(stands) => {
+///
+/// The **largest** of the cell's surfaces and not their product, for the reason
+/// [`walk_cells`] takes the largest: two panels of one corner are two faces of
+/// one wall, and a ray that crosses both has gone through one thing once.
+fn panel_stop(stands: &[crate::occlusion::Surface], crossed: u8, z: f32, tall: f32) -> f32 {
+    stands
+        .iter()
+        .filter(|stands| stands.edges != 0 && stands.edges & crossed != 0)
+        .map(|stands| {
             f32::from(stands.opacity) / 255.0 * pierces(z, stands.bottom as f32, stands.top as f32, tall)
-        }
-    }
+        })
+        .fold(0.0, f32::max)
 }
 
 /// A point in the world, as the lighting sees one: a fractional tile and a `z`.
@@ -1460,7 +1465,19 @@ fn walk_cells(
                 (false, false) => crate::occlusion::EDGE_NORTH,
             },
         };
-        let stands = occlusion.at(cell.0, cell.1);
+        let stands = occlusion.surfaces_at(cell.0, cell.1);
+        let own_cell = cell == first;
+        // The union of the sides the tile's surfaces stand on. A *tile's* answer
+        // and deliberately so: what a pixel is exempted from below is the tile it
+        // is on and not one surface of it.
+        //
+        // Only on the ray's own cell, which is the only place it is read: every
+        // other cell of the walk would be paying for a second pass over its
+        // surfaces to answer a question about a pixel that is not on it.
+        let sides = match own_cell {
+            false => 0,
+            true => stands.iter().fold(0, |mask, surface| mask | surface.edges),
+        };
         // **A surface does not shadow itself**, which is what "neither end of the
         // ray is shadowed by the tile it is on" was always reaching for. The
         // flame's end is a whole tile — a sconce burns outside the plane its tile
@@ -1470,33 +1487,36 @@ fn walk_cells(
         // tile is inside the room, and the ray from it to a lamp in the street
         // crosses the panel its own tile stands on. See
         // [`Surface::shadowed_by_own_tile`], and `blit.wgsl`'s `walk`.
-        let own_cell = cell == first;
         let lit_by_own_tile = match own_cell {
             false => 0,
-            true => match stands {
-                None => 0,
-                Some(stands) => surface.shadowed_by_own_tile(stands.edges),
-            },
+            true => surface.shadowed_by_own_tile(sides),
         };
-        if (!own_cell || lit_by_own_tile != 0) && (!skip_last || cell != last) {
-            if let Some(stands) = stands {
-                let (low, high) = (stands.bottom as f32, stands.top as f32);
-                let opacity = f32::from(stands.opacity) / 255.0;
-                // How soft this cell's own edge is: the penumbra a source of
-                // this size casts from this far along the ray. See
-                // [`FLAME_SPREAD`]; a `spread` of zero is a point source, and the
-                // clamp leaves it the narrowest edge the walk draws.
-                let middle = (entered + leaves) * 0.5;
-                let soft =
-                    (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
+        if (!own_cell || lit_by_own_tile != 0) && (!skip_last || cell != last) && !stands.is_empty() {
+            // How soft this cell's own edge is: the penumbra a source of
+            // this size casts from this far along the ray. See
+            // [`FLAME_SPREAD`]; a `spread` of zero is a point source, and the
+            // clamp leaves it the narrowest edge the walk draws.
+            let middle = (entered + leaves) * 0.5;
+            let soft =
+                (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
+            // What the *cell* stops is the **largest** of what its surfaces stop,
+            // and not the product of them. Two panels on one tile are a corner —
+            // two faces of one wall — and a ray that crosses both has gone
+            // through one thing once; multiplying would darken every corner in
+            // the world twice over. It is also what keeps this step's promise
+            // that the picture does not move: a tile's surfaces all carry its own
+            // span, so the largest of them is the merged cell's own answer.
+            let mut stopped: f32 = 0.0;
+            for stands in stands {
                 // On the lit end's own cell only the panels the surface admits are
                 // asked, and never the body: a pixel standing inside a solid is
                 // not shadowed by the solid it stands in.
-                let edges = match own_cell {
-                    true => lit_by_own_tile,
-                    false => stands.edges,
-                };
-                let stopped = match edges {
+                if own_cell && stands.edges & lit_by_own_tile == 0 {
+                    continue;
+                }
+                let (low, high) = (stands.bottom as f32, stands.top as f32);
+                let opacity = f32::from(stands.opacity) / 255.0;
+                let by_surface = match stands.edges {
                     // A **body** — a lid (a floor, a roof) or a whole tile that
                     // stands up and whose art would not say which way. Either is a
                     // solid the ray travels through, so what it stops is scaled by
@@ -1567,10 +1587,11 @@ fn walk_cells(
                         stopped
                     }
                 };
-                through *= 1.0 - stopped;
-                if through <= RAY_CUTOFF {
-                    return (0.0, Some(cell));
-                }
+                stopped = stopped.max(by_surface);
+            }
+            through *= 1.0 - stopped;
+            if through <= RAY_CUTOFF {
+                return (0.0, Some(cell));
             }
         }
         if next >= 1.0 {
@@ -1607,7 +1628,7 @@ fn walk_cells(
                     continue;
                 }
                 let crossed = crossed & !own_run(own, at, first);
-                let stops = panel_stop(occlusion.at(at.0, at.1), crossed, z, tall);
+                let stops = panel_stop(occlusion.surfaces_at(at.0, at.1), crossed, z, tall);
                 if stops > corner {
                     corner = stops;
                     blamed = Some(at);

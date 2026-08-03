@@ -34,7 +34,7 @@ use openshard_client_render::light::{Light, Lighting, Surface};
 const TORCH_TILES: f32 = 3.0;
 use openshard_client_render::camera::TileBounds;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_client_render::occlusion::Occlusion;
+use openshard_client_render::occlusion::{Builder, Occlusion};
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place::Place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -1106,12 +1106,12 @@ fn a_wall_stops_the_light_behind_it() {
     };
 
     // With nothing in the way, every tile of the row is lit.
-    let open = read(&mut blit, Occlusion::new(bounds));
+    let open = read(&mut blit, Builder::new(bounds).finish());
     let (open_wall, open_behind, open_far) = (at(&open, 101), at(&open, 102), at(&open, 103));
 
     // And with a wall on the second tile, the two behind it are not — while the
     // wall's own tile is exactly as bright as it was.
-    let mut occlusion = Occlusion::new(bounds);
+    let mut occlusion = Builder::new(bounds);
     occlusion.add(
         101,
         ROW,
@@ -1129,7 +1129,7 @@ fn a_wall_stops_the_light_behind_it() {
         // which is a different test — see `occlusion`'s own.
         None,
     );
-    let walled = read(&mut blit, occlusion);
+    let walled = read(&mut blit, occlusion.finish());
     let (wall, behind, far) = (at(&walled, 101), at(&walled, 102), at(&walled, 103));
 
     assert_eq!(

@@ -95,6 +95,19 @@ pub struct Blit {
     /// cell is what a ray walks through cell after cell in a loop, and this is
     /// read once per fragment. `docs/lighting_world.md` decides it once, there.
     field: wgpu::Texture,
+    /// The surfaces the two above index into — one texel a surface, folded into
+    /// rows [`crate::occlusion::SURFACE_ROW`] wide. See
+    /// [`Occlusion::surface_bytes`](crate::occlusion::Occlusion::surface_bytes).
+    ///
+    /// Not a storage buffer, and that is decision 30.5 rather than a preference:
+    /// the ceiling here is WebGL2, which has neither compute nor storage
+    /// buffers, so a list the shader can index has to be a texture read with
+    /// `textureLoad`.
+    ///
+    /// Its *width* is fixed and its height grows with the frame, which is the
+    /// opposite of the two planes above: they are the camera's rectangle and
+    /// this is a list whose length is what the camera happens to be looking at.
+    surfaces: wgpu::Texture,
 }
 
 impl Blit {
@@ -184,6 +197,19 @@ impl Blit {
                     },
                     count: None,
                 },
+                // And the surfaces the grid indexes into — the list of decision
+                // 30, and the only one of the three that is not a picture of the
+                // camera's rectangle.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -257,6 +283,9 @@ impl Blit {
             // texture of no size is not a thing wgpu will make.
             occluders: grid_texture(device, "occluders", 1, 1),
             field: grid_texture(device, "field", 1, 1),
+            // One row, which is a list of no surfaces: the grid above says every
+            // tile stands nothing, so nothing indexes into it.
+            surfaces: grid_texture(device, "surfaces", crate::occlusion::SURFACE_ROW, 1),
         }
     }
 
@@ -327,6 +356,12 @@ impl Blit {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(
                         &self.field.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.surfaces.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
             ],
@@ -558,6 +593,37 @@ impl Blit {
         };
         write(&self.occluders, &occluders);
         write(&self.field, &lighting.occlusion.field_bytes());
+
+        // And the list the grid indexes into. Its height is the frame's own
+        // surface count and not the camera's rectangle, so it is grown on its own
+        // terms: a camera that has not moved keeps the same rows, and walking into
+        // a city grows them. `surface_bytes` pads to a whole row, which is what
+        // makes the upload's `bytes_per_row` exact.
+        let bytes = lighting.occlusion.surface_bytes();
+        let row = crate::occlusion::SURFACE_ROW;
+        let rows = (bytes.len() / (row as usize * 4)) as u32;
+        if self.surfaces.height() != rows {
+            self.surfaces = grid_texture(device, "surfaces", row, rows);
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.surfaces,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row * 4),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d {
+                width: row,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
