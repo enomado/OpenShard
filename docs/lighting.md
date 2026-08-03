@@ -1498,6 +1498,66 @@ stops nothing"). So the order is: land in the grid first, and slopes with it or
 not at all. Written down here so that the next person to want it finds the price
 rather than the idea.
 
+**36. An occluder is a box in the tile's own coordinates, and a plane where the
+art cannot say how deep it is.**
+
+The rules of this grid have grown one shape at a time and each one arrived the
+same way: not as a new rule about light, but as a **form the surface record could
+not state**, faked with a flag. A corner became two panels (decision 25). A wall
+got a hole (21.3). A body got a footprint (34). A stair is a solid, and its treads
+are a shape there is still no way to write down. Five special cases, one after
+another, and none of them was ever about how a ray behaves.
+
+So the record becomes a shape: a **box**, `(u0..u1, v0..v1, z0..z1)` in the
+tile's own unit square, with an opacity. Everything the grid holds today is that
+box with two of its six numbers pinned:
+
+| today | as a box |
+|---|---|
+| a lid | zero height |
+| a body | the whole tile |
+| a tread | part of one axis |
+| a footprint (decision 34) | part of the other |
+
+And the walk gets **simpler**, which is the argument that matters more than the
+tidiness: `blit.wgsl` has three rules today — pierce a plane, travel a span, clip
+to a strip — and a ray against a box is one slab test, three pairs of
+comparisons, closed form. The same box gives the *shading* half its answer for
+free: a pixel's normal is the normal of the face it landed on, which is what
+`place::Stance`'s nine values are a hand-rolled enumeration of.
+
+**A panel stays a plane, and that is the one thing not folded in.** A wall's
+thickness is not in the art — decision 3 is that argument and it has not changed
+— so a box for a wall would need a depth somebody invented. Worse, a
+zero-thickness box is not the same test as a plane: "the segment overlaps a slab
+of width zero" is a numerical coin toss where "the segment crosses this plane" is
+exact, and the seam rules (decision 16, `on_surface`, `stand_clear`) are all
+stated about a plane and each was a defect found the hard way. Two primitives,
+then, and the pair is honest about which one we can measure: **a plane where only
+one axis is known, a box where the shape was fitted whole.**
+
+What it costs:
+
+- **The surface texel doubles.** Four bytes today (`bottom`, `top`, `opacity`,
+  `edges`); a box needs six or seven. The aperture plane already exists beside it
+  and decision 34 already plans to put `near`/`far` there, so this is a second
+  texel in an existing plane rather than a new texture: ~140KB to ~280KB at the
+  widest zoom.
+- **A hole is still not a box.** It is a *subtraction*, and it keeps its own
+  field. A box with a bite out of it is two primitives or one exception, and the
+  exception is the one that already works.
+- **Nothing may move in the picture on the way.** The migration is: express the
+  four existing kinds as boxes, keep every current test green — they are the
+  specification of what must not change — and only then let a tread be a box that
+  is a part of a tile. A step that changes both the representation and the
+  picture is a step where a difference cannot be attributed.
+
+Where this parts company with decision 35: that one deferred *slopes*, and it is
+still deferred and still right — a bilinear patch reopens three rules that each
+cost a day. A box does not. A flight of steps is horizontals and verticals, which
+is exactly what this world is made of, and the shape that was missing was never a
+slope.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -3225,15 +3285,13 @@ Found on a staircase in Britain:
     panels on the tile's east and south edges. Measured at `(1493, 1639)` in
     Britain: the stair tiles read `edges NESW` where they read `-ES-`. A
     staircase no longer shadows a street like a run of wall.
-  - **What is left is the treads themselves.** A tread is a body over *part* of
-    a tile, and `Surface` has no way to say "part of": its three kinds are a
-    panel on one edge, a lid, and a body over the whole tile. The format has
-    room — the hole plane already carries a `near`/`far` along the run and a body
-    never has a hole — and two opposite bits in `edges` (`EAST|WEST`,
-    `NORTH|SOUTH`) are a free encoding for which axis the span runs along, since
-    a panel is one bit and a body is four. What it costs is a rule in
-    `blit.wgsl`: a ray crossing a partial body has to be clipped to that span.
-    Until then a flight of steps occludes as one box the height of its top tread.
+  - **What is left is the treads themselves, and they are decision 36.** A tread
+    is a body over *part* of a tile, and `Surface` has no way to say "part of":
+    its three kinds are a panel on one edge, a lid, and a body over the whole
+    tile. That missing form is the fifth of its kind in this file, which is what
+    turned it from a fix into a decision — an occluder becomes a box in the
+    tile's own coordinates, and a tread is one. Until that lands, a flight of
+    steps occludes as a single box the height of its top tread.
   - **`ArtTable` does not carry a prism.** A row is `facing` and `hole`, so a
     solid measured by `Shape::of` on a machine with no table is lost on one that
     has it — the client would quietly go back to reading stairs as corners. It
