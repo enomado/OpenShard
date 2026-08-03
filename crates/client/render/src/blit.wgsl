@@ -538,7 +538,18 @@ fn debug_color(
     if view == VIEW_LIGHT {
         // The lighting with the art thrown away: the pools' own shapes, where a
         // seam or a step has nothing to hide behind.
-        return min(lit, vec3<f32>(1.0));
+        //
+        // Tone mapped and not clamped, which is the whole difference between this
+        // view working and not. A flame's multiplier passes `1.0` well before its
+        // pool ends — a torch is `0.95` on top of the ambient at its centre — so
+        // `min(lit, 1)` painted the core of every pool one flat white disc, and
+        // the core is exactly the part of the shape nothing else shows: the lit
+        // frame multiplies the art by it, and the art is dark, so the clipping
+        // never appears there. Reinhard, because it is monotone and unbounded: `0`
+        // stays `0`, every step and seam anywhere in the range is still a step
+        // here, and nothing ever reaches `1`. The number read off this view is
+        // therefore a rank and not a level, which is what a shape is read as.
+        return lit / (1.0 + lit);
     }
     if view == VIEW_SHADOW {
         // Blue for "no flame reaches here at all", which is a different fact

@@ -3709,6 +3709,107 @@ fn assert_parity(device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting
     assert_eq!(compared, (width * height) as usize);
 }
 
+/// The light view has no plateau in the middle of a pool.
+///
+/// The failure this protects against is the one it was written for: the view
+/// clamped, a torch's multiplier is past `1.0` for the whole middle of its pool,
+/// and so the core of every flame — the part of the shape no other view shows,
+/// because the lit frame multiplies it by dark art — was drawn as one flat white
+/// disc. A clamp is invisible in a screenshot of a *dim* scene, which is why it
+/// survived; a monotone curve is the property, and the way to state it is that
+/// walking towards the flame never stops getting brighter.
+#[test]
+fn the_light_view_keeps_a_pools_shape_where_it_is_brightest() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (64, 64);
+    let scene = openshard_client_render::scene::room();
+    let mut lighting = scene.lighting(0.0);
+    lighting.view = View::Light;
+    let frame = parity_frame(&device, &queue, &lighting, width, height);
+
+    // The torch is at the room's centre, which the fixture puts at the middle of
+    // the frame: a row through it runs from the pool's rim to its brightest
+    // point. Every step inwards must be brighter than the last — under a clamp
+    // the last two tiles' worth of it were one number.
+    let middle = height / 2;
+    let mut steps = 0;
+    for px in 1..width / 2 {
+        let before = i32::from(frame.pixel(px - 1, middle)[0]);
+        let after = i32::from(frame.pixel(px, middle)[0]);
+        assert!(
+            after >= before,
+            "at ({px}, {middle}) the row towards the flame darkens: {before} then {after}",
+        );
+        if after > before {
+            steps += 1;
+        }
+    }
+    // And it is a ramp rather than a couple of terraces: a curve that clipped
+    // would still pass the test above, which is the trap the first version fell
+    // into. Half the pixels of the row rising is what a gradient looks like.
+    assert!(
+        steps > (width / 4) as usize,
+        "only {steps} of the row towards the flame rise"
+    );
+    // Nothing saturates, anywhere. A tone map that reached white would be a
+    // clamp again for whatever is brighter than the thing that reached it.
+    for py in 0..height {
+        for px in 0..width {
+            let pixel = frame.pixel(px, py);
+            assert!(
+                pixel[..3].iter().all(|channel| *channel < 255),
+                "at ({px}, {py}) the light view saturates: {pixel:?}",
+            );
+        }
+    }
+}
+
+/// Write every debug view of a scene out as a picture, for a person to look at.
+///
+/// Ignored, and asserts nothing: the views are read as shapes, and a shape is
+/// the one thing a count cannot check. Run it and look:
+///
+/// ```sh
+/// OPENSHARD_VIEW_DUMP=/tmp/views cargo test -p openshard-client-render --test frame -- \
+///     --ignored dump_the_lighting_views
+/// ```
+#[test]
+#[ignore = "writes pictures for a person, and asserts nothing"]
+fn dump_the_lighting_views() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (64, 64);
+    let dir = std::env::var_os("OPENSHARD_VIEW_DUMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("views"));
+    std::fs::create_dir_all(&dir).expect("the dump directory");
+    let scenes = [
+        ("room", openshard_client_render::scene::room()),
+        (
+            "window",
+            openshard_client_render::scene::sunlit_room_with_window(),
+        ),
+        ("roofed", openshard_client_render::scene::roofed_room()),
+    ];
+    for (name, scene) in scenes {
+        for view in View::ALL {
+            let mut lighting = scene.lighting(0.0);
+            lighting.view = view;
+            let frame = parity_frame(&device, &queue, &lighting, width, height);
+            let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+            for pixel in frame.pixels.chunks_exact(4) {
+                ppm.extend_from_slice(&pixel[..3]);
+            }
+            let path = dir.join(format!("{name}-{}.ppm", view.name()));
+            std::fs::write(&path, ppm).expect("writing the frame");
+            eprintln!("wrote {}", path.display());
+        }
+    }
+}
+
 /// A debug view reaches the shader, and draws what it says it draws.
 ///
 /// Two things at once, and both are contracts no compiler checks: that

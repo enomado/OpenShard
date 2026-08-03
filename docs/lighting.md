@@ -845,6 +845,27 @@ are what came of the first three, and these are what is left:
   tile-edged shadows a torchlit one no longer does. The traversal is written and
   wants lifting into a shape both walks can use — the only difference is that the
   sun's has no endpoint.
+
+  **And it is not a softness question, it is a hole.** Measured in the sun view
+  over `scene::roofed_room`, which is a shut house with a roof on: every tile of
+  the interior reads `0`, *except* the column one tile in from the sunward wall,
+  which reads a full `255`. At noon the ray climbs 11 `z` a tile, so from that
+  column it is at `z = 16.5` where it crosses the wall's plane — inside a span of
+  `0..=20`, and stopped — and at `z = 22` at the next tile's centre, which is the
+  only place the walk looks. It steps straight over the top of the wall. In
+  `scene::sunlit_room_with_window` the same column is `255` along the whole wall
+  while the floor tile actually at the window is `204`, the pane's four fifths: the
+  bright band inside a windowed room is one tile off the window, brighter than the
+  window's own patch, and runs the length of the wall rather than the width of the
+  opening. Reported from the client as "the light from the windows looks
+  inverted", which is exactly what that reads as.
+- **The sun's walk does not test the panel a wall stands on.** Decision 17 gave
+  the flame's walk the edge test — a cell stops a ray only where the ray crosses
+  the side the thing is actually built on — and `sunlight` never got it: it tests
+  a cell's `z` span alone, so a wall shadows the sun from every direction
+  including along its own line. It cannot be lifted across on its own, though,
+  because a point sample has no crossing to name; the entry above is what makes it
+  possible, and the two are one piece of work.
 - ~~**A wall is still lit as one point per tile.**~~ Done, in step 15, for the
   three quarters of a city whose art names an edge. What is left of it is the
   other quarter — corners, posts and slabs — which still light as a row of tiles
