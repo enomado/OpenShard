@@ -930,11 +930,16 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             None => "—".to_string(),
         },
     ));
-    ui.label("hover — glows yellow, moves with the cursor");
-    tile_panel(ui, hud.hover.as_ref());
-    ui.separator();
+    // The held tile first and the live one under it. The hover readout changes
+    // on every mouse move — a tile with six statics is several rows taller than
+    // an empty one — and whatever is drawn below it is moved by that. Above, the
+    // selection is the one thing on this tab that only changes when the player
+    // clicks, so it stays under the cursor long enough to be read and copied.
     ui.label("selected — glows cyan, click a tile to hold it here");
-    tile_panel(ui, hud.selected.as_ref());
+    tile_panel(ui, "selected", hud.selected.as_ref());
+    ui.separator();
+    ui.label("hover — glows yellow, moves with the cursor");
+    tile_panel(ui, "hover", hud.hover.as_ref());
 }
 
 /// The three things drawn *on* the world rather than beside it: the terrain
@@ -1472,7 +1477,26 @@ fn speech_line(root: &mut egui::Ui, hud: &Hud, typed: &mut String) -> Option<Str
 /// One tile's numbers, each beside a button that puts it on the clipboard —
 /// the whole point of holding a selection still is being able to paste one of
 /// these into a bug report.
-fn tile_panel(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
+///
+/// A fixed-height box, scrolled inside, and that is the point of it: a tile's
+/// readout is as many rows as it has statics, so a panel sized to its content
+/// changes height under the cursor and moves everything below it — including
+/// the other tile panel — while it is being read. The height is spent whether
+/// or not there is a tile to put in it; `id` is what keeps the two boxes'
+/// scroll offsets apart, the same way the tabs' own salt does.
+fn tile_panel(ui: &mut egui::Ui, id: &str, tile: Option<&PickedTile>) {
+    /// Four rows and a little: the header, the levels, the land, and one static
+    /// — past that the box scrolls rather than grows.
+    const HEIGHT: f32 = 108.0;
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .max_height(HEIGHT)
+        .auto_shrink([false; 2])
+        .show(ui, |ui| tile_rows(ui, tile));
+}
+
+/// The rows themselves, inside the box [`tile_panel`] fixes the height of.
+fn tile_rows(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
     let Some(tile) = tile else {
         ui.label("(none)");
         return;
@@ -1482,6 +1506,12 @@ fn tile_panel(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
         // on a pier the land is water far below the deck a body stands on, and
         // every marker on this tile is drawn at the second one.
         ui.label(format!("tile {}, {}   stand z {}", tile.x, tile.y, tile.stand_z));
+        // The whole tile in one press. The per-graphic buttons below copy a
+        // number to paste into a lookup; this copies what a bug report wants,
+        // which is the column and everything standing in it.
+        if ui.small_button("copy all").clicked() {
+            ui.ctx().copy_text(tile_text(tile));
+        }
     });
     // The column in words, in the same green and red the box is drawn in: the
     // picture says *where* the levels are and this says which, so a level hidden
@@ -1518,6 +1548,49 @@ fn tile_panel(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
             }
         });
     }
+}
+
+/// What "copy all" puts on the clipboard: the same rows the panel draws, as
+/// text.
+///
+/// Written out rather than screenshotted because the numbers are the evidence —
+/// a report that says "the wall is at the wrong height" is an opinion until the
+/// column it was read off is pasted under it. Hex beside decimal for the
+/// graphics, since the client's own files and every reference emulator disagree
+/// about which of the two they print.
+fn tile_text(tile: &PickedTile) -> String {
+    use std::fmt::Write;
+
+    let mut text = format!(
+        "tile {}, {}  stand z {}  land z {}\n",
+        tile.x, tile.y, tile.stand_z, tile.land_z
+    );
+    text.push_str("levels");
+    // The panel says "a body does not fit here" in red, and red does not
+    // survive a paste; `!` after the height is the same fact in text.
+    for &(z, standable) in &tile.levels {
+        let verdict = match standable {
+            true => "",
+            false => "!",
+        };
+        // `unwrap` is not needed and `?` cannot happen: writing into a `String`
+        // is infallible, which is why the result is dropped here.
+        let _ = write!(text, " {z}{verdict}");
+    }
+    if let Some(ceiling) = tile.ceiling {
+        let _ = write!(text, " · ceiling {ceiling}");
+    }
+    text.push('\n');
+    match tile.land {
+        Some(graphic) => {
+            let _ = writeln!(text, "land {graphic} (0x{graphic:04X})  z {}", tile.land_z);
+        }
+        None => text.push_str("land: block not loaded\n"),
+    }
+    for &(graphic, z, hue) in &tile.statics {
+        let _ = writeln!(text, "static {graphic} (0x{graphic:04X})  z {z}  hue {hue}");
+    }
+    text
 }
 
 /// The painter every world marker is drawn with: behind the UI, and inside the
