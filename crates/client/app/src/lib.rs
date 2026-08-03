@@ -129,6 +129,7 @@ use openshard_client_render::follow::{Gaze, Rig};
 // `gump_art` and not `gump`: this crate has a module of that name — the egui
 // half of the same window — and the two are deliberately not merged. One
 // draws the art, the other answers the buttons.
+use openshard_client_render::container;
 use openshard_client_render::gump as gump_art;
 use openshard_client_render::gump::{GumpAtlas, GumpPixel, GumpRenderer};
 use openshard_client_render::hue::HueRamp;
@@ -143,6 +144,7 @@ use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
 use openshard_movement::{Heading, Lean, Leeway, Terrain};
+use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
@@ -584,6 +586,9 @@ pub fn run<D: Dial + Send + 'static>(
         // Nobody has pointed at anything yet, and a window that opens under a
         // resting cursor hears `CursorEntered` on the first move.
         pointer_inside: false,
+        pointer_gump: GumpPixel::new(0, 0),
+        container_windows: Vec::new(),
+        dragging: None,
         show_terrain: false,
         show_occluders: false,
         // The item under the cursor, ringed and lit, and the ground otherwise:
@@ -856,6 +861,37 @@ struct Screen {
     /// image. `None` exactly when `App::gumps` is.
     gump_pass: Option<GumpRenderer>,
 }
+
+/// A container's window, and the one thing about it the shard never says.
+///
+/// A `0x24` carries a serial and a gump and **no position**: where a container
+/// window goes is entirely the client's, and once the player has dragged one it
+/// is the player's. That is the whole of this type — everything else about the
+/// window is looked up in the [`WorldView`] by serial, so a window can never
+/// hold a stale copy of what is in the bag.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ContainerWindow {
+    /// Which container it is over.
+    container: Serial,
+    /// Its top-left corner on the surface.
+    at: GumpPixel,
+}
+
+/// Where the first container window opens, and how far each one after it is
+/// offset.
+///
+/// A cascade rather than a pile: the shard sends no position, and two windows at
+/// one coordinate look like one window with the wrong contents. The reference
+/// client remembers a per-container position across sessions; this does not yet,
+/// and the note is in `docs/client.md`.
+const CONTAINER_CASCADE: GumpPixel = GumpPixel::new(24, 24);
+
+/// The corner the cascade starts from.
+const CONTAINER_ORIGIN: GumpPixel = GumpPixel::new(120, 80);
+
+/// How many windows the cascade steps before it starts over, so that a player
+/// who opens a dozen bags does not push the last of them off the screen.
+const CONTAINER_CASCADE_LENGTH: i32 = 8;
 
 struct App {
     /// The facet, shared with the shard thread — see [`link::connect`].
@@ -1135,6 +1171,29 @@ struct App {
     /// it picked sits on the ground with nobody pointing at it. `CursorLeft` is
     /// the only event that says so.
     pointer_inside: bool,
+    /// Where the cursor is in *gump* pixels — measured from the surface's own
+    /// top left, not the viewport's.
+    ///
+    /// A second cursor and not the one [`control`](App::control) keeps, because
+    /// the two are measured from different corners: the world's is relative to
+    /// the viewport, so that the camera zooms about the picture's centre and not
+    /// the window's, and an interface has no viewport at all. Converting one
+    /// into the other at each use is the arithmetic the two pixel types exist to
+    /// stop being done wrong once.
+    pointer_gump: GumpPixel,
+    /// The container windows this client has open, bottom to top.
+    ///
+    /// Painter's order *is* z-order here, the same as the pictures inside one:
+    /// the pass has no depth, so the last window in the list is the one drawn
+    /// over the others and the first one picking finds.
+    container_windows: Vec<ContainerWindow>,
+    /// The window being dragged and where inside it the player grabbed it, or
+    /// `None` when nothing is being dragged.
+    ///
+    /// Keyed by serial rather than by index: raising a window on the press
+    /// reorders the list, so an index taken at the press names a different
+    /// window by the time the mouse moves.
+    dragging: Option<(Serial, GumpPixel)>,
     /// Whether the HUD is drawing what `common/movement` thinks of the ground —
     /// see [`App::terrain_overlay`].
     ///
@@ -1467,7 +1526,16 @@ impl ApplicationHandler<link::Update> for App {
                     (shell.viewport().x as i32, shell.viewport().y as i32)
                 });
                 let (x, y) = (position.x as i32 - origin.0, position.y as i32 - origin.1);
+                // The interface's cursor is measured from the surface's own
+                // corner and in gump pixels, which is what everything drawn by
+                // the gump pass is placed in.
+                let scale = self.gump_scale();
+                self.pointer_gump = GumpPixel::new(
+                    (position.x as f32 / scale) as i32,
+                    (position.y as f32 / scale) as i32,
+                );
                 let mut changed = self.control.cursor_moved(x, y);
+                changed |= self.drag_container();
                 // Held, the button steers: a heading toward wherever the cursor
                 // is, by default, or a Ctrl-held move order — see
                 // `walk_toward_cursor` and `steer.rs`'s module docs for why
@@ -1489,7 +1557,21 @@ impl ApplicationHandler<link::Update> for App {
                 // A left click selects the tile under the cursor for the Tile
                 // panel — reached here and not through egui, because `consumed`
                 // above already sent every click the UI wanted to it.
-                if button == winit::event::MouseButton::Left && state == ElementState::Pressed {
+                if button == winit::event::MouseButton::Left && state == ElementState::Released {
+                    self.dragging = None;
+                }
+                // A container window takes the press before the world sees it,
+                // the same way a panel does: the click that raises a bag must
+                // not also select the tile behind it, and it must not start a
+                // double-click pair that would use whatever is under there.
+                if button == winit::event::MouseButton::Left
+                    && state == ElementState::Pressed
+                    && self.press_on_container()
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.window.request_redraw();
+                    }
+                } else if button == winit::event::MouseButton::Left && state == ElementState::Pressed {
                     // The camera as it stands, which between two frames is the
                     // one the last frame was drawn with — the picture the player
                     // is clicking on.
@@ -1517,7 +1599,17 @@ impl ApplicationHandler<link::Update> for App {
                 // Ctrl-held move order — either way it stays under way while
                 // the button is, driven from `CursorMoved`. Left is spoken for
                 // by the Tile panel above, and the middle button pans.
-                if button == winit::event::MouseButton::Right {
+                // Right over a window closes it — the reference client's own
+                // gesture — and does not steer: a press that never reached the
+                // world cannot be a heading into it.
+                if button == winit::event::MouseButton::Right
+                    && state == ElementState::Pressed
+                    && self.close_container_under_pointer()
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.window.request_redraw();
+                    }
+                } else if button == winit::event::MouseButton::Right {
                     self.aiming = state == ElementState::Pressed;
                     if self.aiming {
                         if self.walk_toward_cursor() {
@@ -1923,6 +2015,163 @@ impl App {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),
         }
+    }
+
+    /// Real pixels per gump pixel, which is egui's own scale.
+    ///
+    /// Not the window's scale factor: the interface's art is placed at
+    /// coordinates egui laid out in points, so any other number here slides a
+    /// window's pictures off whatever egui drew beside them — and the cursor,
+    /// which arrives from `winit` in real pixels, has to come back the same way
+    /// or a click lands where the picture is not.
+    fn gump_scale(&self) -> f32 {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.gumps().scale())
+            .unwrap_or(1.0)
+    }
+
+    /// Open a window for every container the shard has opened and this client
+    /// has not placed yet, and drop the windows whose container is gone.
+    ///
+    /// Run once a frame rather than when the packet arrived, and idempotent for
+    /// that reason: the `0x24` is folded into the [`WorldView`] by
+    /// `client/net`, which knows nothing about screens, so the window is this
+    /// end noticing that the view has grown a container it has nowhere to put.
+    ///
+    /// The drop is the other direction of the same idea: a container removed
+    /// from the world takes its entry in the view with it (see
+    /// `WorldView::apply`'s `Remove` arm), and a window over nothing must not
+    /// outlive it.
+    fn sync_container_windows(&mut self) {
+        let Some(view) = self.view.as_ref() else {
+            // No world, no windows: a map viewer has no shard to have opened
+            // one, and anything left over is from a session that has ended.
+            self.container_windows.clear();
+            return;
+        };
+        self.container_windows
+            .retain(|window| view.containers.contains_key(&window.container));
+        for container in view.containers.keys() {
+            if self
+                .container_windows
+                .iter()
+                .any(|window| window.container == *container)
+            {
+                continue;
+            }
+            let step = self.container_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
+            self.container_windows.push(ContainerWindow {
+                container: *container,
+                at: GumpPixel::new(
+                    CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
+                    CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
+                ),
+            });
+        }
+    }
+
+    /// Which container window the cursor is over, topmost first, or `None`.
+    ///
+    /// Against the background's own pixels and not its bounding box, the same
+    /// rule [`container::pick`] uses inside a window: a bag's art has
+    /// transparent corners, and a click in one belongs to whatever is behind it
+    /// — which is usually the world.
+    fn container_under_pointer(&self) -> Option<Serial> {
+        let view = self.view.as_ref()?;
+        let cursor = self.pointer_gump;
+        self.container_windows.iter().rev().find_map(|window| {
+            let gump = *view.containers.get(&window.container)?;
+            let (width, height) = container::size(&self.gump_atlas, gump)?;
+            let (x, y) = (cursor.x - window.at.x, cursor.y - window.at.y);
+            if x < 0 || y < 0 || x >= width || y >= height {
+                return None;
+            }
+            self.gump_atlas
+                .opaque_at(gump_art::GumpArt::Gump(gump), x as u16, y as u16)
+                .then_some(window.container)
+        })
+    }
+
+    /// Raise a window to the top of the pile, so that the one just clicked is
+    /// the one drawn over the others.
+    fn raise_container(&mut self, container: Serial) {
+        if let Some(index) = self
+            .container_windows
+            .iter()
+            .position(|window| window.container == container)
+        {
+            let window = self.container_windows.remove(index);
+            self.container_windows.push(window);
+        }
+    }
+
+    /// A left press over a container window: raise it and take hold of it.
+    ///
+    /// Answers whether the press belonged to a window, so the caller can leave
+    /// the world's own click alone when it did — a press that opened a bag's
+    /// window must not also select the tile behind it.
+    fn press_on_container(&mut self) -> bool {
+        let Some(container) = self.container_under_pointer() else {
+            return false;
+        };
+        self.raise_container(container);
+        let grab = self
+            .container_windows
+            .last()
+            .map(|window| {
+                GumpPixel::new(
+                    self.pointer_gump.x - window.at.x,
+                    self.pointer_gump.y - window.at.y,
+                )
+            })
+            .unwrap_or_default();
+        self.dragging = Some((container, grab));
+        true
+    }
+
+    /// Move the window being dragged so that the point the player grabbed stays
+    /// under the cursor. Answers whether anything moved.
+    fn drag_container(&mut self) -> bool {
+        let Some((container, grab)) = self.dragging else {
+            return false;
+        };
+        let at = GumpPixel::new(self.pointer_gump.x - grab.x, self.pointer_gump.y - grab.y);
+        let Some(window) = self
+            .container_windows
+            .iter_mut()
+            .find(|window| window.container == container)
+        else {
+            return false;
+        };
+        let moved = window.at != at;
+        window.at = at;
+        moved
+    }
+
+    /// Close the container window under the cursor, if there is one.
+    ///
+    /// The right button, which is what the reference client closes a gump with,
+    /// and it is *not* a conflict with the right-hold that steers: a press over
+    /// a window never reaches the world, the same way a press over a panel does
+    /// not. Answers whether a window was closed.
+    ///
+    /// Nothing goes out on the wire. There is no close-container packet — the
+    /// shard keeps its own list of who has what open and will keep pushing
+    /// `0x25`s at it — which is why `WorldView::container_closed` drops the
+    /// contents as well as the window.
+    fn close_container_under_pointer(&mut self) -> bool {
+        let Some(container) = self.container_under_pointer() else {
+            return false;
+        };
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        view.container_closed(container);
+        self.container_windows
+            .retain(|window| window.container != container);
+        self.dragging = None;
+        true
     }
 
     /// Say a line out loud, if there is a shard to hear it.
@@ -3231,6 +3480,10 @@ impl App {
 
     fn draw(&mut self) {
         let started = Instant::now();
+        // What the shard has opened, and what it has taken away: the view is
+        // filled by `client/net`, which knows nothing about screens, so a
+        // window appearing is this end noticing.
+        self.sync_container_windows();
         // The animation clock moves here, at the top of the frame that is about
         // to show its answer — not when the timer that asked for this frame
         // fired.
@@ -3956,6 +4209,40 @@ impl App {
                     )
                     .pictures,
                 );
+            }
+            // The container windows, over the dialogs. Not egui windows at all,
+            // unlike the `0xB0`s above: a container has no widget in it to
+            // answer with — no button, no field, nothing that would need
+            // egui's hit test — so its position, its drag and its z-order are
+            // this client's, in gump pixels, and there is nothing left for a
+            // frame to be laid out by. See `container_windows` and
+            // `openshard_client_render::container`.
+            //
+            // Bottom to top, which is the list's own order: the pass has no
+            // depth, so later is over.
+            let containers: Vec<(Graphic, Vec<ContainedItem>, GumpPixel)> = self
+                .view
+                .as_ref()
+                .map(|view| {
+                    self.container_windows
+                        .iter()
+                        .filter_map(|open| {
+                            let gump = *view.containers.get(&open.container)?;
+                            let contents = view.contents.get(&open.container).cloned().unwrap_or_default();
+                            Some((gump, contents, open.at))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (gump, contents, at) in &containers {
+                let art_files = gump_art::ArtFiles {
+                    gumps: files,
+                    items: &self.art,
+                };
+                if let Err(error) = self.gump_atlas.add(art_files, container::art_of(*gump, contents)) {
+                    eprintln!("packing container art for gump 0x{:04X}: {error}", gump.0);
+                }
+                pictures.extend(container::window(*gump, contents, *at));
             }
             if let Some(rows) = self.gump_atlas.take_dirty() {
                 pass.upload_rows(&window.queue, self.gump_atlas.pixels(), rows);
