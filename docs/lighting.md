@@ -9,6 +9,18 @@ copied.
 
 ## Where the next session starts
 
+**Start at step 21.1**: the occlusion cell becomes a *list of surfaces* and the
+walk iterates it, with today's union kept so that the picture does not move and
+every existing test stays green. Decision 30 is the argument and its seven
+micro-decisions are settled; step 21 is the same change broken into the five
+pieces that are each testable alone, in the order to do them. Decision 31 is why
+the measuring leaves the frame.
+
+The three sessions below are what that rests on, and the short version is that
+the lighting stopped answering with a *tile* anywhere it was asked about a
+*surface*. That is what makes the representation change a change of storage
+rather than a reopening of the rules — decision 30.7.
+
 **Read decisions 26, 27 and 28 — they are three answers to one objection**, and
 the objection is worth stating in the words it arrived in: *deciding who is lit
 should be by polygon, not by tile.* Every one of the three was a rule that
@@ -1436,20 +1448,48 @@ everywhere else, arriving as a refusal to *require*.
       the override merge. Doing it *before* step 16 is what lets step 16's
       measurement be as expensive as it needs to be, and it closes the backlog
       entry about the atlas walking the same pixels twice.
-- [ ] **21. The baked surface list, and the aperture in the walk.** Decision 30:
-      surfaces measured once per block rather than a grid rebuilt per frame, the
-      tile grid demoted to an index of `(offset, count)`, and the walk testing
-      whether a crossing passes through an aperture's rectangle — a few lines
-      where the span test is.
+- [ ] **21. The surface list.** Decision 30, **and it is five changes rather than
+      one**. They are listed in the order that keeps every one of them testable on
+      its own, and nothing here waits on anything else:
 
-      What it is worth, before it is started: **2.0ms of a 3.3ms CPU budget**,
-      which is thirteen times what the whole GPU pass costs. Read decision 30's
-      seven micro-decisions first; 30.5 is the one that decides the format
-      (WebGL2: a texture, not a storage buffer) and 30.6 is the one that decides
-      how many surfaces a cell holds (a distribution over Britain, not a guess).
+      1. **The list and the walk over it, with the union kept.** A cell stops
+         being one merged span and becomes `(offset, count)` into a list of
+         surfaces; the walk iterates a cell's two or three instead of reading one.
+         **The picture must not move**, and that is the whole point of doing it
+         first: today's cell maps one-to-one onto surfaces — a lid is one
+         horizontal, named sides are a quad each with the same span, and
+         `EDGE_ANY` is one **body** rather than four quads, which is why the list
+         has two kinds of element exactly as the walk has two rules. Every
+         existing test stays green and the parity test keeps holding both
+         implementations, which is what makes a break here land in the plumbing
+         and nowhere else.
+      2. **Split the union.** Two statics on one tile stop merging into one span
+         with one mask. This is the one place the picture *has* to change — it is
+         the backlog's "a cell merges a lid and a panel into one mask and one
+         span" — so it is its own change with its own test, and not smuggled in
+         under a refactor that claimed to change nothing.
+      3. **The aperture in the walk, tested on a built scene.** A surface gets a
+         rectangular hole and the crossing test asks whether it passes through it.
+         **No art is needed for this**: the scenes here are built, so
+         `scene::room_with_window` can be handed a hole directly and the fan on
+         the ground measured. The mechanism and the measurement are independent
+         and neither waits for the other.
+      4. **The tool, the table and the measured aperture** — steps 20b and 16.
+         Until this lands no window in Britain has a hole and every one of them
+         behaves exactly as it does today, which is a feature: the mechanism is
+         already held by a test by then.
+      5. **Bake it.** Decision 30.4's block-and-band cache, and the **2.0ms of a
+         3.3ms CPU budget** that is the largest number in this pass.
 
-      What comes out on the street is a fan: narrow at the wall, widening with
-      distance, with the soft edge decision 14's penumbra already gives it.
+      Read decision 30's micro-decisions before starting: 30.5 decides the format
+      (WebGL2 — a texture read with `textureLoad`, not a storage buffer), 30.6
+      decides how many surfaces a cell may hold (a distribution printed over
+      Britain, not a guess), and 30.7 is why none of the walk's rules are
+      reopened.
+
+      What comes out on the street at the end is a fan: narrow at the wall,
+      widening with distance, with the soft edge decision 14's penumbra already
+      gives it.
 - [ ] **17. The shaft.** The screen-space pass of decision 12, over the mask step
       11 produces — and, once step 16 exists, over the beam from a window too.
       Nothing in this renderer draws air, so a visible shaft is a blur of the lit
@@ -2038,6 +2078,14 @@ the entries it closes are struck through with what the fix turned out to be.
   floor that shadowed the thing standing on it would be a worse artefact than the
   one being removed. The pier entry above is the same question from the other
   side.
+
+Found while deciding what a cell should hold:
+
+- **A cell's fetch count goes from one to `1 + K`.** The walk reads one texel a
+  cell today; with decision 30 it reads the index and then each of that cell's
+  surfaces, inside the same loop. The GPU has the headroom — the whole pass is
+  0.31ms against a 16ms frame — but it is a real change in the shape of the inner
+  loop and it belongs in the measurement of step 21 rather than in its surprise.
 
 Found while giving a corner its two faces:
 
