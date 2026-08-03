@@ -9,6 +9,45 @@ copied.
 
 ## Where the next session starts
 
+**Nothing was built this session. The plan was re-cut, and what re-cut it is
+decision 38: the tile grid stops being a container and becomes an index.**
+
+The question that started it was about stairs — a tread is a shape the surface
+record cannot state — and the answer that came out is larger than a tread. Three
+things were settled and each one removes an argument this file had been making
+for several sessions:
+
+- **A solid is not clipped to its tile; a cell *references* it.** Every seam this
+  file has fought was manufactured by cutting geometry on a tile boundary: the
+  spokes of decision 18 were a ray slipping through the corner between two
+  panels, and a corner is only a corner because the wall was cut there. A whole
+  solid referenced from four cells answers the same ray identically from all
+  four, and the class dies by construction rather than by a rule.
+- **The "two primitives" half of decision 36 is withdrawn**, and it was mine. It
+  argued that a wall must stay a plane because a box of zero thickness is a
+  numerical coin toss — which is an argument against *zero*, not against a box.
+  With authoring, a nominal thickness is a number a person states, and the
+  vocabulary collapses to one solid plus the hole, which stays a subtraction.
+- **"The art cannot measure it" stopped being a bound on the model.** Decision 3
+  is still right about a *detector*; it says nothing about a record a person
+  writes by hand. The measured and the authored differ in provenance, and
+  provenance is a column of the table rather than a second shape in the shader.
+
+**Start at step 23.1.** It is the migration, and its whole property is that the
+picture may not move: the frame's arena stops owning surfaces and starts owning
+solids that cells point at, with the geometry exactly as it is today and every
+scene green. Steps 23.2 onwards are where anything is allowed to look different.
+**Step 22 is folded into it** — a body's footprint is a solid narrower than its
+tile, and building it first would mean writing a flag into the aperture plane in
+order to delete it two steps later.
+
+The WebGL2 ceiling was questioned and **kept**, with a finding: it costs this
+feature nothing, because the bake is on the CPU and a storage buffer would only
+be a tidier spelling of `textureLoad`. Decision 30.5 carries the finding and the
+one question it leaves a person.
+
+Everything below this line is the session before it.
+
 **Step 21.5 has landed, and step 21 with it: the grid is baked per block.**
 `occlusion::bake` keeps one `Baked` per map block — the surfaces its statics
 stand and the sky they take — and a frame is those blocks pasted, plus the three
@@ -1209,7 +1248,12 @@ apertures as `(v, z)` rectangles in the surface's own coordinates. That is the
 whole vocabulary the art can be measured into, and it is what decision 25's
 corner, decision 27's lid and step 16's window all are.
 
-**30.3 The index stays the tile grid.** A texel becomes `(offset, count)` into the
+**30.3 The index stays the tile grid.** *(and decision 38 keeps it while changing
+what it means: a cell's entries become references to solids that need not lie
+inside it, so the grid stops being where geometry is stored and becomes only
+where it is found)*
+
+A texel becomes `(offset, count)` into the
 surface list; the DDA walk is unchanged in shape and iterates a cell's two or
 three surfaces instead of reading one merged span. A uniform grid over a world
 whose every surface is tile-aligned **is** the acceleration structure — a BVH
@@ -1234,6 +1278,35 @@ no compute, no storage buffers. So the list is a **texture** read with
 `textureLoad`, and the bake is CPU-side. This is the constraint that decides the
 format, and it is written here because it is the one a session would otherwise
 design around for an hour before finding it.
+
+**The ceiling was questioned when decision 38 needed a second indirection, and it
+was kept.** What it actually costs, item by item, is close to nothing here:
+
+- **Compute shaders** — unused. The bake is on the CPU, per block, and the
+  largest thing in it is the paste rather than the build.
+- **Atomics and writes from a shader** — unused, for the same reason.
+- **Storage buffers** — the only real loss, and in this pass a storage buffer is
+  precisely "an array read at a computed index from a fragment shader", which a
+  texture already is. `textureLoad` from an integer texture plus the address
+  arithmetic is the difference; it is a dozen lines, not a millisecond.
+
+So the indirection decision 38 needs is a cost of the *model*, not of the floor,
+and it would be paid on WebGPU too. Two things are worth writing down beside
+that. It is **not a WASM limit** — WASM has no opinion about GPUs; this is a
+backend choice, and `wgpu` targets WebGPU as readily. And the place the floor
+*would* bite is a GPU-side bake, GPU light culling, or per-frame variable-length
+lists — none of which is in this plan.
+
+What is left for a person rather than for this file: the sentence in
+`crates/client/render/src/lib.rs` reads as a principle and is a dated assumption
+— WebGPU was behind a flag when it was written and is broadly shipped now. The
+question under it is not a graphics question: **is the web still a target?** If
+it is, this floor is right and the texture indirection is the price. If it is
+"one day, perhaps", saying so plainly is cheaper than carrying the constraint
+through every decision and discovering later that it defended nothing. Keeping
+*both* backends is the worst of the three: WGSL has no preprocessor, so a second
+fetch path means a generated shader or `naga-oil`, which is a real cost paid for
+tidiness.
 
 **30.6 The truncation is measured, not chosen.** How many surfaces a cell may hold
 comes from a distribution printed over Britain, and whatever is dropped is
@@ -1509,8 +1582,10 @@ stops nothing"). So the order is: land in the grid first, and slopes with it or
 not at all. Written down here so that the next person to want it finds the price
 rather than the idea.
 
-**36. An occluder is a box in the tile's own coordinates, and a plane where the
-art cannot say how deep it is.**
+**36. An occluder is a box in the tile's own coordinates, ~~and a plane where the
+art cannot say how deep it is~~.** *(the first half stands and is the reason this
+decision exists; the second half is withdrawn — decision 38 is why, and it also
+takes the "in the tile's own coordinates" out of it)*
 
 The rules of this grid have grown one shape at a time and each one arrived the
 same way: not as a new rule about light, but as a **form the surface record could
@@ -1537,15 +1612,38 @@ comparisons, closed form. The same box gives the *shading* half its answer for
 free: a pixel's normal is the normal of the face it landed on, which is what
 `place::Stance`'s nine values are a hand-rolled enumeration of.
 
-**A panel stays a plane, and that is the one thing not folded in.** A wall's
-thickness is not in the art — decision 3 is that argument and it has not changed
-— so a box for a wall would need a depth somebody invented. Worse, a
+~~**A panel stays a plane, and that is the one thing not folded in.**~~
+*(withdrawn — the argument is left standing so that the next person to reach for
+it finds it already answered)*
+
+~~A wall's thickness is not in the art — decision 3 is that argument and it has
+not changed — so a box for a wall would need a depth somebody invented. Worse, a
 zero-thickness box is not the same test as a plane: "the segment overlaps a slab
 of width zero" is a numerical coin toss where "the segment crosses this plane" is
 exact, and the seam rules (decision 16, `on_surface`, `stand_clear`) are all
 stated about a plane and each was a defect found the hard way. Two primitives,
-then, and the pair is honest about which one we can measure: **a plane where only
-one axis is known, a box where the shape was fitted whole.**
+then, and the pair is honest about which one we can measure: a plane where only
+one axis is known, a box where the shape was fitted whole.~~
+
+Two things are wrong with it and the second is the interesting one.
+
+**The coin toss is an argument against zero, not against a box.** Give a wall a
+thickness of two forty-fourths of a tile and the slab test is exactly as
+well-conditioned as the plane test. What the paragraph did was insist the box be
+degenerate and then object to the degeneracy.
+
+**And "the art cannot measure it" is a bound on a *detector*, not on a record.**
+Decision 3 is right and unchanged: no single sprite says how deep a wall is, and
+a detector that invented a depth would be making decision 3's mistake. But this
+whole track is the authoring one — decision 31.2's `authored` row already exists
+and already wins — and the moment a person can write six numbers, "unmeasurable"
+stops being a property of the model and becomes a property of the *fallback*.
+Provenance is then a column of the table, not a second primitive in the shader.
+
+So the vocabulary is **one solid**, and a derived one is a solid with one
+measured axis and a nominal other. What is still not folded in is the **hole**:
+it is a subtraction rather than a body, a box with a bite out of it is two
+primitives or one exception, and the exception already works.
 
 What it costs:
 
@@ -1606,6 +1704,96 @@ The map itself is the other input, and it is not versioned: a `Bake` is one map'
 the caller owns that, and this client has one map. That is stated rather than
 enforced because the alternative — a map that could tell you it had changed —
 would be a facet-wide dirty bit for a case the client does not have.
+
+**38. The tile grid is a broadphase index, and a solid is a body of the world
+that no cell owns.**
+
+Decision 36 made the record a shape and left it *in the tile's own unit square*.
+That last clause is the one carrying the damage, and it is worth naming what it
+has cost, because the bill is already in this file: **every seam here was
+manufactured by cutting geometry on a tile boundary.** The spokes of decision 18
+were a ray slipping between two panels that meet at a corner — and there is a
+corner there only because the wall was cut where the map's storage happens to be
+cut. Decision 16's fraction of exactly one, `on_surface`, the direction
+`stand_clear` nudges a point: three rules, three days, all of them about what
+happens *at a cut*.
+
+So the solid stops being cut. A solid is a box in **world** coordinates with its
+own six numbers, and a cell holds **references** to every solid whose extent
+touches it.
+
+**38.1 Reference, not clip — and that is the whole of the argument.** A ray
+crossing the join tests the same one solid from both cells and gets the same
+answer twice; there is no hairline left to slip through, and the fix is a
+property of the representation rather than a fourth rule about seams. A solid
+overlapping four cells is referenced four times, which costs four `u16`s. It was
+cut into four pieces before, which cost four records *and* the seams between
+them.
+
+The walk is unchanged in shape: the DDA of decision 14 still steps cells, a cell
+still yields a list, and the test is still one slab test. A solid spanning two
+cells may be tested twice on one ray; a visited-set that avoided that would cost
+more, on a ray of a dozen cells, than the redundant test it saves. So it is not
+deduplicated, and the test being exact is what makes that safe.
+
+**38.2 A solid is anchored, and its overhang is bounded — this is the number to
+argue with.** "Relatively free" is right as a model and fatal as an
+implementation detail: the bake is per block (30.4), so a solid anchored outside
+the visible blocks that reaches into them must still be found, and without a
+bound "found" means scanning the map.
+
+The bound: **a solid may not extend further than one tile beyond its anchor**
+in `x` or `y`, where the anchor is the tile the static stands on. `z` is
+unbounded and always was. Two things make this cheap rather than restrictive.
+Nothing *derived* ever exceeds its own tile, so the allowance is only ever spent
+by a hand-written row — and a hand-written row is checked when it is authored,
+where the error message can name the graphic. And the bookkeeping is the owner's:
+a `Baked` block carries, beside its cells, a small **spill** list of the
+references that reach outside its own bounds. A frame pastes the blocks it needs
+and then pastes only the *spill* of the ring around them — which is empty for
+every block in a stock install, so the ring costs a lookup and nothing else.
+
+One tile is the number because it covers what this world's art actually
+overhangs: a stair's tread, an arch's springing, a sign, a balcony. If something
+wants more, the honest change is to raise it here once and re-measure the ring's
+cost, not to special-case a graphic.
+
+**38.3 The pixel's face is the same slab test.** The projection is orthographic,
+so "which face of the solid is this drawn pixel on" is a ray from the camera
+through the pixel against the same box — the same arithmetic, the same code, a
+different origin. That is what gives the stepped lid of `0x0736` three
+horizontal treads instead of two vertical half-walls, and it is why
+`place::Stance`'s nine hand-enumerated values become a derived answer instead of
+a taxonomy to extend. One-sidedness (decision 22) stops being a rule at the same
+time: a box's back face is real, and the artist simply drew no pixels that land
+on it.
+
+Note what does **not** change: the drawn frame. `statics.wgsl` puts the sprite
+where it put it, the G-buffer is still the bridge from a pixel to a world
+surface (30.'s fourth bullet), and the camera has no opinion about any of this.
+That is exactly why the freedom is affordable — a solid is consulted by the
+light and by the normal, and never by the rasteriser.
+
+**38.4 The format grows one indirection, and it is the model's cost, not the
+floor's.** A cell becomes `(offset, count)` into an **index** plane of solid ids,
+and the ids address a **solid** plane. Two textures where there is one, one more
+`textureLoad` in the walk. Decision 30.5 carries the measurement of what WebGL2
+costs here, and the answer is that a storage buffer would be a tidier spelling of
+the same fetch.
+
+The count of solids goes **down**, not up: a flight of five tiles of stair is one
+solid, not five; a run of wall is one per graphic instance rather than one per
+cell it crosses. Today's 18,071 surfaces over 10,212 cells are largely an
+artefact of tile-shaped storage, and 30.6's distribution is measured again after
+the migration rather than assumed to carry over.
+
+**38.5 Nothing may move in the picture on the way, and the migration is
+therefore two steps and not one.** First the ownership changes with the geometry
+held still — cells reference solids, every solid is exactly the box its surface
+was, every scene and the parity test green. Only then may a solid be a shape no
+surface could have been. A step that changes both where geometry lives and what
+it is, is a step where a difference cannot be attributed, and this file has said
+that twice already for smaller changes.
 
 ## Steps
 
@@ -2226,7 +2414,16 @@ would be a facet-wide dirty bit for a case the client does not have.
       What comes out on the street at the end is a fan: narrow at the wall,
       widening with distance, with the soft edge decision 14's penumbra already
       gives it.
-- [ ] **22. A body's footprint.** Decision 34, and it is five changes in the
+- [ ] **22. A body's footprint.** *(absorbed into step 23 — decision 38 makes a
+      footprint a solid narrower than its tile, so building this first would mean
+      writing a flag into the aperture plane in order to delete it two steps
+      later. What survives unchanged is **22.1, the measurement**: a derived
+      solid still needs the band, and `facing::footprint_of` is where it comes
+      from. 22.2's table row is subsumed by the solid verdict of step 23.3.
+      22.3–22.5 are gone: the grid, the walk and the view all learn the general
+      shape instead.)*
+
+      Decision 34, and it is five changes in the
       order that keeps each one testable alone. Nothing here waits on anything
       outside this list, and every step but the last leaves the picture exactly as
       it is — which is the property that makes the last one readable.
@@ -2295,6 +2492,80 @@ would be a facet-wide dirty bit for a case the client does not have.
       it says nothing about depth (`fx + fy`), which no single picture can
       measure; a footprint is one band, not a polygon; and it is per *graphic*,
       so the same picture is the same band on every tile it stands on.
+- [ ] **23. A solid the world owns.** Decision 38, in five changes. The first is
+      the whole risk and the last three are the whole point; 23.1 is deliberately
+      invisible, and that is the property being bought.
+
+      1. **The ownership, with the geometry held still.** `occlusion::Surface`
+         becomes `Solid` — a box in world coordinates plus the fields it already
+         has (`opacity`, the hole flag) — and a cell holds `(offset, count)` into
+         an index plane of solid ids rather than into the solids themselves.
+         Every solid built in this step is exactly the box its surface was: a
+         panel is a slab of nominal thickness on its edge, a lid is a slab of
+         nominal height, a body is its tile. The nominal numbers are chosen so
+         that **no test moves** — where a plane test and a slab test can differ,
+         the slab is the one that must reproduce the plane's answer, and where it
+         cannot, the scene that catches it is the finding.
+
+         **DoD:** every scene in `tests/lighting.rs` and `tests/frame.rs`
+         unchanged to the byte, the parity test green in both implementations,
+         `tests/cost.rs`'s grid assertions re-derived and the new distribution of
+         solids-per-cell printed beside 30.6's old one. And a bench reading:
+         one indirection in the hot loop is the thing most likely to cost
+         something, and it is measured rather than argued.
+      2. **The spill, and the bound.** Decision 38.2: a `Baked` block gains a
+         spill list, the frame pastes the ring's spill, and an authored solid
+         that reaches further than one tile from its anchor is refused at
+         authoring time with the graphic named. Still no geometry that spills —
+         this is the plumbing arriving before its first user, on purpose, because
+         a missing reference is a hole in a shadow that looks exactly like a
+         detector failing.
+
+         **DoD:** a synthetic solid, authored to overhang one tile, that occludes
+         correctly when its anchor's block is *outside* the frame's block set —
+         which is the test that fails if the ring is not pasted; the refusal
+         test; and a cost reading showing the empty ring costs a lookup.
+      3. **The table carries a solid.** `arttable` gains a third verdict and a
+         `FORMAT` bump to 3, with `facing::DETECTOR` bumped for the reason the
+         last bump had: a table written under the old rules describes yesterday's
+         detector exactly and looks perfectly fresh. Derivation is the prism fit
+         that already exists (`tests/prism.rs` scores 0.977 and 0.975 on the
+         staircase, against 0.812 for a wall that is not a prism at all), gated
+         on `CLIMBABLE` first and the score second. `adopt_authored` carries a
+         hand-written solid over a re-derivation, which is already how it works.
+
+         **DoD:** a round trip through the file including a multi-box solid, a
+         stale table refused rather than half-read, and — the one that matters —
+         a graphic whose solid was measured on a machine with no table reads the
+         *same* solid on a machine with one. That is the defect the backlog
+         already names: a prism measured by `Shape::of` is lost through the table
+         today, and the client quietly goes back to reading a stair as a corner.
+      4. **The instrument, which is what makes "by hand" a real mode.** Authoring
+         six numbers per graphic is only tractable with a loop: draw the
+         candidate solid's silhouette over the real sprite, score the
+         intersection over union, show where they disagree, edit the row, look
+         again. Half of it exists — `tests/artshot.rs` writes a graphic with the
+         tile's diamond stroked over it, `tests/prism.rs` scores a fit — and what
+         is missing is the two of them in one run that takes a graphic and a
+         table and says: here is what you wrote, here is what the artist drew,
+         here is the difference.
+
+         **DoD:** the staircase's two graphics authored through it, and a joint
+         and an arch — the two shapes a person reported as "something odd
+         happens" — authored and scored. The number to record is how long one
+         graphic takes a person, because that is what says whether the mode is
+         hundreds of graphics or three.
+      5. **And now the picture changes.** Treads as their own boxes, a wall with a
+         stated thickness, an arch as more than one solid. Each of these is its
+         own reading, taken one at a time against a scene that isolates it, and
+         each may be reverted alone — which is the entire reason 23.1 through
+         23.4 were built without moving a pixel.
+
+         **DoD:** the staircase at Britain's `(1493, 1639)` lit as horizontal
+         treads rather than as two vertical half-walls; `1509,1635` a narrow slab
+         among red panels rather than a full square; and a corner where two walls
+         meet with no light through the join, which is decision 18's spokes
+         closed by geometry rather than by scaling a crossing's length.
 - [ ] **17. The shaft.** The screen-space pass of decision 12, over the mask step
       11 produces — and, once step 16 exists, over the beam from a window too.
       Nothing in this renderer draws air, so a visible shaft is a blur of the lit
@@ -2416,6 +2687,33 @@ Carried from `client.md`'s firelight backlog and still true:
 - Nothing a mobile carries burns — a player holding a torch makes no light.
 - The ambient is a key (F10), not a clock.
 - A light is placed by its tile, not by its sprite.
+
+Found while re-cutting the plan around decision 38 (nothing was built):
+
+- **The renderer's own doc line about WebGL2 reads as a principle and is a dated
+  assumption.** `crates/client/render/src/lib.rs:17` says the ceiling is WebGL2
+  "because the web is a target", written when WebGPU was behind a flag. The
+  ceiling was re-examined and kept — decision 30.5 has the measurement — but the
+  sentence should say what it is: a floor chosen for a target, with a date on the
+  reasoning. The question underneath it is a product question and not a graphics
+  one, and it wants a person: *is the web still a target?*
+- **Decision 22's one-sidedness and `place::Stance`'s nine values are both
+  taxonomies that a solid derives.** Once a pixel's face comes from a slab test
+  (38.3), a stance is an answer rather than an enum to extend, and "a face is
+  one-sided" is a consequence of where the artist put pixels. Neither is worth
+  touching before step 23.5, but both should be *removed* there rather than
+  carried alongside the thing that replaces them — two ways to answer the same
+  question is how a rule and its replacement drift apart.
+- **30.6's distribution does not survive the migration and must be re-measured.**
+  10,212 cells holding 18,071 surfaces is a fact about tile-shaped storage. Under
+  38 a stair is one solid rather than five and a wall is one per instance, so
+  both the count and the per-cell cap mean something else. Step 23.1's DoD asks
+  for the new number; the old one must not be quoted after it.
+- **`Shape::of`'s prism is still lost through the table.** Carried up from the
+  staircase entry below because step 23.3 is now where it is fixed: a client with
+  a table reads a stair as a corner where a client without one measures a solid,
+  which is a table making things *worse* and the exact failure mode decision
+  31.6 was written to avoid.
 
 Found while baking it (step 21.5):
 
@@ -3355,9 +3653,10 @@ Found on a staircase in Britain:
     is a body over *part* of a tile, and `Surface` has no way to say "part of":
     its three kinds are a panel on one edge, a lid, and a body over the whole
     tile. That missing form is the fifth of its kind in this file, which is what
-    turned it from a fix into a decision — an occluder becomes a box in the
-    tile's own coordinates, and a tread is one. Until that lands, a flight of
-    steps occludes as a single box the height of its top tread.
+    turned it from a fix into a decision — an occluder becomes a box, and a tread
+    is one. Until that lands, a flight of steps occludes as a single box the
+    height of its top tread. *(and the box turned out not to live in the tile's
+    own coordinates either — decision 38, step 23)*
   - **`ArtTable` does not carry a prism.** A row is `facing` and `hole`, so a
     solid measured by `Shape::of` on a machine with no table is lost on one that
     has it — the client would quietly go back to reading stairs as corners. It
