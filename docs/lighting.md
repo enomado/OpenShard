@@ -9,6 +9,25 @@ copied.
 
 ## Where the next session starts
 
+**Read decision 25 and the backlog's "found while giving a corner its two
+faces"**. The missing fact the session before named — a corner is two faces and
+the art would not name either — is measured now: `facing::facing_of` answers
+`Facing::Corner`, the stance carries the four of them, `statics.wgsl` resolves
+one per fragment by which half of the picture a pixel is on, and the grid gets
+two panels where it used to get a whole tile. Two of the three open entries at
+that corner are closed by it. **The third is not**, and it is the one to pick up:
+the floor under a wall tile is lit from outside the house, because the exemption
+that keeps a wall's own tile from shadowing it is asked of the *tile* where it
+should be asked of the *pixel* — the attachment already carries what is needed to
+tell a floor pixel from a face.
+
+What the change is worth, measured rather than argued: the detector reads
+**91.9% of the wall statics standing in Britain** where it read 75.7%, and 45.5%
+of the install's wall art where it read 36.3%. The 744 corner statics in that
+difference are what a city has wherever a run of wall turns.
+
+Everything below this line is the session before it.
+
 **Read decision 24 and the backlog's "found at a house corner in Britain"
 first**, and then decision 18, which decision 24 finishes. Four things were
 reported from one picture of a lamp against a house corner; one is fixed and the
@@ -767,7 +786,70 @@ The penumbra that survives is vertical, it was never measured, and it is now:
 **Two of the three defects in that report are not this one**, and both are the
 same missing fact — that a corner is two faces and the art will not name them.
 They are in the backlog under "found at a house corner in Britain", with what
-each needs.
+each needs. **Decision 25 is that fact.**
+
+**25. A corner is two faces, and the art says so as plainly as it says one.**
+
+Decision 3 refused to read an edge off a silhouette, step 15 read one, and
+everything since has been written as though the answer were "one face or
+nothing". A corner was the *nothing*: `Stance::Upright` in the attachment,
+`EDGE_ANY` in the grid, and three separate artefacts following from those two
+fallbacks — a flat 44-pixel band between two continuous runs of wall, both of its
+faces lit whichever side the flame was on, and a whole-tile occluder where two
+panels stand.
+
+The measurement was already being made and then thrown away. `face_of` proposed
+each half of the tile's column in turn and refused the graphic when the *other*
+half held more than a wall's own thickness — so by the time it gave up it had
+measured both halves and found both to be faces. That refusal was the only thing
+between here and an answer.
+
+So the halves are read **twice**, and the order is what makes the change safe:
+
+- **Strictly first**, each half having to be the only face in the picture. That
+  is exactly what the module did before, so every graphic it read reads the same
+  today — 76% of Britain's walls did not move.
+- **Then together**, each half offered the picture on its own. The only way
+  through is that both are faces and each was refused for the other, which is
+  what a corner is. A face beside a *blob* still fails, because the blob is not a
+  face — two failures are not a corner, and that is the property the second pass
+  rests on.
+
+**Measured**: 91.9% of the wall statics standing in Britain, against 75.7%; 45.5%
+of the install's wall art, against 36.3%. 297 corner graphics, 296 of them the
+east-and-south pair a camera can see and one north-and-west. `tests/facing.rs`
+prints all of it and asserts a floor under each, corners included as their own
+count rather than as a share — a tail hidden in a percentage is a tail that can
+go to zero unnoticed.
+
+**A pixel is resolved to one of the two, in `statics.wgsl`, per fragment.** Which
+half of the tile's column the pixel is drawn on is which surface it is a pixel
+of; there is nothing else to ask, and nothing else needs asking. So the
+attachment carries a single face with a single normal, `blit.wgsl` is not
+touched, and `light::sample` has no case for a corner either. Ten stances need
+four bits where six needed three, and **no format changed**: both words had eight
+or more spare above the stance. The four corner values are laid out so the two
+faces come out by arithmetic rather than by a table — `right = FaceNorth +
+(offset >> 1)`, `left = FaceSouth + (offset & 1)` — because the shader does it
+per fragment, and `place.rs` pins those two lines in a test.
+
+**In the grid it is two bits, and two bits is the panel path.** Decision 18's
+`edges` arm already handles a mask with more than one side in it; what changes is
+that a corner stops being `EDGE_ANY` and therefore stops being a *body*. A ray
+running alongside a corner — down the street it stands on — crosses neither of
+its panels and passes, exactly as it does beside the runs of wall either side of
+it. A ray from inside the house to a lamp outside still crosses one of the two
+and is stopped, which is decision 24's leak staying shut.
+
+**What it costs is a free-standing solid's other two sides.** A pillar filling
+its whole tile reads as a corner, because it *is* one — the same two faces drawn
+on the same two edges, and nothing in a silhouette tells a pillar from the corner
+of a building. Shading it as two faces is right. Occluding it as two panels is
+not quite: a building's corner has its north and west sides inside the house,
+where a pillar's are in the open, so a ray clipping a pillar's far corner now
+passes where it used to be stopped by the length rule. It is in the backlog with
+what it would take; it is not a whole-tile answer coming back, because that would
+take the street-lighting back with it.
 
 ## Steps
 
@@ -942,7 +1024,9 @@ each needs.
       of wall tiles is one continuous surface. Held to by two mutations — the
       run reversed, and the run replaced by a constant — each of which fails it.
 
-      Where it went: `render/src/facing.rs` holds `face_of(&Image) -> Option<Face>`
+      Where it went: `render/src/facing.rs` holds `facing_of(&Image) ->
+      Option<Facing>` (`face_of` at the time; decision 25 made the answer a
+      face *or a corner*)
       and `silhouette`, the fixture both the unit tests and the GPU test are
       drawn against (`pub` for the reason `scene.rs`'s rooms are); `StaticAtlas`
       calls it once while packing and keeps the answer on `Sprite`;
@@ -1444,19 +1528,21 @@ Found while measuring a wall's facing out of its art:
   and both have a floor asserted under them, but the floors are *measurements*
   and not targets — the thing they catch is a gate tightened until the feature
   stops applying, which is what the six-pixel `SPILL` did before it was measured.
-- **The remaining quarter of Britain's walls has a shape.** The most-built unread
-  graphics are `0x00DE`/`0x00DD` (roof slabs carrying `WALL`), `0x0081`/`0x0082`
-  (pillars filling a whole tile) and `0x00C8`/`0x00C9`. None of those is a wall
-  standing on one edge, so the honest next move is not a looser gate but a second
-  *kind* of answer — a corner is two faces and could carry both, which is the
-  same shape the occlusion grid would need to stop exempting a whole tile.
-- **A corner could be answered rather than refused.** `0x0104` is an east face
-  and a south face in one picture, and the detector has already measured both
-  halves by the time it gives up. Two faces in the stance would need four more
-  values and a rule for which half of the sprite a pixel is on — which the
-  fragment shader has in `across` already.
+- **The remaining quarter of Britain's walls has a shape** — and decision 25 took
+  two thirds of it. The most-built unread graphics were `0x00DE`/`0x00DD` (roof
+  slabs carrying `WALL`), `0x0081`/`0x0082` (pillars filling a whole tile) and
+  `0x00C8`/`0x00C9`; the pillars read as corners now, and what is left is **8.1%
+  of the statics standing in Britain**, headed by `0x02D8`, `0x02D3`, `0x02D6`
+  and `0x02D0`. The entry's own prediction was right about the shape of the
+  answer: not a looser gate but a second *kind* of it. Whatever is left will want
+  a third, and it is worth printing the new worst list before guessing at one —
+  `tests/facing.rs` does.
+- ~~**A corner could be answered rather than refused.**~~ Done, decision 25, and
+  the estimate in it was exact: four more stances and the rule that a pixel
+  belongs to the face on its own half of the picture, which the fragment shader
+  had in `across` already.
 - **Nothing measures how far a decided face is from the edge except a gate.**
-  The check that caught `0x0171` is a pass/fail inside `face_of`; the *median*
+  The check that caught `0x0171` is a pass/fail inside `facing_of`; the *median*
   and the outlier list that made it obvious were a throwaway script. A graphic
   drifting from zero to two pixels across a client version is invisible until it
   crosses three and vanishes. The sweep prints two shares and could print this
@@ -1464,7 +1550,7 @@ Found while measuring a wall's facing out of its art:
 - **The sweep reads the whole art file to answer a question about 3,212
   graphics.** It takes a couple of seconds, which is fine for an `#[ignore]`d
   test and would not be if it ever moved into CI.
-- **`face_of` is a second walk of pixels the atlas has just copied.** One pass
+- **`facing_of` is a second walk of pixels the atlas has just copied.** One pass
   per graphic, on the frame it is first packed, and the packing pass is already
   touching every one of them. Measurable only on a scroll that introduces four
   hundred graphics at once, which is the frame `StaticAtlas::add` already owns as
@@ -1517,7 +1603,7 @@ Found while asking what an open door does:
   `render/src/doors.rs` and decision 11. What is left of it is the shape of the
   fix rather than the fix — see the two items below.
 - **The shading half of a door already works.** 558 graphics carry `DOOR`; the
-  ones `facing::face_of` reads sit on a tile edge as squarely as a plain wall —
+  ones `facing::facing_of` reads sit on a tile edge as squarely as a plain wall —
   median distance zero, none over two pixels — so an open leaf is shaded along
   the axis it swung to. Only the occlusion half is wrong.
 - **The door table is thirteen families and a shard's own door is not in it.**
@@ -1541,10 +1627,12 @@ Found at a house corner in Britain:
 
 Four things were reported from one picture — a lamp in the street at
 `(1441, 1693)`, against the corner of the house whose corner tile is
-`(1441, 1692)`. One of them is closed by decision 24; the other three are here,
-and **three of the four are the same missing fact**: `facing::face_of` refuses a
-corner graphic, so `0x0033` is `EDGE_ANY` in the grid and `Stance::Upright` in
-the attachment, and every consequence below follows from one of those two.
+`(1441, 1692)`. One of them is closed by decision 24 and two more by decision 25;
+what is left is the last entry below. **Three of the four were the same missing
+fact**: `facing` refused a corner graphic, so `0x0033` was `EDGE_ANY` in the grid
+and `Stance::Upright` in the attachment, and every consequence below follows from
+one of those two. It is measured now — `facing_of` answers `Facing::Corner` — and
+the entries it closes are struck through with what the fix turned out to be.
 
 - ~~**A ray at 45° goes through a house corner into the room behind it.**~~
   Closed by decision 24. What is worth keeping of it is the shape of the report:
@@ -1552,7 +1640,18 @@ the attachment, and every consequence below follows from one of those two.
   per-tile diagram walks straight over it. `tests/onsite.rs` samples at a third
   of a tile for that reason, and that is what made it visible on the map rather
   than only in a built scene.
-- **A corner's two faces are lit as one.** `Stance::Upright` has no outward
+- ~~**A corner's two faces are lit as one.**~~ Closed by decision 25, and the
+  estimate under it was right: widening the stance to four bits was three
+  constants and no format change. What is worth keeping is the shape of the fix,
+  because it is the shape any *pair* of surfaces in one picture will want — the
+  corner exists in the instance word and nowhere else, and `statics.wgsl`
+  resolves it per fragment, so every reader downstream of the world passes still
+  sees one surface with one normal.
+- ~~**A corner's pixels all claim the middle of their tile.**~~ Closed by the
+  same. A corner's halves now map onto their own edges, so a run of wall, its
+  corner and the run going the other way are one continuous surface — which is
+  step 15's seam property arriving at the place it is most visible.
+- **A corner's two faces are lit as one (as written).** `Stance::Upright` has no outward
   normal, so `blit.wgsl`'s `faces` is skipped entirely and both of the faces the
   art draws are as bright as each other — including the one turned away from the
   flame, which the corner itself occludes. Decision 22 fixed exactly this for a
@@ -1569,7 +1668,7 @@ the attachment, and every consequence below follows from one of those two.
   the two by which half of the sprite a pixel is on, which the shader has as
   `across`. `occlusion::edges_of` then returns two bits and the pierce path
   handles a two-edge mask already.
-- **A corner's pixels all claim the middle of their tile.** The same
+- **A corner's pixels all claim the middle of their tile (as written).** The same
   `Stance::Upright`, and the other half of what step 15 gave a wall: a faced wall
   spreads its pixels along the edge it stands on and reads as one continuous
   surface with its neighbours, and a corner between two such runs is a flat
@@ -1592,6 +1691,39 @@ the attachment, and every consequence below follows from one of those two.
   floor that shadowed the thing standing on it would be a worse artefact than the
   one being removed. The pier entry above is the same question from the other
   side.
+
+Found while giving a corner its two faces:
+
+- **A pillar in the open loses two of its four sides.** A solid filling its whole
+  tile reads as a corner, which is right about the *picture* and half right about
+  the *tile*: a building's corner has its north and west sides inside the house
+  and a free-standing pillar's are in the street, so a ray clipping a pillar's far
+  corner now passes where the length rule used to stop it. The two are one
+  silhouette and no gate can tell them apart. What can is the **map**: a corner
+  has a wall on the tile beyond each of its two panels and a pillar has open
+  ground on all four sides, which `occlusion::collect` is already walking. Until
+  then it is a sliver of light past a pillar against a room leaking into a
+  street, and this file has taken the second every time.
+- **Decision 22's exemption is a whole row or column, and a street lamp can stand
+  in one.** A flame in a wall's own line is treated as part of that wall, because
+  a lamp mounted anywhere along a run lights all of it. Nothing distinguishes that
+  from a lamp standing in the street *due south* of a north-south run — which is
+  where the lamp in the Britain report stands — so the run's back faces are lit as
+  brightly as its front ones for the whole length of the column. It is the same
+  placeholder the entry below names from the other end: what answers it is placing
+  a mounted light outside the plane its tile names, after which the exemption can
+  go entirely. Where it bites: `scene::house_corner_named_by_its_art` has to put
+  its lamp north-east of the corner rather than due south, because due south the
+  scene would be measuring the exemption instead of the geometry.
+- **A corner is not in the elevation view.** `plan::elevation` unrolls one run of
+  one face — `wall.face` is a single `Face` — so the instrument that made
+  decisions 22 and 23 visible cannot draw the join a corner makes between two
+  runs, which is exactly where a seam artefact would now show. It is the same
+  shape as `mark_seams` and wants the run to be a list of faces rather than one.
+- **A built scene still gets `EDGE_ANY` unless it is handed art.** Three scenes
+  now carry silhouettes and the rest do not, so the backlog entry above about
+  thin coverage of the *panel* path is one scene better and otherwise unchanged.
+  `scene::corner_art` is the place a fourth would be added.
 
 Found while writing this plan:
 

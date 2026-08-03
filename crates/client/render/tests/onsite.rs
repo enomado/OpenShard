@@ -125,14 +125,14 @@ fn what_the_lighting_knows_about_a_place() {
             for item in map.statics_at(x, y) {
                 let graphic = Graphic(item.tile);
                 let tile = tiledata.static_tile(item.tile);
-                let face = atlas.sprite(graphic).and_then(|sprite| sprite.face);
+                let facing = atlas.sprite(graphic).and_then(|sprite| sprite.facing);
                 println!(
-                    "({x}, {y}) z {:>4}  {graphic:?}  h {:>3}  face {:?}  stance {:?}  \
+                    "({x}, {y}) z {:>4}  {graphic:?}  h {:>3}  facing {:?}  stance {:?}  \
                      opacity {:>3}  burns {}",
                     item.z,
                     tile.height,
-                    face,
-                    Stance::of(tile, face),
+                    facing,
+                    Stance::of(tile, facing),
                     occlusion::opacity(graphic, tile),
                     light::burns(graphic, tile),
                 );

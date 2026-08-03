@@ -169,7 +169,7 @@ pub fn collect(
                 // answers the second, measured once when the atlas packed this
                 // sprite. See `crate::place::Stance` and `crate::facing`.
                 place: crate::place::Place {
-                    stance: crate::place::Stance::of(tile, sprite.face),
+                    stance: crate::place::Stance::of(tile, sprite.facing),
                     ..crate::place::Place::of_static(Point::new(item.x, item.y, item.z))
                 },
                 depth: order.to_depth(base),
@@ -359,7 +359,7 @@ mod tests {
                 du: 0.0,
                 dv: 0.0,
             },
-            face: None,
+            facing: None,
         };
         let on = |x: f32, y: f32| on_screen(&camera, Vec2::new(x, y), &sprite);
 

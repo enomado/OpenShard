@@ -125,11 +125,14 @@ const SUB_TILE: f32 = 127.0;
 const KIND_NOTHING: u32 = 0u;
 
 // The third channel is `z + 128` in its low eight bits and the sprite's stance in
-// three of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
+// four of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
 // writes it. The four faces are the only values this pass reads: a flat or
-// faceless surface has no direction to be lit from.
+// faceless surface has no direction to be lit from, and a **corner** never
+// arrives here at all — `statics.wgsl` has already resolved it to the face of the
+// half the fragment was drawn on, because a corner's two surfaces are two halves
+// of one picture and one pixel is on one of them.
 const PLACE_STANCE_SHIFT: u32 = 8u;
-const PLACE_STANCE_MASK: u32 = 7u;
+const PLACE_STANCE_MASK: u32 = 15u;
 const PLACE_Z_MASK: u32 = 255u;
 const STANCE_FACE_NORTH: u32 = 2u;
 const STANCE_FACE_EAST: u32 = 3u;

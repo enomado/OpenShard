@@ -112,11 +112,11 @@ const HALF_TILE_WIDTH: f32 = TILE_WIDTH * 0.5;
 // centre is, since that edge stands on the diamond's bottom vertex.
 const HALF_TILE_HEIGHT: f32 = 22.0;
 
-// `crate::place::Stance`, in the three bits `Place::packed` writes it to. The
+// `crate::place::Stance`, in the four bits `Place::packed` writes it to. The
 // numbers are pinned on the Rust side; nothing but a person reading both files
 // can check that these agree with them.
 const STANCE_SHIFT: u32 = 16u;
-const STANCE_MASK: u32 = 7u;
+const STANCE_MASK: u32 = 15u;
 // And where it rides in the *attachment*, which is a different word: the third
 // channel is a `z + 128` in the low eight bits of a `u16`, and the eight above it
 // were spare. `blit.wgsl` reads it back with the same shift, and
@@ -128,6 +128,12 @@ const STANCE_FACE_NORTH: u32 = 2u;
 const STANCE_FACE_EAST: u32 = 3u;
 const STANCE_FACE_SOUTH: u32 = 4u;
 const STANCE_FACE_WEST: u32 = 5u;
+// The first of the four corner stances, which are two faces in one number: the
+// right half's face is `STANCE_FACE_NORTH + (offset >> 1)` and the left half's is
+// `STANCE_FACE_SOUTH + (offset & 1)`. Laid out for that arithmetic on purpose —
+// see `crate::place::Stance::CornerNorthSouth`, where the same two lines are
+// pinned in a test.
+const STANCE_CORNER: u32 = 6u;
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.
@@ -228,12 +234,29 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // `crate::place::Place::packed` put them together. A discarded fragment
     // never reaches this line, so what the attachment holds is what is visible.
     let base = f32(in.place.y & 0xFFu) - 128.0;
-    let stance = (in.place.y >> STANCE_SHIFT) & STANCE_MASK;
 
     // Where this pixel is on the screen relative to its tile: `across` from the
     // column the sprite is centred on, `down` from the tile's own centre row.
     // Both are what the projection is inverted through below.
     let across = in.pixel_x - in.middle_x;
+
+    // A **corner** is two faces in one picture — the client draws every
+    // building's corner that way — and which of them a pixel is a pixel *of* is
+    // which half of the tile's column it was drawn on. So the corner is resolved
+    // here, per fragment, and nothing downstream ever sees one: what goes into
+    // the attachment is a single face with a single outward normal, which is what
+    // `blit.wgsl` knows how to light. Before this a corner was `Upright` — a flat
+    // 44-pixel band between two continuous runs of wall, lit identically on the
+    // side turned away from the flame. See `crate::facing::Facing::on_half`.
+    var stance = (in.place.y >> STANCE_SHIFT) & STANCE_MASK;
+    if stance >= STANCE_CORNER {
+        let offset = stance - STANCE_CORNER;
+        if across > 0.0 {
+            stance = STANCE_FACE_NORTH + (offset >> 1u);
+        } else {
+            stance = STANCE_FACE_SOUTH + (offset & 1u);
+        }
+    }
     let down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
     // How far along a *face's* edge this pixel is, before the face says which
     // direction that edge runs in. One division, shared by the four cases.
@@ -255,7 +278,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     //
     // An **upright** picture with no face is the middle of its tile, and that is
     // a statement about what is *not* known rather than a shortcut: a tree, a
-    // corner piece, a wall the detector would not guess at. Reading the
+    // post, a wall the detector would not guess at. Reading the
     // horizontal offset as `x - y` for those, as this did for one commit, spreads
     // their pixels along the one direction no wall ever runs.
     //

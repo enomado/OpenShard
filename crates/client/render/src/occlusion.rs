@@ -77,7 +77,7 @@
 
 use openshard_protocol::wire::Graphic;
 
-use crate::facing::Face;
+use crate::facing::{Face, Facing};
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
@@ -149,18 +149,30 @@ pub fn opposite(side: u8) -> u8 {
 
 /// Which sides of its tile a static occupies, from what the art said about it.
 ///
-/// `None` — a corner, a post, a tree, a graphic no atlas was offered — is
-/// [`EDGE_ANY`]: the whole-tile answer, unchanged from before faces existed.
-/// A [`Stance::Flat`](crate::place::Stance) static is not asked at all; see
+/// `None` — a post, a tree, a graphic no atlas was offered — is [`EDGE_ANY`]:
+/// the whole-tile answer, unchanged from before faces existed. A **corner** is
+/// two bits, which is the panel path with two panels on it and not a new case —
+/// see the `edges` arm of `light::walk_cells` and of `blit.wgsl`'s `walk`. A
+/// [`Stance::Flat`](crate::place::Stance) static is not asked at all; see
 /// [`Occlusion::add`].
-pub fn edges_of(face: Option<crate::facing::Face>) -> u8 {
-    match face {
-        Some(crate::facing::Face::North) => EDGE_NORTH,
-        Some(crate::facing::Face::East) => EDGE_EAST,
-        Some(crate::facing::Face::South) => EDGE_SOUTH,
-        Some(crate::facing::Face::West) => EDGE_WEST,
-        None => EDGE_ANY,
-    }
+///
+/// Two bits and not four is the whole of what decision 25 buys the grid: a ray
+/// running *alongside* a corner — down the street the corner stands on — crosses
+/// neither of its two panels and passes, exactly as it does beside the runs of
+/// wall either side of it, where before it was stopped by a whole-tile occluder.
+pub fn edges_of(facing: Option<crate::facing::Facing>) -> u8 {
+    let Some(facing) = facing else {
+        return EDGE_ANY;
+    };
+    facing
+        .faces()
+        .map(|face| match face {
+            Face::North => EDGE_NORTH,
+            Face::East => EDGE_EAST,
+            Face::South => EDGE_SOUTH,
+            Face::West => EDGE_WEST,
+        })
+        .fold(0, |mask, side| mask | side)
 }
 
 /// How much of a ray crossing a pane of glass is stopped.
@@ -327,7 +339,15 @@ impl Occlusion {
     /// A tile outside [`Occlusion::bounds`] is dropped rather than clamped: it
     /// is a caller walking wider than it asked the grid for, and folding it onto
     /// the edge would put a wall where the map has none.
-    pub fn add(&mut self, x: u16, y: u16, z: i8, graphic: Graphic, tile: &StaticTile, face: Option<Face>) {
+    pub fn add(
+        &mut self,
+        x: u16,
+        y: u16,
+        z: i8,
+        graphic: Graphic,
+        tile: &StaticTile,
+        facing: Option<Facing>,
+    ) {
         let opacity = opacity(graphic, tile);
         if opacity == CLEAR {
             return;
@@ -352,7 +372,7 @@ impl Occlusion {
             // stop three quarters less light than it does today.
             edges: match tile.flags.is_background() {
                 true => 0,
-                false => edges_of(face),
+                false => edges_of(facing),
             },
         };
         self.cells[index] = Some(match self.cells[index] {
@@ -576,7 +596,11 @@ pub fn collect(
     // the rim: the grid is grown by the widest pool's reach and the atlas by what
     // is drawn, and those are not the same rectangle. Both fall back the safe
     // way. See `Occlusion::add` and `crate::facing`.
-    let face = |graphic: Graphic| atlas.and_then(|atlas| atlas.sprite(graphic)).and_then(|s| s.face);
+    let facing = |graphic: Graphic| {
+        atlas
+            .and_then(|atlas| atlas.sprite(graphic))
+            .and_then(|s| s.facing)
+    };
 
     crate::statics::for_each_static_in(map, bounds, |item| {
         let tile = tiledata.static_tile(item.tile);
@@ -595,7 +619,7 @@ pub fn collect(
                 item.z,
                 Graphic(item.tile),
                 tile,
-                face(Graphic(item.tile)),
+                facing(Graphic(item.tile)),
             );
         }
     });
@@ -617,7 +641,7 @@ pub fn collect(
                 item.at.z,
                 item.graphic,
                 tile,
-                face(item.graphic),
+                facing(item.graphic),
             );
         }
     }
@@ -734,6 +758,53 @@ mod tests {
             })
         );
         assert_eq!(occlusion.at(103, 103), None, "its neighbour is open ground");
+    }
+
+    /// A corner stands on **two** of its tile's sides, and on the other two it
+    /// stands on nothing.
+    ///
+    /// The grid's half of decision 25. Two bits and not four is what the walk
+    /// reads as a panel rather than as a body — see the `edges` arm of
+    /// `light::walk_cells` — so a ray crossing the sides the corner does
+    /// not stand on passes, exactly as it does beside the runs of wall either
+    /// side of it. Before this every corner in the world was `EDGE_ANY`.
+    #[test]
+    fn a_corner_stands_on_the_two_sides_its_art_named() {
+        use crate::facing::{Face, Facing};
+
+        let corner = Facing::Corner {
+            right: Face::East,
+            left: Face::South,
+        };
+        assert_eq!(edges_of(Some(corner)), EDGE_EAST | EDGE_SOUTH);
+        // And each of the four pairings, so that a mask built from the right
+        // half's answer twice would be caught.
+        assert_eq!(
+            edges_of(Some(Facing::Corner {
+                right: Face::North,
+                left: Face::West
+            })),
+            EDGE_NORTH | EDGE_WEST,
+        );
+        // A plain wall is still one side, and a graphic nothing measured is still
+        // the whole tile: neither of those moved.
+        assert_eq!(edges_of(Some(Facing::One(Face::South))), EDGE_SOUTH);
+        assert_eq!(edges_of(None), EDGE_ANY);
+
+        let mut occlusion = Occlusion::new(bounds());
+        occlusion.add(
+            102,
+            103,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Some(corner),
+        );
+        assert_eq!(
+            occlusion.at(102, 103).unwrap().edges,
+            EDGE_EAST | EDGE_SOUTH,
+            "the cell did not take the corner's two sides",
+        );
     }
 
     /// Stairs count as half their height, the way every other reader of this

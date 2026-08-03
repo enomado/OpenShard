@@ -1,6 +1,6 @@
 //! What a real install's walls say about which edge they stand on.
 //!
-//! [`facing::face_of`](openshard_client_render::facing::face_of) is unit-tested
+//! [`facing::facing_of`](openshard_client_render::facing::facing_of) is unit-tested
 //! on silhouettes drawn by hand, which says the arithmetic is right and nothing
 //! about whether the client's own art matches the shapes it was drawn against.
 //! This is the other half: every `WALL` graphic the install ships, offered to the
@@ -27,7 +27,7 @@
 
 use std::collections::BTreeMap;
 
-use openshard_client_render::facing::{self, Face};
+use openshard_client_render::facing::{self, Face, Facing};
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
@@ -35,7 +35,8 @@ use openshard_uofiles::tiledata::{TileData, TileFlags};
 
 /// How much of the install's wall *art* this has to be able to read.
 ///
-/// Measured, not chosen: the sweep produced 36.3% the day it was written. The
+/// Measured, not chosen: the sweep produced 45.5% the day corners were added to
+/// it, where it produced 36.3% with faces alone. The
 /// floor is under it by a margin, because the number this catches is a gate
 /// tightened until the feature stops applying — not a version of the art with a
 /// few graphics more.
@@ -44,14 +45,23 @@ use openshard_uofiles::tiledata::{TileData, TileFlags};
 /// fireplaces, arches, posts, corner pieces and whole multi-tile buildings
 /// shipped as one graphic, and none of those is a wall standing on one edge of
 /// one tile. See [`britain`] for the share that decides how the frame looks.
-const MUST_DECIDE_ART: f64 = 0.30;
+const MUST_DECIDE_ART: f64 = 0.40;
 
 /// And how much of what a city is actually built out of.
 ///
-/// Measured at 75.7% over the tiles below. This is the number the step is for: it
-/// says that a wall the player is looking at is a wall this can shade along the
-/// axis it runs on.
-const MUST_DECIDE_MAP: f64 = 0.70;
+/// Measured at 91.9% over the tiles below, where faces alone read 75.7%: the
+/// difference is 744 corner statics, which is what a city has between its runs
+/// of wall. This is the number the step is for — it says that a wall the player
+/// is looking at is a wall this can shade along the axis it runs on.
+const MUST_DECIDE_MAP: f64 = 0.85;
+
+/// How many of the install's wall graphics have to come back as a **corner**.
+///
+/// Its own floor and not a share, because corners are a small tail of the table
+/// and a percentage would hide them going to zero. Measured at 297 graphics —
+/// 296 of them the east-and-south pair a camera can see and one north-and-west —
+/// and the floor is well under it for the reason the two above are.
+const MUST_READ_CORNERS: usize = 100;
 
 /// The tiles the map sweep reads: Britain, from the bank down to the docks.
 /// Wide enough to hold several districts, so the answer is not one architect's.
@@ -71,21 +81,39 @@ fn every_wall_graphic_the_client_ships_is_offered_to_the_detector() {
     // off the silhouette by hand before the code was written — see the module
     // header of `facing.rs`.
     for (id, want) in [
-        (0x0100u16, Some(Face::East)), // marble wall, running along +y
-        (0x0007, Some(Face::South)),   // the same shape on the other axis
-        (0x0063, Some(Face::South)),   // a low garden wall, its top surface drawn
-        (0x0104, None),                // a corner: two faces at once
-        (0x0006, None),                // and another
-        (0x0009, None),                // a post: no edge at all
-        (0x0082, None),                // a pillar filling its whole tile
+        // A marble wall running along +y, and the same shape on the other axis.
+        (0x0100u16, Some(Facing::One(Face::East))),
+        (0x0007, Some(Facing::One(Face::South))),
+        // A low garden wall, with its top surface drawn.
+        (0x0063, Some(Facing::One(Face::South))),
+        // The corners: two faces at once, and both of them read. These were the
+        // `None`s this test pinned before decision 25 — the pair a camera can
+        // see, which is what every corner the client ships is.
+        (0x0104, Some(CORNER)),
+        (0x0006, Some(CORNER)),
+        // A post: no edge at all, and still none. Its base is a few columns wide
+        // and level, so neither half can be fitted with a 45° run and two
+        // failures are not a corner.
+        (0x0009, None),
+        // And a **pillar filling its whole tile**, which was undecided before
+        // decision 25 and is now the same answer as a corner — because that is
+        // what it is. A solid standing on the whole of its tile shows the two
+        // faces a camera can see, drawn on the two tile edges, and there is
+        // nothing in the silhouette that tells it from the corner of a building.
+        // Shading it as two faces is right; what it costs is in the plan's
+        // backlog, where it belongs — a free-standing pillar's `N` and `W` sides
+        // are no longer occluders, and unlike a building's corner those are
+        // sides the light can be on.
+        (0x0082, Some(CORNER)),
     ] {
         let image = art.static_art(Graphic(id)).expect("read").expect("art");
-        assert_eq!(facing::face_of(&image), want, "{id:#06X}");
+        assert_eq!(facing::facing_of(&image), want, "{id:#06X}");
     }
 
     let mut walls = 0usize;
     let mut faces: BTreeMap<String, usize> = BTreeMap::new();
     let mut undecided: Vec<u16> = Vec::new();
+    let mut corners = 0usize;
     for id in 0..=u16::MAX {
         if !is_wall(&tiledata, id) {
             continue;
@@ -94,8 +122,11 @@ fn every_wall_graphic_the_client_ships_is_offered_to_the_detector() {
             continue;
         };
         walls += 1;
-        match facing::face_of(&image) {
-            Some(face) => *faces.entry(format!("{face:?}")).or_default() += 1,
+        match facing::facing_of(&image) {
+            Some(facing) => {
+                corners += usize::from(matches!(facing, Facing::Corner { .. }));
+                *faces.entry(label(facing)).or_default() += 1;
+            }
             None => undecided.push(id),
         }
     }
@@ -138,6 +169,17 @@ fn every_wall_graphic_the_client_ships_is_offered_to_the_detector() {
     // assertion and is false. It is the pair that exists, plus the fact that the
     // other two are vanishingly rare rather than absent: a handful of lattices
     // and gates read as west, and the detector is allowed to say so.
+    // And the corners, which were every one of them undecided before decision
+    // 25. A floor under them for the reason there is one under the faces: a
+    // detector that quietly stopped reading corners would go back to putting a
+    // whole-tile occluder on every building's corner, and nothing else here
+    // would say so.
+    println!("corners:                {corners}");
+    assert!(
+        corners >= MUST_READ_CORNERS,
+        "only {corners} corner graphics were read, under the floor of {MUST_READ_CORNERS}",
+    );
+
     let count = |face: Face| faces.get(&format!("{face:?}")).copied().unwrap_or(0);
     assert!(count(Face::South) > 100, "no south faces: {faces:?}");
     assert!(count(Face::East) > 100, "no east faces: {faces:?}");
@@ -164,7 +206,7 @@ fn britain_s_walls_are_read_where_they_stand() {
 
     // Read once per graphic, the way the atlas does: the answer is a property of
     // the picture, and a city repeats its pictures thousands of times.
-    let mut known: BTreeMap<u16, Option<Face>> = BTreeMap::new();
+    let mut known: BTreeMap<u16, Option<Facing>> = BTreeMap::new();
     let mut standing = 0usize;
     let mut decided = 0usize;
     let mut faces: BTreeMap<String, usize> = BTreeMap::new();
@@ -177,16 +219,16 @@ fn britain_s_walls_are_read_where_they_stand() {
                     continue;
                 }
                 standing += 1;
-                let face = *known.entry(item.tile).or_insert_with(|| {
+                let facing = *known.entry(item.tile).or_insert_with(|| {
                     art.static_art(Graphic(item.tile))
                         .ok()
                         .flatten()
-                        .and_then(|image| facing::face_of(&image))
+                        .and_then(|image| facing::facing_of(&image))
                 });
-                match face {
-                    Some(face) => {
+                match facing {
+                    Some(facing) => {
                         decided += 1;
-                        *faces.entry(format!("{face:?}")).or_default() += 1;
+                        *faces.entry(label(facing)).or_default() += 1;
                     }
                     None => *worst.entry(item.tile).or_default() += 1,
                 }
@@ -227,6 +269,23 @@ fn britain_s_walls_are_read_where_they_stand() {
         share * 100.0,
         MUST_DECIDE_MAP * 100.0,
     );
+}
+
+/// The corner every building in the client is built with: the two faces an
+/// isometric camera can see.
+const CORNER: Facing = Facing::Corner {
+    right: Face::East,
+    left: Face::South,
+};
+
+/// One verdict, as the key a count is tallied under. A corner is one bucket and
+/// not two, because a graphic is one picture and the question is how many
+/// pictures were read.
+fn label(facing: Facing) -> String {
+    match facing {
+        Facing::One(face) => format!("{face:?}"),
+        Facing::Corner { right, left } => format!("{right:?}+{left:?}"),
+    }
 }
 
 fn client() -> Option<std::path::PathBuf> {

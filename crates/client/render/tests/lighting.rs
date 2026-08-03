@@ -652,6 +652,68 @@ fn a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it() {
     );
 }
 
+/// A corner's two faces are lit as two surfaces, not as one tile.
+///
+/// The other half of the same report, and the half decision 24 could not reach:
+/// a corner whose art named no edge was `Stance::Upright`, which has no outward
+/// normal at all — so `blit.wgsl`'s facing test was skipped for it and both of
+/// the faces the picture draws came out equally bright, including the one the
+/// corner itself stands between the flame and. Decision 22 fixed exactly this for
+/// a wall and could not reach a corner, because there was nothing in the
+/// attachment to fix it with.
+///
+/// The lamp stands north-east of the corner — see
+/// [`scene::house_corner_named_by_its_art`] for why that is the one quadrant that
+/// can say this — so the corner's **east** face looks at it and its **south**
+/// face looks away. Both samples are on the corner's own tile, at the same
+/// height, differing in nothing but which surface they are a point of, which is
+/// the whole claim: one tile, two answers.
+///
+/// What says the renderer agrees is two other tests. `frame.rs`'s
+/// `a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on` is what puts
+/// those faces into the attachment per half, and the GPU parity fixture is what
+/// says the shader reads them the way `light::sample` does here.
+#[test]
+fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
+    use openshard_client_render::facing::Face;
+
+    let scene = scene::house_corner_named_by_its_art();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+    let (cx, cy) = (f32::from(CENTRE.0), f32::from(CENTRE.1));
+
+    // The south face lies on the `y1` line of the corner's tile, halfway along
+    // it; the east face on the `x1` line. Both a step of the attachment's own
+    // fraction inside the tile, which is where `statics.wgsl` writes them — see
+    // `INSIDE`, and decision 16 for what a clean 1 would do to the walk.
+    let inside = 1.0 - 1.0 / 127.0;
+    let reach = |at: Vec2, face: Face| {
+        let spot = Spot {
+            at,
+            z: f32::from(scene::WALL_HEIGHT) / 2.0,
+            face: Some(face),
+        };
+        light::sample(spot, &lighting)
+            .reaches
+            .iter()
+            .find(|reach| reach.within)
+            .map_or(0.0, |reach| reach.through * reach.cone)
+    };
+    // `cone` is where a surface's facing lands — the same number a beam does,
+    // because both are "how much of this flame is turned this way".
+    let towards = reach(Vec2::new(cx + inside, cy + 0.5), Face::East);
+    let away = reach(Vec2::new(cx + 0.5, cy + inside), Face::South);
+
+    assert!(
+        towards > 0.5,
+        "the corner's east face does not see the lamp standing east of it: {towards}{picture}",
+    );
+    assert!(
+        away < 1e-6,
+        "the corner's south face is lit by a flame behind it: {away}{picture}",
+    );
+}
+
 /// A wall throws a shadow across the ground away from the sun, and the ground
 /// on the sun's side stays lit.
 ///

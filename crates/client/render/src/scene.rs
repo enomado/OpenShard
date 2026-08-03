@@ -53,15 +53,20 @@ pub const WALL_EAST: Graphic = Graphic(0x000B);
 
 /// And the piece where the two runs meet, whose art names no edge at all.
 ///
-/// **The whole point of it is that it is faceless.** A corner is two faces in one
-/// picture, and `facing::face_of` refuses rather than guesses — so the occlusion
-/// grid falls back to [`crate::occlusion::EDGE_ANY`], the whole-tile answer, and
-/// the sprite falls back to [`crate::place::Stance::Upright`]. Measured on the
-/// install: Britain's corner at `(1441, 1692)` is graphic `0x0033`, and the atlas
-/// answers `None` for it. This scene reproduces that by leaving the graphic out
-/// of its own atlas, which is the same `None` by the same path — see
-/// `occlusion::collect`, where the face of a graphic the atlas does not hold and
-/// the face of a picture the detector refused are one expression.
+/// **The whole point of it is that it is faceless.** [`house_corner`] leaves this
+/// graphic out of its own atlas, so the occlusion grid falls back to
+/// [`crate::occlusion::EDGE_ANY`], the whole-tile answer, and the sprite falls
+/// back to [`crate::place::Stance::Upright`] — which is what a corner *was*
+/// before decision 25, when `facing::facing_of` refused one rather than reading
+/// it. The `None` arrives by the same expression a refused picture's would: see
+/// `occlusion::collect`, where the facing of a graphic the atlas does not hold
+/// and the facing of a picture the detector would not name are one lookup.
+///
+/// It is still the case worth having a scene for, because the detector still
+/// refuses things that stand up — a post, a tree, a multi-tile building shipped
+/// as one graphic — and every one of those is this cell.
+/// [`house_corner_named_by_its_art`] is the same house with the picture the
+/// client actually ships, which reads as two faces.
 pub const CORNER: Graphic = Graphic(0x000C);
 
 /// A pane of glass. `WINDOW` is what the reference's line of sight tests
@@ -396,7 +401,29 @@ fn south_faced_wall() -> StaticAtlas {
 /// detector might one day read — see the corner entry in `docs/lighting.md`'s
 /// backlog, which is what would then have to change.
 fn corner_of_a_house() -> StaticAtlas {
-    StaticAtlas::pack([
+    corner_art(None)
+}
+
+/// The same house with a **picture for its corner**: the two faces a camera can
+/// see, drawn in one 44-wide sprite, which is what the client's own corner
+/// graphics are and what [`crate::facing::facing_of`] now reads as a corner.
+///
+/// The pair with [`corner_of_a_house`], and the pair is the point: one house is
+/// built out of a corner the art would not name and the other out of one it
+/// would, and everything else about them is identical. `docs/lighting.md`,
+/// decision 25.
+fn corner_of_a_house_the_art_names() -> StaticAtlas {
+    corner_art(Some(crate::facing::corner_silhouette(
+        crate::facing::Face::East,
+        crate::facing::Face::South,
+        WALL_HEIGHT.into(),
+    )))
+}
+
+/// The two runs' silhouettes, and whatever the corner between them is a picture
+/// of — one function so the two houses cannot drift into two arrangements.
+fn corner_art(corner: Option<openshard_uofiles::image::Image>) -> StaticAtlas {
+    let runs = [
         (
             WALL,
             crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
@@ -405,8 +432,8 @@ fn corner_of_a_house() -> StaticAtlas {
             WALL_EAST,
             crate::facing::silhouette(crate::facing::Face::East, WALL_HEIGHT.into()),
         ),
-    ])
-    .expect("two silhouettes fit")
+    ];
+    StaticAtlas::pack(runs.into_iter().chain(corner.map(|art| (CORNER, art)))).expect("three fit")
 }
 
 /// How long each of [`house_corner`]'s two runs is, in tiles past the corner.
@@ -444,8 +471,61 @@ pub const CORNER_RUN: u16 = 3;
 ///
 /// `docs/lighting.md`, decision 24.
 pub fn house_corner() -> Scene {
+    corner_house(
+        "the corner of a house with a lamp outside it",
+        corner_of_a_house(),
+        (0, 1),
+    )
+}
+
+/// **The same corner, with a picture the detector reads.**
+///
+/// [`house_corner`] is the corner as this pass had it: a graphic whose art names
+/// no edge, so the tile is `EDGE_ANY` in the grid and `Upright` in the
+/// attachment. This one gives that graphic the two faces a camera can see, which
+/// is what the client's own corner art is — so the tile carries two panels rather
+/// than four, and each of its halves is a surface with a direction it looks in.
+///
+/// What it is for is the thing [`house_corner`] cannot state: that the face
+/// turned towards the lamp and the face turned away from it stop being equally
+/// bright, which is what a corner with no stance could not do. Decision 22 gave a
+/// wall a side to be lit from and could not reach a corner, because
+/// `Stance::Upright` has no outward normal at all.
+///
+/// **The lamp stands north-east of the corner here and due south in
+/// [`house_corner`]**, and that is not tidying. There is only one quadrant a lamp
+/// can be in and light one of these two faces without the other:
+///
+/// - Due *south* is in front of the south face and behind the east one, which is
+///   the arrangement this wants — but it is also in the **column** the east face
+///   stands on, and decision 22 exempts a flame standing in a wall's own line
+///   because a lamp mounted anywhere along a run of wall lights all of it. The
+///   scene would be measuring the exemption rather than the geometry. Due east
+///   is the same thing mirrored, in the south face's own row.
+/// - Diagonally *outside* the corner — south-east — is in front of both.
+/// - **North-east** is in front of the east face, behind the south one, and in
+///   neither line: the street on the far side of the east run, which is an
+///   ordinary place for a lamp to hang.
+///
+/// The exemption is a placeholder for placing a mounted light outside the plane
+/// its tile names — see the backlog in `docs/lighting.md` — and until it is, a
+/// fixture about facing has to stand clear of it.
+///
+/// `docs/lighting.md`, decision 25.
+pub fn house_corner_named_by_its_art() -> Scene {
+    corner_house(
+        "the corner of a house whose art names both its faces",
+        corner_of_a_house_the_art_names(),
+        (1, -1),
+    )
+}
+
+/// The arrangement both corner scenes are: two runs meeting at a right angle, a
+/// piece where they meet, and a lamp in the street outside it, `lamp` tiles off
+/// the corner.
+fn corner_house(name: &'static str, art: StaticAtlas, lamp: (i32, i32)) -> Scene {
     let (cx, cy) = CENTRE;
-    let mut scene = empty("the corner of a house with a lamp outside it");
+    let mut scene = empty(name);
     // The south run, west of the corner: panels on the `y1` line, so the house is
     // north of them.
     for x in cx - CORNER_RUN..cx {
@@ -457,9 +537,11 @@ pub fn house_corner() -> Scene {
         scene = scene.with((cx, y), WALL_EAST);
     }
     scene = scene.with(CENTRE, CORNER);
-    scene.art = Some(corner_of_a_house());
-    // Outside, in the street, on the tile diagonally off the corner.
-    scene.with((cx, cy + 1), TORCH)
+    scene.art = Some(art);
+    // Outside, in the street, off the corner. Signed, because the two scenes put
+    // it in different quadrants and for a reason — see `house_corner_named_by_its_art`.
+    let at = |tile: u16, by: i32| (i32::from(tile) + by) as u16;
+    scene.with((at(cx, lamp.0), at(cy, lamp.1)), TORCH)
 }
 
 /// A shut room with a torch in the middle of it.
@@ -728,6 +810,7 @@ pub fn all() -> Vec<Scene> {
         torch_before_a_wall(),
         wall_run_lit_from_along_it(),
         house_corner(),
+        house_corner_named_by_its_art(),
         room(),
         room_with_shut_door(),
         room_with_open_door(),

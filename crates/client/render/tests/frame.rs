@@ -1808,7 +1808,11 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
     // The atlas is what measures the face, and if it did not this test would go
     // on to assert about two `Upright` sprites and pass for the wrong reason —
     // their fractions are equal, so the step across the seam would be zero.
-    assert_eq!(sprite.face, Some(FACE), "the atlas did not read the fixture");
+    assert_eq!(
+        sprite.facing,
+        Some(openshard_client_render::facing::Facing::One(FACE)),
+        "the atlas did not read the fixture",
+    );
 
     let tile = |x: u16| Point::new(x, 400, 0);
     let quad = |at: Point, dx: f32, dy: f32| SpriteQuad {
@@ -1900,6 +1904,118 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
             );
         }
     }
+}
+
+/// A corner's two faces are two halves of one picture, and a pixel belongs to
+/// the one it is drawn on.
+///
+/// The whole of decision 25 on the GPU side: `statics.wgsl` resolves a corner per
+/// fragment, so what reaches the attachment is a single face with a single
+/// outward normal and `blit.wgsl` never learns that corners exist. Before it, a
+/// corner was `Upright` — every pixel of it claiming the middle of its tile, a
+/// flat 44-pixel band between two continuous runs of wall, lit identically on the
+/// side turned towards the flame and the side turned away.
+///
+/// Asserted as the *two halves disagreeing*, which is the property that fails:
+/// a corner resolved to one face for the whole tile draws a wall along an axis
+/// half of it does not run on, and every pixel would still carry a face and a
+/// fraction that moves. Only comparing the halves says which face is where.
+#[test]
+fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    use openshard_client_render::facing::{Face, Facing};
+    use openshard_client_render::place::Stance;
+
+    const GRAPHIC: Graphic = Graphic(1);
+    const HEIGHT: u16 = 60;
+    const ORIGIN: f32 = 20.0;
+    // The pair a camera can see, which is what every corner the client ships is:
+    // the east face on the right half of the picture, the south face on the left.
+    const RIGHT: Face = Face::East;
+    const LEFT: Face = Face::South;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([(
+        GRAPHIC,
+        openshard_client_render::facing::corner_silhouette(RIGHT, LEFT, HEIGHT),
+    )])
+    .expect("fits");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+    // The atlas is what measures it, and without this the test would go on to
+    // assert about an `Upright` sprite whose halves agree — and pass by drawing
+    // exactly the artefact it is here to catch.
+    assert_eq!(
+        sprite.facing,
+        Some(Facing::Corner {
+            right: RIGHT,
+            left: LEFT
+        }),
+        "the atlas did not read the fixture as a corner",
+    );
+
+    let at = Point::new(300, 400, 0);
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[SpriteQuad {
+            rect: Rect {
+                x: ORIGIN,
+                y: ORIGIN,
+                width: f32::from(sprite.width),
+                height: f32::from(sprite.height),
+            },
+            region: sprite.region,
+            depth: 0.4,
+            hue: 0,
+            place: Place {
+                stance: Stance::of(&openshard_uofiles::tiledata::StaticTile::default(), sprite.facing),
+                ..Place::of_static(at)
+            },
+        }],
+        256,
+    );
+
+    // A row a third of the way up the picture, one pixel either side of the
+    // column the sprite is centred on: the two halves of the same corner, as
+    // close together as the picture allows.
+    let row = ORIGIN as u32 + u32::from(HEIGHT);
+    let middle = ORIGIN as u32 + 22;
+    let stance = |x: u32, y: u32| {
+        let place = places.at(x, y);
+        assert_eq!(place[3] & 3, 2, "nothing was drawn at ({x}, {y})");
+        place[2] >> openshard_client_render::place::STANCE_SHIFT
+    };
+    assert_eq!(
+        stance(middle + 4, row),
+        Stance::FaceEast as u16,
+        "the right half of the corner is not its east face",
+    );
+    assert_eq!(
+        stance(middle - 4, row),
+        Stance::FaceSouth as u16,
+        "the left half of the corner is not its south face",
+    );
+
+    // And the fraction each half carries is its own face's: an east face lies on
+    // `x + 1` and a south face on `y + 1`, so the two halves are two different
+    // surfaces of one tile and not one surface read twice. Compared as the
+    // *fixed* coordinate of each, because that is what a face is — the run along
+    // the edge moves in both.
+    let sub = |x: u32, y: u32| {
+        let place = places.at(x, y);
+        ((place[3] >> 2) & 127, (place[3] >> 9) & 127)
+    };
+    let (right_x, _) = sub(middle + 4, row);
+    let (_, left_y) = sub(middle - 4, row);
+    assert!(right_x > 120, "the east half left its own edge: {right_x}");
+    assert!(left_y > 120, "the south half left its own edge: {left_y}");
 }
 
 /// Draw ground and one sprite and read back the *place* attachment rather than
@@ -3435,10 +3551,7 @@ fn parity_frame(
                 None => (1u16, 0u16),
                 Some(face) => (
                     openshard_client_render::place::Kind::Static as u16,
-                    openshard_client_render::place::Stance::of(
-                        &openshard_uofiles::tiledata::StaticTile::default(),
-                        Some(face),
-                    ) as u16,
+                    openshard_client_render::place::Stance::face(face) as u16,
                 ),
             };
             let z = 128 | stance << openshard_client_render::place::STANCE_SHIFT;

@@ -25,18 +25,34 @@
 //! Those two bits are the four faces, and they are independent, which is what
 //! makes the pair a measurement rather than a guess.
 //!
-//! # And what it refuses
+//! # A corner is two faces, and it is answered rather than refused
+//!
+//! Both halves of a corner's column are full, because a corner *is* both faces
+//! at once. The first version of this read that as a contradiction and refused
+//! it, which left every corner of every building in the world an
+//! [`Upright`](crate::place::Stance::Upright) whole-tile occluder — a flat
+//! 44-pixel band between two continuous runs of wall, lit on the side turned
+//! away from the flame, and leaking a diagonal sliver of light into the room
+//! behind it. See `docs/lighting.md`'s decision 25.
+//!
+//! So the halves are read **twice**. First strictly, each one having to be the
+//! only face in the picture: that is the whole of what this module did before
+//! corners, and a graphic it reads keeps exactly the answer it had. Only when
+//! neither half can carry the picture alone are the two offered the picture
+//! together, and a corner is two independent measurements that each passed every
+//! gate but the one about the other half.
+//!
+//! # And what it still refuses
 //!
 //! A detector that cannot say "I do not know" is the failure mode here: a wrong
 //! face is a wall shaded along an axis it does not run on, and every graphic
-//! this is offered is a graphic somebody's shard draws. Three gates, each of
-//! which a real client graphic fails:
+//! this is offered is a graphic somebody's shard draws. The gates, each of which
+//! a real client graphic fails:
 //!
-//! - A **corner** (`0x0104`) is drawn as two faces at once, so both halves of
-//!   its column are full. Whichever half is proposed, the other one is occupied
-//!   past the sliver a wall's thickness accounts for, and the proposal dies.
 //! - A **post** (`0x0101`) covers neither half: its base is a few columns wide
-//!   with a level bottom, so no run of 45° can be fitted to it.
+//!   with a level bottom, so no run of 45° can be fitted to it. Neither half
+//!   reads, so there is no corner either — two failures are not a corner, and
+//!   that is the property the second pass rests on.
 //! - Anything whose base is not straight — a tree, a barrel, a fence with a gap
 //!   — fails the straightness test over the half it claims.
 //!
@@ -49,10 +65,10 @@
 //! its mass in columns 18..=43 of a 44-wide sprite with the base descending to
 //! the left, which is the east face, and its base line lands on the predicted
 //! `dy = 22 - across` to the pixel over the whole 22-column span. `0x0007` is
-//! the south face of the same shape, and `0x0104` is the corner that has to come
-//! back undecided. The sweep in `tests/facing.rs` is what says how much of a real
-//! install this reads, because a detector with no coverage count is a green light
-//! for having checked nothing.
+//! the south face of the same shape, and `0x0104` is the corner, which is both.
+//! The sweep in `tests/facing.rs` is what says how much of a real install this
+//! reads, because a detector with no coverage count is a green light for having
+//! checked nothing.
 
 use openshard_uofiles::image::Image;
 
@@ -188,11 +204,17 @@ const MIN_FILLED: usize = 18;
 /// twelve is a wall half a tile thick, which is thicker than any the client
 /// ships.
 ///
-/// The number that matters is the gap to the thing this has to refuse: a corner
-/// is two faces and covers the *whole* other half, 21.5 pixels of it. Twelve
-/// sits between the two with room on both sides, and it was chosen by measuring
-/// both — at six, 40% of the walls standing in Britain were read; at twelve, 76%,
-/// and the corners are still refused. See `tests/facing.rs`.
+/// The number that matters is the gap to the thing this has to tell it apart
+/// from: a corner is two faces and covers the *whole* other half, 21.5 pixels of
+/// it. Twelve sits between the two with room on both sides, and it was chosen by
+/// measuring both — at six, 40% of the walls standing in Britain were read; at
+/// twelve, 76%. See `tests/facing.rs`.
+///
+/// It is still the line between one face and two now that both are answers: what
+/// it decides is whether a picture is a wall with its thickness showing or a
+/// corner with a second surface on it, and those are shaded and occluded
+/// differently. A thickness read as a face would give the tile a panel on an edge
+/// nothing stands on, which stops a ray that should pass.
 const SPILL: f32 = 12.0;
 
 /// How far past the tile's own column anything may be drawn at all.
@@ -232,7 +254,69 @@ const OFF_EDGE: f32 = 3.0;
 /// billboard whose picture is height.
 const MIN_STANDING: u16 = 16;
 
-/// Which edge of its tile this wall stands on, or `None` if the art does not say.
+/// What the art says a static's picture is a surface of: one face, or the two of
+/// a corner.
+///
+/// The corner's two are always **one from each half** of the tile's column, which
+/// is not a convention but the way the halves are read: the right half can only
+/// answer `North` or `East` and the left half only `South` or `West`. So `right`
+/// and `left` are the two questions and neither can hold the other's answer.
+///
+/// Two faces and not four: nothing in a picture 44 pixels wide can be a third
+/// surface, because a tile's column has two halves and each of them is one edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Facing {
+    /// A plain wall: one edge of the tile, and nothing on the other half of the
+    /// picture but the wall's own thickness.
+    One(Face),
+    /// A corner: both halves of the column are a face, each measured on its own.
+    Corner {
+        /// The face on the right half of the tile's column — `North` or `East`.
+        right: Face,
+        /// The face on the left half — `South` or `West`.
+        left: Face,
+    },
+}
+
+impl Facing {
+    /// Which of the faces a pixel `across` pixels from the tile's own column
+    /// belongs to.
+    ///
+    /// The rule `statics.wgsl` applies per fragment, and it is the whole of how a
+    /// corner is resolved: a corner's two faces are two halves of one picture, so
+    /// the half a pixel is drawn on names which surface it is a pixel of. A
+    /// pixel exactly on the middle column goes to the left face, which is the
+    /// half the sign convention puts zero in — it is one column of a 44-wide
+    /// sprite and either answer is a face of the same corner.
+    ///
+    /// The Rust copy of that switch, for [`crate::plan`]'s elevation and for
+    /// anything on the CPU that has to say what the attachment will hold.
+    pub fn on_half(self, across: f32) -> Face {
+        match self {
+            Self::One(face) => face,
+            Self::Corner { right, left } => match across > 0.0 {
+                true => right,
+                false => left,
+            },
+        }
+    }
+
+    /// Every face this picture is a surface of, in the order the halves are read.
+    ///
+    /// What asks is anything that has to answer about the *tile* rather than
+    /// about a pixel of it — [`edges_of`](crate::occlusion::edges_of), which
+    /// turns them into the sides of the cell a ray can be stopped by.
+    pub fn faces(self) -> impl Iterator<Item = Face> {
+        let (first, second) = match self {
+            Self::One(face) => (face, None),
+            Self::Corner { right, left } => (right, Some(left)),
+        };
+        std::iter::once(first).chain(second)
+    }
+}
+
+/// Which edges of its tile this static stands on, or `None` if the art does not
+/// say.
 ///
 /// Pure: an image in, a verdict out, no files and no state. Called once per
 /// graphic while the atlas packs it — see
@@ -240,8 +324,9 @@ const MIN_STANDING: u16 = 16;
 /// property of the picture and a picture is packed once.
 ///
 /// The cost is one pass over the sprite's pixels, which is the pass that
-/// [`copy_sprite`](crate::atlas) is making anyway.
-pub fn face_of(image: &Image) -> Option<Face> {
+/// [`copy_sprite`](crate::atlas) is making anyway. The halves are read at most
+/// twice over that one pass; nothing looks at the image again.
+pub fn facing_of(image: &Image) -> Option<Facing> {
     let width = image.width();
     // Narrower than a tile cannot hold a whole edge in the half it belongs to:
     // the sprite is centred on the tile's column, so a 22-wide picture reaches
@@ -250,16 +335,39 @@ pub fn face_of(image: &Image) -> Option<Face> {
         return None;
     }
     let base = base_edge(image);
-    // The right half first, then the left. They are exclusive by construction —
-    // each rules the other out through `SPILL` — so the order decides nothing,
-    // and a graphic that somehow satisfied both would be a corner and is refused
-    // by the check inside each.
+    let height = image.height();
+    // Strictly first: each half proposed as the *only* face in the picture, the
+    // other half allowed nothing past a wall's own thickness. A graphic that
+    // reads here reads exactly what it read before corners existed, which is
+    // what keeps this change from moving three quarters of a city's walls.
     for half in [Half::Right, Half::Left] {
-        if let Some(face) = half.read(&base, width, image.height()) {
-            return Some(face);
+        if let Some(face) = half.read(&base, width, height, Second::Refused) {
+            return Some(Facing::One(face));
         }
     }
-    None
+    // And then together. Both halves have already failed alone, so the only way
+    // through here is that each of them is a face and the other one is why it
+    // was refused — which is what a corner is. A picture where one half is a
+    // face and the other is a blob still fails, because the blob is not a face.
+    let right = Half::Right.read(&base, width, height, Second::Allowed)?;
+    let left = Half::Left.read(&base, width, height, Second::Allowed)?;
+    Some(Facing::Corner { right, left })
+}
+
+/// Whether a half being read may have a second face drawn on the other half of
+/// the picture.
+///
+/// Named rather than a `bool` at the call site because the two passes over the
+/// same halves differ in nothing else, and "true" there would say nothing about
+/// which of them is which.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Second {
+    /// The half must be the only face in the picture: anything past a wall's own
+    /// thickness on the other half refuses it. The plain-wall question.
+    Refused,
+    /// The other half may hold whatever it holds — it is being asked the same
+    /// question separately. The corner question.
+    Allowed,
 }
 
 /// Which half of the tile's column a face occupies.
@@ -282,7 +390,13 @@ impl Half {
 
     /// The face on this half of the column, or `None` if the art is not a wall
     /// standing on it.
-    fn read(self, base: &BaseEdge, width: u16, height: u16) -> Option<Face> {
+    ///
+    /// `second` is the one thing that differs between the two passes
+    /// [`facing_of`] makes: whether a face on the *other* half refuses this one
+    /// or is somebody else's business. Everything else — the straightness, the
+    /// slope, the standing height, the position of the base line — is a
+    /// measurement of this half alone and is made the same way both times.
+    fn read(self, base: &BaseEdge, width: u16, height: u16, second: Second) -> Option<Face> {
         let middle = f32::from(width) / 2.0;
         // The columns of this half, and everything the other half may not hold.
         let mut mine: Vec<(i32, u16)> = Vec::new();
@@ -313,7 +427,11 @@ impl Half {
             // second face, which is a corner. A column past the *far* vertex is
             // neither — it is the antialiased tip `OVERHANG` allows — and it is
             // left out of the fit rather than counted against it.
-            if -into > SPILL {
+            //
+            // On the corner pass this is not asked at all: the other half is
+            // being read as a face in its own right, and the whole question
+            // there is whether *this* half is one too.
+            if second == Second::Refused && -into > SPILL {
                 return None;
             }
         }
@@ -502,11 +620,52 @@ pub fn silhouette(face: Face, height: u16) -> Image {
     Image::new(width, rows, pixels)
 }
 
+/// A corner's silhouette: the two faces of [`silhouette`] drawn into one
+/// picture, which is what the client's own corner graphics are.
+///
+/// `right` must be a right-half face (`North` or `East`) and `left` a left-half
+/// one (`South` or `West`) — the same pairing [`Facing::Corner`] carries, for the
+/// same reason: two faces on one half would be one picture of two surfaces on one
+/// edge, which is not a shape the projection can draw.
+///
+/// `pub` for the reason [`silhouette`] is: the GPU frame test needs the *same*
+/// picture the unit tests here decide against, or it would be asserting about a
+/// shape this module never sees.
+pub fn corner_silhouette(right: Face, left: Face, height: u16) -> Image {
+    let (a, b) = (silhouette(right, height), silhouette(left, height));
+    // The two are the same size by construction — same width, same `height + 45`
+    // — so this is a pixel-for-pixel union with no placement in it.
+    let pixels = a
+        .pixels()
+        .iter()
+        .zip(b.pixels())
+        .map(|(over, under)| match over.is_transparent() {
+            true => *under,
+            false => *over,
+        })
+        .collect();
+    Image::new(a.width(), a.height(), pixels)
+}
+
 #[cfg(test)]
 mod tests {
     use openshard_uofiles::color::Color16;
 
     use super::*;
+
+    /// The single-face answer, for the tests that are about a plain wall.
+    ///
+    /// A corner is a *panic* and not a `None`: every test below that asserts
+    /// "undecided" is asserting that the picture is not a surface this can name,
+    /// and a corner is one. Folding the two together would let the corner pass
+    /// quietly start answering about a post.
+    fn face_of(image: &Image) -> Option<Face> {
+        match facing_of(image) {
+            Some(Facing::One(face)) => Some(face),
+            Some(corner) => panic!("{corner:?}, and the fixture is not a corner"),
+            None => None,
+        }
+    }
 
     /// The tile is the camera's tile and not a second opinion about it.
     #[test]
@@ -524,22 +683,72 @@ mod tests {
         }
     }
 
-    /// A corner is two faces at once, and both of them have to lose.
+    /// A corner is two faces at once, and both of them are read.
     ///
     /// `0x0104` is the client's own, and this is the shape of it: every column
     /// of the tile drawn, with the base descending both ways from the middle.
-    /// The gate that catches it is `SPILL` — whichever half is proposed, the
-    /// other is occupied far past a wall's thickness.
+    /// What used to happen is in the name of the test this replaced — whichever
+    /// half was proposed, `SPILL` refused it for the other one, and the whole
+    /// tile came back `Upright`.
+    ///
+    /// All four pairings, because a detector that answered `Corner { East,
+    /// South }` always — which is the only pairing a real client graphic is —
+    /// would pass a test of the one.
     #[test]
-    fn a_corner_is_undecided() {
-        let east = silhouette(Face::East, 80);
-        let south = silhouette(Face::South, 80);
-        let mut pixels = Vec::with_capacity(east.pixels().len());
-        for (a, b) in east.pixels().iter().zip(south.pixels()) {
-            pixels.push(if a.is_transparent() { *b } else { *a });
+    fn a_corner_is_both_of_its_faces() {
+        for right in [Face::North, Face::East] {
+            for left in [Face::South, Face::West] {
+                assert_eq!(
+                    facing_of(&corner_silhouette(right, left, 80)),
+                    Some(Facing::Corner { right, left }),
+                    "{right:?} and {left:?}",
+                );
+            }
         }
-        let corner = Image::new(east.width(), east.height(), pixels);
-        assert_eq!(face_of(&corner), None);
+    }
+
+    /// And a pixel of it belongs to the face drawn on its own half.
+    ///
+    /// The rule `statics.wgsl` applies per fragment: a corner's two surfaces are
+    /// two halves of one picture, so which half a pixel is on is which surface it
+    /// is a pixel of. Without it a corner would have to pick one of its faces for
+    /// the whole tile, which is a wall shaded along an axis half of it does not
+    /// run on.
+    #[test]
+    fn a_pixel_of_a_corner_belongs_to_the_face_on_its_own_half() {
+        let corner = Facing::Corner {
+            right: Face::East,
+            left: Face::South,
+        };
+        assert_eq!(corner.on_half(10.0), Face::East);
+        assert_eq!(corner.on_half(-10.0), Face::South);
+        // And a plain wall is the same face wherever the pixel is, including the
+        // sliver of its own thickness drawn past the edge it stands on.
+        assert_eq!(Facing::One(Face::East).on_half(-4.0), Face::East);
+    }
+
+    /// A picture with one face on it and a blob on the other half is not a
+    /// corner.
+    ///
+    /// The property the second pass rests on: a corner is two *faces*, and a
+    /// half that fails every gate is not made into one by the half beside it
+    /// passing. Without this the corner pass would be a way of letting anything
+    /// wide enough through — the `SPILL` gate exists precisely because a
+    /// half-full picture is not a wall.
+    #[test]
+    fn a_face_beside_a_blob_is_not_a_corner() {
+        let wall = silhouette(Face::East, 80);
+        let (width, height) = (wall.width(), wall.height());
+        let mut pixels = wall.pixels().to_vec();
+        // A square block filling the left half of the tile's column: it covers
+        // the half, it stands up, and its base is level, so no 45° run fits it.
+        for row in height - 40..height {
+            for column in 2..21u16 {
+                pixels[usize::from(row) * usize::from(width) + usize::from(column)] =
+                    Color16(0b0_11111_00000_00000);
+            }
+        }
+        assert_eq!(facing_of(&Image::new(width, height, pixels)), None);
     }
 
     /// A post covers no edge: a few columns at the tile's centre with a level
@@ -575,8 +784,12 @@ mod tests {
             let sliver = smeared(&silhouette(Face::East, 80), by);
             assert_eq!(face_of(&sliver), Some(Face::East), "{by} pixels of thickness");
         }
+        // Twenty pixels is not thickness, and it is not a corner either: what is
+        // drawn on the other half is this wall's own base line moved sideways, so
+        // it sits twenty pixels off the edge it would have to stand on and the
+        // position gate refuses it. A corner is two faces each on *its own* edge.
         let wide = smeared(&silhouette(Face::East, 80), 20);
-        assert_eq!(face_of(&wide), None, "twenty pixels is another face");
+        assert_eq!(facing_of(&wide), None, "twenty pixels is another face");
     }
 
     /// The same picture with every drawn column copied `by` columns to its left,

@@ -86,21 +86,29 @@ pub enum Kind {
 ///   on. Its picture is a billboard rising from one 22-pixel edge of the
 ///   diamond, so a pixel's horizontal position is how far *along that edge* it
 ///   is and what runs down the picture is height. Which edge is measured from the
-///   art: [`crate::facing::face_of`], because nothing in `tiledata.mul` records
+///   art: [`crate::facing::facing_of`], because nothing in `tiledata.mul` records
 ///   it. This is what makes a row of wall tiles one continuous surface instead of
 ///   a row of separately lit sprites — see [`crate::facing::Face::place_at`].
+/// - The four **corners** — a picture that is two of those faces at once, which
+///   is what a building's corner piece is. Which of the two a pixel belongs to
+///   is which half of the tile's column it is drawn on, so a corner is resolved
+///   to one of the four faces **per fragment**, in `statics.wgsl`, and what
+///   reaches the attachment is always a single face. Nothing downstream of the
+///   world passes has ever to know a corner exists: see
+///   [`crate::facing::Facing::on_half`].
 /// - [`Stance::Upright`] — everything else that stands up: a tree, a body, a
-///   corner piece, a wall whose art the detector could not read. It stands on
-///   the tile and what varies down its picture is height, but across it nothing
-///   varies: the fraction is the tile's middle everywhere. That is a statement
-///   about what is *not* known rather than a shortcut — reading the horizontal
-///   offset as `x - y`, as this did for one commit, spreads the pixels along the
-///   one direction no wall ever runs, and it looks like it.
+///   post, a wall whose art the detector could not read. It stands on the tile
+///   and what varies down its picture is height, but across it nothing varies:
+///   the fraction is the tile's middle everywhere. That is a statement about
+///   what is *not* known rather than a shortcut — reading the horizontal offset
+///   as `x - y`, as this did for one commit, spreads the pixels along the one
+///   direction no wall ever runs, and it looks like it.
 ///
-/// It rides in **three bits** of the instance's second word, which is what the
-/// six values need and what [`Place::packed`] reserves — and it reaches the
+/// It rides in **four bits** of the instance's second word, which is what the
+/// ten values need and what [`Place::packed`] reserves — and it reaches the
 /// attachment too, in the eight bits a `z + 128` leaves spare in the third
-/// channel's `u16`. See [`STANCE_SHIFT`].
+/// channel's `u16`. See [`STANCE_SHIFT`]. Four where six values needed three,
+/// and neither word had to grow: both have eight or more bits spare above it.
 ///
 /// **Why the lighting needs it, when the fraction is already there.** A fraction
 /// says where in its tile a pixel is; a face says **which way that surface
@@ -126,7 +134,30 @@ pub enum Stance {
     FaceSouth = 4,
     /// A wall on the tile's `x0` edge, running along `+y`.
     FaceWest = 5,
+    /// A corner: the north face on the right half of the picture, the south face
+    /// on the left.
+    ///
+    /// The four corner values are laid out so the two faces come out of the
+    /// number by arithmetic rather than by a table, because `statics.wgsl` has to
+    /// do it per fragment: `right = FaceNorth + ((v - CORNER) >> 1)` and
+    /// `left = FaceSouth + ((v - CORNER) & 1)`. Right is always `North` or
+    /// `East` and left always `South` or `West` — the halves of the tile's
+    /// column, which is the invariant [`crate::facing::Facing::Corner`] carries.
+    CornerNorthSouth = 6,
+    /// The north face on the right half, the west face on the left.
+    CornerNorthWest = 7,
+    /// The east face on the right half, the south face on the left. The corner
+    /// the client's own art draws: those are the two faces a camera can see, so
+    /// this is nearly every corner of nearly every building.
+    CornerEastSouth = 8,
+    /// The east face on the right half, the west face on the left.
+    CornerEastWest = 9,
 }
+
+/// The first of the four corner stances. `statics.wgsl` has the same number, and
+/// the arithmetic that takes a corner apart is stated on
+/// [`Stance::CornerNorthSouth`].
+pub const STANCE_CORNER: u8 = Stance::CornerNorthSouth as u8;
 
 impl Stance {
     /// Which way a static's picture faces: the client's own bit first, then what
@@ -140,20 +171,41 @@ impl Stance {
     /// it not at all, which is the pair worth checking, because "you can stand on
     /// it" is a different question and `PLATFORM` is how it is asked.
     ///
-    /// `face` is [`crate::atlas::Sprite::face`], measured once when the picture
-    /// was packed. `None` — a corner, a post, a graphic the client ships no
+    /// `facing` is [`crate::atlas::Sprite::facing`], measured once when the
+    /// picture was packed. `None` — a post, a tree, a graphic the client ships no
     /// readable wall for — falls back to [`Stance::Upright`], which is exactly
     /// what every static did before faces existed. Nothing gets worse anywhere.
-    pub fn of(tile: &openshard_uofiles::tiledata::StaticTile, face: Option<crate::facing::Face>) -> Self {
+    pub fn of(tile: &openshard_uofiles::tiledata::StaticTile, facing: Option<crate::facing::Facing>) -> Self {
+        use crate::facing::{Face, Facing};
+
         if tile.flags.is_background() {
             return Self::Flat;
         }
-        match face {
-            Some(crate::facing::Face::North) => Self::FaceNorth,
-            Some(crate::facing::Face::East) => Self::FaceEast,
-            Some(crate::facing::Face::South) => Self::FaceSouth,
-            Some(crate::facing::Face::West) => Self::FaceWest,
+        match facing {
+            Some(Facing::One(face)) => Self::face(face),
+            // The pairing is the one `Facing::Corner` guarantees — a right-half
+            // face and a left-half one — so the sixteen combinations the types
+            // allow are the four the detector can produce, and anything else is
+            // a facing built by hand and not by measurement. It falls back to
+            // the whole-tile answer rather than picking a half.
+            Some(Facing::Corner { right, left }) => match (right, left) {
+                (Face::North, Face::South) => Self::CornerNorthSouth,
+                (Face::North, Face::West) => Self::CornerNorthWest,
+                (Face::East, Face::South) => Self::CornerEastSouth,
+                (Face::East, Face::West) => Self::CornerEastWest,
+                _ => Self::Upright,
+            },
             None => Self::Upright,
+        }
+    }
+
+    /// The stance of a single face.
+    pub fn face(face: crate::facing::Face) -> Self {
+        match face {
+            crate::facing::Face::North => Self::FaceNorth,
+            crate::facing::Face::East => Self::FaceEast,
+            crate::facing::Face::South => Self::FaceSouth,
+            crate::facing::Face::West => Self::FaceWest,
         }
     }
 }
@@ -252,12 +304,13 @@ impl Place {
     /// apart with the same shifts, which are written out there rather than
     /// shared — there is nothing in Rust for a WGSL function to call.
     ///
-    /// The stance rides above the kind in **three bits**, and is *masked off*
+    /// The stance rides above the kind in **four bits**, and is *masked off*
     /// again where the world pass writes the attachment's fourth channel: that
     /// channel is two bits of kind and fourteen of fraction with nothing spare,
     /// and the stance's job is finished by the time the fraction has been
-    /// computed. Three bits because there are six stances — one flat, one
-    /// unknown, and the four wall faces — and the word has room above them.
+    /// computed. Four bits because there are ten stances — one flat, one
+    /// unknown, four wall faces and four corners — and the word has room above
+    /// them.
     pub fn packed(self) -> [u32; 2] {
         [
             u32::from(self.x) | u32::from(self.y) << 16,
@@ -269,9 +322,14 @@ impl Place {
 /// Where a [`Stance`] rides in the attachment's third channel, above the height.
 ///
 /// The channel is a `u16` holding `z + 128`, which needs eight bits and has
-/// sixteen. Three of the spare eight carry the stance, so a fragment can ask
+/// sixteen. Four of the spare eight carry the stance, so a fragment can ask
 /// which way the surface it is looking at faces without a second attachment or a
 /// wider format.
+///
+/// What arrives here is never a corner: `statics.wgsl` resolves a corner to the
+/// face of the half the fragment is on before it writes this, so the reader —
+/// `blit.wgsl`'s `outward` — sees one surface with one normal and has no case
+/// for two.
 ///
 /// `statics.wgsl`'s `PLACE_STANCE_SHIFT` and `blit.wgsl`'s reader are the other
 /// two places this number appears, and nothing but a person can compare the
@@ -368,6 +426,63 @@ mod tests {
         // fraction cannot reach into: it is the *kind* that is zero, and the
         // kinds occupy two bits.
         assert!((Kind::Mobile as u32) < 4, "a kind no longer fits its two bits");
+    }
+
+    /// A corner's number is the two faces it is made of, by arithmetic.
+    ///
+    /// `statics.wgsl` takes a corner apart per fragment with two shifts rather
+    /// than with a switch, so the layout of these four values is a contract with
+    /// it: `right` is `FaceNorth` plus the high bit of the offset from
+    /// [`STANCE_CORNER`], `left` is `FaceSouth` plus the low one. Stated here
+    /// because a value reordered in the enum would compile, draw, and shade every
+    /// corner in the world along the wrong axis.
+    #[test]
+    fn a_corner_s_number_holds_both_of_its_faces() {
+        for (stance, right, left) in [
+            (Stance::CornerNorthSouth, Stance::FaceNorth, Stance::FaceSouth),
+            (Stance::CornerNorthWest, Stance::FaceNorth, Stance::FaceWest),
+            (Stance::CornerEastSouth, Stance::FaceEast, Stance::FaceSouth),
+            (Stance::CornerEastWest, Stance::FaceEast, Stance::FaceWest),
+        ] {
+            let offset = stance as u8 - STANCE_CORNER;
+            assert_eq!(Stance::FaceNorth as u8 + (offset >> 1), right as u8, "{stance:?}");
+            assert_eq!(Stance::FaceSouth as u8 + (offset & 1), left as u8, "{stance:?}");
+        }
+        // And all ten fit the four bits both words reserve for them.
+        assert!((Stance::CornerEastWest as u32) < 16);
+    }
+
+    /// A corner is what the detector said and not a half of it.
+    ///
+    /// The pairing is the invariant `Facing::Corner` carries; a facing built by
+    /// hand with two right-half faces is not a picture anything measured, and
+    /// what it must not do is pick one of them for the whole tile.
+    #[test]
+    fn a_corner_facing_becomes_a_corner_stance() {
+        use crate::facing::{Face, Facing};
+
+        let wall = openshard_uofiles::tiledata::StaticTile::default();
+        assert_eq!(
+            Stance::of(
+                &wall,
+                Some(Facing::Corner {
+                    right: Face::East,
+                    left: Face::South
+                })
+            ),
+            Stance::CornerEastSouth,
+        );
+        assert_eq!(
+            Stance::of(
+                &wall,
+                Some(Facing::Corner {
+                    right: Face::South,
+                    left: Face::North
+                })
+            ),
+            Stance::Upright,
+            "a pairing no half can produce falls back to the whole tile",
+        );
     }
 
     /// The kinds, one number each. `blit.wgsl` holds the same four and cannot be
