@@ -421,8 +421,9 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     bytes.extend_from_slice(&[0; 12]);
 
     // The sun: its direction, then the height above which nothing in this
-    // frame's grid can stop it — the bound that lets a ray leave the walk
-    // instead of counting out its thirty-two steps over an empty street.
+    // frame's grid can stop it. That height is where a sunbeam's segment *ends* —
+    // the sun has no position, so this is what gives its ray a far end to walk to
+    // — and over an open street it ends a tile or two out.
     //
     // A frame with no sun writes a direction of zero and an intensity of zero,
     // and the shader tests the intensity: one branch, and a night frame does not

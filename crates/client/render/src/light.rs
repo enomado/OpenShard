@@ -252,14 +252,16 @@ impl Sun {
     }
 }
 
-/// How many tiles of grid one sunbeam's ray may walk.
+/// How far along the ground one sunbeam may run, in tiles.
 ///
-/// The bound the ray needs and a flame's does not — see [`Sun`]. Thirty-two
-/// tiles is a shadow long enough for a low sun over a city block, and it is
-/// almost never reached: the walk stops as soon as the ray is above everything
-/// in the grid, which for a street of one-storey buildings is two or three
-/// steps. `blit.wgsl`'s `MAX_SUN_STEPS`, and the two are one number.
-pub const MAX_SUN_STEPS: i32 = 32;
+/// The bound the ray needs and a flame's does not — see [`Sun`]. What ends a
+/// sunbeam is the grid's ceiling: a ray that has climbed above everything in the
+/// frame is looking at sky, which for a street of one-storey buildings is two or
+/// three tiles out. This is what is left for a sun so low that it never climbs
+/// out — a shadow thirty-two tiles long is already longer than any frame, and
+/// without it a sunset would be a segment with no end. `blit.wgsl`'s
+/// `MAX_SUN_TILES`, and the two are one number.
+pub const MAX_SUN_TILES: f32 = 32.0;
 
 /// How many `z` units make one tile's width.
 ///
@@ -683,15 +685,17 @@ fn place(at: Point, flame: Flame, time: f32) -> Light {
     }
 }
 
-/// How many cells of the grid one shadow ray may look at.
+/// How many cells of the grid one ray may look at.
 ///
-/// `blit.wgsl`'s `MAX_RAY_STEPS`, and the two are one number: [`sample`] is the
+/// `blit.wgsl`'s `MAX_WALK_STEPS`, and the two are one number: [`sample`] is the
 /// shader's own arithmetic in Rust and a bound that differed would make the two
-/// disagree exactly where a ray is longest. A pool reaches nine tiles at the
-/// widest and the walk visits every cell the ray crosses, which on a diagonal is
-/// both axes' worth — so this is never actually reached; it exists so that a
-/// loop over data cannot be made unbounded by a radius somebody widens later.
-pub const MAX_RAY_STEPS: i32 = 24;
+/// disagree exactly where a ray is longest. One number for both rays, because
+/// [`walk_cells`] is one walk: a pool reaches nine tiles at the widest, a
+/// sunbeam's segment runs [`MAX_SUN_TILES`], and a walk visits every cell the
+/// segment crosses, which on a diagonal is both axes' worth. It is never actually
+/// reached; it exists so that a loop over data cannot be made unbounded by a
+/// radius somebody widens later.
+pub const MAX_WALK_STEPS: i32 = 72;
 
 /// How far a ray must travel inside an occluding cell for that cell to stop all
 /// it can, in tiles. `blit.wgsl`'s `SOFT_CROSSING`.
@@ -953,15 +957,16 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
 
 /// The sun's ray from a spot: how much of it arrives, and what stopped it.
 ///
-/// `blit.wgsl`'s `sunlight`, and the same three differences from a flame's walk:
-/// there is no endpoint, so the ray is bounded by [`MAX_SUN_STEPS`]; the step is
-/// one tile along the ground, so the height climbs by the sun's slope each time;
-/// and the walk stops as soon as the ray is above everything the grid holds,
-/// which is what makes a daylit frame affordable at all.
+/// `blit.wgsl`'s `sunlight`. What the sun has instead of a position is a
+/// *direction*, so the only thing this does that [`walk`] does not is work out
+/// where the segment ends: the point at which the ray leaves the grid's ceiling,
+/// because from there on it is looking at sky. Everything after that is
+/// [`walk_cells`], the same walk a flame's ray takes.
 ///
 /// The spot's own tile is skipped, as it is for a flame, and for the same reason
 /// in reverse: a wall's own pixels are on a tile that stops light, and a wall
-/// that shadowed itself would be black on the side the sun is on.
+/// that shadowed itself would be black on the side the sun is on. The far end is
+/// *not* skipped — there is no tile there, only a point in the sky.
 fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
     let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
     if horizontal < 1e-6 {
@@ -970,66 +975,87 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i
         // exempt. Nothing stops it.
         return (1.0, None);
     }
+    // One tile of ground a unit, so `z` climbs by the sun's own slope.
     let step = [
         sun.toward[0] / horizontal,
         sun.toward[1] / horizontal,
         sun.toward[2] / horizontal * Z_PER_TILE,
     ];
-    let ceiling = occlusion.tallest();
-    let mut through = 1.0;
-    for tile in 1..=MAX_SUN_STEPS {
-        let along = tile as f32;
-        let at = [
-            spot.at.x + step[0] * along,
-            spot.at.y + step[1] * along,
-            spot.z + step[2] * along,
-        ];
-        match ceiling {
-            // Above everything that could stop it: the rest of the ray is sky.
-            Some(top) if at[2] > top as f32 => break,
-            // Nothing in the grid stops anything, so neither does the walk.
-            None => break,
-            _ => {}
-        }
-        let (x, y) = (at[0].floor() as i32, at[1].floor() as i32);
-        let Some(cell) = occlusion.at(x, y) else {
-            continue;
-        };
-        if at[2] < cell.bottom as f32 || at[2] > cell.top as f32 {
-            continue;
-        }
-        through *= 1.0 - f32::from(cell.opacity) / 255.0;
-        if through <= RAY_CUTOFF {
-            return (0.0, Some((x, y)));
-        }
+    let mut tiles = MAX_SUN_TILES;
+    if let (Some(ceiling), true) = (occlusion.tallest(), step[2] > 1e-6) {
+        tiles = tiles.min((ceiling as f32 - spot.z) / step[2]);
     }
-    (through, None)
+    if occlusion.tallest().is_none() || tiles <= 0.0 {
+        // Nothing in the grid stops anything, or the spot is already above
+        // everything that could — either way the ray is in the sky from here.
+        return (1.0, None);
+    }
+    let from = [spot.at.x, spot.at.y, spot.z];
+    let to = [
+        from[0] + step[0] * tiles,
+        from[1] + step[1] * tiles,
+        from[2] + step[2] * tiles,
+    ];
+    // No tile to exempt at the far end, and a point source: the sun subtends half
+    // a degree, so its penumbra is the narrowest the walk draws.
+    walk_cells(from, to, false, 0.0, occlusion)
 }
 
-/// The ray from a spot to a flame, cell by cell: how much survives, and what
-/// stopped it.
+/// The ray from a spot to a flame: [`walk_cells`] with a flame's two ends.
 ///
-/// `blit.wgsl`'s `reaches`, including what it leaves out. Both ends of the walk
-/// are skipped — the flame's own tile must not shadow it, because a sconce
-/// stands *on* a wall, and the tile being lit must not shadow itself, which is
-/// what keeps a wall's own face the brightest thing beside a torch.
+/// The flame's own tile must not shadow it — a sconce stands *on* a wall — and a
+/// flame is a body about a tile across, which is what its penumbra is made of.
+/// Those two facts are the whole difference between this ray and the sun's.
+fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
+    walk_cells(
+        [spot.at.x, spot.at.y, spot.z],
+        [light.at.x, light.at.y, light.z],
+        true,
+        FLAME_SPREAD,
+        occlusion,
+    )
+}
+
+/// One segment of the world, cell by cell: how much of a ray survives it, and
+/// what stopped it.
+///
+/// `blit.wgsl`'s `walk`, including what it leaves out, and **one walk for both
+/// the flame and the sun** — see the shader for the argument, and for the
+/// measurement that produced it. The ends are the parameters: `skip_last` is the
+/// flame's own tile, and `spread` is how big the source is, in tiles. A sunbeam
+/// passes `false` and `0.0`.
 ///
 /// Every cell the segment crosses, in order, with the length of each crossing:
 /// not a fixed number of samples, which at two tiles apart was one interior
 /// point and put every shadow's edge on a tile boundary. What a cell stops is
-/// its opacity scaled by how far the ray ran inside it — [`SOFT_CROSSING`] — and
-/// by how much of that run was inside the span the tile occupies, so a ray
-/// grazing the top of a wall or clipping its corner is dimmed rather than cut.
-fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
-    let delta = [light.at.x - spot.at.x, light.at.y - spot.at.y, light.z - spot.z];
+/// its opacity scaled by how far the ray ran inside it — [`FLAME_SPREAD`] and its
+/// two bounds — and by how much of that run was inside the span the tile
+/// occupies, so a ray grazing the top of a wall or clipping its corner is dimmed
+/// rather than cut.
+///
+/// The starting cell is always skipped: the tile being lit must not shadow
+/// itself, which is what keeps a wall's own face the brightest thing beside a
+/// torch.
+fn walk_cells(
+    from: [f32; 3],
+    to: [f32; 3],
+    skip_last: bool,
+    spread: f32,
+    occlusion: &Occlusion,
+) -> (f32, Option<(i32, i32)>) {
+    let spot = Spot {
+        at: Vec2::new(from[0], from[1]),
+        z: from[2],
+    };
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
-        // Straight up or down: the only cells on the line are the two exempt
-        // ones, and there is no direction to walk in.
+        // Straight up or down: the only cells on the line are the exempt ones,
+        // and there is no direction to walk in.
         return (1.0, None);
     }
-    let first = (spot.at.x.floor() as i32, spot.at.y.floor() as i32);
-    let last = (light.at.x.floor() as i32, light.at.y.floor() as i32);
+    let first = (from[0].floor() as i32, from[1].floor() as i32);
+    let last = (to[0].floor() as i32, to[1].floor() as i32);
     let mut cell = first;
     // Which way each axis steps, how much of the whole segment one tile of it is
     // worth, and how far along the segment the first boundary is. An axis the
@@ -1063,10 +1089,10 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
     let mut entered = 0.0;
     let mut through = 1.0;
     // Which side of the current cell the ray came in through, and which it is
-    // about to leave by. `blit.wgsl`'s `reaches`, line for line — see there for
-    // why an occluder is a panel on one side rather than a whole tile.
+    // about to leave by. `blit.wgsl`'s `walk`, line for line — see there for why
+    // an occluder is a panel on one side rather than a whole tile.
     let mut entry = 0u8;
-    for _ in 0..MAX_RAY_STEPS {
+    for _ in 0..MAX_WALK_STEPS {
         let next = boundary[0].min(boundary[1]);
         let leaves = next.min(1.0);
         let out_by_x = boundary[0] < boundary[1];
@@ -1081,14 +1107,14 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
         };
         let crossing = entry | exit;
         let stands = occlusion.at(cell.0, cell.1);
-        // A *named* side, and the flame's own tile is exempt only while nothing
-        // names one. `blit.wgsl`'s `reaches` argues it at length: the flame sits
-        // at its tile's centre, inside the panel, so a ray crossing that panel is
-        // leaving the wall. The lit tile stays exempt whatever it holds, because a
-        // wall's two faces are one tile and there is no telling which of them a
-        // pixel is on.
+        // A *named* side, and the far end's tile is exempt only for a flame, and
+        // then only while nothing names one. `blit.wgsl`'s `walk` argues it at
+        // length: the flame sits at its tile's centre, inside the panel, so a ray
+        // crossing that panel is leaving the wall. The lit tile stays exempt
+        // whatever it holds, because a wall's two faces are one tile and there is
+        // no telling which of them a pixel is on.
         let named = stands.is_some_and(|stands| stands.edges != 0 && stands.edges != EDGE_ANY);
-        if cell != first && (cell != last || named) {
+        if cell != first && (!skip_last || cell != last || named) {
             if let Some(stands) = stands.filter(|stands| stands.edges == 0 || stands.edges & crossing != 0) {
                 // The ray's own height over this crossing, against the span the
                 // tile occupies: what counts is how much of the two overlap.
@@ -1106,11 +1132,13 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
                     },
                 };
                 let crossed = (leaves - entered) * ground * share;
-                // How soft this cell's own edge is: the penumbra of an occluder
-                // this far along the ray. See [`FLAME_SPREAD`].
+                // How soft this cell's own edge is: the penumbra a source of
+                // this size casts from this far along the ray. See
+                // [`FLAME_SPREAD`]; a `spread` of zero is a point source, and the
+                // clamp leaves it the narrowest edge the walk draws.
                 let middle = (entered + leaves) * 0.5;
-                let soft = (FLAME_SPREAD * middle / (1.0 - middle).max(1e-3))
-                    .clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
+                let soft =
+                    (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
                 let stopped = f32::from(stands.opacity) / 255.0 * (crossed / soft).clamp(0.0, 1.0);
                 through *= 1.0 - stopped;
                 if through <= RAY_CUTOFF {

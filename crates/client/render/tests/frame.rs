@@ -3543,11 +3543,12 @@ fn the_shader_and_light_sample_agree_about_which_side_a_wall_is_on() {
 
 /// And the same for a frame with a sun in it.
 ///
-/// A separate scene rather than a second flame, because the sun's walk is a
-/// different loop with a different bound: no endpoint, one tile a step, and an
-/// exit as soon as the ray is above everything in the grid. A parity test that
-/// only ever ran firelight would leave that loop with no oracle at all — and it
-/// is the one that runs on every ground pixel of a daylit frame.
+/// A separate scene rather than a second flame, because the sun enters the walk
+/// by a different door: its segment is *computed* — a direction, and an end where
+/// the ray leaves the grid's ceiling — and it exempts no far tile and spreads
+/// nothing. The walk itself is now the same one a flame takes, which is what
+/// makes this a test of the two ends rather than of a second loop, and it is the
+/// walk that runs on every ground pixel of a daylit frame.
 #[test]
 fn the_shader_and_light_sample_agree_about_the_sun() {
     let Some((device, queue)) = gpu() else {

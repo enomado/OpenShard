@@ -127,15 +127,17 @@ const KIND_NOTHING: u32 = 0u;
 // derivation: 44 virtual pixels of tile over 4 pixels a unit of height.
 const Z_PER_TILE: f32 = 11.0;
 
-// How many cells of the grid one shadow ray may look at.
+// How many cells of the grid one ray may look at.
 //
-// A pool reaches nine tiles at the widest (`light::CAMPFIRE`), and the walk
-// below visits every cell the ray crosses rather than a fixed number of samples
-// — which on a diagonal is both axes' worth, so the bound is twice the radius
-// and a little. A fragment further away than the radius never gets here at all;
-// this exists so that a loop over data cannot be made unbounded by a radius
-// somebody widens later. `light::MAX_RAY_STEPS`, and the two are one number.
-const MAX_RAY_STEPS: i32 = 24;
+// One number for both rays, because they are one walk. A pool reaches nine tiles
+// at the widest (`light::CAMPFIRE`) and a sunbeam's segment runs `MAX_SUN_TILES`,
+// and `walk` visits every cell the segment crosses rather than a fixed number of
+// samples — which on a diagonal is both axes' worth, so this is twice the longer
+// of the two and a little. It is not meant to be reached: a fragment outside a
+// pool never walks at all, and a sunbeam ends where it leaves the grid's ceiling.
+// It exists so that a loop over data cannot be made unbounded by a radius
+// somebody widens later. `light::MAX_WALK_STEPS`, and the two are one number.
+const MAX_WALK_STEPS: i32 = 72;
 
 // How far a ray must travel inside an occluding cell for that cell to stop all
 // it can, in tiles.
@@ -215,17 +217,32 @@ fn opposite(side: u32) -> u32 {
     }
 }
 
-// How much of a flame reaches a tile: 1 for nothing in the way, 0 for a wall.
+// How much of a ray survives a segment of the world: 1 for nothing in the way,
+// 0 for a wall.
 //
-// A grid traversal of the cells between the two — every cell the segment
-// actually crosses, in order, with the length of each crossing. Not a fixed
-// number of samples along the ray: at two tiles apart that was one interior
-// point, so whether a fragment was in shadow was decided at the resolution of a
-// tile and every shadow's edge was a staircase.
+// **One walk for both the flame and the sun.** They differ in their *ends* and in
+// nothing else, so the ends are the parameters: `skip_last` is the flame's own
+// tile, which must not shadow it (a sconce stands *on* a wall), and `spread` is
+// how big the source is — see `FLAME_SPREAD`. A sunbeam passes `0` for both: its
+// far end is a point in the sky rather than a tile, and the sun subtends half a
+// degree, so its penumbra is the narrowest this walk draws.
 //
-// Both end cells are left out: the flame's own tile must not shadow it (a sconce
-// stands *on* a wall), and the tile being lit must not shadow itself, which is
-// what keeps a wall's own face the brightest thing near a torch.
+// They were two functions until the sun's was measured. The sun's sampled one
+// point per tile — the arrangement this walk replaced for flames — and a sealed
+// roofed room therefore had a full-strength column of sunlight down the inside of
+// its sunward wall: at noon a ray climbs 11 `z` a tile, so it crossed the wall's
+// plane at 16 and was looked at, one tile later, at 22. It stepped over the top of
+// a wall it had gone through. Two implementations of one idea, one of them a
+// generation behind, is what that failure is made of; hence one.
+//
+// A grid traversal of the cells the segment crosses — every one, in order, with
+// the length of each crossing. Not a fixed number of samples along the ray: at
+// two tiles apart that was one interior point, so whether a fragment was in
+// shadow was decided at the resolution of a tile and every shadow's edge was a
+// staircase.
+//
+// The starting cell is always left out: the tile being lit must not shadow
+// itself, which is what keeps a wall's own face the brightest thing near a torch.
 //
 // **A cell in between stops the ray only where the ray crosses the side the
 // thing actually stands on.** That is decision 3 revised: an occluder used to be
@@ -240,16 +257,17 @@ fn opposite(side: u32) -> u32 {
 // of the crossing that is inside that span which counts, so a ray grazing the
 // top of a wall is dimmed rather than switched. That is what keeps a cellar's
 // wall out of the street above it, without a step where the two meet.
-fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
-    let delta = flame - lit;
+fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f32 {
+    let delta = finish - start;
     let ground = length(delta.xy);
     if ground < 1.0e-6 {
-        // Straight up or down: the only cells on the line are the two exempt
-        // ones, and there is no direction to walk in.
+        // Straight up or down: the only cells on the line are the exempt ones,
+        // and there is no direction to walk in.
         return 1.0;
     }
-    let first = vec2<i32>(i32(floor(lit.x)), i32(floor(lit.y)));
-    let last = vec2<i32>(i32(floor(flame.x)), i32(floor(flame.y)));
+    let lit = start;
+    let first = vec2<i32>(i32(floor(start.x)), i32(floor(start.y)));
+    let last = vec2<i32>(i32(floor(finish.x)), i32(floor(finish.y)));
     var cell = first;
     // Which way each axis steps, how much of the whole segment one tile of it is
     // worth, and how far along the segment the first boundary is. An axis the
@@ -274,12 +292,12 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
     // Which side of the current cell the ray came in through. Nothing for the
     // first cell, where the ray begins inside — and that cell is exempt anyway.
     var entry = 0u;
-    for (var i = 0; i < MAX_RAY_STEPS; i = i + 1) {
+    for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let next = min(boundary.x, boundary.y);
         let leaves = min(next, 1.0);
         // And which side it will leave through: the boundary about to be
-        // crossed, named by the direction of travel. Nothing where the ray ends
-        // inside this cell, which is the flame's own and exempt.
+        // crossed, named by the direction of travel. Nothing where the segment
+        // ends inside this cell — which for a flame is its own tile.
         let out_by_x = boundary.x < boundary.y;
         var exit = 0u;
         if next < 1.0 {
@@ -302,7 +320,8 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
         // testing its own panel would darken whichever of the two the flame is
         // not behind, and there is no way to know which that is.
         //
-        // The flame's tile is exempt only while nothing names a side. That
+        // The far end's tile is exempt only for a flame (`skip_last`), and then
+        // only while nothing names a side. That
         // exemption exists so a sconce is not shadowed by the wall it hangs on,
         // and with a whole-tile occluder there was no alternative. With a panel
         // there is: the flame is at its tile's centre, which is *inside* the
@@ -312,7 +331,7 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
         // either side of it, which reads as a starburst — measured, and the reason
         // this line is not the obvious one.
         let exempt = (cell.x == first.x && cell.y == first.y)
-            || (cell.x == last.x && cell.y == last.y && !named);
+            || (skip_last && cell.x == last.x && cell.y == last.y && !named);
         if !exempt {
             // A lid (`sides == 0`) is tested by its `z` span alone; a panel also
             // has to be on a side the ray goes through.
@@ -334,11 +353,13 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
                     share = 1.0;
                 }
                 let crossed = (leaves - entered) * ground * share;
-                // How soft this cell's own edge is: the penumbra of an occluder
-                // this far along the ray. See `FLAME_SPREAD`.
+                // How soft this cell's own edge is: the penumbra a source of
+                // this size casts from this far along the ray. See
+                // `FLAME_SPREAD`; a `spread` of zero is a point source, and the
+                // clamp below leaves it the narrowest edge the walk draws.
                 let middle = (entered + leaves) * 0.5;
                 let soft = clamp(
-                    FLAME_SPREAD * middle / max(1.0 - middle, 1.0e-3),
+                    spread * middle / max(1.0 - middle, 1.0e-3),
                     SOFT_CROSSING_MIN,
                     SOFT_CROSSING_MAX,
                 );
@@ -407,18 +428,29 @@ fn cone(beam: vec4<f32>, offset: vec3<f32>) -> f32 {
     return BEAM_SPILL + (1.0 - BEAM_SPILL) * t * t * (3.0 - 2.0 * t);
 }
 
-// How many tiles of grid one sunbeam's ray may walk. `light::MAX_SUN_STEPS`.
-const MAX_SUN_STEPS: i32 = 32;
+// How far along the ground one sunbeam may run, in tiles. `light::MAX_SUN_TILES`.
+//
+// The bound that matters is the ceiling below — a ray that has climbed above
+// everything in the grid is looking at sky and stops there, which over open
+// ground is two or three tiles. This is what is left for a sun so low that it
+// never climbs out: a shadow thirty-two tiles long is already longer than any
+// frame, and an unbounded segment would be a walk with no end at sunset.
+const MAX_SUN_TILES: f32 = 32.0;
 
 // How much of the sun reaches a fragment: 1 in the open, 0 in a wall's shadow.
 //
-// The same grid as a flame's walk and the same test against a cell's span, with
-// three differences, all of them from the sun having no position: the ray has no
-// endpoint, so it is bounded by `MAX_SUN_STEPS`; one step is one tile along the
-// ground, so the height climbs by the sun's own slope; and the walk stops as
-// soon as the ray is above everything in the grid, because from there on it is
-// looking at sky. The fragment's own tile is skipped, so a wall is lit on the
-// side the sun is on rather than shadowed by itself.
+// The same walk as a flame's, which is the whole of it now: what the sun has
+// instead of a position is a *direction*, so the far end of the segment is
+// computed rather than given. It is the point at which the ray leaves the
+// grid's ceiling — `lighting.sun.w`, the height above which nothing this frame
+// holds can stop anything — because from there on the ray is in the sky. A
+// fragment already above the ceiling is in open air and the walk never starts.
+//
+// `false` and `0.0`: there is no far tile to exempt, the far end being a point in
+// the sky, and the sun is half a degree wide, so its penumbra is the narrowest
+// `walk` draws. The fragment's own tile is skipped there as it is for a flame,
+// which is what lights a wall on the side the sun is on instead of shadowing it
+// with itself.
 fn sunlight(at: vec3<f32>) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
@@ -426,31 +458,22 @@ fn sunlight(at: vec3<f32>) -> f32 {
         // and that one is exempt.
         return 1.0;
     }
+    // One tile of ground a unit, so `z` climbs by the sun's own slope.
     let step = vec3<f32>(
         lighting.sun.x / horizontal,
         lighting.sun.y / horizontal,
         lighting.sun.z / horizontal * Z_PER_TILE,
     );
-    var through = 1.0;
-    for (var tile = 1; tile <= MAX_SUN_STEPS; tile = tile + 1) {
-        let along = at + step * f32(tile);
-        if along.z > lighting.sun.w {
-            break;
-        }
-        let cell = occluder_at(i32(floor(along.x)), i32(floor(along.y)));
-        if cell.w == 0u {
-            continue;
-        }
-        let bottom = f32(cell.x) - 128.0;
-        let top = f32(cell.y) - 128.0;
-        if along.z >= bottom && along.z <= top {
-            through = through * (1.0 - f32(cell.z) / 255.0);
-            if through <= 0.004 {
-                return 0.0;
-            }
-        }
+    var tiles = MAX_SUN_TILES;
+    if step.z > 1.0e-6 {
+        tiles = min(tiles, (lighting.sun.w - at.z) / step.z);
     }
-    return through;
+    if tiles <= 0.0 {
+        // Above everything the grid holds — or the grid holds nothing at all,
+        // which arrives here as a ceiling below every fragment there is.
+        return 1.0;
+    }
+    return walk(at, at + step * tiles, false, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -666,7 +689,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         if light.beam.w > -1.0 {
             lit_by = cone(light.beam, -offset);
         }
-        let through = reaches(at, vec3<f32>(to.x, to.y, to.z));
+        // The flame's own tile is exempt, and a flame is a body a tile wide:
+        // `walk`'s two parameters, and the only two things that make this ray
+        // different from the sun's.
+        let through = walk(at, vec3<f32>(to.x, to.y, to.z), true, FLAME_SPREAD);
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
         // from open ground nothing reaches. That difference is the one the whole

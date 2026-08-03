@@ -557,6 +557,74 @@ fn the_sun_reaches_the_floor_through_a_window() {
         "the window is not a window, or the wall is not a wall:\n{lit}\n{dark}{}",
         picture(&scene, &lighting),
     );
+
+    // And the patch is as wide as the opening, which the ordering above cannot
+    // see. With the sun's ray sampled one point per tile, the *whole* column one
+    // tile in from the wall read `1.0` — brighter than the window's own patch and
+    // the same the length of the wall, because what it was reading was a ray that
+    // had stepped over the top of the wall rather than through the pane. Read off
+    // the sun view, that is a stripe down the room with no window at the end of
+    // it: reported from the client as the light from the windows looking
+    // inverted, and the reason a floor is swept here rather than two tiles named.
+    let mut lit_rows = Vec::new();
+    let mut swept = 0;
+    for x in CENTRE.0 - scene::ROOM_HALF + 1..CENTRE.0 + scene::ROOM_HALF {
+        for y in CENTRE.1 - scene::ROOM_HALF + 1..CENTRE.1 + scene::ROOM_HALF {
+            if sun_of(&light::sample(spot((x, y), 0.0), &lighting)).through > 0.0 {
+                lit_rows.push((x, y));
+            }
+            swept += 1;
+        }
+    }
+    let interior = (scene::ROOM_HALF * 2 - 1) as usize;
+    assert_eq!(swept, interior * interior, "the sweep did not cover the floor");
+    assert!(
+        lit_rows.iter().all(|(_, y)| *y == scene::WINDOW_TILE.1),
+        "the sun reaches floor the window is not opposite: {lit_rows:?}{}",
+        picture(&scene, &lighting),
+    );
+    assert!(
+        !lit_rows.is_empty(),
+        "no floor at all is lit, so the assertion above is about nothing{}",
+        picture(&scene, &lighting),
+    );
+}
+
+/// A shut house lets no sun onto its floor. Not one tile of it.
+///
+/// The regression the sun's walk was rewritten for, and it was found in the sun
+/// view rather than by reasoning: every interior tile read `0` **except** the
+/// column one tile in from the sunward wall, which read a full `255` — a stripe
+/// of noon down the inside of a sealed building. The sun's ray sampled one point
+/// per tile, so at 45° it crossed the wall's plane at `z = 16`, inside a span of
+/// `0..=20`, and was next looked at one tile later at `z = 22`. It stepped over
+/// the top of a wall it had gone through.
+///
+/// Which is why this sweeps the whole floor rather than asserting on the middle:
+/// the middle was always dark, and a test that asked it would have been green for
+/// as long as the bug existed. It counts what it swept for the same reason — a
+/// sweep over an empty range asserts nothing and looks identical in the output.
+#[test]
+fn a_shut_house_lets_no_sun_onto_any_tile_of_its_floor() {
+    let house = scene::roofed_room();
+    let lighting = house.lighting(STILL);
+
+    let mut swept = 0;
+    for x in CENTRE.0 - scene::ROOM_HALF + 1..CENTRE.0 + scene::ROOM_HALF {
+        for y in CENTRE.1 - scene::ROOM_HALF + 1..CENTRE.1 + scene::ROOM_HALF {
+            let sample = light::sample(spot((x, y), 0.0), &lighting);
+            let sun = sample.sun.expect("a sunlit frame");
+            assert_eq!(
+                sun.through,
+                0.0,
+                "({x}, {y}) is inside a shut house and the sun reaches it:\n{sample}{}",
+                picture(&house, &lighting),
+            );
+            swept += 1;
+        }
+    }
+    let interior = (scene::ROOM_HALF * 2 - 1) as usize;
+    assert_eq!(swept, interior * interior, "the sweep did not cover the floor");
 }
 
 /// A frame with no sun pays nothing and says so.

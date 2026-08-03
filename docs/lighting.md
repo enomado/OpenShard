@@ -536,7 +536,9 @@ is. Which is what decision 11 always claimed to be doing.
       borrows `NO_SHOOT`'s answer — `occlusion::PANE` passes four fifths — and
       the sun is F8 in the app, off by default. Step 6 has since measured it —
       0.021ms a frame, 9% of the pass — so what keeps it off is no longer the
-      cost but the tile-stepped ray the backlog names.
+      cost but the tile-stepped ray the backlog named — and that has since been
+      fixed too, so what keeps the sun off by default is now only that nothing
+      has asked for it to be on.
 - [x] **12. A floor is not a wall.** Decision 13's `place::Stance`: a flat
       static's fraction is the inverse of `camera::project` over the pixel's
       offset from its tile's centre, an upright one's is the tile's middle, and
@@ -775,7 +777,9 @@ Found while building the observability and the sun:
   test (`Occlusion::tallest`) makes it two or three steps over open ground —
   ~~and the number is still unmeasured~~, and step 6 has now measured it at
   0.021ms a frame, which is a tenth of what firelight costs on the same frame.
-  The cost was never the reason to leave F8 off; the tile-stepped ray below is.
+  ~~The cost was never the reason to leave F8 off; the tile-stepped ray below
+  is.~~ Both are answered: the walk is a walk now and costs 0.057ms of the
+  0.287ms pass.
 
 Found while drawing the boxes:
 
@@ -838,15 +842,20 @@ Found while asking why a house's windows burn:
 Found while asking why the light steps from tile to tile — decisions 13 and 14
 are what came of the first three, and these are what is left:
 
-- **The sun's ray still steps a whole tile at a time.** `sunlight` and
-  `light::walk_sun` sample one point per tile along the direction, which is the
-  arrangement decision 14 replaced for flames: at a low elevation the ray skips
-  cells, and what it does hit is tested all-or-nothing, so a sunlit frame has the
-  tile-edged shadows a torchlit one no longer does. The traversal is written and
-  wants lifting into a shape both walks can use — the only difference is that the
-  sun's has no endpoint.
+- ~~**The sun's ray still steps a whole tile at a time.**~~ Done: there is one
+  walk now, and both rays take it. `blit.wgsl`'s `walk` and `light::walk_cells`
+  take the two ends as parameters — `skip_last` is the flame's own tile, `spread`
+  is how big the source is — and a sunbeam passes `false` and `0.0`. What the sun
+  has instead of a position is a direction, so the far end is *computed*: the
+  point at which the ray leaves the grid's ceiling, past which it is looking at
+  sky. It costs 0.057ms a frame at the widest zoom over Britain, against the
+  0.021ms the point sampling cost, and the pass as a whole is 0.287ms — a quarter
+  over an unlit frame, for a walk that runs on every ground pixel there is.
 
-  **And it is not a softness question, it is a hole.** Measured in the sun view
+  The sun's ray also gains the panel test it never had (below), because a
+  crossing is something only a walk can name.
+
+  **And it was not a softness question, it was a hole.** Measured in the sun view
   over `scene::roofed_room`, which is a shut house with a roof on: every tile of
   the interior reads `0`, *except* the column one tile in from the sunward wall,
   which reads a full `255`. At noon the ray climbs 11 `z` a tile, so from that
@@ -859,13 +868,10 @@ are what came of the first three, and these are what is left:
   window's own patch, and runs the length of the wall rather than the width of the
   opening. Reported from the client as "the light from the windows looks
   inverted", which is exactly what that reads as.
-- **The sun's walk does not test the panel a wall stands on.** Decision 17 gave
-  the flame's walk the edge test — a cell stops a ray only where the ray crosses
-  the side the thing is actually built on — and `sunlight` never got it: it tests
-  a cell's `z` span alone, so a wall shadows the sun from every direction
-  including along its own line. It cannot be lifted across on its own, though,
-  because a point sample has no crossing to name; the entry above is what makes it
-  possible, and the two are one piece of work.
+- ~~**The sun's walk does not test the panel a wall stands on.**~~ Done, with the
+  entry above and by it: a point sample has no crossing to name, so the edge test
+  could not be lifted across until the sun's ray was a walk. It is one now, and
+  decision 17 applies to it unchanged.
 - ~~**A wall is still lit as one point per tile.**~~ Done, in step 15, for the
   three quarters of a city whose art names an edge. What is left of it is the
   other quarter — corners, posts and slabs — which still light as a row of tiles
